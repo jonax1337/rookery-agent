@@ -43,20 +43,19 @@ export function InputBox({
       <Box
         flexDirection="column"
         borderStyle="round"
-        borderColor={busy ? ui.muted : ui.amber}
-        borderDimColor={Boolean(busy)}
+        borderColor={busy ? ui.faint : ui.amber}
+        borderDimColor
         paddingX={1}
       >
         {lines.map((line, index) => (
+          // Buffer lines have no identity beyond their position.
           <Box key={index} flexDirection="row">
-            <Text color={busy ? ui.muted : ui.amber} bold={index === 0}>
-              {index === 0 ? glyph.prompt + ' ' : glyph.dot + ' '}
+            <Text color={busy ? ui.faint : ui.amber} bold={index === 0}>
+              {index === 0 ? glyph.prompt + ' ' : glyph.bar + ' '}
             </Text>
             <Box flexGrow={1}>
               {empty && index === 0 ? (
-                <Text color={ui.muted} dimColor>
-                  {placeholder ?? ''}
-                </Text>
+                <Text color={ui.faint}>{placeholder ?? ''}</Text>
               ) : (
                 <CaretLine
                   line={line}
@@ -70,9 +69,7 @@ export function InputBox({
       </Box>
       {hint ? (
         <Box paddingX={1}>
-          <Text color={ui.muted} dimColor>
-            {hint}
-          </Text>
+          <Text color={ui.faint}>{hint}</Text>
         </Box>
       ) : null}
     </Box>

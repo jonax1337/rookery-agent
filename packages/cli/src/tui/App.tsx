@@ -19,7 +19,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, render, useApp, useInput } from 'ink';
 import { Assistant, loadConfig } from '@rookery/core';
-import type { RookeryConfig, TurnUsage } from '@rookery/core';
+import type { ProviderQuota, RookeryConfig, TurnUsage } from '@rookery/core';
 import {
   parseEffort,
   parsePermission,
@@ -29,19 +29,22 @@ import {
   resolveSession,
 } from '../commands/shared.js';
 import { speak, stopSpeaking } from '../ui/speech.js';
-import { contextLabel, runSlashCommand } from './commands.js';
+import { runSlashCommand } from './commands.js';
 import { Scrollback } from './components/Scrollback.js';
 import { AssistantMessage } from './components/Message.js';
 import { ActivityLine } from './components/ActivityLine.js';
+import { ToolGroup } from './components/ToolGroup.js';
 import { InputBox } from './components/InputBox.js';
 import { SlashPalette } from './components/SlashPalette.js';
 import { StatusLine } from './components/StatusLine.js';
 import { AssignmentsView } from './components/AssignmentsView.js';
+import { useColumns } from './hooks/useColumns.js';
 import { useHistory } from './hooks/useHistory.js';
 import { useSlash } from './hooks/useSlash.js';
 import { useTurn } from './hooks/useTurn.js';
 import { glyph, ui } from './theme.js';
-import type { Entry, NoticeLine, SessionState } from './types.js';
+import { EMPTY_USAGE, addUsage, groupActivities } from './types.js';
+import type { BannerState, Entry, SessionState } from './types.js';
 
 export interface TuiOptions {
   session?: string;
@@ -70,7 +73,12 @@ export interface AppProps {
   initialEntries?: Entry[];
 }
 
-export function App({ assistant, config, initial, initialEntries = [] }: AppProps): React.JSX.Element {
+export function App({
+  assistant,
+  config,
+  initial,
+  initialEntries = [],
+}: AppProps): React.JSX.Element {
   const { exit } = useApp();
 
   const [session, setSession] = useState<SessionState>(initial);
@@ -82,6 +90,7 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
   const [frame, setFrame] = useState(0);
   const [now, setNow] = useState(() => Date.now());
 
+  const columns = useColumns();
   const ids = useRef(0);
   const nextId = useCallback(() => 'x' + (ids.current += 1), []);
 
@@ -108,6 +117,10 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
     [assistant],
   );
 
+  const onQuota = useCallback((quota: ProviderQuota) => {
+    setSession((current) => ({ ...current, quota }));
+  }, []);
+
   const onFinish = useCallback(
     (result: { text: string; aborted: boolean; usage?: TurnUsage }) => {
       const current = sessionRef.current;
@@ -115,9 +128,14 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
         const stored = assistant.getSession(current.sessionId);
         if (stored) setSession((state) => ({ ...state, title: stored.title }));
       }
-      if (result.usage?.contextTokens !== undefined) {
-        const { contextTokens, contextWindow } = result.usage;
-        setSession((state) => ({ ...state, contextTokens, contextWindow }));
+      if (result.usage) {
+        const usage = result.usage;
+        setSession((state) => ({
+          ...state,
+          usage: addUsage(state.usage, usage),
+          ...(usage.contextTokens !== undefined ? { contextTokens: usage.contextTokens } : {}),
+          ...(usage.contextWindow !== undefined ? { contextWindow: usage.contextWindow } : {}),
+        }));
       }
       if (!current.voice || result.aborted || !result.text.trim()) return;
       void speak(result.text, {
@@ -127,7 +145,7 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
       }).then((spoken) => {
         if (!spoken.ok && spoken.detail !== 'aborted') {
           append([
-            { kind: 'activity', id: nextId(), icon: glyph.warn, text: 'voice: ' + spoken.detail },
+            { kind: 'activity', id: nextId(), icon: glyph.warn, text: 'Sprache: ' + spoken.detail },
           ]);
         }
       });
@@ -135,7 +153,7 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
     [append, assistant, config.voice.lang, config.voice.rate, config.voice.voiceName, nextId],
   );
 
-  const turn = useTurn({ assistant, onCommit: append, onSession, onFinish });
+  const turn = useTurn({ assistant, onCommit: append, onSession, onQuota, onFinish });
   const turnRef = useRef(turn);
   turnRef.current = turn;
 
@@ -211,7 +229,7 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
           kind: 'activity',
           id: nextId(),
           icon: glyph.warn,
-          text: 'a turn is already running - Ctrl+C to interrupt it',
+          text: 'Es läuft schon ein Zug — Ctrl+C unterbricht ihn',
         },
       ]);
       return;
@@ -372,12 +390,16 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
 
   const hint = useMemo(() => {
     if (paletteOpen) return '';
-    if (turn.busy) return 'Ctrl+C interrupt';
+    if (turn.busy) return 'Ctrl+C unterbricht';
     return (
-      'Enter send ' + glyph.dot + ' Shift+Enter newline ' + glyph.dot +
-      ' / commands ' + glyph.dot + ' Ctrl+D exit'
+      'Enter senden ' + glyph.dot + ' Shift+Enter neue Zeile ' + glyph.dot +
+      ' / Befehle ' + glyph.dot + ' Ctrl+D beenden'
     );
   }, [paletteOpen, turn.busy]);
+
+  // The live region groups exactly the way the committed scrollback will, so
+  // a finished turn never visibly re-flows.
+  const groups = useMemo(() => groupActivities(turn.activities), [turn.activities]);
 
   const elapsedMs = turn.startedAt === null ? 0 : Math.max(0, now - turn.startedAt);
   const caretVisible = Math.floor(frame / (turn.busy ? 6 : 1)) % 2 === 0;
@@ -388,14 +410,18 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
 
       {/* The live region: only this repaints while a turn streams. */}
       <Box flexDirection="column">
-        {turn.activities.map((activity) => (
-          <ActivityLine
-            key={activity.id}
-            icon={activity.icon}
-            text={activity.text}
-            {...(activity.color ? { color: activity.color } : {})}
-          />
-        ))}
+        {groups.map((group) =>
+          group.kind === 'tools' ? (
+            <ToolGroup key={group.id} calls={group.calls} frame={frame} now={now} />
+          ) : (
+            <ActivityLine
+              key={group.note.id}
+              icon={group.note.icon}
+              text={group.note.text}
+              {...(group.note.color ? { color: group.note.color } : {})}
+            />
+          ),
+        )}
 
         {turn.assignments ? (
           <AssignmentsView state={turn.assignments} frame={frame} now={now} />
@@ -419,9 +445,10 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
           provider={session.provider}
           {...(session.model ? { model: session.model } : {})}
           {...(session.effort ? { effort: session.effort } : {})}
-          {...(session.contextTokens !== undefined
-            ? { context: 'ctx ' + contextLabel(session.contextTokens, session.contextWindow) }
-            : {})}
+          {...(session.contextTokens !== undefined ? { contextTokens: session.contextTokens } : {})}
+          {...(session.contextWindow !== undefined ? { contextWindow: session.contextWindow } : {})}
+          usage={session.usage}
+          {...(session.quota ? { quota: session.quota } : {})}
           permission={session.permission}
           title={session.title}
           {...(session.projectName ? { project: session.projectName } : {})}
@@ -432,12 +459,13 @@ export function App({ assistant, config, initial, initialEntries = [] }: AppProp
           label={turn.label}
           voice={session.voice}
           verbose={session.verbose}
+          columns={columns}
         />
         <InputBox
           value={draft}
           cursor={cursor}
           busy={turn.busy}
-          placeholder="Ask anything, or / for commands"
+          placeholder="Frag was, oder / für Befehle"
           hint={hint}
           caretVisible={caretVisible}
         />
@@ -488,20 +516,19 @@ export async function startTui(options: TuiOptions = {}): Promise<number> {
 
   const state: SessionState = {
     sessionId: options.session,
-    title: 'New conversation',
+    title: 'Neue Unterhaltung',
     assistantName,
     counterpart: assistantName,
     provider: parseProvider(options.provider) ?? config.defaultProvider,
     model: options.model ?? config.defaultModel,
     effort: parseEffort(options.effort) ?? config.defaultEffort,
     permission: parsePermission(options.permission) ?? config.defaultPermission,
+    usage: EMPTY_USAGE,
     voice: options.voice ?? false,
     verbose: options.verbose ?? false,
   };
 
-  const banner: Entry[] = [];
-  let id = 0;
-  const bannerId = (): string => 'b' + (id += 1);
+  const warnings: string[] = [];
 
   try {
     const project = resolveProject(assistant, options.project);
@@ -510,11 +537,7 @@ export async function startTui(options: TuiOptions = {}): Promise<number> {
       state.projectName = project.name;
     }
   } catch (error) {
-    banner.push({
-      kind: 'notice',
-      id: bannerId(),
-      lines: [{ text: glyph.warn + ' ' + (error as Error).message, color: ui.warn }],
-    });
+    warnings.push((error as Error).message);
   }
 
   if (options.agent) {
@@ -526,11 +549,7 @@ export async function startTui(options: TuiOptions = {}): Promise<number> {
       state.provider = agent.provider ?? state.provider;
       state.model = agent.model ?? state.model;
     } catch (error) {
-      banner.push({
-        kind: 'notice',
-        id: bannerId(),
-        lines: [{ text: glyph.warn + ' ' + (error as Error).message, color: ui.warn }],
-      });
+      warnings.push((error as Error).message);
     }
   }
 
@@ -552,16 +571,14 @@ export async function startTui(options: TuiOptions = {}): Promise<number> {
         state.projectName = assistant.store.org.getProject(existing.projectId)?.name;
       }
     } catch (error) {
-      banner.push({
-        kind: 'notice',
-        id: bannerId(),
-        lines: [{ text: glyph.warn + ' ' + (error as Error).message, color: ui.warn }],
-      });
+      warnings.push((error as Error).message);
       state.sessionId = undefined;
     }
   }
 
-  banner.push({ kind: 'notice', id: bannerId(), lines: await bannerLines(assistant, state) });
+  const banner: Entry[] = [
+    { kind: 'banner', id: 'b1', banner: await bannerState(assistant, state, warnings) },
+  ];
 
   const instance = render(
     <App assistant={assistant} config={config} initial={state} initialEntries={banner} />,
@@ -585,38 +602,26 @@ export async function startTui(options: TuiOptions = {}): Promise<number> {
   return 0;
 }
 
-async function bannerLines(assistant: Assistant, state: SessionState): Promise<NoticeLine[]> {
-  const lines: NoticeLine[] = [
-    { text: 'Rookery', color: ui.amber, bold: true },
-  ];
-
+/** What the boot banner shows: the mark, the counterpart, the logins. */
+async function bannerState(
+  assistant: Assistant,
+  state: SessionState,
+  warnings: string[],
+): Promise<BannerState> {
   const statuses = await assistant.providers.statuses();
   const ready = statuses.filter((status) => status.available && status.authenticated);
+  const offline = statuses.filter((status) => !(status.available && status.authenticated));
 
-  if (!ready.length) {
-    lines.push({
-      text: glyph.fail + ' No provider is logged in - run `rookery doctor` for the fix.',
-      color: ui.danger,
-    });
-  } else {
-    const missing = statuses.filter((status) => !(status.available && status.authenticated));
-    lines.push({
-      text:
-        glyph.ok + ' ' + ready.map((status) => status.id).join(' + ') +
-        (missing.length
-          ? '  (' + missing.map((status) => status.id + ' offline').join(', ') + ')'
-          : ''),
-      dim: true,
-    });
-  }
-
-  lines.push({
-    text:
-      (state.agentId ? 'with ' + state.counterpart + ' ' + glyph.dot + ' ' : '') +
-      state.provider + ' ' + glyph.dot + ' ' +
-      state.permission + '   /help for commands',
-    dim: true,
-  });
-
-  return lines;
+  return {
+    wordmark: 'Rookery',
+    assistantName: state.assistantName,
+    ready: ready.map((status) => status.id),
+    offline: offline.map((status) => status.id),
+    provider: state.provider,
+    ...(state.model ? { model: state.model } : {}),
+    permission: state.permission,
+    ...(state.projectName ? { project: state.projectName } : {}),
+    ...(state.agentId ? { agent: state.counterpart } : {}),
+    ...(warnings.length ? { warnings } : {}),
+  };
 }

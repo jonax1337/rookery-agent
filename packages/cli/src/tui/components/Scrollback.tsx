@@ -11,8 +11,10 @@ import React from 'react';
 import { Box, Static, Text } from 'ink';
 import { ui } from '../theme.js';
 import { ActivityLine } from './ActivityLine.js';
+import { Banner } from './Banner.js';
 import { AssistantMessage, UserMessage } from './Message.js';
 import { AssignmentsSummaryView } from './AssignmentsView.js';
+import { ToolGroup } from './ToolGroup.js';
 import type { Entry } from '../types.js';
 
 export interface ScrollbackProps {
@@ -54,6 +56,7 @@ export function EntryView({ entry }: { entry: Entry }): React.JSX.Element {
           speaker={entry.speaker}
           {...(entry.provider ? { provider: entry.provider } : {})}
           {...(entry.durationMs !== undefined ? { durationMs: entry.durationMs } : {})}
+          {...(entry.usage ? { usage: entry.usage } : {})}
           {...(entry.aborted ? { aborted: true } : {})}
         />
       );
@@ -67,6 +70,12 @@ export function EntryView({ entry }: { entry: Entry }): React.JSX.Element {
         />
       );
 
+    case 'tools':
+      return <ToolGroup calls={entry.calls} />;
+
+    case 'banner':
+      return <Banner state={entry.banner} />;
+
     case 'assignments':
       return <AssignmentsSummaryView summary={entry.summary} />;
 
@@ -75,10 +84,11 @@ export function EntryView({ entry }: { entry: Entry }): React.JSX.Element {
       return (
         <Box flexDirection="column" marginTop={1}>
           {entry.lines.map((line, index) => (
+            // Notice lines have no identity beyond their position.
             <Text
               key={index}
               color={line.color ?? ui.muted}
-              dimColor={line.dim ?? !line.color}
+              dimColor={line.dim ?? false}
               bold={line.bold}
               wrap="wrap"
             >

@@ -11,6 +11,10 @@
  *  - Nothing is written to the scrollback until the turn ends: activity lines
  *    and the reply must stay in the order they happened, and `<Static>` can
  *    only append.
+ *  - A tool call is one record, not two events. Core sends `start` and `end`
+ *    separately; they are folded together by id so the interface can show a
+ *    row that changes state instead of two lines that have to be paired up by
+ *    the reader.
  *  - Assignments are merged by id. Core re-sends the whole view on every
  *    change - handed out, running, a progress tick, done - so the reducer
  *    keeps the latest per id and remembers when each one started running.
@@ -18,29 +22,34 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Assistant, AssignInput, ChatInput } from '@rookery/core';
-import type { AgentEvent, AssignmentView, TurnUsage } from '@rookery/core';
+import type { AgentEvent, AssignmentView, ProviderQuota, TurnUsage } from '@rookery/core';
 import { glyph, ui } from '../theme.js';
 import { shorten } from '../../ui/render.js';
+import { groupActivities } from '../types.js';
 import type {
   Activity,
   AssignmentsState,
   AssignmentsSummary,
   Entry,
   SessionState,
+  ToolActivity,
 } from '../types.js';
 
 /** How often live state is pushed into React, in milliseconds. */
 const FLUSH_MS = 40;
 /** Hard cap on live activity lines, so a chatty provider cannot blow up RAM. */
 const MAX_ACTIVITIES = 500;
+/** How much of a tool's argument summary is kept. Wrapping shows the rest. */
+const MAX_TOOL_DETAIL = 400;
 
 export interface LiveTurn {
   busy: boolean;
   /** Streamed assistant text for the turn in flight. */
   text: string;
+  /** Tool calls and side-channel notes, in the order they happened. */
   activities: Activity[];
   assignments: AssignmentsState | null;
-  /** Status-line verb: 'thinking' or 'delegating'. */
+  /** Status-bar verb: 'denkt' or 'delegiert'. */
   label: string;
   startedAt: number | null;
 }
@@ -63,6 +72,8 @@ export interface UseTurnOptions {
   onCommit: (entries: Entry[]) => void;
   /** The runtime told us which session this turn belongs to. */
   onSession: (sessionId: string) => void;
+  /** The provider reported the account's own limit windows mid-turn. */
+  onQuota?: (quota: ProviderQuota) => void;
   onFinish?: (result: TurnResult) => void;
 }
 
@@ -76,11 +87,17 @@ const IDLE: LiveTurn = {
   text: '',
   activities: [],
   assignments: null,
-  label: 'thinking',
+  label: 'denkt',
   startedAt: null,
 };
 
-export function useTurn({ assistant, onCommit, onSession, onFinish }: UseTurnOptions): TurnApi {
+export function useTurn({
+  assistant,
+  onCommit,
+  onSession,
+  onQuota,
+  onFinish,
+}: UseTurnOptions): TurnApi {
   const [live, setLive] = useState<LiveTurn>(IDLE);
   const draft = useRef<LiveTurn>(IDLE);
   const flushTimer = useRef<NodeJS.Timeout | null>(null);
@@ -124,10 +141,9 @@ export function useTurn({ assistant, onCommit, onSession, onFinish }: UseTurnOpt
     (icon: string, text: string, color?: string) => {
       counter.current += 1;
       const activity: Activity = color
-        ? { id: 'a' + counter.current, icon, text, color }
-        : { id: 'a' + counter.current, icon, text };
-      const next = [...draft.current.activities, activity];
-      draft.current.activities = next.length > MAX_ACTIVITIES ? next.slice(-MAX_ACTIVITIES) : next;
+        ? { kind: 'note', id: 'a' + counter.current, icon, text, color }
+        : { kind: 'note', id: 'a' + counter.current, icon, text };
+      draft.current.activities = capped([...draft.current.activities, activity]);
       schedule();
     },
     [schedule],
@@ -149,7 +165,7 @@ export function useTurn({ assistant, onCommit, onSession, onFinish }: UseTurnOpt
         text: '',
         activities: [],
         assignments: null,
-        label: request.kind === 'assign' ? 'delegating' : 'thinking',
+        label: request.kind === 'assign' ? 'delegiert' : 'denkt',
         startedAt: Date.now(),
       };
       flushNow();
@@ -167,6 +183,7 @@ export function useTurn({ assistant, onCommit, onSession, onFinish }: UseTurnOpt
           for await (const event of stream) {
             if (event.type === 'session') onSession(event.sessionId);
             if (event.type === 'done') usage = event.usage;
+            if (event.type === 'quota') onQuota?.(event.quota);
             if (event.type === 'error' && event.fatal && !signal.signal.aborted) failed = true;
             applyEvent(draft, event, session.verbose, pushActivity, (id) =>
               assistant.store.org.getAgent(id)?.slug ?? id.slice(0, 8),
@@ -181,10 +198,11 @@ export function useTurn({ assistant, onCommit, onSession, onFinish }: UseTurnOpt
         }
 
         const aborted = signal.signal.aborted;
+        closeOpenTools(draft.current, aborted);
         const finished = draft.current;
         const durationMs = Date.now() - (finished.startedAt ?? Date.now());
 
-        onCommit(toEntries(finished, session, request, durationMs, aborted, counter));
+        onCommit(toEntries(finished, session, request, durationMs, aborted, counter, usage));
 
         controller.current = null;
         draft.current = IDLE;
@@ -192,13 +210,17 @@ export function useTurn({ assistant, onCommit, onSession, onFinish }: UseTurnOpt
         onFinish?.({ text: finished.text, aborted, failed, ...(usage ? { usage } : {}) });
       })();
     },
-    [assistant, flushNow, onCommit, onFinish, onSession, pushActivity, schedule],
+    [assistant, flushNow, onCommit, onFinish, onQuota, onSession, pushActivity, schedule],
   );
 
   return { ...live, start, abort };
 }
 
 /* ------------------------------- plumbing ------------------------------ */
+
+function capped(activities: Activity[]): Activity[] {
+  return activities.length > MAX_ACTIVITIES ? activities.slice(-MAX_ACTIVITIES) : activities;
+}
 
 function chatInput(
   request: Extract<TurnRequest, { kind: 'chat' }>,
@@ -264,22 +286,22 @@ export function applyEvent(
     }
 
     case 'tool': {
-      if (event.status === 'start') {
-        pushActivity(glyph.tool, event.name + (event.detail ? ' ' + shorten(event.detail, 72) : ''));
-      } else if (verbose) {
-        pushActivity(glyph.tool, event.name + ' done');
-      }
+      applyTool(live, event);
       return;
     }
 
     case 'memory': {
-      const word = event.count === 1 ? 'memory' : 'memories';
-      pushActivity(glyph.memory, event.count + ' ' + word + ' ' + event.action);
+      const word = event.count === 1 ? 'Erinnerung' : 'Erinnerungen';
+      const verb = event.action === 'recalled' ? 'abgerufen' : 'gespeichert';
+      pushActivity(glyph.memory, event.count + ' ' + word + ' ' + verb);
       return;
     }
 
     case 'status': {
-      pushActivity(glyph.status, event.label + (event.detail ? ' ' + glyph.dot + ' ' + event.detail : ''));
+      pushActivity(
+        glyph.status,
+        event.label + (event.detail ? ' ' + glyph.dot + ' ' + event.detail : ''),
+      );
       return;
     }
 
@@ -297,11 +319,11 @@ export function applyEvent(
       }
       state.byId = { ...state.byId, [view.id]: view };
       live.assignments = state;
-      // The status line says what the turn is actually doing: as long as an
+      // The status bar says what the turn is actually doing: as long as an
       // agent is working somewhere, the assistant is delegating, not thinking.
       live.label = Object.values(state.byId).some((entry) => entry.status === 'running')
-        ? 'delegating'
-        : 'thinking';
+        ? 'delegiert'
+        : 'denkt';
       return;
     }
 
@@ -330,13 +352,112 @@ export function applyEvent(
       return;
     }
 
+    case 'quota':
     case 'session':
     default:
       return;
   }
 }
 
-/** Everything a finished turn leaves in the scrollback, in order. */
+/**
+ * Fold a `tool` event into the row it belongs to.
+ *
+ * `start` opens a row; `end` closes the newest still-open row with that id.
+ * An `end` whose `start` was never seen - a provider that only reports
+ * completions - opens and closes a row in one go, so the call is still shown.
+ */
+function applyTool(live: LiveTurn, event: Extract<AgentEvent, { type: 'tool' }>): void {
+  const id = event.id ?? event.name + ':' + live.activities.length;
+
+  if (event.status === 'start') {
+    const call: ToolActivity = {
+      kind: 'tool',
+      id,
+      name: event.name,
+      status: 'running',
+      startedAt: Date.now(),
+      ...(event.detail ? { detail: event.detail.slice(0, MAX_TOOL_DETAIL) } : {}),
+    };
+    live.activities = capped([...live.activities, call]);
+    return;
+  }
+
+  const open = findOpenTool(live.activities, id);
+  if (!open) {
+    const now = Date.now();
+    live.activities = capped([
+      ...live.activities,
+      {
+        kind: 'tool',
+        id,
+        name: event.name,
+        status: 'done',
+        startedAt: now,
+        durationMs: 0,
+        ...(event.detail ? { detail: event.detail.slice(0, MAX_TOOL_DETAIL) } : {}),
+      },
+    ]);
+    return;
+  }
+
+  // The row is replaced rather than mutated: the committed React state holds
+  // the same objects, and mutating them would change the past silently.
+  live.activities = live.activities.map((activity) =>
+    activity === open
+      ? {
+          ...open,
+          status: 'done' as const,
+          durationMs: Date.now() - open.startedAt,
+          // An `end` that carries a better summary than the `start` wins.
+          ...(event.detail ? { detail: event.detail.slice(0, MAX_TOOL_DETAIL) } : {}),
+        }
+      : activity,
+  );
+}
+
+function findOpenTool(activities: Activity[], id: string): ToolActivity | undefined {
+  for (let index = activities.length - 1; index >= 0; index -= 1) {
+    const activity = activities[index];
+    if (activity?.kind === 'tool' && activity.id === id && activity.status === 'running') {
+      return activity;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * A turn that ends leaves no tool spinning.
+ *
+ * An interrupted turn marks them failed - that is what happened to them - and
+ * a clean end marks them done, because a provider that closes its stream has
+ * finished whatever it was doing.
+ */
+function closeOpenTools(live: LiveTurn, aborted: boolean): void {
+  const open = live.activities.some(
+    (activity) => activity.kind === 'tool' && activity.status === 'running',
+  );
+  if (!open) return;
+
+  const now = Date.now();
+  live.activities = live.activities.map((activity) =>
+    activity.kind === 'tool' && activity.status === 'running'
+      ? {
+          ...activity,
+          status: aborted ? ('failed' as const) : ('done' as const),
+          durationMs: now - activity.startedAt,
+        }
+      : activity,
+  );
+}
+
+/**
+ * Everything a finished turn leaves in the scrollback, in order.
+ *
+ * Consecutive tool calls collapse into one `tools` entry. That is what turns a
+ * ribbon of unrelated lines into a block a reader can take in at a glance -
+ * and it is the only place the grouping can happen, because `<Static>` renders
+ * each entry on its own and cannot see its neighbours.
+ */
 function toEntries(
   live: LiveTurn,
   session: SessionState,
@@ -344,14 +465,25 @@ function toEntries(
   durationMs: number,
   aborted: boolean,
   counter: { current: number },
+  usage: TurnUsage | undefined,
 ): Entry[] {
-  const entries: Entry[] = live.activities.map((activity) => ({
-    kind: 'activity' as const,
-    id: 'e' + activity.id,
-    icon: activity.icon,
-    text: activity.text,
-    ...(activity.color ? { color: activity.color } : {}),
-  }));
+  const entries: Entry[] = [];
+
+  for (const group of groupActivities(live.activities)) {
+    if (group.kind === 'tools') {
+      counter.current += 1;
+      entries.push({ kind: 'tools', id: 'k' + counter.current, calls: group.calls });
+      continue;
+    }
+    const note = group.note;
+    entries.push({
+      kind: 'activity',
+      id: 'e' + note.id,
+      icon: note.icon,
+      text: note.text,
+      ...(note.color ? { color: note.color } : {}),
+    });
+  }
 
   if (live.assignments && live.assignments.order.length) {
     counter.current += 1;
@@ -371,12 +503,11 @@ function toEntries(
       // An assignment's output is the agent's report, not the assistant's
       // voice; a direct chat is the agent speaking for itself.
       speaker:
-        request.kind === 'assign'
-          ? request.agent
-          : session.counterpart || session.assistantName,
-      text: text || '(no output)',
+        request.kind === 'assign' ? request.agent : session.counterpart || session.assistantName,
+      text: text || '(keine Ausgabe)',
       provider: session.provider,
       durationMs,
+      ...(usage ? { usage } : {}),
       ...(aborted ? { aborted: true } : {}),
     });
   }

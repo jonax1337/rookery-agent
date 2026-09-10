@@ -1,6 +1,9 @@
 /**
  * The inline command palette that appears while a `/` command is being typed.
  * Arrow keys move the highlight, Tab or Enter completes it.
+ *
+ * The selected row is the only coloured thing in the list: a palette where
+ * every row competes for attention is a menu, not a completion.
  */
 
 import React from 'react';
@@ -26,33 +29,35 @@ export function SlashPalette({
   const start = Math.max(0, Math.min(selected - limit + 1, matches.length - limit));
   const visible = matches.slice(Math.max(0, start), Math.max(0, start) + limit);
   const hidden = matches.length - visible.length;
-  const width = Math.max(...matches.map((command) => command.name.length + (command.args ? command.args.length + 1 : 0)));
+  const width = Math.max(
+    ...matches.map((command) => command.name.length + (command.args ? command.args.length + 1 : 0)),
+  );
 
   return (
-    <Box flexDirection="column" paddingX={2}>
+    <Box flexDirection="column" paddingX={1} marginTop={1}>
       {visible.map((command, index) => {
         const absolute = Math.max(0, start) + index;
         const active = absolute === selected;
         const label = command.name + (command.args ? ' ' + command.args : '');
         return (
           <Box key={command.name} flexDirection="row">
+            <Text color={active ? ui.amber : ui.faint}>
+              {(active ? glyph.prompt : ' ') + ' '}
+            </Text>
             <Text color={active ? ui.amber : ui.muted} bold={active}>
-              {active ? glyph.prompt + ' ' : '  '}
               {label.padEnd(width + 2)}
             </Text>
-            <Text color={ui.muted} dimColor>
-              {command.description}
-            </Text>
+            <Box flexGrow={1}>
+              <Text color={ui.faint} wrap="truncate-end">
+                {command.description}
+              </Text>
+            </Box>
           </Box>
         );
       })}
-      {hidden > 0 ? (
-        <Text color={ui.muted} dimColor>
-          {'  +' + hidden + ' more'}
-        </Text>
-      ) : null}
-      <Text color={ui.muted} dimColor>
-        {'  ↑↓ select ' + glyph.dot + ' Tab complete ' + glyph.dot + ' Esc dismiss'}
+      {hidden > 0 ? <Text color={ui.faint}>{'  +' + hidden + ' weitere'}</Text> : null}
+      <Text color={ui.faint}>
+        {'  ↑↓ wählen ' + glyph.dot + ' Tab übernehmen ' + glyph.dot + ' Esc schließen'}
       </Text>
     </Box>
   );

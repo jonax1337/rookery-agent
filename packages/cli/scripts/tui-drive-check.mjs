@@ -266,8 +266,8 @@ console.log(preview(frame, 8));
 expect(frame, 'jarvis', 'status line shows the assistant');
 expect(frame, 'claude', 'status line shows the provider');
 expect(frame, 'read', 'status line shows the permission level');
-expect(frame, 'Ask anything, or / for commands', 'input box placeholder');
-expect(frame, 'Ctrl+D exit', 'hint line');
+expect(frame, 'Frag was, oder / für Befehle', 'input box placeholder');
+expect(frame, 'Ctrl+D beenden', 'hint line');
 
 /* 2. typing `/hel` opens the palette */
 let mark = stdout.mark();
@@ -277,8 +277,8 @@ frame = stdout.since(mark);
 console.log('\n--- after typing "/hel" ---------------------------------------');
 console.log(preview(frame, 6));
 expect(frame, '/help', 'palette lists /help');
-expect(frame, 'show commands and agent roles', 'palette shows the description');
-expect(frame, 'Tab complete', 'palette hint');
+expect(frame, 'Befehle und Rollen der Firma', 'palette shows the description');
+expect(frame, 'Tab übernehmen', 'palette hint');
 
 /* 3. Tab completes it */
 mark = stdout.mark();
@@ -294,7 +294,7 @@ await wait(400);
 frame = stdout.since(mark);
 console.log('\n--- after Enter on /help --------------------------------------');
 console.log(preview(frame, 14));
-expect(frame, 'Commands', '/help printed the command list');
+expect(frame, 'Befehle', '/help printed the command list');
 expect(frame, '/permission', '/help lists every command');
 expect(frame, '/assign', '/help lists the company commands');
 
@@ -312,7 +312,7 @@ expect(frame, 'Read src/repl.ts', 'the tool activity line appears while streamin
 expect(frame, 'Rebuild the terminal', 'a task event appears as an activity line');
 expect(frame, 'backend-dev', 'the task line names the assignee by slug');
 expect(frame, 'Ink ', 'assistant text streams in');
-expect(frame, 'thinking', 'the status line switches to the running label');
+expect(frame, 'denkt', 'the status line switches to the running label');
 
 mark = stdout.mark();
 stdin.write(CTRL_C);
@@ -320,9 +320,9 @@ await wait(500);
 frame = stdout.since(mark);
 console.log('\n--- after Ctrl+C during the turn -------------------------------');
 console.log(preview(frame, 8));
-expect(frame, 'interrupted', 'the aborted turn is marked interrupted');
-expect(frame, 'ready', 'the status line returns to idle');
-refute(stdout.lastFrame(), 'thinking', 'the spinner is gone from the final frame');
+expect(frame, 'abgebrochen', 'the aborted turn is marked interrupted');
+expect(frame, 'bereit', 'the status line returns to idle');
+refute(stdout.lastFrame(), 'denkt', 'the spinner is gone from the final frame');
 
 /* 6. /assign renders the live assignment rows */
 mark = stdout.mark();
@@ -335,8 +335,8 @@ console.log('\n--- /assign, live ---------------------------------------------')
 console.log(preview(frame, 12));
 expect(frame, 'backend-dev', 'the row names the agent');
 expect(frame, 'rebuild the terminal', 'the row shows the task');
-expect(frame, 'delegated', 'the block headline');
-expect(frame, 'delegating', 'the status line label while an agent works');
+expect(frame, 'delegiert', 'the block headline');
+expect(frame, 'delegiert', 'the status line label while an agent works');
 await wait(1400);
 
 /* 7. the board: put something on it, then read it back */
@@ -371,7 +371,7 @@ await wait(300);
 frame = stdout.since(mark);
 console.log('\n--- /talk backend-dev -----------------------------------------');
 console.log(preview(frame, 6));
-expect(frame, 'talking to Ada, Backend Engineer', '/talk names the agent and its role');
+expect(frame, 'im Gespräch mit Ada, Backend Engineer', '/talk names the agent and its role');
 expect(frame, 'backend-dev', 'the status line shows the new counterpart');
 expect(frame, 'Backend Engineer', 'the status line shows the job title');
 
@@ -381,10 +381,10 @@ await wait(150);
 stdin.write('\r');
 await wait(300);
 frame = stdout.since(mark);
-expect(frame, 'talking to jarvis', '/talk assistant hands the floor back');
+expect(frame, 'im Gespräch mit jarvis', '/talk assistant hands the floor back');
 // The idle status line, which only reads this way once the counterpart is the
 // assistant again: while the agent held the floor it said "ready  backend-dev".
-expect(frame, 'ready  jarvis', 'the status line is back to the assistant');
+expect(frame, 'bereit  jarvis', 'the status line is back to the assistant');
 
 /* 9. Ctrl+C at an idle prompt leaves */
 let exited = false;
