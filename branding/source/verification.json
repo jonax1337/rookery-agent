@@ -1,0 +1,79 @@
+{
+  "svg": {
+    "logo.svg": {
+      "paths": 8,
+      "viewBox": "0 0 557 172"
+    },
+    "logo-light.svg": {
+      "paths": 8,
+      "viewBox": "0 0 557 172"
+    },
+    "mark.svg": {
+      "paths": 1,
+      "viewBox": "0 0 343 402"
+    },
+    "mark-light.svg": {
+      "paths": 1,
+      "viewBox": "0 0 343 402"
+    },
+    "favicon.svg": {
+      "paths": 1,
+      "viewBox": "0 0 512 512"
+    }
+  },
+  "png": {
+    "logo.png": {
+      "size": [
+        1600,
+        494
+      ],
+      "mode": "RGBA"
+    },
+    "logo-light.png": {
+      "size": [
+        1600,
+        494
+      ],
+      "mode": "RGBA"
+    },
+    "apple-touch-icon.png": {
+      "size": [
+        180,
+        180
+      ],
+      "mode": "RGBA"
+    },
+    "preview.png": {
+      "size": [
+        1280,
+        760
+      ],
+      "mode": "RGBA"
+    }
+  },
+  "ico": {
+    "sizes": [
+      [
+        16,
+        16
+      ],
+      [
+        32,
+        32
+      ],
+      [
+        48,
+        48
+      ],
+      [
+        256,
+        256
+      ]
+    ]
+  },
+  "wordmark": {
+    "font": "Manrope",
+    "weight": 700,
+    "method": "Typeset using the real variable font at weight 700; glyph outlines exported directly from font data. No raster tracing."
+  }
+}

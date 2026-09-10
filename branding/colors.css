@@ -1,0 +1,7 @@
+:root {
+  --rookery-ink: #171A1D;
+  --rookery-ivory: #F2F0EA;
+  --rookery-amber: #D9A65C;
+  /* Dunkler Akzent fuer lesbaren Text auf hellem Grund. */
+  --rookery-amber-text: #80551D;
+}

@@ -1,0 +1,85 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { ServerContext } from '../context.js';
+import { createSessionSchema, parseOrThrow, patchSessionSchema } from '../schemas.js';
+
+type IdParams = { Params: { id: string } };
+
+/**
+ * Session CRUD. A session owns the transcript and the provider-side thread id;
+ * `reset` drops only the latter, so history stays readable while the next turn
+ * starts the provider cold.
+ */
+export async function registerSessionRoutes(
+  app: FastifyInstance,
+  context: ServerContext,
+): Promise<void> {
+  // `?agent=<id>` lists direct chats with one agent, `?agent=assistant`
+  // the conversations with the assistant, nothing lists everything.
+  app.get(
+    '/api/sessions',
+    async (request: FastifyRequest<{ Querystring: { limit?: string; agent?: string; kind?: string } }>) => {
+      const limit = clampLimit(request.query.limit, 50, 500);
+      const agent = request.query.agent;
+      const kind = request.query.kind === 'voice' || request.query.kind === 'chat' ? request.query.kind : undefined;
+      return context.assistant.listSessions(limit, agent === 'assistant' ? null : agent || undefined, kind);
+    },
+  );
+
+  app.post('/api/sessions', async (request: FastifyRequest, reply: FastifyReply) => {
+    const input = parseOrThrow(createSessionSchema, request.body ?? {});
+    const session = context.assistant.createSession(input);
+    reply.code(201);
+    return session;
+  });
+
+  app.get('/api/sessions/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const session = context.assistant.getSession(request.params.id);
+    if (!session) {
+      reply.code(404);
+      return { error: 'Not found', message: `No session ${request.params.id}` };
+    }
+    return { session, messages: context.assistant.store.getMessages(session.id) };
+  });
+
+  app.patch('/api/sessions/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const session = context.assistant.getSession(request.params.id);
+    if (!session) {
+      reply.code(404);
+      return { error: 'Not found', message: `No session ${request.params.id}` };
+    }
+    const patch = parseOrThrow(patchSessionSchema, request.body ?? {});
+    context.assistant.store.updateSession(session.id, {
+      title: patch.title,
+      // null clears the project; undefined leaves it alone.
+      projectId: patch.projectId === null ? (undefined as unknown as string) : patch.projectId,
+    });
+    if (patch.projectId === null) {
+      context.assistant.store.db.prepare('UPDATE sessions SET project_id = NULL WHERE id = ?').run(session.id);
+    }
+    return context.assistant.getSession(session.id);
+  });
+
+  app.delete('/api/sessions/:id', async (request: FastifyRequest<IdParams>) => {
+    context.assistant.deleteSession(request.params.id);
+    return { ok: true };
+  });
+
+  app.post(
+    '/api/sessions/:id/reset',
+    async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+      const session = context.assistant.getSession(request.params.id);
+      if (!session) {
+        reply.code(404);
+        return { error: 'Not found', message: `No session ${request.params.id}` };
+      }
+      context.assistant.resetSessionContext(session.id);
+      return { ok: true };
+    },
+  );
+}
+
+function clampLimit(raw: string | undefined, fallback: number, max: number): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+}

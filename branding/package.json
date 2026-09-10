@@ -1,0 +1,14 @@
+{
+  "name": "rookery-brand-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Reproduzierbare Vektor- und Icon-Exporte fuer Rookery, Konzept 01.",
+  "scripts": {
+    "build": "node scripts/build-brand.mjs"
+  },
+  "devDependencies": {
+    "fontkit": "2.0.4",
+    "sharp": "0.35.4"
+  }
+}

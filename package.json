@@ -1,0 +1,27 @@
+{
+  "name": "rookery-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Rookery - a personal AI assistant powered by your existing Claude Code and Codex CLI subscriptions. No API keys.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=22.5.0" },
+  "workspaces": ["packages/core", "packages/server", "packages/cli", "packages/web"],
+  "scripts": {
+    "build": "npm run build -w @rookery/core && npm run build -w @rookery/server && npm run build -w @rookery/cli && npm run build -w @rookery/web",
+    "build:core": "npm run build -w @rookery/core",
+    "dev": "npm run dev -w @rookery/server",
+    "dev:web": "npm run dev -w @rookery/web",
+    "dev:all": "node scripts/dev.mjs",
+    "start": "npm run start -w @rookery/server",
+    "cli": "node packages/cli/dist/index.js",
+    "typecheck": "tsc -b packages/core packages/server packages/cli",
+    "test": "node --test packages/core/test/*.test.js",
+    "doctor": "node packages/cli/dist/index.js doctor",
+    "clean": "node scripts/clean.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
+  }
+}

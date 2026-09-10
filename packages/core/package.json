@@ -1,0 +1,21 @@
+{
+  "name": "@rookery/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./*": "./dist/*.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "watch": "tsc -b --watch"
+  },
+  "dependencies": {
+    "@playwright/mcp": "^0.0.80",
+    "@zavora-ai/computer-use-mcp": "^7.1.0",
+    "zod": "^3.24.1"
+  }
+}

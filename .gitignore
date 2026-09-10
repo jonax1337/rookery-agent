@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.local
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+packages/web/dist/
+logs/
+
+# ProjectAtlas local index (config + db)
+.projectatlas/
+
+# Playwright MCP session logs/snapshots
+.playwright-mcp/

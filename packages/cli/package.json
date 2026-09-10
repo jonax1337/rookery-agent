@@ -1,0 +1,33 @@
+{
+  "name": "@rookery/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Rookery command line: REPL, one-shot chat, memory and provider tools.",
+  "bin": {
+    "rookery": "./dist/index.js",
+    "rk": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "watch": "tsc -b --watch",
+    "start": "node ./dist/index.js",
+    "tui:check": "node ./scripts/tui-render-check.mjs",
+    "tui:drive": "node ./scripts/tui-drive-check.mjs"
+  },
+  "dependencies": {
+    "@rookery/core": "*",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "ink": "^7.1.1",
+    "react": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18"
+  }
+}

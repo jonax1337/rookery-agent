@@ -1,0 +1,64 @@
+# Rookery Agent
+
+Persoenlicher KI-Assistent ueber die lokalen `claude`- und `codex`-CLIs (OAuth-Sitzung der
+eingeloggten CLI, keine API-Keys). Monorepo mit npm-Workspaces:
+
+```
+packages/core     Das Gehirn: Provider-Adapter, Gedaechtnis, Persona, Runtime, die
+                  Organisation (org/: Store, Controller, Planner, MCP-Bruecke) und die
+                  Computer-Steuerung (computer/). Kennt weder HTTP noch Terminal.
+packages/server   Fastify: REST + WebSocket + SSE, liefert die gebaute Web-UI aus.
+packages/cli      Terminal-Interface (Ink-TUI, REPL, OS-Sprachausgabe).
+packages/web      React + Vite. Assistenten-Bildschirm mit Orb und Sprachsteuerung.
+```
+
+Details, Schnellstart und Turn-Ablauf stehen in `README.md`. Design-Konzepte fuer
+Ausbaustufen, die noch nicht oder nur teilweise umgesetzt sind, liegen unter
+`docs/concepts/` (z. B. Agent-Leistungsbewertung, Gedaechtnis als Graph) — Konzept,
+kein Code; im Zweifel gilt der Code.
+
+## Wichtigste Regel
+
+Der Assistent selbst laeuft immer in `~/.rookery/workspace`, **nie** im Repo, und sieht
+nie das Verzeichnis, aus dem Rookery gestartet wurde. Nur Agenten (Auftraege der Firma)
+arbeiten in Projektverzeichnissen wie diesem. Werkzeuge fuer den Assistenten kommen
+ausschliesslich ueber den Rookery-MCP-Server (`packages/core/src/org/`), nie direkt.
+
+## Build, Dev, Test
+
+| Befehl | Zweck |
+|---|---|
+| `npm install` | Abhaengigkeiten fuer alle vier Workspaces |
+| `npm run build` | alle vier Pakete bauen, in Abhaengigkeitsreihenfolge |
+| `npm run build:core` | nur `@rookery/core` bauen |
+| `npm run dev` | Server allein, mit Reload |
+| `npm run dev:web` | nur der Vite-Dev-Server fuer `packages/web` |
+| `npm run dev:all` | Server + Vite-Dev-Server zusammen; **setzt einen gebauten Server voraus** (`npm run build` zuerst) |
+| `npm start` | gebauter Server, liefert auch die gebaute Web-UI aus |
+| `npm run cli` | `packages/cli/dist/index.js` |
+| `npm test` | Node-Test-Runner ueber `packages/core/test/*.test.js` — vor jedem Commit an `packages/core` laufen lassen |
+| `npm run typecheck` | `tsc -b` ueber core, server, cli |
+| `npm run doctor` | Provider-Diagnose (Claude Code / Codex), ohne Server |
+| `npm run clean` | `scripts/clean.mjs` |
+
+Node.js >= 22.5 ist Pflicht (`node:sqlite`, keine native Abhaengigkeit fuer die
+Datenbank).
+
+## Konventionen
+
+- Identifier, Kommentare und Commit-Messages auf Englisch; UI-Strings und Nutzertexte
+  auf Deutsch.
+- UI: Stock assistant-ui + shadcn (radix-vega), echte Seiten statt Modals, moeglichst
+  kein Customizing.
+- Keine API-Keys im Code oder in Beispielen. Rookery liest/setzt bewusst weder
+  `ANTHROPIC_API_KEY` noch `OPENAI_API_KEY`; Provider-Auth laeuft ausschliesslich ueber
+  die OAuth-Sitzung der lokal eingeloggten `claude`- bzw. `codex`-CLI.
+- Package-Grenzen respektieren: `packages/core` kennt weder HTTP noch Terminal. HTTP-
+  und Terminal-spezifischer Code gehoert in `packages/server` bzw. `packages/cli`.
+- Nach Aenderungen an `packages/core` betroffene Tests unter `packages/core/test`
+  laufen lassen (`npm test`); bei API-Aenderungen `npm run typecheck` gegen core,
+  server und cli.
+
+## Lizenz
+
+MIT, siehe `LICENSE`.

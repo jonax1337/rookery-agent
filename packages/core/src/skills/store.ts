@@ -1,0 +1,144 @@
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { ToolServerAudience } from '../types.js';
+
+/**
+ * Skills: written instructions the assistant and its agents can pull in on
+ * demand. One folder per skill under `<home>/skills`, a `SKILL.md` with a
+ * small frontmatter, any other files alongside it.
+ *
+ * Rookery renders skills itself rather than leaning on a provider's own
+ * skill loading: the assistant runs with its system prompt replaced and
+ * without user settings, and Codex has no notion of them. The prompt carries
+ * an index (name and description); `use_skill` returns the body.
+ */
+
+export interface Skill {
+  name: string;
+  description: string;
+  audience: ToolServerAudience;
+  body: string;
+  /** Other files in the folder, relative names. */
+  files: string[];
+  path: string;
+  updatedAt: number;
+}
+
+export interface SkillInput {
+  name: string;
+  description: string;
+  audience?: ToolServerAudience;
+  body: string;
+}
+
+const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+export function skillSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+}
+
+/** The frontmatter block and the body; a file without frontmatter is all body. */
+function parse(text: string): { meta: Record<string, string>; body: string } {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
+  if (!match) return { meta: {}, body: text.trim() };
+  const meta: Record<string, string> = {};
+  for (const line of (match[1] ?? '').split(/\r?\n/)) {
+    const colon = line.indexOf(':');
+    if (colon === -1) continue;
+    meta[line.slice(0, colon).trim()] = line.slice(colon + 1).trim().replace(/^["']|["']$/g, '');
+  }
+  return { meta, body: (match[2] ?? '').trim() };
+}
+
+function asAudience(value: string | undefined): ToolServerAudience {
+  return value === 'agents' || value === 'assistant' ? value : 'both';
+}
+
+export class SkillStore {
+  readonly dir: string;
+
+  constructor(dir: string) {
+    this.dir = dir;
+  }
+
+  list(): Skill[] {
+    if (!existsSync(this.dir)) return [];
+    const skills: Skill[] = [];
+    for (const name of readdirSync(this.dir)) {
+      const skill = this.get(name);
+      if (skill) skills.push(skill);
+    }
+    return skills.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  get(name: string): Skill | null {
+    if (!NAME.test(name)) return null;
+    const folder = join(this.dir, name);
+    const file = join(folder, 'SKILL.md');
+    if (!existsSync(file)) return null;
+    const { meta, body } = parse(readFileSync(file, 'utf8'));
+    const files = readdirSync(folder).filter((entry) => entry !== 'SKILL.md');
+    return {
+      name,
+      description: meta.description ?? '',
+      audience: asAudience(meta.audience),
+      body,
+      files,
+      path: folder,
+      updatedAt: statSync(file).mtimeMs,
+    };
+  }
+
+  save(input: SkillInput): Skill {
+    const name = skillSlug(input.name);
+    if (!NAME.test(name)) throw new Error('A skill needs a name of letters, digits and dashes.');
+    if (!input.description.trim()) throw new Error('A skill needs a one-line description.');
+    const folder = join(this.dir, name);
+    mkdirSync(folder, { recursive: true });
+    const text =
+      '---\n' +
+      'name: ' + name + '\n' +
+      'description: ' + input.description.trim().replace(/\s+/g, ' ') + '\n' +
+      'audience: ' + asAudience(input.audience) + '\n' +
+      '---\n\n' +
+      input.body.trim() + '\n';
+    writeFileSync(join(folder, 'SKILL.md'), text, 'utf8');
+    return this.get(name) as Skill;
+  }
+
+  remove(name: string): boolean {
+    if (!NAME.test(name)) return false;
+    const folder = join(this.dir, name);
+    if (!existsSync(folder)) return false;
+    rmSync(folder, { recursive: true, force: true });
+    return true;
+  }
+
+  /** The skills one audience may open. */
+  for(who: 'assistant' | 'agent'): Skill[] {
+    return this.list().filter(
+      (skill) => skill.audience === 'both' || (who === 'assistant' ? skill.audience === 'assistant' : skill.audience === 'agents'),
+    );
+  }
+}
+
+/** The index paragraph for a prompt; empty when there is nothing to open. */
+export function renderSkillsIndex(skills: Skill[]): string {
+  if (!skills.length) return '';
+  return (
+    'Skills - written instructions you can open with the use_skill tool when a task matches; ' +
+    'open one before starting such a task and follow it:\n' +
+    skills.map((skill) => '- ' + skill.name + ': ' + skill.description).join('\n')
+  );
+}
+
+/** What use_skill returns: the instructions and the files that come with them. */
+export function renderSkill(skill: Skill): string {
+  const files = skill.files.length ? '\n\nFiles in ' + skill.path + ': ' + skill.files.join(', ') : '';
+  return '# ' + skill.name + '\n' + skill.description + '\n\n' + skill.body + files;
+}
