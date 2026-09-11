@@ -15,13 +15,23 @@ export async function registerSessionRoutes(
 ): Promise<void> {
   // `?agent=<id>` lists direct chats with one agent, `?agent=assistant`
   // the conversations with the assistant, nothing lists everything.
+  // `?includeArchived=1` adds the ones filed away, for an archive view.
   app.get(
     '/api/sessions',
-    async (request: FastifyRequest<{ Querystring: { limit?: string; agent?: string; kind?: string } }>) => {
+    async (
+      request: FastifyRequest<{
+        Querystring: { limit?: string; agent?: string; kind?: string; includeArchived?: string };
+      }>,
+    ) => {
       const limit = clampLimit(request.query.limit, 50, 500);
       const agent = request.query.agent;
       const kind = request.query.kind === 'voice' || request.query.kind === 'chat' ? request.query.kind : undefined;
-      return context.assistant.listSessions(limit, agent === 'assistant' ? null : agent || undefined, kind);
+      return context.assistant.listSessions(
+        limit,
+        agent === 'assistant' ? null : agent || undefined,
+        kind,
+        isTruthy(request.query.includeArchived),
+      );
     },
   );
 
@@ -52,6 +62,7 @@ export async function registerSessionRoutes(
       title: patch.title,
       // null clears the project; undefined leaves it alone.
       projectId: patch.projectId === null ? (undefined as unknown as string) : patch.projectId,
+      archived: patch.archived,
     });
     if (patch.projectId === null) {
       context.assistant.store.db.prepare('UPDATE sessions SET project_id = NULL WHERE id = ?').run(session.id);
@@ -82,4 +93,8 @@ function clampLimit(raw: string | undefined, fallback: number, max: number): num
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.min(Math.floor(parsed), max);
+}
+
+function isTruthy(value: string | undefined): boolean {
+  return value === '1' || value === 'true' || value === 'yes';
 }

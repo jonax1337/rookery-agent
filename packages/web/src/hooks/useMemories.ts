@@ -12,13 +12,23 @@ import type {
   SleepStatusView,
 } from '../lib/types';
 
+/**
+ * The server's ceiling for `GET /api/memories`. Asking for more is clamped
+ * there, so the list page can say "von 500 geladenen" and mean it.
+ */
+export const MEMORY_LIST_LIMIT = 500;
+
 /** Browse, search, add, edit and forget what the assistant remembers. */
 export function useMemories() {
   const [items, setItems] = useState<(MemoryRecord | ScoredMemory)[]>([]);
   const [stats, setStats] = useState<MemoryStats | null>(null);
   const [query, setQuery] = useState('');
   const [kind, setKind] = useState<MemoryKind | ''>('');
+  // Forgotten memories are still in the database; the list hides them until
+  // someone asks, because they are not what the assistant can recall.
+  const [includeForgotten, setIncludeForgotten] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
 
   const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -27,19 +37,22 @@ export function useMemories() {
         api.memories({
           q: query.trim() || undefined,
           kind: kind || undefined,
-          limit: 100,
+          limit: MEMORY_LIST_LIMIT,
+          includeForgotten,
         }),
         api.memoryStats(),
       ]);
       setItems(list);
       setStats(counts);
+      setError(false);
     } catch {
       setItems([]);
       setStats(null);
+      setError(true);
     } finally {
       setLoading(false);
     }
-  }, [kind, query]);
+  }, [includeForgotten, kind, query]);
 
   // Debounced so typing in the search box does not hammer the API.
   useEffect(() => {
@@ -68,11 +81,19 @@ export function useMemories() {
     }
   }, []);
 
-  /** Pin, re-word, re-weight, or wake a sleeping memory. */
+  /** Pin, re-word, re-weight, re-file, wake or un-forget a memory. */
   const patch = useCallback(
     async (
       id: string,
-      changes: { pinned?: boolean; importance?: number; content?: string; dormant?: boolean },
+      changes: {
+        pinned?: boolean;
+        importance?: number;
+        content?: string;
+        kind?: MemoryKind;
+        tags?: string[];
+        dormant?: boolean;
+        forgotten?: boolean;
+      },
     ) => {
       const updated = await api.patchMemory(id, changes);
       setItems((current) => current.map((item) => (item.id === id ? { ...item, ...updated } : item)));
@@ -82,7 +103,29 @@ export function useMemories() {
     [],
   );
 
-  return { items, stats, query, setQuery, kind, setKind, loading, refresh, add, forget, patch };
+  // The list hangs exactly at the server's ceiling: there may be more that no
+  // page of this API can reach, and the table footer has to say so. A search
+  // answers with a ranked shortlist, which is a different kind of list and
+  // never "capped".
+  const capped = !query.trim() && items.length >= MEMORY_LIST_LIMIT;
+
+  return {
+    items,
+    stats,
+    query,
+    setQuery,
+    kind,
+    setKind,
+    includeForgotten,
+    setIncludeForgotten,
+    capped,
+    loading,
+    error,
+    refresh,
+    add,
+    forget,
+    patch,
+  };
 }
 
 /**
@@ -128,21 +171,37 @@ export function useMemoryGraph(options: { limit?: number } = {}) {
  * Phases arrive over the socket, so a run started in another tab or by the
  * clock at half past three shows up here exactly the same way.
  */
+export const SLEEP_RUN_LIMIT = 200;
+
 export function useSleep(socket: RookerySocket, onFinished?: () => void) {
   const [status, setStatus] = useState<SleepStatusView | null>(null);
   const [runs, setRuns] = useState<SleepRun[]>([]);
   const [phase, setPhase] = useState<string>('');
   const [cycle, setCycle] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+  // Without this the table shows "Noch keine Nacht gelaufen" plus a "Jetzt
+  // schlafen" button for the duration of both requests, even when nights exist.
+  const [loading, setLoading] = useState(false);
 
   const refresh = useCallback(async (): Promise<void> => {
+    setLoading(true);
     try {
-      const [state, history] = await Promise.all([api.sleepStatus(), api.sleepRuns(undefined, 20)]);
+      // 200 nights is roughly half a year of nightly runs - enough to draw the
+      // 90-day curve the Nächte page shows without a second request.
+      const [state, history] = await Promise.all([
+        api.sleepStatus(),
+        api.sleepRuns(undefined, SLEEP_RUN_LIMIT),
+      ]);
       setStatus(state);
       setRuns(history);
+      setError(false);
     } catch {
       setStatus(null);
       setRuns([]);
+      setError(true);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -201,5 +260,5 @@ export function useSleep(socket: RookerySocket, onFinished?: () => void) {
     [onFinished, refresh],
   );
 
-  return { status, runs, phase, cycle, busy, refresh, start, cancel, undo };
+  return { status, runs, phase, cycle, busy, error, loading, refresh, start, cancel, undo };
 }

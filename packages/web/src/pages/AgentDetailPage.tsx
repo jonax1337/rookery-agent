@@ -1,27 +1,59 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { NavLink, useParams } from 'react-router';
-import { ArchiveIcon, MessagesSquareIcon, PencilIcon, SendIcon } from 'lucide-react';
-import { toast } from 'sonner';
-import { api } from '@/lib/api';
 import {
-  ASSIGNMENT_STATUS_LABEL,
-  ASSIGNMENT_STATUS_VARIANT,
-  formatDuration,
-  MEMORY_KIND_LABEL,
-  PERMISSION_LABEL,
-  PROVIDER_LABEL,
-  relativeTime,
-  shorten,
-} from '@/lib/format';
-import type { RookerySocket } from '@/lib/socket';
-import type { AgentDetail, AssignmentView } from '@/lib/types';
-import type { OrgState } from '@/hooks/useOrg';
-import { AssignmentsView } from '@/components/AssignmentsView';
+  ArchiveIcon,
+  BrainIcon,
+  Building2Icon,
+  CpuIcon,
+  InboxIcon,
+  MessagesSquareIcon,
+  PencilIcon,
+  SendIcon,
+  ShieldIcon,
+  TriangleAlertIcon,
+  UserRoundIcon,
+  UsersIcon,
+} from 'lucide-react';
+import { toast } from 'sonner';
+
+import { PageBody } from '@/components/blocks/page-body';
+import { StatCards, StatCardsSkeleton, cappedBadge } from '@/components/blocks/stat-cards';
+import type { StatCardProps } from '@/components/blocks/stat-cards';
+import { DetailDrawer } from '@/components/blocks/detail-drawer';
+import { DataTable } from '@/components/blocks/data-table/data-table';
+import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
+import { EMPTY_CELL, relativeTimeCell } from '@/components/blocks/data-table/table-columns';
+import { createRookeryColumnHelper } from '@/components/blocks/data-table/table-features';
+import { EmptyState, ServerOffline } from '@/components/common/empty-state';
+import { useCancelAssignment } from '@/components/common/entity-actions';
+import { LiveRunList } from '@/components/common/live-run-list';
+import { MEMORY_COLUMN_LABELS, buildMemoryColumns } from '@/components/common/memory-columns';
+import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
+import { ProviderCell } from '@/components/common/provider-cell';
+import { RowMenuButton } from '@/components/common/row-menu-button';
+import { StatusBadge } from '@/components/common/status-badge';
+import { useConfirm } from '@/components/common/confirm-dialog';
+import { useRecord } from '@/hooks/useRecord';
 import { ResultMarkdown } from '@/components/result-markdown';
+import { usePageMeta } from '@/components/shell/page-meta';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Label } from '@/components/ui/label';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
 import {
   Select,
   SelectContent,
@@ -29,55 +61,85 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
-
-const NO_PROJECT = '__none__';
-
-interface AgentDetailPageProps {
-  org: OrgState;
-  socket: RookerySocket;
-  /** Makes this agent the chat's counterpart and goes to the conversation. */
-  onOpenChat(agentId: string | null): void;
-}
+import { api } from '@/lib/api';
+import { reportFailure } from '@/lib/errors';
+import {
+  formatDuration,
+  NO_PROJECT,
+  PERMISSION_HINT,
+  PERMISSION_LABEL,
+  shorten,
+} from '@/lib/format';
+import { average, formatNumber } from '@/lib/stats';
+import type { AgentDetail, Agent, Assignment, AssignmentView } from '@/lib/types';
+import { useChatSession, useConfig, useConnection, useOrgState } from '@/providers/rookery-provider';
 
 /**
  * One member of staff: who they are, what they are working on, what they know.
  *
- * The assignment form here talks to the socket directly rather than through
- * the chat hook: handing an agent a task from their own page is not a turn in
- * the conversation and must not land in the transcript.
+ * The page used to stack six cards and put the assignment form in the middle
+ * of them, which meant every handed-out task scrolled the page under the
+ * reader while it streamed. Now the facts sit in a `MetaList`, the four
+ * numbers in `StatCards`, the four lists behind tabs over one `DataTable`,
+ * and the assignment lives in a drawer - the stream stays inside it and the
+ * page underneath does not move.
+ *
+ * The assignment talks to the socket directly rather than through the chat
+ * hook: handing an agent a task from their own page is not a turn in the
+ * conversation and must not land in the transcript.
  */
-export function AgentDetailPage({ org, socket, onOpenChat }: AgentDetailPageProps) {
-  const { id } = useParams<{ id: string }>();
-  const [detail, setDetail] = useState<AgentDetail | null>(null);
-  const [loading, setLoading] = useState(true);
 
+/** The server's own ceilings on `GET /api/org/agents/:id` - see routes/org.ts. */
+const ASSIGNMENT_LIMIT = 30;
+const MEMORY_LIMIT = 100;
+
+/** Past this many characters the instructions get a fold instead of a wall. */
+const INSTRUCTIONS_FOLD = 1200;
+
+type TabValue = 'assignments' | 'reports' | 'memories' | 'instructions';
+
+export function AgentDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const org = useOrgState();
+  const { socket } = useConnection();
+  const { config } = useConfig();
+  const { chooseCounterpart } = useChatSession();
+  const { confirm, dialog } = useConfirm();
+  // The stop button of `LiveRunList` asks the same question on every page that
+  // renders it; this page used to be one of the two that cancelled silently.
+  const { dialog: cancelDialog, cancelAssignment } = useCancelAssignment();
+
+  const [tab, setTab] = useState<TabValue>('assignments');
+
+  /* ------------------------------ the record ----------------------------- */
+
+  // `missing` is what tells a deleted agent from a stopped server - the page
+  // used to answer both with "Erneut versuchen".
+  const {
+    record: detail,
+    loading,
+    missing,
+    error: loadError,
+    reload,
+  } = useRecord<AgentDetail>(id, api.agent);
+
+  const agent = detail?.agent ?? null;
+  const assignments = useMemo(() => detail?.assignments ?? [], [detail]);
+  const memories = useMemo(() => detail?.memories ?? [], [detail]);
+  const reports = useMemo(() => detail?.reports ?? [], [detail]);
+
+  /* ------------------------------ the drawer ----------------------------- */
+
+  const [assignOpen, setAssignOpen] = useState(false);
   const [task, setTask] = useState('');
   const [projectId, setProjectId] = useState<string>(NO_PROJECT);
   const [busy, setBusy] = useState(false);
   const [live, setLive] = useState<AssignmentView[]>([]);
   const [result, setResult] = useState('');
   const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async (): Promise<void> => {
-    if (!id) return;
-    setLoading(true);
-    try {
-      setDetail(await api.agent(id));
-    } catch (caught) {
-      toast.error('Agent konnte nicht geladen werden', {
-        description: (caught as Error).message,
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const agent = detail?.agent ?? null;
 
   const assign = (): void => {
     if (!agent || busy) return;
@@ -116,7 +178,11 @@ export function AgentDetailPage({ org, socket, onOpenChat }: AgentDetailPageProp
           if (text) setResult(text);
           setBusy(false);
           setTask('');
-          void load();
+          // The run is over, so the live list has nothing left to say - the
+          // finished assignment belongs in the table, and showing it twice is
+          // what made the old page read as if two runs had happened.
+          setLive([]);
+          void reload();
           void org.refresh();
           toast('Auftrag abgeschlossen');
         },
@@ -128,239 +194,567 @@ export function AgentDetailPage({ org, socket, onOpenChat }: AgentDetailPageProp
     );
   };
 
-  const archive = async (): Promise<void> => {
+  const cancelRun = useCallback(
+    (assignmentId: string) => {
+      void cancelAssignment(assignmentId);
+    },
+    [cancelAssignment],
+  );
+
+  /* ------------------------------- archive ------------------------------- */
+
+  const archive = useCallback(async (): Promise<void> => {
     if (!agent) return;
+    const ok = await confirm({
+      title: agent.name + ' archivieren?',
+      description:
+        'Archivierte Agenten nehmen keine Aufträge mehr an. Die bisherigen Aufträge und ' +
+        'Erinnerungen bleiben erhalten.',
+      confirmLabel: 'Archivieren',
+      destructive: true,
+      icon: ArchiveIcon,
+    });
+    if (!ok) return;
     try {
       await api.updateAgent(agent.id, { archived: true });
       await org.refresh();
-      await load();
+      await reload();
       toast(agent.name + ' archiviert');
     } catch (caught) {
-      toast.error('Archivieren fehlgeschlagen', { description: (caught as Error).message });
+      reportFailure('Archivieren', caught);
     }
-  };
+  }, [agent, confirm, org, reload]);
 
-  if (loading && !agent) return <Shell>Agent wird geladen …</Shell>;
-  if (!agent) return <Shell>Dieser Agent existiert nicht.</Shell>;
+  /* -------------------------------- header ------------------------------- */
+
+  usePageMeta(
+    {
+      ...(agent ? { title: agent.name } : {}),
+      breadcrumb: [
+        { label: 'Firma', to: '/org/agents' },
+        { label: 'Agenten', to: '/org/agents' },
+        { label: agent?.name ?? 'Agent' },
+      ],
+      actions: agent ? (
+        <>
+          <Button size="sm" onClick={() => setAssignOpen(true)} disabled={agent.archived}>
+            <SendIcon data-icon="inline-start" />
+            Auftrag geben
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => chooseCounterpart(agent.id)}
+          >
+            <MessagesSquareIcon data-icon="inline-start" />
+            Chat
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <RowMenuButton tone="header" label="Weitere Aktionen" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem asChild>
+                <NavLink to={'/org/agents/' + agent.id + '/edit'}>
+                  <PencilIcon data-icon="inline-start" />
+                  Bearbeiten
+                </NavLink>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                disabled={agent.archived}
+                onSelect={() => void archive()}
+              >
+                <ArchiveIcon data-icon="inline-start" />
+                Archivieren
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>
+      ) : null,
+    },
+    [agent?.id, agent?.archived, archive, chooseCounterpart],
+  );
+
+  /* -------------------------------- columns ------------------------------ */
+
+  const assignmentColumns = useMemo(() => {
+    const column = createRookeryColumnHelper<Assignment>();
+    return column.columns([
+      column.accessor('task', {
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Auftrag" />,
+        cell: ({ row }) => (
+          <NavLink
+            to={'/assignments/' + row.original.id}
+            className="font-medium hover:underline"
+          >
+            {shorten(row.original.task, 90)}
+          </NavLink>
+        ),
+        enableHiding: false,
+      }),
+      column.accessor('status', {
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Status" />,
+        cell: ({ row }) => <StatusBadge kind="assignment" status={row.original.status} />,
+      }),
+      column.accessor((row) => row.durationMs ?? 0, {
+        id: 'durationMs',
+        header: ({ column: head }) => (
+          <DataTableColumnHeader column={head} title="Dauer" align="end" />
+        ),
+        cell: ({ row }) => (
+          <span className="block text-right tabular-nums text-muted-foreground">
+            {formatDuration(row.original.durationMs) || EMPTY_CELL}
+          </span>
+        ),
+      }),
+      column.accessor('chars', {
+        header: ({ column: head }) => (
+          <DataTableColumnHeader column={head} title="Zeichen" align="end" />
+        ),
+        cell: ({ row }) => (
+          <span className="block text-right tabular-nums text-muted-foreground">
+            {row.original.chars > 0 ? formatNumber(row.original.chars) : EMPTY_CELL}
+          </span>
+        ),
+      }),
+      column.accessor('createdAt', {
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Erteilt" />,
+        cell: ({ row }) => relativeTimeCell(row.original.createdAt),
+      }),
+    ]);
+  }, []);
+
+  const reportColumns = useMemo(() => {
+    const column = createRookeryColumnHelper<Agent>();
+    return column.columns([
+      column.accessor('name', {
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Name" />,
+        cell: ({ row }) => (
+          <NavLink
+            to={'/org/agents/' + row.original.id}
+            className="font-medium hover:underline"
+          >
+            {row.original.name}
+          </NavLink>
+        ),
+        enableHiding: false,
+      }),
+      column.accessor('title', {
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Rolle" />,
+        cell: ({ row }) => <span className="text-muted-foreground">{row.original.title}</span>,
+      }),
+      column.accessor((row) => org.teams.find((team) => team.id === row.teamId)?.name ?? '', {
+        id: 'team',
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Team" />,
+        cell: ({ row }) => {
+          const team = org.teams.find((entry) => entry.id === row.original.teamId);
+          return team ? (
+            <NavLink to="/org/teams" className="hover:underline">
+              {team.name}
+            </NavLink>
+          ) : (
+            <span className="text-muted-foreground">Ohne Team</span>
+          );
+        },
+      }),
+      column.accessor((row) => row.provider ?? '', {
+        id: 'provider',
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Modell" />,
+        cell: ({ row }) => (
+          <ProviderCell
+            {...(row.original.provider ? { provider: row.original.provider } : {})}
+            {...(row.original.model ? { model: row.original.model } : {})}
+          />
+        ),
+      }),
+      column.accessor((row) => row.permission ?? '', {
+        id: 'permission',
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Zugriff" />,
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">
+            {row.original.permission ? PERMISSION_LABEL[row.original.permission] : 'Vorgabe'}
+          </span>
+        ),
+      }),
+    ]);
+  }, [org.teams]);
+
+  // The same table the memory list draws, in its short form: the agent tab
+  // used to call the weight "Gewicht" and print it as "0,73" where the list
+  // said "Wichtigkeit" and "73 %".
+  const memoryColumns = useMemo(() => buildMemoryColumns({ compact: true }), []);
+
+  /* --------------------------------- states ------------------------------ */
+
+  if (loading && !agent) return <AgentDetailSkeleton />;
+
+  if (!agent) {
+    return (
+      <PageBody width="3xl">
+        {loadError && !missing ? (
+          <ServerOffline onRetry={() => void reload()} />
+        ) : (
+          <EmptyState
+            icon={UserRoundIcon}
+            title="Diesen Agenten gibt es nicht"
+            description="Der Eintrag wurde gelöscht, oder die Adresse stimmt nicht."
+            actionLabel="Zu den Agenten"
+            actionTo="/org/agents"
+          />
+        )}
+      </PageBody>
+    );
+  }
+
+  /* -------------------------------- numbers ------------------------------ */
+
+  const failedCount = assignments.filter((entry) => entry.status === 'failed').length;
+  const cancelledCount = assignments.filter((entry) => entry.status === 'cancelled').length;
+  const doneDurations = assignments
+    .filter((entry) => entry.status === 'done' && (entry.durationMs ?? 0) > 0)
+    .map((entry) => entry.durationMs ?? 0);
+  const meanDuration = formatDuration(Math.round(average(doneDurations)));
+
+  // Both lists come back capped, so every number below rests on what the
+  // server handed over - never on "all of them". The footnotes say so, and a
+  // list sitting exactly on its ceiling gets the badge as well.
+  const assignmentsCapped = assignments.length >= ASSIGNMENT_LIMIT;
+  const memoriesCapped = memories.length >= MEMORY_LIMIT;
+
+  const cards: StatCardProps[] = [
+    {
+      label: 'Aufträge',
+      value: formatNumber(assignments.length),
+      ...cappedBadge(assignmentsCapped),
+      headline: assignments.length === 0 ? 'Noch nichts erteilt' : 'Zuletzt erteilte Aufträge',
+      footnote: 'Der Server liefert die letzten ' + ASSIGNMENT_LIMIT,
+    },
+    {
+      label: 'Fehlgeschlagen',
+      value: formatNumber(failedCount),
+      ...(cancelledCount > 0
+        ? { badge: <Badge variant="outline">{cancelledCount} abgebrochen</Badge> }
+        : {}),
+      headline: failedCount === 0 ? 'Nichts ist schiefgegangen' : 'Abbrüche mit Fehlermeldung',
+      footnote: 'Unter den ' + assignments.length + ' geladenen Aufträgen',
+    },
+    {
+      label: 'Mittlere Dauer',
+      value: meanDuration || '–',
+      headline: doneDurations.length === 0 ? 'Noch nichts abgeschlossen' : 'Vom Start bis zur Antwort',
+      footnote: 'Über ' + doneDurations.length + ' abgeschlossene Aufträge',
+    },
+    {
+      label: 'Erinnerungen',
+      value: formatNumber(memories.length),
+      ...cappedBadge(memoriesCapped),
+      headline: memories.length === 0 ? 'Noch nichts gelernt' : 'Eigenes Gedächtnis',
+      footnote: 'Der Server liefert die letzten ' + MEMORY_LIMIT,
+    },
+  ];
+
+  /* --------------------------------- facts ------------------------------- */
 
   const manager = org.agentById(agent.managerId);
   const team = org.teams.find((entry) => entry.id === agent.teamId);
+  const permission = agent.permission ?? config?.defaultPermission;
+
+  const instructions = agent.instructions.trim();
+  const foldInstructions = instructions.length > INSTRUCTIONS_FOLD;
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-4xl space-y-6 p-6">
-        {/* ------------------------------- header ------------------------------ */}
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-semibold tracking-tight">{agent.name}</h1>
-              <Badge variant="outline" className="font-mono text-[11px] font-normal">
-                {agent.slug}
-              </Badge>
-              {agent.archived && <Badge variant="secondary">archiviert</Badge>}
-            </div>
-            <p className="text-sm text-muted-foreground">{agent.title}</p>
-            <p className="text-xs text-muted-foreground">
-              {team ? 'Team ' + team.name : 'Ohne Team'} ·{' '}
-              {manager ? 'berichtet an ' + manager.name : 'berichtet an den Assistenten'}
-              {agent.provider && ' · ' + PROVIDER_LABEL[agent.provider]}
-              {agent.model && ' · ' + agent.model}
-              {agent.permission && ' · ' + PERMISSION_LABEL[agent.permission]}
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => onOpenChat(agent.id)}>
-              <MessagesSquareIcon />
-              Chat öffnen
-            </Button>
-            <Button asChild variant="outline" size="sm">
-              <NavLink to={'/org/agents/' + agent.id + '/edit'}>
-                <PencilIcon />
-                Bearbeiten
-              </NavLink>
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={agent.archived}
-              onClick={() => void archive()}
-            >
-              <ArchiveIcon />
-              Archivieren
-            </Button>
-          </div>
-        </div>
+    <PageBody>
+      {dialog}
+      {cancelDialog}
 
-        {/* ---------------------------- instructions --------------------------- */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Anweisungen</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{agent.instructions}</p>
-          </CardContent>
-        </Card>
-
-        {/* -------------------------------- assign ----------------------------- */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Auftrag geben</CardTitle>
-            <CardDescription>
-              Läuft als eigener Prozess, kalt gestartet, im Projektverzeichnis oder im Arbeitsraum.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="assign-task" className="text-[12px] text-muted-foreground">
-                Anweisung
-              </Label>
-              <Textarea
-                id="assign-task"
-                rows={4}
-                placeholder={'Was soll ' + agent.name + ' tun?'}
-                value={task}
-                onChange={(event) => setTask(event.target.value)}
-                disabled={busy}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="assign-project" className="text-[12px] text-muted-foreground">
-                Projekt
-              </Label>
-              <Select value={projectId} onValueChange={setProjectId} disabled={busy}>
-                <SelectTrigger id="assign-project" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_PROJECT}>Kein Projekt</SelectItem>
-                  {org.projects
-                    .filter((project) => !project.archived)
-                    .map((project) => (
-                      <SelectItem key={project.id} value={project.id}>
-                        {project.name}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex justify-end">
-              <Button onClick={assign} disabled={busy || !task.trim()}>
-                <SendIcon />
-                {busy ? 'Läuft …' : 'Auftrag geben'}
-              </Button>
-            </div>
-
-            {error && <p className="text-sm text-destructive">{error}</p>}
-
-            {live.length > 0 && <AssignmentsView assignments={live} />}
-
-            {result && (
-              <div className="rounded-xl border p-4">
-                <ResultMarkdown text={result} />
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* ----------------------------- assignments --------------------------- */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Letzte Aufträge</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {detail && detail.assignments.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Noch keine Aufträge.</p>
-            ) : (
-              <ul className="divide-y">
-                {detail?.assignments.map((assignment) => (
-                  <li key={assignment.id}>
-                    <NavLink
-                      to={'/assignments/' + assignment.id}
-                      className="-mx-2 flex flex-wrap items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm hover:bg-muted/60"
-                    >
-                      <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
-                        {shorten(assignment.task, 90)}
-                      </span>
-                      <span className="flex shrink-0 items-center gap-2">
-                        <Badge
-                          variant={ASSIGNMENT_STATUS_VARIANT[assignment.status]}
-                          className="h-5"
-                        >
-                          {ASSIGNMENT_STATUS_LABEL[assignment.status]}
-                        </Badge>
-                        <span className="tabular text-xs text-muted-foreground">
-                          {formatDuration(assignment.durationMs) || '—'} ·{' '}
-                          {relativeTime(assignment.createdAt)}
-                        </span>
-                      </span>
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* ------------------------------- reports ----------------------------- */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Direkt unterstellt</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {detail && detail.reports.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Niemand berichtet an {agent.name}.</p>
-            ) : (
-              <ul className="divide-y">
-                {detail?.reports.map((report) => (
-                  <li key={report.id}>
-                    <NavLink
-                      to={'/org/agents/' + report.id}
-                      className="-mx-2 flex items-center justify-between gap-3 rounded-md px-2 py-2.5 text-sm hover:bg-muted/60"
-                    >
-                      <span className="font-medium">{report.name}</span>
-                      <span className="text-xs text-muted-foreground">{report.title}</span>
-                    </NavLink>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* ------------------------------- memory ------------------------------ */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Gedächtnis</CardTitle>
-            <CardDescription>Was {agent.name} aus eigenen Aufträgen gelernt hat.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {detail && detail.memories.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Noch nichts gespeichert.</p>
-            ) : (
-              <ul className="space-y-2">
-                {detail?.memories.map((memory) => (
-                  <li key={memory.id} className="flex items-start gap-2 text-sm">
-                    <Badge variant="secondary" className="mt-0.5 shrink-0">
-                      {MEMORY_KIND_LABEL[memory.kind]}
-                    </Badge>
-                    <span className="leading-relaxed">{memory.content}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+      <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
+        <span className="text-sm text-muted-foreground">{agent.title}</span>
+        <Badge variant="outline" className="font-mono font-normal">
+          {agent.slug}
+        </Badge>
+        {agent.archived && <Badge variant="secondary">archiviert</Badge>}
       </div>
-    </div>
+
+      <div className="px-4 lg:px-6">
+        <MetaList
+          columns={2}
+          items={[
+            {
+              label: 'Team',
+              value: team?.name ?? 'Ohne Team',
+              icon: Building2Icon,
+              ...(team ? { to: '/org/teams' } : {}),
+            },
+            {
+              label: 'Vorgesetzter',
+              value: manager?.name ?? 'Der Assistent',
+              icon: UsersIcon,
+              ...(manager ? { to: '/org/agents/' + manager.id } : {}),
+            },
+            {
+              label: 'Anbieter',
+              value: (
+                <ProviderCell
+                  layout="inline"
+                  {...(agent.provider ? { provider: agent.provider } : {})}
+                  {...(agent.model ? { model: agent.model } : {})}
+                />
+              ),
+              icon: CpuIcon,
+            },
+            {
+              label: 'Zugriff',
+              value: permission ? PERMISSION_LABEL[permission] : 'Vorgabe',
+              icon: ShieldIcon,
+            },
+          ]}
+        />
+      </div>
+
+      <StatCards items={cards} />
+
+      <div className="px-4 lg:px-6">
+        <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
+          <TabsList>
+            <TabsTrigger value="assignments">Aufträge</TabsTrigger>
+            <TabsTrigger value="reports">Direkt unterstellt</TabsTrigger>
+            <TabsTrigger value="memories">Gedächtnis</TabsTrigger>
+            <TabsTrigger value="instructions">Anweisungen</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="assignments" className="mt-4">
+            <DataTable
+              flush
+              idPrefix="agent-auftraege"
+              data={assignments}
+              columns={assignmentColumns}
+              searchable
+              searchPlaceholder="Aufträge durchsuchen"
+              searchText={(row) => row.task}
+              initialSorting={[{ id: 'createdAt', desc: true }]}
+              groupTime={(row) => row.createdAt}
+              groupSortId="createdAt"
+              capped={assignmentsCapped}
+              rowLabel={{ singular: 'Auftrag', plural: 'Aufträgen' }}
+              columnLabels={{
+                task: 'Auftrag',
+                status: 'Status',
+                durationMs: 'Dauer',
+                chars: 'Zeichen',
+                createdAt: 'Erteilt',
+              }}
+              empty={
+                <EmptyState
+                  icon={InboxIcon}
+                  title={'Noch kein Auftrag für ' + agent.name}
+                  description="Aufträge laufen als eigener Prozess, unabhängig vom Gespräch."
+                  actionLabel="Auftrag geben"
+                  onAction={() => setAssignOpen(true)}
+                  variant="plain"
+                  size="sm"
+                />
+              }
+            />
+          </TabsContent>
+
+          <TabsContent value="reports" className="mt-4">
+            <DataTable
+              flush
+              idPrefix="agent-unterstellt"
+              data={reports}
+              columns={reportColumns}
+              paginate={false}
+              showColumnMenu={false}
+              rowLabel={{ singular: 'Agent', plural: 'Agenten' }}
+              empty={
+                <EmptyState
+                  icon={UsersIcon}
+                  title={'Niemand berichtet an ' + agent.name}
+                  description="Ein Agent bekommt eine Vorgesetzte, indem sie in seinem Profil eingetragen wird."
+                  actionLabel="Agent einstellen"
+                  actionTo="/org/agents/new"
+                  variant="plain"
+                  size="sm"
+                />
+              }
+            />
+          </TabsContent>
+
+          <TabsContent value="memories" className="mt-4">
+            <DataTable
+              flush
+              idPrefix="agent-gedaechtnis"
+              data={memories}
+              columns={memoryColumns}
+              searchable
+              searchPlaceholder="Erinnerungen durchsuchen"
+              searchText={(row) => row.content + ' ' + row.tags.join(' ')}
+              initialSorting={[{ id: 'createdAt', desc: true }]}
+              groupTime={(row) => row.createdAt}
+              groupSortId="createdAt"
+              capped={memoriesCapped}
+              rowLabel={{ singular: 'Erinnerung', plural: 'Erinnerungen' }}
+              columnLabels={MEMORY_COLUMN_LABELS}
+              empty={
+                <EmptyState
+                  icon={BrainIcon}
+                  title="Noch nichts gelernt"
+                  description={
+                    agent.name + ' legt Erinnerungen aus eigenen Aufträgen an, nicht aus dem Gespräch.'
+                  }
+                  actionLabel="Auftrag geben"
+                  onAction={() => setAssignOpen(true)}
+                  variant="plain"
+                  size="sm"
+                />
+              }
+            />
+          </TabsContent>
+
+          <TabsContent value="instructions" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Anweisungen</CardTitle>
+                <CardDescription>
+                  Der Auftrag im Wortlaut, mit dem {agent.name} jeden Lauf beginnt.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {instructions === '' ? (
+                  <EmptyState
+                    icon={PencilIcon}
+                    title="Keine Anweisungen hinterlegt"
+                    description="Ohne eigene Anweisungen arbeitet der Agent nur mit dem Auftragstext."
+                    actionLabel="Bearbeiten"
+                    actionTo={'/org/agents/' + agent.id + '/edit'}
+                    variant="plain"
+                    size="sm"
+                  />
+                ) : foldInstructions ? (
+                  <>
+                    <ResultMarkdown text={shorten(instructions, INSTRUCTIONS_FOLD)} />
+                    {/* The fold, not a truncation: the whole text stays one
+                        click away instead of being cut off for good. */}
+                    <Accordion type="single" collapsible>
+                      <AccordionItem value="full" className="border-b-0">
+                        <AccordionTrigger>Ganzen Text zeigen</AccordionTrigger>
+                        <AccordionContent>
+                          <ResultMarkdown text={instructions} />
+                        </AccordionContent>
+                      </AccordionItem>
+                    </Accordion>
+                  </>
+                ) : (
+                  <ResultMarkdown text={instructions} />
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+
+      {/* ------------------------------ assign ------------------------------ */}
+      <DetailDrawer
+        open={assignOpen}
+        onOpenChange={setAssignOpen}
+        title={'Auftrag an ' + agent.name}
+        description="Läuft als eigener Prozess, kalt gestartet, im Projektverzeichnis oder im Arbeitsraum."
+        className="data-[vaul-drawer-direction=right]:sm:max-w-xl"
+        footer={
+          <Button onClick={assign} disabled={busy || !task.trim()}>
+            <SendIcon data-icon="inline-start" />
+            {busy ? 'Läuft …' : 'Losschicken'}
+          </Button>
+        }
+      >
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="assign-task">Auftrag</FieldLabel>
+            <Textarea
+              id="assign-task"
+              rows={5}
+              required
+              placeholder={'Was soll ' + agent.name + ' tun?'}
+              value={task}
+              onChange={(event) => setTask(event.target.value)}
+              disabled={busy}
+            />
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="assign-project">Projekt</FieldLabel>
+            <Select value={projectId} onValueChange={setProjectId} disabled={busy}>
+              <SelectTrigger id="assign-project" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PROJECT}>Kein Projekt</SelectItem>
+                {org.projects
+                  .filter((project) => !project.archived)
+                  .map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            <FieldDescription>
+              {permission
+                ? 'Zugriff ' + PERMISSION_LABEL[permission] + ': ' + PERMISSION_HINT[permission]
+                : 'Der Lauf übernimmt die Zugriffsstufe aus den Einstellungen.'}
+            </FieldDescription>
+          </Field>
+        </FieldGroup>
+
+        {/* Derselbe Bau wie auf /org/assignments/:id und im Formularrahmen:
+            `Alert` bringt `role="alert"` mit, ein nacktes <p> sagte einer
+            Vorlesehilfe nichts. */}
+        {error ? (
+          <Alert variant="destructive">
+            <TriangleAlertIcon />
+            <AlertTitle>Der Auftrag ist gescheitert</AlertTitle>
+            <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        {/* The stream stays in the drawer: the page behind it must not jump
+            while an agent works. */}
+        {live.length > 0 && (
+          <LiveRunList assignments={live} onCancel={cancelRun} variant="plain" />
+        )}
+
+        {result && (
+          <div className="rounded-xl border p-4">
+            <ResultMarkdown text={result} />
+          </div>
+        )}
+      </DetailDrawer>
+    </PageBody>
   );
 }
 
-function Shell({ children }: { children: string }) {
+/**
+ * The loading state, in the geometry the loaded page will have: the fact
+ * rows, the four numbers, the tab bar and a table. Anything shorter would
+ * make the header jump the moment the request comes back.
+ */
+function AgentDetailSkeleton() {
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-4xl p-6">
-        <p className="text-sm text-muted-foreground">{children}</p>
+    <PageBody>
+      <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
+        <Skeleton className="h-5 w-40" />
+        <Skeleton className="h-5 w-24" />
       </div>
-    </div>
+
+      <MetaListSkeleton className="px-4 lg:px-6" />
+      <StatCardsSkeleton />
+
+      <div className="flex flex-col gap-4 px-4 lg:px-6">
+        <Skeleton className="h-9 w-96 max-w-full rounded-lg" />
+        <Skeleton className="h-80 w-full rounded-lg" />
+      </div>
+    </PageBody>
   );
 }

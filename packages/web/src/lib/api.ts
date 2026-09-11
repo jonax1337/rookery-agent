@@ -17,7 +17,6 @@ import type {
   CronJobKind,
   CronOverview,
   CronPreview,
-  MemoryEdge,
   MemoryEntity,
   MemoryGraph,
   MemoryKind,
@@ -38,6 +37,7 @@ import type {
   SleepRun,
   SleepStatusView,
   SessionKind,
+  StatsSnapshot,
   Task,
   TaskDetail,
   TaskPlanResult,
@@ -211,6 +211,26 @@ export const api = {
   updateConfig: (patch: Partial<PublicConfig>) =>
     request<PublicConfig>('/api/config', { method: 'PATCH', ...json(patch) }),
 
+  /* ------------------------------- statistics ------------------------------ */
+
+  /**
+   * The only aggregate call in the API: real `COUNT(*)` totals plus a daily
+   * series, both counted in the database instead of estimated from a capped
+   * list. `since` (epoch ms or ISO) wins over `days` when both are given;
+   * without either the server draws the last 90 local calendar days.
+   *
+   * The series leaves empty days out - `fillDayGaps` from `lib/stats.ts` closes
+   * them for the window a chart actually means to draw.
+   */
+  stats: (options: { days?: number; since?: number | string; owner?: string } = {}) => {
+    const params = new URLSearchParams();
+    if (options.since !== undefined) params.set('since', String(options.since));
+    else if (options.days !== undefined) params.set('days', String(options.days));
+    if (options.owner) params.set('owner', options.owner);
+    const query = params.toString();
+    return request<StatsSnapshot>('/api/stats' + (query ? '?' + query : ''));
+  },
+
   /* ---------------------------------- voice -------------------------------- */
 
   ttsVoices: () => request<TtsCatalogue>('/api/tts/voices'),
@@ -255,12 +275,13 @@ export const api = {
    * chat, the literal `assistant` for the assistant's own conversations,
    * nothing for every conversation there is.
    */
-  sessions: (limit = 50, agent?: string, kind?: SessionKind) =>
+  sessions: (limit = 50, agent?: string, kind?: SessionKind, includeArchived = false) =>
     request<Session[]>(
       '/api/sessions?limit=' +
         limit +
         (agent ? '&agent=' + encodeURIComponent(agent) : '') +
-        (kind ? '&kind=' + kind : ''),
+        (kind ? '&kind=' + kind : '') +
+        (includeArchived ? '&includeArchived=1' : ''),
     ),
   createSession: (
     input: {
@@ -274,8 +295,11 @@ export const api = {
   ) => request<Session>('/api/sessions', { method: 'POST', ...json(input) }),
   session: (id: string) =>
     request<{ session: Session; messages: Message[] }>('/api/sessions/' + id),
-  patchSession: (id: string, patch: { title?: string; projectId?: Nullable<string> }) =>
-    request<Session>('/api/sessions/' + id, { method: 'PATCH', ...json(patch) }),
+  /** `archived` files a conversation away; `?includeArchived=1` brings it back into a list. */
+  patchSession: (
+    id: string,
+    patch: { title?: string; projectId?: Nullable<string>; archived?: boolean },
+  ) => request<Session>('/api/sessions/' + id, { method: 'PATCH', ...json(patch) }),
   deleteSession: (id: string) =>
     request<{ ok: true }>('/api/sessions/' + id, { method: 'DELETE' }),
   resetSession: (id: string) =>
@@ -283,12 +307,22 @@ export const api = {
 
   /* -------------------------------- memories ------------------------------- */
 
-  memories: (options: { q?: string; kind?: MemoryKind; limit?: number; owner?: string } = {}) => {
+  memories: (
+    options: {
+      q?: string;
+      kind?: MemoryKind;
+      limit?: number;
+      owner?: string;
+      /** Include what was forgotten - the memory list's "Vergessene zeigen". */
+      includeForgotten?: boolean;
+    } = {},
+  ) => {
     const params = new URLSearchParams();
     if (options.q) params.set('q', options.q);
     if (options.kind) params.set('kind', options.kind);
     if (options.limit) params.set('limit', String(options.limit));
     if (options.owner) params.set('owner', options.owner);
+    if (options.includeForgotten) params.set('includeForgotten', '1');
     const query = params.toString();
     return request<ScoredMemory[] | MemoryRecord[]>('/api/memories' + (query ? '?' + query : ''));
   },

@@ -1,161 +1,357 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
+import { Trash2Icon, UserMinusIcon, UsersRoundIcon } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/lib/api';
-import type { OrgState } from '@/hooks/useOrg';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { z } from 'zod';
+
+import { api, type TeamInput, type TeamPatch } from '@/lib/api';
+import { reportFailure } from '@/lib/errors';
+import type { Team } from '@/lib/types';
+import { useOrgState } from '@/providers/rookery-provider';
+import { PageBody } from '@/components/blocks/page-body';
+import { FormPage } from '@/components/blocks/form-page';
+import { usePageMeta } from '@/components/shell/page-meta';
+import { useConfirm } from '@/components/common/confirm-dialog';
+import { EmptyState } from '@/components/common/empty-state';
+import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+  FormFieldsSkeleton,
+  FormHeaderActions,
+  useDraft,
+  useFormSubmit,
+} from '@/components/forms/form-kit';
+import { Button } from '@/components/ui/button';
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+  FieldSeparator,
+  FieldSet,
+} from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemGroup,
+  ItemTitle,
+} from '@/components/ui/item';
 import { Textarea } from '@/components/ui/textarea';
 
-const NONE = '__none__';
+/**
+ * A team: who is in it, what it is for, and who leads it.
+ *
+ * The members block is the new part. Until now the only way to put an agent
+ * into a team was to open that agent and pick the team there, which is the
+ * wrong direction for the one question a team page raises - "who is in this
+ * team?". Membership is a column on the agent, so each change is its own
+ * `updateAgent` call and lands immediately; it is not part of the draft and
+ * therefore not gated behind "Speichern".
+ */
 
-/** Create or rename a team, and say who leads it. */
-export function TeamFormPage({ org }: { org: OrgState }) {
+interface TeamDraft {
+  name: string;
+  purpose: string;
+  leadId: string | null;
+}
+
+const EMPTY: TeamDraft = { name: '', purpose: '', leadId: null };
+
+const schema = z.object({
+  name: z.string().trim().min(1, 'Ein Name ist Pflicht.'),
+});
+
+function draftOf(team: Team): TeamDraft {
+  return { name: team.name, purpose: team.purpose ?? '', leadId: team.leadId ?? null };
+}
+
+function buildPatch(draft: TeamDraft): TeamPatch {
+  return {
+    name: draft.name.trim(),
+    purpose: draft.purpose.trim() || null,
+    leadId: draft.leadId,
+  };
+}
+
+function toInput(patch: TeamPatch): TeamInput {
+  return {
+    name: patch.name ?? '',
+    ...(patch.purpose ? { purpose: patch.purpose } : {}),
+    ...(patch.leadId ? { leadId: patch.leadId } : {}),
+  };
+}
+
+export function TeamFormPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const editing = Boolean(id);
-  const existing = org.teams.find((team) => team.id === id);
+  const org = useOrgState();
+  const { confirm, dialog } = useConfirm();
 
-  const [name, setName] = useState('');
-  const [purpose, setPurpose] = useState('');
-  const [leadId, setLeadId] = useState<string>(NONE);
-  const [saving, setSaving] = useState(false);
+  const editing = Boolean(id);
+  const team = org.teams.find((entry) => entry.id === id);
+
+  const formId = useId();
+  const { draft, dirty, set, hydrate, markSaved } = useDraft<TeamDraft>(EMPTY);
+  const [moving, setMoving] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!existing) return;
-    setName(existing.name);
-    setPurpose(existing.purpose ?? '');
-    setLeadId(existing.leadId ?? NONE);
-  }, [existing]);
+    if (!team) return;
+    hydrate(team.id, () => draftOf(team));
+  }, [hydrate, team]);
 
-  const save = async (): Promise<void> => {
-    if (!name.trim()) {
-      toast.error('Ein Name ist Pflicht');
-      return;
-    }
-    setSaving(true);
-    try {
-      if (editing && id) {
-        await api.updateTeam(id, {
-          name: name.trim(),
-          purpose: purpose.trim() || null,
-          leadId: leadId === NONE ? null : leadId,
-        });
-        toast('Team gespeichert');
-      } else {
-        await api.createTeam({
-          name: name.trim(),
-          ...(purpose.trim() ? { purpose: purpose.trim() } : {}),
-          ...(leadId !== NONE ? { leadId } : {}),
-        });
-        toast('Team angelegt');
+  /* ------------------------------ Mitglieder ------------------------------ */
+
+  const members = useMemo(
+    () => org.agents.filter((agent) => agent.teamId === id && !agent.archived),
+    [id, org.agents],
+  );
+
+  const candidates = useMemo<EntityOption[]>(
+    () =>
+      org.agents
+        .filter((agent) => !agent.archived && agent.teamId !== id)
+        .map((agent) => ({ value: agent.id, label: agent.name, hint: agent.title })),
+    [id, org.agents],
+  );
+
+  const leadOptions = useMemo<EntityOption[]>(
+    () =>
+      org.agents
+        .filter((agent) => !agent.archived)
+        .map((agent) => ({ value: agent.id, label: agent.name, hint: agent.title })),
+    [org.agents],
+  );
+
+  const setTeamOf = useCallback(
+    async (agentId: string, teamId: string | null, done: string): Promise<void> => {
+      setMoving(agentId);
+      try {
+        await api.updateAgent(agentId, { teamId });
+        await org.refresh();
+        toast(done);
+      } catch (caught) {
+        reportFailure('Änderung', caught);
+      } finally {
+        setMoving(null);
       }
-      await org.refresh();
-      void navigate('/org');
-    } catch (error) {
-      toast.error('Speichern fehlgeschlagen', { description: (error as Error).message });
-    } finally {
-      setSaving(false);
-    }
-  };
+    },
+    [org],
+  );
 
-  const remove = async (): Promise<void> => {
-    if (!id) return;
+  /* -------------------------------- Sichern ------------------------------- */
+
+  const { errors, failure, saving, submit } = useFormSubmit(schema, draft, async () => {
+    const patch = buildPatch(draft);
+    if (editing && id) await api.updateTeam(id, patch);
+    else await api.createTeam(toInput(patch));
+    markSaved();
+    await org.refresh();
+    toast(editing ? 'Team gespeichert' : 'Team angelegt');
+    void navigate('/org/teams');
+  });
+
+  const dissolve = useCallback(async (): Promise<void> => {
+    if (!id || !team) return;
+    const ok = await confirm({
+      title: 'Team auflösen?',
+      description:
+        members.length === 0
+          ? 'Das Team „' + team.name + '“ ist leer und verschwindet vollständig.'
+          : members.length +
+            (members.length === 1 ? ' Agent verliert' : ' Agenten verlieren') +
+            ' die Zuordnung zu „' +
+            team.name +
+            '“. Die Agenten selbst bleiben bestehen.',
+      confirmLabel: 'Auflösen',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await api.deleteTeam(id);
       await org.refresh();
-      toast('Team aufgelöst');
-      void navigate('/org');
-    } catch (error) {
-      toast.error('Löschen fehlgeschlagen', { description: (error as Error).message });
+      toast('Team aufgelöst', { description: team.name });
+      void navigate('/org/teams');
+    } catch (caught) {
+      reportFailure('Auflösen', caught);
     }
-  };
+  }, [confirm, id, members.length, navigate, org, team]);
+
+  /* --------------------------------- Kopf --------------------------------- */
+
+  const leaf = editing ? (team?.name ?? 'Team bearbeiten') : 'Team anlegen';
+
+  usePageMeta(
+    {
+      breadcrumb: [
+        { label: 'Firma', to: '/org/teams' },
+        { label: 'Teams', to: '/org/teams' },
+        { label: leaf },
+      ],
+      actions: (
+        <FormHeaderActions
+          form={formId}
+          cancelTo="/org/teams"
+          submitting={saving}
+          submitDisabled={!dirty || saving}
+          menu={
+            editing
+              ? [
+                  {
+                    label: 'Team auflösen',
+                    icon: Trash2Icon,
+                    destructive: true,
+                    onSelect: () => void dissolve(),
+                  },
+                ]
+              : []
+          }
+        />
+      ),
+    },
+    [dirty, dissolve, editing, formId, saving],
+  );
+
+  /* ------------------------------- Zustände ------------------------------- */
+
+  if (editing && !team && !org.loading) {
+    return (
+      <PageBody width="2xl">
+        <EmptyState
+          icon={UsersRoundIcon}
+          title="Dieses Team gibt es nicht mehr"
+          description="Es wurde aufgelöst oder hat nie existiert."
+          actionLabel="Zu den Teams"
+          actionTo="/org/teams"
+        />
+      </PageBody>
+    );
+  }
+
+  if (editing && !team) {
+    return (
+      <PageBody width="2xl">
+        <FormFieldsSkeleton fields={3} />
+      </PageBody>
+    );
+  }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-2xl space-y-6 p-6">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {editing ? 'Team bearbeiten' : 'Team anlegen'}
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Teams gruppieren Agenten und geben ihnen einen gemeinsamen Zweck.
-          </p>
-        </div>
+    <PageBody width="2xl">
+      {dialog}
+      <FormPage
+        formId={formId}
+        showActions={false}
+        onSubmit={submit}
+        error={failure}
+        description="Teams gruppieren Agenten und geben ihnen einen gemeinsamen Zweck."
+      >
+        <FieldSet>
+          <Field>
+            <FieldLabel htmlFor="team-name">Name</FieldLabel>
+            <Input
+              id="team-name"
+              value={draft.name}
+              aria-invalid={Boolean(errors.name)}
+              onChange={(event) => set({ name: event.target.value })}
+            />
+            <FieldError>{errors.name}</FieldError>
+          </Field>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Team</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="team-name" className="text-[12px] text-muted-foreground">
-                Name
-              </Label>
-              <Input
-                id="team-name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="team-purpose" className="text-[12px] text-muted-foreground">
-                Zweck
-              </Label>
-              <Textarea
-                id="team-purpose"
-                rows={3}
-                placeholder="Wofür dieses Team zuständig ist."
-                value={purpose}
-                onChange={(event) => setPurpose(event.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="team-lead" className="text-[12px] text-muted-foreground">
-                Teamleitung
-              </Label>
-              <Select value={leadId} onValueChange={setLeadId}>
-                <SelectTrigger id="team-lead" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>Keine Leitung</SelectItem>
-                  {org.agents
-                    .filter((agent) => !agent.archived)
-                    .map((agent) => (
-                      <SelectItem key={agent.id} value={agent.id}>
-                        {agent.name} · {agent.title}
-                      </SelectItem>
+          <Field>
+            <FieldLabel htmlFor="team-purpose">Zweck</FieldLabel>
+            <Textarea
+              id="team-purpose"
+              rows={3}
+              placeholder="Wofür dieses Team zuständig ist."
+              value={draft.purpose}
+              onChange={(event) => set({ purpose: event.target.value })}
+            />
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="team-lead">Leitung</FieldLabel>
+            <EntityCombobox
+              id="team-lead"
+              options={leadOptions}
+              value={draft.leadId}
+              onChange={(leadId) => set({ leadId })}
+              placeholder="Noch offen"
+              emptyLabel="Kein Agent gefunden"
+            />
+            <FieldDescription>
+              Die Leitung muss nicht im Team sein — sie ist die Ansprechpartnerin, nicht die
+              Mitgliedschaft.
+            </FieldDescription>
+          </Field>
+        </FieldSet>
+
+        {editing && id ? (
+          <>
+            <FieldSeparator />
+            <FieldSet>
+              <Field>
+                <FieldLabel htmlFor="team-add-member">Mitglieder</FieldLabel>
+                {members.length ? (
+                  <ItemGroup className="gap-2">
+                    {members.map((agent) => (
+                      <Item key={agent.id} variant="outline" size="sm">
+                        <ItemContent>
+                          <ItemTitle className="font-normal">{agent.name}</ItemTitle>
+                          <ItemDescription className="text-xs">{agent.title}</ItemDescription>
+                        </ItemContent>
+                        <ItemActions>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={moving === agent.id}
+                            onClick={() =>
+                              void setTeamOf(agent.id, null, agent.name + ' ist jetzt ohne Team')
+                            }
+                          >
+                            <UserMinusIcon data-icon="inline-start" />
+                            Entfernen
+                          </Button>
+                        </ItemActions>
+                      </Item>
                     ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </CardContent>
-        </Card>
-
-        <div className="flex justify-end gap-2">
-          {editing && (
-            <Button variant="ghost" className="mr-auto text-destructive" onClick={() => void remove()}>
-              Team auflösen
-            </Button>
-          )}
-          <Button variant="ghost" onClick={() => void navigate('/org')}>
-            Abbrechen
-          </Button>
-          <Button onClick={() => void save()} disabled={saving}>
-            Speichern
-          </Button>
-        </div>
-      </div>
-    </div>
+                  </ItemGroup>
+                ) : (
+                  <EmptyState
+                    icon={UsersRoundIcon}
+                    title="Noch niemand im Team"
+                    description="Über die Auswahl darunter kommt der erste Agent dazu."
+                    variant="plain"
+                    size="sm"
+                  />
+                )}
+                <EntityCombobox
+                  id="team-add-member"
+                  options={candidates}
+                  value={null}
+                  clearable={false}
+                  onChange={(agentId) => {
+                    if (!agentId) return;
+                    const agent = org.agents.find((entry) => entry.id === agentId);
+                    void setTeamOf(
+                      agentId,
+                      id,
+                      (agent?.name ?? 'Agent') + ' gehört jetzt zu ' + draft.name,
+                    );
+                  }}
+                  placeholder="Agent hinzufügen"
+                  emptyLabel="Alle Agenten sind schon hier"
+                />
+                <FieldDescription>
+                  Mitgliedschaften werden sofort gespeichert, unabhängig von den Feldern oben.
+                </FieldDescription>
+              </Field>
+            </FieldSet>
+          </>
+        ) : null}
+      </FormPage>
+    </PageBody>
   );
 }

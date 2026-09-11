@@ -1,15 +1,46 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { Trash2Icon } from 'lucide-react';
+import { FileTextIcon, SparklesIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/lib/api';
-import type { ToolServerAudience } from '@/lib/types';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { z } from 'zod';
+
+import { AUDIENCE_CHOICES } from '@/lib/tools';
+import type { Skill, ToolServerAudience } from '@/lib/types';
+import { useSkill } from '@/hooks/useSkills';
+import { PageBody } from '@/components/blocks/page-body';
+import { FormPage } from '@/components/blocks/form-page';
+import { usePageMeta } from '@/components/shell/page-meta';
+import { EmptyState } from '@/components/common/empty-state';
+import { useDeleteSkill } from '@/components/common/entity-actions';
+import {
+  ChoiceField,
+  FormFieldsSkeleton,
+  FormHeaderActions,
+  useDraft,
+  useFormSubmit,
+} from '@/components/forms/form-kit';
+import { ResultMarkdown } from '@/components/result-markdown';
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+  FieldSeparator,
+  FieldSet,
+} from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+
+/**
+ * Write a skill: a name, the one sentence that decides when it is opened, and
+ * the instructions themselves.
+ *
+ * The instructions are Markdown that a model reads, so the page now shows
+ * them as Markdown too - "Schreiben" and "Vorschau" as two tabs over the same
+ * text. Until now the only way to see whether a heading was actually a
+ * heading was to save and open the skill elsewhere.
+ */
 
 const TEMPLATE = `## Wann
 Wenn der Nutzer ... möchte.
@@ -22,148 +53,233 @@ Wenn der Nutzer ... möchte.
 - ...
 `;
 
-/** Create or edit one skill: name, one-line description, audience, the instructions. */
+interface SkillDraft {
+  name: string;
+  description: string;
+  audience: ToolServerAudience;
+  body: string;
+}
+
+const EMPTY: SkillDraft = {
+  name: '',
+  description: '',
+  audience: 'both',
+  body: TEMPLATE,
+};
+
+/** The server's own folder rule - a skill's name is its directory. */
+const schema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, 'Ein Name ist Pflicht.')
+    .regex(
+      /^[a-z0-9][a-z0-9-]{0,63}$/,
+      'Kleinbuchstaben, Ziffern und Bindestriche, beginnend mit Buchstabe oder Ziffer.',
+    ),
+  description: z
+    .string()
+    .trim()
+    .min(1, 'Ohne diesen Satz wird der Skill nie geöffnet.'),
+});
+
+function draftOf(skill: Skill): SkillDraft {
+  return {
+    name: skill.name,
+    description: skill.description,
+    audience: skill.audience,
+    body: skill.body,
+  };
+}
+
 export function SkillFormPage() {
-  const { name: existing } = useParams<{ name: string }>();
+  const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
-  const editing = Boolean(existing);
+  const { skill, loading, save: saveSkill, remove: removeSkill } = useSkill(name);
+  const { dialog, deleteSkill } = useDeleteSkill(removeSkill);
 
-  const [name, setName] = useState(existing ?? '');
-  const [description, setDescription] = useState('');
-  const [audience, setAudience] = useState<ToolServerAudience>('both');
-  const [body, setBody] = useState(TEMPLATE);
-  const [busy, setBusy] = useState(false);
-  const [loaded, setLoaded] = useState(!editing);
+  const editing = Boolean(name);
 
+  const formId = useId();
+  const { draft, dirty, set, hydrate, markSaved } = useDraft<SkillDraft>(EMPTY);
+  const [tab, setTab] = useState('schreiben');
+
+  // The shared list refetches on every tab focus, so the fill is guarded the
+  // same way as everywhere else: once per skill, and never over an edit.
   useEffect(() => {
-    if (!existing) return;
-    api
-      .skill(existing)
-      .then((skill) => {
-        setName(skill.name);
-        setDescription(skill.description);
-        setAudience(skill.audience);
-        setBody(skill.body);
-      })
-      .catch((caught: Error) => toast.error('Skill konnte nicht geladen werden', { description: caught.message }))
-      .finally(() => setLoaded(true));
-  }, [existing]);
+    if (!skill) return;
+    hydrate(skill.name, () => draftOf(skill));
+  }, [hydrate, skill]);
 
-  const save = async (): Promise<void> => {
-    if (!name.trim() || !description.trim()) {
-      toast.error('Name und Beschreibung sind Pflicht');
-      return;
-    }
-    setBusy(true);
-    try {
-      const saved = await api.saveSkill(name.trim(), { description: description.trim(), audience, body });
-      toast(editing ? 'Skill gespeichert' : 'Skill angelegt');
-      navigate('/skills/' + saved.name + '/edit', { replace: true });
-    } catch (caught) {
-      toast.error('Speichern fehlgeschlagen', { description: (caught as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { errors, failure, saving, submit } = useFormSubmit(schema, draft, async () => {
+    const saved = await saveSkill(draft.name.trim(), {
+      description: draft.description.trim(),
+      audience: draft.audience,
+      body: draft.body,
+    });
+    markSaved();
+    toast(editing ? 'Skill gespeichert' : 'Skill angelegt', { description: saved.name });
+    void navigate('/skills/' + saved.name);
+  });
 
-  const remove = async (): Promise<void> => {
-    if (!existing) return;
-    try {
-      await api.deleteSkill(existing);
-      toast('Skill gelöscht');
-      navigate('/skills');
-    } catch (caught) {
-      toast.error('Löschen fehlgeschlagen', { description: (caught as Error).message });
-    }
-  };
+  const remove = useCallback(async (): Promise<void> => {
+    if (!skill) return;
+    if (await deleteSkill(skill)) void navigate('/skills');
+  }, [deleteSkill, navigate, skill]);
 
-  if (!loaded) return <div className="p-6 text-sm text-muted-foreground">Wird geladen …</div>;
+  usePageMeta(
+    {
+      breadcrumb: [
+        { label: 'Skills', to: '/skills' },
+        { label: editing ? (skill?.name ?? 'Skill bearbeiten') : 'Skill anlegen' },
+      ],
+      actions: (
+        <FormHeaderActions
+          form={formId}
+          cancelTo={editing && name ? '/skills/' + name : '/skills'}
+          submitting={saving}
+          submitDisabled={!dirty || saving}
+          menu={
+            editing
+              ? [
+                  {
+                    label: 'Löschen',
+                    icon: Trash2Icon,
+                    destructive: true,
+                    onSelect: () => void remove(),
+                  },
+                ]
+              : []
+          }
+        />
+      ),
+    },
+    [dirty, editing, formId, name, remove, saving, skill],
+  );
+
+  /* ------------------------------- Zustände ------------------------------- */
+
+  if (editing && !skill && !loading) {
+    return (
+      <PageBody width="3xl">
+        <EmptyState
+          icon={SparklesIcon}
+          title="Diesen Skill gibt es nicht mehr"
+          description="Der Ordner wurde gelöscht oder hat nie existiert."
+          actionLabel="Zu den Skills"
+          actionTo="/skills"
+        />
+      </PageBody>
+    );
+  }
+
+  if (editing && !skill) {
+    return (
+      <PageBody width="3xl">
+        <FormFieldsSkeleton fields={3} />
+      </PageBody>
+    );
+  }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-3xl space-y-6 p-6">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">{editing ? 'Skill bearbeiten' : 'Skill anlegen'}</h1>
-          <p className="text-sm text-muted-foreground">
-            Die Beschreibung entscheidet, wann der Skill geöffnet wird: ein Satz, der die Aufgabe trifft.
-          </p>
-        </div>
+    <PageBody width="3xl">
+      {dialog}
+      <FormPage
+        formId={formId}
+        showActions={false}
+        onSubmit={submit}
+        error={failure}
+        description="Die Beschreibung entscheidet, wann der Skill geöffnet wird: ein Satz, der die Aufgabe trifft."
+      >
+        <FieldSet>
+          <Field>
+            <FieldLabel htmlFor="skill-name">Name</FieldLabel>
+            <Input
+              id="skill-name"
+              className="font-mono"
+              placeholder="z. B. wochenbericht"
+              value={draft.name}
+              disabled={editing}
+              aria-invalid={Boolean(errors.name)}
+              onChange={(event) => set({ name: event.target.value })}
+            />
+            <FieldDescription>
+              {editing
+                ? 'Der Name ist der Ordnername und lässt sich nicht ändern.'
+                : 'Kleinbuchstaben, Ziffern, Bindestriche. Er wird zum Ordnernamen.'}
+            </FieldDescription>
+            <FieldError>{errors.name}</FieldError>
+          </Field>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Skill</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="skill-name" className="text-[12px] text-muted-foreground">
-                  Name
-                </Label>
-                <Input
-                  id="skill-name"
-                  value={name}
-                  disabled={editing}
-                  placeholder="z. B. wochenbericht"
-                  onChange={(event) => setName(event.target.value)}
+          <Field>
+            <FieldLabel htmlFor="skill-audience-assistant">Für wen</FieldLabel>
+            <ChoiceField
+              id="skill-audience"
+              options={AUDIENCE_CHOICES}
+              value={draft.audience}
+              onChange={(audience) => set({ audience })}
+            />
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="skill-description">Beschreibung</FieldLabel>
+            <Input
+              id="skill-description"
+              placeholder="Wann dieser Skill gilt, in einem Satz."
+              value={draft.description}
+              aria-invalid={Boolean(errors.description)}
+              onChange={(event) => set({ description: event.target.value })}
+            />
+            <FieldDescription>
+              Ein Satz — danach entscheidet der Assistent, ob er den Skill öffnet.
+            </FieldDescription>
+            <FieldError>{errors.description}</FieldError>
+          </Field>
+        </FieldSet>
+
+        <FieldSeparator />
+
+        <FieldSet>
+          <Field>
+            <FieldLabel htmlFor="skill-body">Inhalt</FieldLabel>
+            <Tabs value={tab} onValueChange={setTab}>
+              <TabsList>
+                <TabsTrigger value="schreiben">Schreiben</TabsTrigger>
+                <TabsTrigger value="vorschau">Vorschau</TabsTrigger>
+              </TabsList>
+              <TabsContent value="schreiben">
+                <Textarea
+                  id="skill-body"
+                  rows={18}
+                  className="font-mono text-[13px]"
+                  value={draft.body}
+                  onChange={(event) => set({ body: event.target.value })}
                 />
-                <p className="text-[10.5px] text-muted-foreground/80">Kleinbuchstaben, Ziffern, Bindestriche. Wird zum Ordnernamen.</p>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="skill-audience" className="text-[12px] text-muted-foreground">
-                  Für wen
-                </Label>
-                <Select value={audience} onValueChange={(value) => setAudience(value as ToolServerAudience)}>
-                  <SelectTrigger id="skill-audience" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="both">Assistent und Agenten</SelectItem>
-                    <SelectItem value="assistant">Nur der Assistent</SelectItem>
-                    <SelectItem value="agents">Nur die Agenten</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="skill-description" className="text-[12px] text-muted-foreground">
-                Beschreibung
-              </Label>
-              <Input
-                id="skill-description"
-                value={description}
-                placeholder="Wann dieser Skill gilt, in einem Satz."
-                onChange={(event) => setDescription(event.target.value)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="skill-body" className="text-[12px] text-muted-foreground">
-                Anleitung (Markdown)
-              </Label>
-              <Textarea
-                id="skill-body"
-                rows={18}
-                className="font-mono text-[13px]"
-                value={body}
-                onChange={(event) => setBody(event.target.value)}
-              />
-            </div>
-            <div className="flex flex-wrap justify-end gap-2">
-              {editing && (
-                <Button variant="ghost" className="me-auto" onClick={() => void remove()}>
-                  <Trash2Icon />
-                  Löschen
-                </Button>
-              )}
-              <Button variant="ghost" onClick={() => navigate('/skills')}>
-                Abbrechen
-              </Button>
-              <Button onClick={() => void save()} disabled={busy}>
-                Speichern
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+              </TabsContent>
+              <TabsContent value="vorschau">
+                <div className="min-h-[24rem] rounded-md border p-4">
+                  {draft.body.trim() ? (
+                    <ResultMarkdown text={draft.body} />
+                  ) : (
+                    <EmptyState
+                      icon={FileTextIcon}
+                      title="Noch nichts geschrieben"
+                      description="Was im Reiter „Schreiben“ steht, erscheint hier als Markdown."
+                      actionLabel="Zum Schreiben"
+                      onAction={() => setTab('schreiben')}
+                      variant="plain"
+                      size="sm"
+                    />
+                  )}
+                </div>
+              </TabsContent>
+            </Tabs>
+            <FieldDescription>
+              Markdown. Der Text wird wörtlich gelesen, wenn der Skill geöffnet wird.
+            </FieldDescription>
+          </Field>
+        </FieldSet>
+      </FormPage>
+    </PageBody>
   );
 }

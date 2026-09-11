@@ -163,6 +163,31 @@ export interface SleepRun {
   undoneAt?: number;
 }
 
+/**
+ * The nightly clean-up's settings, exactly as `config.memory.sleep` in core.
+ *
+ * `GET /api/sleep/status` hands this object straight out, so it is the same
+ * shape in both places and is declared once.
+ */
+export interface SleepConfig {
+  enabled: boolean;
+  /** Five-field cron expression for the nightly run. */
+  schedule: string;
+  /** Which banks sleep: only the assistant's, or every agent's too. */
+  scope: 'assistant' | 'all';
+  maxMergeCalls: number;
+  dormantAfterDays: number;
+  minStrength: number;
+  insights: number;
+  cycles: number;
+  maxResolveCalls: number;
+  /** An agent bank sleeps only after this many new memories. */
+  agentThreshold: number;
+  model: string;
+  /** Empty means "same as `model`". */
+  insightModel: string;
+}
+
 /** What `GET /api/sleep/status` answers. */
 export interface SleepStatusView {
   owner: string;
@@ -170,19 +195,7 @@ export interface SleepStatusView {
   activeOwners: string[];
   lastRun: SleepRun | null;
   schedule: CronJob | null;
-  config: {
-    enabled: boolean;
-    schedule: string;
-    scope: string;
-    maxMergeCalls: number;
-    dormantAfterDays: number;
-    minStrength: number;
-    insights: number;
-    cycles: number;
-    maxResolveCalls: number;
-    model: string;
-    insightModel: string;
-  };
+  config: SleepConfig;
 }
 
 /* ------------------------------ organisation ------------------------------ */
@@ -368,7 +381,12 @@ export interface TaskPlanResult {
 
 /* ------------------------------- schedules ------------------------------- */
 
-export type CronJobKind = 'assistant' | 'agent';
+/**
+ * `sleep` is the system's own row: `ensureSleepSchedule` keeps exactly one of
+ * them, it carries no prompt a person wrote, and it must not be offered for
+ * deletion in the schedules table.
+ */
+export type CronJobKind = 'assistant' | 'agent' | 'sleep';
 export type CronRunStatus = 'running' | 'done' | 'failed';
 export type CronTrigger = 'schedule' | 'manual';
 
@@ -566,6 +584,28 @@ export interface TtsCatalogue {
   openai: TtsVoice[];
 }
 
+/** The gate in front of the write path: what may become a memory at all. */
+export interface MemoryGateConfig {
+  maxPerTurn: number;
+  minImportance: number;
+  duplicateThreshold: number;
+  clusterThreshold: number;
+}
+
+/** The second hop: how far recall reaches past a literal match. */
+export interface MemoryGraphConfig {
+  hopEntity: number;
+  hopEdge: number;
+  maxNodes: number;
+}
+
+/**
+ * `GET /api/config` hands out the whole `config.memory`, sub-objects included.
+ *
+ * `gate`, `graph` and `sleep` are optional here on purpose: the settings page
+ * edits only the six flat fields, and `PATCH /api/config` is a deep merge, so
+ * a patch that leaves them out must still typecheck as a `MemoryConfig`.
+ */
 export interface MemoryConfig {
   enabled: boolean;
   recallLimit: number;
@@ -573,17 +613,29 @@ export interface MemoryConfig {
   autoExtract: boolean;
   workingWindow: number;
   contextBudget: number;
+  gate?: MemoryGateConfig;
+  graph?: MemoryGraphConfig;
+  sleep?: SleepConfig;
 }
 
 export interface OrgConfig {
   maxConcurrentAssignments: number;
   maxDelegationDepth: number;
   assignmentTimeoutMs: number;
+  /** Agents get the Ponytail ruleset in their system prompt. */
+  lazyCoding: boolean;
   activeOrganizationId?: string;
 }
 
 /** The subset of RookeryConfig the server exposes. It never includes the token. */
 export interface PublicConfig {
+  /**
+   * Where the server listens, straight from its own config. Read-only: PATCH
+   * ignores both. The page cannot work this out for itself - in development it
+   * talks to Vite, which proxies on, so its own origin names the wrong port.
+   */
+  host?: string;
+  port?: number;
   assistantName: string;
   userName?: string;
   /** Address the user formally ("Sie"). */
@@ -689,6 +741,86 @@ export interface MemoryStats {
   pinned: number;
   entities: number;
   edges: number;
+}
+
+/* --------------------------- aggregate statistics -------------------------- */
+
+/**
+ * Whole-database counts, every one of them a `COUNT(*)` on the server.
+ *
+ * They exist because every list endpoint is capped: a total counted from a
+ * page of 500 stops being true the moment the cap bites. Sessions, messages
+ * and memories span the database; the company's numbers belong to the active
+ * organisation, the memory numbers to one owner.
+ */
+export interface StatsTotals {
+  /** Conversations that are not archived. */
+  sessions: number;
+  archivedSessions: number;
+  /** Transcript rows across every conversation. */
+  messages: number;
+  assignments: number;
+  /** Assignments still `pending` or `running`. */
+  runningAssignments: number;
+  /** Top-level tasks and subtasks together. */
+  tasks: number;
+  /** Tasks in `open`, `planned` or `running` - what is still ahead. */
+  openTasks: number;
+  cronJobs: number;
+  cronRuns: number;
+  /** Live memories of the asked-for owner; the same figure as `MemoryStats.total`. */
+  memories: number;
+  /** Agents that are not archived. */
+  agents: number;
+}
+
+/**
+ * One local calendar day of the time series.
+ *
+ * A day only appears once something happened on it - the gaps are left in and
+ * `fillDayGaps` in `lib/stats.ts` closes them for the window being drawn.
+ *
+ * Every figure counts what was *created* that day, whatever became of it
+ * since: a conversation archived last week still counts on the day it
+ * started. That is why the series and `StatsTotals` answer different
+ * questions and need not add up to each other.
+ */
+export interface StatsDay {
+  /** Local calendar day, `YYYY-MM-DD`. */
+  day: string;
+  sessions: number;
+  messages: number;
+  assignments: number;
+  tasks: number;
+  /** Dated by `startedAt`. */
+  cronRuns: number;
+  memories: number;
+  /** Prompt tokens summed over the day's messages; 0 when none were recorded. */
+  inputTokens: number;
+  /** Completion tokens, same caveat. */
+  outputTokens: number;
+}
+
+/** What `GET /api/stats` answers: the counts, and how they came about. */
+export interface StatsSnapshot {
+  /** Start of the series window, epoch milliseconds, inclusive. */
+  since: number;
+  /** End of the window, epoch milliseconds, inclusive - "now" in practice. */
+  until: number;
+  /** The company the organisation numbers belong to. */
+  orgId: string;
+  /** The memory bank the memory numbers belong to. */
+  owner: string;
+  totals: StatsTotals;
+  /** Ascending by day, gaps left in. */
+  series: StatsDay[];
+  /**
+   * False when no message in the window carried usage data at all. Then the
+   * token figures are zero because nothing was recorded, not because nothing
+   * was spent - the difference matters on a chart, so a token card must check
+   * this before it claims a number.
+   */
+  tokensAvailable: boolean;
 }
 
 export interface ChatPayload {

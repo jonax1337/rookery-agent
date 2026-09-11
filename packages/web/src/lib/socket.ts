@@ -7,6 +7,7 @@ import type {
   ClientFrame,
   MemoryRecord,
   OrgChange,
+  ProviderQuota,
   RunTaskPayload,
   ServerFrame,
   Task,
@@ -59,6 +60,7 @@ export class RookerySocket {
   #cronListeners = new Set<(event: CronEvent) => void>();
   #changedListeners = new Set<(change: OrgChange) => void>();
   #sleepListeners = new Set<(event: SleepEvent) => void>();
+  #quotaListeners = new Set<(quota: ProviderQuota) => void>();
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #pingTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -109,6 +111,20 @@ export class RookerySocket {
   onSleep(listener: (event: SleepEvent) => void): () => void {
     this.#sleepListeners.add(listener);
     return () => this.#sleepListeners.delete(listener);
+  }
+
+  /**
+   * The provider reported the subscription's limit windows.
+   *
+   * This rides a turn's stream - it is what the CLI says on its way past -
+   * but the figure is about the account, not the turn, so it gets its own
+   * listener set. Without it the context indicator in the header would only
+   * ever learn about quota while a turn happened to be running in the chat.
+   * Outside a turn, `GET /api/providers/:id/usage` stays the source.
+   */
+  onQuota(listener: (quota: ProviderQuota) => void): () => void {
+    this.#quotaListeners.add(listener);
+    return () => this.#quotaListeners.delete(listener);
   }
 
   /** An agent, team, project or the company itself was created or edited. */
@@ -283,6 +299,14 @@ export class RookerySocket {
     }
 
     if (frame.type === 'event') {
+      // Quota is about the account, not the turn, so it is handed on even
+      // when the turn itself is no longer ours to render (a reload mid-turn,
+      // say). Everything else below belongs to a registered turn.
+      if (frame.event.type === 'quota') {
+        const quota = frame.event.quota;
+        for (const listener of this.#quotaListeners) listener(quota);
+      }
+
       const turn = this.#pending.get(frame.id);
       if (!turn) return;
       turn.onEvent(frame.event);

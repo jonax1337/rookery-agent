@@ -245,9 +245,13 @@ export class Assistant extends EventEmitter {
     return this.store.getSession(id);
   }
 
-  /** Recent sessions; `agentId` narrows to one counterpart (`null` = the assistant), `kind` to chats or voice. */
-  listSessions(limit = 50, agentId?: string | null, kind?: SessionKind): Session[] {
-    return this.store.listSessions({ limit, agentId, kind });
+  /**
+   * Recent sessions; `agentId` narrows to one counterpart (`null` = the
+   * assistant), `kind` to chats or voice. Archived conversations stay out
+   * unless asked for, because archiving is how a list is kept short.
+   */
+  listSessions(limit = 50, agentId?: string | null, kind?: SessionKind, includeArchived = false): Session[] {
+    return this.store.listSessions({ limit, agentId, kind, includeArchived });
   }
 
   deleteSession(id: string): void {

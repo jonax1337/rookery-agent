@@ -18,6 +18,9 @@ import {
   type SessionKind,
   type SleepRun,
   type SleepStatus,
+  type StatsDay,
+  type StatsSnapshot,
+  type StatsTotals,
   type TurnUsage,
 } from '../types.js';
 import { openDatabase, type Db } from './db.js';
@@ -545,6 +548,132 @@ export class Store {
     const byKind: Record<string, number> = {};
     for (const row of rows) byKind[row.kind] = row.n;
     return { total, byKind, forgotten, dormant, pinned, entities, edges };
+  }
+
+  /* ----------------------------- statistics ---------------------------- */
+
+  /**
+   * The dashboard's numbers: real totals, plus a day-by-day series.
+   *
+   * `memoryStats` answers "what does the bank hold"; this answers "how much
+   * is there across the whole system, and when did it happen". Both count in
+   * SQL rather than over a fetched page, because every list endpoint is
+   * capped and a number derived from a capped list is silently wrong once
+   * the cap bites.
+   *
+   * Days are local calendar days. The server runs on the same machine as the
+   * person reading the chart, so "Tuesday" should mean the Tuesday they had,
+   * not the one UTC had. Empty days are not emitted - the client knows which
+   * window it wants and fills the gaps itself.
+   */
+  stats(options: { orgId: string; since: number; until?: number; owner?: string }): StatsSnapshot {
+    const owner = options.owner || ASSISTANT_MEMORY_OWNER;
+    const until = options.until ?? Date.now();
+    const since = Math.min(options.since, until);
+
+    const count = (sql: string, ...values: unknown[]): number =>
+      (this.db.prepare(sql).get(...(values as never[])) as { n: number } | undefined)?.n ?? 0;
+
+    // Reused rather than recounted, so the dashboard and the memory page can
+    // never disagree about how many memories there are.
+    const memory = this.memoryStats(owner);
+
+    const totals: StatsTotals = {
+      sessions: count('SELECT COUNT(*) AS n FROM sessions WHERE archived = 0'),
+      archivedSessions: count('SELECT COUNT(*) AS n FROM sessions WHERE archived = 1'),
+      messages: count('SELECT COUNT(*) AS n FROM messages'),
+      assignments: count('SELECT COUNT(*) AS n FROM assignments WHERE org_id = ?', options.orgId),
+      runningAssignments: count(
+        "SELECT COUNT(*) AS n FROM assignments WHERE org_id = ? AND status IN ('pending', 'running')",
+        options.orgId,
+      ),
+      tasks: count('SELECT COUNT(*) AS n FROM tasks WHERE org_id = ?', options.orgId),
+      openTasks: count(
+        "SELECT COUNT(*) AS n FROM tasks WHERE org_id = ? AND status IN ('open', 'planned', 'running')",
+        options.orgId,
+      ),
+      cronJobs: count('SELECT COUNT(*) AS n FROM cron_jobs WHERE org_id = ?', options.orgId),
+      cronRuns: count('SELECT COUNT(*) AS n FROM cron_runs WHERE org_id = ?', options.orgId),
+      memories: memory.total,
+      agents: count('SELECT COUNT(*) AS n FROM agents WHERE org_id = ? AND archived = 0', options.orgId),
+    };
+
+    const buckets = new Map<string, StatsDay>();
+    const bucket = (day: string): StatsDay => {
+      const existing = buckets.get(day);
+      if (existing) return existing;
+      const created: StatsDay = {
+        day,
+        sessions: 0,
+        messages: 0,
+        assignments: 0,
+        tasks: 0,
+        cronRuns: 0,
+        memories: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+      buckets.set(day, created);
+      return created;
+    };
+
+    /**
+     * One GROUP BY per table. Timestamps are milliseconds and SQLite's date
+     * functions want seconds, hence the division; `localtime` is what turns
+     * an instant into the day the user had. Table and column are literals
+     * from the calls right below, never anything a request carried.
+     */
+    const perDay = (table: string, column: string, filter: string, values: unknown[]): Map<string, number> => {
+      const rows = this.db
+        .prepare(
+          `SELECT strftime('%Y-%m-%d', ${column} / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
+             FROM ${table}
+            WHERE ${column} >= ? AND ${column} <= ?` +
+            (filter ? ' AND ' + filter : '') +
+            ' GROUP BY day',
+        )
+        .all(...([since, until, ...values] as never[])) as Row[];
+      return new Map(rows.map((row) => [String(row.day), Number(row.n ?? 0)]));
+    };
+
+    for (const [day, n] of perDay('sessions', 'created_at', '', [])) bucket(day).sessions = n;
+    for (const [day, n] of perDay('messages', 'created_at', '', [])) bucket(day).messages = n;
+    for (const [day, n] of perDay('assignments', 'created_at', 'org_id = ?', [options.orgId]))
+      bucket(day).assignments = n;
+    for (const [day, n] of perDay('tasks', 'created_at', 'org_id = ?', [options.orgId])) bucket(day).tasks = n;
+    // A run is dated by when it started; `finished_at` is null while it runs.
+    for (const [day, n] of perDay('cron_runs', 'started_at', 'org_id = ?', [options.orgId])) bucket(day).cronRuns = n;
+    for (const [day, n] of perDay('memories', 'created_at', 'owner = ?', [owner])) bucket(day).memories = n;
+
+    // `messages.usage` is a JSON blob rather than columns, so the tokens can
+    // only be summed with json_extract. That is the difference between one
+    // query and one request per conversation, and worth the guard: json_valid
+    // skips anything an older build may have written, and if the function is
+    // missing altogether the two figures simply stay unknown.
+    let tokensAvailable = false;
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS day,
+                  SUM(COALESCE(json_extract(usage, '$.inputTokens'), 0))  AS input_tokens,
+                  SUM(COALESCE(json_extract(usage, '$.outputTokens'), 0)) AS output_tokens
+             FROM messages
+            WHERE created_at >= ? AND created_at <= ? AND usage IS NOT NULL AND json_valid(usage)
+            GROUP BY day`,
+        )
+        .all(...([since, until] as never[])) as Row[];
+      tokensAvailable = rows.length > 0;
+      for (const row of rows) {
+        const entry = bucket(String(row.day));
+        entry.inputTokens = Number(row.input_tokens ?? 0);
+        entry.outputTokens = Number(row.output_tokens ?? 0);
+      }
+    } catch {
+      tokensAvailable = false;
+    }
+
+    const series = [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day));
+    return { since, until, orgId: options.orgId, owner, totals, series, tokensAvailable };
   }
 
   /* ---------------------------- entities ---------------------------- */

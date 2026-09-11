@@ -1,6 +1,16 @@
-import type { CronRunStatus, CronTrigger } from './types';
+import type { CronRun, CronRunStatus, CronTrigger } from './types';
 
 /** Labels and presets for the schedule pages. */
+
+/**
+ * What a run has to say for itself: its error, else its result.
+ *
+ * The list and the detail page both open a report dialog from a row, and both
+ * had to answer this question the same way.
+ */
+export function cronRunReport(run: CronRun): string {
+  return run.error ?? run.result ?? '';
+}
 
 export const CRON_RUN_STATUS_LABEL: Record<CronRunStatus, string> = {
   running: 'Läuft',
@@ -33,7 +43,9 @@ export const CRON_PRESETS: { label: string; schedule: string }[] = [
 
 export const CUSTOM_SCHEDULE = '__custom__';
 
-export function formatDateTime(timestamp: number | undefined): string {
-  if (!timestamp) return '–';
-  return new Date(timestamp).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
-}
+/**
+ * Moved to `lib/format.ts` (and implemented once in `lib/stats.ts`) when the
+ * dashboard pages started needing it too. Re-exported here so the schedule
+ * pages' existing imports keep working.
+ */
+export { formatDateTime } from './format';

@@ -86,6 +86,7 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     maxConcurrentAssignments: 4,
     maxDelegationDepth: 3,
     assignmentTimeoutMs: 45 * 60 * 1000,
+    lazyCoding: true,
   },
   tools: { servers: [] },
   skillsDir: join(DEFAULT_HOME, 'skills'),

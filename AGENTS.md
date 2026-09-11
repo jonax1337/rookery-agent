@@ -9,7 +9,12 @@ packages/core     Das Gehirn: Provider-Adapter, Gedaechtnis, Persona, Runtime, d
                   Computer-Steuerung (computer/). Kennt weder HTTP noch Terminal.
 packages/server   Fastify: REST + WebSocket + SSE, liefert die gebaute Web-UI aus.
 packages/cli      Terminal-Interface (Ink-TUI, REPL, OS-Sprachausgabe).
-packages/web      React + Vite. Assistenten-Bildschirm mit Orb und Sprachsteuerung.
+packages/web      React + Vite. Steht auf den shadcn-Blocks dashboard-01 und
+                  sidebar-16: src/components/shell/ (Navigation, Kopf, Provider),
+                  src/components/blocks/ (Seiten-Templates: StatCards, Kurve,
+                  DataTable, Drawer, Formularrahmen), src/components/common/
+                  (Leerzustand, Bestaetigung, Status-Badge, Zeilenmenue) und
+                  src/pages/, die diese Templates benutzen statt sie nachzubauen.
 ```
 
 Details, Schnellstart und Turn-Ablauf stehen in `README.md`. Design-Konzepte fuer
@@ -49,7 +54,13 @@ Datenbank).
 - Identifier, Kommentare und Commit-Messages auf Englisch; UI-Strings und Nutzertexte
   auf Deutsch.
 - UI: Stock assistant-ui + shadcn (radix-vega), echte Seiten statt Modals, moeglichst
-  kein Customizing.
+  kein Customizing. Eine Seite baut kein Template nach — fehlt etwas, bekommt das
+  Template unter `src/components/blocks/` bzw. `/common/` eine rueckwaertskompatible
+  Prop. `ButtonGroup` nur fuer Knoepfe **derselben** Variante; gefuellt neben Outline
+  verschweisst zu einem Bauteil, dem sichtbar eine Kante fehlt.
+- Keine erfundenen Zahlen: jede Kennzahl braucht eine belegte Quelle. Gesamtzahlen
+  kommen aus `GET /api/stats`, nicht aus einer Liste, die der Server deckelt; wo nur
+  eine gedeckelte Liste da ist, nennt die Karte ihre Basis.
 - Keine API-Keys im Code oder in Beispielen. Rookery liest/setzt bewusst weder
   `ANTHROPIC_API_KEY` noch `OPENAI_API_KEY`; Provider-Auth laeuft ausschliesslich ueber
   die OAuth-Sitzung der lokal eingeloggten `claude`- bzw. `codex`-CLI.

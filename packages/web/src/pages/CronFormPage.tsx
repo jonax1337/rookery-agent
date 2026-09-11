@@ -1,318 +1,587 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { Trash2Icon } from 'lucide-react';
+import { CalendarClockIcon, ChevronDownIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/lib/api';
-import { CRON_PRESETS, CUSTOM_SCHEDULE, formatDateTime } from '@/lib/cron';
-import type { CronPreview } from '@/lib/types';
-import type { CronState } from '@/hooks/useCron';
-import type { OrgState } from '@/hooks/useOrg';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { z } from 'zod';
+
+import { api, type CronJobInput, type CronJobPatch } from '@/lib/api';
+import { CRON_PRESETS } from '@/lib/cron';
+import { reportFailure } from '@/lib/errors';
+import {
+  PERMISSION_CHOICES,
+  STANDARD_CHOICE,
+  formatDateTime,
+  type PermissionChoice,
+} from '@/lib/format';
+import type { CronJob, CronPreview } from '@/lib/types';
+import { useCronState, useOrgState } from '@/providers/rookery-provider';
+import { PageBody } from '@/components/blocks/page-body';
+import { FormPage } from '@/components/blocks/form-page';
+import { usePageMeta } from '@/components/shell/page-meta';
+import { useConfirm } from '@/components/common/confirm-dialog';
+import { EmptyState } from '@/components/common/empty-state';
+import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
+import {
+  ChoiceField,
+  FormFieldsSkeleton,
+  FormHeaderActions,
+  useDraft,
+  useFormSubmit,
+  type ChoiceOption,
+} from '@/components/forms/form-kit';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+  FieldLegend,
+  FieldSeparator,
+  FieldSet,
+  FieldTitle,
+} from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
+import { Item, ItemContent, ItemGroup, ItemTitle } from '@/components/ui/item';
+import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 
-/** Radix selects have no empty value, so "the assistant" and "no project" need sentinels. */
-const ASSISTANT = '__assistant__';
-const NO_PROJECT = '__none__';
+/**
+ * A standing order: a prompt that fires on a cron expression.
+ *
+ * The server owns the parser, so the form never guesses what an expression
+ * means - it asks `GET /api/cron/preview` and shows the answer in its own
+ * card. That card is also the gate: while the server says the expression is
+ * wrong, "Speichern" is disabled, instead of letting the save go out and
+ * turning the refusal into a toast.
+ *
+ * The eight presets moved into the field itself. There used to be a second
+ * select next to the expression plus a `'__custom__'` sentinel to keep the
+ * two in sync; a menu that writes into the one input needs neither.
+ */
 
 const PROMPT_PLACEHOLDER =
-  'Was bei jedem Lauf zu tun ist, so dass es ohne Rückfragen geht. Etwa: „Sieh dir die offenen Aufgaben ' +
-  'und die Aufträge der letzten 24 Stunden an und fasse in fünf Sätzen zusammen, was passiert ist und was ' +
-  'heute ansteht.“';
+  'Was bei jedem Lauf zu tun ist, so dass es ohne Rückfragen geht. Etwa: „Sieh dir die offenen ' +
+  'Aufgaben und die Aufträge der letzten 24 Stunden an und fasse in fünf Sätzen zusammen, was ' +
+  'passiert ist und was heute ansteht.“';
 
-/** Create or edit one schedule: name, timetable with a live preview, who runs it, the prompt. */
-export function CronFormPage({ cron, org }: { cron: CronState; org: OrgState }) {
-  const { id: existing } = useParams<{ id: string }>();
+type RunnerChoice = 'assistant' | 'agent';
+
+interface CronDraft {
+  name: string;
+  schedule: string;
+  prompt: string;
+  runner: RunnerChoice;
+  agentId: string | null;
+  projectId: string | null;
+  permission: PermissionChoice;
+  once: boolean;
+  enabled: boolean;
+}
+
+const EMPTY: CronDraft = {
+  name: '',
+  schedule: CRON_PRESETS[0]?.schedule ?? '0 8 * * *',
+  prompt: '',
+  runner: 'assistant',
+  agentId: null,
+  projectId: null,
+  permission: STANDARD_CHOICE,
+  once: false,
+  enabled: true,
+};
+
+const schema = z
+  .object({
+    name: z.string().trim().min(1, 'Ein Name ist Pflicht.'),
+    schedule: z.string().trim().min(1, 'Ohne Ausdruck feuert nichts.'),
+    prompt: z.string().trim().min(1, 'Ohne Anweisung weiß der Lauf nicht, was er tun soll.'),
+    runner: z.enum(['assistant', 'agent']),
+    agentId: z.string().nullable(),
+  })
+  .superRefine((value, context) => {
+    if (value.runner === 'agent' && !value.agentId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agentId'],
+        message: 'Ein Agentenzeitplan braucht einen Agenten.',
+      });
+    }
+  });
+
+const RUNNER_OPTIONS: ChoiceOption<RunnerChoice>[] = [
+  {
+    value: 'assistant',
+    label: 'Der Assistent',
+    description: 'Arbeitet in einem eigenen Gespräch mit all seinen Werkzeugen.',
+  },
+  {
+    value: 'agent',
+    label: 'Ein Agent',
+    description: 'Bekommt bei jedem Lauf einen Auftrag im Projektverzeichnis.',
+  },
+];
+
+function draftOf(job: CronJob): CronDraft {
+  return {
+    name: job.name,
+    schedule: job.schedule,
+    prompt: job.prompt,
+    runner: job.kind === 'agent' ? 'agent' : 'assistant',
+    agentId: job.agentId ?? null,
+    projectId: job.projectId ?? null,
+    permission: job.permission ?? STANDARD_CHOICE,
+    once: job.once,
+    enabled: job.enabled,
+  };
+}
+
+/**
+ * One shape for create and update. `kind` is left out on purpose: the
+ * scheduler derives it from `agentId` (`null` means the assistant), so
+ * sending both would be two sources for one fact.
+ */
+function buildPatch(draft: CronDraft): CronJobPatch {
+  return {
+    name: draft.name.trim(),
+    schedule: draft.schedule.trim(),
+    prompt: draft.prompt.trim(),
+    agentId: draft.runner === 'agent' ? draft.agentId : null,
+    projectId: draft.projectId,
+    permission: draft.permission === STANDARD_CHOICE ? null : draft.permission,
+    once: draft.once,
+    enabled: draft.enabled,
+  };
+}
+
+function toInput(patch: CronJobPatch): CronJobInput {
+  return {
+    name: patch.name ?? '',
+    schedule: patch.schedule ?? '',
+    prompt: patch.prompt ?? '',
+    ...(patch.agentId ? { agentId: patch.agentId } : {}),
+    ...(patch.projectId ? { projectId: patch.projectId } : {}),
+    ...(patch.permission ? { permission: patch.permission } : {}),
+    once: patch.once ?? false,
+    enabled: patch.enabled ?? true,
+  };
+}
+
+export function CronFormPage() {
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const editing = Boolean(existing);
+  const cron = useCronState();
+  const org = useOrgState();
+  const { confirm, dialog } = useConfirm();
 
-  const [name, setName] = useState('');
-  const [preset, setPreset] = useState<string>(CRON_PRESETS[0]!.schedule);
-  const [schedule, setSchedule] = useState(CRON_PRESETS[0]!.schedule);
-  const [runner, setRunner] = useState<string>(ASSISTANT);
-  const [projectId, setProjectId] = useState<string>(NO_PROJECT);
-  const [prompt, setPrompt] = useState('');
-  const [once, setOnce] = useState(false);
-  const [enabled, setEnabled] = useState(true);
+  const editing = Boolean(id);
+  const job = cron.jobById(id);
+
+  const formId = useId();
+  const { draft, dirty, set, hydrate, markSaved } = useDraft<CronDraft>(EMPTY);
   const [preview, setPreview] = useState<CronPreview | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [loaded, setLoaded] = useState(!editing);
+  const [checking, setChecking] = useState(false);
 
   useEffect(() => {
-    if (!existing) return;
-    api
-      .cronJob(existing)
-      .then(({ job }) => {
-        setName(job.name);
-        setSchedule(job.schedule);
-        setPreset(CRON_PRESETS.some((entry) => entry.schedule === job.schedule) ? job.schedule : CUSTOM_SCHEDULE);
-        setRunner(job.kind === 'agent' && job.agentId ? job.agentId : ASSISTANT);
-        setProjectId(job.projectId ?? NO_PROJECT);
-        setPrompt(job.prompt);
-        setOnce(job.once);
-        setEnabled(job.enabled);
-      })
-      .catch((caught: Error) => toast.error('Zeitplan konnte nicht geladen werden', { description: caught.message }))
-      .finally(() => setLoaded(true));
-  }, [existing]);
+    if (!job) return;
+    hydrate(job.id, () => draftOf(job));
+  }, [hydrate, job]);
 
-  // The server owns the parser; the form only shows what it would do with
-  // the expression, debounced so typing does not fire a request per key.
+  /* -------------------------------- Vorschau ------------------------------ */
+
+  // Debounced, because the endpoint is cheap but one request per keystroke is
+  // not, and the answer for a half-typed expression is noise either way.
   useEffect(() => {
-    const wanted = schedule.trim();
+    const wanted = draft.schedule.trim();
     if (!wanted) {
       setPreview(null);
+      setChecking(false);
       return;
     }
+    setChecking(true);
+    let cancelled = false;
     const timer = setTimeout(() => {
       void api
         .cronPreview(wanted)
-        .then(setPreview)
-        .catch(() => setPreview(null));
+        .then((next) => {
+          if (!cancelled) setPreview(next);
+        })
+        // A failed request is not an invalid expression: leave the last
+        // answer standing rather than claiming the timetable is broken.
+        .catch(() => undefined)
+        .finally(() => {
+          if (!cancelled) setChecking(false);
+        });
     }, 250);
-    return () => clearTimeout(timer);
-  }, [schedule]);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [draft.schedule]);
 
-  const choosePreset = (value: string): void => {
-    setPreset(value);
-    if (value !== CUSTOM_SCHEDULE) setSchedule(value);
-  };
+  const invalidSchedule = preview !== null && !preview.ok;
 
-  const save = async (): Promise<void> => {
-    if (!name.trim() || !schedule.trim() || !prompt.trim()) {
-      toast.error('Name, Zeitplan und Anweisung sind Pflicht');
-      return;
-    }
-    if (preview && !preview.ok) {
-      toast.error('Der Zeitplan ist ungültig', { description: preview.error });
-      return;
-    }
-    setBusy(true);
-    const agentId = runner === ASSISTANT ? null : runner;
+  /* -------------------------------- Auswahl ------------------------------- */
+
+  const agentOptions = useMemo<EntityOption[]>(
+    () =>
+      org.agents
+        .filter((agent) => !agent.archived)
+        .map((agent) => ({ value: agent.id, label: agent.name, hint: agent.title })),
+    [org.agents],
+  );
+
+  const projectOptions = useMemo<EntityOption[]>(
+    () =>
+      org.projects
+        .filter((project) => !project.archived)
+        .map((project) => ({ value: project.id, label: project.name })),
+    [org.projects],
+  );
+
+  /* -------------------------------- Sichern ------------------------------- */
+
+  const { errors, failure, saving, submit } = useFormSubmit(schema, draft, async () => {
+    const patch = buildPatch(draft);
+    const saved =
+      editing && id ? await api.updateCronJob(id, patch) : await api.createCronJob(toInput(patch));
+    markSaved();
+    await cron.refresh();
+    toast(editing ? 'Zeitplan gespeichert' : 'Zeitplan angelegt', {
+      ...(preview?.ok ? { description: preview.description } : {}),
+    });
+    void navigate('/cron/' + saved.id);
+  });
+
+  const remove = useCallback(async (): Promise<void> => {
+    if (!id || !job) return;
+    const ok = await confirm({
+      title: 'Zeitplan löschen?',
+      description:
+        'Der Zeitplan „' +
+        job.name +
+        '“ feuert danach nicht mehr. Bereits gelaufene Aufträge und Gespräche bleiben erhalten.',
+      confirmLabel: 'Löschen',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
-      let savedId: string;
-      if (existing) {
-        const saved = await api.updateCronJob(existing, {
-          name: name.trim(),
-          schedule: schedule.trim(),
-          prompt: prompt.trim(),
-          agentId,
-          projectId: projectId === NO_PROJECT ? null : projectId,
-          once,
-          enabled,
-        });
-        savedId = saved.id;
-        toast('Zeitplan gespeichert');
-      } else {
-        const saved = await api.createCronJob({
-          name: name.trim(),
-          schedule: schedule.trim(),
-          prompt: prompt.trim(),
-          ...(agentId ? { agentId } : {}),
-          ...(projectId !== NO_PROJECT ? { projectId } : {}),
-          once,
-          enabled,
-        });
-        savedId = saved.id;
-        toast('Zeitplan angelegt', { description: preview?.description });
-      }
-      void cron.refresh();
-      navigate('/cron/' + savedId, { replace: true });
+      await api.deleteCronJob(id);
+      await cron.refresh();
+      toast('Zeitplan gelöscht', { description: job.name });
+      void navigate('/cron');
     } catch (caught) {
-      toast.error('Speichern fehlgeschlagen', { description: (caught as Error).message });
-    } finally {
-      setBusy(false);
+      reportFailure('Löschen', caught);
     }
-  };
+  }, [confirm, cron, id, job, navigate]);
 
-  const remove = async (): Promise<void> => {
-    if (!existing) return;
-    try {
-      await api.deleteCronJob(existing);
-      toast('Zeitplan gelöscht');
-      navigate('/cron');
-    } catch (caught) {
-      toast.error('Löschen fehlgeschlagen', { description: (caught as Error).message });
-    }
-  };
+  /* --------------------------------- Kopf --------------------------------- */
 
-  if (!loaded) return <div className="p-6 text-sm text-muted-foreground">Wird geladen …</div>;
+  const leaf = editing ? (job?.name ?? 'Zeitplan bearbeiten') : 'Zeitplan anlegen';
 
-  const agents = org.agents.filter((agent) => !agent.archived);
+  usePageMeta(
+    {
+      breadcrumb: [{ label: 'Zeitpläne', to: '/cron' }, { label: leaf }],
+      actions: (
+        <FormHeaderActions
+          form={formId}
+          cancelTo={editing && id ? '/cron/' + id : '/cron'}
+          submitting={saving}
+          submitDisabled={!dirty || saving || invalidSchedule}
+          menu={
+            editing
+              ? [
+                  {
+                    label: 'Löschen',
+                    icon: Trash2Icon,
+                    destructive: true,
+                    onSelect: () => void remove(),
+                  },
+                ]
+              : []
+          }
+        />
+      ),
+    },
+    [dirty, editing, formId, id, invalidSchedule, remove, saving],
+  );
+
+  /* ------------------------------- Zustände ------------------------------- */
+
+  if (editing && !job && !cron.loading) {
+    return (
+      <PageBody width="3xl">
+        <EmptyState
+          icon={CalendarClockIcon}
+          title="Diesen Zeitplan gibt es nicht mehr"
+          description="Er wurde gelöscht oder hat nie existiert."
+          actionLabel="Zu den Zeitplänen"
+          actionTo="/cron"
+        />
+      </PageBody>
+    );
+  }
+
+  // `sleep` ist die Zeile des Systems: `ensureSleepSchedule` legt sie immer
+  // wieder an, und ihre Uhrzeit gehört den Gedächtnis-Einstellungen.
+  if (job?.kind === 'sleep') {
+    return (
+      <PageBody width="3xl">
+        <EmptyState
+          icon={CalendarClockIcon}
+          title="Dieser Zeitplan gehört dem System"
+          description="Die Nacht des Gedächtnisses wird in den Einstellungen eingestellt, nicht hier."
+          actionLabel="Zu den Einstellungen"
+          actionTo="/settings/memory"
+        />
+      </PageBody>
+    );
+  }
+
+  if (editing && !job) {
+    return (
+      <PageBody width="3xl">
+        <FormFieldsSkeleton fields={5} />
+      </PageBody>
+    );
+  }
+
+  /* -------------------------------- Vorschau ------------------------------ */
+
+  const previewCard = (
+    <Card>
+      {preview && preview.ok ? (
+        <>
+          <CardHeader>
+            <CardTitle>{preview.description}</CardTitle>
+            <CardDescription>
+              Die nächsten Termine, in der Zeitzone des Rechners, auf dem der Server läuft.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ItemGroup className="grid gap-2 @md/main:grid-cols-2">
+              {preview.next.slice(0, 5).map((at) => (
+                <Item key={at} variant="outline" size="sm">
+                  <ItemContent>
+                    <ItemTitle className="font-normal tabular-nums">
+                      {formatDateTime(at)}
+                    </ItemTitle>
+                  </ItemContent>
+                </Item>
+              ))}
+            </ItemGroup>
+          </CardContent>
+        </>
+      ) : preview && !preview.ok ? (
+        <CardContent>
+          <Alert variant="destructive">
+            <AlertTitle>Der Ausdruck geht so nicht</AlertTitle>
+            <AlertDescription>
+              {preview.error ?? 'Der Server konnte den Ausdruck nicht lesen.'}
+            </AlertDescription>
+          </Alert>
+        </CardContent>
+      ) : (
+        <CardContent className="flex flex-col gap-2">
+          <Skeleton className="h-5 w-2/3" />
+          <Skeleton className="h-4 w-1/2" />
+        </CardContent>
+      )}
+    </Card>
+  );
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-3xl space-y-6 p-6">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {editing ? 'Zeitplan bearbeiten' : 'Zeitplan anlegen'}
-          </h1>
-          <p className="text-sm text-muted-foreground">
+    <PageBody width="3xl">
+      {dialog}
+      <FormPage
+        formId={formId}
+        showActions={false}
+        onSubmit={submit}
+        error={failure}
+        aside={previewCard}
+      >
+        {/*
+          Die Legende steht hier und nicht als Kartenkopf: ohne sie begann die
+          Karte mit dem blossen Hinweissatz, waehrend die spaeteren Abschnitte
+          eine Ueberschrift trugen - der Aufbau wirkte oben abgeschnitten.
+        */}
+        <FieldSet>
+          <FieldLegend>Zeitplan</FieldLegend>
+          <FieldDescription>
             Zeiten gelten in der Zeitzone des Rechners, auf dem der Server läuft.
-          </p>
-        </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Zeitplan</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="cron-name" className="text-[12px] text-muted-foreground">
-                Name
-              </Label>
-              <Input
-                id="cron-name"
-                value={name}
-                placeholder="z. B. Morgenbriefing"
-                onChange={(event) => setName(event.target.value)}
+          </FieldDescription>
+          <Field>
+            <FieldLabel htmlFor="cron-schedule">Ausdruck</FieldLabel>
+            <InputGroup>
+              <InputGroupInput
+                id="cron-schedule"
+                className="font-mono"
+                placeholder="Minute Stunde Tag Monat Wochentag"
+                value={draft.schedule}
+                aria-invalid={Boolean(errors.schedule) || invalidSchedule}
+                onChange={(event) => set({ schedule: event.target.value })}
               />
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="cron-preset" className="text-[12px] text-muted-foreground">
-                  Wann
-                </Label>
-                <Select value={preset} onValueChange={choosePreset}>
-                  <SelectTrigger id="cron-preset" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
+              <InputGroupAddon align="inline-end">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <InputGroupButton>
+                      Vorlagen
+                      <ChevronDownIcon />
+                    </InputGroupButton>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-64">
+                    <DropdownMenuLabel>Übliche Zeiten</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
                     {CRON_PRESETS.map((entry) => (
-                      <SelectItem key={entry.schedule} value={entry.schedule}>
+                      <DropdownMenuItem
+                        key={entry.schedule}
+                        onSelect={() => set({ schedule: entry.schedule })}
+                      >
                         {entry.label}
-                      </SelectItem>
+                      </DropdownMenuItem>
                     ))}
-                    <SelectItem value={CUSTOM_SCHEDULE}>Eigener Cron-Ausdruck</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="cron-schedule" className="text-[12px] text-muted-foreground">
-                  Cron-Ausdruck
-                </Label>
-                <Input
-                  id="cron-schedule"
-                  value={schedule}
-                  className="font-mono"
-                  placeholder="Minute Stunde Tag Monat Wochentag"
-                  onChange={(event) => {
-                    setSchedule(event.target.value);
-                    setPreset(CUSTOM_SCHEDULE);
-                  }}
-                />
-                <p className="text-[10.5px] text-muted-foreground/80">
-                  Fünf Felder: Minute, Stunde, Tag, Monat, Wochentag. „0 8 * * 1-5“ ist werktags um 08:00.
-                </p>
-              </div>
-            </div>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </InputGroupAddon>
+            </InputGroup>
+            <FieldDescription>
+              Fünf Felder: Minute, Stunde, Tag, Monat, Wochentag. „0 8 * * 1-5“ ist werktags um
+              08:00. {checking ? 'Wird geprüft …' : ''}
+            </FieldDescription>
+            <FieldError>{errors.schedule}</FieldError>
+          </Field>
 
-            {preview && (
-              <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                {preview.ok ? (
-                  <>
-                    <p className="font-medium">{preview.description}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Nächste Läufe: {preview.next.slice(0, 3).map((at) => formatDateTime(at)).join(' · ')}
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-destructive">{preview.error}</p>
-                )}
-              </div>
-            )}
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldTitle>Nur einmal ausführen</FieldTitle>
+              <FieldDescription>
+                Nach dem ersten Lauf schaltet sich der Zeitplan selbst ab.
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              id="cron-once"
+              checked={draft.once}
+              onCheckedChange={(once) => set({ once })}
+            />
+          </Field>
+        </FieldSet>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="cron-runner" className="text-[12px] text-muted-foreground">
-                  Wer führt aus
-                </Label>
-                <Select value={runner} onValueChange={setRunner}>
-                  <SelectTrigger id="cron-runner" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ASSISTANT}>Der Assistent selbst</SelectItem>
-                    {agents.map((agent) => (
-                      <SelectItem key={agent.id} value={agent.id}>
-                        {agent.name} · {agent.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-[10.5px] text-muted-foreground/80">
-                  Der Assistent arbeitet in einem eigenen Gespräch mit all seinen Werkzeugen; ein Agent bekommt
-                  einen Auftrag im Projektverzeichnis.
-                </p>
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="cron-project" className="text-[12px] text-muted-foreground">
-                  Projekt
-                </Label>
-                <Select value={projectId} onValueChange={setProjectId}>
-                  <SelectTrigger id="cron-project" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={NO_PROJECT}>Kein Projekt</SelectItem>
-                    {org.projects
-                      .filter((project) => !project.archived)
-                      .map((project) => (
-                        <SelectItem key={project.id} value={project.id}>
-                          {project.name}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
+        <FieldSeparator />
 
-            <div className="space-y-1.5">
-              <Label htmlFor="cron-prompt" className="text-[12px] text-muted-foreground">
-                Anweisung
-              </Label>
-              <Textarea
-                id="cron-prompt"
-                rows={8}
-                value={prompt}
-                placeholder={PROMPT_PLACEHOLDER}
-                onChange={(event) => setPrompt(event.target.value)}
+        <FieldSet>
+          <Field>
+            <FieldLabel htmlFor="cron-runner-assistant">Ausführung</FieldLabel>
+            <ChoiceField
+              id="cron-runner"
+              options={RUNNER_OPTIONS}
+              value={draft.runner}
+              onChange={(runner) => set({ runner })}
+            />
+          </Field>
+
+          {draft.runner === 'agent' ? (
+            <Field>
+              <FieldLabel htmlFor="cron-agent">Agent</FieldLabel>
+              <EntityCombobox
+                id="cron-agent"
+                options={agentOptions}
+                value={draft.agentId}
+                onChange={(agentId) => set({ agentId })}
+                placeholder="Agent wählen"
+                emptyLabel="Kein Agent gefunden"
+                invalid={Boolean(errors.agentId)}
               />
-            </div>
+              <FieldError>{errors.agentId}</FieldError>
+            </Field>
+          ) : null}
 
-            <div className="flex flex-wrap gap-6">
-              <label className="flex items-center gap-2 text-sm">
-                <Switch checked={once} onCheckedChange={setOnce} />
-                Einmalig, danach abschalten
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <Switch checked={enabled} onCheckedChange={setEnabled} />
-                Aktiv
-              </label>
-            </div>
+          <Field>
+            <FieldLabel htmlFor="cron-project">Projekt</FieldLabel>
+            <EntityCombobox
+              id="cron-project"
+              options={projectOptions}
+              value={draft.projectId}
+              onChange={(projectId) => set({ projectId })}
+              placeholder="Kein Projekt"
+              emptyLabel="Kein Projekt gefunden"
+            />
+            <FieldDescription>
+              Das Projekt entscheidet, in welchem Verzeichnis der Lauf arbeitet.
+            </FieldDescription>
+          </Field>
 
-            <div className="flex flex-wrap justify-end gap-2">
-              {editing && (
-                <Button variant="ghost" className="me-auto" onClick={() => void remove()}>
-                  <Trash2Icon />
-                  Löschen
-                </Button>
-              )}
-              <Button variant="ghost" onClick={() => navigate(existing ? '/cron/' + existing : '/cron')}>
-                Abbrechen
-              </Button>
-              <Button onClick={() => void save()} disabled={busy}>
-                Speichern
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+          <Field>
+            <FieldLabel htmlFor="cron-permission-standard">Zugriff</FieldLabel>
+            <ChoiceField
+              id="cron-permission"
+              options={PERMISSION_CHOICES}
+              value={draft.permission}
+              onChange={(permission) => set({ permission })}
+            />
+          </Field>
+        </FieldSet>
+
+        <FieldSeparator />
+
+        <FieldSet>
+          <Field>
+            <FieldLabel htmlFor="cron-name">Name</FieldLabel>
+            <Input
+              id="cron-name"
+              placeholder="z. B. Morgenbriefing"
+              value={draft.name}
+              aria-invalid={Boolean(errors.name)}
+              onChange={(event) => set({ name: event.target.value })}
+            />
+            <FieldError>{errors.name}</FieldError>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="cron-prompt">Anweisung</FieldLabel>
+            <Textarea
+              id="cron-prompt"
+              rows={10}
+              placeholder={PROMPT_PLACEHOLDER}
+              value={draft.prompt}
+              aria-invalid={Boolean(errors.prompt)}
+              onChange={(event) => set({ prompt: event.target.value })}
+            />
+            <FieldDescription>
+              Jeder Lauf startet frisch: der Text muss ohne Rückfragen für sich stehen.
+            </FieldDescription>
+            <FieldError>{errors.prompt}</FieldError>
+          </Field>
+        </FieldSet>
+
+        <FieldSeparator />
+
+        <FieldSet>
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldTitle>Aktiv</FieldTitle>
+              <FieldDescription>
+                Ausgeschaltet bleibt der Zeitplan erhalten, feuert aber nicht.
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              id="cron-enabled"
+              checked={draft.enabled}
+              onCheckedChange={(enabled) => set({ enabled })}
+            />
+          </Field>
+        </FieldSet>
+      </FormPage>
+    </PageBody>
   );
 }

@@ -8,6 +8,7 @@ import { BadRequestError } from './schemas.js';
 import { sendFrame } from './services/stream.js';
 import { registerStatic } from './static.js';
 import { registerHealthRoutes } from './routes/health.js';
+import { registerStatsRoutes } from './routes/stats.js';
 import { registerConfigRoutes } from './routes/config.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerSessionRoutes } from './routes/sessions.js';
@@ -98,6 +99,7 @@ export async function buildServer(
   });
 
   await registerHealthRoutes(app, context);
+  await registerStatsRoutes(app, context);
   await registerConfigRoutes(app, context);
   await registerProviderRoutes(app, context);
   await registerSessionRoutes(app, context);

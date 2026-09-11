@@ -1,127 +1,1169 @@
-import { useCallback, useEffect, useState } from 'react';
-import { NavLink } from 'react-router';
-import { api } from '@/lib/api';
+import * as React from 'react';
+import { NavLink, useNavigate } from 'react-router';
 import {
-  ASSIGNMENT_STATUS_LABEL,
-  ASSIGNMENT_STATUS_VARIANT,
-  formatDuration,
-  relativeTime,
-} from '@/lib/format';
-import type { Assignment, AssignmentStatus } from '@/lib/types';
-import type { OrgState } from '@/hooks/useOrg';
-import { Badge } from '@/components/ui/badge';
-import { Card, CardContent } from '@/components/ui/card';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+  BanIcon,
+  ListTodoIcon,
+  SendIcon,
+  SquareArrowOutUpRightIcon,
+  UserRoundIcon,
+} from 'lucide-react';
+import { toast } from 'sonner';
+import { z } from 'zod';
 
-const ALL = '__all__';
-const STATUSES: AssignmentStatus[] = ['pending', 'running', 'done', 'failed', 'cancelled'];
+import { formatDateTime, formatDuration, relativeTime, shorten } from '@/lib/format';
+import {
+  average,
+  bucketByDay,
+  daysAgo,
+  formatNumber,
+  formatPercent,
+  ratePercent,
+  startOfDay,
+} from '@/lib/stats';
+import { api } from '@/lib/api';
+import type {
+  Agent,
+  Assignment,
+  AssignmentStatus,
+  AssignmentView,
+  ProviderId,
+  Task,
+} from '@/lib/types';
+import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-provider';
+import { useStatsTotals } from '@/hooks/useStatsTotals';
+import { usePageMeta } from '@/components/shell/page-meta';
+
+import { PageBody } from '@/components/blocks/page-body';
+import { cappedBadge, StatCards, type StatCardProps } from '@/components/blocks/stat-cards';
+import { TrendChartCard, type TrendSeries } from '@/components/blocks/trend-chart-card';
+import {
+  DetailDrawer,
+  DetailDrawerTrigger,
+  useDrawerSubject,
+} from '@/components/blocks/detail-drawer';
+import { DataTable, type DataTableTab } from '@/components/blocks/data-table/data-table';
+import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
+import {
+  actionsColumn,
+  EMPTY_CELL,
+  relativeTimeCell,
+  selectionColumn,
+} from '@/components/blocks/data-table/table-columns';
+import {
+  createRookeryColumnHelper,
+  type RookeryColumnDef,
+} from '@/components/blocks/data-table/table-features';
+import { useCancelAssignment } from '@/components/common/entity-actions';
+import { FormField, type FieldAria } from '@/components/forms/form-kit';
+import { EmptyState, ServerOffline } from '@/components/common/empty-state';
+import { MetaList } from '@/components/common/meta-list';
+import { ProviderCell } from '@/components/common/provider-cell';
+import { RowMenuButton } from '@/components/common/row-menu-button';
+import { RunningBadge, StatusBadge } from '@/components/common/status-badge';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from '@/components/ui/combobox';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { FieldGroup } from '@/components/ui/field';
+import { Spinner } from '@/components/ui/spinner';
+import { Textarea } from '@/components/ui/textarea';
 
 /**
- * Everything the company has been asked to do, newest first.
+ * Every single run an agent was ever asked to do.
  *
- * The list reloads whenever the socket reports an assignment change, so a run
- * started in the chat, the CLI or from an agent's own page shows up here
- * without a refresh.
+ * The page is the full `dashboard-01` triple - headline numbers, a stacked
+ * day curve, one big table - because assignments are the one thing in this
+ * app that exists in the thousands and carries a status, a duration and a
+ * size. Everything a card or a curve shows rests on the same loaded window,
+ * and each of them says so.
+ *
+ * Two honesty rules shape what is here. Nothing claims a total the API cannot
+ * prove: the only real totals come from `GET /api/stats`, everything else
+ * names "die letzten 500" in its footnote and wears "gedeckelt" once the list
+ * hangs exactly at the cap. And the cards that count states count them over
+ * the *unfiltered* window, never over whatever the status tab narrowed the
+ * request to - otherwise "Abgeschlossen" would read 500 on the "Fertig" tab.
  */
-export function AssignmentsPage({ org }: { org: OrgState }) {
-  const [items, setItems] = useState<Assignment[]>([]);
-  const [status, setStatus] = useState<string>(ALL);
-  const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async (): Promise<void> => {
-    setLoading(true);
-    try {
-      setItems(
-        await api.assignments({
-          limit: 100,
-          ...(status !== ALL ? { status: [status as AssignmentStatus] } : {}),
-        }),
-      );
-    } catch {
-      setItems([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [status]);
+/** The server's ceiling for one list request; the honest base of every count. */
+const LIMIT = 500;
 
-  // `live` gets a new identity on every assignment broadcast, so depending on
-  // it is what keeps the list current without a poll.
-  useEffect(() => {
-    void load();
-  }, [load, org.live]);
+/** How long a burst of socket news is collected before one silent refetch. */
+const REFRESH_DEBOUNCE_MS = 600;
+
+/* ------------------------------ the row type ----------------------------- */
+
+/**
+ * One table row: an `Assignment` flattened, with the agent's name resolved and
+ * the live status overlaid.
+ *
+ * Flat rather than a nested `{ assignment, agent }` because sorting, the
+ * column visibility menu and the toolbar search all address fields by name.
+ */
+export interface AssignmentRow {
+  id: string;
+  status: AssignmentStatus;
+  agentId: string;
+  agentName: string;
+  agentSlug: string;
+  task: string;
+  provider?: ProviderId;
+  model?: string;
+  chars: number;
+  durationMs?: number;
+  depth: number;
+  createdAt: number;
+  error?: string;
+  /** The board task this run belongs to, when one points at it. */
+  taskId?: string;
+}
+
+/**
+ * Builds a row, letting the socket's newest word win over the loaded record.
+ *
+ * That overlay is what replaced the old full reload on every broadcast: a
+ * running assignment changes its status, its character count and its duration
+ * several times a second, and refetching 500 rows for each of them made the
+ * table flicker for the whole length of a run.
+ */
+export function toAssignmentRow(
+  assignment: Assignment,
+  agent?: Agent,
+  live?: AssignmentView,
+  taskId?: string,
+): AssignmentRow {
+  const durationMs = live?.durationMs ?? assignment.durationMs;
+  const provider = assignment.provider ?? live?.provider;
+  const error = assignment.error ?? live?.error;
+
+  return {
+    id: assignment.id,
+    status: live?.status ?? assignment.status,
+    agentId: assignment.agentId,
+    agentName: agent?.name ?? live?.agentName ?? 'Unbekannt',
+    agentSlug: agent?.slug ?? live?.agentSlug ?? '',
+    task: assignment.task,
+    chars: live?.chars ?? assignment.chars,
+    depth: assignment.depth,
+    createdAt: assignment.createdAt,
+    ...(provider ? { provider } : {}),
+    ...(assignment.model ? { model: assignment.model } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(error ? { error } : {}),
+    ...(taskId ? { taskId } : {}),
+  };
+}
+
+/** German column names for the visibility menu, keyed by column id. */
+export const ASSIGNMENT_COLUMN_LABELS: Record<string, string> = {
+  status: 'Status',
+  agentName: 'Agent',
+  task: 'Auftrag',
+  provider: 'Anbieter',
+  chars: 'Zeichen',
+  durationMs: 'Dauer',
+  depth: 'Ebene',
+  createdAt: 'Zeitpunkt',
+};
+
+/** Ebene is noise on a flat list, so it starts hidden and stays in the menu. */
+export const ASSIGNMENT_HIDDEN_COLUMNS = { depth: false };
+
+export const ASSIGNMENT_SORTING = [{ id: 'createdAt', desc: true }];
+
+export const ASSIGNMENT_ROW_LABEL = { singular: 'Auftrag', plural: 'Aufträgen' };
+
+export interface AssignmentColumnOptions {
+  /** Opens the row drawer. Left out where the table has no drawer. */
+  onOpenDetail?: (row: AssignmentRow) => void;
+  /** Given: pending and running rows offer "Abbrechen". */
+  onCancel?: (row: AssignmentRow) => void;
+  /** Drops the checkbox column, for the read-only children table. */
+  selectable?: boolean;
+}
+
+const column = createRookeryColumnHelper<AssignmentRow>();
+
+/**
+ * The assignment columns, shared by this page's table and the "Weitergegeben"
+ * table on the detail page - two views of the same kind of record should not
+ * drift into two different sets of columns.
+ */
+export function buildAssignmentColumns({
+  onOpenDetail,
+  onCancel,
+  selectable = true,
+}: AssignmentColumnOptions = {}): RookeryColumnDef<AssignmentRow>[] {
+  const columns: RookeryColumnDef<AssignmentRow>[] = [];
+
+  if (selectable) {
+    columns.push(
+      selectionColumn<AssignmentRow>({
+        rowLabel: (row) => shorten(row.task, 60) + ' wählen',
+      }),
+    );
+  }
+
+  columns.push(
+    column.accessor('status', {
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Status" />,
+      // A running row gets the spinner alone: the badge next to it would say
+      // "läuft" in a table where motion already says it, and the column stays
+      // narrow enough for the task text to keep its two lines.
+      cell: ({ row }) =>
+        row.original.status === 'running' ? (
+          <span className="flex items-center gap-1.5 text-sm">
+            <Spinner className="size-4 text-primary" aria-hidden="true" />
+            <span className="sr-only">läuft</span>
+          </span>
+        ) : (
+          <StatusBadge kind="assignment" status={row.original.status} />
+        ),
+      enableHiding: false,
+    }),
+
+    column.accessor('agentName', {
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Agent" />,
+      cell: ({ row }) => (
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <NavLink
+            to={'/org/agents/' + row.original.agentId}
+            className="truncate text-sm font-medium hover:underline"
+            onClick={(event) => event.stopPropagation()}
+          >
+            {row.original.agentName}
+          </NavLink>
+          {row.original.agentSlug ? (
+            <Badge variant="outline" className="font-mono text-[11px] font-normal">
+              {row.original.agentSlug}
+            </Badge>
+          ) : null}
+        </div>
+      ),
+    }),
+
+    column.accessor('task', {
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Auftrag" />,
+      cell: ({ row }) =>
+        onOpenDetail ? (
+          <DetailDrawerTrigger
+            className="line-clamp-2 h-auto max-w-xl py-0 text-sm whitespace-normal"
+            onClick={() => onOpenDetail(row.original)}
+          >
+            {row.original.task}
+          </DetailDrawerTrigger>
+        ) : (
+          <NavLink
+            to={'/assignments/' + row.original.id}
+            className="line-clamp-2 max-w-xl text-sm hover:underline"
+          >
+            {row.original.task}
+          </NavLink>
+        ),
+      enableHiding: false,
+    }),
+
+    column.accessor('provider', {
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Anbieter" />,
+      cell: ({ row }) => (
+        <ProviderCell
+          {...(row.original.provider ? { provider: row.original.provider } : {})}
+          {...(row.original.model ? { model: row.original.model } : {})}
+        />
+      ),
+    }),
+
+    column.accessor('chars', {
+      header: ({ column: col }) => (
+        <DataTableColumnHeader column={col} title="Zeichen" align="end" />
+      ),
+      cell: ({ row }) => (
+        <div className="text-right text-sm tabular-nums">
+          {row.original.chars > 0 ? formatNumber(row.original.chars) : EMPTY_CELL}
+        </div>
+      ),
+    }),
+
+    column.accessor('durationMs', {
+      header: ({ column: col }) => (
+        <DataTableColumnHeader column={col} title="Dauer" align="end" />
+      ),
+      cell: ({ row }) => (
+        <div className="text-right text-sm tabular-nums">
+          {formatDuration(row.original.durationMs) || EMPTY_CELL}
+        </div>
+      ),
+    }),
+
+    column.accessor('depth', {
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Ebene" />,
+      // Depth 0 is the normal case - a badge on every row would say nothing.
+      cell: ({ row }) =>
+        row.original.depth > 0 ? (
+          <Badge variant="outline" className="tabular-nums">
+            Ebene {row.original.depth}
+          </Badge>
+        ) : null,
+    }),
+
+    column.accessor('createdAt', {
+      header: ({ column: col }) => (
+        <DataTableColumnHeader column={col} title="Zeitpunkt" align="end" />
+      ),
+      cell: ({ row }) => relativeTimeCell(row.original.createdAt, { align: 'end' }),
+    }),
+
+    actionsColumn<AssignmentRow>((row) => (
+      <RowActions row={row} {...(onCancel ? { onCancel } : {})} />
+    )),
+  );
+
+  return column.columns(columns);
+}
+
+/**
+ * The row menu.
+ *
+ * "Abbrechen" sits here rather than only on the detail page: stopping a run
+ * that is going wrong used to cost two navigations, which is one too many for
+ * something people do while watching the list.
+ */
+function RowActions({
+  row,
+  onCancel,
+}: {
+  row: AssignmentRow;
+  onCancel?: (row: AssignmentRow) => void;
+}) {
+  const cancellable = row.status === 'pending' || row.status === 'running';
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-5xl space-y-6 p-6">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div className="space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight">Aufträge</h1>
-            <p className="text-sm text-muted-foreground">
-              Jeder einzelne Lauf eines Agenten: ein Prozess, ein Ergebnis. Neueste zuerst.
-            </p>
-          </div>
-          <Select value={status} onValueChange={setStatus}>
-            <SelectTrigger className="w-48" aria-label="Status filtern">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL}>Alle Status</SelectItem>
-              {STATUSES.map((entry) => (
-                <SelectItem key={entry} value={entry}>
-                  {ASSIGNMENT_STATUS_LABEL[entry]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <RowMenuButton label={'Aktionen für ' + shorten(row.task, 60)} />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuItem asChild>
+          <NavLink to={'/assignments/' + row.id}>
+            <SquareArrowOutUpRightIcon data-icon="inline-start" />
+            Öffnen
+          </NavLink>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <NavLink to={'/org/agents/' + row.agentId}>
+            <UserRoundIcon data-icon="inline-start" />
+            Agent öffnen
+          </NavLink>
+        </DropdownMenuItem>
+        {row.taskId ? (
+          <DropdownMenuItem asChild>
+            <NavLink to={'/tasks/' + row.taskId}>
+              <ListTodoIcon data-icon="inline-start" />
+              Zur Aufgabe
+            </NavLink>
+          </DropdownMenuItem>
+        ) : null}
+        {cancellable && onCancel ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => onCancel(row)}>
+              <BanIcon data-icon="inline-start" />
+              Abbrechen
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
-        <Card>
-          <CardContent>
-            {loading && items.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Wird geladen …</p>
-            ) : items.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Keine Aufträge in dieser Auswahl.</p>
-            ) : (
-              <ul className="divide-y">
-                {items.map((assignment) => {
-                  const agent = org.agentById(assignment.agentId);
-                  return (
-                    <li key={assignment.id}>
-                      <NavLink
-                        to={'/assignments/' + assignment.id}
-                        className="-mx-2 flex flex-wrap items-center gap-3 rounded-md px-2 py-3 text-sm hover:bg-muted/60"
-                      >
-                        <Badge
-                          variant={ASSIGNMENT_STATUS_VARIANT[assignment.status]}
-                          className="h-5 shrink-0"
-                        >
-                          {ASSIGNMENT_STATUS_LABEL[assignment.status]}
-                        </Badge>
-                        <span className="w-36 shrink-0 overflow-hidden text-ellipsis whitespace-nowrap font-medium">
-                          {agent?.name ?? 'Unbekannt'}
-                        </span>
-                        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-muted-foreground">
-                          {assignment.task}
-                        </span>
-                        <span className="tabular shrink-0 text-xs text-muted-foreground">
-                          {formatDuration(assignment.durationMs) || '—'} ·{' '}
-                          {relativeTime(assignment.createdAt)}
-                        </span>
-                      </NavLink>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
+/* --------------------------------- facets -------------------------------- */
+
+interface FacetTab {
+  value: string;
+  label: string;
+  /** What goes into the server's `status[]`; unset means "no filter". */
+  status?: AssignmentStatus[];
+}
+
+/**
+ * The status tabs, each one a server parameter rather than a client filter -
+ * with no paging in the API, filtering after the fact would only ever search
+ * inside the newest 500 rows, so a long-finished failure would be unreachable.
+ */
+const TABS: FacetTab[] = [
+  { value: 'all', label: 'Alle' },
+  { value: 'running', label: 'Läuft', status: ['pending', 'running'] },
+  { value: 'done', label: 'Fertig', status: ['done'] },
+  { value: 'failed', label: 'Fehlgeschlagen', status: ['failed'] },
+  { value: 'cancelled', label: 'Abgebrochen', status: ['cancelled'] },
+];
+
+/**
+ * Chart bands: the outcomes an assignment can stand in today.
+ *
+ * The curve is dated by `createdAt`, so a band says "this many of the
+ * assignments created that day ended like this" - not "this many finished
+ * that day". Assignments still pending or running carry no outcome yet and
+ * are left out rather than guessed at; the card description spells both
+ * halves out, because "nach Abschluss gestapelt" read as a completion curve
+ * and was the wrong sentence for this data.
+ */
+type ChartKey = 'done' | 'failed' | 'cancelled';
+
+const CHART_SERIES: TrendSeries[] = [
+  { key: 'done', label: 'Fertig', color: 'var(--chart-1)' },
+  { key: 'failed', label: 'Fehlgeschlagen', color: 'var(--chart-5)' },
+  { key: 'cancelled', label: 'Abgebrochen', color: 'var(--chart-3)' },
+];
+
+const CHART_KEYS: ChartKey[] = ['done', 'failed', 'cancelled'];
+
+/* ------------------------------- the page -------------------------------- */
+
+export function AssignmentsPage() {
+  const navigate = useNavigate();
+  const { socket } = useConnection();
+  const org = useOrgState();
+  const { tasks } = useTasksState();
+  // Eine Rueckfrage fuer alle sechs Abbruchstellen der App - inklusive der
+  // Sammelaktion unten, die bisher als einzige ohne gefragt hat.
+  const { dialog, cancelAssignment, cancelAssignments } = useCancelAssignment();
+
+  const [tab, setTab] = React.useState('all');
+  const [agentId, setAgentId] = React.useState<string | null>(null);
+  const [assignOpen, setAssignOpen] = React.useState(false);
+  const [detailRow, setDetailRow] = React.useState<AssignmentRow | null>(null);
+
+  const activeTab = TABS.find((entry) => entry.value === tab) ?? TABS[0];
+  const status = activeTab?.status;
+  const narrowed = status !== undefined || agentId !== null;
+
+  /* ------------------------------- loading ------------------------------ */
+
+  const [base, setBase] = React.useState<Assignment[]>([]);
+  const [baseState, setBaseState] = React.useState<'loading' | 'ready' | 'error'>('loading');
+  const [narrow, setNarrow] = React.useState<Assignment[]>([]);
+  const [narrowState, setNarrowState] = React.useState<'loading' | 'ready' | 'error'>('ready');
+
+  // The real totals, the one number on this page that is not an estimate -
+  // shared with the other lists so the same tile is equally current.
+  const totals = useStatsTotals(socket);
+
+  /**
+   * The unfiltered window. Everything above the table rests on it, which is
+   * what keeps "Abgeschlossen" meaning the same thing on every tab.
+   */
+  const loadBase = React.useCallback(async (silent = false): Promise<void> => {
+    if (!silent) setBaseState('loading');
+    try {
+      setBase(await api.assignments({ limit: LIMIT }));
+      setBaseState('ready');
+    } catch {
+      if (!silent) setBaseState('error');
+    }
+  }, []);
+
+  const statusKey = status?.join(',') ?? '';
+  const loadNarrow = React.useCallback(
+    async (silent = false): Promise<void> => {
+      if (!narrowed) return;
+      if (!silent) setNarrowState('loading');
+      try {
+        setNarrow(
+          await api.assignments({
+            limit: LIMIT,
+            ...(statusKey ? { status: statusKey.split(',') as AssignmentStatus[] } : {}),
+            ...(agentId ? { agentId } : {}),
+          }),
+        );
+        setNarrowState('ready');
+      } catch {
+        if (!silent) setNarrowState('error');
+      }
+    },
+    [agentId, narrowed, statusKey],
+  );
+
+  React.useEffect(() => {
+    void loadBase();
+  }, [loadBase]);
+
+  React.useEffect(() => {
+    void loadNarrow();
+  }, [loadNarrow]);
+
+  const list = narrowed ? narrow : base;
+  const listState = narrowed ? narrowState : baseState;
+
+  /* ------------------------- live merge, not reload --------------------- */
+
+  const knownIds = React.useMemo(() => new Set(list.map((entry) => entry.id)), [list]);
+  const knownRef = React.useRef(knownIds);
+  knownRef.current = knownIds;
+
+  // Assignments we have already refetched for, so an id that does not match
+  // the current filter cannot re-trigger a load on every single broadcast.
+  const handledRef = React.useRef<Set<string>>(new Set());
+  React.useEffect(() => {
+    handledRef.current = new Set();
+  }, [statusKey, agentId]);
+
+  React.useEffect(() => {
+    if (listState === 'loading') return;
+    const fresh = Object.keys(org.live).filter(
+      (id) => !knownRef.current.has(id) && !handledRef.current.has(id),
+    );
+    if (fresh.length === 0) return;
+    for (const id of fresh) handledRef.current.add(id);
+
+    // Only a genuinely new assignment is worth a request; everything else the
+    // socket says about a row we already hold is merged in memory below.
+    const timer = setTimeout(() => {
+      void loadBase(true);
+      void loadNarrow(true);
+    }, REFRESH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [org.live, listState, loadBase, loadNarrow]);
+
+  /* -------------------------------- rows -------------------------------- */
+
+  /** Which board task points at which assignment, for "Zur Aufgabe". */
+  const taskByAssignment = React.useMemo(() => {
+    const map = new Map<string, Task>();
+    for (const task of tasks) if (task.assignmentId) map.set(task.assignmentId, task);
+    return map;
+  }, [tasks]);
+
+  const rows = React.useMemo(
+    () =>
+      list.map((assignment) =>
+        toAssignmentRow(
+          assignment,
+          org.agentById(assignment.agentId),
+          org.live[assignment.id],
+          taskByAssignment.get(assignment.id)?.id,
+        ),
+      ),
+    [list, org, taskByAssignment],
+  );
+
+  /* ------------------------------- numbers ------------------------------ */
+
+  const baseCapped = base.length >= LIMIT;
+  const basis = totals
+    ? 'Basis: die letzten ' +
+      formatNumber(base.length) +
+      ' von ' +
+      formatNumber(totals.assignments) +
+      ' Aufträgen'
+    : 'Basis: die letzten ' + formatNumber(base.length) + ' Aufträge';
+
+  const counts = React.useMemo(() => {
+    const tally: Record<AssignmentStatus, number> = {
+      pending: 0,
+      running: 0,
+      done: 0,
+      failed: 0,
+      cancelled: 0,
+    };
+    for (const entry of base) tally[org.live[entry.id]?.status ?? entry.status] += 1;
+    return tally;
+  }, [base, org.live]);
+
+  const meanDuration = React.useMemo(
+    () =>
+      average(
+        base.flatMap((entry) =>
+          entry.status === 'done' && entry.durationMs && entry.durationMs > 0
+            ? [entry.durationMs]
+            : [],
+        ),
+      ),
+    [base],
+  );
+
+  const running = org.running.length;
+
+  const cards: StatCardProps[] = [
+    {
+      label: 'Läuft gerade',
+      value: formatNumber(running),
+      ...(running > 0 ? { badge: <RunningBadge count={running} /> } : {}),
+      headline: running > 0 ? 'Die Firma arbeitet' : 'Nichts in Arbeit',
+      // The one card that is not an estimate at all: the socket knows every
+      // run that is open right now, capped list or not.
+      footnote: 'Aus dem Livestand der Firma',
+    },
+    {
+      label: 'Abgeschlossen',
+      value: formatNumber(counts.done),
+      headline:
+        base.length > 0
+          ? formatPercent(ratePercent(counts.done, base.length)) + ' der geladenen Aufträge'
+          : 'Noch nichts abgeschlossen',
+      footnote: basis,
+    },
+    {
+      label: 'Fehlgeschlagen',
+      value: formatNumber(counts.failed),
+      ...(counts.cancelled > 0
+        ? {
+            badge: (
+              <Badge variant="destructive">
+                {formatNumber(counts.cancelled)} abgebrochen
+              </Badge>
+            ),
+          }
+        : {}),
+      headline:
+        base.length > 0
+          ? formatPercent(ratePercent(counts.failed, base.length)) + ' der geladenen Aufträge'
+          : 'Noch nichts fehlgeschlagen',
+      footnote: basis,
+    },
+    {
+      label: 'Mittlere Dauer',
+      value: meanDuration > 0 ? formatDuration(meanDuration) : '–',
+      headline: 'Über ' + formatNumber(counts.done) + ' abgeschlossene Aufträge',
+      footnote: basis,
+    },
+  ];
+
+  /* -------------------------------- chart ------------------------------- */
+
+  const chartSince = React.useMemo(() => startOfDay(daysAgo(89)), []);
+  const chartData = React.useMemo(
+    () =>
+      bucketByDay<Assignment, ChartKey>(base, (entry) => entry.createdAt, {
+        since: chartSince,
+        keys: CHART_KEYS,
+        seriesOf: (entry) => {
+          const state = org.live[entry.id]?.status ?? entry.status;
+          return state === 'done' || state === 'failed' || state === 'cancelled' ? state : null;
+        },
+      }),
+    [base, chartSince, org.live],
+  );
+
+  /* ------------------------------- actions ------------------------------ */
+
+  const cancel = React.useCallback(
+    (row: AssignmentRow): void => {
+      void cancelAssignment(row.id);
+    },
+    [cancelAssignment],
+  );
+
+  const columns = React.useMemo(
+    () => buildAssignmentColumns({ onOpenDetail: setDetailRow, onCancel: cancel }),
+    [cancel],
+  );
+
+  usePageMeta({
+    breadcrumb: [{ label: 'Aufträge' }],
+    actions: (
+      <Button size="sm" onClick={() => setAssignOpen(true)}>
+        <SendIcon data-icon="inline-start" />
+        Agent beauftragen
+      </Button>
+    ),
+  });
+
+  /* ------------------------------- facets ------------------------------- */
+
+  // Counts on the tabs would be a guess once the window is capped, so they
+  // only appear while the loaded list really is everything there is.
+  const tabs: DataTableTab[] = TABS.map((entry) => {
+    const count = baseCapped
+      ? undefined
+      : entry.status
+        ? entry.status.reduce((sum, state) => sum + counts[state], 0)
+        : base.length;
+    return { value: entry.value, label: entry.label, ...(count === undefined ? {} : { count }) };
+  });
+
+  const agentOptions = React.useMemo(
+    () =>
+      org.agents
+        .filter((agent) => !agent.archived)
+        .map((agent) => ({ value: agent.id, label: agent.name })),
+    [org.agents],
+  );
+
+  const retry = (): void => {
+    void loadBase();
+    void loadNarrow();
+  };
+
+  return (
+    <PageBody>
+      {dialog}
+
+      {baseState === 'error' ? (
+        <div className="px-4 lg:px-6">
+          <ServerOffline onRetry={retry} />
+        </div>
+      ) : (
+        <>
+          <StatCards items={cards} />
+
+          <div className="px-4 lg:px-6">
+            <TrendChartCard
+              title="Angelegte Aufträge pro Tag"
+              description={
+                'Nach ihrem heutigen Ausgang eingefärbt; laufende sind noch nicht dabei. ' +
+                basis +
+                '.'
+              }
+              descriptionShort="Pro Tag angelegt"
+              data={chartData}
+              series={CHART_SERIES}
+              {...cappedBadge(baseCapped)}
+              empty={
+                <EmptyState
+                  icon={SendIcon}
+                  title="Nichts in diesem Zeitraum"
+                  description="In den gewählten Tagen wurde kein Auftrag angelegt, der inzwischen abgeschlossen ist."
+                  variant="plain"
+                  size="sm"
+                />
+              }
+            />
+          </div>
+        </>
+      )}
+
+      <DataTable
+        data={rows}
+        columns={columns}
+        getRowId={(row) => row.id}
+        tabs={tabs}
+        tab={tab}
+        onTabChange={setTab}
+        tabLabel="Status"
+        searchable
+        searchPlaceholder="Aufträge durchsuchen"
+        searchText={(row) => row.task}
+        filters={
+          <AgentFilter options={agentOptions} value={agentId} onChange={setAgentId} />
+        }
+        columnLabels={ASSIGNMENT_COLUMN_LABELS}
+        initialSorting={ASSIGNMENT_SORTING}
+        initialColumnVisibility={ASSIGNMENT_HIDDEN_COLUMNS}
+        pageSize={20}
+        capped={list.length >= LIMIT}
+        rowLabel={ASSIGNMENT_ROW_LABEL}
+        loading={listState === 'loading' && rows.length === 0}
+        idPrefix="auftraege"
+        // Die ganze Zeile oeffnet die Schublade, wie auf /chats und /tasks -
+        // ausser dort, wo die Zelle selbst etwas anderes tut.
+        onRowClick={setDetailRow}
+        rowClickIgnoreColumns={['select', 'task', 'actions']}
+        bulkActions={(selected, clear) => {
+          const open = selected.filter(
+            (row) => row.status === 'pending' || row.status === 'running',
+          );
+          return (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={open.length === 0}
+              onClick={() => {
+                void cancelAssignments(open.map((row) => row.id)).then((stopped) => {
+                  if (stopped !== null) clear();
+                });
+              }}
+            >
+              <BanIcon data-icon="inline-start" />
+              {formatNumber(open.length)} abbrechen
+            </Button>
+          );
+        }}
+        error={listState === 'error' ? <ServerOffline onRetry={retry} size="sm" /> : undefined}
+        empty={
+          <EmptyState
+            icon={SendIcon}
+            title="Noch keine Aufträge"
+            description="Sobald ein Agent beauftragt wird, steht jeder Lauf hier — mit Ergebnis, Dauer und Kosten an Zeichen."
+            actionLabel="Agent beauftragen"
+            onAction={() => setAssignOpen(true)}
+            variant="plain"
+            size="sm"
+          />
+        }
+      />
+
+      <AssignDrawer
+        open={assignOpen}
+        onOpenChange={setAssignOpen}
+        agents={org.agents}
+        projects={org.projects.filter((project) => !project.archived)}
+        onAssigned={() => {
+          void loadBase(true);
+          void loadNarrow(true);
+        }}
+        assign={(payload, handlers) => socket.sendAssign(payload, handlers)}
+      />
+
+      <RowDrawer
+        row={detailRow}
+        onOpenChange={(next) => {
+          if (!next) setDetailRow(null);
+        }}
+        onOpen={(id) => {
+          setDetailRow(null);
+          void navigate('/assignments/' + id);
+        }}
+        onCancel={cancel}
+      />
+    </PageBody>
+  );
+}
+
+/* ------------------------------ the filters ------------------------------ */
+
+interface Option {
+  value: string;
+  label: string;
+}
+
+/**
+ * The agent filter.
+ *
+ * It sets the server's `agentId`, not a client predicate, for the same reason
+ * the status tabs do: filtering inside the newest 500 rows would hide an
+ * agent's older work entirely.
+ */
+function AgentFilter({
+  options,
+  value,
+  onChange,
+}: {
+  options: Option[];
+  value: string | null;
+  onChange: (value: string | null) => void;
+}) {
+  const selected = options.find((option) => option.value === value) ?? null;
+
+  return (
+    <Combobox
+      items={options}
+      value={selected}
+      onValueChange={(next: Option | null) => onChange(next?.value ?? null)}
+    >
+      <ComboboxInput
+        placeholder="Alle Agenten"
+        aria-label="Nach Agent filtern"
+        className="h-8 w-full sm:w-48"
+        showClear={selected !== null}
+      />
+      <ComboboxContent>
+        <ComboboxEmpty>Kein Agent gefunden</ComboboxEmpty>
+        <ComboboxList>
+          {(item: Option) => (
+            <ComboboxItem key={item.value} value={item}>
+              {item.label}
+            </ComboboxItem>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  );
+}
+
+/* ------------------------------- the drawers ----------------------------- */
+
+/** What the row drawer shows: the whole record, without leaving the table. */
+function RowDrawer({
+  row: chosen,
+  onOpenChange,
+  onOpen,
+  onCancel,
+}: {
+  row: AssignmentRow | null;
+  onOpenChange: (open: boolean) => void;
+  onOpen: (id: string) => void;
+  onCancel: (row: AssignmentRow) => void;
+}) {
+  // Die Zeile bleibt stehen, bis die Schublade zugefahren ist - `open` ist
+  // damit eine echte Zustandsangabe statt eines fest verdrahteten `true`.
+  const row = useDrawerSubject(chosen);
+  if (!row) return null;
+  const cancellable = row.status === 'pending' || row.status === 'running';
+
+  return (
+    <DetailDrawer
+      open={chosen !== null}
+      onOpenChange={onOpenChange}
+      title={shorten(row.task, 80)}
+      description={row.agentName + ' · ' + relativeTime(row.createdAt)}
+      footer={
+        <div className="flex flex-wrap gap-2">
+          <Button className="flex-1" onClick={() => onOpen(row.id)}>
+            Auftrag öffnen
+          </Button>
+          {cancellable ? (
+            <Button variant="outline" onClick={() => onCancel(row)}>
+              <BanIcon data-icon="inline-start" />
+              Abbrechen
+            </Button>
+          ) : null}
+        </div>
+      }
+    >
+      <MetaList
+        columns={1}
+        items={[
+          { label: 'Status', value: <StatusBadge kind="assignment" status={row.status} /> },
+          {
+            label: 'Agent',
+            value: row.agentName,
+            to: '/org/agents/' + row.agentId,
+          },
+          {
+            label: 'Anbieter',
+            value: row.provider ? (
+              <ProviderCell
+                provider={row.provider}
+                {...(row.model ? { model: row.model } : {})}
+                layout="inline"
+              />
+            ) : null,
+          },
+          { label: 'Zeichen', value: row.chars > 0 ? formatNumber(row.chars) : null },
+          { label: 'Dauer', value: formatDuration(row.durationMs) || null },
+          { label: 'Ebene', value: row.depth > 0 ? String(row.depth) : null },
+          { label: 'Angelegt', value: formatDateTime(row.createdAt) },
+        ]}
+      />
+
+      <div className="space-y-1">
+        <p className="text-xs text-muted-foreground">Auftrag</p>
+        <p className="whitespace-pre-wrap">{row.task}</p>
       </div>
-    </div>
+
+      {row.error ? (
+        <div className="space-y-1">
+          <p className="text-xs text-muted-foreground">Fehler</p>
+          <p className="whitespace-pre-wrap text-destructive">{row.error}</p>
+        </div>
+      ) : null}
+    </DetailDrawer>
+  );
+}
+
+const assignSchema = z.object({
+  agent: z.string().min(1, 'Ohne Agent geht es nicht.'),
+  task: z.string().trim().min(3, 'Der Auftrag braucht mindestens einen Satz.'),
+});
+
+type AssignErrors = Partial<Record<'agent' | 'task', string>>;
+
+/**
+ * Hand an agent a job, from the page that lists what came of it.
+ *
+ * The turn runs over the socket exactly as it does in the chat - the drawer
+ * only needs to know that it started; the row appears in the table as soon as
+ * the first broadcast names it.
+ */
+function AssignDrawer({
+  open,
+  onOpenChange,
+  agents,
+  projects,
+  onAssigned,
+  assign,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  agents: Agent[];
+  projects: { id: string; name: string }[];
+  onAssigned: () => void;
+  assign: (
+    payload: { agent: string; task: string; projectId?: string },
+    handlers: {
+      onEvent: () => void;
+      onDone: (text: string) => void;
+      onError: (message: string) => void;
+    },
+  ) => string;
+}) {
+  const [agentId, setAgentId] = React.useState<string | null>(null);
+  const [projectId, setProjectId] = React.useState<string | null>(null);
+  const [task, setTask] = React.useState('');
+  const [errors, setErrors] = React.useState<AssignErrors>({});
+  const [busy, setBusy] = React.useState(false);
+
+  const agentOptions = React.useMemo(
+    () =>
+      agents
+        .filter((agent) => !agent.archived)
+        .map((agent) => ({ value: agent.id, label: agent.name + ' · ' + agent.slug })),
+    [agents],
+  );
+  const projectOptions = React.useMemo(
+    () => projects.map((project) => ({ value: project.id, label: project.name })),
+    [projects],
+  );
+
+  const submit = (): void => {
+    const parsed = assignSchema.safeParse({ agent: agentId ?? '', task });
+    if (!parsed.success) {
+      const next: AssignErrors = {};
+      for (const issue of parsed.error.issues) {
+        const field = issue.path[0];
+        if (field === 'agent' || field === 'task') next[field] = issue.message;
+      }
+      setErrors(next);
+      return;
+    }
+    const agent = agents.find((entry) => entry.id === agentId);
+    if (!agent) return;
+
+    setErrors({});
+    setBusy(true);
+    assign(
+      {
+        agent: agent.slug,
+        task: parsed.data.task,
+        ...(projectId ? { projectId } : {}),
+      },
+      {
+        // The live rows arrive on the org socket anyway; this turn's own
+        // stream is only interesting for its end.
+        onEvent: () => undefined,
+        onDone: () => {
+          setBusy(false);
+          onAssigned();
+          toast('Auftrag abgeschlossen');
+        },
+        onError: (message) => {
+          setBusy(false);
+          toast.error('Auftrag fehlgeschlagen', { description: message });
+        },
+      },
+    );
+
+    toast(agent.name + ' ist beauftragt');
+    setTask('');
+    onOpenChange(false);
+    onAssigned();
+  };
+
+  return (
+    <DetailDrawer
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Agent beauftragen"
+      description="Der Lauf startet sofort und erscheint in der Tabelle."
+      closeLabel="Abbrechen"
+      footer={
+        <Button onClick={submit} disabled={busy}>
+          {busy ? <Spinner aria-label="Wird gestartet" /> : <SendIcon data-icon="inline-start" />}
+          Beauftragen
+        </Button>
+      }
+    >
+      <FieldGroup>
+        {/* FormField statt handverdrahtetem Field: `data-invalid` faerbte die
+            Gruppe zwar rot, das Bedienelement selbst trug aber weder
+            `aria-invalid` noch einen Verweis auf seine Meldung. */}
+        <FormField id="auftrag-agent" label="Agent" error={errors.agent}>
+          {(control) => (
+            <OptionCombobox
+              {...control}
+              options={agentOptions}
+              value={agentId}
+              onChange={setAgentId}
+              placeholder="Agent wählen"
+            />
+          )}
+        </FormField>
+
+        <FormField
+          id="auftrag-projekt"
+          label="Projekt"
+          description="Legt fest, in welchem Verzeichnis der Agent arbeitet."
+        >
+          {(control) => (
+            <OptionCombobox
+              {...control}
+              options={projectOptions}
+              value={projectId}
+              onChange={setProjectId}
+              placeholder="Kein Projekt"
+            />
+          )}
+        </FormField>
+
+        <FormField id="auftrag-text" label="Auftrag" error={errors.task}>
+          {(control) => (
+            <Textarea
+              {...control}
+              rows={6}
+              value={task}
+              onChange={(event) => setTask(event.target.value)}
+              placeholder="Was soll getan werden?"
+            />
+          )}
+        </FormField>
+      </FieldGroup>
+    </DetailDrawer>
+  );
+}
+
+/**
+ * The plain single-select combobox both fields in the drawer use.
+ *
+ * Nimmt die ARIA-Props aus `FormField` entgegen und reicht sie an die Eingabe
+ * durch - dort sitzt der Fokus, also muss dort auch stehen, dass das Feld
+ * abgelehnt wurde und wo die Begruendung steht.
+ */
+function OptionCombobox({
+  options,
+  value,
+  onChange,
+  placeholder,
+  ...control
+}: FieldAria['control'] & {
+  options: Option[];
+  value: string | null;
+  onChange: (value: string | null) => void;
+  placeholder: string;
+}) {
+  const selected = options.find((option) => option.value === value) ?? null;
+
+  return (
+    <Combobox
+      items={options}
+      value={selected}
+      onValueChange={(next: Option | null) => onChange(next?.value ?? null)}
+    >
+      <ComboboxInput {...control} placeholder={placeholder} showClear={selected !== null} />
+      <ComboboxContent>
+        <ComboboxEmpty>Nichts gefunden</ComboboxEmpty>
+        <ComboboxList>
+          {(item: Option) => (
+            <ComboboxItem key={item.value} value={item}>
+              {item.label}
+            </ComboboxItem>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
   );
 }

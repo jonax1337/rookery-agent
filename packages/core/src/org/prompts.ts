@@ -13,6 +13,7 @@ import type {
 } from '../types.js';
 import type { OrgStore } from './store.js';
 import { renderMemoryBlock } from '../memory/recall.js';
+import { PONYTAIL_RULESET } from './ponytail.js';
 import { describeCronJob } from '../cron/scheduler.js';
 import { clip, shorten } from '../util/queue.js';
 
@@ -226,6 +227,10 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
 
   sections.push('Your standing instructions:\n' + agent.instructions);
 
+  // How the work gets done, below the role and above the task: the agent's
+  // own instructions still win, because they were written for this job.
+  if (config.org.lazyCoding) sections.push(PONYTAIL_RULESET);
+
   if (input.project) {
     sections.push(
       'Project: ' + input.project.name +
@@ -341,6 +346,10 @@ export function buildAgentChatPrompt(input: AgentChatPromptInput): string {
   );
 
   sections.push('Your standing instructions:\n' + agent.instructions);
+
+  // How the work gets done, below the role and above the task: the agent's
+  // own instructions still win, because they were written for this job.
+  if (config.org.lazyCoding) sections.push(PONYTAIL_RULESET);
 
   if (input.project) {
     sections.push(

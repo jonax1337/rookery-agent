@@ -1,18 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { BrainIcon, LoaderIcon, MaximizeIcon } from 'lucide-react';
-import type { MemoryEntity, MemoryGraph as Graph, MemoryKind, MemoryRecord } from '../lib/types';
-import { MEMORY_KIND_LABEL, RELATION_LABEL } from '../lib/format';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
+import { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { Ref, RefObject } from 'react';
+
+import type {
+  MemoryEntity,
+  MemoryGraph as Graph,
+  MemoryKind,
+  MemoryRecord,
+  MemoryRelation,
+} from '@/lib/types';
 
 /**
  * The brain, in space.
@@ -24,23 +19,143 @@ import { Label } from '@/components/ui/label';
  * the shape of what the assistant knows is actually visible.
  *
  * The library and the WebGL renderer behind it load on demand, so only
- * whoever opens this tab pays for them.
+ * whoever opens this page pays for them.
  *
- * The scene keeps its own palette instead of reading the app's CSS tokens:
- * those are oklch, which the renderer cannot parse, and a canvas wants
- * colours picked for a dark room anyway.
+ * What changed with the block rebuild: the component is now only the canvas.
+ * Its filter bar, its legend and its frame moved out to `MemoryGraphPage`,
+ * where they can be the same `ButtonGroup` and `ItemGroup` every other page
+ * uses. The palette moved out too - see `useGraphPalette` below.
  */
 
-interface MemoryGraph3DProps {
-  graph: Graph | null;
-  entities: MemoryEntity[];
+/* -------------------------------- palette -------------------------------- */
+
+export interface GraphPalette {
+  background: string;
   entity: string;
-  onEntity(value: string): void;
-  includeDormant: boolean;
-  onIncludeDormant(value: boolean): void;
-  loading: boolean;
-  onSelect(memory: MemoryRecord): void;
+  mention: string;
+  kinds: Record<MemoryKind, string>;
+  relations: Record<MemoryRelation, string>;
 }
+
+const KIND_VARIABLE: Record<MemoryKind, string> = {
+  fact: '--graph-fact',
+  preference: '--graph-preference',
+  project: '--graph-project',
+  event: '--graph-event',
+  summary: '--graph-summary',
+  insight: '--graph-insight',
+};
+
+const RELATION_VARIABLE: Record<MemoryRelation, string> = {
+  refines: '--graph-refines',
+  supersedes: '--graph-supersedes',
+  contradicts: '--graph-contradicts',
+  caused_by: '--graph-caused-by',
+  co_occurs: '--graph-co-occurs',
+};
+
+/**
+ * What the palette falls back to before the stage is mounted, and if a token
+ * is ever missing: the dark values, because the canvas is a lit object on a
+ * dark ground by nature.
+ */
+const FALLBACK: GraphPalette = {
+  background: '#0a0a0c',
+  entity: '#d6dae1',
+  mention: '#343a44',
+  kinds: {
+    fact: '#5b9dff',
+    preference: '#a98bff',
+    project: '#f5a524',
+    event: '#3fd18b',
+    summary: '#8aa0b4',
+    insight: '#ffffff',
+  },
+  relations: {
+    refines: '#5b9dff',
+    supersedes: '#6b7280',
+    contradicts: '#ff5252',
+    caused_by: '#3fd18b',
+    co_occurs: '#3a4049',
+  },
+};
+
+function readPalette(element: HTMLElement | null): GraphPalette {
+  if (!element) return FALLBACK;
+  const style = getComputedStyle(element);
+  const read = (variable: string, fallback: string): string =>
+    style.getPropertyValue(variable).trim() || fallback;
+
+  const kinds = {} as Record<MemoryKind, string>;
+  for (const kind of Object.keys(KIND_VARIABLE) as MemoryKind[]) {
+    kinds[kind] = read(KIND_VARIABLE[kind], FALLBACK.kinds[kind]);
+  }
+  const relations = {} as Record<MemoryRelation, string>;
+  for (const relation of Object.keys(RELATION_VARIABLE) as MemoryRelation[]) {
+    relations[relation] = read(RELATION_VARIABLE[relation], FALLBACK.relations[relation]);
+  }
+
+  return {
+    background: read('--graph-background', FALLBACK.background),
+    entity: read('--graph-entity', FALLBACK.entity),
+    mention: read('--graph-mention', FALLBACK.mention),
+    kinds,
+    relations,
+  };
+}
+
+function samePalette(a: GraphPalette, b: GraphPalette): boolean {
+  if (a.background !== b.background || a.entity !== b.entity || a.mention !== b.mention) return false;
+  for (const kind of Object.keys(KIND_VARIABLE) as MemoryKind[]) {
+    if (a.kinds[kind] !== b.kinds[kind]) return false;
+  }
+  for (const relation of Object.keys(RELATION_VARIABLE) as MemoryRelation[]) {
+    if (a.relations[relation] !== b.relations[relation]) return false;
+  }
+  return true;
+}
+
+/**
+ * The net's colours, read off the `.graph-stage` element the page renders.
+ *
+ * The hex values live in `styles/index.css` because WebGL cannot parse oklch,
+ * which is what every design token in this app is. Reading them back here
+ * rather than keeping a second copy in JavaScript means the theme is defined
+ * in exactly one place - and the `MutationObserver` on the root class is what
+ * makes a theme switch repaint the scene without rebuilding it.
+ */
+export function useGraphPalette(stage: RefObject<HTMLElement | null>): GraphPalette {
+  const [palette, setPalette] = useState<GraphPalette>(FALLBACK);
+
+  useLayoutEffect(() => {
+    // The observer fires on every class change of the root element, most of
+    // which have nothing to do with the theme. Keeping the old object when the
+    // colours did not move is what stops those from re-feeding the whole scene.
+    const update = (): void =>
+      setPalette((current) => {
+        const next = readPalette(stage.current);
+        return samePalette(current, next) ? current : next;
+      });
+    update();
+
+    const observer = new MutationObserver(update);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+    // A root without an explicit class follows the operating system, and that
+    // can change while the page is open.
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)');
+    media?.addEventListener('change', update);
+
+    return () => {
+      observer.disconnect();
+      media?.removeEventListener('change', update);
+    };
+  }, [stage]);
+
+  return palette;
+}
+
+/* --------------------------------- scene --------------------------------- */
 
 interface Node {
   id: string;
@@ -62,90 +177,49 @@ interface Link {
   width: number;
 }
 
-const PALETTE = {
-  dark: {
-    background: '#0a0a0c',
-    entity: '#d6dae1',
-    mention: '#343a44',
-    kinds: {
-      fact: '#5b9dff',
-      preference: '#a98bff',
-      project: '#f5a524',
-      event: '#3fd18b',
-      summary: '#8aa0b4',
-      insight: '#ffffff',
-    } as Record<MemoryKind, string>,
-    relations: {
-      refines: '#5b9dff',
-      caused_by: '#3fd18b',
-      contradicts: '#ff5252',
-      supersedes: '#6b7280',
-      co_occurs: '#3a4049',
-    } as Record<string, string>,
-  },
-  light: {
-    background: '#f7f7f8',
-    entity: '#2b3038',
-    mention: '#cbd2da',
-    kinds: {
-      fact: '#1f6feb',
-      preference: '#7c4dff',
-      project: '#c2710c',
-      event: '#1a9e63',
-      summary: '#5a6b7d',
-      insight: '#111318',
-    } as Record<MemoryKind, string>,
-    relations: {
-      refines: '#1f6feb',
-      caused_by: '#1a9e63',
-      contradicts: '#d92020',
-      supersedes: '#8b929c',
-      co_occurs: '#cbd2da',
-    } as Record<string, string>,
-  },
-};
+/** What the page's "Einpassen" button reaches into the scene for. */
+export interface GraphHandle {
+  fit(): void;
+}
 
-function prefersDark(): boolean {
-  if (typeof document === 'undefined') return true;
-  const root = document.documentElement;
-  if (root.classList.contains('dark')) return true;
-  if (root.classList.contains('light')) return false;
-  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true;
+export interface MemoryGraph3DProps {
+  graph: Graph | null;
+  palette: GraphPalette;
+  /** Clicking a memory body. */
+  onSelectMemory(memory: MemoryRecord): void;
+  /** Clicking a hub filters the net down to that topic. */
+  onSelectEntity(entityId: string): void;
+  /** WebGL is missing or the library failed to load - the page says so. */
+  onUnavailable?(): void;
+  ref?: Ref<GraphHandle>;
 }
 
 export function MemoryGraph3D({
   graph,
-  entities,
-  entity,
-  onEntity,
-  includeDormant,
-  onIncludeDormant,
-  loading,
-  onSelect,
+  palette,
+  onSelectMemory,
+  onSelectEntity,
+  onUnavailable,
+  ref,
 }: MemoryGraph3DProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
   // The instance stays untyped on purpose: the library's own types drag the
   // whole three.js surface into this file for no benefit.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const graphRef = useRef<any>(null);
-  const selectRef = useRef(onSelect);
-  const entityRef = useRef(onEntity);
-  const [failed, setFailed] = useState(false);
+  // Read through refs so a new handler identity never rebuilds the scene.
+  const selectRef = useRef(onSelectMemory);
+  const entityRef = useRef(onSelectEntity);
+  const failedRef = useRef(onUnavailable);
+  selectRef.current = onSelectMemory;
+  entityRef.current = onSelectEntity;
+  failedRef.current = onUnavailable;
+
   // The scene is built asynchronously. Without this the first data pass runs
   // before the instance exists and nothing ever reaches the canvas.
   const [ready, setReady] = useState(false);
-  const [dark, setDark] = useState(prefersDark);
 
-  selectRef.current = onSelect;
-  entityRef.current = onEntity;
-
-  // Follow the app's theme switch without rebuilding the scene.
-  useEffect(() => {
-    const observer = new MutationObserver(() => setDark(prefersDark()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    return () => observer.disconnect();
-  }, []);
-
-  const theme = dark ? PALETTE.dark : PALETTE.light;
+  useImperativeHandle(ref, () => ({ fit: () => graphRef.current?.zoomToFit?.(600, 80) }), []);
 
   const data = useMemo(() => {
     if (!graph) return { nodes: [] as Node[], links: [] as Link[] };
@@ -161,7 +235,7 @@ export function MemoryGraph3D({
         type: 'entity' as const,
         label: item.name,
         size: 12 + Math.min(60, (mentions.get(item.id) ?? 1) * 8),
-        colour: theme.entity,
+        colour: palette.entity,
         dormant: false,
         entity: item,
       })),
@@ -170,7 +244,7 @@ export function MemoryGraph3D({
         type: 'memory' as const,
         label: memory.content,
         size: 1.5 + memory.importance * 5 + (memory.pinned ? 2 : 0),
-        colour: theme.kinds[memory.kind] ?? theme.kinds.fact,
+        colour: palette.kinds[memory.kind] ?? palette.kinds.fact,
         dormant: Boolean(memory.dormantAt),
         memory,
       })),
@@ -184,7 +258,7 @@ export function MemoryGraph3D({
           source: 'm:' + link.memoryId,
           target: 'e:' + link.entityId,
           kind: 'mention' as const,
-          colour: theme.mention,
+          colour: palette.mention,
           width: 0.3,
         })),
       ...graph.edges
@@ -194,14 +268,14 @@ export function MemoryGraph3D({
           target: 'm:' + edge.dstId,
           kind: 'relation' as const,
           relation: edge.relation,
-          colour: theme.relations[edge.relation] ?? theme.mention,
+          colour: palette.relations[edge.relation] ?? palette.mention,
           // A contradiction should be impossible to miss.
           width: edge.relation === 'contradicts' ? 1.6 : 0.6 + edge.weight,
         })),
     ];
 
     return { nodes, links };
-  }, [graph, theme]);
+  }, [graph, palette]);
 
   // Build the scene once, then only feed it data.
   useEffect(() => {
@@ -219,6 +293,7 @@ export function MemoryGraph3D({
 
         // Typed loosely on purpose: the library's generics expect its own
         // node shape, and threading ours through them buys nothing here.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const instance: any = new ForceGraph3D(mountRef.current);
         instance
           .showNavInfo(false)
@@ -271,13 +346,15 @@ export function MemoryGraph3D({
         observer.observe(mountRef.current);
         (instance as { __observer?: ResizeObserver }).__observer = observer;
       } catch {
-        if (!cancelled) setFailed(true);
+        if (!cancelled) failedRef.current?.();
       }
     })();
 
     return () => {
       cancelled = true;
-      const instance = graphRef.current as { __observer?: ResizeObserver; _destructor?: () => void } | null;
+      const instance = graphRef.current as
+        | { __observer?: ResizeObserver; _destructor?: () => void }
+        | null;
       instance?.__observer?.disconnect();
       instance?._destructor?.();
       graphRef.current = null;
@@ -291,119 +368,9 @@ export function MemoryGraph3D({
   useEffect(() => {
     const instance = graphRef.current;
     if (!instance) return;
-    instance.backgroundColor(theme.background);
+    instance.backgroundColor(palette.background);
     instance.graphData({ nodes: data.nodes, links: data.links });
-  }, [data, theme, ready]);
+  }, [data, palette, ready]);
 
-  const empty = !loading && (!graph || !graph.memories.length);
-
-  return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <Select value={entity || 'all'} onValueChange={(value) => onEntity(value === 'all' ? '' : value)}>
-          <SelectTrigger className="h-8 w-56 text-xs">
-            <SelectValue placeholder="Alle Themen" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Alle Themen</SelectItem>
-            {entities.map((item) => (
-              <SelectItem key={item.id} value={item.id}>
-                {item.name} ({item.mentions})
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <div className="flex items-center gap-2">
-          <Switch id="dormant" checked={includeDormant} onCheckedChange={onIncludeDormant} />
-          <Label htmlFor="dormant" className="text-xs font-normal text-muted-foreground">
-            Aufgeräumte zeigen
-          </Label>
-        </div>
-
-        <Button
-          size="sm"
-          variant="ghost"
-          className="h-8 px-2 text-xs text-muted-foreground"
-          onClick={() => graphRef.current?.zoomToFit?.(600, 80)}
-        >
-          <MaximizeIcon className="size-3.5" />
-          Einpassen
-        </Button>
-
-        {graph ? (
-          <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-foreground">
-            <span>{graph.memories.length} Erinnerungen</span>
-            <span>·</span>
-            <span>{graph.entities.length} Themen</span>
-            <span>·</span>
-            <span>{graph.edges.length} Verbindungen</span>
-            {graph.truncated ? (
-              <Badge variant="outline" className="h-4 px-1.5 text-[9.5px]">
-                gekürzt
-              </Badge>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border bg-card">
-        <div ref={mountRef} className="absolute inset-0" />
-
-        {loading ? (
-          <div className="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-2 rounded-md bg-background/80 px-2 py-1 text-[11px] text-muted-foreground backdrop-blur">
-            <LoaderIcon className="size-3.5 animate-spin" />
-            lädt
-          </div>
-        ) : null}
-
-        {failed ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-            <BrainIcon className="size-8 opacity-40" />
-            <p className="text-sm">Der 3D-Graph lässt sich hier nicht darstellen.</p>
-            <p className="max-w-xs text-center text-xs">
-              Das Fenster braucht WebGL. In der Liste und auf der Zeitachse steht dasselbe Gedächtnis.
-            </p>
-          </div>
-        ) : empty ? (
-          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-            <BrainIcon className="size-8 opacity-40" />
-            <p className="text-sm">Noch nichts im Gedächtnis.</p>
-            <p className="max-w-xs text-center text-xs">
-              Sobald Gespräche etwas Dauerhaftes hinterlassen, entsteht hier das Netz.
-            </p>
-          </div>
-        ) : null}
-      </div>
-
-      <Legend theme={theme} />
-    </div>
-  );
-}
-
-/** Without this the colours are decoration; with it they are information. */
-function Legend({ theme }: { theme: (typeof PALETTE)['dark'] }) {
-  return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10.5px] text-muted-foreground">
-      {(Object.keys(MEMORY_KIND_LABEL) as MemoryKind[]).map((kind) => (
-        <span key={kind} className="flex items-center gap-1.5">
-          <span className="inline-block size-2 rounded-full" style={{ background: theme.kinds[kind] }} />
-          {MEMORY_KIND_LABEL[kind]}
-        </span>
-      ))}
-      <span className="flex items-center gap-1.5">
-        <span className="inline-block h-px w-4" style={{ background: theme.relations.refines }} />
-        {RELATION_LABEL.refines}
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="inline-block h-px w-4" style={{ background: theme.relations.contradicts }} />
-        {RELATION_LABEL.contradicts}
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="inline-block h-px w-4" style={{ background: theme.relations.supersedes }} />
-        {RELATION_LABEL.supersedes}
-      </span>
-      <span className="opacity-60">Ziehen dreht, Rad zoomt, Klick öffnet</span>
-    </div>
-  );
+  return <div ref={mountRef} className="absolute inset-0" aria-hidden="true" />;
 }

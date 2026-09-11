@@ -49,6 +49,8 @@ export const createSessionSchema = z.object({
 export const patchSessionSchema = z.object({
   title: z.string().min(1).optional(),
   projectId: z.string().min(1).nullable().optional(),
+  /** Out of the way, not deleted: the transcript stays, the list gets shorter. */
+  archived: z.boolean().optional(),
 });
 
 export const createMemorySchema = z.object({
@@ -234,6 +236,7 @@ const orgConfigSchema = z
     maxConcurrentAssignments: z.number().int().min(1).max(16),
     maxDelegationDepth: z.number().int().min(1).max(6),
     assignmentTimeoutMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000),
+    lazyCoding: z.boolean(),
     activeOrganizationId: z.string().min(1),
   })
   .partial();

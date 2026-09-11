@@ -34,9 +34,15 @@ npm start          # API auf http://127.0.0.1:4317, liefert auch die Web-UI aus
 ```
 
 Web-Interface unter <http://127.0.0.1:4317> öffnen — oder im Terminal bleiben.
-Die Seitenleiste führt zu Chat, **Dashboard**, Firma (`/org`), Aufgaben,
-Aufträge, Zeitpläne, **Gedächtnis** (Graph, Zeitachse, Liste), Werkzeuge,
-Skills, Einstellungen und Sprechen.
+Die Seitenleiste ist in drei Gruppen sortiert: **Arbeiten** (Übersicht,
+Gespräche), **Betrieb** (Aufgaben, Aufträge, Zeitpläne) und **Firma & Wissen**
+(Firma mit Agenten/Teams/Projekten, Gedächtnis mit Erinnerungen/Netz/Nächten,
+Werkzeuge, Skills). Oben starten „Neues Gespräch“ und der Sprechen-Knopf, unten
+liegen Suche (`Strg`+`K`), Einstellungen und der Verbindungszustand.
+
+Die Gespräche haben eine **eigene Seite** (`/chats`) statt einer Liste in der
+Seitenleiste: mit Suche, Filtern nach Gegenüber und Projekt, Facetten für
+Assistent/Agenten/Sprache/Archiv und dem Verlauf jedes Gesprächs im Drawer.
 
 ```bash
 node packages/cli/dist/index.js          # interaktives Terminal
@@ -101,8 +107,18 @@ packages/core     Das Gehirn: Provider-Adapter, Gedächtnis, Persona, Runtime,
                   und die Computer-Steuerung (computer/). Kennt weder HTTP noch Terminal.
 packages/server   Fastify: REST + WebSocket + SSE, liefert die gebaute Web-UI aus.
 packages/cli      Das Terminal-Interface mit REPL und OS-Sprachausgabe.
-packages/web      React + Vite. Der Assistenten-Bildschirm mit Orb und Sprachsteuerung.
+packages/web      React + Vite. Die Oberfläche steht auf den shadcn-Blocks
+                  dashboard-01 und sidebar-16: src/components/shell/ trägt die
+                  Navigation, src/components/blocks/ die Seiten-Templates
+                  (StatCards, Kurve, DataTable, Drawer, Formularrahmen), die
+                  jede Seite unter src/pages/ wiederverwendet.
 ```
+
+Kennzahlen kommen aus `GET /api/stats`: echte `COUNT(*)` über Gespräche,
+Nachrichten, Aufträge, Aufgaben, Cron-Läufe, Erinnerungen und Agenten, dazu
+Tagesreihen für die Kurven. Vorher summierte die Oberfläche über Listen, die
+der Server bei 500 abschneidet — die Zahlen wurden also still falsch, sobald
+genug zusammenkam.
 
 Ein Turn durchläuft immer dieselben Schritte:
 
@@ -465,7 +481,8 @@ Agenten mit Berechtigung `full`; der Assistent selbst führt keine Skripte aus.
 
 ## Sprache
 
-- **Sprechen** (`/voice`, Eintrag in der Seitenleiste): ein Vollbild mit nichts
+- **Sprechen** (`/voice`, Knopf neben „Neues Gespräch“ oben in der
+  Seitenleiste): ein Vollbild mit nichts
   als dem Orb. Einmal tippen, dann einfach reden. Jede fertige Äußerung wird ein Turn,
   die Antwort wird Satz für Satz vorgelesen, während sie noch streamt, und das
   Mikrofon geht wieder auf, sobald die Stimme schweigt. Tippen auf den Orb oder
@@ -474,10 +491,11 @@ Agenten mit Berechtigung `full`; der Assistent selbst führt keine Skripte aus.
   Bewegung zurück. Das Aktivierungswort ist dort optional zuschaltbar.
   Gesprochen wird ab dem ersten Halbsatz der Antwort, nicht erst am Ende.
   Der Sprachmodus hat sein **eigenes Gespräch** mit dem Assistenten: eine
-  Session der Art `voice` (Titel „Sprachgespräch · Datum“), die in der
-  Seitenleiste im eingeklappten Ordner **Sprachgespräche** liegt statt in der
-  Chatliste, und in der der Assistent immer im Sprech-Register antwortet, auch
-  wenn man sie später im Chat öffnet. `GET /api/sessions?kind=voice|chat`
+  Session der Art `voice` (Titel „Sprachgespräch · Datum“), die auf `/chats`
+  hinter der Facette **Sprache** liegt, und in der der Assistent immer im
+  Sprech-Register antwortet, auch wenn man sie später im Chat öffnet — die
+  Mitschrift lässt sich dort lesen, ohne den Sprachmodus zu starten.
+  `GET /api/sessions?kind=voice|chat`
   filtert danach, getrennt von den Text-Chats und nie mit
   einem Agenten; der Reset-Knopf in der Leiste beginnt ein neues. Gesprochene
   Turns laufen mit Effort `low`, solange keine Stufe gepinnt ist. Mit
@@ -651,6 +669,8 @@ betroffenen Dateien im Kopf:
 
 - [`agent-performance-management.md`](docs/concepts/agent-performance-management.md) — Bewertung, Verlauf und Eskalationsstufen für Agenten
 - [`memory-graph-and-sleep.md`](docs/concepts/memory-graph-and-sleep.md) — Gedächtnis als Graph mit nächtlicher Verdichtung
+- [`project-scoped-skills-and-mcp.md`](docs/concepts/project-scoped-skills-and-mcp.md) — Skills und MCP-Server pro Projekt statt global
+- [`telegram-channel.md`](docs/concepts/telegram-channel.md) — Telegram als Fernsteuerung für den Assistenten
 
 ## Lizenz
 

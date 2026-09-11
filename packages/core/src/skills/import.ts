@@ -39,6 +39,7 @@ export const SKILL_SOURCES: SkillSourceEntry[] = [
   { source: 'anthropics/skills/skills/webapp-testing', name: 'Web-App testen', description: 'Web-Anwendungen mit Playwright durchklicken und prüfen.', needsShell: true },
   { source: 'anthropics/skills/skills/mcp-builder', name: 'MCP-Server bauen', description: 'Eigene MCP-Server nach den Regeln des Protokolls entwerfen.', needsShell: false },
   { source: 'anthropics/skills/skills/skill-creator', name: 'Skills schreiben', description: 'Anleitung, wie gute Skills aufgebaut und getestet werden.', needsShell: false },
+  { source: 'DietrichGebert/ponytail/skills/ponytail', name: 'Ponytail', description: 'Code sparsam schreiben: erst prüfen, ob es etwas schon gibt, dann die kleinste Lösung. Die Kurzfassung steckt schon im Agenten-Prompt.', needsShell: false },
   { source: 'anthropics/skills/skills/doc-coauthoring', name: 'Dokumente mitschreiben', description: 'Längere Texte gemeinsam mit dem Nutzer entwickeln.', needsShell: false },
   { source: 'anthropics/skills/skills/canvas-design', name: 'Canvas-Design', description: 'Poster, Grafiken und visuelle Entwürfe.', needsShell: false },
 ];

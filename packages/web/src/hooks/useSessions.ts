@@ -13,21 +13,17 @@ import type { Message, Session } from '../lib/types';
  */
 export function useSessions(onOffline?: (offline: boolean) => void) {
   const [sessions, setSessions] = useState<Session[]>([]);
-  /** The hands-free conversations, filed apart from the chats. */
-  const [voiceSessions, setVoiceSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [counterpartId, setCounterpartId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async (): Promise<Session[]> => {
     try {
-      // Voice sessions only ever belong to the assistant.
-      const [list, spoken] = await Promise.all([
-        api.sessions(50, counterpartId ?? 'assistant', 'chat'),
-        counterpartId ? Promise.resolve([] as Session[]) : api.sessions(50, 'assistant', 'voice'),
-      ]);
+      // Nur die Chats des aktuellen Gegenübers. Die Sprachgespräche wurden hier
+      // einmal zusätzlich geholt; seit /chats sie über die geteilte Gesamtliste
+      // zeigt, hatte dieser zweite Abruf keinen Leser mehr.
+      const list = await api.sessions(50, counterpartId ?? 'assistant', 'chat');
       setSessions(list);
-      setVoiceSessions(spoken);
       onOffline?.(false);
       return list;
     } catch (error) {
@@ -61,7 +57,6 @@ export function useSessions(onOffline?: (offline: boolean) => void) {
         // Already gone server-side; drop it locally either way.
       }
       setSessions((current) => current.filter((session) => session.id !== id));
-      setVoiceSessions((current) => current.filter((session) => session.id !== id));
       setActiveId((current) => (current === id ? null : current));
     },
     [],
@@ -103,7 +98,6 @@ export function useSessions(onOffline?: (offline: boolean) => void) {
 
   return {
     sessions,
-    voiceSessions,
     activeId,
     setActiveId,
     counterpartId,

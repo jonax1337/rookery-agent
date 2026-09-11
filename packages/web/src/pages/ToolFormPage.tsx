@@ -1,125 +1,201 @@
-import { useState } from 'react';
+import { useId, useMemo } from 'react';
 import { useNavigate } from 'react-router';
+import { TerminalIcon } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/lib/api';
-import type { ToolServerAudience } from '@/lib/types';
-import { AUDIENCE_LABEL } from '@/lib/tools';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { z } from 'zod';
 
-/** A server of the user's own: any stdio MCP command. */
+import { AUDIENCE_CHOICES } from '@/lib/tools';
+import type { ToolServerAudience } from '@/lib/types';
+import { useTools } from '@/hooks/useTools';
+import { PageBody } from '@/components/blocks/page-body';
+import { FormPage } from '@/components/blocks/form-page';
+import { usePageMeta } from '@/components/shell/page-meta';
+import {
+  ChoiceField,
+  FormHeaderActions,
+  useDraft,
+  useFormSubmit,
+} from '@/components/forms/form-kit';
+import { Badge } from '@/components/ui/badge';
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldLabel,
+  FieldSet,
+} from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
+import { Textarea } from '@/components/ui/textarea';
+
+/**
+ * A server of the user's own: any stdio MCP command.
+ *
+ * Only creating - there is no `PATCH` for the command line of a custom
+ * server, so editing one means removing it and adding it again, and this page
+ * does not pretend otherwise.
+ *
+ * The arguments field is one text input because that is how a person copies a
+ * command out of a README. What the server will actually receive is shown
+ * underneath as the parsed list, so the split is visible before it matters.
+ */
+
+interface ToolDraft {
+  name: string;
+  command: string;
+  args: string;
+  hint: string;
+  audience: ToolServerAudience;
+}
+
+const EMPTY: ToolDraft = {
+  name: '',
+  command: '',
+  args: '',
+  hint: '',
+  audience: 'assistant',
+};
+
+const schema = z.object({
+  name: z.string().trim().min(1, 'Ein Name ist Pflicht.'),
+  command: z.string().trim().min(1, 'Ohne Befehl gibt es nichts zu starten.'),
+});
+
+/** Whitespace-separated, the way a shell would read it. */
+function parseArgs(text: string): string[] {
+  return text.split(/\s+/).filter(Boolean);
+}
+
 export function ToolFormPage() {
   const navigate = useNavigate();
-  const [name, setName] = useState('');
-  const [command, setCommand] = useState('');
-  const [args, setArgs] = useState('');
-  const [hint, setHint] = useState('');
-  const [audience, setAudience] = useState<ToolServerAudience>('assistant');
-  const [busy, setBusy] = useState(false);
+  const { addCustom } = useTools();
 
-  const submit = async (): Promise<void> => {
-    if (!name.trim() || !command.trim()) {
-      toast.error('Name und Befehl sind Pflicht');
-      return;
-    }
-    setBusy(true);
-    try {
-      const created = await api.addCustomTool({
-        name: name.trim(),
-        command: command.trim(),
-        args: args.split(/\s+/).filter(Boolean),
-        hint: hint.trim(),
-        audience,
-      });
-      toast('Server hinzugefügt');
-      navigate('/tools/' + created.id);
-    } catch (caught) {
-      toast.error('Hinzufügen fehlgeschlagen', { description: (caught as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
+  const formId = useId();
+  const { draft, dirty, set, markSaved } = useDraft<ToolDraft>(EMPTY);
+
+  const args = useMemo(() => parseArgs(draft.args), [draft.args]);
+
+  const { errors, failure, saving, submit } = useFormSubmit(schema, draft, async () => {
+    // `addCustom` refetches the catalogue itself - a new server changes
+    // more than its own row, and nothing broadcasts that over the socket.
+    const created = await addCustom({
+      name: draft.name.trim(),
+      command: draft.command.trim(),
+      args,
+      hint: draft.hint.trim(),
+      audience: draft.audience,
+    });
+    markSaved();
+    toast('Server angelegt', { description: created.name });
+    void navigate('/tools/' + created.id);
+  });
+
+  usePageMeta(
+    {
+      breadcrumb: [{ label: 'Werkzeuge', to: '/tools' }, { label: 'Eigener Server' }],
+      actions: (
+        <FormHeaderActions
+          form={formId}
+          cancelTo="/tools"
+          submitLabel="Anlegen"
+          submitting={saving}
+          submitDisabled={!dirty || saving}
+        />
+      ),
+    },
+    [dirty, formId, saving],
+  );
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-2xl space-y-6 p-6">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Eigener MCP-Server</h1>
-          <p className="text-sm text-muted-foreground">
-            Jeder stdio-MCP-Server geht. Umgebungsvariablen wie API-Keys lassen sich danach auf der Seite des Servers eintragen.
-          </p>
-        </div>
+    <PageBody width="2xl">
+      <FormPage
+        formId={formId}
+        showActions={false}
+        onSubmit={submit}
+        error={failure}
+        description="Jeder stdio-MCP-Server geht. Schlüssel und Umgebungsvariablen lassen sich danach auf der Seite des Servers eintragen."
+      >
+        <FieldSet>
+          <Field>
+            <FieldLabel htmlFor="tool-name">Name</FieldLabel>
+            <Input
+              id="tool-name"
+              placeholder="z. B. Notion"
+              value={draft.name}
+              aria-invalid={Boolean(errors.name)}
+              onChange={(event) => set({ name: event.target.value })}
+            />
+            <FieldError>{errors.name}</FieldError>
+          </Field>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Server</CardTitle>
-            <CardDescription>Der Hinweis sagt dem Assistenten, wofür die Werkzeuge gut sind und wann er sie nimmt.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="custom-name" className="text-[12px] text-muted-foreground">
-                Name
-              </Label>
-              <Input id="custom-name" value={name} onChange={(event) => setName(event.target.value)} placeholder="z. B. Notion" />
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="custom-command" className="text-[12px] text-muted-foreground">
-                  Befehl
-                </Label>
-                <Input id="custom-command" value={command} onChange={(event) => setCommand(event.target.value)} placeholder="npx" />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="custom-args" className="text-[12px] text-muted-foreground">
-                  Argumente
-                </Label>
-                <Input id="custom-args" value={args} onChange={(event) => setArgs(event.target.value)} placeholder="-y @notionhq/notion-mcp-server" />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="custom-audience" className="text-[12px] text-muted-foreground">
-                Für wen
-              </Label>
-              <Select value={audience} onValueChange={(value) => setAudience(value as ToolServerAudience)}>
-                <SelectTrigger id="custom-audience" className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(AUDIENCE_LABEL) as ToolServerAudience[]).map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {AUDIENCE_LABEL[value]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="custom-hint" className="text-[12px] text-muted-foreground">
-                Hinweis für den Assistenten
-              </Label>
-              <Textarea
-                id="custom-hint"
-                rows={3}
-                value={hint}
-                onChange={(event) => setHint(event.target.value)}
-                placeholder="Wofür diese Werkzeuge gut sind und wann er sie nehmen soll."
+          <Field>
+            <FieldLabel htmlFor="tool-command">Befehl</FieldLabel>
+            <InputGroup>
+              <InputGroupAddon align="inline-start">
+                <TerminalIcon />
+              </InputGroupAddon>
+              <InputGroupInput
+                id="tool-command"
+                className="font-mono"
+                placeholder="npx"
+                value={draft.command}
+                aria-invalid={Boolean(errors.command)}
+                onChange={(event) => set({ command: event.target.value })}
               />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => navigate('/tools')}>
-                Abbrechen
-              </Button>
-              <Button onClick={() => void submit()} disabled={busy}>
-                Hinzufügen
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </div>
+            </InputGroup>
+            <FieldDescription>
+              Das Programm selbst, ohne Argumente — auf diesem Rechner ausführbar.
+            </FieldDescription>
+            <FieldError>{errors.command}</FieldError>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="tool-args">Argumente</FieldLabel>
+            <Input
+              id="tool-args"
+              className="font-mono"
+              placeholder="-y @notionhq/notion-mcp-server"
+              value={draft.args}
+              onChange={(event) => set({ args: event.target.value })}
+            />
+            <FieldDescription>Durch Leerzeichen getrennt.</FieldDescription>
+            {args.length ? (
+              <div className="flex flex-wrap gap-1.5">
+                {args.map((arg, index) => (
+                  <Badge key={index + '-' + arg} variant="secondary" className="font-mono text-xs">
+                    {arg}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="tool-audience-assistant">Für wen</FieldLabel>
+            <ChoiceField
+              id="tool-audience"
+              options={AUDIENCE_CHOICES}
+              value={draft.audience}
+              onChange={(audience) => set({ audience })}
+            />
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="tool-hint">Hinweis</FieldLabel>
+            <Textarea
+              id="tool-hint"
+              rows={3}
+              placeholder="Wofür diese Werkzeuge gut sind und wann er sie nehmen soll."
+              value={draft.hint}
+              onChange={(event) => set({ hint: event.target.value })}
+            />
+            <FieldDescription>
+              Steht im Systemprompt neben den Werkzeugnamen — daran entscheidet sich, ob der Server
+              je benutzt wird.
+            </FieldDescription>
+          </Field>
+        </FieldSet>
+      </FormPage>
+    </PageBody>
   );
 }

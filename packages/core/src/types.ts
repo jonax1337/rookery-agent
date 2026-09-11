@@ -590,6 +590,88 @@ export interface CronRun {
 }
 
 /* ------------------------------------------------------------------ *
+ * Aggregate statistics
+ * ------------------------------------------------------------------ */
+
+/**
+ * Whole-database counts, every one of them a `COUNT(*)`.
+ *
+ * They exist because every list endpoint is capped: a total counted from a
+ * page of 500 stops being true the moment the cap bites, and a dashboard
+ * that quietly rounds down is worse than one that shows nothing. Sessions,
+ * messages and memories span the database; the company's numbers belong to
+ * the active organisation, the memory numbers to one owner.
+ */
+export interface StatsTotals {
+  /** Conversations that are not archived. */
+  sessions: number;
+  archivedSessions: number;
+  /** Transcript rows across every conversation. */
+  messages: number;
+  assignments: number;
+  /** Assignments still pending or running. */
+  runningAssignments: number;
+  /** Top-level tasks and subtasks together. */
+  tasks: number;
+  /** Tasks in `open`, `planned` or `running` - what is still ahead. */
+  openTasks: number;
+  cronJobs: number;
+  cronRuns: number;
+  /** Live memories of the asked-for owner; the same figure as `memoryStats().total`. */
+  memories: number;
+  /** Agents that are not archived. */
+  agents: number;
+}
+
+/**
+ * One local calendar day of the time series.
+ *
+ * A day only appears once something happened on it. The gaps are left in on
+ * purpose: only the client knows which window it means to draw, so filling
+ * them is its job, not the database's.
+ *
+ * Every figure counts what was created that day, whatever became of it
+ * since - a conversation archived last week still counts on the day it
+ * started. That is why the series and `StatsTotals` answer different
+ * questions and need not add up to each other.
+ */
+export interface StatsDay {
+  /** Local calendar day, `YYYY-MM-DD`. */
+  day: string;
+  sessions: number;
+  messages: number;
+  assignments: number;
+  tasks: number;
+  cronRuns: number;
+  memories: number;
+  /** Prompt tokens summed over the day's messages; 0 when none were recorded. */
+  inputTokens: number;
+  /** Completion tokens, same caveat. */
+  outputTokens: number;
+}
+
+/** What `GET /api/stats` answers with: the counts, and how they came about. */
+export interface StatsSnapshot {
+  /** Start of the series window, epoch milliseconds, inclusive. */
+  since: number;
+  /** End of the window, epoch milliseconds, inclusive - "now" in practice. */
+  until: number;
+  /** The company the organisation numbers belong to. */
+  orgId: string;
+  /** The memory bank the memory numbers belong to. */
+  owner: string;
+  totals: StatsTotals;
+  /** Ascending by day, gaps left in. */
+  series: StatsDay[];
+  /**
+   * False when no message in the window carried usage data at all. Then the
+   * token figures are zero because nothing was recorded, not because nothing
+   * was spent - the difference matters on a chart.
+   */
+  tokensAvailable: boolean;
+}
+
+/* ------------------------------------------------------------------ *
  * Provider adapter contract
  * ------------------------------------------------------------------ */
 
@@ -819,6 +901,14 @@ export interface OrgConfig {
   maxDelegationDepth: number;
   /** Hard stop for a single assignment, in milliseconds. */
   assignmentTimeoutMs: number;
+  /**
+   * Put the Ponytail ruleset (org/ponytail.ts) into every agent's system
+   * prompt: understand the problem, then stop at the first rung of the
+   * laziness ladder that holds. Costs roughly 600 tokens per run and pays for
+   * itself on anything that writes code. Off leaves agents to their own
+   * judgement.
+   */
+  lazyCoding: boolean;
   /** Explicitly chosen company; the newest one otherwise. */
   activeOrganizationId?: string;
 }

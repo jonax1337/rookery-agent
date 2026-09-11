@@ -180,7 +180,10 @@ test('a skill source is owner/repo, a path below it, or a GitHub URL', () => {
   });
   assert.deepEqual(parseSkillSource('https://github.com/owner/repo.git'), { owner: 'owner', repo: 'repo', ref: undefined, path: '' });
   assert.throws(() => parseSkillSource('just-a-name'), /owner\/repo/);
-  assert.ok(SKILL_SOURCES.every((entry) => entry.source.startsWith('anthropics/skills/skills/')));
+  // The shelf is no longer only Anthropic's, but every entry still has to name
+  // one skill folder rather than a whole repo, so importing it lands a skill
+  // instead of a list of candidates to pick from.
+  assert.ok(SKILL_SOURCES.every((entry) => parseSkillSource(entry.source).path !== ''));
 });
 
 test('skills live as SKILL.md folders and render into an index per audience', async () => {
@@ -231,6 +234,17 @@ test('an agent prompt is a member of staff, never the assistant', () => {
   assert.match(prompt, /direct reports: ben/);
   assert.match(prompt, /report to whoever assigned it/);
   assert.doesNotMatch(prompt, /You are Rookery/);
+
+  // org.lazyCoding is on by default, and off has to mean off: a switch that
+  // silently changes nothing is the failure worth catching here.
+  assert.match(prompt, /stop at the first rung that holds/);
+  const eager = buildAgentPrompt({
+    config: { ...DEFAULT_CONFIG, org: { ...DEFAULT_CONFIG.org, lazyCoding: false } },
+    agent, snapshot, memories: [], inbox: [],
+    assignmentId: 'abcdef12-0000', requestedBy: 'the assistant',
+  });
+  assert.doesNotMatch(eager, /stop at the first rung that holds/);
+  assert.match(eager, /Keep the API small/);
 });
 
 test('agents see the staff subset of the tools', () => {
