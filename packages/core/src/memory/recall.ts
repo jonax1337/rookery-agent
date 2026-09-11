@@ -1,4 +1,11 @@
-import { ASSISTANT_MEMORY_OWNER, type MemoryKind, type MemoryQuery, type ScoredMemory } from '../types.js';
+import {
+  ASSISTANT_MEMORY_OWNER,
+  type MemoryEntity,
+  type MemoryKind,
+  type MemoryQuery,
+  type MemoryRecord,
+  type ScoredMemory,
+} from '../types.js';
 import { mapMemory, type Store } from './store.js';
 
 /**
@@ -57,6 +64,15 @@ export interface RecallOptions extends MemoryQuery {
   threshold?: number;
   /** Mark the returned memories as accessed. Off for read-only inspection. */
   touch?: boolean;
+  /**
+   * Reach past the literal match through the graph. On by default; the
+   * inspector switches it off so a search shows what actually matched.
+   */
+  expand?: boolean;
+  /** Score a memory inherits through a shared entity. */
+  hopEntity?: number;
+  /** Score a memory inherits through a `refines` or `caused_by` edge. */
+  hopEdge?: number;
 }
 
 /**
@@ -83,6 +99,8 @@ export function recall(store: Store, options: RecallOptions): ScoredMemory[] {
       WHERE memories_fts MATCH ?
         AND m.owner = ?
         AND m.forgotten = 0
+        AND m.dormant_at IS NULL
+        AND m.superseded_by IS NULL
         AND m.importance >= ?` +
     kindFilter +
     ` ORDER BY relevance DESC LIMIT ?`;
@@ -116,18 +134,117 @@ export function recall(store: Store, options: RecallOptions): ScoredMemory[] {
       WEIGHTS.usage * usage +
       tagHit;
 
-    return { ...record, score, reason: describe(relevance, record.importance, recency, tagHit > 0) };
+    return {
+      ...record,
+      score,
+      hop: 'direct' as const,
+      reason: describe(relevance, record.importance, recency, tagHit > 0),
+    };
   });
 
-  const top = scored
-    .filter((memory) => memory.score >= threshold)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+  const direct = scored.filter((memory) => memory.score >= threshold).sort((a, b) => b.score - a.score);
+
+  // The second hop: what the question could not say in words. Only the best
+  // few direct hits get to pull neighbours in, so a vague question does not
+  // drag the whole bank along behind it.
+  const expanded =
+    options.expand === false ? [] : expand(store, owner, direct.slice(0, 3), options);
+
+  const byId = new Map<string, ScoredMemory>();
+  for (const memory of [...direct, ...expanded]) {
+    const existing = byId.get(memory.id);
+    // Maximum, never a sum: reaching the same memory two ways is one memory.
+    if (!existing || memory.score > existing.score) byId.set(memory.id, memory);
+  }
+
+  const top = [...byId.values()].sort((a, b) => b.score - a.score).slice(0, limit);
 
   if (options.touch !== false && top.length) {
     store.touchMemories(top.map((memory) => memory.id));
   }
   return top;
+}
+
+/**
+ * Pull in what the direct hits are connected to.
+ *
+ * This is what closes the gap lexical search cannot: "which language do I
+ * prefer?" shares no word with "works mainly with TypeScript", but both hang
+ * off the entity `typescript`. Common entities are damped - one that half the
+ * bank mentions says nothing about this question in particular.
+ */
+function expand(
+  store: Store,
+  owner: string,
+  seeds: ScoredMemory[],
+  options: RecallOptions,
+): ScoredMemory[] {
+  if (!seeds.length) return [];
+  const hopEntity = options.hopEntity ?? 0.45;
+  const hopEdge = options.hopEdge ?? 0.6;
+  const seedIds = seeds.map((memory) => memory.id);
+  const out = new Map<string, ScoredMemory>();
+
+  const offer = (record: MemoryRecord, score: number, hop: 'entity' | 'edge', reason: string): void => {
+    if (seedIds.includes(record.id)) return;
+    if (record.forgotten || record.dormantAt || record.supersededBy) return;
+    const existing = out.get(record.id);
+    if (existing && existing.score >= score) return;
+    out.set(record.id, { ...record, score, hop, reason });
+  };
+
+  for (const seed of seeds) {
+    const entities = store.entitiesFor(seed.id);
+    for (const entity of entities) {
+      if (entity.mentions <= 1) continue;
+      const damping = Math.min(1, 3 / Math.max(1, entity.mentions));
+      const inherited = hopEntity * seed.score * damping;
+      if (inherited < (options.threshold ?? 0.12) * 0.5) continue;
+      for (const record of store.memoriesForEntities([entity.id], { exclude: seedIds, limit: 8 })) {
+        offer(record, inherited * (0.6 + 0.4 * record.importance), 'entity', 'connected through ' + entity.name);
+      }
+    }
+  }
+
+  const edges = store.edgesFrom(seedIds, ['refines', 'caused_by']);
+  for (const edge of edges) {
+    const seed = seeds.find((memory) => memory.id === edge.srcId);
+    if (!seed) continue;
+    const record = store.getMemory(edge.dstId);
+    if (!record || record.owner !== owner) continue;
+    offer(
+      record,
+      hopEdge * seed.score * edge.weight,
+      'edge',
+      edge.relation === 'refines' ? 'refines a match' : 'explains a match',
+    );
+  }
+
+  return [...out.values()];
+}
+
+/**
+ * Of a pair that cannot both be true, only the newer one goes into a prompt.
+ * The older one stays in the bank and stays visible in the inspector - the
+ * night reports contradictions, it never decides them, and neither does this.
+ */
+export function dropContradicted(store: Store, memories: ScoredMemory[]): ScoredMemory[] {
+  if (memories.length < 2) return memories;
+  const ids = memories.map((memory) => memory.id);
+  const edges = store.edgesFrom(ids, ['contradicts']);
+  if (!edges.length) return memories;
+  const loser = new Set<string>();
+  for (const edge of edges) {
+    const a = memories.find((memory) => memory.id === edge.srcId);
+    const b = memories.find((memory) => memory.id === edge.dstId);
+    if (!a || !b) continue;
+    loser.add(a.updatedAt >= b.updatedAt ? b.id : a.id);
+  }
+  return memories.map((memory) =>
+    loser.has(memory.id)
+      ? { ...memory, reason: memory.reason + ', outdated by a newer note' }
+      : memory,
+  ).filter((memory) => !loser.has(memory.id));
 }
 
 /**
@@ -148,20 +265,27 @@ export function coreProfile(
   const minImportance = options.minImportance ?? 0.7;
   const owner = options.owner ?? ASSISTANT_MEMORY_OWNER;
 
+  // Pinned first, then insights, then plain weight: what the user fixed in
+  // place and what the nights concluded outrank whatever scored highest.
   const rows = store.db
     .prepare(
       `SELECT * FROM memories
-        WHERE owner = ? AND forgotten = 0 AND importance >= ?
-        ORDER BY importance DESC, updated_at DESC
+        WHERE owner = ? AND forgotten = 0 AND dormant_at IS NULL AND superseded_by IS NULL
+          AND (importance >= ? OR pinned = 1)
+        ORDER BY pinned DESC, (kind = 'insight') DESC, importance DESC, updated_at DESC
         LIMIT ?`,
     )
     .all(owner, minImportance, limit) as Record<string, unknown>[];
 
-  return rows.map((row) => ({
-    ...mapMemory(row),
-    score: 1,
-    reason: 'core profile',
-  }));
+  return rows.map((row) => {
+    const record = mapMemory(row);
+    return {
+      ...record,
+      score: 1,
+      hop: 'direct' as const,
+      reason: record.pinned ? 'pinned' : record.kind === 'insight' ? 'insight' : 'core profile',
+    };
+  });
 }
 
 function describe(relevance: number, importance: number, recency: number, taggedHit: boolean): string {
@@ -174,17 +298,52 @@ function describe(relevance: number, importance: number, recency: number, tagged
   return parts.length ? parts.join(', ') : 'weak match';
 }
 
-/** Format recalled memories as the block injected into the system prompt. */
-export function renderMemoryBlock(memories: ScoredMemory[], budget = 2000, subject = 'this user'): string {
+/**
+ * Format recalled memories as the block injected into the system prompt.
+ *
+ * Grouped by entity when a store is available: a model reads "Rookery: three
+ * things" far better than twelve unrelated bullets, and the grouping is the
+ * only place the graph becomes visible to the model at all. Without a store
+ * it falls back to the flat list, which is what the tests and the CLI use.
+ */
+export function renderMemoryBlock(
+  memories: ScoredMemory[],
+  budget = 2000,
+  subject = 'this user',
+  store?: Store,
+): string {
   if (!memories.length) return '';
   const lines: string[] = [];
   let used = 0;
-  for (const memory of memories) {
-    const line = '- (' + memory.kind + ') ' + memory.content;
-    if (used + line.length > budget) break;
+  const push = (line: string): boolean => {
+    if (used + line.length > budget) return false;
     lines.push(line);
     used += line.length + 1;
+    return true;
+  };
+
+  const groups = store ? groupByEntity(store, memories) : null;
+  if (groups && groups.grouped.length) {
+    for (const group of groups.grouped) {
+      if (!push(group.entity.name + ':')) break;
+      let full = false;
+      for (const memory of group.memories) {
+        if (!push('  - (' + memory.kind + ') ' + memory.content)) {
+          full = true;
+          break;
+        }
+      }
+      if (full) break;
+    }
+    for (const memory of groups.loose) {
+      if (!push('- (' + memory.kind + ') ' + memory.content)) break;
+    }
+  } else {
+    for (const memory of memories) {
+      if (!push('- (' + memory.kind + ') ' + memory.content)) break;
+    }
   }
+
   if (!lines.length) return '';
   return (
     'What you already know about ' + subject + ' (from earlier work):\n' +
@@ -193,4 +352,46 @@ export function renderMemoryBlock(memories: ScoredMemory[], budget = 2000, subje
   );
 }
 
-export const MEMORY_KINDS: MemoryKind[] = ['fact', 'preference', 'project', 'event', 'summary'];
+/**
+ * Bucket memories under the entity that best explains them. Each memory
+ * appears once, under its rarest entity - the rarest one is the most
+ * informative, since an entity half the bank mentions groups nothing.
+ */
+function groupByEntity(
+  store: Store,
+  memories: ScoredMemory[],
+): { grouped: { entity: MemoryEntity; memories: ScoredMemory[] }[]; loose: ScoredMemory[] } {
+  const buckets = new Map<string, { entity: MemoryEntity; memories: ScoredMemory[] }>();
+  const loose: ScoredMemory[] = [];
+
+  for (const memory of memories) {
+    const entities = store.entitiesFor(memory.id).filter((entity) => entity.mentions > 1);
+    if (!entities.length) {
+      loose.push(memory);
+      continue;
+    }
+    const best = entities.reduce((a, b) => (a.mentions <= b.mentions ? a : b));
+    const bucket = buckets.get(best.id);
+    if (bucket) bucket.memories.push(memory);
+    else buckets.set(best.id, { entity: best, memories: [memory] });
+  }
+
+  // A group of one is not a group; it reads better as a plain line.
+  const grouped: { entity: MemoryEntity; memories: ScoredMemory[] }[] = [];
+  for (const bucket of buckets.values()) {
+    if (bucket.memories.length > 1) grouped.push(bucket);
+    else loose.push(...bucket.memories);
+  }
+  grouped.sort((a, b) => b.memories.length - a.memories.length);
+  loose.sort((a, b) => b.score - a.score);
+  return { grouped, loose };
+}
+
+export const MEMORY_KINDS: MemoryKind[] = [
+  'fact',
+  'preference',
+  'project',
+  'event',
+  'summary',
+  'insight',
+];

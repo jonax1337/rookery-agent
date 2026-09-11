@@ -4,7 +4,7 @@ import {
   SKILL_SOURCES,
   customToolId,
   importSkillFromGitHub,
-  saveConfig,
+  applyConfig,
   skillSlug,
   toolServerStates,
   withToolServer,
@@ -57,12 +57,12 @@ function runPrepare(command: string, args: string[]): Promise<{ ok: boolean; out
 /**
  * The tool hub and the skills folder.
  *
- * Writes go through saveConfig and into the live config object the runtime
+ * Writes go through applyConfig and into the one config object the runtime
  * and the server share, so a switch flipped here reaches the next turn.
  */
 export async function registerToolRoutes(app: FastifyInstance, context: ServerContext): Promise<void> {
   const apply = (tools: RookeryConfig['tools']): void => {
-    Object.assign(context.config, saveConfig({ tools }, context.config.home));
+    applyConfig(context.config, { tools });
     context.assistant.emit('changed', { kind: 'tools', id: 'tools' });
   };
   const notFound = (reply: FastifyReply, message: string): { error: string; message: string } => {

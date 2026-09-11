@@ -28,6 +28,9 @@ export type SocketStatus = 'connecting' | 'open' | 'closed';
 /** The `cron` broadcast: the job as it is now, and the run that changed, if one did. */
 export type CronEvent = Extract<AgentEvent, { type: 'cron' }>;
 
+/** The `sleep` broadcast: the run as it stands, and which phase it just left. */
+export type SleepEvent = Extract<AgentEvent, { type: 'sleep' }>;
+
 export interface TurnHandlers {
   onEvent(event: AgentEvent): void;
   onDone(text: string, usage?: TurnUsage): void;
@@ -55,6 +58,7 @@ export class RookerySocket {
   #taskListeners = new Set<(task: Task) => void>();
   #cronListeners = new Set<(event: CronEvent) => void>();
   #changedListeners = new Set<(change: OrgChange) => void>();
+  #sleepListeners = new Set<(event: SleepEvent) => void>();
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #pingTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -99,6 +103,12 @@ export class RookerySocket {
   onCron(listener: (event: CronEvent) => void): () => void {
     this.#cronListeners.add(listener);
     return () => this.#cronListeners.delete(listener);
+  }
+
+  /** The memory fell asleep, moved on a phase, or woke up again. */
+  onSleep(listener: (event: SleepEvent) => void): () => void {
+    this.#sleepListeners.add(listener);
+    return () => this.#sleepListeners.delete(listener);
   }
 
   /** An agent, team, project or the company itself was created or edited. */
@@ -246,6 +256,14 @@ export class RookerySocket {
       if (frame.event.type === 'cron') {
         const event = frame.event;
         for (const listener of this.#cronListeners) listener(event);
+      }
+      return;
+    }
+
+    if (frame.type === 'sleep') {
+      if (frame.event.type === 'sleep') {
+        const event = frame.event;
+        for (const listener of this.#sleepListeners) listener(event);
       }
       return;
     }

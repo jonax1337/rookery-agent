@@ -12,6 +12,7 @@ import { registerConfigRoutes } from './routes/config.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerSessionRoutes } from './routes/sessions.js';
 import { registerMemoryRoutes } from './routes/memories.js';
+import { registerSleepRoutes } from './routes/sleep.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerOrgRoutes } from './routes/org.js';
 import { registerCronRoutes } from './routes/cron.js';
@@ -101,6 +102,7 @@ export async function buildServer(
   await registerProviderRoutes(app, context);
   await registerSessionRoutes(app, context);
   await registerMemoryRoutes(app, context);
+  await registerSleepRoutes(app, context);
   await registerChatRoutes(app, context);
   await registerOrgRoutes(app, context);
   await registerCronRoutes(app, context);
@@ -139,16 +141,24 @@ export async function buildServer(
   const onCron = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'cron', event });
   };
+  // The brain falling asleep and waking up again: the memory page follows a
+  // run phase by phase, so it has to arrive on every socket, not one.
+  const onSleep = (event: AgentEvent): void => {
+    for (const socket of context.sockets) sendFrame(socket, { type: 'sleep', event });
+  };
   assistant.on('assignment', onAssignment);
   assistant.on('message', onMessage);
   assistant.on('changed', onChanged);
   assistant.on('task', onTask);
   assistant.on('cron', onCron);
+  assistant.on('sleep', onSleep);
 
   // The clock runs for as long as the server does: a schedule is a promise
   // that something happens at a time, and the server is the process that is
   // up at that time.
   assistant.cron.start();
+  // The nightly memory run is an ordinary schedule row, created on first start.
+  assistant.ensureSleepSchedule();
 
   // A socket that misses a full heartbeat round trip is dead weight: without
   // this a dropped Wi-Fi connection would sit in `sockets` forever.
@@ -188,6 +198,7 @@ export async function buildServer(
     assistant.off('changed', onChanged);
     assistant.off('task', onTask);
     assistant.off('cron', onCron);
+    assistant.off('sleep', onSleep);
     for (const socket of context.sockets) {
       try {
         socket.close(1001, 'server shutting down');

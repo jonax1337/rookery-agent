@@ -139,8 +139,8 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'tool_servers',
     description:
       'The tool hub: which MCP servers exist (computer control, browser, filesystem, GitHub, ' +
-      'documentation, custom ones), whether they are on, and for whom. Servers switched on here ' +
-      'are attached to your next turn, not this one.',
+      'documentation, custom ones), whether they are on, and for whom. A server you switch on ' +
+      'is attached as soon as you stop talking, and the turn carries on with it.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     audience: ASSISTANT_ONLY,
   },
@@ -148,8 +148,10 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'set_tool_server',
     description:
       'Switch a tool server on or off, for the assistant, the agents or both. Installing or ' +
-      "configuring keys is the user's job on the Werkzeuge page; you only flip switches. Takes " +
-      'effect from the next turn.',
+      "configuring keys is the user's job on the Werkzeuge page; you only flip switches. A " +
+      'server you switch on for yourself is attached the moment this answer ends, and you get ' +
+      'to go on working with it in the same turn, so switch it on and continue instead of ' +
+      'asking the user to try again.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -444,6 +446,19 @@ export const ORG_TOOLS: ToolDefinition[] = [
       properties: { id: str('Schedule id, prefix, or exact name.') },
       required: ['id'],
       additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
+  },
+  {
+    name: 'sleep_now',
+    description:
+      "Run the memory's nightly clean-up right now: condense memories that say the same thing, " +
+      'let unused ones fall asleep, draw connections between them and note what the last days ' +
+      'add up to. It normally runs on a schedule at night, so use this only when the user asks. ' +
+      'Nothing is ever deleted, and the whole run can be undone from the memory page.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
     audience: ASSISTANT_ONLY,
   },

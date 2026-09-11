@@ -1,7 +1,10 @@
 import type {
   AssignmentStatus,
   EffortLevel,
+  EntityKind,
   MemoryKind,
+  MemoryOrigin,
+  MemoryRelation,
   PermissionLevel,
   ProviderId,
   TaskPriority,
@@ -34,6 +37,55 @@ export const MEMORY_KIND_LABEL: Record<MemoryKind, string> = {
   project: 'Projekt',
   event: 'Ereignis',
   summary: 'Zusammenfassung',
+  insight: 'Einsicht',
+};
+
+/** What an entity is a name for. */
+export const ENTITY_KIND_LABEL: Record<EntityKind, string> = {
+  person: 'Person',
+  project: 'Projekt',
+  tool: 'Werkzeug',
+  place: 'Ort',
+  org: 'Organisation',
+  topic: 'Thema',
+};
+
+/** How two memories relate, said the way a person would say it. */
+export const RELATION_LABEL: Record<MemoryRelation, string> = {
+  refines: 'präzisiert',
+  supersedes: 'ersetzt',
+  contradicts: 'widerspricht',
+  caused_by: 'liegt an',
+  co_occurs: 'hängt zusammen mit',
+};
+
+/** Who wrote a memory. */
+export const ORIGIN_LABEL: Record<MemoryOrigin, string> = {
+  extract: 'aus einem Gespräch',
+  user: 'von dir',
+  sleep: 'im Schlaf verdichtet',
+};
+
+/**
+ * The stage a running night is in. A night is not one chore: light sleep
+ * tidies, deep sleep files and decides, dream sleep connects and concludes.
+ */
+export const SLEEP_PHASE_LABEL: Record<string, string> = {
+  started: 'schläft ein',
+  light: 'Leichtschlaf',
+  deep: 'Tiefschlaf',
+  rem: 'Traumschlaf',
+  finished: 'wacht auf',
+  undone: 'zurückgenommen',
+};
+
+/** What each stage is actually doing, one line for the card. */
+export const SLEEP_PHASE_DETAIL: Record<string, string> = {
+  started: 'sammelt sich',
+  light: 'räumt auf, ohne nachzudenken',
+  deep: 'verdichtet und entscheidet Widersprüche',
+  rem: 'verknüpft und zieht Schlüsse',
+  finished: 'fertig',
 };
 
 export const PERMISSION_LABEL: Record<PermissionLevel, string> = {

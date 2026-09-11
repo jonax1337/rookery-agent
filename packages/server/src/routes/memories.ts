@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { MEMORY_KINDS, recall } from '@rookery/core';
 import type { MemoryKind } from '@rookery/core';
 import type { ServerContext } from '../context.js';
-import { createMemorySchema, parseOrThrow } from '../schemas.js';
+import { createMemorySchema, patchMemorySchema, parseOrThrow } from '../schemas.js';
 
 type MemoryQuery = {
   Querystring: { q?: string; kind?: string | string[]; limit?: string; includeForgotten?: string; owner?: string };
@@ -39,6 +39,8 @@ export async function registerMemoryRoutes(
         limit,
         kinds: kinds.length ? kinds : undefined,
         owner: owner || undefined,
+        hopEntity: context.config.memory.graph.hopEntity,
+        hopEdge: context.config.memory.graph.hopEdge,
         touch: false,
       });
     }
@@ -51,9 +53,70 @@ export async function registerMemoryRoutes(
     });
   });
 
+  /**
+   * The graph behind the list: entities, the memories hanging off them and
+   * the edges between those memories. Everything the brain view draws comes
+   * out of this one request.
+   */
+  app.get(
+    '/api/memories/graph',
+    async (
+      request: FastifyRequest<{
+        Querystring: {
+          owner?: string;
+          entity?: string;
+          kind?: string | string[];
+          since?: string;
+          includeDormant?: string;
+          limit?: string;
+        };
+      }>,
+    ) => {
+      const kinds = parseKinds(request.query.kind);
+      const since = Number(request.query.since);
+      return context.assistant.store.memoryGraph({
+        owner: request.query.owner || undefined,
+        entityId: request.query.entity || undefined,
+        kinds: kinds.length ? kinds : undefined,
+        since: Number.isFinite(since) && since > 0 ? since : undefined,
+        includeDormant: isTruthy(request.query.includeDormant),
+        limit: clampLimit(request.query.limit, context.config.memory.graph.maxNodes, 1000),
+      });
+    },
+  );
+
+  /** Entities for the graph's filter bar and for autocomplete. */
+  app.get(
+    '/api/entities',
+    async (
+      request: FastifyRequest<{ Querystring: { owner?: string; limit?: string; minMentions?: string } }>,
+    ) => {
+      const minMentions = Number(request.query.minMentions);
+      return context.assistant.store.listEntities({
+        owner: request.query.owner || undefined,
+        limit: clampLimit(request.query.limit, 200, 1000),
+        minMentions: Number.isFinite(minMentions) ? minMentions : 1,
+      });
+    },
+  );
+
+  /** One memory with its entities and both directions of its edges. */
+  app.get(
+    '/api/memories/:id/edges',
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const neighbourhood = context.assistant.store.neighbourhood(request.params.id);
+      if (!neighbourhood) {
+        reply.code(404);
+        return { error: 'No memory ' + request.params.id + '.' };
+      }
+      return neighbourhood;
+    },
+  );
+
   app.post('/api/memories', async (request: FastifyRequest, reply: FastifyReply) => {
     const input = parseOrThrow(createMemorySchema, request.body ?? {});
-    const record = context.assistant.store.upsertMemory({
+    // Added by hand means added by the user: protected from the night.
+    const record = context.assistant.rememberFact({
       kind: input.kind ?? 'fact',
       content: input.content,
       tags: input.tags,
@@ -62,6 +125,29 @@ export async function registerMemoryRoutes(
     reply.code(201);
     return record;
   });
+
+  /** Pin, re-word, re-weight, or wake a sleeping memory. */
+  app.patch(
+    '/api/memories/:id',
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const input = parseOrThrow(patchMemorySchema, request.body ?? {});
+      const store = context.assistant.store;
+      if (!store.getMemory(request.params.id)) {
+        reply.code(404);
+        return { error: 'No memory ' + request.params.id + '.' };
+      }
+      if (input.dormant === false) store.wakeMemory(request.params.id);
+      return store.updateMemory(request.params.id, {
+        content: input.content,
+        kind: input.kind,
+        tags: input.tags,
+        importance: input.importance,
+        pinned: input.pinned,
+        forgotten: input.forgotten,
+        ...(input.dormant === true ? { dormantAt: Date.now() } : {}),
+      });
+    },
+  );
 
   app.delete(
     '/api/memories/:id',

@@ -246,6 +246,19 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
   for (const hint of input.toolHints ?? []) sections.push(hint);
   if (input.skillsIndex) sections.push(input.skillsIndex);
 
+  // The assistant is told not to accept dead ends; an agent that reports
+  // "not possible" after one attempt would hand it one anyway.
+  sections.push(
+    [
+      'Do not come back with a dead end you have not earned. A failed command, a missing file or a',
+      'closed door is the first attempt, not the answer: read what the error actually says, change',
+      'the approach rather than the parameter, and try a genuinely different route before you report',
+      'that something cannot be done. When you do report it, say what you tried and what would',
+      'unblock it. Stop short of anything irreversible or consequential the assignment did not ask',
+      'for, and never claim a result you have not seen.',
+    ].join(' '),
+  );
+
   sections.push(
     [
       'Work the assignment and nothing else. Your output is a report to whoever assigned it,',

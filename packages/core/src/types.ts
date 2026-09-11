@@ -141,6 +141,8 @@ export type AgentEvent =
   | { type: 'task'; task: Task }
   /** A schedule was created, edited, deleted, or one of its runs changed state. */
   | { type: 'cron'; job: CronJob; run?: CronRun; deleted?: boolean }
+  /** The memory bank started, advanced through or finished a night's clean-up. */
+  | { type: 'sleep'; run: SleepRun; phase?: string; cycle?: number }
   /** The provider reported the account's limit windows during the turn. */
   | { type: 'quota'; quota: ProviderQuota }
   | { type: 'error'; message: string; fatal: boolean }
@@ -157,8 +159,13 @@ export type AgentEvent =
  * - project:    ongoing work, goals, constraints
  * - event:      something that happened, where the timestamp matters
  * - summary:    a compressed digest of an older conversation span
+ * - insight:    a conclusion drawn across several memories; written only by
+ *               the sleep run, never by a turn, and always backed by evidence
  */
-export type MemoryKind = 'fact' | 'preference' | 'project' | 'event' | 'summary';
+export type MemoryKind = 'fact' | 'preference' | 'project' | 'event' | 'summary' | 'insight';
+
+/** Who wrote a memory. `user` is protected from everything the night does. */
+export type MemoryOrigin = 'extract' | 'user' | 'sleep';
 
 /** The assistant's own memory bank. Agents own theirs under their agent id. */
 export const ASSISTANT_MEMORY_OWNER = 'assistant';
@@ -183,6 +190,26 @@ export interface MemoryRecord {
   accessCount: number;
   /** Soft delete, so a forgotten memory can still be audited. */
   forgotten: boolean;
+  /** Who wrote it. Decides what the sleep run may do with it. */
+  origin: MemoryOrigin;
+  /** The user pinned this: never dormant, never merged away. */
+  pinned: boolean;
+  /**
+   * Asleep since. A dormant memory is out of recall and out of the core
+   * profile, but stays in the table, in search and in the inspector. This is
+   * how the night shrinks the bank without ever losing anything.
+   */
+  dormantAt?: number;
+  /** The condensed memory that took this one's place. */
+  supersededBy?: string;
+  /** The sleep run that wrote this memory, when one did. */
+  sleepRunId?: string;
+  /**
+   * 0..1 - how often this memory actually got recalled. Separate from
+   * `importance` on purpose: importance says how much it should matter,
+   * usefulness says how much it demonstrably did.
+   */
+  usefulness: number;
 }
 
 export interface MemoryQuery {
@@ -198,6 +225,131 @@ export interface ScoredMemory extends MemoryRecord {
   score: number;
   /** Why this memory surfaced - shown in the memory inspector. */
   reason: string;
+  /** How it was reached: directly, or through an entity or an edge. */
+  hop?: MemoryHop;
+}
+
+/** Whether a recalled memory matched the question itself or a neighbour of a match. */
+export type MemoryHop = 'direct' | 'entity' | 'edge';
+
+/* --------------------------- the memory graph --------------------------- */
+
+/** What an entity is a name for. */
+export type EntityKind = 'person' | 'project' | 'tool' | 'place' | 'org' | 'topic';
+
+/**
+ * A named thing several memories talk about. Entities are what makes recall
+ * work past wording: two sentences about "Rookery" are related even when
+ * they share no other word.
+ */
+export interface MemoryEntity {
+  id: string;
+  owner: string;
+  /** Display name, spelled the way the user spells it. */
+  name: string;
+  /** Normalised key: lower case, no diacritics. Unique per owner. */
+  slug: string;
+  kind: EntityKind;
+  /** How many live memories mention it. Common entities are damped in recall. */
+  mentions: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+}
+
+/**
+ * A directed relation between two memories.
+ * - refines:     the target sharpens the source
+ * - supersedes:  the source replaces the target, which goes dormant
+ * - contradicts: both cannot be true; reported, never decided automatically
+ * - caused_by:   the source is the way it is because of the target
+ * - co_occurs:   they turn up together; weakest link, used for clustering
+ */
+export type MemoryRelation = 'refines' | 'supersedes' | 'contradicts' | 'caused_by' | 'co_occurs';
+
+export interface MemoryEdge {
+  id: string;
+  owner: string;
+  srcId: string;
+  dstId: string;
+  relation: MemoryRelation;
+  /** 0..1 confidence. */
+  weight: number;
+  origin: 'sleep' | 'user' | 'gate';
+  /** The sleep run that drew this edge, for undo. */
+  runId?: string;
+  createdAt: number;
+}
+
+/** One memory with everything hanging off it, for the inspector. */
+export interface MemoryNeighbourhood {
+  memory: MemoryRecord;
+  entities: MemoryEntity[];
+  /** Edges where this memory is the source, with the memory at the other end. */
+  outgoing: (MemoryEdge & { other: MemoryRecord })[];
+  incoming: (MemoryEdge & { other: MemoryRecord })[];
+}
+
+/** The graph as the web view wants it: nodes for entities and memories, plus links. */
+export interface MemoryGraph {
+  entities: MemoryEntity[];
+  memories: MemoryRecord[];
+  edges: MemoryEdge[];
+  /** memory id -> entity ids, so the client does not need a second request. */
+  links: { memoryId: string; entityId: string }[];
+  /** True when the node cap cut the result short. */
+  truncated: boolean;
+}
+
+/* -------------------------------- sleep -------------------------------- */
+
+export type SleepStatus = 'running' | 'done' | 'failed';
+
+/**
+ * The stages of one night, in the order they run.
+ *
+ * Sleep is not one uniform chore, and modelling it as a flat list of steps
+ * was wrong. Light sleep is bookkeeping and costs nothing. Deep sleep is
+ * where the filing happens: what says the same thing becomes one sentence,
+ * and what cannot both be true gets decided. Dream sleep is the loose,
+ * associative part - links across distant subjects, and the conclusions that
+ * only surface once the day's noise is gone.
+ *
+ * A night runs several cycles of the three, because condensing changes what
+ * there is to connect: the second pass works on a bank the first one tidied.
+ */
+export type SleepStage = 'light' | 'deep' | 'rem';
+
+/**
+ * One night's work on one memory bank. Every write a run makes carries its
+ * id, which is what makes a night undoable in a single transaction.
+ */
+export interface SleepRun {
+  id: string;
+  owner: string;
+  trigger: CronTrigger;
+  status: SleepStatus;
+  startedAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+  /** How many live memories the run looked at. */
+  readCount: number;
+  /** How many memories were folded into a condensed one. */
+  mergedCount: number;
+  /** How many were put to sleep. */
+  dormantCount: number;
+  edgeCount: number;
+  insightCount: number;
+  /** Contradictions found. */
+  conflictCount: number;
+  /** Contradictions actually decided, the loser filed away. */
+  resolvedCount: number;
+  /** Small-model calls spent. Capped by config. */
+  modelCalls: number;
+  /** Two or three sentences a person can read. */
+  report?: string;
+  error?: string;
+  /** Set when the run was rolled back. */
+  undoneAt?: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -379,7 +531,7 @@ export interface Task {
  * of its own in a conversation dedicated to the job, or one agent as an
  * assignment. Either way the outcome lands in the assistant's inbox.
  */
-export type CronJobKind = 'assistant' | 'agent';
+export type CronJobKind = 'assistant' | 'agent' | 'sleep';
 export type CronRunStatus = 'running' | 'done' | 'failed';
 /** Whether the clock started a run or somebody pressed "run now". */
 export type CronTrigger = 'schedule' | 'manual';
@@ -563,6 +715,71 @@ export interface MemoryConfig {
   workingWindow: number;
   /** Rough character budget for the assembled context block. */
   contextBudget: number;
+  /** The gate in front of the write path: what may become a memory at all. */
+  gate: MemoryGateConfig;
+  /** The second hop: how far recall reaches past a literal match. */
+  graph: MemoryGraphConfig;
+  /** The nightly clean-up. */
+  sleep: SleepConfig;
+}
+
+export interface MemoryGateConfig {
+  /** How many candidates one turn may store at most. */
+  maxPerTurn: number;
+  /** Candidates below this are dropped unless they name a known entity. */
+  minImportance: number;
+  /** Similarity at or above which a candidate reinforces instead of inserting. */
+  duplicateThreshold: number;
+  /** Similarity at or above which two memories are queued for the night. */
+  clusterThreshold: number;
+}
+
+export interface MemoryGraphConfig {
+  /** Score a memory inherits through a shared entity. */
+  hopEntity: number;
+  /** Score a memory inherits through a `refines` or `caused_by` edge. */
+  hopEdge: number;
+  /** Hard cap on nodes handed to the graph view. */
+  maxNodes: number;
+}
+
+export interface SleepConfig {
+  enabled: boolean;
+  /** Five-field cron expression for the nightly run. */
+  schedule: string;
+  /** Which banks sleep: only the assistant's, or every agent's too. */
+  scope: 'assistant' | 'all';
+  /** Upper bound on condensation calls per night. */
+  maxMergeCalls: number;
+  /** Untouched for this long and weak enough, a memory goes dormant. */
+  dormantAfterDays: number;
+  /** Blended strength below which a memory may be put to sleep. */
+  minStrength: number;
+  /** How many insights one night may write. */
+  insights: number;
+  /**
+   * How often the three stages repeat in one night. More than one because
+   * deep sleep changes what dream sleep has to work with.
+   */
+  cycles: number;
+  /** Upper bound on contradiction decisions per night. */
+  maxResolveCalls: number;
+  /** An agent bank sleeps only after this many new memories. */
+  agentThreshold: number;
+  /**
+   * Model for condensing and linking. Not the cheapest one on purpose:
+   * deciding that two sentences mean the same thing, and writing the one
+   * sentence that replaces both, is a judgement call. A weak model merges
+   * things that do not belong together. Empty falls back to the provider's
+   * small default.
+   */
+  model: string;
+  /**
+   * Model for the single nightly insight call. It is the hardest thing the
+   * system does and it happens once a night, so it is worth paying for.
+   * Empty means "same as `model`".
+   */
+  insightModel: string;
 }
 
 /**

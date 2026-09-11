@@ -11,7 +11,7 @@ import { z } from 'zod';
 export const providerIdSchema = z.enum(['claude', 'codex']);
 export const permissionSchema = z.enum(['chat', 'read', 'write', 'full']);
 export const effortSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
-export const memoryKindSchema = z.enum(['fact', 'preference', 'project', 'event', 'summary']);
+export const memoryKindSchema = z.enum(['fact', 'preference', 'project', 'event', 'summary', 'insight']);
 
 /** Body of POST /api/chat and the `payload` of a websocket `chat` frame. */
 export const chatInputSchema = z.object({
@@ -56,6 +56,18 @@ export const createMemorySchema = z.object({
   kind: memoryKindSchema.optional(),
   tags: z.array(z.string()).optional(),
   importance: z.number().min(0).max(1).optional(),
+});
+
+/** Editing one memory from the inspector: pin it, re-word it, wake it up. */
+export const patchMemorySchema = z.object({
+  content: z.string().min(1).optional(),
+  kind: memoryKindSchema.optional(),
+  tags: z.array(z.string()).optional(),
+  importance: z.number().min(0).max(1).optional(),
+  pinned: z.boolean().optional(),
+  /** true puts the memory to sleep, false wakes it up. */
+  dormant: z.boolean().optional(),
+  forgotten: z.boolean().optional(),
 });
 
 /* ------------------------------ organisation ------------------------------ */

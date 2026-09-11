@@ -108,10 +108,19 @@ Ein Turn durchläuft immer dieselben Schritte:
 
 ```
 Eingabe → Recall (was weiß ich schon?) → Kontext bauen (inkl. Organigramm, Posteingang)
-        → Provider-CLI streamen, dabei Aufträge an Agenten → speichern → lernen
+        → Provider-CLI streamen, dabei Aufträge an Agenten
+        → (hat er ein Werkzeug dazugeschaltet: zweiter Durchgang mit diesem Werkzeug)
+        → speichern → lernen
 ```
 
 Der Lernschritt läuft **nach** der Antwort und blockiert dich nie.
+
+Der zweite Durchgang ist die Ausnahme, nicht die Regel: Ein MCP-Server kann nur an
+einen Prozess gehängt werden, der noch nicht läuft. Legt der Assistent mitten im Turn
+einen Schalter um, weil ihm für die Aufgabe ein Werkzeug fehlt, würde die Arbeit sonst
+liegen bleiben, bis du nochmal fragst. Stattdessen läuft der Turn ein zweites Mal an,
+mit der Sitzung des Anbieters fortgesetzt und dem neuen Server dran; die beiden
+Antworten werden zu einer. Mehr als zwei Durchgänge gibt es nie.
 
 ## Ohne API-Keys — wie genau
 
@@ -133,11 +142,17 @@ Kontext behält.
 
 Das ist der Teil, der Rookery von einem CLI-Wrapper unterscheidet.
 
-**Gespeichert** wird in fünf Arten: `fact`, `preference`, `project`, `event`,
-`summary`. Nach jedem Turn liest ein kleines Modell (Haiku) den Austausch und
-schlägt dauerhafte Erinnerungen vor — knapp gehalten, ohne Aufgabendetails,
-mit aufgelösten Datumsangaben. Dieselbe Aussage zweimal zu lernen erhöht nur
-ihre Wichtigkeit, statt einen Duplikat-Eintrag anzulegen.
+**Gespeichert** wird in sechs Arten: `fact`, `preference`, `project`, `event`,
+`summary` und `insight` — letztere entsteht ausschließlich im Schlaf. Nach
+jedem Turn liest ein kleines Modell den Austausch und schlägt dauerhafte
+Erinnerungen vor. Davor liegt ein **Tor** (`memory/gate.ts`): höchstens drei
+Kandidaten pro Turn, nichts unter Wichtigkeit 0,4 ohne bekannte Entität, und
+ein Fast-Duplikat verstärkt die vorhandene Erinnerung, statt eine zweite
+anzulegen. Die Ähnlichkeit ist der Dice-Koeffizient über normalisierte
+Token-Mengen; dieselbe Aussage anders formuliert erzeugt also keinen zweiten
+Datensatz. Was das Modell als „bereits bekannt" sieht, sind die zum Turn
+**passenden** Erinnerungen, nicht die insgesamt wichtigsten — das war der
+Hauptgrund, aus dem die Datenbank früher immer weiter wuchs.
 
 **Abgerufen** wird über eine Mischung aus vier Signalen, nicht nur Textsuche:
 
@@ -150,10 +165,18 @@ ihre Wichtigkeit, statt einen Duplikat-Eintrag anzulegen.
 
 Dazu kommt ein flacher **Tag-Treffer-Bonus** von +0,1, wenn ein Wort der
 aktuellen Frage einem Tag der Erinnerung entspricht, sowie ein **Kernprofil**:
-bis zu fünf Erinnerungen mit Wichtigkeit ≥ 0,7 werden unabhängig von der
-Frage in jeden Turn gelegt, weil reiner Texttreffer eine Frage nach einer
-Kategorie („welche Sprache bevorzugst du?") nie mit einer Erinnerung an eine
-Instanz („arbeitet mit TypeScript") verbindet.
+angeheftete Erinnerungen, Einsichten und bis zu fünf mit Wichtigkeit ≥ 0,7
+liegen unabhängig von der Frage in jedem Turn.
+
+Danach folgt ein **zweiter Sprung** über den Graphen. Aus den drei besten
+Treffern werden Erinnerungen nachgezogen, die eine Entität mit ihnen teilen
+(0,45 des Scores, gedämpft nach Häufigkeit der Entität) oder über eine
+`refines`- bzw. `caused_by`-Kante an ihnen hängen (0,6). Das schließt die
+Lücke, die reine Textsuche nicht schließen kann: die Frage nach einer
+Kategorie („welche Sprache bevorzugst du?") trifft kein Wort der Erinnerung an
+die Instanz („arbeitet mit TypeScript"), aber beide hängen an der Entität
+`typescript`. Von einem Widerspruchspaar geht nur der neuere Satz in den
+Prompt; der ältere bleibt sichtbar.
 
 Jede abgerufene Erinnerung trägt eine lesbare, englische Begründung —
 `strong text match`, `text match`, `high importance`, `recent`, `tag hit`
@@ -172,6 +195,72 @@ rookery memory search deployment
 rookery memory forget <id> [--hard]
 rookery memory stats
 ```
+
+### Der Graph
+
+Erinnerungen stehen nicht mehr allein. Jede hängt an **Entitäten** (Person,
+Projekt, Werkzeug, Ort, Organisation, Thema), und zwischen Erinnerungen gibt
+es gerichtete **Kanten**: `refines`, `supersedes`, `contradicts`, `caused_by`,
+`co_occurs`. Die Entitäten entstehen kostenlos aus den Tags, die die
+Extraktion ohnehin liefert; die Kanten zieht der Schlaflauf.
+
+Bewusst **ohne Embeddings**: die Provider-CLIs liefern Text, kein
+Embedding-Modell, und ein lokales wäre genau der native Build-Schritt, den
+`node:sqlite` vermeidet. Nähe kommt aus geteilten Entitäten, Duplikate aus
+lexikalischer Ähnlichkeit, Bedeutung aus nachts gezogenen Kanten.
+
+Die Web-UI zeigt das Gedächtnis unter **Gedächtnis** in drei Ansichten: das
+**Netz** als Kraftgraph **im Raum** (Entitäten als beschriftete Knotenpunkte,
+Erinnerungen als farbige Körper darum, Ziehen dreht, Rad zoomt), die
+**Zeitachse** (was wann gelernt wurde, mit den Nächten dazwischen) und die
+**Liste**. Ein Klick auf einen Knoten öffnet die Erinnerung mit ihren Themen,
+ihren Verbindungen und den Aktionen Anheften, Aufwecken, Vergessen.
+
+Der Graph nutzt `3d-force-graph` über WebGL und wird erst beim Öffnen des
+Reiters geladen, liegt also in einem eigenen Bündel und kostet den Rest der
+Anwendung nichts.
+
+### Schlaf
+
+Nachts um 03:30 räumt das Gedächtnis auf — als ganz normaler Zeitplan
+(`cron_jobs.kind = 'sleep'`), also sichtbar, abschaltbar und von Hand
+auslösbar wie jeder andere.
+
+Eine Nacht ist keine gleichförmige Liste von Schritten, sondern läuft in
+**Zyklen aus drei Phasen**, so wie Schlaf tatsächlich abläuft:
+
+| Phase | Was passiert | Modellaufrufe |
+|---|---|---|
+| **Leichtschlaf** | Buchhaltung: `stärke = 0,5·Wichtigkeit + 0,3·Nutzen + 0,2·Aktualität`; zu schwach und lange ungenutzt wird weggeräumt. Entitätszählung frisch. | 0 |
+| **Tiefschlaf** | Ablage: Bündel werden zu einem Satz, und Widersprüche werden **entschieden** — eine Seite gilt, die andere wird weggeräumt. | ≤ 12 + ≤ 5 |
+| **Traumschlaf** | Das Assoziative: Verbindungen über Themen hinweg, und am Ende der Nacht die Einsichten. | ≤ 3 + 1 |
+
+Die Phasen füttern einander, deshalb wiederholt sich der Zyklus (Standard
+zweimal): der Traumschlaf findet die Widersprüche, die der nächste Tiefschlaf
+entscheidet, und der Tiefschlaf hinterlässt ein aufgeräumteres Gedächtnis für
+den nächsten Traumschlaf. Das Aufrufbudget ist für den Tiefschlaf nach vorn
+und für den Traumschlaf nach hinten gewichtet.
+
+Vier Regeln machen einen unbeaufsichtigten Nachtlauf zumutbar:
+
+- **Nie gelöscht.** Erinnerungen werden weggeräumt (`dormant_at`): raus aus
+  dem Recall, weiter in der Datenbank, weiter sichtbar, ein Klick zurück.
+  Das gilt auch für die Verliererseite eines entschiedenen Widerspruchs.
+- **Jede Nacht umkehrbar.** Alles, was ein Lauf schreibt, trägt seine
+  `run_id`; „Rückgängig" ist eine Transaktion.
+- **Was du geschrieben hast, ist unantastbar.** `origin = 'user'` und
+  angeheftete Erinnerungen werden weder verdichtet noch weggeräumt. Im
+  Widerspruch gewinnen sie **ohne** Modellaufruf: was du selbst gesagt hast,
+  schlägt alles, was aus einem Gespräch abgeleitet wurde.
+- **Nur ein Widerspruch unter zwei geschützten Sätzen bleibt offen.** Den
+  entscheidest du, und der Bericht sagt es.
+
+Das Modell dafür ist standardmäßig **Sonnet**, nicht das billigste: sechzehn
+Aufrufe einmal pro Nacht sind günstig, ein falsch verschmolzenes Paar nicht.
+Beides ist konfigurierbar (`memory.sleep.model`, `memory.sleep.insightModel`).
+
+Das ausführliche Konzept steht in
+[`docs/concepts/memory-graph-and-sleep.md`](docs/concepts/memory-graph-and-sleep.md).
 
 ## Ein Ansprechpartner
 
@@ -331,8 +420,11 @@ im Chat, in der CLI und im Sprachmodus gleich, weil alle drei durch dieselbe
 Agenten, beide), seine Optionen und seine Schlüssel. Der Assistent bekommt pro
 aktivem Server einen Absatz im Systemprompt, der ihm sagt, wofür die Werkzeuge
 gut sind. Er darf Schalter selbst umlegen (`tool_servers`, `set_tool_server`),
-aber nichts installieren und keine Schlüssel eintragen. Ein Schalter gilt ab
-dem nächsten Turn.
+aber nichts installieren und keine Schlüssel eintragen. Legt er selbst einen Schalter
+um, gilt er sofort: der Turn läuft mit dem neuen Server ein zweites Mal an und die
+Arbeit geht weiter. Ausserdem steht im Systemprompt, welche Server er noch dazuschalten
+könnte und welche erst du auf der Werkzeuge-Seite freischalten musst — ein Schalter, von
+dem er nichts weiss, ist für ihn eine Wand.
 
 | Server | Was | Installation |
 |---|---|---|
@@ -438,6 +530,14 @@ spätere Werte gewinnen: eingebaute Defaults → `config.json` → Umgebung →
 explizite Aufruf-Overrides. Gelesen wird `~/.rookery/.env` und ein `.env` im
 Repo-Root (Vorlage: `.env.example`); Werte, die die Shell schon gesetzt hat,
 gewinnen.
+
+Änderungen zur Laufzeit — der Einstellungsdialog, die Werkzeug-Schalter, das
+`update_settings`-Werkzeug des Assistenten — gehen alle durch `applyConfig`:
+geschrieben wird in `config.json`, aktualisiert wird das eine Konfigurations-
+objekt, das Runtime, Firma und Server gemeinsam halten. Ein Aufruf-Override wie
+`--port` überlebt das, ohne in der Datei zu landen; eine ausdrückliche Änderung
+sticht ihn trotzdem. Auf „Standard" zurückgesetzte Werte verschwinden ganz,
+statt als leerer String hängenzubleiben.
 
 Vollständiges Beispiel — kommentiert sind Werte, die vom Default abweichen:
 

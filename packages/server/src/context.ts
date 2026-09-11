@@ -6,12 +6,13 @@ import type { WebSocket } from '@fastify/websocket';
  * Everything a route needs, handed down explicitly instead of through Fastify
  * decorators so the types stay obvious and `buildServer` remains testable.
  *
- * `config` is mutable on purpose: PATCH /api/config replaces it in place so a
- * setting change takes effect without a restart.
+ * `config` is the Assistant's own config object, not a copy: PATCH /api/config
+ * and the tool switches change it in place through applyConfig, so a setting
+ * takes effect without a restart and the two can never drift apart.
  */
 export interface ServerContext {
   readonly assistant: Assistant;
-  config: RookeryConfig;
+  readonly config: RookeryConfig;
   readonly log: Logger;
   /** Every live websocket, used to broadcast background memory events. */
   readonly sockets: Set<WebSocket>;

@@ -6,13 +6,14 @@
  */
 
 export * from './types.js';
-export { DEFAULT_CONFIG, databasePath, ensureHome, loadConfig, saveConfig } from './config.js';
+export { DEFAULT_CONFIG, applyConfig, databasePath, ensureHome, loadConfig, saveConfig } from './config.js';
 export { createLogger, silentLogger, type LogLevel, type Logger } from './logger.js';
 
 export { openDatabase, reindex, SCHEMA_VERSION, type Db } from './memory/db.js';
-export { Store, mapMemory } from './memory/store.js';
+export { Store, entitySlug, mapEdge, mapEntity, mapMemory, mapSleepRun } from './memory/store.js';
 export {
   coreProfile,
+  dropContradicted,
   MEMORY_KINDS,
   recall,
   renderMemoryBlock,
@@ -20,6 +21,24 @@ export {
   toMatchQuery,
   type RecallOptions,
 } from './memory/recall.js';
+// The write gate and the night shift: what may enter the bank at all, and
+// what happens to it once nobody is asking anything.
+export {
+  admitCandidates,
+  linkEntities,
+  normalizeTokens,
+  similarity,
+  type GateInput,
+  type GateResult,
+} from './memory/gate.js';
+export {
+  SleepRunner,
+  describeSleep,
+  parseObject,
+  share,
+  type SleepInput,
+  type SleepRunnerOptions,
+} from './memory/sleep.js';
 export {
   extractMemories,
   parseCandidates,
@@ -125,6 +144,7 @@ export {
 export { BROWSER_DEBUG_PORT, browserAlive, browserExecutable, ensureBrowser } from './tools/browser.js';
 export {
   customToolId,
+  dormantToolsHint,
   ensureToolServers,
   renderToolServers,
   toolServerConfig,

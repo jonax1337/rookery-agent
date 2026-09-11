@@ -1,0 +1,497 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  DEFAULT_CONFIG,
+  ProviderRegistry,
+  SleepRunner,
+  Store,
+  admitCandidates,
+  describeSleep,
+  linkEntities,
+  normalizeTokens,
+  recall,
+  share,
+  similarity,
+} from '../dist/index.js';
+
+/**
+ * The write gate, the graph and the night shift.
+ *
+ * The model calls are faked: a scripted provider returns the JSON a real one
+ * would, so the phases are tested for what they do to the bank rather than
+ * for how well a model happened to write that night.
+ */
+
+const DAY = 24 * 60 * 60 * 1000;
+
+function makeStore() {
+  return new Store(':memory:');
+}
+
+/** The same normalisation the gate uses: lower case, no stop words. */
+const tokens = normalizeTokens;
+
+/** A provider that answers each phase's prompt from a scripted table. */
+function scriptedProvider(replies = {}) {
+  const prompts = [];
+  return {
+    prompts,
+    provider: {
+      id: 'claude',
+      displayName: 'Scripted',
+      models: () => ['fake'],
+      async status() {
+        return { id: 'claude', available: true, binary: 'fake', authenticated: true };
+      },
+      async *run(options) {
+        const prompt = options.prompt ?? '';
+        prompts.push(prompt);
+        let text = '{}';
+        if (prompt.includes('raeumst nachts einen Widerspruch')) text = replies.resolve ?? '{"decision":"both"}';
+        else if (prompt.includes('raeumst nachts')) text = replies.condense ?? '{"merge":false}';
+        else if (prompt.includes('verbindest nachts')) text = replies.link ?? '{"edges":[],"entities":[]}';
+        else if (prompt.includes('ziehst nachts Bilanz')) text = replies.insight ?? '{"insights":[]}';
+        yield { type: 'done', text };
+      },
+    },
+  };
+}
+
+function makeRunner(store, replies, overrides = {}) {
+  const scripted = scriptedProvider(replies);
+  const config = {
+    ...DEFAULT_CONFIG,
+    memory: {
+      ...DEFAULT_CONFIG.memory,
+      sleep: { ...DEFAULT_CONFIG.memory.sleep, ...overrides },
+    },
+  };
+  const runner = new SleepRunner({
+    store,
+    registry: new ProviderRegistry([scripted.provider]),
+    config,
+  });
+  return { runner, scripted, config };
+}
+
+/* -------------------------------- the gate ------------------------------- */
+
+test('similarity reads two wordings of one fact as the same fact', () => {
+  const a = tokens('Der Nutzer arbeitet hauptsaechlich mit TypeScript');
+  const b = tokens('Der Nutzer arbeitet mit TypeScript');
+  assert.ok(similarity(a, b) > 0.82, 'near-identical sentences must clear the duplicate threshold');
+
+  const c = tokens('Der Nutzer haelt Huehner im Garten');
+  assert.ok(similarity(a, c) < 0.3, 'unrelated sentences must not');
+  assert.equal(similarity(new Set(), a), 0);
+});
+
+test('the gate reinforces a reworded memory instead of storing it twice', () => {
+  const store = makeStore();
+  store.upsertMemory({
+    kind: 'preference',
+    content: 'Der Nutzer arbeitet hauptsaechlich mit TypeScript.',
+    importance: 0.7,
+  });
+
+  const result = admitCandidates(store, {
+    owner: 'assistant',
+    config: DEFAULT_CONFIG.memory,
+    candidates: [
+      {
+        kind: 'fact',
+        content: 'Der Nutzer arbeitet hauptsaechlich mit TypeScript.',
+        tags: ['typescript'],
+        importance: 0.8,
+      },
+    ],
+  });
+
+  assert.equal(result.stored.length, 0, 'nothing new may be written');
+  assert.equal(result.reinforced.length, 1);
+  assert.equal(store.listMemories({ limit: 50 }).length, 1, 'the bank must not grow');
+  store.close();
+});
+
+test('the gate drops weak candidates and stops at the per-turn cap', () => {
+  const store = makeStore();
+  const result = admitCandidates(store, {
+    owner: 'assistant',
+    config: DEFAULT_CONFIG.memory,
+    candidates: [
+      { kind: 'fact', content: 'Der Nutzer wohnt in Hamburg.', tags: [], importance: 0.9 },
+      { kind: 'fact', content: 'Das Wetter war heute freundlich.', tags: [], importance: 0.2 },
+      { kind: 'fact', content: 'Der Nutzer faehrt ein Lastenrad.', tags: [], importance: 0.7 },
+      { kind: 'fact', content: 'Der Nutzer mag Filterkaffee.', tags: [], importance: 0.7 },
+      { kind: 'fact', content: 'Der Nutzer spielt Klavier.', tags: [], importance: 0.7 },
+    ],
+  });
+
+  assert.equal(result.stored.length, DEFAULT_CONFIG.memory.gate.maxPerTurn);
+  assert.ok(result.rejected.some((entry) => entry.reason === 'weak'), 'the 0.2 candidate is noise');
+  assert.ok(result.rejected.some((entry) => entry.reason === 'over-budget'));
+  store.close();
+});
+
+test('reinforcement raises importance but never usefulness', () => {
+  const store = makeStore();
+  const first = store.upsertMemory({ kind: 'fact', content: 'Der Nutzer wohnt in Hamburg.', importance: 0.5 });
+  store.upsertMemory({ kind: 'fact', content: 'Der Nutzer wohnt in Hamburg.', importance: 0.5 });
+  const after = store.getMemory(first.id);
+
+  assert.ok(after.importance > 0.5 && after.importance < 0.6, 'the bump is small on purpose');
+  assert.equal(after.usefulness, 0, 'being written again is not evidence of being useful');
+
+  store.touchMemories([first.id]);
+  assert.ok(store.getMemory(first.id).usefulness > 0, 'an actual recall is');
+  store.close();
+});
+
+/* -------------------------------- the graph ------------------------------ */
+
+test('recall reaches a memory through a shared entity that no word matches', () => {
+  const store = makeStore();
+  const preference = store.upsertMemory({
+    kind: 'preference',
+    content: 'Der Nutzer schreibt am liebsten TypeScript.',
+    tags: ['typescript'],
+    importance: 0.6,
+  });
+  const project = store.upsertMemory({
+    kind: 'project',
+    content: 'Rookery ist in TypeScript geschrieben und laeuft auf Node.',
+    tags: ['typescript'],
+    importance: 0.6,
+  });
+  linkEntities(store, 'assistant', preference.id, ['typescript']);
+  linkEntities(store, 'assistant', project.id, ['typescript']);
+
+  const hits = recall(store, { text: 'Woran laeuft Rookery?', limit: 8, touch: false });
+  const ids = hits.map((hit) => hit.id);
+  assert.ok(ids.includes(project.id), 'the direct hit');
+  assert.ok(ids.includes(preference.id), 'and the one only the graph could reach');
+  assert.equal(hits.find((hit) => hit.id === preference.id).hop, 'entity');
+  store.close();
+});
+
+test('a sleeping memory is out of recall but still in the bank', () => {
+  const store = makeStore();
+  const memory = store.upsertMemory({
+    kind: 'fact',
+    content: 'Der Nutzer nutzte frueher eine Kaffeemaschine von Jura.',
+    importance: 0.6,
+  });
+  assert.equal(recall(store, { text: 'Kaffeemaschine Jura', touch: false }).length, 1);
+
+  store.sleepMemory(memory.id);
+  assert.equal(recall(store, { text: 'Kaffeemaschine Jura', touch: false }).length, 0, 'gone from recall');
+  assert.equal(store.listMemories({ limit: 50 }).length, 1, 'still stored');
+  assert.ok(store.getMemory(memory.id).dormantAt, 'and marked as asleep');
+
+  store.wakeMemory(memory.id);
+  assert.equal(recall(store, { text: 'Kaffeemaschine Jura', touch: false }).length, 1, 'and it comes back');
+  store.close();
+});
+
+/* -------------------------------- the night ------------------------------ */
+
+test('decay puts weak, unused memories to sleep and never touches protected ones', async () => {
+  const store = makeStore();
+  const old = Date.now() - 200 * DAY;
+
+  const weak = store.upsertMemory({ kind: 'fact', content: 'Ein belangloser alter Hinweis.', importance: 0.2 });
+  const mine = store.upsertMemory({
+    kind: 'fact',
+    content: 'Ein ebenso belangloser Hinweis, aber von Hand.',
+    importance: 0.2,
+    origin: 'user',
+  });
+  const pinned = store.upsertMemory({
+    kind: 'fact',
+    content: 'Ein angehefteter belangloser Hinweis.',
+    importance: 0.2,
+    pinned: true,
+  });
+  const strong = store.upsertMemory({ kind: 'fact', content: 'Der Nutzer heisst Jonas.', importance: 0.9 });
+
+  // Age everything past the dormancy window.
+  for (const id of [weak.id, mine.id, pinned.id, strong.id]) {
+    store.db.prepare('UPDATE memories SET created_at = ?, updated_at = ? WHERE id = ?').run(old, old, id);
+  }
+
+  const { runner } = makeRunner(store);
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.status, 'done');
+  assert.ok(store.getMemory(weak.id).dormantAt, 'the weak one sleeps');
+  assert.equal(store.getMemory(mine.id).dormantAt, undefined, 'what the user wrote is untouchable');
+  assert.equal(store.getMemory(pinned.id).dormantAt, undefined, 'so is what they pinned');
+  assert.equal(store.getMemory(strong.id).dormantAt, undefined, 'and so is what carries weight');
+  assert.equal(store.listMemories({ limit: 50 }).length, 4, 'nothing was deleted');
+  store.close();
+});
+
+test('condensing folds a cluster into one memory and the originals sleep, not vanish', async () => {
+  const store = makeStore();
+  const first = store.upsertMemory({
+    kind: 'project',
+    content: 'Rookery nutzt Fastify im Server.',
+    tags: ['rookery', 'server'],
+    importance: 0.6,
+  });
+  const second = store.upsertMemory({
+    kind: 'project',
+    content: 'Der Rookery-Server liefert die Web-UI aus.',
+    tags: ['rookery', 'server'],
+    importance: 0.6,
+  });
+  for (const memory of [first, second]) {
+    linkEntities(store, 'assistant', memory.id, ['rookery', 'server']);
+  }
+
+  const { runner } = makeRunner(store, {
+    condense: JSON.stringify({
+      merge: true,
+      content: 'Der Rookery-Server nutzt Fastify und liefert die Web-UI aus.',
+      kind: 'project',
+      importance: 0.7,
+      tags: ['rookery'],
+      supersedes: [1, 2],
+    }),
+  });
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.mergedCount, 1);
+  assert.ok(store.getMemory(first.id).dormantAt, 'the originals sleep');
+  assert.ok(store.getMemory(second.id).dormantAt);
+
+  const live = store.liveMemories('assistant');
+  assert.equal(live.length, 1);
+  assert.match(live[0].content, /Fastify und liefert/);
+  assert.equal(live[0].origin, 'sleep');
+  assert.equal(store.getMemory(first.id).supersededBy, live[0].id);
+  // The condensed memory inherits the entities, so the graph keeps its shape.
+  assert.ok(store.entitiesFor(live[0].id).length >= 2);
+  store.close();
+});
+
+test('a night can be taken back exactly', async () => {
+  const store = makeStore();
+  const first = store.upsertMemory({
+    kind: 'project',
+    content: 'Rookery nutzt Fastify im Server.',
+    tags: ['rookery', 'server'],
+    importance: 0.6,
+  });
+  const second = store.upsertMemory({
+    kind: 'project',
+    content: 'Der Rookery-Server liefert die Web-UI aus.',
+    tags: ['rookery', 'server'],
+    importance: 0.6,
+  });
+  for (const memory of [first, second]) {
+    linkEntities(store, 'assistant', memory.id, ['rookery', 'server']);
+  }
+  const before = store
+    .liveMemories('assistant')
+    .map((memory) => memory.id)
+    .sort();
+
+  const { runner } = makeRunner(store, {
+    condense: JSON.stringify({
+      merge: true,
+      content: 'Der Rookery-Server nutzt Fastify und liefert die Web-UI aus.',
+      kind: 'project',
+      importance: 0.7,
+      tags: [],
+      supersedes: [1, 2],
+    }),
+  });
+  const run = await runner.run({ owner: 'assistant' });
+  assert.equal(store.liveMemories('assistant').length, 1);
+
+  const undone = runner.undo(run.id);
+  assert.equal(undone.woken, 2);
+  assert.equal(undone.removed, 1);
+
+  const after = store
+    .liveMemories('assistant')
+    .map((memory) => memory.id)
+    .sort();
+  assert.deepEqual(after, before, 'the bank is exactly as it was');
+  assert.ok(store.getSleepRun(run.id).undoneAt, 'and the night is marked as taken back');
+  assert.equal(runner.undo(run.id), null, 'undoing twice is not a thing');
+  store.close();
+});
+
+test('an insight needs at least two pieces of evidence', async () => {
+  const store = makeStore();
+  for (const content of [
+    'Der Nutzer arbeitet abends an Rookery.',
+    'Der Nutzer hat gestern am Gedaechtnis gearbeitet.',
+    'Der Nutzer plant den Schlaf-Lauf fuer Rookery.',
+    'Der Nutzer nutzt Windows als Arbeitsrechner.',
+  ]) {
+    store.upsertMemory({ kind: 'event', content, importance: 0.6 });
+  }
+
+  const { runner } = makeRunner(store, {
+    insight: JSON.stringify({
+      insights: [
+        {
+          content: 'Der Nutzer entwickelt Rookery abends und schwerpunktmaessig am Gedaechtnis.',
+          importance: 0.8,
+          evidence: [1, 3],
+          tags: [],
+        },
+        { content: 'Der Nutzer mag vermutlich Katzen.', importance: 0.8, evidence: [2], tags: [] },
+      ],
+    }),
+  });
+
+  const run = await runner.run({ owner: 'assistant' });
+  assert.equal(run.insightCount, 1, 'the one-source guess is thrown away');
+
+  const insights = store.listMemories({ kinds: ['insight'], limit: 10 });
+  assert.equal(insights.length, 1);
+  assert.match(insights[0].content, /abends/);
+  // An insight points at what it came from, so it can be checked.
+  const neighbourhood = store.neighbourhood(insights[0].id);
+  assert.equal(neighbourhood.outgoing.filter((edge) => edge.relation === 'refines').length, 2);
+  store.close();
+});
+
+test('the night stays inside its model budget', async () => {
+  const store = makeStore();
+  // Twenty pairs: far more clusters than the budget allows.
+  for (let index = 0; index < 20; index += 1) {
+    const a = store.upsertMemory({
+      kind: 'project',
+      content: 'Thema ' + index + ': der erste Hinweis zu diesem Gegenstand.',
+      importance: 0.6,
+    });
+    const b = store.upsertMemory({
+      kind: 'project',
+      content: 'Thema ' + index + ': der zweite Hinweis zu diesem Gegenstand.',
+      importance: 0.6,
+    });
+    for (const memory of [a, b]) {
+      linkEntities(store, 'assistant', memory.id, ['thema-' + index, 'hinweis']);
+    }
+  }
+
+  const { runner } = makeRunner(store, {}, { maxMergeCalls: 3 });
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.ok(run.modelCalls <= 3 + 3 + 1, 'condense, link and insight are all capped');
+  store.close();
+});
+
+test('the report says what happened in words a person reads', () => {
+  assert.equal(
+    describeSleep({ readCount: 42, mergedCount: 0, dormantCount: 0, edgeCount: 0, insightCount: 0, conflictCount: 0 }),
+    '42 Erinnerungen gelesen, nichts zu tun.',
+  );
+  // A decided contradiction reads as decided; only what is left over is "offen".
+  assert.match(
+    describeSleep({
+      readCount: 42,
+      mergedCount: 2,
+      dormantCount: 9,
+      edgeCount: 14,
+      insightCount: 1,
+      conflictCount: 3,
+      resolvedCount: 2,
+    }),
+    /2 verdichtet, 9 aufgeraeumt, 14 Verbindungen gezogen, 2 Widersprüche entschieden, 1 Widerspruch offen, 1 Einsicht notiert\./,
+  );
+});
+
+test('the call budget is split across cycles, front- or back-loaded', () => {
+  // Whatever the weighting, the parts add up to exactly the budget.
+  for (const cycles of [1, 2, 3, 4]) {
+    for (const bias of ['early', 'late']) {
+      let sum = 0;
+      for (let cycle = 1; cycle <= cycles; cycle += 1) sum += share(12, cycles, cycle, bias);
+      assert.equal(sum, 12, cycles + ' cycles, ' + bias);
+    }
+  }
+  // Deep work leans on the first cycle, dreaming on the last.
+  assert.ok(share(12, 2, 1, 'early') > share(12, 2, 2, 'early'));
+  assert.ok(share(12, 2, 2, 'late') > share(12, 2, 1, 'late'));
+});
+
+test('the night decides a contradiction and files the losing side away', async () => {
+  const store = makeStore();
+  const windows = store.upsertMemory({
+    kind: 'fact',
+    content: 'Der Nutzer arbeitet an einem Rechner mit Windows 11.',
+    importance: 0.7,
+  });
+  const linux = store.upsertMemory({
+    kind: 'fact',
+    content: 'Der Nutzer ist inzwischen auf Linux umgestiegen.',
+    importance: 0.7,
+  });
+  store.addEdge({
+    owner: 'assistant',
+    srcId: windows.id,
+    dstId: linux.id,
+    relation: 'contradicts',
+    weight: 0.9,
+    origin: 'sleep',
+  });
+
+  // The model picks the second sentence: the newer state holds.
+  const { runner } = makeRunner(store, { resolve: JSON.stringify({ decision: 'second' }) });
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.resolvedCount, 1);
+  assert.ok(store.getMemory(windows.id).dormantAt, 'the outdated side is filed away');
+  assert.equal(store.getMemory(windows.id).supersededBy, linux.id);
+  assert.equal(store.getMemory(linux.id).dormantAt, undefined, 'the one that holds stays');
+  assert.equal(store.listMemories({ limit: 10 }).length, 2, 'nothing was deleted');
+
+  // Recall now answers with one side instead of two contradicting ones.
+  const hits = recall(store, { text: 'Welches Betriebssystem nutzt der Nutzer?', touch: false });
+  assert.equal(hits.length, 1);
+  assert.match(hits[0].content, /Linux/);
+  store.close();
+});
+
+test('what the user wrote wins a contradiction without asking a model', async () => {
+  const store = makeStore();
+  const mine = store.upsertMemory({
+    kind: 'preference',
+    content: 'Der Nutzer moechte immer deutsche Oberflaechentexte.',
+    importance: 0.8,
+    origin: 'user',
+  });
+  const guessed = store.upsertMemory({
+    kind: 'preference',
+    content: 'Der Nutzer moechte englische Oberflaechentexte.',
+    importance: 0.8,
+  });
+  store.addEdge({
+    owner: 'assistant',
+    srcId: guessed.id,
+    dstId: mine.id,
+    relation: 'contradicts',
+    weight: 0.9,
+    origin: 'sleep',
+  });
+
+  // No resolve reply is scripted: if a model were asked, the decision would fail.
+  const { runner, scripted } = makeRunner(store);
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.resolvedCount, 1);
+  assert.equal(store.getMemory(mine.id).dormantAt, undefined, 'the user always wins');
+  assert.ok(store.getMemory(guessed.id).dormantAt, 'the inferred one is filed away');
+  assert.ok(
+    !scripted.prompts.some((prompt) => prompt.includes('raeumst nachts einen Widerspruch')),
+    'and it cost no model call',
+  );
+  store.close();
+});

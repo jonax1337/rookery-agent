@@ -18,6 +18,7 @@ import {
   parseSkillSource,
   renderSkillsIndex,
   toolServerStates,
+  dormantToolsHint,
   toolServersFor,
   withToolServer,
   withoutToolServer,
@@ -60,6 +61,38 @@ test('the system prompt carries identity, memories, history and the company bloc
   assert.match(prompt, /mara — Mara, Backend Engineer/, 'the org chart is in the prompt');
   assert.match(prompt, /never hand the/, 'the single-identity rule is stated');
   assert.doesNotMatch(prompt, /computer tools/, 'no screen talk unless the tools are attached');
+});
+
+test('the prompt tells the assistant to find a way, and where finding a way stops', () => {
+  const prompt = buildSystemPrompt({ config: DEFAULT_CONFIG, memories: [], resumed: true });
+  assert.match(prompt, /You do not hit dead ends/, 'the doctrine is in every turn');
+  assert.match(prompt, /three genuinely different routes/, 'it says how much trying is enough');
+  assert.match(prompt, /a route you have not tried is still open/);
+  assert.match(prompt, /still gets one short question first/, 'the brake survives the doctrine');
+  assert.match(prompt, /"stop" stops you immediately/);
+  assert.doesNotMatch(prompt, /set_tool_server/, 'which tools exist comes from the hub, not the identity');
+});
+
+test('the hub tells the assistant what it could attach and what only the user can fix', () => {
+  const base = { ...DEFAULT_CONFIG, tools: { servers: [] } };
+  const token = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+  delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+  try {
+    const hint = dormantToolsHint(base, 'assistant');
+    assert.match(hint, /ready to attach with set_tool_server:/);
+    assert.ok(hint.includes('computer (Computer-Steuerung)'), 'a server that is merely off is reachable');
+    assert.ok(hint.includes('github (GitHub): needs GITHUB_PERSONAL_ACCESS_TOKEN'), 'a missing key is a real wall');
+    assert.match(hint, /Werkzeuge page/, 'and the wall names who can remove it');
+    assert.equal(dormantToolsHint(base, 'agent'), '', 'agents cannot flip switches, so they hear nothing');
+
+    const on = { ...base, tools: withToolServer(base, 'computer', { enabled: true }) };
+    assert.ok(!dormantToolsHint(on, 'assistant').includes('computer (Computer-Steuerung)'), 'an attached server is not offered again');
+
+    const forAgents = { ...base, tools: withToolServer(base, 'computer', { enabled: true, audience: 'agents' }) };
+    assert.ok(dormantToolsHint(forAgents, 'assistant').includes('computer (Computer-Steuerung)'), 'on for the staff is still off for you');
+  } finally {
+    if (token) process.env.GITHUB_PERSONAL_ACCESS_TOKEN = token;
+  }
 });
 
 test('computer control: prompt block, server spec and key combos', () => {

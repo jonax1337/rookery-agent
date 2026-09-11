@@ -167,6 +167,9 @@ export class CronScheduler extends EventEmitter {
     const schedule = parseCron(input.schedule).expression;
     const kind = input.kind ?? (input.agentId ? 'agent' : 'assistant');
     if (kind === 'agent' && !input.agentId) throw new Error('An agent schedule needs an agent.');
+    // A sleep job's `prompt` carries a scope, not an instruction. Default it
+    // here rather than letting an empty one quietly mean "nothing sleeps".
+    if (kind === 'sleep' && !input.prompt.trim()) input = { ...input, prompt: 'assistant' };
     const enabled = input.enabled ?? true;
     const nextRunAt = enabled ? this.#next(schedule, Date.now()) : null;
     if (enabled && nextRunAt === null) {
@@ -376,7 +379,12 @@ export class CronScheduler extends EventEmitter {
 
 /** One line per job, for the assistant's prompt and tool replies. */
 export function describeCronJob(job: CronJob, agentSlug?: string): string {
-  const who = job.kind === 'agent' ? 'agent ' + (agentSlug ?? job.agentId ?? '?') : 'you';
+  const who =
+    job.kind === 'agent'
+      ? 'agent ' + (agentSlug ?? job.agentId ?? '?')
+      : job.kind === 'sleep'
+        ? 'the memory itself'
+        : 'you';
   const next = job.enabled && job.nextRunAt ? 'next ' + new Date(job.nextRunAt).toLocaleString('de-DE') : 'off';
   const last = job.lastRunAt
     ? ', last ' + new Date(job.lastRunAt).toLocaleString('de-DE') + ' ' + (job.lastStatus ?? '')

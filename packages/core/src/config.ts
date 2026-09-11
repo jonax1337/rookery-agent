@@ -32,6 +32,39 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     autoExtract: true,
     workingWindow: 12,
     contextBudget: 6000,
+    gate: {
+      // Three a turn, not eight: a conversation that yields more than three
+      // durable facts is rare, and this cap is what stops the bank drifting.
+      maxPerTurn: 3,
+      minImportance: 0.4,
+      duplicateThreshold: 0.82,
+      clusterThreshold: 0.55,
+    },
+    graph: {
+      hopEntity: 0.45,
+      hopEdge: 0.6,
+      maxNodes: 300,
+    },
+    sleep: {
+      enabled: true,
+      // Half past three: late enough that nobody is working, early enough
+      // that the machine is usually still awake.
+      schedule: '30 3 * * *',
+      scope: 'assistant',
+      maxMergeCalls: 12,
+      dormantAfterDays: 45,
+      minStrength: 0.25,
+      insights: 2,
+      agentThreshold: 20,
+      // Two cycles: the second one sees the bank the first one tidied, so
+      // dream sleep connects what deep sleep just made connectable.
+      cycles: 2,
+      maxResolveCalls: 5,
+      // Sonnet, not haiku. Sixteen calls once a night is cheap; a merge that
+      // throws two different facts into one sentence is not.
+      model: 'sonnet',
+      insightModel: 'sonnet',
+    },
   },
   voice: {
     enabled: true,
@@ -115,6 +148,17 @@ function envOverrides(): Partial<RookeryConfig> {
 }
 
 /**
+ * What each config object was loaded with on top of the file.
+ *
+ * The file is not the whole truth: a host can start Rookery with settings
+ * that were never written to it - `rookery-server --port 4318`, a test with
+ * its own home directory. Saving re-reads the file, so without this the
+ * first tool switch would quietly put the port back to what config.json
+ * says. Keyed by object identity, so nothing shows up in the config shape
+ * or in what the browser is handed.
+ */
+const OVERRIDES = new WeakMap<RookeryConfig, Partial<RookeryConfig>>();
+/**
  * Load the effective config, creating ~/.rookery on first run.
  * A malformed config.json is reported rather than silently ignored, so a
  * typo never quietly reverts the assistant to defaults.
@@ -162,6 +206,7 @@ export function loadConfig(overrides: Partial<RookeryConfig> = {}): RookeryConfi
   if (!config.defaultEffort) delete config.defaultEffort;
 
   ensureHome(config.home, config.workspace);
+  OVERRIDES.set(config, overrides);
   return config;
 }
 
@@ -188,6 +233,34 @@ export function saveConfig(patch: Partial<RookeryConfig>, home?: string): Rooker
   return loadConfig({ home: root });
 }
 
+/**
+ * Persist a patch and bring one live config object up to date, in place.
+ *
+ * The runtime, the company controller and the server routes all hold the
+ * same object, so a setting change has to mutate it rather than replace it:
+ * whoever captured a reference must keep seeing current settings. Three
+ * things a plain `Object.assign(config, saveConfig(...))` gets wrong and this
+ * does not. A setting cleared to "unset" is absent from the reloaded config
+ * and would otherwise survive the assign. The overrides the object was
+ * started with would be lost to the file, so the first tool switch would put
+ * a `--port` flag back to whatever config.json says. And an override must not
+ * outrank the change being made: the layering is file, then what the host
+ * started with, then this patch, so an explicit change always wins and only
+ * the keys it leaves alone keep the host's value.
+ */
+export function applyConfig(config: RookeryConfig, patch: Partial<RookeryConfig>): RookeryConfig {
+  const overrides = merge(OVERRIDES.get(config) ?? {}, patch);
+  const next = merge(saveConfig(patch, config.home), overrides);
+  // The rule loadConfig uses, applied again because the patch reintroduces
+  // the empty string the UI sends for "use the default".
+  if (!next.defaultModel) delete next.defaultModel;
+  if (!next.defaultEffort) delete next.defaultEffort;
+  const live = config as unknown as Record<string, unknown>;
+  for (const key of Object.keys(live)) if (!(key in next)) delete live[key];
+  Object.assign(config, next);
+  OVERRIDES.set(config, overrides);
+  return config;
+}
 export function databasePath(config: RookeryConfig): string {
   return join(config.home, 'rookery.db');
 }

@@ -121,6 +121,49 @@ export function toolServersFor(
 }
 
 /**
+ * What the assistant could reach this turn but does not have attached.
+ *
+ * Without this paragraph the model is blind to its own reach: a server that
+ * is switched off simply does not exist in the prompt, so the obvious detour
+ * around a wall - attach the browser and carry on - never occurs to it. The
+ * distinction that matters is between a server it can attach itself and one
+ * that needs the user on the Werkzeuge page; only the second is a real wall,
+ * and then the model can say exactly what is missing.
+ *
+ * Agents get nothing here: only the assistant may flip a switch.
+ */
+export function dormantToolsHint(config: RookeryConfig, who: 'assistant' | 'agent'): string {
+  if (who !== 'assistant') return '';
+  const ready: string[] = [];
+  const blocked: string[] = [];
+  for (const state of toolServerStates(config)) {
+    if (state.active && serves(state.audience, 'assistant')) continue;
+    const what = state.id + ' (' + state.name + ')';
+    if (!state.installed) blocked.push(what + ': not installed on this machine');
+    else if (state.missingEnv.length) blocked.push(what + ': needs ' + state.missingEnv.join(', '));
+    else ready.push(what);
+  }
+  if (!ready.length && !blocked.length) return '';
+
+  const lines = ['Tools you do not have in this turn but can reach:'];
+  if (ready.length) {
+    lines.push(
+      'ready to attach with set_tool_server: ' + ready.join(', ') + '.',
+      'Attaching one is yours to decide and needs no approval from anyone. The turn does not end there:',
+      'after you attach a server the work continues with it available, so switch it on and go on',
+      'with the job instead of announcing it and stopping.',
+    );
+  }
+  if (blocked.length) {
+    lines.push(
+      'out of reach until the user acts on the Werkzeuge page: ' + blocked.join('; ') + '.',
+      'When one of these is the only route left, name exactly what is missing.',
+    );
+  }
+  return lines.join(' ');
+}
+
+/**
  * Run every active server's `ensure` hook for one audience before a turn:
  * a shared browser comes up here. Failures are logged by the caller's
  * silence; a server that cannot prepare simply behaves as before.

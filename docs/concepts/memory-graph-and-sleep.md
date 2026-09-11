@@ -1,8 +1,10 @@
 # Gedaechtnis als Graph, mit Schlaf
 
-Stand: 2026-09-10. Konzept, kein Code. Betrifft `packages/core/src/memory/`, `packages/core/src/cron/`,
-`packages/core/src/runtime.ts`, `packages/core/src/org/controller.ts`, `packages/server/src/routes/memories.ts`
-und die Gedaechtnis-Seite der Web-UI.
+Stand: 2026-09-10. **Umgesetzt** in allen fuenf Phasen; dieses Dokument bleibt als Begruendung stehen.
+Der Code liegt in `packages/core/src/memory/gate.ts`, `sleep.ts`, `recall.ts`, `store.ts` und `db.ts`,
+die Oberflaeche in `packages/web/src/components/Memory*.tsx` und `SleepCard.tsx`. Beruehrt ausserdem
+`packages/core/src/cron/`, `packages/core/src/runtime.ts`, `packages/core/src/org/controller.ts` und
+`packages/server/src/routes/`.
 
 ## 1. Zielsetzung
 
@@ -269,8 +271,8 @@ Entitaeten teilen. Daraus werden ueber eine Union-Find-Struktur Buendel von zwei
 Buendel, die nur `pinned` oder `origin = 'user'` enthalten, fallen raus.
 
 **Phase 3 – Verdichten. Bis zu `maxMergeCalls` (Standard 12) Aufrufe.**
-Buendel absteigend nach Groesse, ein kleiner Modellaufruf je Buendel (`smallModelFor`, `effort: 'low'`,
-`permission: 'chat'`). Eingabe: die Saetze mit Datum und Wichtigkeit. Ausgabe streng als JSON:
+Buendel absteigend nach Groesse, ein Modellaufruf je Buendel (`effort: 'low'`, `permission: 'chat'`).
+Das Modell ist **nicht** das billigste (Entscheidung E6). Eingabe: die Saetze mit Datum und Wichtigkeit. Ausgabe streng als JSON:
 
 ```json
 {"merge": true, "content": "...", "kind": "fact", "importance": 0.7, "tags": ["..."], "supersedes": ["id", "id"]}
@@ -298,8 +300,8 @@ striktesten begrenzt gehoert.
 `sleep_runs` wird abgeschlossen, `report` aus den Zaehlern zusammengesetzt: "42 Erinnerungen gelesen, 6 zu
 2 verdichtet, 9 schlafen gelegt, 14 Verbindungen gezogen, 1 Widerspruch gefunden, 1 Einsicht."
 
-Gesamtbudget pro Nacht und Besitzer: hoechstens 16 Aufrufe eines kleinen Modells. Das ist weniger, als ein
-mittlerer Arbeits-Turn kostet.
+Gesamtbudget pro Nacht und Besitzer: hoechstens 16 Aufrufe. Das ist weniger, als ein mittlerer
+Arbeits-Turn kostet.
 
 ### 7.3 Was der Schlaf niemals tut
 
@@ -405,8 +407,29 @@ ist eine Transaktion. Ohne das ist ein selbstaendig arbeitender Nachtlauf nicht 
 **E4 – Was der Nutzer geschrieben hat, ist unantastbar.** `origin = 'user'` und `pinned = 1` werden weder
 schlafen gelegt noch verdichtet.
 
-**E5 – Widersprueche werden gemeldet, nicht entschieden.** Sie erscheinen als Handlungspunkt. In den Prompt
-geht nur der neuere Satz, mit Hinweis auf die aeltere Notiz.
+**E6 – Der Schlaf laeuft nicht auf dem billigsten Modell.** Standard ist Sonnet fuer alle drei
+Modellphasen (`memory.sleep.model`, `memory.sleep.insightModel`). Verdichten heisst entscheiden, ob zwei
+Saetze denselben Sachverhalt meinen, Verknuepfen heisst Widersprueche erkennen, und die Einsicht ist die
+schwerste Aufgabe im System. Ein zu schwaches Modell verschmilzt Unzusammengehoeriges oder schreibt
+Plattitueden. Das Kostenargument traegt hier nicht: sechzehn Aufrufe einmal pro Nacht sind billig, ein
+falsch verschmolzenes Paar ist es nicht. Entschieden am 2026-09-10 von Jonas.
+
+**E5 – Widersprueche werden entschieden, nicht nur gemeldet.** *Geaendert am 2026-09-11 auf Wunsch von
+Jonas; die urspruengliche Fassung meldete nur.* Zwei Saetze, die nicht beide stimmen koennen, sind kein
+Kuriosum, sondern ein Defekt: je nachdem, welchen der Abruf hochspuelt, liegt der Assistent die Haelfte
+der Zeit falsch. Der Tiefschlaf entscheidet daher im Modellaufruf, welche Seite gilt; die andere wird
+weggeraeumt (`dormant_at` plus `superseded_by`), nicht geloescht, und die Nacht bleibt umkehrbar. Zwei
+Faelle erreichen nie ein Modell: sind beide Seiten geschuetzt, bleibt der Widerspruch beim Nutzer; ist
+genau eine geschuetzt, gewinnt sie, weil eine eigene Aussage des Nutzers jede Ableitung schlaegt.
+
+**E7 – Der Schlaf hat Phasen, keine Schrittliste.** Leichtschlaf raeumt ohne Modell auf, Tiefschlaf
+verdichtet und entscheidet, Traumschlaf verknuepft und zieht Schluesse. Der Zyklus wiederholt sich
+(Standard zweimal), weil die Phasen einander fuettern: der Traumschlaf findet die Widersprueche, die der
+naechste Tiefschlaf entscheidet. Entschieden am 2026-09-11 von Jonas.
+
+**E8 – Der Graph wird dreidimensional dargestellt.** Die flache SVG-Zeichnung wurde ab etwa dreissig
+Knoten zum Knaeuel. `3d-force-graph` ueber WebGL, per dynamischem Import in ein eigenes Buendel gelegt.
+Entschieden am 2026-09-11 von Jonas.
 
 ### Offen
 

@@ -18,7 +18,7 @@ import type {
   TaskStatus,
 } from '../types.js';
 import { ASSISTANT_MEMORY_OWNER, EFFORT_LEVELS } from '../types.js';
-import { saveConfig } from '../config.js';
+import { applyConfig } from '../config.js';
 import type { Logger } from '../logger.js';
 import { silentLogger } from '../logger.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -26,6 +26,8 @@ import type { Store } from '../memory/store.js';
 import type { OrgStore } from './store.js';
 import { coreProfile, recall } from '../memory/recall.js';
 import { extractMemories, smallModelFor } from '../memory/extractor.js';
+import { admitCandidates, linkEntities } from '../memory/gate.js';
+import type { SleepRunner } from '../memory/sleep.js';
 import { clip, shorten, tail } from '../util/queue.js';
 import type { BridgeServer, ToolCallResult, ToolHandler } from './bridge.js';
 import { buildAgentPrompt, renderBoard, renderOrgOverview, renderSchedules, type OrgSnapshot } from './prompts.js';
@@ -86,6 +88,8 @@ export interface OrgControllerOptions {
   logger?: Logger;
   /** The clock, when the runtime has one; the schedule tools need it. */
   cron?: CronScheduler;
+  /** The night shift, when the runtime has one; `sleep_now` needs it. */
+  sleep?: SleepRunner;
 }
 
 /** Emit a progress line roughly every this many characters of agent output. */
@@ -101,6 +105,7 @@ export class OrgController extends EventEmitter {
   readonly #log: Logger;
   readonly #skills: SkillStore;
   readonly #cron: CronScheduler | undefined;
+  readonly #sleep: SleepRunner | undefined;
   #running = 0;
   #waiting: (() => void)[] = [];
   /** Cancel hooks of assignments that are queued or running, by assignment id. */
@@ -117,6 +122,7 @@ export class OrgController extends EventEmitter {
     this.#log = options.logger ?? silentLogger;
     this.#skills = new SkillStore(options.config.skillsDir);
     this.#cron = options.cron;
+    this.#sleep = options.sleep;
   }
 
   get bridge(): BridgeServer {
@@ -246,17 +252,35 @@ export class OrgController extends EventEmitter {
         return { text: 'Updated project "' + (patch.name ?? project.name) + '": ' + Object.keys(patch).join(', ') + '.' };
       }
 
+      case 'sleep_now': {
+        if (context.audience !== 'assistant') return fail('Only the assistant has this memory.');
+        if (!this.#sleep) return fail('The nightly memory run is not available here.');
+        if (this.#sleep.isRunning(ASSISTANT_MEMORY_OWNER)) return { text: 'The memory is already asleep.' };
+        // Started, not awaited: a night takes minutes and the turn must not
+        // sit and wait for it. The memory page follows it live.
+        void this.#sleep.run({ owner: ASSISTANT_MEMORY_OWNER, trigger: 'manual' });
+        return {
+          text:
+            'The memory is going to sleep now. It condenses, files and connects; nothing is deleted, ' +
+            'and the run can be undone on the memory page.',
+        };
+      }
+
       case 'remember': {
         if (context.audience !== 'assistant') return fail('Only the assistant has this memory.');
         if (!text('content')) return fail('A memory needs content.');
+        const tags = text('tags').split(',').map((v) => v.trim()).filter(Boolean);
         const record = this.#store.upsertMemory({
           kind: asMemoryKind(text('kind')),
           content: text('content'),
-          tags: text('tags').split(',').map((v) => v.trim()).filter(Boolean),
+          tags,
           importance: clampNumber(args.importance, 0, 1, 0.7),
           owner: ASSISTANT_MEMORY_OWNER,
           sourceSessionId: context.sessionId,
+          // Asked for explicitly, so the night never merges it away.
+          origin: 'user',
         });
+        linkEntities(this.#store, ASSISTANT_MEMORY_OWNER, record.id, tags);
         this.emit('changed', { kind: 'memory', id: record.id });
         return { text: 'Remembered (' + record.id.slice(0, 8) + '): ' + record.content };
       }
@@ -342,9 +366,14 @@ export class OrgController extends EventEmitter {
           enabled: args.enabled,
           ...(audience === 'assistant' || audience === 'agents' || audience === 'both' ? { audience } : {}),
         });
-        Object.assign(this.#config, saveConfig({ tools }, this.#config.home));
+        applyConfig(this.#config, { tools });
         this.emit('changed', { kind: 'tools', id: state.id });
-        return { text: state.name + ' is now ' + (args.enabled ? 'on' : 'off') + ' for ' + (audience || state.audience) + '. It applies from the next turn.' };
+        return {
+          text: state.name + ' is now ' + (args.enabled ? 'on' : 'off') + ' for ' + (audience || state.audience) + '. ' +
+            (args.enabled
+              ? 'Finish this answer and it is attached; the turn then carries on and you can use it.'
+              : 'It is gone from the next turn on.'),
+        };
       }
 
       case 'hire_agent': {
@@ -913,15 +942,10 @@ export class OrgController extends EventEmitter {
     if (Object.keys(org).length) patch.org = org;
     if (!Object.keys(patch).length) return fail('Nothing to change.');
 
-    // saveConfig deep-merges into ~/.rookery/config.json; the runtime and the
-    // server share this one config object, so assigning in place is enough.
-    // A cleared setting is absent from the result, so it has to be removed
-    // here too rather than surviving the assign.
-    const updated = saveConfig(patch as Partial<RookeryConfig>, this.#config.home);
-    const live = this.#config as { defaultModel?: string; defaultEffort?: EffortLevel };
-    if (!updated.defaultModel) delete live.defaultModel;
-    if (!updated.defaultEffort) delete live.defaultEffort;
-    Object.assign(this.#config, updated);
+    // applyConfig writes ~/.rookery/config.json and refreshes the one config
+    // object the runtime and the server share, dropping the keys a cleared
+    // setting leaves behind.
+    applyConfig(this.#config, patch as Partial<RookeryConfig>);
     this.emit('changed', { kind: 'config', id: 'config' });
     return { text: 'Settings updated.\n' + describeSettings(this.#config) };
   }
@@ -1247,7 +1271,17 @@ export class OrgController extends EventEmitter {
   /** Let an agent keep what it learned, in its own memory bank. */
   async #learn(agent: Agent, task: string, report: string, providerId: ProviderId): Promise<void> {
     try {
-      const known = this.#store.listMemories({ owner: agent.id, limit: 30 }).map((memory) => memory.content);
+      // The memories relevant to this assignment, not the ones that happen to
+      // rank highest overall - otherwise the model cannot tell that it is
+      // about to write the same sentence for the fourth time.
+      const known = recall(this.#store, {
+        text: task + '\n' + report,
+        owner: agent.id,
+        limit: 20,
+        threshold: 0.05,
+        touch: false,
+        expand: false,
+      }).map((memory) => memory.content);
       const candidates = await extractMemories(this.#registry.get(providerId), {
         userText: task,
         assistantText: report,
@@ -1255,9 +1289,11 @@ export class OrgController extends EventEmitter {
         model: smallModelFor(providerId),
         perspective: 'agent',
       });
-      for (const candidate of candidates) {
-        this.#store.upsertMemory({ ...candidate, owner: agent.id });
-      }
+      admitCandidates(this.#store, {
+        candidates,
+        owner: agent.id,
+        config: this.#config.memory,
+      });
     } catch (error) {
       this.#log.warn('Agent memory extraction failed', { agent: agent.slug, error: (error as Error).message });
     }

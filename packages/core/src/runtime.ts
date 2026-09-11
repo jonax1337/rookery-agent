@@ -20,13 +20,15 @@ import { databasePath, loadConfig } from './config.js';
 import { createLogger, silentLogger, type Logger } from './logger.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Store } from './memory/store.js';
-import { coreProfile, recall } from './memory/recall.js';
+import { coreProfile, dropContradicted, recall } from './memory/recall.js';
 import { extractMemories, smallModelFor } from './memory/extractor.js';
+import { admitCandidates, linkEntities } from './memory/gate.js';
+import { SleepRunner } from './memory/sleep.js';
 import { buildSystemPrompt, deriveTitle } from './agents/persona.js';
 import { BridgeServer } from './org/bridge.js';
 import { OrgController } from './org/controller.js';
 import { assistantOrgBlock, buildAgentChatPrompt } from './org/prompts.js';
-import { ensureToolServers, toolServersFor } from './tools/hub.js';
+import { dormantToolsHint, ensureToolServers, toolServersFor } from './tools/hub.js';
 import { SkillStore, renderSkillsIndex } from './skills/store.js';
 import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
@@ -54,6 +56,42 @@ import { EventQueue } from './util/queue.js';
  * the directory Rookery was started from; only agents work in project
  * directories, and only when the project names one.
  */
+
+/**
+ * How many provider processes one turn may use. Two, because a turn that
+ * attaches a tool server needs a second process to actually get it, and
+ * because a third would let the assistant loop over its own switches.
+ */
+const MAX_PROVIDER_PASSES = 2;
+
+/** Add up what two passes of one turn cost; the last pass owns the context gauge. */
+function mergeUsage(base: TurnUsage | undefined, next: TurnUsage | undefined): TurnUsage | undefined {
+  if (!base) return next;
+  if (!next) return base;
+  const sum = (a?: number, b?: number): number | undefined => (a === undefined && b === undefined ? undefined : (a ?? 0) + (b ?? 0));
+  return {
+    inputTokens: sum(base.inputTokens, next.inputTokens),
+    outputTokens: sum(base.outputTokens, next.outputTokens),
+    cachedInputTokens: sum(base.cachedInputTokens, next.cachedInputTokens),
+    reasoningTokens: sum(base.reasoningTokens, next.reasoningTokens),
+    costUsd: sum(base.costUsd, next.costUsd),
+    contextTokens: next.contextTokens ?? base.contextTokens,
+    contextWindow: next.contextWindow ?? base.contextWindow,
+  };
+}
+
+/**
+ * What the second pass is asked. It is not the user talking, and it says so:
+ * the assistant should pick the work back up, not answer this sentence.
+ */
+function continuePrompt(servers: string[]): string {
+  return [
+    '[Rookery] The tool servers you just switched on are attached now: ' + servers.join(', ') + '.',
+    'This message is from the system, not from your user, so do not address it and do not greet.',
+    'Carry on with what you stopped for, using the new tools, and finish the answer without',
+    'repeating what you already said.',
+  ].join(' ');
+}
 
 export interface ChatInput {
   text: string;
@@ -120,6 +158,12 @@ export class Assistant extends EventEmitter {
    * runtime for real (the server), never by a one-off CLI command.
    */
   readonly cron: CronScheduler;
+  /**
+   * The night shift: condensing, linking and concluding over the memory
+   * bank while nobody is talking. Fires from a schedule like anything else,
+   * and can be started by hand from the memory page.
+   */
+  readonly sleep: SleepRunner;
 
   constructor(options: AssistantOptions = {}) {
     super();
@@ -138,6 +182,13 @@ export class Assistant extends EventEmitter {
       logger: this.log,
       timeoutMs: this.config.org.assignmentTimeoutMs,
     });
+    // Before the controller: the `sleep_now` tool needs it at construction.
+    this.sleep = new SleepRunner({
+      store: this.store,
+      registry: this.providers,
+      config: this.config,
+      logger: this.log,
+    });
     this.org = new OrgController({
       store: this.store,
       registry: this.providers,
@@ -145,9 +196,12 @@ export class Assistant extends EventEmitter {
       bridge: new BridgeServer({ runDir: join(this.config.home, 'run') }),
       logger: this.log,
       cron: this.cron,
+      sleep: this.sleep,
     });
     this.cron.on('cron', (event: AgentEvent) => this.emit('cron', event));
     this.cron.on('message', (event: AgentEvent) => this.emit('message', event));
+    // Every client watches the brain fall asleep and wake up again.
+    this.sleep.on('sleep', (event: AgentEvent) => this.emit('sleep', event));
     // Anything an agent does is interesting to every client, not only the
     // turn that caused it: the org page shows activity live.
     this.org.on('assignment', (event: AgentEvent) => this.emit('assignment', event));
@@ -215,18 +269,85 @@ export class Assistant extends EventEmitter {
       text,
       limit: limit ?? this.config.memory.recallLimit,
       threshold: this.config.memory.recallThreshold,
+      hopEntity: this.config.memory.graph.hopEntity,
+      hopEdge: this.config.memory.graph.hopEdge,
       touch: false,
     });
   }
 
-  rememberFact(input: { content: string; kind?: MemoryRecord['kind']; tags?: string[]; importance?: number }): MemoryRecord {
-    return this.store.upsertMemory({
+  /**
+   * Something the user told us to keep. Marked `user`, which makes it
+   * untouchable for the nightly run: it is never merged away and never put
+   * to sleep, however little it gets recalled.
+   */
+  rememberFact(input: {
+    content: string;
+    kind?: MemoryRecord['kind'];
+    tags?: string[];
+    importance?: number;
+    pinned?: boolean;
+  }): MemoryRecord {
+    const record = this.store.upsertMemory({
       kind: input.kind ?? 'fact',
       content: input.content,
       tags: input.tags,
       importance: input.importance,
       owner: ASSISTANT_MEMORY_OWNER,
+      origin: 'user',
+      pinned: input.pinned,
     });
+    linkEntities(this.store, ASSISTANT_MEMORY_OWNER, record.id, input.tags ?? []);
+    return record;
+  }
+
+  /* ------------------------------- sleep ---------------------------- */
+
+  /** Run a night by hand, for one bank. The memory page's "sleep now". */
+  async sleepNow(owner: string = ASSISTANT_MEMORY_OWNER, signal?: AbortSignal) {
+    return this.sleep.run({ owner, trigger: 'manual', signal });
+  }
+
+  sleepRuns(owner?: string, limit = 30) {
+    return this.store.listSleepRuns({ owner, limit });
+  }
+
+  /** Take one night back, in a single transaction. */
+  undoSleep(runId: string) {
+    return this.sleep.undo(runId);
+  }
+
+  /**
+   * Make sure the nightly run has a schedule. Called once when the clock
+   * starts. The job is an ordinary `cron_jobs` row, so it shows up on the
+   * schedules page, can be edited, switched off or run by hand like any
+   * other - there is no second, hidden timer anywhere.
+   */
+  ensureSleepSchedule(): CronJob | null {
+    const sleep = this.config.memory.sleep;
+    if (!sleep.enabled) return null;
+    try {
+      const organization = this.org.activeOrganization();
+      const existing = this.cron.list(organization.id).find((job) => job.kind === 'sleep');
+      if (existing) {
+        // Follow the config when the user changes it there, but never
+        // re-enable a job they switched off by hand.
+        if (existing.schedule !== sleep.schedule && existing.enabled) {
+          return this.cron.update(existing.id, { schedule: sleep.schedule });
+        }
+        return existing;
+      }
+      return this.cron.create({
+        orgId: organization.id,
+        name: 'Schlaf des Gedächtnisses',
+        schedule: sleep.schedule,
+        kind: 'sleep',
+        prompt: sleep.scope,
+        createdBy: 'user',
+      });
+    } catch (error) {
+      this.log.warn('Could not set up the nightly memory schedule', { error: (error as Error).message });
+      return null;
+    }
   }
 
   /* ------------------------------- chat ----------------------------- */
@@ -277,6 +398,8 @@ export class Assistant extends EventEmitter {
         owner,
         limit: this.config.memory.recallLimit,
         threshold: this.config.memory.recallThreshold,
+        hopEntity: this.config.memory.graph.hopEntity,
+        hopEdge: this.config.memory.graph.hopEdge,
       });
       const profile = coreProfile(this.store, {
         owner,
@@ -285,7 +408,9 @@ export class Assistant extends EventEmitter {
       const byId = new Map<string, ScoredMemory>();
       for (const memory of profile) byId.set(memory.id, memory);
       for (const memory of matched) byId.set(memory.id, memory);
-      memories = [...byId.values()].sort((a, b) => b.score - a.score);
+      // Of a contradicting pair only the newer sentence goes into the prompt;
+      // the older one stays in the bank and stays visible in the inspector.
+      memories = dropContradicted(this.store, [...byId.values()]).sort((a, b) => b.score - a.score);
       if (memories.length) {
         yield { type: 'memory', action: 'recalled', count: memories.length, items: memories };
       }
@@ -308,11 +433,14 @@ export class Assistant extends EventEmitter {
       this.log.warn('Tool server could not prepare', { id, error: error.message }),
     );
     const extra = toolServersFor(this.config, who, providerId);
+    // The assistant also hears about the servers it could attach but has not:
+    // a switch it does not know about is a wall it cannot climb.
+    const toolHints = [...extra.hints, dormantToolsHint(this.config, who)].filter(Boolean);
     const skillsIndex = renderSkillsIndex(this.skills.for(who));
     const systemPrompt = agent
       ? buildAgentChatPrompt({
           config: this.config, agent, snapshot, memories, inbox, history, resumed, project,
-          toolHints: extra.hints, skillsIndex,
+          toolHints, skillsIndex,
         })
       : buildSystemPrompt({
           config: this.config,
@@ -322,8 +450,10 @@ export class Assistant extends EventEmitter {
           // A voice session speaks whichever surface the turn came from.
           voice: input.voice ?? session.kind === 'voice',
           orgBlock: assistantOrgBlock(this.config, snapshot, inbox, project, this.cron.list(organization.id)),
-          toolHints: extra.hints,
+          toolHints,
           skillsIndex,
+          // Lets the memory block group itself by entity.
+          store: this.store,
         });
 
     this.store.addMessage({ sessionId: session.id, role: 'user', content: prompt });
@@ -340,74 +470,121 @@ export class Assistant extends EventEmitter {
 
     yield { type: 'session', sessionId: session.id, providerSessionId, provider: providerId, model };
 
-    // Everything the turn produces goes through one queue: the provider's
-    // own events, and whatever the tool calls it makes cause in the company.
-    const queue = new EventQueue<AgentEvent>();
-    const token = this.org.register({
-      orgId: organization.id,
-      audience: agent ? 'agent' : 'assistant',
-      agentId: agent?.id,
-      sessionId: session.id,
-      projectId: session.projectId,
-      depth: agent ? 0 : -1,
-      emit: (event) => queue.push(event),
-      signal: input.signal,
-    });
     // An agent in a chat may look at its project; the assistant stays in the
     // workspace and is a person, not Claude Code's coding agent.
     const cwd = agent && project?.path ? project.path : this.config.workspace;
 
-    const pump = (async () => {
-      try {
-        const mcp = await this.org.bridge.spec(token);
-        for await (const event of provider.run({
-          prompt,
-          systemPrompt,
-          systemPromptMode: agent ? 'append' : 'replace',
-          providerSessionId,
-          model,
-          effort,
-          cwd,
-          permission: input.permission ?? agent?.permission ?? this.config.defaultPermission,
-          mcp,
-          mcpExtra: extra.specs.length ? extra.specs : undefined,
-          signal: input.signal,
-        })) {
-          queue.push(event);
-        }
-      } catch (error) {
-        queue.push({ type: 'error', message: (error as Error).message, fatal: true });
-      } finally {
-        queue.close();
-      }
-    })();
+    // What this pass of the provider is run with. A turn usually has exactly
+    // one pass; see the continuation below for why it sometimes has two.
+    let passPrompt = prompt;
+    let passSystemPrompt = systemPrompt;
+    let passExtra = extra;
+    let attached = new Set(extra.specs.map((spec) => spec.name));
 
-    try {
-      for await (const event of queue.drain()) {
-        switch (event.type) {
-          case 'text':
-            answer += event.delta;
-            yield event;
-            break;
-          case 'session':
-            providerSessionId = event.providerSessionId ?? providerSessionId;
-            break;
-          case 'done':
-            providerSessionId = event.providerSessionId ?? providerSessionId;
-            answer = event.text || answer;
-            usage = event.usage;
-            break;
-          case 'error':
-            if (event.fatal) failed = true;
-            yield event;
-            break;
-          default:
-            yield event;
+    for (let pass = 1; pass <= MAX_PROVIDER_PASSES; pass += 1) {
+      // Everything the turn produces goes through one queue: the provider's
+      // own events, and whatever the tool calls it makes cause in the company.
+      const queue = new EventQueue<AgentEvent>();
+      const token = this.org.register({
+        orgId: organization.id,
+        audience: agent ? 'agent' : 'assistant',
+        agentId: agent?.id,
+        sessionId: session.id,
+        projectId: session.projectId,
+        depth: agent ? 0 : -1,
+        emit: (event) => queue.push(event),
+        signal: input.signal,
+      });
+
+      const currentPrompt = passPrompt;
+      const currentSystemPrompt = passSystemPrompt;
+      const currentSpecs = passExtra.specs;
+      const currentResume = providerSessionId;
+      const pump = (async () => {
+        try {
+          const mcp = await this.org.bridge.spec(token);
+          for await (const event of provider.run({
+            prompt: currentPrompt,
+            systemPrompt: currentSystemPrompt,
+            systemPromptMode: agent ? 'append' : 'replace',
+            providerSessionId: currentResume,
+            model,
+            effort,
+            cwd,
+            permission: input.permission ?? agent?.permission ?? this.config.defaultPermission,
+            mcp,
+            mcpExtra: currentSpecs.length ? currentSpecs : undefined,
+            signal: input.signal,
+          })) {
+            queue.push(event);
+          }
+        } catch (error) {
+          queue.push({ type: 'error', message: (error as Error).message, fatal: true });
+        } finally {
+          queue.close();
         }
+      })();
+
+      let passText = '';
+      try {
+        for await (const event of queue.drain()) {
+          switch (event.type) {
+            case 'text':
+              passText += event.delta;
+              yield event;
+              break;
+            case 'session':
+              providerSessionId = event.providerSessionId ?? providerSessionId;
+              break;
+            case 'done':
+              providerSessionId = event.providerSessionId ?? providerSessionId;
+              passText = event.text || passText;
+              usage = mergeUsage(usage, event.usage);
+              break;
+            case 'error':
+              if (event.fatal) failed = true;
+              yield event;
+              break;
+            default:
+              yield event;
+          }
+        }
+      } finally {
+        await pump;
+        this.org.unregister(token);
       }
-    } finally {
-      await pump;
-      this.org.unregister(token);
+
+      answer = answer && passText ? answer + '\n\n' + passText : answer || passText;
+
+      // The continuation. A tool server the assistant switched on mid-turn
+      // can only be attached to a provider process that has not started yet,
+      // so without this the work stalls until the user asks again - exactly
+      // the dead end the assistant is told not to accept. Instead the turn
+      // runs once more with the new servers attached and the provider's own
+      // session resumed, and the two answers are joined.
+      if (failed || agent || pass === MAX_PROVIDER_PASSES) break;
+      if (input.signal?.aborted) break;
+      const next = toolServersFor(this.config, who, providerId);
+      const fresh = next.specs.map((spec) => spec.name).filter((name) => !attached.has(name));
+      if (!fresh.length) break;
+
+      await ensureToolServers(this.config, who, providerId, (id, error) =>
+        this.log.warn('Tool server could not prepare', { id, error: error.message }),
+      );
+      passExtra = next;
+      attached = new Set(next.specs.map((spec) => spec.name));
+      passSystemPrompt = buildSystemPrompt({
+        config: this.config,
+        memories,
+        resumed: true,
+        voice: input.voice ?? session.kind === 'voice',
+        orgBlock: assistantOrgBlock(this.config, snapshot, [], project, this.cron.list(organization.id)),
+        toolHints: [...next.hints, dormantToolsHint(this.config, who)].filter(Boolean),
+        skillsIndex,
+        store: this.store,
+      });
+      passPrompt = continuePrompt(fresh);
+      yield { type: 'status', label: 'tools', detail: fresh.join(', ') + ' attached, carrying on' };
     }
 
     if (failed && !answer) {
@@ -545,6 +722,23 @@ export class Assistant extends EventEmitter {
    */
   async #runScheduled(job: CronJob, run: CronRun, signal: AbortSignal): Promise<CronRunOutcome> {
     void run;
+    if (job.kind === 'sleep') {
+      // The night shift. `prompt` carries the scope, not an instruction:
+      // "assistant", "all", or one agent id.
+      const scope = job.prompt.trim() || 'assistant';
+      const owners =
+        scope === 'all' ? this.sleep.dueOwners() : scope === 'assistant' ? [ASSISTANT_MEMORY_OWNER] : [scope];
+      const lines: string[] = [];
+      let failed: string | undefined;
+      for (const owner of owners) {
+        const result = await this.sleep.run({ owner, trigger: 'schedule', signal });
+        lines.push(labelForOwner(this, owner) + ': ' + (result.report ?? '-'));
+        if (result.status === 'failed') failed = result.error ?? 'Der Schlaflauf ist fehlgeschlagen.';
+      }
+      if (failed && lines.length <= 1) return { status: 'failed', error: failed };
+      return { status: 'done', result: lines.join('\n') };
+    }
+
     if (job.kind === 'agent') {
       const agent = job.agentId ? this.store.org.getAgent(job.agentId) : null;
       if (!agent || agent.archived) return { status: 'failed', error: 'Der Agent dieses Zeitplans existiert nicht mehr.' };
@@ -607,7 +801,11 @@ export class Assistant extends EventEmitter {
     owner: string,
   ): Promise<void> {
     try {
-      const known = this.store.listMemories({ owner, limit: 40 }).map((memory) => memory.content);
+      // What the model must not repeat is what is RELEVANT here, not what
+      // happens to rank highest overall. Listing the forty most important
+      // memories was the single biggest reason the bank kept growing: the
+      // sentence about to be written again was almost never in that list.
+      const known = relevantKnown(this.store, owner, userText + '\n' + assistantText);
       const candidates = await extractMemories(this.providers.get(providerId), {
         userText,
         assistantText,
@@ -615,14 +813,45 @@ export class Assistant extends EventEmitter {
         sessionId,
         model: smallModelFor(providerId),
       });
-      const stored: MemoryRecord[] = [];
-      for (const candidate of candidates) {
-        stored.push(this.store.upsertMemory({ ...candidate, owner, sourceSessionId: sessionId }));
+      const admitted = admitCandidates(this.store, {
+        candidates,
+        owner,
+        config: this.config.memory,
+        sourceSessionId: sessionId,
+      });
+      if (admitted.rejected.length) {
+        this.log.debug('Memory gate rejected candidates', {
+          count: admitted.rejected.length,
+          reasons: admitted.rejected.map((entry) => entry.reason).join(','),
+        });
       }
-      const event: MemoryLearnedEvent = { sessionId, stored };
+      const event: MemoryLearnedEvent = { sessionId, stored: admitted.stored };
       this.emit('memory', event);
     } catch (error) {
       this.log.warn('Memory extraction failed', { error: (error as Error).message });
     }
   }
+}
+
+/** "Der Assistent" or the agent's name, for the schedule's report line. */
+function labelForOwner(assistant: Assistant, owner: string): string {
+  if (owner === ASSISTANT_MEMORY_OWNER) return 'Assistent';
+  return assistant.store.org.getAgent(owner)?.name ?? owner.slice(0, 8);
+}
+
+/**
+ * The memories the extractor needs to see so it does not write them again:
+ * whatever this exchange actually touches, plus the small core profile.
+ */
+function relevantKnown(store: Store, owner: string, text: string): string[] {
+  const matched = recall(store, { text, owner, limit: 20, threshold: 0.05, touch: false, expand: false });
+  const profile = coreProfile(store, { owner, limit: 5 });
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const memory of [...matched, ...profile]) {
+    if (seen.has(memory.id)) continue;
+    seen.add(memory.id);
+    out.push(memory.content);
+  }
+  return out;
 }

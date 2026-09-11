@@ -17,7 +17,11 @@ import type {
   CronJobKind,
   CronOverview,
   CronPreview,
+  MemoryEdge,
+  MemoryEntity,
+  MemoryGraph,
   MemoryKind,
+  MemoryNeighbourhood,
   MemoryRecord,
   MemoryStats,
   Message,
@@ -31,6 +35,8 @@ import type {
   PublicConfig,
   ScoredMemory,
   Session,
+  SleepRun,
+  SleepStatusView,
   SessionKind,
   Task,
   TaskDetail,
@@ -296,6 +302,77 @@ export const api = {
     request<{ ok: true }>('/api/memories/' + id + (hard ? '?hard=1' : ''), { method: 'DELETE' }),
   memoryStats: (owner?: string) =>
     request<MemoryStats>('/api/memories/stats' + (owner ? '?owner=' + encodeURIComponent(owner) : '')),
+
+  /** Pin, re-word, re-weight, or wake a sleeping memory. */
+  patchMemory: (
+    id: string,
+    patch: {
+      content?: string;
+      kind?: MemoryKind;
+      tags?: string[];
+      importance?: number;
+      pinned?: boolean;
+      dormant?: boolean;
+      forgotten?: boolean;
+    },
+  ) => request<MemoryRecord>('/api/memories/' + id, { method: 'PATCH', ...json(patch) }),
+
+  /* ---------------------------- the memory graph --------------------------- */
+
+  memoryGraph: (
+    options: {
+      owner?: string;
+      entity?: string;
+      kind?: MemoryKind;
+      since?: number;
+      includeDormant?: boolean;
+      limit?: number;
+    } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (options.owner) query.set('owner', options.owner);
+    if (options.entity) query.set('entity', options.entity);
+    if (options.kind) query.set('kind', options.kind);
+    if (options.since) query.set('since', String(options.since));
+    if (options.includeDormant) query.set('includeDormant', '1');
+    if (options.limit) query.set('limit', String(options.limit));
+    const search = query.toString();
+    return request<MemoryGraph>('/api/memories/graph' + (search ? '?' + search : ''));
+  },
+  entities: (options: { owner?: string; limit?: number; minMentions?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (options.owner) query.set('owner', options.owner);
+    if (options.limit) query.set('limit', String(options.limit));
+    if (options.minMentions !== undefined) query.set('minMentions', String(options.minMentions));
+    const search = query.toString();
+    return request<MemoryEntity[]>('/api/entities' + (search ? '?' + search : ''));
+  },
+  memoryEdges: (id: string) => request<MemoryNeighbourhood>('/api/memories/' + id + '/edges'),
+
+  /* --------------------------------- sleep -------------------------------- */
+
+  sleepStatus: (owner?: string) =>
+    request<SleepStatusView>('/api/sleep/status' + (owner ? '?owner=' + encodeURIComponent(owner) : '')),
+  sleepRuns: (owner?: string, limit = 30) => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (owner) query.set('owner', owner);
+    return request<SleepRun[]>('/api/sleep/runs?' + query.toString());
+  },
+  /** Start a night. Resolves once it is running; the socket reports the rest. */
+  startSleep: (owner?: string) =>
+    request<{ started: boolean; owner: string }>(
+      '/api/sleep/run' + (owner ? '?owner=' + encodeURIComponent(owner) : ''),
+      { method: 'POST' },
+    ),
+  cancelSleep: (owner?: string) =>
+    request<{ cancelled: boolean }>(
+      '/api/sleep/cancel' + (owner ? '?owner=' + encodeURIComponent(owner) : ''),
+      { method: 'POST' },
+    ),
+  undoSleep: (id: string) =>
+    request<{ woken: number; removed: number; edges: number }>('/api/sleep/runs/' + id + '/undo', {
+      method: 'POST',
+    }),
 
   /* ------------------------------ organisation ----------------------------- */
 

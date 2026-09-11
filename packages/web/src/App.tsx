@@ -22,7 +22,7 @@ import type {
   PublicConfig,
 } from './lib/types';
 import { useChat } from './hooks/useChat';
-import { useMemories } from './hooks/useMemories';
+import { useMemories, useMemoryGraph, useSleep } from './hooks/useMemories';
 import { useOrg } from './hooks/useOrg';
 import { useSessions } from './hooks/useSessions';
 import { useTasks } from './hooks/useTasks';
@@ -188,6 +188,13 @@ export default function App() {
   const onSettled = useCallback(() => void sessions.refresh(), [sessions]);
   const chat = useChat(socket, sessions.activeId, onSession, onSettled);
   const memories = useMemories();
+  const memoryGraph = useMemoryGraph();
+  // A finished night rewrites the bank, so both views reload when one ends.
+  const refreshAfterSleep = useCallback(() => {
+    void memories.refresh();
+    void memoryGraph.refresh();
+  }, [memories, memoryGraph]);
+  const sleep = useSleep(socket, refreshAfterSleep);
   const org = useOrg(socket);
   const tasks = useTasks(socket);
   const cron = useCron(socket);
@@ -625,6 +632,11 @@ export default function App() {
                       onKind={(value) => memories.setKind(value as MemoryKind | '')}
                       onAdd={(input) => void memories.add(input)}
                       onForget={(id) => void memories.forget(id)}
+                      graph={memoryGraph}
+                      sleep={sleep}
+                      onPatch={(id, changes) => {
+                        void memories.patch(id, changes).then(() => void memoryGraph.refresh());
+                      }}
                     />
                   }
                 />

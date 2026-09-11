@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { saveConfig } from '@rookery/core';
+import { applyConfig } from '@rookery/core';
 import type { RookeryConfig } from '@rookery/core';
 import { publicConfig, type ServerContext } from '../context.js';
 import { parseOrThrow, patchConfigSchema } from '../schemas.js';
@@ -18,14 +18,12 @@ export async function registerConfigRoutes(
 
   app.patch('/api/config', async (request: FastifyRequest) => {
     const patch = parseOrThrow(patchConfigSchema, request.body ?? {});
-    // saveConfig deep-merges, so a partial `memory`/`voice` object is exactly
-    // what it wants; the cast only bridges Zod's deep-partial shape.
-    const updated = saveConfig(patch as Partial<RookeryConfig>, context.config.home);
-
-    context.config = updated;
-    // The Assistant holds its own reference; keep the two in step so a turn
-    // started after this PATCH uses the new settings.
-    Object.assign(context.assistant.config, updated);
+    // applyConfig deep-merges into the file, so a partial `memory`/`voice`
+    // object is exactly what it wants; the cast only bridges Zod's
+    // deep-partial shape. It updates the config in place, and the server and
+    // the Assistant hold the same object, so a turn started after this PATCH
+    // sees the new settings without anything being copied across.
+    const updated = applyConfig(context.config, patch as Partial<RookeryConfig>);
 
     context.log.info('Config updated', { keys: Object.keys(patch) });
     return publicConfig(updated);

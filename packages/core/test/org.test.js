@@ -74,6 +74,18 @@ function createFakeProvider(options = {}) {
           yield { type: 'done', text };
           return;
         }
+        // A scripted tool switch: the assistant turns a server on mid-turn.
+        const wanted = prompt.match(/TOOLS:([a-z0-9-]+)/);
+        if (wanted && opts.mcp) {
+          const result = await bridgeCall(opts.mcp.env.ROOKERY_BRIDGE_PATH, opts.mcp.env.ROOKERY_BRIDGE_TOKEN, 'call', {
+            name: 'set_tool_server',
+            args: { id: wanted[1], enabled: true },
+          });
+          const text = 'SWITCHED: ' + result.text;
+          yield { type: 'text', delta: text };
+          yield { type: 'done', text };
+          return;
+        }
         if (prompt.includes('FAIL')) {
           yield { type: 'error', message: 'boom', fatal: true };
           return;
@@ -523,5 +535,52 @@ test('a direct chat with an agent speaks as the agent, with its memory and tools
   for await (const _ of assistant.chat({ text: 'hi' })) void _;
   assert.equal(fake.runs.at(-1).systemPromptMode, 'replace');
   assert.match(fake.runs.at(-1).systemPrompt, /never about repositories/);
+  assistant.close();
+});
+
+test('a tool switched on mid-turn is attached at once instead of next time', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake, {
+    tools: {
+      servers: [
+        {
+          id: 'custom-notes',
+          enabled: false,
+          audience: 'assistant',
+          options: {},
+          env: {},
+          custom: { name: 'Notes', command: 'node', args: ['notes.js'], hint: 'The notes live here.' },
+        },
+      ],
+    },
+  });
+
+  const session = assistant.createSession();
+  let done = null;
+  const attached = [];
+  for await (const event of assistant.chat({ text: 'TOOLS:custom-notes', sessionId: session.id })) {
+    if (event.type === 'done') done = event;
+    if (event.type === 'status' && event.label === 'tools') attached.push(event.detail);
+  }
+
+  const passes = fake.runs.filter((run) => run.mcp);
+  assert.equal(passes.length, 2, 'the turn ran the provider again with the new server');
+  assert.equal(passes[0].mcpExtra, undefined, 'the first pass had nothing attached');
+  assert.deepEqual(passes[1].mcpExtra.map((spec) => spec.name), ['custom-notes']);
+  assert.ok(passes[1].prompt.startsWith('[Rookery]'), 'the second pass is nudged by the system, not the user');
+  assert.ok(passes[1].systemPrompt.includes('The notes live here.'), 'and it is told what the new server is for');
+  assert.deepEqual(attached, ['custom-notes attached, carrying on']);
+
+  assert.ok(done.text.includes('SWITCHED'));
+  assert.ok(done.text.includes('OUTPUT([Rookery]'), 'both passes are one answer');
+  const messages = store.getMessages(session.id, 10);
+  assert.equal(messages.filter((message) => message.role === 'assistant').length, 1, 'one turn, one stored answer');
+
+  // A second turn changes nothing more: the server is attached from the start.
+  fake.runs.length = 0;
+  for await (const event of assistant.chat({ text: 'hello', sessionId: session.id })) void event;
+  const second = fake.runs.filter((run) => run.mcp);
+  assert.equal(second.length, 1, 'no continuation when no switch was flipped');
+  assert.deepEqual(second[0].mcpExtra.map((spec) => spec.name), ['custom-notes']);
   assistant.close();
 });

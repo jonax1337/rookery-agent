@@ -95,6 +95,8 @@ export type ServerFrame =
   | { type: 'task'; event: AgentEvent }
   /** Broadcast: a schedule was created, edited, deleted, or a run of it changed state. */
   | { type: 'cron'; event: AgentEvent }
+  /** Broadcast: the memory started, advanced through or finished a night. */
+  | { type: 'sleep'; event: AgentEvent }
   /** Broadcast: an agent, team or project was created or edited. */
   | { type: 'changed'; change: { kind: string; id: string } }
   | { type: 'pong' }

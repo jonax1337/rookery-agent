@@ -9,7 +9,8 @@
 export type ProviderId = 'claude' | 'codex';
 export type Role = 'user' | 'assistant' | 'system';
 export type PermissionLevel = 'chat' | 'read' | 'write' | 'full';
-export type MemoryKind = 'fact' | 'preference' | 'project' | 'event' | 'summary';
+export type MemoryKind = 'fact' | 'preference' | 'project' | 'event' | 'summary' | 'insight';
+export type MemoryOrigin = 'extract' | 'user' | 'sleep';
 
 export interface TurnUsage {
   inputTokens?: number;
@@ -74,11 +75,114 @@ export interface MemoryRecord {
   lastAccessedAt?: number;
   accessCount: number;
   forgotten: boolean;
+  /** Who wrote it. `user` is protected from the nightly clean-up. */
+  origin: MemoryOrigin;
+  pinned: boolean;
+  /** Asleep since: out of recall, still listed and one click from waking. */
+  dormantAt?: number;
+  /** The condensed memory that took this one's place. */
+  supersededBy?: string;
+  sleepRunId?: string;
+  /** 0..1, from actual recalls rather than from being written again. */
+  usefulness: number;
 }
 
 export interface ScoredMemory extends MemoryRecord {
   score: number;
   reason: string;
+  /** Reached directly, or through a shared entity or an edge. */
+  hop?: 'direct' | 'entity' | 'edge';
+}
+
+/* ------------------------------ memory graph ------------------------------ */
+
+export type EntityKind = 'person' | 'project' | 'tool' | 'place' | 'org' | 'topic';
+
+export interface MemoryEntity {
+  id: string;
+  owner: string;
+  name: string;
+  slug: string;
+  kind: EntityKind;
+  mentions: number;
+  firstSeenAt: number;
+  lastSeenAt: number;
+}
+
+export type MemoryRelation = 'refines' | 'supersedes' | 'contradicts' | 'caused_by' | 'co_occurs';
+
+export interface MemoryEdge {
+  id: string;
+  owner: string;
+  srcId: string;
+  dstId: string;
+  relation: MemoryRelation;
+  weight: number;
+  origin: 'sleep' | 'user' | 'gate';
+  runId?: string;
+  createdAt: number;
+}
+
+export interface MemoryGraph {
+  entities: MemoryEntity[];
+  memories: MemoryRecord[];
+  edges: MemoryEdge[];
+  links: { memoryId: string; entityId: string }[];
+  truncated: boolean;
+}
+
+export interface MemoryNeighbourhood {
+  memory: MemoryRecord;
+  entities: MemoryEntity[];
+  outgoing: (MemoryEdge & { other: MemoryRecord })[];
+  incoming: (MemoryEdge & { other: MemoryRecord })[];
+}
+
+/* --------------------------------- sleep --------------------------------- */
+
+export type SleepStatus = 'running' | 'done' | 'failed';
+
+export interface SleepRun {
+  id: string;
+  owner: string;
+  trigger: 'schedule' | 'manual';
+  status: SleepStatus;
+  startedAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+  readCount: number;
+  mergedCount: number;
+  dormantCount: number;
+  edgeCount: number;
+  insightCount: number;
+  conflictCount: number;
+  resolvedCount: number;
+  modelCalls: number;
+  report?: string;
+  error?: string;
+  undoneAt?: number;
+}
+
+/** What `GET /api/sleep/status` answers. */
+export interface SleepStatusView {
+  owner: string;
+  running: boolean;
+  activeOwners: string[];
+  lastRun: SleepRun | null;
+  schedule: CronJob | null;
+  config: {
+    enabled: boolean;
+    schedule: string;
+    scope: string;
+    maxMergeCalls: number;
+    dormantAfterDays: number;
+    minStrength: number;
+    insights: number;
+    cycles: number;
+    maxResolveCalls: number;
+    model: string;
+    insightModel: string;
+  };
 }
 
 /* ------------------------------ organisation ------------------------------ */
@@ -387,6 +491,8 @@ export type AgentEvent =
   | { type: 'task'; task: Task }
   /** A schedule was created, edited, deleted, or one of its runs changed state. */
   | { type: 'cron'; job: CronJob; run?: CronRun; deleted?: boolean }
+  /** The memory started, advanced through or finished a night's clean-up. */
+  | { type: 'sleep'; run: SleepRun; phase?: string; cycle?: number }
   /** The provider reported the account's limit windows during the turn. */
   | { type: 'quota'; quota: ProviderQuota }
   | { type: 'error'; message: string; fatal: boolean }
@@ -578,6 +684,11 @@ export interface MemoryStats {
   total: number;
   byKind: Record<string, number>;
   forgotten: number;
+  /** Asleep: still stored, out of recall. */
+  dormant: number;
+  pinned: number;
+  entities: number;
+  edges: number;
 }
 
 export interface ChatPayload {
@@ -635,6 +746,8 @@ export type ServerFrame =
   | { type: 'task'; event: AgentEvent }
   /** Broadcast: a schedule or one of its runs changed. */
   | { type: 'cron'; event: AgentEvent }
+  /** Broadcast: the memory is asleep, working, or done for the night. */
+  | { type: 'sleep'; event: AgentEvent }
   | { type: 'changed'; change: OrgChange }
   | { type: 'pong' }
   | { type: 'error'; id?: string; message: string };

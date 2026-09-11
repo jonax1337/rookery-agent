@@ -8,7 +8,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 6;
 
 export type Db = DatabaseSync;
 
@@ -102,15 +102,114 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE sessions ADD COLUMN agent_id TEXT');
   }
 
+  // Schema 4 -> 5: the memory graph. Memories learn where they came from,
+  // whether they are protected, and whether they are asleep.
+  if (!hasColumn(db, 'memories', 'origin')) {
+    db.exec("ALTER TABLE memories ADD COLUMN origin TEXT NOT NULL DEFAULT 'extract'");
+  }
+  if (!hasColumn(db, 'memories', 'pinned')) {
+    db.exec('ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn(db, 'memories', 'dormant_at')) {
+    db.exec('ALTER TABLE memories ADD COLUMN dormant_at INTEGER');
+  }
+  if (!hasColumn(db, 'memories', 'superseded_by')) {
+    db.exec('ALTER TABLE memories ADD COLUMN superseded_by TEXT');
+  }
+  if (!hasColumn(db, 'memories', 'sleep_run_id')) {
+    db.exec('ALTER TABLE memories ADD COLUMN sleep_run_id TEXT');
+  }
+  if (!hasColumn(db, 'memories', 'usefulness')) {
+    db.exec('ALTER TABLE memories ADD COLUMN usefulness REAL NOT NULL DEFAULT 0');
+  }
+
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_memories_live
       ON memories(owner, forgotten, importance DESC, updated_at DESC);
+
+    -- The recall path filters on all three of these together.
+    CREATE INDEX IF NOT EXISTS idx_memories_awake
+      ON memories(owner, forgotten, dormant_at, importance DESC);
 
     -- Duplicate guard: the same sentence is never stored twice for one owner.
     DROP INDEX IF EXISTS idx_memories_unique;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_unique_owner
       ON memories(owner, kind, content);
   `);
+
+  // The graph over those memories: named things, and relations between
+  // sentences. Both are written by the nightly run and by the write gate;
+  // neither is ever required for the plain recall path to work.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_entities (
+      id            TEXT PRIMARY KEY,
+      owner         TEXT NOT NULL,
+      name          TEXT NOT NULL,
+      slug          TEXT NOT NULL,
+      kind          TEXT NOT NULL DEFAULT 'topic',
+      mentions      INTEGER NOT NULL DEFAULT 0,
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at  INTEGER NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_slug ON memory_entities(owner, slug);
+    CREATE INDEX IF NOT EXISTS idx_entities_rank ON memory_entities(owner, mentions DESC);
+
+    CREATE TABLE IF NOT EXISTS memory_entity_links (
+      memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      entity_id TEXT NOT NULL REFERENCES memory_entities(id) ON DELETE CASCADE,
+      weight    REAL NOT NULL DEFAULT 1,
+      PRIMARY KEY (memory_id, entity_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_entity_links_entity ON memory_entity_links(entity_id);
+
+    CREATE TABLE IF NOT EXISTS memory_edges (
+      id         TEXT PRIMARY KEY,
+      owner      TEXT NOT NULL,
+      src_id     TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      dst_id     TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      relation   TEXT NOT NULL,
+      weight     REAL NOT NULL DEFAULT 0.5,
+      origin     TEXT NOT NULL DEFAULT 'sleep',
+      run_id     TEXT,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_triple ON memory_edges(src_id, dst_id, relation);
+    CREATE INDEX IF NOT EXISTS idx_edges_src ON memory_edges(owner, src_id);
+    CREATE INDEX IF NOT EXISTS idx_edges_dst ON memory_edges(owner, dst_id);
+    CREATE INDEX IF NOT EXISTS idx_edges_run ON memory_edges(run_id);
+
+    CREATE TABLE IF NOT EXISTS sleep_runs (
+      id             TEXT PRIMARY KEY,
+      owner          TEXT NOT NULL,
+      trigger        TEXT NOT NULL,
+      status         TEXT NOT NULL,
+      started_at     INTEGER NOT NULL,
+      finished_at    INTEGER,
+      duration_ms    INTEGER,
+      read_count     INTEGER NOT NULL DEFAULT 0,
+      merged_count   INTEGER NOT NULL DEFAULT 0,
+      dormant_count  INTEGER NOT NULL DEFAULT 0,
+      edge_count     INTEGER NOT NULL DEFAULT 0,
+      insight_count  INTEGER NOT NULL DEFAULT 0,
+      conflict_count INTEGER NOT NULL DEFAULT 0,
+      model_calls    INTEGER NOT NULL DEFAULT 0,
+      resolved_count INTEGER NOT NULL DEFAULT 0,
+      report         TEXT,
+      error          TEXT,
+      undone_at      INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sleep_runs_owner ON sleep_runs(owner, started_at DESC);
+  `);
+
+  // Schema 5 -> 6: the night decides contradictions instead of only counting
+  // them, so a run records how many it actually settled.
+  if (!hasColumn(db, 'sleep_runs', 'resolved_count')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN resolved_count INTEGER NOT NULL DEFAULT 0');
+  }
 
   // FTS index over memory content plus tags, kept in sync by triggers.
   db.exec(`
