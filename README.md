@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="branding/logo-light.svg">
-    <source media="(prefers-color-scheme: light)" srcset="branding/logo.svg">
-    <img src="branding/logo.svg" alt="Rookery" width="260">
+    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/jonax1337/rookery-agent/raw/main/branding/logo-light.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://github.com/jonax1337/rookery-agent/raw/main/branding/logo.svg">
+    <img src="https://github.com/jonax1337/rookery-agent/raw/main/branding/logo.svg" alt="Rookery" width="260">
   </picture>
 </p>
 
