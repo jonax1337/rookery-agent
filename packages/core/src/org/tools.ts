@@ -121,6 +121,32 @@ export const ORG_TOOLS: ToolDefinition[] = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     audience: BOTH,
   },
+  // ASSISTANT_ONLY on purpose: an agent that thinks something deserves the
+  // user's attention writes to its manager (send_message), same as any other
+  // report. Only the assistant decides whether that is worth a push to the
+  // phone - agents never reach the user directly.
+  {
+    name: 'notify',
+    description:
+      'Send the user a message over whatever notification channel is open right now, even when no ' +
+      'conversation is running - a phone push, say. For something worth surfacing on its own, not ' +
+      'for an ordinary answer inside a turn. urgency "high" breaks through quiet hours, so use it ' +
+      'only when that is worth it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: str('The message to send.'),
+        urgency: {
+          type: 'string',
+          enum: ['normal', 'high'],
+          description: 'Default normal. "high" breaks through quiet hours.',
+        },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
+  },
   {
     name: 'use_skill',
     description:

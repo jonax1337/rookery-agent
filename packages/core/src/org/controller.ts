@@ -8,6 +8,7 @@ import type {
   AssignmentView,
   EffortLevel,
   MemoryKind,
+  NotifyEvent,
   Organization,
   PermissionLevel,
   ProviderId,
@@ -90,6 +91,14 @@ export interface OrgControllerOptions {
   cron?: CronScheduler;
   /** The night shift, when the runtime has one; `sleep_now` needs it. */
   sleep?: SleepRunner;
+  /**
+   * Whether an outgoing channel could deliver a notification *right now* -
+   * not merely whether one is registered. A Telegram push service that is
+   * attached but switched off, or has nobody left to send to, answers no, so
+   * `notify` fails cleanly instead of claiming success into the void. The
+   * controller has no notion of transport, so it asks rather than looks.
+   */
+  canNotify?: () => boolean;
 }
 
 /** Emit a progress line roughly every this many characters of agent output. */
@@ -106,6 +115,7 @@ export class OrgController extends EventEmitter {
   readonly #skills: SkillStore;
   readonly #cron: CronScheduler | undefined;
   readonly #sleep: SleepRunner | undefined;
+  readonly #canNotify: (() => boolean) | undefined;
   #running = 0;
   #waiting: (() => void)[] = [];
   /** Cancel hooks of assignments that are queued or running, by assignment id. */
@@ -123,6 +133,7 @@ export class OrgController extends EventEmitter {
     this.#skills = new SkillStore(options.config.skillsDir);
     this.#cron = options.cron;
     this.#sleep = options.sleep;
+    this.#canNotify = options.canNotify;
   }
 
   get bridge(): BridgeServer {
@@ -338,6 +349,21 @@ export class OrgController extends EventEmitter {
             })
             .join('\n'),
         };
+      }
+
+      case 'notify': {
+        if (context.audience !== 'assistant') return fail('Only the assistant can send notifications.');
+        if (!text('text')) return fail('A notification needs text.');
+        if (!this.#canNotify || !this.#canNotify()) {
+          return fail(
+            'No notification channel can reach the user right now - none is set up, it is ' +
+              'switched off, or it has no recipient. Nothing was sent.',
+          );
+        }
+        const urgency = args.urgency === 'high' ? 'high' : 'normal';
+        const event: NotifyEvent = { text: text('text'), urgency, at: Date.now() };
+        this.emit('notify', event);
+        return { text: 'Sent' + (urgency === 'high' ? ' (high urgency)' : '') + ': ' + event.text };
       }
 
       case 'use_skill': {

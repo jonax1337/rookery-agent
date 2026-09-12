@@ -17,6 +17,9 @@ import type {
   CronJobKind,
   CronOverview,
   CronPreview,
+  GatewayId,
+  GatewayStatus,
+  GatewayTestResult,
   MemoryEntity,
   MemoryGraph,
   MemoryKind,
@@ -248,6 +251,18 @@ export const api = {
   /** Runs the entry's one-off preparation, e.g. a browser download. Takes a while. */
   prepareTool: (id: string) =>
     request<{ ok: boolean; output: string }>('/api/tools/' + id + '/prepare', { method: 'POST' }),
+
+  /* -------------------------------- gateways -------------------------------- */
+
+  getGateways: () =>
+    request<{ gateways: GatewayStatus[] }>('/api/gateways').then((body) => body.gateways),
+  /**
+   * Sends one push message through the channel to prove it actually works.
+   * A channel that cannot send answers 400, which `request` already turns
+   * into a rejected `ApiError` - so there is nothing to check on the result.
+   */
+  testGateway: (id: GatewayId) =>
+    request<GatewayTestResult>('/api/gateways/' + id + '/test', { method: 'POST' }),
 
   /* --------------------------------- skills -------------------------------- */
 

@@ -8,6 +8,7 @@ import {
   LayoutDashboardIcon,
   ListTodoIcon,
   MessagesSquareIcon,
+  RadioTowerIcon,
   SendIcon,
   Settings2Icon,
   SparklesIcon,
@@ -103,6 +104,9 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/cron/new', label: 'Zeitplan anlegen', parent: '/cron', hidden: true },
   { path: '/cron/:id', label: 'Zeitplan', parent: '/cron', hidden: true },
   { path: '/cron/:id/edit', label: 'Zeitplan bearbeiten', parent: '/cron', hidden: true },
+
+  { path: '/gateways', label: 'Gateway', icon: RadioTowerIcon, group: 'operations' },
+  { path: '/gateways/:id', label: 'Gateway', parent: '/gateways', hidden: true },
 
   /* --------------------------- firma & wissen ----------------------------- */
   // `/org` is a redirect, but it is the honest parent of the three tables and

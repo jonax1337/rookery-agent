@@ -10,6 +10,8 @@ import { CronDetailPage } from './pages/CronDetailPage';
 import { CronFormPage } from './pages/CronFormPage';
 import { CronPage } from './pages/CronPage';
 import { DashboardPage } from './pages/DashboardPage';
+import { GatewayDetailPage } from './pages/GatewayDetailPage';
+import { GatewaysPage } from './pages/GatewaysPage';
 import { MemoryGraphPage } from './pages/MemoryGraphPage';
 import { MemoryLayout } from './pages/MemoryLayout';
 import { MemoryListPage } from './pages/MemoryListPage';
@@ -75,6 +77,9 @@ export default function App() {
         <Route path="/cron/new" element={<CronFormPage />} />
         <Route path="/cron/:id" element={<CronDetailPage />} />
         <Route path="/cron/:id/edit" element={<CronFormPage />} />
+
+        <Route path="/gateways" element={<GatewaysPage />} />
+        <Route path="/gateways/:id" element={<GatewayDetailPage />} />
 
         {/* --------------------------------- firma ---------------------- */}
         {/* The three tables share numbers and a tab strip, so they are

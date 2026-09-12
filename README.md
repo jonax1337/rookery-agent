@@ -35,10 +35,20 @@ npm start          # API auf http://127.0.0.1:4317, liefert auch die Web-UI aus
 
 Web-Interface unter <http://127.0.0.1:4317> öffnen — oder im Terminal bleiben.
 Die Seitenleiste ist in drei Gruppen sortiert: **Arbeiten** (Übersicht,
-Gespräche), **Betrieb** (Aufgaben, Aufträge, Zeitpläne) und **Firma & Wissen**
-(Firma mit Agenten/Teams/Projekten, Gedächtnis mit Erinnerungen/Netz/Nächten,
-Werkzeuge, Skills). Oben starten „Neues Gespräch“ und der Sprechen-Knopf, unten
-liegen Suche (`Strg`+`K`), Einstellungen und der Verbindungszustand.
+Gespräche), **Betrieb** (Aufgaben, Aufträge, Zeitpläne, Gateway) und **Firma &
+Wissen** (Firma mit Agenten/Teams/Projekten, Gedächtnis mit
+Erinnerungen/Netz/Nächten, Werkzeuge, Skills). Oben starten „Neues Gespräch“
+und der Sprechen-Knopf, unten liegen Suche (`Strg`+`K`), Einstellungen und der
+Verbindungszustand.
+
+Unter **Gateway** (`/gateways`) lässt sich der Assistent auch von unterwegs
+erreichen — Telegram ist das erste Gateway. Einrichtung: bei
+[@BotFather](https://t.me/BotFather) einen Bot anlegen, den Token in den
+Gateway-Einstellungen eintragen und **Kopplung** einschalten, dem Bot `/id`
+schreiben, die zurückgemeldete Nummer freischalten — damit schließt sich die
+Kopplung wieder — und den Kanal einschalten. Kein Neustart, keine Datei von
+Hand. Details und das Sicherheitsmodell stehen in
+[`telegram-channel.md`](docs/concepts/telegram-channel.md).
 
 Die Gespräche haben eine **eigene Seite** (`/chats`) statt einer Liste in der
 Seitenleiste: mit Suche, Filtern nach Gegenüber und Projekt, Facetten für

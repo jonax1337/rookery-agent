@@ -241,6 +241,52 @@ const orgConfigSchema = z
   })
   .partial();
 
+/** "22:00", or empty for no quiet hours - never a bare hour or a 24:00. */
+const timeOfDaySchema = z
+  .string()
+  .refine((value) => value === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(value), 'HH:MM oder leer');
+
+/** Telegram ids: bounded so a pasted list cannot grow the allowlist without limit. */
+const telegramIdListSchema = z.array(z.number().int().positive()).max(8);
+
+const telegramPushConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    assignments: z.boolean(),
+    cron: z.boolean(),
+    sleep: z.boolean(),
+    tasks: z.boolean(),
+    quietFrom: timeOfDaySchema,
+    quietUntil: timeOfDaySchema,
+    maxPerHour: z.number().int().min(1).max(60),
+    recipients: telegramIdListSchema,
+  })
+  .partial();
+
+/**
+ * `token` is write-only: a PATCH may set it, GET never returns it. An empty
+ * string is therefore not "clear the token" - it is what a form that never
+ * touched the field sends back, and treating that as a wipe would drop the
+ * channel's credentials on every unrelated save. Clearing is `null`.
+ */
+const telegramConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    token: z.string().trim().max(200).nullable(),
+    pairing: z.boolean(),
+    allowedUserIds: telegramIdListSchema,
+    permission: permissionSchema,
+    model: z.string(),
+    push: telegramPushConfigSchema,
+  })
+  .partial();
+
+const gatewaysConfigSchema = z
+  .object({
+    telegram: telegramConfigSchema,
+  })
+  .partial();
+
 /**
  * PATCH /api/config. Deliberately narrower than RookeryConfig: `home`,
  * `workspace` and `token` are not remotely settable, because any of them
@@ -263,6 +309,7 @@ export const patchConfigSchema = z
     memory: memoryConfigSchema,
     voice: voiceConfigSchema,
     org: orgConfigSchema,
+    gateways: gatewaysConfigSchema,
   })
   .partial();
 

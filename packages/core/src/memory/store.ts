@@ -1125,6 +1125,24 @@ export class Store {
     this.recountEntities(run.owner);
     return counts;
   }
+
+  /* ------------------------------- meta ------------------------------- */
+
+  // Beyond the schema version, `meta` is a generic key/value store for small
+  // mappings that don't warrant their own table, e.g. Telegram-chat-to-session.
+
+  getMeta(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as Row | undefined;
+    return row ? (row.value as string) : null;
+  }
+
+  setMeta(key: string, value: string): void {
+    this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(key, value);
+  }
+
+  deleteMeta(key: string): void {
+    this.db.prepare('DELETE FROM meta WHERE key = ?').run(key);
+  }
 }
 
 /* ------------------------------ mappers ------------------------------ */

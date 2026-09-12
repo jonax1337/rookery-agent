@@ -19,7 +19,10 @@ import { registerOrgRoutes } from './routes/org.js';
 import { registerCronRoutes } from './routes/cron.js';
 import { registerTtsRoutes } from './routes/tts.js';
 import { registerToolRoutes } from './routes/tools.js';
+import { registerGatewayRoutes } from './routes/gateways.js';
 import { registerWebsocketRoutes } from './routes/ws.js';
+import { createTelegramGateway, type GatewayHandle } from './gateways/telegram.js';
+import { attachGatewayPush } from './gateways/push.js';
 
 /** How often to prove each socket is still there. */
 const HEARTBEAT_MS = 30_000;
@@ -45,11 +48,17 @@ export async function buildServer(
       ? silentLogger
       : createLogger({ level: config.logLevel, home: config.home, scope: 'server' });
 
+  // Created before the context so the context can hold it: a gateway needs
+  // the context to reach the assistant and the config, so it cannot exist
+  // before the context does, and the context's own field cannot be filled
+  // in until the gateway does.
+  const gateways: GatewayHandle[] = [];
   const context: ServerContext = {
     assistant,
     config,
     log,
     sockets: new Set<WebSocket>(),
+    gateways,
   };
 
   const app = Fastify({
@@ -110,6 +119,7 @@ export async function buildServer(
   await registerCronRoutes(app, context);
   await registerTtsRoutes(app, context);
   await registerToolRoutes(app, context);
+  await registerGatewayRoutes(app, context);
   await registerWebsocketRoutes(app, context);
 
   // Registered last so the static SPA fallback never shadows an API route.
@@ -162,6 +172,21 @@ export async function buildServer(
   // The nightly memory run is an ordinary schedule row, created on first start.
   assistant.ensureSleepSchedule();
 
+  // The Telegram channel is best-effort: a missing token or a network hiccup
+  // is a reason to run without it, never a reason the server itself refuses
+  // to start. `start()` is therefore not awaited here - its own status()
+  // reports what happened, for the gateways page to show.
+  const telegramGateway = createTelegramGateway(context);
+  gateways.push(telegramGateway);
+  void telegramGateway.start().catch((error: Error) => {
+    log.warn('Telegram gateway could not start', { error: error.message });
+  });
+  const telegramPush = attachGatewayPush(context, telegramGateway);
+  // The `notify` tool refuses rather than reporting a delivery that never
+  // happened; this is the honest answer it asks for, and it changes with a
+  // setting or a blocked recipient, so the probe is a call, not a flag.
+  assistant.notifyProbe = () => telegramPush.canDeliver();
+
   // A socket that misses a full heartbeat round trip is dead weight: without
   // this a dropped Wi-Fi connection would sit in `sockets` forever.
   const liveness = new WeakMap<WebSocket, boolean>();
@@ -201,6 +226,13 @@ export async function buildServer(
     assistant.off('task', onTask);
     assistant.off('cron', onCron);
     assistant.off('sleep', onSleep);
+    telegramPush.detach();
+    assistant.notifyProbe = undefined;
+    try {
+      await telegramGateway.stop();
+    } catch (error) {
+      log.warn('Telegram gateway did not stop cleanly', { error: (error as Error).message });
+    }
     for (const socket of context.sockets) {
       try {
         socket.close(1001, 'server shutting down');

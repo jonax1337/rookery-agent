@@ -1,9 +1,14 @@
 # Telegram als Fernsteuerung
 
-Stand: 2026-09-11. Konzept, kein Code. Betrifft `packages/server/src/channels/` (neu),
-`packages/server/src/server.ts`, `packages/server/src/schemas.ts`, `packages/core/src/types.ts`,
-`packages/core/src/config.ts`, `packages/core/src/memory/store.ts`, `packages/core/src/org/tools.ts`,
-`packages/core/src/org/controller.ts` und die Einstellungsseite der Web-UI.
+Stand: 2026-09-11. **Umgesetzt**; dieses Dokument bleibt als Begruendung stehen. Der Code liegt in
+`packages/core/src/gateway/policy.ts` (Wache, Nachrichtenaufteilung, Ruhezeit - die reine
+Entscheidungslogik, siehe Abschnitt 3), `packages/core/src/types.ts`, `packages/core/src/config.ts`,
+`packages/core/src/memory/store.ts` und `packages/core/src/org/tools.ts` bzw. `org/controller.ts`
+(das `notify`-Werkzeug); der Transport in `packages/server/src/gateways/telegram.ts`,
+`telegram-api.ts` und `push.ts` sowie `routes/gateways.ts`; die Oberflaeche unter `/gateways` in
+`packages/web/src/pages/GatewaysPage.tsx` und `GatewayDetailPage.tsx`. Telegram ist darin das erste
+von mehreren Gateways (Abschnitt 3, E5) – der Einstellungsbereich heisst deshalb durchgaengig
+"Gateway", nicht "Telegram".
 
 ## 1. Zielsetzung
 
@@ -56,6 +61,15 @@ ist hier keine Formalie: `core` kennt kein HTTP, und der Telegram-Adapter ist zu
 HTTP-Klempnerei. Was `core` bekommt, ist ausschliesslich die Konfigurationsform und ein abstraktes
 Ausgangsereignis (Abschnitt 7.3) – nichts, was `api.telegram.org` kennt.
 
+Beim Bauen hat sich diese Grenze noch einmal geteilt, und zwar innerhalb dessen, was "kein HTTP"
+bedeutet: Die Wache (4.1), das Aufteilen langer Nachrichten (6.3) und das Ruhezeit-Fenster (7.2)
+sind reine Entscheidungen ueber Werte – kein Netz, keine Uhr, kein Socket. Die liegen deshalb in
+`packages/core/src/gateway/policy.ts`, nicht im Transport, und genau deshalb ohne Mock-Server unter
+`packages/core/test/gateway.test.js` testbar. `packages/server/src/gateways/telegram.ts` ruft diese
+Funktionen nur noch auf; was dort steht, ist Langabruf, Turn-Bruecke und Versand – der Teil, der
+tatsaechlich einen Socket braucht und deshalb nicht anders als gegen `api.telegram.org` selbst
+pruefbar ist.
+
 **Long Polling, kein Webhook.** Rookery bleibt an `127.0.0.1` gebunden und holt seine Nachrichten
 selbst ab. Ein Webhook braucht eine oeffentlich erreichbare HTTPS-Adresse und macht damit genau die
 Annahme kaputt, auf der das gesamte Auth-Modell steht. Der Preis ist eine offene ausgehende
@@ -63,8 +77,17 @@ Verbindung, die alle 50 Sekunden erneuert wird – tragbar.
 
 **Fail closed.** Beim HTTP-Token heisst leer "offen", weil Loopback schuetzt. Beim Bot heisst leer
 **"aus"**. Ohne Bot-Token startet der Kanal nicht, ohne mindestens eine erlaubte Telegram-ID startet
-er auch nicht, und er sagt beim Start ins Log, welche der beiden Bedingungen gefehlt hat. Es gibt
-keine Einstellung, die "jeder darf" bedeutet.
+er auch nicht, und er sagt beim Start ins Log, welche Bedingung gefehlt hat. Es gibt keine
+Einstellung, die "jeder darf" bedeutet.
+
+Die eine Ausnahme ist die **Kopplung** (`gateways.telegram.pairing`), und sie ist eine Ausnahme vom
+Start, nicht von der Wache. Ohne sie ist die Ersteinrichtung ein geschlossener Kreis: Die Allowlist
+braucht eine Nummer, die Nummer kommt aus `/id`, und `/id` antwortet nur, wenn der Kanal laeuft –
+was er ohne Eintrag in der Allowlist nicht tut. Eingeschaltet pollt der Kanal mit leerer Liste;
+jede Nachricht faellt weiterhin als `not_allowed` durch, und das Einzige, was zurueckkommt, ist die
+eigene Absender-ID. Bezahlt wird dafuer mit dem Schweigen: Wer den Bot findet, erfaehrt, dass er
+lebt. Deshalb ein Schalter, den der Nutzer bewusst umlegt, standardmaessig aus, und der sich beim
+Eintragen der ersten ID selbst wieder schliesst.
 
 ## 4. Sicherheitsmodell
 
@@ -97,7 +120,7 @@ dass hinter ihm etwas laeuft.
 | Fremder findet den Bot und schreibt ihn an | Allowlist auf numerische IDs, stilles Verwerfen, Log-Eintrag |
 | Jemand legt einen Account mit dem gleichen `@username` an | Es wird nie ein Username geprueft |
 | Bot wird in eine Gruppe gezogen | Nur `chat.type === 'private'`; zusaetzlich Gruppenbeitritt in BotFather abschalten (Bot Settings -> Allow Groups? -> off) |
-| Bot-Token geraet nach aussen | Token nur in `~/.rookery/.env`, nie in `config.json`, nie in `publicConfig()`, nie in einer Logzeile. Bei Telegram steht der Token im Pfad der URL, also muss jede geloggte URL maskiert werden |
+| Bot-Token geraet nach aussen | Token in `~/.rookery/config.json` neben dem Bearer-Token, nie in `publicConfig()`, nie in einer API-Antwort, nie in einer Logzeile. Bei Telegram steht der Token im Pfad der URL, also maskiert `telegram-api.ts` jeden String, der das Modul verlaesst – auch fetch-eigene Fehlertexte |
 | Zwei Rookery-Instanzen pollen denselben Bot | Telegram antwortet mit `409 Conflict`; der Kanal schaltet sich ab und meldet es, statt in eine Schleife zu laufen |
 | Nach Neustart wird ein alter Befehl nachgeholt | Beim Start `deleteWebhook(drop_pending_updates=true)`, dann `getUpdates(offset=-1, limit=1)`, um den Offset hinter das letzte Update zu setzen. Der Rueckstand wird bewusst verworfen |
 | Nachrichtenflut startet viele Provider-Prozesse | Serielle Queue je Absender, Tiefe max. 3; darueber hinaus eine kurze Absage |
@@ -128,7 +151,14 @@ befohlen wurde; ohne sie ist "volle Rechte" nicht verantwortbar.
 
 ```ts
 // packages/core/src/types.ts
-export interface TelegramConfig {
+/** Welchem Gateway ein Konfigurationsabschnitt gehoert. Bisher nur Telegram. */
+export type GatewayId = 'telegram';
+
+export interface GatewaysConfig {
+  telegram: TelegramGatewayConfig;
+}
+
+export interface TelegramGatewayConfig {
   /** Der Kanal laeuft nur, wenn dies an ist UND Token und Allowlist gefuellt sind. */
   enabled: boolean;
   /**
@@ -144,16 +174,31 @@ export interface TelegramConfig {
 }
 ```
 
-- **Bot-Token**: ausschliesslich `TELEGRAM_BOT_TOKEN` aus `~/.rookery/.env` bzw. der Umgebung –
-  derselbe Weg wie die Sprachschluessel (`main.ts: loadDotEnv`). Nicht in `config.json`, damit eine
-  versehentlich weitergegebene Konfigurationsdatei keinen Fernzugriff verschenkt, und damit die
-  Regel "keine API-Keys im Code" auch fuer Kanalgeheimnisse gilt.
-- **Default** in `DEFAULT_CONFIG`: `{ enabled: false, allowedUserIds: [], permission: 'full', push: … }`.
-  Der Default ist aus; `permission: 'full'` wirkt erst, wenn der Nutzer den Kanal bewusst einschaltet
-  (E1).
-- `publicConfig()` gibt `telegram` weiter; der Token steht dort ohnehin nicht. Die Allowlist selbst
-  muss die UI sehen, sonst laesst sie sich nicht verwalten.
-- `patchConfigSchema` bekommt `telegram: telegramConfigSchema`, mit `allowedUserIds` als
+Konfiguriert liegt der Abschnitt unter `gateways.telegram`, nicht unter `telegram` – auch das ein
+Rest des Umbaus auf mehrere Gateways: `GatewaysConfig` ist der Container, `GatewayId` benennt heute
+genau einen moeglichen Eintrag.
+
+- **Bot-Token**: `gateways.telegram.token`, eingetragen auf der Gateway-Seite, gespeichert in
+  `~/.rookery/config.json`. Der erste Entwurf legte ihn nach `~/.rookery/.env`, mit Verweis auf die
+  Regel "keine API-Keys im Code". Die Regel meint Code und Beispiele und zielt auf Provider-Auth;
+  `config.json` ist keins von beidem, sondern lokaler Nutzerzustand. Vor allem aber steht
+  `RookeryConfig.token` – das Bearer-Token fuer den ganzen Server – laengst dort: dasselbe
+  Verzeichnis, dieselben Dateirechte, derselbe Umgang. Ein zweiter Ort haette keinen
+  Sicherheitsgewinn gebracht, sondern Funktion gekostet: `.env` wird einmal beim Prozessstart
+  gelesen, also waere genau die Live-Einrichtung unmoeglich geblieben, fuer die die Seite da ist.
+  Der Schutz liegt woanders – `publicConfig` leert das Feld beim Ausliefern (wie beim Bearer-Token),
+  das Patch-Schema nimmt es nur entgegen, und `GatewayStatus` meldet bloss, *ob* einer gesetzt ist
+  und *woher* er kommt. Auf einem PATCH heisst leer "unveraendert lassen" und `null` "loeschen";
+  ein Formular, dem der echte Wert nie gezeigt wird, sendet sonst bei jedem Speichern eine Leerung.
+  `TELEGRAM_BOT_TOKEN` bleibt als vorrangige Quelle fuer kopflose Installationen; die Seite sagt
+  dann, dass die Variable gewinnt, statt das Feld heimlich wirkungslos zu machen.
+- **Default** in `DEFAULT_CONFIG`: `gateways.telegram = { enabled: false, allowedUserIds: [],
+  permission: 'full', push: … }`. Der Default ist aus; `permission: 'full'` wirkt erst, wenn der
+  Nutzer den Kanal bewusst einschaltet (E1).
+- `publicConfig()` gibt `gateways` weiter; der Token steht dort ohnehin nicht. Die Allowlist selbst
+  muss die Oberflaeche sehen, sonst laesst sie sich nicht verwalten.
+- `patchConfigSchema` bekommt `gateways: gatewaysConfigSchema`, die ihrerseits
+  `telegram: telegramConfigSchema` traegt, mit `allowedUserIds` als
   `z.array(z.number().int().positive()).max(8)`.
 - Aenderungen greifen wie ueberall ueber `applyConfig` ohne Neustart: Der Kanal beobachtet seine
   eigene Konfiguration und startet oder stoppt den Poller, wenn `enabled` oder die Allowlist sich
@@ -215,9 +260,13 @@ aus dem `done`-Ereignis.
 
 ### 6.4 Was nicht angenommen wird
 
-Fotos, Dokumente, Sprachnachrichten und Sticker werden in Phase 1 mit einer kurzen deutschen Absage
-beantwortet. Sprachnachrichten sind der naheliegende naechste Schritt (Phase 3) – dafuer braucht es
-eine Spracherkennung, die Rookery heute nicht hat; die vorhandene Sprachbedienung laeuft im Browser.
+Fotos, Dokumente, Sprachnachrichten und Sticker werden stillschweigend verworfen und nur geloggt.
+Der erste Entwurf sah hier eine kurze deutsche Absage vor; das widersprach 4.1, und 4.1 gewinnt:
+eine Antwort ist eine Antwort, auch wenn sie ablehnt. Wer ein Foto schickt und "kann ich nicht"
+zurueckbekommt, weiss, dass hinter dem Bot etwas laeuft – und genau diese Auskunft soll kein
+Unbefugter bekommen. Sprachnachrichten sind der naheliegende naechste Schritt (Phase 3) – dafuer
+braucht es eine Spracherkennung, die Rookery heute nicht hat; die vorhandene Sprachbedienung
+laeuft im Browser.
 
 ### 6.5 Befehle
 
@@ -246,7 +295,7 @@ Dieselben Ereignisse, die `buildServer` heute an die Websockets verteilt:
 | `assignment` | Status wechselt auf `done`, `failed` oder `cancelled` | Agent, Auftrag in einer Zeile, Dauer, die ersten 600 Zeichen des Ergebnisses |
 | `cron` | Ein Lauf endet, und der Job ist als meldepflichtig markiert | Jobname, Ergebnis oder Fehler |
 | `sleep` | Ein Schlaflauf endet | Verdichtet, gelinkt, eingeschlafen, Einsichten – der Bericht, den die Merkseite zeigt |
-| `task` | Eine Aufgabe geht auf `blocked` | Was haengt und woran |
+| `task` | Eine Aufgabe geht auf `failed` | Welche Aufgabe gescheitert ist. Der Entwurf sagte `blocked` – den Zustand fuehrt das Board nicht, und ein Zweig, der nie feuert, ist schlimmer als keiner |
 | `notify` | Jarvis ruft das Werkzeug (7.3) | Sein Text, unveraendert |
 
 `message`, `memory` und `changed` werden **nicht** gepusht. Sie sind Oberflaechen-Ereignisse; auf dem
@@ -312,18 +361,26 @@ an dieselbe Stelle, ohne dass `core` davon erfaehrt.
 
 | Datei | Art | Inhalt |
 |---|---|---|
-| `packages/server/src/channels/telegram.ts` | neu | Poller, Wache, Turn-Bruecke, Versand |
-| `packages/server/src/channels/telegram-api.ts` | neu | Duenne Huelle um `api.telegram.org` mit Timeout, Backoff und Token-Maskierung |
-| `packages/server/src/channels/push.ts` | neu | Ereignis-Abonnent, Ruhezeiten, Drosselung, Zusammenfassung |
-| `packages/server/src/server.ts` | geaendert | Kanal starten neben `cron.start()`, im `onClose` stoppen |
-| `packages/server/src/schemas.ts` | geaendert | `telegramConfigSchema` in `patchConfigSchema` |
-| `packages/core/src/types.ts` | geaendert | `TelegramConfig`, `TelegramPushConfig`, `RookeryConfig.telegram` |
-| `packages/core/src/config.ts` | geaendert | Defaults; `TELEGRAM_BOT_TOKEN` bleibt Umgebung, nicht Config |
+| `packages/core/src/gateway/policy.ts` | neu | Wache (4.1), Aufteilung langer Nachrichten, Ruhezeit-Fenster, Push-Empfaenger – reine Entscheidungslogik ohne HTTP (Abschnitt 3) |
+| `packages/core/test/gateway.test.js` | neu | Tests fuer `policy.ts` |
+| `packages/core/src/types.ts` | geaendert | `GatewayId`, `GatewaysConfig`, `TelegramGatewayConfig`, `TelegramPushConfig`, `NotifyEvent` |
+| `packages/core/src/config.ts` | geaendert | Defaults unter `gateways.telegram`; `TELEGRAM_BOT_TOKEN` als vorrangige Quelle in `envOverrides` |
 | `packages/core/src/memory/store.ts` | geaendert | `getMeta` / `setMeta` |
 | `packages/core/src/org/tools.ts` | geaendert | `notify` |
 | `packages/core/src/org/controller.ts` | geaendert | Handler fuer `notify`, emittiert das Ereignis |
-| `packages/web/src/pages/SettingsPage.tsx` | geaendert | Kanal an/aus, Allowlist, Push-Schalter, Ruhezeit |
-| `packages/core/test/telegram.test.js` | neu | Die Wache (Abschnitt 4.1), Aufteilung langer Nachrichten, Ruhezeit-Fenster |
+| `packages/server/src/gateways/telegram.ts` | neu | Poller, Aufruf der Wache aus `policy.ts`, Turn-Bruecke, Versand |
+| `packages/server/src/gateways/telegram-api.ts` | neu | Duenne Huelle um `api.telegram.org` mit Timeout, Backoff und Token-Maskierung |
+| `packages/server/src/gateways/push.ts` | neu | Ereignis-Abonnent, Ruhezeiten, Drosselung, Zusammenfassung |
+| `packages/server/src/routes/gateways.ts` | neu | `GET /api/gateways`, `POST /api/gateways/:id/test` |
+| `packages/server/src/server.ts` | geaendert | Kanal starten neben `cron.start()`, Routen registrieren, im `onClose` stoppen |
+| `packages/server/src/schemas.ts` | geaendert | `gatewaysConfigSchema` (mit `telegramConfigSchema`) in `patchConfigSchema` |
+| `packages/web/src/pages/GatewaysPage.tsx` | neu | Tabelle aller Gateways unter `/gateways` – heute eine Zeile, aber ohne das im Code anzunehmen |
+| `packages/web/src/pages/GatewayDetailPage.tsx` | neu | Detailseite unter `/gateways/:id`: an/aus, Allowlist, Push-Schalter, Ruhezeit, Testversand |
+| `packages/web/src/hooks/useGateways.ts` | neu | Datenzugriff fuer beide Seiten |
+| `packages/web/src/lib/gateways.ts` | neu | Statusdarstellung (Badges, Zustandstexte) |
+| `packages/web/src/lib/nav.ts` | geaendert | Eigener Sidebar-Eintrag "Gateway" unter `/gateways`, Gruppe "Betrieb" |
+| `packages/web/src/lib/api.ts` | geaendert | `getGateways`, `testGateway` |
+| `packages/web/src/lib/types.ts` | geaendert | `GatewayId`, `GatewaysConfig`, `TelegramGatewayConfig`, `GatewayStatus`, `GatewayTestResult` |
 
 Keine neue Abhaengigkeit: Node 22 bringt `fetch` mit, die Telegram-Bot-API ist JSON ueber HTTPS. Eine
 Bot-Bibliothek waere fuer sechs Endpunkte (`getMe`, `getUpdates`, `deleteWebhook`, `sendMessage`,
@@ -333,22 +390,29 @@ Bot-Bibliothek waere fuer sechs Endpunkte (`getMe`, `getUpdates`, `deleteWebhook
 
 1. Bei **@BotFather** einen Bot anlegen, Token kopieren. Dort ausserdem: Allow Groups -> off,
    Privacy -> on.
-2. `TELEGRAM_BOT_TOKEN=…` in `~/.rookery/.env`.
-3. Server starten, den eigenen Bot anschreiben mit `/id` -> er antwortet mit der Nummer.
-4. Nummer in den Einstellungen eintragen, Kanal einschalten.
+2. Unter **Gateway** (`/gateways`) den Token einfuegen, **Kopplung** einschalten, speichern. Der
+   Kanal laeuft damit mit leerer Allowlist: jede Nachricht faellt weiterhin durch die Wache,
+   einzig `/id` antwortet.
+3. Den eigenen Bot anschreiben mit `/id` -> er antwortet mit der Nummer.
+4. Nummer eintragen. Die Kopplung schaltet sich dabei selbst ab; Kanal einschalten, fertig -
+   alles ohne Neustart.
 5. Beim Telegram-Konto Zwei-Faktor-Anmeldung setzen, falls nicht geschehen. Ab hier ist dieses Konto
    ein Schluessel zum Rechner.
 
 ## 10. Phasen
 
-**Phase 1 – Eingang.** Konfiguration, Poller, Wache, Session-Zuordnung, Turn, Antwort mit
-Aufteilung, Befehle, Audit-Log, Tests fuer die Wache. Danach ist der Kanal benutzbar.
+**Phase 1 – Eingang (erledigt).** Konfiguration, Poller, Wache, Session-Zuordnung, Turn, Antwort mit
+Aufteilung, Befehle, Audit-Log, Tests fuer die Wache. Der Kanal ist benutzbar.
 
-**Phase 2 – Ausgang.** `push.ts`, Ereignis-Abonnements, Ruhezeit und Drosselung, `notify`-Werkzeug
-samt `notify`-Ereignis in `core`.
+**Phase 2 – Ausgang (erledigt).** `push.ts`, Ereignis-Abonnements, Ruhezeit und Drosselung,
+`notify`-Werkzeug samt `notify`-Ereignis in `core`.
 
-**Phase 3 – Oberflaeche und Komfort.** Einstellungsseite, Sprachnachrichten per Spracherkennung,
-Fotos an Turns mit sehendem Modell, `/agent <slug>` fuer Direktchats mit einem Agenten.
+**Phase 3 – Oberflaeche (erledigt).** Eigener Bereich **Gateway** unter `/gateways`:
+Uebersichtstabelle (`GatewaysPage.tsx`) und Detailseite (`GatewayDetailPage.tsx`) mit an/aus,
+Allowlist, Push-Schaltern, Ruhezeit und Testversand.
+
+**Naechste Stufe – offen.** Sprachnachrichten per Spracherkennung, Fotos an Turns mit sehendem
+Modell, `/agent <slug>` fuer Direktchats mit einem Agenten.
 
 ## 11. Entscheidungen
 
@@ -362,5 +426,9 @@ Fotos an Turns mit sehendem Modell, `/agent <slug>` fuer Direktchats mit einem A
 - **E4 – offen:** Soll eine fehlgeschlagene Zustellung den Text in die Warteschlange zuruecklegen
   und beim naechsten erfolgreichen Versand nachliefern? Vorschlag: ja fuer `notify`, nein fuer
   Statusmeldungen – eine zwanzig Minuten alte Tipp-Anzeige hilft niemandem.
-- **E5 – offen:** Zweiter Kanal (Signal, Matrix) spaeter – dann lohnt es, `channels/` um eine
-  gemeinsame Schnittstelle zu ergaenzen. Solange es einer ist, waere die Abstraktion Rateraterei.
+- **E5 – teilweise entschieden:** Die Huelle fuer mehrere Gateways ist beim Bauen schon entstanden –
+  `GatewayId`, `GatewaysConfig`, `GatewayStatus` und die generische Tabelle unter `/gateways` nehmen
+  keinen zweiten Eintrag an, sondern zeichnen, was `GET /api/gateways` liefert. Offen bleibt der
+  eigentliche zweite Transport (Signal, Matrix): `packages/server/src/gateways/` haelt bisher nur
+  `telegram.ts`, `telegram-api.ts` und `push.ts`, und eine gemeinsame Transport-Schnittstelle fuer den
+  Poller/Versand-Teil zu ziehen, waere mit nur einem Beispiel weiterhin Rateraterei.
