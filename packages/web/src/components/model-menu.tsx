@@ -38,7 +38,7 @@ export function ModelMenu({ provider, model, providers, disabled, onSelect }: Mo
     id,
     status: providers.find((entry) => entry.id === id),
   }));
-  const label = model ?? 'Standard';
+  const label = model ?? 'Default';
 
   return (
     <DropdownMenu>
@@ -48,7 +48,7 @@ export function ModelMenu({ provider, model, providers, disabled, onSelect }: Mo
           variant="ghost"
           size="sm"
           disabled={disabled}
-          aria-label={'Modell wählen, aktuell ' + PROVIDER_BRAND[provider] + ' ' + label}
+          aria-label={'Choose model, currently ' + PROVIDER_BRAND[provider] + ' ' + label}
           className="h-7 gap-1.5 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground"
         >
           <ProviderIcon provider={provider} className="size-3.5" />
@@ -65,13 +65,13 @@ export function ModelMenu({ provider, model, providers, disabled, onSelect }: Mo
             <span className="block truncate text-sm font-medium">{label}</span>
             <span className="block truncate text-xs text-muted-foreground">
               {PROVIDER_PLAN_LABEL[provider]}
-              {model ? '' : ' · Standardmodell'}
+              {model ? '' : ' · Default model'}
             </span>
           </span>
         </div>
         <DropdownMenuSeparator />
         <DropdownMenuGroup>
-          <DropdownMenuLabel>Modell wählen</DropdownMenuLabel>
+          <DropdownMenuLabel>Choose model</DropdownMenuLabel>
           {groups.map((group) => {
             const unavailable = group.status ? !group.status.available : false;
             const models = group.status?.models ?? [];
@@ -81,7 +81,7 @@ export function ModelMenu({ provider, model, providers, disabled, onSelect }: Mo
                   <ProviderIcon provider={group.id} className="size-3.5" />
                   <span className="truncate">{PROVIDER_PLAN_LABEL[group.id]}</span>
                   {group.status && !group.status.authenticated && (
-                    <span className="ml-auto text-xs text-muted-foreground">nicht angemeldet</span>
+                    <span className="ml-auto text-xs text-muted-foreground">not signed in</span>
                   )}
                 </DropdownMenuSubTrigger>
                 <DropdownMenuSubContent className="w-64">
@@ -90,9 +90,9 @@ export function ModelMenu({ provider, model, providers, disabled, onSelect }: Mo
                     className="gap-2"
                   >
                     <ProviderIcon provider={group.id} className="size-3.5" />
-                    <span className="truncate">Standard</span>
+                    <span className="truncate">Default</span>
                     <span className="truncate text-xs text-muted-foreground">
-                      was {PROVIDER_BRAND[group.id]} vorsieht
+                      chosen by {PROVIDER_BRAND[group.id]}
                     </span>
                     {group.id === provider && !model && <CheckIcon className="ml-auto size-4 shrink-0" />}
                   </DropdownMenuItem>

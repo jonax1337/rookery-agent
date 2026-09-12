@@ -144,7 +144,7 @@ export function useRookeryRuntime({
       sessions.sessions.map((session) => ({
         status: 'regular',
         id: session.id,
-        title: session.title || 'Neues Gespräch',
+        title: session.title || 'New conversation',
         lastMessageAt: new Date(session.updatedAt),
       })),
     [sessions.sessions],

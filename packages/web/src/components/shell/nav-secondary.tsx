@@ -18,14 +18,14 @@ export interface NavSecondaryItem {
   url?: string;
   onClick?: () => void;
   isActive?: boolean;
-  /** The shortcut hint beside "Suchen"; anything else fits here too. */
+  /** The shortcut hint beside "Search"; anything else fits here too. */
   badge?: ReactNode;
 }
 
 /**
  * The small block in the rail's footer (sidebar-16's `nav-secondary`).
  *
- * "Suchen" has no URL: it opens the command palette the shell owns, which is
+ * "Search" has no URL: it opens the command palette the shell owns, which is
  * why an entry here may be a button instead of a link.
  */
 export function NavSecondary({

@@ -57,10 +57,10 @@ const column = createRookeryColumnHelper<Team>();
 
 const COLUMN_LABELS: Record<string, string> = {
   name: 'Name',
-  purpose: 'Zweck',
-  lead: 'Leitung',
-  members: 'Mitglieder',
-  actions: 'Aktionen',
+  purpose: 'Purpose',
+  lead: 'Lead',
+  members: 'Members',
+  actions: 'Actions',
 };
 
 export function OrgTeamsPage() {
@@ -95,15 +95,15 @@ export function OrgTeamsPage() {
     async (team: Team): Promise<void> => {
       const members = membersByTeam.get(team.id)?.length ?? 0;
       const ok = await confirm({
-        title: team.name + ' auflösen?',
+        title: team.name + ' disband?',
         description:
           members === 0
-            ? 'Das Team hat keine Mitglieder. Es verschwindet ersatzlos.'
+            ? 'The team has no members and will be removed completely.'
             : formatNumber(members) +
-              (members === 1 ? ' Agent bleibt' : ' Agenten bleiben') +
-              ' bestehen, steht dann aber ohne Team da. Aufträge und Erinnerungen ' +
-              'bleiben unberührt.',
-        confirmLabel: 'Auflösen',
+              (members === 1 ? ' agent remains' : ' agents remain') +
+              ' but will no longer belong to a team. Assignments and memories ' +
+              'will remain untouched.',
+        confirmLabel: 'Disband',
         destructive: true,
       });
       if (!ok) return;
@@ -111,9 +111,9 @@ export function OrgTeamsPage() {
       try {
         await api.deleteTeam(team.id);
         await org.refresh();
-        toast(team.name + ' aufgelöst');
+        toast(team.name + ' disbanded');
       } catch (caught) {
-        reportFailure('Auflösen', caught);
+        reportFailure('Disband', caught);
       }
     },
     [confirm, membersByTeam, org],
@@ -134,7 +134,7 @@ export function OrgTeamsPage() {
   const columns = useMemo(
     () =>
       column.columns([
-        selectionColumn<Team>({ rowLabel: (team) => team.name + ' wählen' }),
+        selectionColumn<Team>({ rowLabel: (team) => team.name + ' selected' }),
 
         column.accessor('name', {
           header: ({ column: head }) => <DataTableColumnHeader column={head} title="Name" />,
@@ -151,7 +151,7 @@ export function OrgTeamsPage() {
 
         column.accessor((team) => team.purpose ?? '', {
           id: 'purpose',
-          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Zweck" />,
+          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Purpose" />,
           cell: ({ row }) =>
             row.original.purpose ? (
               <span className="line-clamp-1 max-w-[28rem] text-muted-foreground">
@@ -166,10 +166,10 @@ export function OrgTeamsPage() {
           (team) => org.agents.find((agent) => agent.id === team.leadId)?.name ?? '',
           {
             id: 'lead',
-            header: ({ column: head }) => <DataTableColumnHeader column={head} title="Leitung" />,
+            header: ({ column: head }) => <DataTableColumnHeader column={head} title="Lead" />,
             cell: ({ row }) => {
               const lead = org.agentById(row.original.leadId);
-              if (!lead) return <span className="text-muted-foreground">Ohne Leitung</span>;
+              if (!lead) return <span className="text-muted-foreground">No lead</span>;
               return (
                 <NavLink to={'/org/agents/' + lead.id} className="hover:underline">
                   {lead.name}
@@ -182,7 +182,7 @@ export function OrgTeamsPage() {
         column.accessor((team) => membersByTeam.get(team.id)?.length ?? 0, {
           id: 'members',
           header: ({ column: head }) => (
-            <DataTableColumnHeader column={head} title="Mitglieder" align="end" />
+            <DataTableColumnHeader column={head} title="Members" align="end" />
           ),
           cell: ({ row }) => {
             const count = membersByTeam.get(row.original.id)?.length ?? 0;
@@ -208,27 +208,27 @@ export function OrgTeamsPage() {
         actionsColumn<Team>((team) => (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton label={'Aktionen für ' + team.name} />
+              <RowMenuButton label={'Actions for ' + team.name} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem onSelect={() => setDrawerId(team.id)}>
                 <SquareArrowOutUpRightIcon />
-                Öffnen
+                Open
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
                 <NavLink to={'/org/teams/' + team.id + '/edit'}>
                   <PencilIcon />
-                  Bearbeiten
+                  Edit
                 </NavLink>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => showMembers(team)}>
                 <UsersIcon />
-                Mitglieder öffnen
+                View members
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => void dissolve(team)}>
                 <Trash2Icon />
-                Auflösen
+                Disband
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -254,7 +254,7 @@ export function OrgTeamsPage() {
         searchable
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Teams durchsuchen"
+        searchPlaceholder="Search teams"
         searchText={(team) => team.name + ' ' + (team.purpose ?? '')}
         columnLabels={COLUMN_LABELS}
         initialSorting={[{ id: 'name', desc: false }]}
@@ -271,15 +271,15 @@ export function OrgTeamsPage() {
                 rows: selected,
                 noun: { singular: 'Team', plural: 'Teams' },
                 nameOf: (team) => team.name,
-                verb: 'auflösen',
-                done: 'aufgelöst',
-                confirmLabel: 'Auflösen',
+                verb: 'disband',
+                done: 'disbanded',
+                confirmLabel: 'Disband',
                 description:
                   affected === 0
-                    ? 'Keines dieser Teams hat Mitglieder.'
+                    ? 'None of these teams has members.'
                     : formatNumber(affected) +
-                      (affected === 1 ? ' Agent steht' : ' Agenten stehen') +
-                      ' danach ohne Team da.',
+                      (affected === 1 ? ' agent will be' : ' agents will be') +
+                      ' without a team afterward.',
                 run: (team) => api.deleteTeam(team.id),
                 after: org.refresh,
                 clear,
@@ -287,15 +287,15 @@ export function OrgTeamsPage() {
             }}
           >
             <Trash2Icon data-icon="inline-start" />
-            Auflösen
+            Disband
           </Button>
         )}
         empty={
           <EmptyState
             icon={UsersIcon}
-            title="Noch keine Teams"
-            description="Ein Team bündelt Agenten unter einer Leitung. Ohne Teams berichten alle direkt an den Assistenten — für eine Handvoll Agenten reicht das."
-            actionLabel="Team anlegen"
+            title="No teams yet"
+            description="A team groups agents under a lead. Reporting relationships are configured separately for each agent."
+            actionLabel="Create team"
             actionTo="/org/teams/new"
             variant="plain"
           />
@@ -335,11 +335,11 @@ function TeamDrawer({ team, members, leadName, onOpenChange }: TeamDrawerProps) 
       open={team !== null}
       onOpenChange={onOpenChange}
       title={team?.name ?? 'Team'}
-      description={team?.purpose || 'Kein Zweck hinterlegt.'}
+      description={team?.purpose || 'No purpose provided.'}
       footer={
         team ? (
           <Button asChild>
-            <NavLink to={'/org/teams/' + team.id + '/edit'}>Bearbeiten</NavLink>
+            <NavLink to={'/org/teams/' + team.id + '/edit'}>Edit</NavLink>
           </Button>
         ) : null
       }
@@ -350,30 +350,30 @@ function TeamDrawer({ team, members, leadName, onOpenChange }: TeamDrawerProps) 
             columns={1}
             items={[
               {
-                label: 'Leitung',
-                value: leadName ?? 'Ohne Leitung',
+                label: 'Lead',
+                value: leadName ?? 'No lead',
                 icon: UserRoundIcon,
                 ...(team.leadId ? { to: '/org/agents/' + team.leadId } : {}),
               },
               {
-                label: 'Mitglieder',
+                label: 'Members',
                 value: formatNumber(members.length),
                 icon: UsersIcon,
                 to: '/org/agents?team=' + team.id,
               },
-              { label: 'Angelegt', value: formatDateTime(team.createdAt) },
-              { label: 'Zuletzt geändert', value: formatDateTime(team.updatedAt) },
+              { label: 'Created', value: formatDateTime(team.createdAt) },
+              { label: 'Last updated', value: formatDateTime(team.updatedAt) },
             ]}
           />
 
           <div>
-            <h3 className="mb-2 text-sm font-medium">Wer hier arbeitet</h3>
+            <h3 className="mb-2 text-sm font-medium">Who works here</h3>
             {members.length === 0 ? (
               <EmptyState
                 icon={UserRoundIcon}
-                title="Noch niemand in diesem Team"
-                description="Ein Agent kommt ins Team, indem das Team in seinem Profil eingetragen wird."
-                actionLabel="Agent einstellen"
+                title="No members in this team yet"
+                description="Assign the team in an agent’s profile to add that agent."
+                actionLabel="Hire agent"
                 actionTo="/org/agents/new"
                 variant="plain"
                 size="sm"
@@ -385,10 +385,10 @@ function TeamDrawer({ team, members, leadName, onOpenChange }: TeamDrawerProps) 
                     key={agent.id}
                     to={'/org/agents/' + agent.id}
                     title={agent.name}
-                    description={agent.title + (agent.id === team.leadId ? ' · Leitung' : '')}
+                    description={agent.title + (agent.id === team.leadId ? ' · Lead' : '')}
                     trailing={
                       <span className="text-xs text-muted-foreground">
-                        {agent.permission ? PERMISSION_LABEL[agent.permission] : 'Vorgabe'}
+                        {agent.permission ? PERMISSION_LABEL[agent.permission] : 'Default'}
                       </span>
                     }
                   />

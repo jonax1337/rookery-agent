@@ -33,15 +33,15 @@ import type { Agent, Task } from '@/lib/types';
  */
 
 export const TASK_COLUMN_LABELS: Record<string, string> = {
-  title: 'Titel',
+  title: 'Title',
   status: 'Status',
-  priority: 'Priorität',
-  assignee: 'Zuständig',
-  project: 'Projekt',
-  subtasks: 'Teilaufgaben',
-  dependsOn: 'Hängt ab von',
-  createdAt: 'Angelegt',
-  updatedAt: 'Zuletzt',
+  priority: 'Priority',
+  assignee: 'Assignee',
+  project: 'Project',
+  subtasks: 'Subtasks',
+  dependsOn: 'Depends on',
+  createdAt: 'Created',
+  updatedAt: 'Last updated',
 };
 
 /** What the list starts with: most urgent first, oldest of those on top. */
@@ -51,7 +51,7 @@ export const TASK_SORTING = [
 ];
 
 /** Nobody is on it yet. One wording, because it is a state and not a person. */
-export const TASK_UNASSIGNED = 'Noch offen';
+export const TASK_UNASSIGNED = 'Unassigned';
 
 export interface TaskColumnsOptions {
   /** Resolves the assignee. Every caller already holds the org state. */
@@ -101,19 +101,19 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
   const columns: RookeryColumnDef<Task>[] = [];
 
   if (selectable) {
-    columns.push(selectionColumn<Task>({ rowLabel: (task) => task.title + ' wählen' }));
+    columns.push(selectionColumn<Task>({ rowLabel: (task) => 'Select ' + task.title }));
   }
 
   columns.push(
     column.accessor('title', {
       id: 'title',
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Titel" />,
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Title" />,
       enableHiding: false,
       cell: ({ row }) => {
         const task = row.original;
         const hint =
           showParentHint && task.parentId ? (
-            <div className="text-xs text-muted-foreground">Teilaufgabe</div>
+            <div className="text-xs text-muted-foreground">Subtask</div>
           ) : null;
 
         if (onOpenDetail) {
@@ -154,13 +154,13 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
     // old board used.
     column.accessor((task) => TASK_PRIORITY_RANK[task.priority], {
       id: 'priority',
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Priorität" />,
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Priority" />,
       cell: ({ row }) => <StatusBadge kind="priority" status={row.original.priority} />,
     }),
 
     column.accessor((task) => agentById(task.assigneeId)?.name ?? TASK_UNASSIGNED, {
       id: 'assignee',
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Zuständig" />,
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Assignee" />,
       cell: ({ row }) => {
         const agent = agentById(row.original.assigneeId);
         return agent ? (
@@ -178,7 +178,7 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
     columns.push(
       column.accessor((task) => projectName(task), {
         id: 'project',
-        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Projekt" />,
+        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Project" />,
         cell: ({ getValue }) => {
           const name = getValue() as string;
           return name ? (
@@ -198,7 +198,7 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
       column.accessor((task) => childrenOf(task.id).length, {
         id: 'subtasks',
         header: ({ column: col }) => (
-          <DataTableColumnHeader column={col} title="Teilaufgaben" align="end" />
+          <DataTableColumnHeader column={col} title="Subtasks" align="end" />
         ),
         cell: ({ row }) => {
           const children = childrenOf(row.original.id);
@@ -218,7 +218,7 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
     columns.push(
       column.display({
         id: 'dependsOn',
-        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Hängt ab von" />,
+        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Depends on" />,
         cell: ({ row }) =>
           row.original.dependsOn.length === 0 ? (
             emptyCell()
@@ -249,7 +249,7 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
       column.accessor('createdAt', {
         id: 'createdAt',
         header: ({ column: col }) => (
-          <DataTableColumnHeader column={col} title="Angelegt" align="end" />
+          <DataTableColumnHeader column={col} title="Created" align="end" />
         ),
         cell: ({ row }) => relativeTimeCell(row.original.createdAt, { align: 'end' }),
       }),
@@ -261,7 +261,7 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
       column.accessor('updatedAt', {
         id: 'updatedAt',
         header: ({ column: col }) => (
-          <DataTableColumnHeader column={col} title="Zuletzt" align="end" />
+          <DataTableColumnHeader column={col} title="Last updated" align="end" />
         ),
         cell: ({ row }) => relativeTimeCell(row.original.updatedAt, { align: 'end' }),
       }),

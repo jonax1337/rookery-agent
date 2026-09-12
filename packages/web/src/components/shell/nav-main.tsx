@@ -92,7 +92,7 @@ export function NavMain({ label, items }: { label: string; items: NavMainItem[] 
                       {/* The block's bare "Toggle" would read as several
                           identical buttons in a row; the section name is right
                           here in the same iteration. */}
-                      <span className="sr-only">{item.title} auf- oder zuklappen</span>
+                      <span className="sr-only">{item.title} expand or collapse</span>
                     </SidebarMenuAction>
                   </CollapsibleTrigger>
                   <CollapsibleContent>

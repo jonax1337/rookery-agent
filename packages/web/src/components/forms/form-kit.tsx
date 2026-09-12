@@ -415,7 +415,7 @@ export function FormHeaderActions({ menu = [], ...actions }: FormHeaderActionsPr
           <DropdownMenuTrigger asChild>
             {/* The header overflow of a form is the same gesture as the one on
                 a detail page, so it wears the same trigger. */}
-            <RowMenuButton type="button" tone="header" label="Weitere Aktionen" />
+            <RowMenuButton type="button" tone="header" label="More actions" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
             {menu.map((action) => (
@@ -522,7 +522,7 @@ export function SliderField({
               onCommit?.(fallback);
             }}
           >
-            Zurücksetzen
+            Reset
           </InputGroupButton>
         </div>
       </div>

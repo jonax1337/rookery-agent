@@ -95,7 +95,7 @@ import { Textarea } from '@/components/ui/textarea';
  * names "die letzten 500" in its footnote and wears "gedeckelt" once the list
  * hangs exactly at the cap. And the cards that count states count them over
  * the *unfiltered* window, never over whatever the status tab narrowed the
- * request to - otherwise "Abgeschlossen" would read 500 on the "Fertig" tab.
+ * request to - otherwise "Completed" would read 500 on the "Done" tab.
  */
 
 /** The server's ceiling for one list request; the honest base of every count. */
@@ -153,7 +153,7 @@ export function toAssignmentRow(
     id: assignment.id,
     status: live?.status ?? assignment.status,
     agentId: assignment.agentId,
-    agentName: agent?.name ?? live?.agentName ?? 'Unbekannt',
+    agentName: agent?.name ?? live?.agentName ?? 'Unknown',
     agentSlug: agent?.slug ?? live?.agentSlug ?? '',
     task: assignment.task,
     chars: live?.chars ?? assignment.chars,
@@ -171,25 +171,25 @@ export function toAssignmentRow(
 export const ASSIGNMENT_COLUMN_LABELS: Record<string, string> = {
   status: 'Status',
   agentName: 'Agent',
-  task: 'Auftrag',
-  provider: 'Anbieter',
-  chars: 'Zeichen',
-  durationMs: 'Dauer',
-  depth: 'Ebene',
-  createdAt: 'Zeitpunkt',
+  task: 'Assignment',
+  provider: 'Provider',
+  chars: 'Characters',
+  durationMs: 'Duration',
+  depth: 'Level',
+  createdAt: 'Time',
 };
 
-/** Ebene is noise on a flat list, so it starts hidden and stays in the menu. */
+/** Level is noise on a flat list, so it starts hidden and stays in the menu. */
 export const ASSIGNMENT_HIDDEN_COLUMNS = { depth: false };
 
 export const ASSIGNMENT_SORTING = [{ id: 'createdAt', desc: true }];
 
-export const ASSIGNMENT_ROW_LABEL = { singular: 'Auftrag', plural: 'Aufträgen' };
+export const ASSIGNMENT_ROW_LABEL = { singular: 'Assignment', plural: 'assignments' };
 
 export interface AssignmentColumnOptions {
   /** Opens the row drawer. Left out where the table has no drawer. */
   onOpenDetail?: (row: AssignmentRow) => void;
-  /** Given: pending and running rows offer "Abbrechen". */
+  /** Given: pending and running rows offer "Cancel". */
   onCancel?: (row: AssignmentRow) => void;
   /** Drops the checkbox column, for the read-only children table. */
   selectable?: boolean;
@@ -198,7 +198,7 @@ export interface AssignmentColumnOptions {
 const column = createRookeryColumnHelper<AssignmentRow>();
 
 /**
- * The assignment columns, shared by this page's table and the "Weitergegeben"
+ * The assignment columns, shared by this page's table and the "Delegated"
  * table on the detail page - two views of the same kind of record should not
  * drift into two different sets of columns.
  */
@@ -212,7 +212,7 @@ export function buildAssignmentColumns({
   if (selectable) {
     columns.push(
       selectionColumn<AssignmentRow>({
-        rowLabel: (row) => shorten(row.task, 60) + ' wählen',
+        rowLabel: (row) => shorten(row.task, 60) + ' selected',
       }),
     );
   }
@@ -221,13 +221,13 @@ export function buildAssignmentColumns({
     column.accessor('status', {
       header: ({ column: col }) => <DataTableColumnHeader column={col} title="Status" />,
       // A running row gets the spinner alone: the badge next to it would say
-      // "läuft" in a table where motion already says it, and the column stays
+      // "running" in a table where motion already says it, and the column stays
       // narrow enough for the task text to keep its two lines.
       cell: ({ row }) =>
         row.original.status === 'running' ? (
           <span className="flex items-center gap-1.5 text-sm">
             <Spinner className="size-4 text-primary" aria-hidden="true" />
-            <span className="sr-only">läuft</span>
+            <span className="sr-only">running</span>
           </span>
         ) : (
           <StatusBadge kind="assignment" status={row.original.status} />
@@ -256,7 +256,7 @@ export function buildAssignmentColumns({
     }),
 
     column.accessor('task', {
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Auftrag" />,
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Assignment" />,
       cell: ({ row }) =>
         onOpenDetail ? (
           <DetailDrawerTrigger
@@ -277,7 +277,7 @@ export function buildAssignmentColumns({
     }),
 
     column.accessor('provider', {
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Anbieter" />,
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Provider" />,
       cell: ({ row }) => (
         <ProviderCell
           {...(row.original.provider ? { provider: row.original.provider } : {})}
@@ -288,7 +288,7 @@ export function buildAssignmentColumns({
 
     column.accessor('chars', {
       header: ({ column: col }) => (
-        <DataTableColumnHeader column={col} title="Zeichen" align="end" />
+        <DataTableColumnHeader column={col} title="Characters" align="end" />
       ),
       cell: ({ row }) => (
         <div className="text-right text-sm tabular-nums">
@@ -299,7 +299,7 @@ export function buildAssignmentColumns({
 
     column.accessor('durationMs', {
       header: ({ column: col }) => (
-        <DataTableColumnHeader column={col} title="Dauer" align="end" />
+        <DataTableColumnHeader column={col} title="Duration" align="end" />
       ),
       cell: ({ row }) => (
         <div className="text-right text-sm tabular-nums">
@@ -309,19 +309,19 @@ export function buildAssignmentColumns({
     }),
 
     column.accessor('depth', {
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Ebene" />,
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Level" />,
       // Depth 0 is the normal case - a badge on every row would say nothing.
       cell: ({ row }) =>
         row.original.depth > 0 ? (
           <Badge variant="outline" className="tabular-nums">
-            Ebene {row.original.depth}
+            Level {row.original.depth}
           </Badge>
         ) : null,
     }),
 
     column.accessor('createdAt', {
       header: ({ column: col }) => (
-        <DataTableColumnHeader column={col} title="Zeitpunkt" align="end" />
+        <DataTableColumnHeader column={col} title="Time" align="end" />
       ),
       cell: ({ row }) => relativeTimeCell(row.original.createdAt, { align: 'end' }),
     }),
@@ -337,7 +337,7 @@ export function buildAssignmentColumns({
 /**
  * The row menu.
  *
- * "Abbrechen" sits here rather than only on the detail page: stopping a run
+ * "Cancel" sits here rather than only on the detail page: stopping a run
  * that is going wrong used to cost two navigations, which is one too many for
  * something people do while watching the list.
  */
@@ -353,26 +353,26 @@ function RowActions({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <RowMenuButton label={'Aktionen für ' + shorten(row.task, 60)} />
+        <RowMenuButton label={'Actions for ' + shorten(row.task, 60)} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuItem asChild>
           <NavLink to={'/assignments/' + row.id}>
             <SquareArrowOutUpRightIcon data-icon="inline-start" />
-            Öffnen
+            Open
           </NavLink>
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <NavLink to={'/org/agents/' + row.agentId}>
             <UserRoundIcon data-icon="inline-start" />
-            Agent öffnen
+            Open agent
           </NavLink>
         </DropdownMenuItem>
         {row.taskId ? (
           <DropdownMenuItem asChild>
             <NavLink to={'/tasks/' + row.taskId}>
               <ListTodoIcon data-icon="inline-start" />
-              Zur Aufgabe
+              View task
             </NavLink>
           </DropdownMenuItem>
         ) : null}
@@ -381,7 +381,7 @@ function RowActions({
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => onCancel(row)}>
               <BanIcon data-icon="inline-start" />
-              Abbrechen
+              Cancel
             </DropdownMenuItem>
           </>
         ) : null}
@@ -405,11 +405,11 @@ interface FacetTab {
  * inside the newest 500 rows, so a long-finished failure would be unreachable.
  */
 const TABS: FacetTab[] = [
-  { value: 'all', label: 'Alle' },
-  { value: 'running', label: 'Läuft', status: ['pending', 'running'] },
-  { value: 'done', label: 'Fertig', status: ['done'] },
-  { value: 'failed', label: 'Fehlgeschlagen', status: ['failed'] },
-  { value: 'cancelled', label: 'Abgebrochen', status: ['cancelled'] },
+  { value: 'all', label: 'All' },
+  { value: 'running', label: 'Running', status: ['pending', 'running'] },
+  { value: 'done', label: 'Done', status: ['done'] },
+  { value: 'failed', label: 'Failed', status: ['failed'] },
+  { value: 'cancelled', label: 'Cancelled', status: ['cancelled'] },
 ];
 
 /**
@@ -425,9 +425,9 @@ const TABS: FacetTab[] = [
 type ChartKey = 'done' | 'failed' | 'cancelled';
 
 const CHART_SERIES: TrendSeries[] = [
-  { key: 'done', label: 'Fertig', color: 'var(--chart-1)' },
-  { key: 'failed', label: 'Fehlgeschlagen', color: 'var(--chart-5)' },
-  { key: 'cancelled', label: 'Abgebrochen', color: 'var(--chart-3)' },
+  { key: 'done', label: 'Done', color: 'var(--chart-1)' },
+  { key: 'failed', label: 'Failed', color: 'var(--chart-5)' },
+  { key: 'cancelled', label: 'Cancelled', color: 'var(--chart-3)' },
 ];
 
 const CHART_KEYS: ChartKey[] = ['done', 'failed', 'cancelled'];
@@ -465,7 +465,7 @@ export function AssignmentsPage() {
 
   /**
    * The unfiltered window. Everything above the table rests on it, which is
-   * what keeps "Abgeschlossen" meaning the same thing on every tab.
+   * what keeps "Completed" meaning the same thing on every tab.
    */
   const loadBase = React.useCallback(async (silent = false): Promise<void> => {
     if (!silent) setBaseState('loading');
@@ -541,7 +541,7 @@ export function AssignmentsPage() {
 
   /* -------------------------------- rows -------------------------------- */
 
-  /** Which board task points at which assignment, for "Zur Aufgabe". */
+  /** Which board task points at which assignment, for "View task". */
   const taskByAssignment = React.useMemo(() => {
     const map = new Map<string, Task>();
     for (const task of tasks) if (task.assignmentId) map.set(task.assignmentId, task);
@@ -565,12 +565,12 @@ export function AssignmentsPage() {
 
   const baseCapped = base.length >= LIMIT;
   const basis = totals
-    ? 'Basis: die letzten ' +
+    ? 'Based on the latest ' +
       formatNumber(base.length) +
-      ' von ' +
+      ' of ' +
       formatNumber(totals.assignments) +
-      ' Aufträgen'
-    : 'Basis: die letzten ' + formatNumber(base.length) + ' Aufträge';
+      ' assignments'
+    : 'Based on the latest ' + formatNumber(base.length) + ' Assignments';
 
   const counts = React.useMemo(() => {
     const tally: Record<AssignmentStatus, number> = {
@@ -600,45 +600,45 @@ export function AssignmentsPage() {
 
   const cards: StatCardProps[] = [
     {
-      label: 'Läuft gerade',
+      label: 'Running now',
       value: formatNumber(running),
       ...(running > 0 ? { badge: <RunningBadge count={running} /> } : {}),
-      headline: running > 0 ? 'Die Firma arbeitet' : 'Nichts in Arbeit',
+      headline: running > 0 ? 'The organization is working' : 'No work in progress',
       // The one card that is not an estimate at all: the socket knows every
       // run that is open right now, capped list or not.
-      footnote: 'Aus dem Livestand der Firma',
+      footnote: 'From the current organization state',
     },
     {
-      label: 'Abgeschlossen',
+      label: 'Completed',
       value: formatNumber(counts.done),
       headline:
         base.length > 0
-          ? formatPercent(ratePercent(counts.done, base.length)) + ' der geladenen Aufträge'
-          : 'Noch nichts abgeschlossen',
+          ? formatPercent(ratePercent(counts.done, base.length)) + ' of loaded assignments'
+          : 'Nothing completed yet',
       footnote: basis,
     },
     {
-      label: 'Fehlgeschlagen',
+      label: 'Failed',
       value: formatNumber(counts.failed),
       ...(counts.cancelled > 0
         ? {
             badge: (
               <Badge variant="destructive">
-                {formatNumber(counts.cancelled)} abgebrochen
+                {formatNumber(counts.cancelled)} cancelled
               </Badge>
             ),
           }
         : {}),
       headline:
         base.length > 0
-          ? formatPercent(ratePercent(counts.failed, base.length)) + ' der geladenen Aufträge'
-          : 'Noch nichts fehlgeschlagen',
+          ? formatPercent(ratePercent(counts.failed, base.length)) + ' of loaded assignments'
+          : 'No failures yet',
       footnote: basis,
     },
     {
-      label: 'Mittlere Dauer',
+      label: 'Average duration',
       value: meanDuration > 0 ? formatDuration(meanDuration) : '–',
-      headline: 'Über ' + formatNumber(counts.done) + ' abgeschlossene Aufträge',
+      headline: 'Across ' + formatNumber(counts.done) + ' completed assignments',
       footnote: basis,
     },
   ];
@@ -674,11 +674,11 @@ export function AssignmentsPage() {
   );
 
   usePageMeta({
-    breadcrumb: [{ label: 'Aufträge' }],
+    breadcrumb: [{ label: 'Assignments' }],
     actions: (
       <Button size="sm" onClick={() => setAssignOpen(true)}>
         <SendIcon data-icon="inline-start" />
-        Agent beauftragen
+        Assign agent
       </Button>
     ),
   });
@@ -723,21 +723,21 @@ export function AssignmentsPage() {
 
           <div className="px-4 lg:px-6">
             <TrendChartCard
-              title="Angelegte Aufträge pro Tag"
+              title="Assignments created per day"
               description={
-                'Nach ihrem heutigen Ausgang eingefärbt; laufende sind noch nicht dabei. ' +
+                'Colored by their current outcome; running assignments are not included yet. ' +
                 basis +
                 '.'
               }
-              descriptionShort="Pro Tag angelegt"
+              descriptionShort="Created per day"
               data={chartData}
               series={CHART_SERIES}
               {...cappedBadge(baseCapped)}
               empty={
                 <EmptyState
                   icon={SendIcon}
-                  title="Nichts in diesem Zeitraum"
-                  description="In den gewählten Tagen wurde kein Auftrag angelegt, der inzwischen abgeschlossen ist."
+                  title="Nothing in this period"
+                  description="No assignment created during the selected days has been completed yet."
                   variant="plain"
                   size="sm"
                 />
@@ -756,7 +756,7 @@ export function AssignmentsPage() {
         onTabChange={setTab}
         tabLabel="Status"
         searchable
-        searchPlaceholder="Aufträge durchsuchen"
+        searchPlaceholder="Assignments durchsuchen"
         searchText={(row) => row.task}
         filters={
           <AgentFilter options={agentOptions} value={agentId} onChange={setAgentId} />
@@ -769,7 +769,7 @@ export function AssignmentsPage() {
         rowLabel={ASSIGNMENT_ROW_LABEL}
         loading={listState === 'loading' && rows.length === 0}
         idPrefix="auftraege"
-        // Die ganze Zeile oeffnet die Schublade, wie auf /chats und /tasks -
+        // The ganze Zeile oeffnet die Schublade, wie auf /chats und /tasks -
         // ausser dort, wo die Zelle selbst etwas anderes tut.
         onRowClick={setDetailRow}
         rowClickIgnoreColumns={['select', 'task', 'actions']}
@@ -789,7 +789,7 @@ export function AssignmentsPage() {
               }}
             >
               <BanIcon data-icon="inline-start" />
-              {formatNumber(open.length)} abbrechen
+              {formatNumber(open.length)} cancel
             </Button>
           );
         }}
@@ -797,9 +797,9 @@ export function AssignmentsPage() {
         empty={
           <EmptyState
             icon={SendIcon}
-            title="Noch keine Aufträge"
-            description="Sobald ein Agent beauftragt wird, steht jeder Lauf hier — mit Ergebnis, Dauer und Kosten an Zeichen."
-            actionLabel="Agent beauftragen"
+            title="No assignments yet"
+            description="Each agent run appears here with its result, duration, and reported usage."
+            actionLabel="Assign agent"
             onAction={() => setAssignOpen(true)}
             variant="plain"
             size="sm"
@@ -866,13 +866,13 @@ function AgentFilter({
       onValueChange={(next: Option | null) => onChange(next?.value ?? null)}
     >
       <ComboboxInput
-        placeholder="Alle Agenten"
-        aria-label="Nach Agent filtern"
+        placeholder="All Agents"
+        aria-label="Filter by agent"
         className="h-8 w-full sm:w-48"
         showClear={selected !== null}
       />
       <ComboboxContent>
-        <ComboboxEmpty>Kein Agent gefunden</ComboboxEmpty>
+        <ComboboxEmpty>No agent found</ComboboxEmpty>
         <ComboboxList>
           {(item: Option) => (
             <ComboboxItem key={item.value} value={item}>
@@ -899,8 +899,8 @@ function RowDrawer({
   onOpen: (id: string) => void;
   onCancel: (row: AssignmentRow) => void;
 }) {
-  // Die Zeile bleibt stehen, bis die Schublade zugefahren ist - `open` ist
-  // damit eine echte Zustandsangabe statt eines fest verdrahteten `true`.
+  // The Zeile bleibt stehen, bis die Schublade zugefahren ist - `open` ist
+  // damit eine echte Statussangabe statt eines fest verdrahteten `true`.
   const row = useDrawerSubject(chosen);
   if (!row) return null;
   const cancellable = row.status === 'pending' || row.status === 'running';
@@ -914,12 +914,12 @@ function RowDrawer({
       footer={
         <div className="flex flex-wrap gap-2">
           <Button className="flex-1" onClick={() => onOpen(row.id)}>
-            Auftrag öffnen
+            Open assignment
           </Button>
           {cancellable ? (
             <Button variant="outline" onClick={() => onCancel(row)}>
               <BanIcon data-icon="inline-start" />
-              Abbrechen
+              Cancel
             </Button>
           ) : null}
         </div>
@@ -935,7 +935,7 @@ function RowDrawer({
             to: '/org/agents/' + row.agentId,
           },
           {
-            label: 'Anbieter',
+            label: 'Provider',
             value: row.provider ? (
               <ProviderCell
                 provider={row.provider}
@@ -944,21 +944,21 @@ function RowDrawer({
               />
             ) : null,
           },
-          { label: 'Zeichen', value: row.chars > 0 ? formatNumber(row.chars) : null },
-          { label: 'Dauer', value: formatDuration(row.durationMs) || null },
-          { label: 'Ebene', value: row.depth > 0 ? String(row.depth) : null },
-          { label: 'Angelegt', value: formatDateTime(row.createdAt) },
+          { label: 'Characters', value: row.chars > 0 ? formatNumber(row.chars) : null },
+          { label: 'Duration', value: formatDuration(row.durationMs) || null },
+          { label: 'Level', value: row.depth > 0 ? String(row.depth) : null },
+          { label: 'Created', value: formatDateTime(row.createdAt) },
         ]}
       />
 
       <div className="space-y-1">
-        <p className="text-xs text-muted-foreground">Auftrag</p>
+        <p className="text-xs text-muted-foreground">Assignment</p>
         <p className="whitespace-pre-wrap">{row.task}</p>
       </div>
 
       {row.error ? (
         <div className="space-y-1">
-          <p className="text-xs text-muted-foreground">Fehler</p>
+          <p className="text-xs text-muted-foreground">Error</p>
           <p className="whitespace-pre-wrap text-destructive">{row.error}</p>
         </div>
       ) : null}
@@ -967,8 +967,8 @@ function RowDrawer({
 }
 
 const assignSchema = z.object({
-  agent: z.string().min(1, 'Ohne Agent geht es nicht.'),
-  task: z.string().trim().min(3, 'Der Auftrag braucht mindestens einen Satz.'),
+  agent: z.string().min(1, 'Select an agent.'),
+  task: z.string().trim().min(3, 'The assignment needs at least one sentence.'),
 });
 
 type AssignErrors = Partial<Record<'agent' | 'task', string>>;
@@ -1049,16 +1049,16 @@ function AssignDrawer({
         onDone: () => {
           setBusy(false);
           onAssigned();
-          toast('Auftrag abgeschlossen');
+          toast('Assignment completed');
         },
         onError: (message) => {
           setBusy(false);
-          toast.error('Auftrag fehlgeschlagen', { description: message });
+          toast.error('Assignment failed', { description: message });
         },
       },
     );
 
-    toast(agent.name + ' ist beauftragt');
+    toast(agent.name + ' has been assigned');
     setTask('');
     onOpenChange(false);
     onAssigned();
@@ -1068,13 +1068,13 @@ function AssignDrawer({
     <DetailDrawer
       open={open}
       onOpenChange={onOpenChange}
-      title="Agent beauftragen"
-      description="Der Lauf startet sofort und erscheint in der Tabelle."
-      closeLabel="Abbrechen"
+      title="Assign agent"
+      description="The run starts immediately and appears in the table."
+      closeLabel="Cancel"
       footer={
         <Button onClick={submit} disabled={busy}>
-          {busy ? <Spinner aria-label="Wird gestartet" /> : <SendIcon data-icon="inline-start" />}
-          Beauftragen
+          {busy ? <Spinner aria-label="Starting" /> : <SendIcon data-icon="inline-start" />}
+          Assign
         </Button>
       }
     >
@@ -1089,15 +1089,15 @@ function AssignDrawer({
               options={agentOptions}
               value={agentId}
               onChange={setAgentId}
-              placeholder="Agent wählen"
+              placeholder="Select agent"
             />
           )}
         </FormField>
 
         <FormField
           id="auftrag-projekt"
-          label="Projekt"
-          description="Legt fest, in welchem Verzeichnis der Agent arbeitet."
+          label="Project"
+          description="Determines which directory the agent works in."
         >
           {(control) => (
             <OptionCombobox
@@ -1105,19 +1105,19 @@ function AssignDrawer({
               options={projectOptions}
               value={projectId}
               onChange={setProjectId}
-              placeholder="Kein Projekt"
+              placeholder="No project"
             />
           )}
         </FormField>
 
-        <FormField id="auftrag-text" label="Auftrag" error={errors.task}>
+        <FormField id="auftrag-text" label="Assignment" error={errors.task}>
           {(control) => (
             <Textarea
               {...control}
               rows={6}
               value={task}
               onChange={(event) => setTask(event.target.value)}
-              placeholder="Was soll getan werden?"
+              placeholder="What should be done?"
             />
           )}
         </FormField>
@@ -1155,7 +1155,7 @@ function OptionCombobox({
     >
       <ComboboxInput {...control} placeholder={placeholder} showClear={selected !== null} />
       <ComboboxContent>
-        <ComboboxEmpty>Nichts gefunden</ComboboxEmpty>
+        <ComboboxEmpty>Nothing found</ComboboxEmpty>
         <ComboboxList>
           {(item: Option) => (
             <ComboboxItem key={item.value} value={item}>

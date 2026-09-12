@@ -42,14 +42,14 @@ import { Textarea } from '@/components/ui/textarea';
  * heading was to save and open the skill elsewhere.
  */
 
-const TEMPLATE = `## Wann
-Wenn der Nutzer ... möchte.
+const TEMPLATE = `## When to use
+When the user wants to ...
 
-## Schritte
+## Steps
 1. ...
 2. ...
 
-## Woran man merkt, dass es fertig ist
+## How to know it is complete
 - ...
 `;
 
@@ -72,15 +72,15 @@ const schema = z.object({
   name: z
     .string()
     .trim()
-    .min(1, 'Ein Name ist Pflicht.')
+    .min(1, 'A name is required.')
     .regex(
       /^[a-z0-9][a-z0-9-]{0,63}$/,
-      'Kleinbuchstaben, Ziffern und Bindestriche, beginnend mit Buchstabe oder Ziffer.',
+      'Lowercase letters, numbers, and hyphens, starting with a letter or number.',
     ),
   description: z
     .string()
     .trim()
-    .min(1, 'Ohne diesen Satz wird der Skill nie geöffnet.'),
+    .min(1, 'Without this sentence, the skill will never be opened.'),
 });
 
 function draftOf(skill: Skill): SkillDraft {
@@ -118,7 +118,7 @@ export function SkillFormPage() {
       body: draft.body,
     });
     markSaved();
-    toast(editing ? 'Skill gespeichert' : 'Skill angelegt', { description: saved.name });
+    toast(editing ? 'Skill saved' : 'Skill created', { description: saved.name });
     void navigate('/skills/' + saved.name);
   });
 
@@ -131,7 +131,7 @@ export function SkillFormPage() {
     {
       breadcrumb: [
         { label: 'Skills', to: '/skills' },
-        { label: editing ? (skill?.name ?? 'Skill bearbeiten') : 'Skill anlegen' },
+        { label: editing ? (skill?.name ?? 'Edit skill') : 'Create skill' },
       ],
       actions: (
         <FormHeaderActions
@@ -143,7 +143,7 @@ export function SkillFormPage() {
             editing
               ? [
                   {
-                    label: 'Löschen',
+                    label: 'Delete',
                     icon: Trash2Icon,
                     destructive: true,
                     onSelect: () => void remove(),
@@ -164,9 +164,9 @@ export function SkillFormPage() {
       <PageBody width="3xl">
         <EmptyState
           icon={SparklesIcon}
-          title="Diesen Skill gibt es nicht mehr"
-          description="Der Ordner wurde gelöscht oder hat nie existiert."
-          actionLabel="Zu den Skills"
+          title="This skill no longer exists"
+          description="The folder was deleted or never existed."
+          actionLabel="View skills"
           actionTo="/skills"
         />
       </PageBody>
@@ -189,7 +189,7 @@ export function SkillFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        description="Die Beschreibung entscheidet, wann der Skill geöffnet wird: ein Satz, der die Aufgabe trifft."
+        description="The description determines when the skill is opened: one sentence that matches the task."
       >
         <FieldSet>
           <Field>
@@ -205,14 +205,14 @@ export function SkillFormPage() {
             />
             <FieldDescription>
               {editing
-                ? 'Der Name ist der Ordnername und lässt sich nicht ändern.'
-                : 'Kleinbuchstaben, Ziffern, Bindestriche. Er wird zum Ordnernamen.'}
+                ? 'The name is also the folder name and cannot be changed.'
+                : 'Lowercase letters, numbers, and hyphens. It becomes the folder name.'}
             </FieldDescription>
             <FieldError>{errors.name}</FieldError>
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="skill-audience-assistant">Für wen</FieldLabel>
+            <FieldLabel htmlFor="skill-audience-assistant">Audience</FieldLabel>
             <ChoiceField
               id="skill-audience"
               options={AUDIENCE_CHOICES}
@@ -222,16 +222,16 @@ export function SkillFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="skill-description">Beschreibung</FieldLabel>
+            <FieldLabel htmlFor="skill-description">Description</FieldLabel>
             <Input
               id="skill-description"
-              placeholder="Wann dieser Skill gilt, in einem Satz."
+              placeholder="When this skill applies, in one sentence."
               value={draft.description}
               aria-invalid={Boolean(errors.description)}
               onChange={(event) => set({ description: event.target.value })}
             />
             <FieldDescription>
-              Ein Satz — danach entscheidet der Assistent, ob er den Skill öffnet.
+              One sentence that helps the assistant decide whether to open the skill.
             </FieldDescription>
             <FieldError>{errors.description}</FieldError>
           </Field>
@@ -241,11 +241,11 @@ export function SkillFormPage() {
 
         <FieldSet>
           <Field>
-            <FieldLabel htmlFor="skill-body">Inhalt</FieldLabel>
+            <FieldLabel htmlFor="skill-body">Content</FieldLabel>
             <Tabs value={tab} onValueChange={setTab}>
               <TabsList>
-                <TabsTrigger value="schreiben">Schreiben</TabsTrigger>
-                <TabsTrigger value="vorschau">Vorschau</TabsTrigger>
+                <TabsTrigger value="schreiben">Write</TabsTrigger>
+                <TabsTrigger value="vorschau">Preview</TabsTrigger>
               </TabsList>
               <TabsContent value="schreiben">
                 <Textarea
@@ -263,9 +263,9 @@ export function SkillFormPage() {
                   ) : (
                     <EmptyState
                       icon={FileTextIcon}
-                      title="Noch nichts geschrieben"
-                      description="Was im Reiter „Schreiben“ steht, erscheint hier als Markdown."
-                      actionLabel="Zum Schreiben"
+                      title="Nothing written yet"
+                      description="The text in the “Write” tab appears here as Markdown."
+                      actionLabel="Started writing"
                       onAction={() => setTab('schreiben')}
                       variant="plain"
                       size="sm"
@@ -275,7 +275,7 @@ export function SkillFormPage() {
               </TabsContent>
             </Tabs>
             <FieldDescription>
-              Markdown. Der Text wird wörtlich gelesen, wenn der Skill geöffnet wird.
+              Markdown. This text is read verbatim when the skill is opened.
             </FieldDescription>
           </Field>
         </FieldSet>

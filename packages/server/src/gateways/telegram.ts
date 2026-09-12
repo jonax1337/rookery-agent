@@ -213,7 +213,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
 
   async function deliver(chatId: number, text: string): Promise<void> {
     const client = api;
-    if (!client) throw new Error('Der Telegram-Kanal läuft nicht.');
+    if (!client) throw new Error('The Telegram gateway is not running.');
     for (const piece of splitMessage(text)) {
       await client.sendMessage(chatId, toHtml(piece), {
         parseMode: 'HTML',
@@ -259,9 +259,9 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     try {
       const quota = await providerQuota(provider);
       const windows = quota.windows.map((w) => `${w.label} ${w.percent} %`).join(', ');
-      lines.push(`Kontingent: ${windows || quota.error || 'unbekannt'}`);
+      lines.push(`Usage limits: ${windows || quota.error || 'unknown'}`);
     } catch (error) {
-      lines.push(`Kontingent: unbekannt (${errorText(error)})`);
+      lines.push(`Usage limits: unknown (${errorText(error)})`);
     }
 
     try {
@@ -270,9 +270,9 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         status: ['pending', 'running'],
         limit: 20,
       });
-      lines.push(`Laufende Aufträge: ${open.length}`);
+      lines.push(`Active assignments: ${open.length}`);
     } catch {
-      lines.push('Laufende Aufträge: keine Firma eingerichtet');
+      lines.push('Active assignments: no company configured');
     }
 
     const [last] = context.assistant.store.listSleepRuns({
@@ -281,8 +281,8 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     });
     lines.push(
       last
-        ? `Letzter Schlaflauf: ${new Date(last.startedAt).toLocaleString('de-DE')} (${last.status})`
-        : 'Letzter Schlaflauf: noch keiner',
+        ? `Last sleep run: ${new Date(last.startedAt).toLocaleString('en-GB')} (${last.status})`
+        : 'Last sleep run: none yet',
     );
     return lines.join('\n');
   }
@@ -297,26 +297,27 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       case 'start':
         say(
           chatId,
-          `Hallo! Hier ist ${context.config.assistantName}. Schreib einfach los - ich antworte in ` +
-            'derselben Unterhaltung wie im Browser.\n\n' +
-            '/neu neue Unterhaltung, /stop laufenden Auftrag abbrechen, /status Lage, ' +
-            '/id deine Nummer, /aus Kanal bis zum Neustart stilllegen.',
+          `Hello, this is ${context.config.assistantName}. Send a message and I will reply in ` +
+            'the same conversation you can access in the browser.\n\n' +
+            '/new new conversation, /stop cancel the current turn, /status current state, ' +
+            '/id your user ID, /off silence the gateway until restart.',
         );
         return true;
 
+      case 'new':
       case 'neu': {
         const session = resolveSession(chatId, true);
         log.info('Telegram session replaced', { from: userId, sessionId: session.id });
-        say(chatId, 'Neue Unterhaltung angelegt. Die alte bleibt erhalten.');
+        say(chatId, 'New conversation created. The previous one is preserved.');
         return true;
       }
 
       case 'stop': {
         const turn = turns.get(userId);
-        // The turn itself reports "Abgebrochen." on its way out, so this
+        // The turn itself reports "Cancelled." on its way out, so this
         // branch stays silent unless there was nothing to stop.
         if (turn) turn.abort();
-        else say(chatId, 'Gerade läuft nichts.');
+        else say(chatId, 'Nothing is running.');
         return true;
       }
 
@@ -328,9 +329,10 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         say(chatId, String(userId));
         return true;
 
+      case 'off':
       case 'aus':
         silenced = true;
-        say(chatId, 'Der Kanal ist bis zum Neustart still.');
+        say(chatId, 'The gateway is silenced until restart.');
         // Let the farewell leave before the socket does.
         void chain(chatId, () => Promise.resolve()).finally(() => {
           void stop();
@@ -340,7 +342,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       default:
         say(
           chatId,
-          'Den Befehl kenne ich nicht. Es gibt /start, /neu, /stop, /status, /id und /aus.',
+          'Unknown command. Available commands: /start, /new, /stop, /status, /id and /off.',
         );
         return true;
     }
@@ -377,7 +379,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     // of life the phone looks broken. Only when the turn has said nothing at
     // all so far - an error line is a sign of life too.
     const firstNote = setTimeout(() => {
-      if (noteAt === 0) note('Ich arbeite noch daran ...');
+      if (noteAt === 0) note('Still working on it ...');
     }, FIRST_NOTE_MS);
     firstNote.unref?.();
 
@@ -395,7 +397,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         } else if (event.type === 'error') {
           // Never swallowed: an error the user does not see is an answer that
           // simply never arrives.
-          say(chatId, `Fehler: ${event.message}`);
+          say(chatId, `Error: ${event.message}`);
           noteAt = Date.now();
         } else if (event.type === 'status' && noteAt > 0) {
           if (Date.now() - noteAt >= NOTE_INTERVAL_MS) {
@@ -406,7 +408,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     } catch (error) {
       if (!turn.signal.aborted) {
         log.error('Telegram turn failed', { from: userId, error: errorText(error) });
-        say(chatId, `Fehler: ${errorText(error)}`);
+        say(chatId, `Error: ${errorText(error)}`);
       }
     } finally {
       clearTimeout(firstNote);
@@ -414,9 +416,9 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       if (turns.get(userId) === turn) turns.delete(userId);
     }
 
-    if (turn.signal.aborted) say(chatId, 'Abgebrochen.');
+    if (turn.signal.aborted) say(chatId, 'Cancelled.');
     else if (answer.trim().length > 0) say(chatId, answer);
-    else say(chatId, 'Dazu habe ich keine Antwort bekommen.');
+    else say(chatId, 'No answer was returned.');
   }
 
   /* ---------------------------- dispatch ---------------------------- */
@@ -490,7 +492,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     if (!enqueue(userId, () => runTurn(userId, chatId, text))) {
       say(
         chatId,
-        'Ich komme gerade nicht hinterher. Warte kurz, bis ich die vorigen Nachrichten beantwortet habe.',
+        'The queue is full. Please wait until I have answered the previous messages.',
       );
     }
   }
@@ -529,7 +531,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         // Two processes polling the same bot steal each other's updates
         // forever. Stopping with a visible reason beats a silent tug of war.
         if (error instanceof TelegramApiError && error.conflict) {
-          lastError = 'Ein anderer Prozess fragt denselben Bot ab (409). Kanal angehalten.';
+          lastError = 'Another process is polling the same bot (409). Gateway stopped.';
           blocked = { reason: lastError, token: activeToken };
           log.error('Telegram polling conflict, gateway stopped', { error: error.message });
           break;
@@ -538,7 +540,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         // A token Telegram rejects will be rejected again in sixty seconds,
         // and in sixty after that. Say so once and wait for a new one.
         if (error instanceof TelegramApiError && error.unauthorized) {
-          lastError = 'Telegram kennt diesen Bot-Token nicht (401). Kanal angehalten.';
+          lastError = 'Telegram rejected this bot token (401). Gateway stopped.';
           blocked = { reason: lastError, token: activeToken };
           log.error('Telegram rejected the bot token, gateway stopped');
           break;
@@ -590,8 +592,8 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       // loop: getMe is where a bad token usually announces itself.
       if (error instanceof TelegramApiError && (error.unauthorized || error.conflict)) {
         lastError = error.unauthorized
-          ? 'Telegram kennt diesen Bot-Token nicht (401). Kanal angehalten.'
-          : 'Ein anderer Prozess fragt denselben Bot ab (409). Kanal angehalten.';
+          ? 'Telegram rejected this bot token (401). Gateway stopped.'
+          : 'Another process is polling the same bot (409). Gateway stopped.';
         blocked = { reason: lastError, token: secret };
         log.error('Telegram gateway cannot run with these settings', { reason: lastError });
         return;

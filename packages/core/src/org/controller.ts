@@ -153,7 +153,7 @@ export class OrgController extends EventEmitter {
     if (existing) return existing;
     return this.#store.org.createOrganization({
       name: (this.#config.assistantName || 'Rookery') + ' & Co.',
-      mission: 'Die Firma des persoenlichen Assistenten.',
+      mission: 'The personal assistant company.',
     });
   }
 
@@ -385,7 +385,7 @@ export class OrgController extends EventEmitter {
         if (typeof args.enabled !== 'boolean') return fail('enabled must be true or false.');
         if (args.enabled && !state.installed) return fail(state.name + ' is not installed on this machine.');
         if (args.enabled && state.missingEnv.length) {
-          return fail(state.name + ' needs ' + state.missingEnv.join(', ') + ' first; the user sets that on the Werkzeuge page.');
+          return fail(state.name + ' needs ' + state.missingEnv.join(', ') + ' first; the user sets that on the Tools page.');
         }
         const audience = text('audience');
         const tools = withToolServer(this.#config, state.id, {

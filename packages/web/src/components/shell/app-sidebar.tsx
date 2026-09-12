@@ -78,9 +78,9 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
             ...(capped
               ? {
                   label:
-                    'mindestens ' +
+                    'at least ' +
                     formatNumber(openConversations) +
-                    ' offene Gespräche, die Liste endet bei ' +
+                    ' open conversations; the list is limited to ' +
                     formatNumber(limit),
                 }
               : {}),
@@ -91,7 +91,7 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
       ? {
           '/tasks': {
             node: formatNumber(runningTasks),
-            label: 'laufende Hauptaufgaben, Teilaufgaben sind nicht mitgezählt',
+            label: 'running top-level tasks; subtasks are not included',
           },
         }
       : {}),

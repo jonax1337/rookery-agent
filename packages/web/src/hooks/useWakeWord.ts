@@ -156,8 +156,8 @@ export function useSpeechInput(options: SpeechInputOptions): SpeechInputState {
       if (event.error === 'no-speech' || event.error === 'aborted') return;
       setError(
         event.error === 'not-allowed'
-          ? 'Mikrofonzugriff wurde abgelehnt.'
-          : 'Spracherkennung: ' + event.error,
+          ? 'Microphone access was denied.'
+          : 'Speech recognition: ' + event.error,
       );
       wantRunningRef.current = false;
     };

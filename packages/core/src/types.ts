@@ -47,7 +47,7 @@ export interface TurnUsage {
 export interface QuotaWindow {
   /** Stable key, e.g. `five_hour`, `seven_day`, `weekly`. */
   kind: string;
-  /** Human label, e.g. "5 Stunden". */
+  /** Human label, e.g. "5 hours". */
   label: string;
   /** 0..100, how much of the window is used up. */
   percent: number;
@@ -1015,7 +1015,7 @@ export interface VoiceConfig {
   speakCleanText: boolean;
   /** Which synthesiser produces the voice. */
   engine: VoiceEngine;
-  /** Edge neural voice short name, e.g. `de-DE-FlorianMultilingualNeural`. */
+  /** Edge neural voice short name, e.g. `en-GB-RyanNeural`. */
   edgeVoice: string;
   /** ElevenLabs voice id; empty falls back to the library's default voice. */
   elevenLabsVoiceId: string;

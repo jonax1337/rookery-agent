@@ -90,10 +90,10 @@ function ComboboxInput({
             className="group-has-data-[slot=combobox-clear]/input-group:hidden data-pressed:bg-transparent"
             disabled={disabled}
           >
-            <ComboboxTrigger aria-label="Auswahl öffnen" />
+            <ComboboxTrigger aria-label="Open options" />
           </InputGroupButton>
         )}
-        {showClear && <ComboboxClear disabled={disabled} aria-label="Auswahl leeren" />}
+        {showClear && <ComboboxClear disabled={disabled} aria-label="Clear selection" />}
       </InputGroupAddon>
       {children}
     </InputGroup>

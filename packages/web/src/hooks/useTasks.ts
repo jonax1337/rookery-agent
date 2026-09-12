@@ -53,7 +53,7 @@ export function useTasks(socket: RookerySocket): TasksState {
       setError(null);
     } catch (caught) {
       if (caught instanceof ApiError && caught.offline) {
-        setError('Keine Verbindung zum Rookery-Server.');
+        setError('No connection to the Rookery server.');
       } else {
         setError((caught as Error).message);
       }

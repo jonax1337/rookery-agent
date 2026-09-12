@@ -39,7 +39,7 @@ import { Textarea } from '@/components/ui/textarea';
  * team list, an agent list grouped by team, a project list - none of which
  * could be searched, sorted or filtered. The three lists are three routes now,
  * and this layout holds what they share: the headline numbers and the tab
- * strip. Headline numbers appear on Agenten; navigation remains on every tab.
+ * strip. Headline numbers appear on Agents; navigation remains on every tab.
  *
  * The tabs are routes rather than local state: `/org/teams` is a place the
  * sidebar, the command palette and a bookmark can all point at. Radix' Tabs
@@ -61,13 +61,13 @@ interface OrgTab {
 }
 
 const TABS: readonly OrgTab[] = [
-  { value: 'agents', to: '/org/agents', label: 'Agenten', createLabel: 'Agent einstellen' },
-  { value: 'teams', to: '/org/teams', label: 'Teams', createLabel: 'Team anlegen' },
-  { value: 'projects', to: '/org/projects', label: 'Projekte', createLabel: 'Projekt anlegen' },
+  { value: 'agents', to: '/org/agents', label: 'Agents', createLabel: 'Hire agent' },
+  { value: 'teams', to: '/org/teams', label: 'Teams', createLabel: 'Create team' },
+  { value: 'projects', to: '/org/projects', label: 'Projects', createLabel: 'Create project' },
 ];
 
 const organizationSchema = z.object({
-  name: z.string().trim().min(1, 'Ein Name ist Pflicht'),
+  name: z.string().trim().min(1, 'A name is required'),
   mission: z.string(),
 });
 
@@ -85,7 +85,7 @@ export function OrgLayout() {
 
   const active = TABS.find((tab) => pathname.startsWith(tab.to))?.value ?? 'agents';
   const activeTab = TABS.find((tab) => tab.value === active) ?? TABS[0];
-  /** Agenten is where /org lands, so it is this section's front page. */
+  /** Agents is where /org lands, so it is this section's front page. */
   const isIndex = active === TABS[0]?.value;
 
   /* -------------------------------- header -------------------------------- */
@@ -94,8 +94,8 @@ export function OrgLayout() {
     {
       ...(organization ? { title: organization.name } : {}),
       breadcrumb: [
-        { label: organization?.name ?? 'Firma', to: '/org/agents' },
-        { label: activeTab?.label ?? 'Agenten' },
+        { label: organization?.name ?? 'Organization', to: '/org/agents' },
+        { label: activeTab?.label ?? 'Agents' },
       ],
       // One primary button, then the overflow the detail pages already use.
       // Not a ButtonGroup: that welds a filled button to an outlined one, and
@@ -105,12 +105,12 @@ export function OrgLayout() {
           <Button size="sm" asChild>
             <NavLink to={(activeTab?.to ?? '/org/agents') + '/new'}>
               <PlusIcon data-icon="inline-start" />
-              {activeTab?.createLabel ?? 'Agent einstellen'}
+              {activeTab?.createLabel ?? 'Hire agent'}
             </NavLink>
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="Weitere Aktionen für die Firma" />
+              <RowMenuButton tone="header" label="More Organization actions" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               {TABS.filter((tab) => tab.value !== active).map((tab) => (
@@ -124,7 +124,7 @@ export function OrgLayout() {
               <DropdownMenuSeparator />
               <DropdownMenuItem disabled={!organization} onSelect={() => setEditOpen(true)}>
                 <PencilIcon />
-                Firma bearbeiten
+                Edit organization
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -154,13 +154,13 @@ export function OrgLayout() {
   // one says which population it counted.
   const cards: StatCardProps[] = [
     {
-      label: 'Agenten',
+      label: 'Agents',
       value: formatNumber(org.agents.length),
       headline:
         counts.withoutTeam === 0
-          ? 'Alle einem Team zugeordnet'
-          : formatNumber(counts.withoutTeam) + ' ohne Team',
-      footnote: 'Aktive Agenten, ohne Archiv',
+          ? 'All assigned to a team'
+          : formatNumber(counts.withoutTeam) + ' without a team',
+      footnote: 'Active agents, excluding archive',
       to: '/org/agents',
     },
     {
@@ -168,28 +168,28 @@ export function OrgLayout() {
       value: formatNumber(org.teams.length),
       headline:
         counts.withoutLead === 0
-          ? 'Jedes Team hat eine Leitung'
-          : formatNumber(counts.withoutLead) + ' ohne Leitung',
-      footnote: 'Teams der aktiven Firma',
+          ? 'Every team has a lead'
+          : formatNumber(counts.withoutLead) + ' without a lead',
+      footnote: 'Teams in the active organization',
       to: '/org/teams',
     },
     {
-      label: 'Projekte',
+      label: 'Projects',
       value: formatNumber(org.projects.length),
       headline:
         counts.withPath === 0
-          ? 'Alle laufen im Arbeitsraum'
-          : formatNumber(counts.withPath) + ' mit eigenem Verzeichnis',
-      footnote: 'Aktive Projekte, ohne Archiv',
+          ? 'All use the shared workspace'
+          : formatNumber(counts.withPath) + ' with a custom directory',
+      footnote: 'Active projects, excluding archive',
       to: '/org/projects',
     },
     {
-      label: 'Laufende Aufträge',
+      label: 'Running assignments',
       value: formatNumber(running),
       ...(running > 0 ? { badge: <RunningBadge count={running} /> } : {}),
       headline:
-        running === 0 ? 'Gerade arbeitet niemand' : shorten(counts.busy.join(', '), 40),
-      footnote: 'Live aktualisiert',
+        running === 0 ? 'No one is working right now' : shorten(counts.busy.join(', '), 40),
+      footnote: 'Updated live',
       to: '/assignments',
     },
   ];
@@ -206,9 +206,9 @@ export function OrgLayout() {
         ) : (
           <EmptyState
             icon={Building2Icon}
-            title="Keine Firma gefunden"
-            description="Rookery legt die Firma beim ersten Start selbst an. Läuft der Server mit einer anderen Datenbank?"
-            actionLabel="Erneut laden"
+            title="Organization not found"
+            description="Rookery creates the organization automatically on first launch. Is the server using a different database?"
+            actionLabel="Reload"
             onAction={() => void org.refresh()}
           />
         )}
@@ -220,7 +220,7 @@ export function OrgLayout() {
     <PageBody>
       <div className="px-4 lg:px-6">
         <p className="text-sm text-muted-foreground">
-          {organization.mission || 'Noch keine Mission hinterlegt.'}
+          {organization.mission || 'No mission provided yet.'}
         </p>
       </div>
 
@@ -239,7 +239,7 @@ export function OrgLayout() {
           <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:rounded-full **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1">
             <TabsTrigger value="agents" asChild>
               <NavLink to="/org/agents">
-                Agenten
+                Agents
                 <Badge variant="secondary">{formatNumber(org.agents.length)}</Badge>
               </NavLink>
             </TabsTrigger>
@@ -251,7 +251,7 @@ export function OrgLayout() {
             </TabsTrigger>
             <TabsTrigger value="projects" asChild>
               <NavLink to="/org/projects">
-                Projekte
+                Projects
                 <Badge variant="secondary">{formatNumber(org.projects.length)}</Badge>
               </NavLink>
             </TabsTrigger>
@@ -329,9 +329,9 @@ function OrganizationDrawer({
       markSaved();
       onSaved();
       onOpenChange(false);
-      toast('Firma gespeichert');
+      toast('Organization saved');
     } catch (caught) {
-      reportFailure('Speichern', caught);
+      reportFailure('Save', caught);
     } finally {
       setSaving(false);
     }
@@ -341,12 +341,12 @@ function OrganizationDrawer({
     <DetailDrawer
       open={open}
       onOpenChange={onOpenChange}
-      title="Firma bearbeiten"
-      description="Der Name steht im Kopf jeder Firmenseite, die Mission im Systemprompt der Agenten."
-      closeLabel="Abbrechen"
+      title="Edit organization"
+      description="The name appears at the top of every Organization page; the mission appears in agents’ system prompts."
+      closeLabel="Cancel"
       footer={
         <Button onClick={() => void save()} disabled={saving || !dirty}>
-          Speichern
+          Save
         </Button>
       }
     >
@@ -367,7 +367,7 @@ function OrganizationDrawer({
           <Textarea
             id="firma-mission"
             rows={4}
-            placeholder="Wofür die Firma da ist, in ein bis zwei Sätzen."
+            placeholder="What the organization exists to do, in one or two sentences."
             value={draft.mission}
             onChange={(event) => set({ mission: event.target.value })}
           />

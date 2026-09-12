@@ -34,7 +34,7 @@ import { cn } from '@/lib/utils';
  *
  * Four corrections to the original, all of them things that would be bugs
  * here: the reference date is `Date.now()` instead of the block's hard-wired
- * 2024-06-30, the axis and the tooltip format `de-DE`, the gradient ids are
+ * 2024-06-30, the axis and the tooltip format `en-GB`, the gradient ids are
  * prefixed with `useId()` so two charts on one page stop stealing each
  * other's fills, and the data arrives as a prop - `data.json` stays in the
  * reference folder.
@@ -70,9 +70,9 @@ export const TREND_RANGE_DAYS: Record<TrendRange, number> = {
 };
 
 const RANGE_LABEL: Record<TrendRange, string> = {
-  '90d': 'Letzte 3 Monate',
-  '30d': 'Letzte 30 Tage',
-  '7d': 'Letzte 7 Tage',
+  '90d': 'Last 3 months',
+  '30d': 'Last 30 days',
+  '7d': 'Last 7 days',
 };
 
 /**
@@ -81,9 +81,9 @@ const RANGE_LABEL: Record<TrendRange, string> = {
  * in it, and the switch that changed it sits right there.
  */
 export const TREND_RANGE_SUFFIX: Record<TrendRange, string> = {
-  '90d': 'in 3 Monaten',
-  '30d': 'in 30 Tagen',
-  '7d': 'in 7 Tagen',
+  '90d': 'in 3 months',
+  '30d': 'in 30 days',
+  '7d': 'in 7 days',
 };
 
 const RANGES: TrendRange[] = ['90d', '30d', '7d'];
@@ -307,7 +307,7 @@ export function TrendChartCard<T extends TrendPoint>({
             <SelectTrigger
               className="flex w-40 **:data-[slot=select-value]:block **:data-[slot=select-value]:truncate @[767px]/card:hidden"
               size="sm"
-              aria-label="Zeitraum wählen"
+              aria-label="Choose time range"
             >
               <SelectValue placeholder={RANGE_LABEL['90d']} />
             </SelectTrigger>
@@ -423,7 +423,7 @@ export function TrendChartCard<T extends TrendPoint>({
               </caption>
               <thead>
                 <tr>
-                  <th scope="col">Tag</th>
+                  <th scope="col">Day</th>
                   {series.map((entry) => (
                     <th key={entry.key} scope="col">
                       {entry.label}

@@ -83,13 +83,13 @@ const EMPTY: AgentDraft = {
 
 /** Only the typed fields are validated; the pickers cannot produce rubbish. */
 const schema = z.object({
-  name: z.string().trim().min(1, 'Ein Name ist Pflicht.'),
-  title: z.string().trim().min(1, 'Ohne Titel weiß niemand, wofür der Agent da ist.'),
+  name: z.string().trim().min(1, 'A name is required.'),
+  title: z.string().trim().min(1, 'A title is required to explain what the agent does.'),
   slug: z
     .string()
     .trim()
-    .regex(/^$|^[a-z0-9][a-z0-9-]*$/, 'Nur Kleinbuchstaben, Ziffern und Bindestriche.'),
-  instructions: z.string().trim().min(1, 'Die Anweisungen sind die Rolle. Sie sind Pflicht.'),
+    .regex(/^$|^[a-z0-9][a-z0-9-]*$/, 'Use lowercase letters, numbers, and hyphens only.'),
+  instructions: z.string().trim().min(1, 'Instructions define the role and are required.'),
 });
 
 function draftOf(agent: Agent): AgentDraft {
@@ -140,7 +140,7 @@ function toInput(patch: AgentPatch): AgentInput {
 }
 
 /**
- * What the server would derive from the name when the Kürzel is left empty.
+ * What the server would derive from the name when the Slug is left empty.
  *
  * A preview, not a promise: `slugify` on the server also has to make the
  * result unique, so a second "Anna" becomes `anna-2` there. Showing the
@@ -198,10 +198,10 @@ export function AgentFormPage() {
     () => [
       {
         value: STANDARD_CHOICE,
-        label: 'Standard',
+        label: 'Default',
         description: config
-          ? 'Derzeit ' + PROVIDER_LABEL[config.defaultProvider] + '.'
-          : 'Was in den Einstellungen als Vorgabe steht.',
+          ? 'Currently ' + PROVIDER_LABEL[config.defaultProvider] + '.'
+          : 'Uses the default from Settings.',
       },
       ...(['claude', 'codex'] as ProviderId[]).map((provider) => {
         const status = providers.find((entry) => entry.id === provider);
@@ -210,7 +210,7 @@ export function AgentFormPage() {
           label: PROVIDER_LABEL[provider],
           icon: <ProviderIcon provider={provider} className="size-4 text-muted-foreground" />,
           ...(status && !status.available
-            ? { description: 'Nicht installiert. Aufträge dieses Agenten scheitern.' }
+            ? { description: 'Not installed. Assignments for this agent will fail.' }
             : {}),
         };
       }),
@@ -228,7 +228,7 @@ export function AgentFormPage() {
     // A model the provider no longer lists still has to be visible, or an
     // edit would silently drop it the moment anything else is saved.
     if (draft.model && !models.includes(draft.model)) {
-      options.unshift({ value: draft.model, label: draft.model, hint: 'unbekannt' });
+      options.unshift({ value: draft.model, label: draft.model, hint: 'unknown' });
     }
     return options;
   }, [draft.model, models]);
@@ -241,7 +241,7 @@ export function AgentFormPage() {
       editing && id ? await api.updateAgent(id, patch) : await api.createAgent(toInput(patch));
     markSaved();
     await org.refresh();
-    toast(editing ? 'Agent gespeichert' : saved.name + ' eingestellt');
+    toast(editing ? 'Agent saved' : saved.name + ' hired');
     void navigate('/org/agents/' + saved.id);
   });
 
@@ -250,11 +250,11 @@ export function AgentFormPage() {
       if (!id || !agent) return;
       if (archived) {
         const ok = await confirm({
-          title: 'Agent archivieren?',
+          title: 'Agent archive?',
           description:
             agent.name +
-            ' bekommt keine neuen Aufträge mehr und verschwindet aus den Auswahllisten. Bisherige Aufträge und Erinnerungen bleiben erhalten.',
-          confirmLabel: 'Archivieren',
+            ' will no longer receive new assignments and will disappear from selection lists. Previous assignments and memories will remain.',
+          confirmLabel: 'Archive',
           destructive: true,
         });
         if (!ok) return;
@@ -262,10 +262,10 @@ export function AgentFormPage() {
       try {
         await api.updateAgent(id, { archived });
         await org.refresh();
-        toast(archived ? agent.name + ' archiviert' : agent.name + ' ist wieder im Dienst');
+        toast(archived ? agent.name + ' archived' : agent.name + ' is active again');
         if (archived) void navigate('/org/agents');
       } catch (caught) {
-        reportFailure('Änderung', caught);
+        reportFailure('Update', caught);
       }
     },
     [agent, confirm, id, navigate, org],
@@ -273,13 +273,13 @@ export function AgentFormPage() {
 
   /* --------------------------------- Kopf --------------------------------- */
 
-  const leaf = editing ? (agent?.name ?? 'Agent bearbeiten') : 'Agent einstellen';
+  const leaf = editing ? (agent?.name ?? 'Edit agent') : 'Hire agent';
 
   usePageMeta(
     {
       breadcrumb: [
-        { label: 'Firma', to: '/org/agents' },
-        { label: 'Agenten', to: '/org/agents' },
+        { label: 'Organization', to: '/org/agents' },
+        { label: 'Agents', to: '/org/agents' },
         { label: leaf },
       ],
       actions: (
@@ -293,12 +293,12 @@ export function AgentFormPage() {
               ? [
                   agent.archived
                     ? {
-                        label: 'Zurückholen',
+                        label: 'Restore',
                         icon: ArchiveRestoreIcon,
                         onSelect: () => void setArchived(false),
                       }
                     : {
-                        label: 'Archivieren',
+                        label: 'Archive',
                         icon: ArchiveIcon,
                         destructive: true,
                         onSelect: () => void setArchived(true),
@@ -319,9 +319,9 @@ export function AgentFormPage() {
       <PageBody width="3xl">
         <EmptyState
           icon={UsersRoundIcon}
-          title="Diesen Agenten gibt es nicht mehr"
-          description="Er wurde entlassen oder hat nie existiert."
-          actionLabel="Zu den Agenten"
+          title="This agent no longer exists"
+          description="The agent was removed or never existed."
+          actionLabel="View agents"
           actionTo="/org/agents"
         />
       </PageBody>
@@ -337,8 +337,8 @@ export function AgentFormPage() {
   }
 
   const slugHint = draft.slug.trim()
-    ? 'Kleinbuchstaben, Ziffern, Bindestriche.'
-    : 'Leer lassen: der Server bildet es aus dem Namen, hier voraussichtlich „' +
+    ? 'Lowercase letters, numbers, and hyphens.'
+    : 'Leave empty and the server will derive it from the name, likely “' +
       suggestSlug(draft.name || 'Agent') +
       '“.';
 
@@ -352,8 +352,8 @@ export function AgentFormPage() {
         error={failure}
         description={
           editing
-            ? 'Rolle, Anweisungen und Gedächtnis bleiben bestehen; jeder Auftrag startet trotzdem einen frischen Prozess.'
-            : 'Ein Agent ist fest angestellt: Rolle, Anweisungen und eigenes Gedächtnis bleiben bestehen.'
+            ? 'Role, instructions, and Memory persist; every assignment still starts a fresh process.'
+            : 'An agent is a permanent team member: role, instructions, and personal Memory persist.'
         }
       >
         <FieldSet>
@@ -369,10 +369,10 @@ export function AgentFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="agent-title">Titel</FieldLabel>
+            <FieldLabel htmlFor="agent-title">Title</FieldLabel>
             <Input
               id="agent-title"
-              placeholder="z. B. Backend-Entwicklerin"
+              placeholder="e.g. Backend engineer"
               value={draft.title}
               aria-invalid={Boolean(errors.title)}
               onChange={(event) => set({ title: event.target.value })}
@@ -381,7 +381,7 @@ export function AgentFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="agent-slug">Kürzel</FieldLabel>
+            <FieldLabel htmlFor="agent-slug">Slug</FieldLabel>
             <Input
               id="agent-slug"
               className="font-mono"
@@ -405,31 +405,31 @@ export function AgentFormPage() {
               options={teamOptions}
               value={draft.teamId}
               onChange={(teamId) => set({ teamId })}
-              placeholder="Ohne Team"
-              emptyLabel="Kein Team gefunden"
+              placeholder="No team"
+              emptyLabel="No team found"
             />
             <FieldDescription>
-              Ohne Team steht der Agent für sich. Die Zuordnung lässt sich auch vom Team aus ändern.
+              Without a team, the agent works independently. You can also change the assignment from the team page.
             </FieldDescription>
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="agent-manager">Vorgesetzter</FieldLabel>
+            <FieldLabel htmlFor="agent-manager">Manager</FieldLabel>
             <EntityCombobox
               id="agent-manager"
               options={managerOptions}
               value={draft.managerId}
               onChange={(managerId) => set({ managerId })}
-              placeholder="Der Assistent"
-              emptyLabel="Kein Agent gefunden"
+              placeholder="The assistant"
+              emptyLabel="No agent found"
             />
             <FieldDescription>
-              Ohne Vorgesetzten berichtet der Agent an den Assistenten.
+              Without a manager, the agent reports to the assistant.
             </FieldDescription>
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="agent-permission-standard">Zugriff</FieldLabel>
+            <FieldLabel htmlFor="agent-permission-standard">Permission</FieldLabel>
             <ChoiceField
               id="agent-permission"
               options={PERMISSION_CHOICES}
@@ -443,7 +443,7 @@ export function AgentFormPage() {
 
         <FieldSet>
           <Field>
-            <FieldLabel htmlFor="agent-provider-standard">Anbieter</FieldLabel>
+            <FieldLabel htmlFor="agent-provider-standard">Provider</FieldLabel>
             <ChoiceField
               id="agent-provider"
               options={providerOptions}
@@ -451,29 +451,28 @@ export function AgentFormPage() {
               onChange={(provider) => set({ provider, model: null })}
             />
             <FieldDescription>
-              Der Wechsel setzt das Modell zurück, damit kein Name bei seinem alten Anbieter
-              zurückbleibt.
+              Changing provider resets the model selection.
             </FieldDescription>
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="agent-model">Modell</FieldLabel>
+            <FieldLabel htmlFor="agent-model">Model</FieldLabel>
             <EntityCombobox
               id="agent-model"
               options={modelOptions}
               value={draft.model}
               onChange={(model) => set({ model })}
-              placeholder="Standardmodell"
-              emptyLabel="Kein Modell gefunden"
+              placeholder="Default model"
+              emptyLabel="No model found"
             />
             <FieldDescription>
               {modelOptions.length
-                ? 'Modelle von ' +
+                ? 'Models from ' +
                   PROVIDER_LABEL[effectiveProvider] +
-                  (draft.provider === STANDARD_CHOICE ? ' (Vorgabe)' : '') +
-                  '. Leer heißt: was der Anbieter selbst wählt.'
+                  (draft.provider === STANDARD_CHOICE ? ' (Default)' : '') +
+                  '. Empty means the provider chooses.'
                 : PROVIDER_LABEL[effectiveProvider] +
-                  ' meldet derzeit keine Modelle. Leer heißt: was der Anbieter selbst wählt.'}
+                  ' currently reports no models. Empty means the provider chooses.'}
             </FieldDescription>
           </Field>
         </FieldSet>
@@ -482,18 +481,18 @@ export function AgentFormPage() {
 
         <FieldSet>
           <Field>
-            <FieldLabel htmlFor="agent-instructions">Anweisungen</FieldLabel>
+            <FieldLabel htmlFor="agent-instructions">Instructions</FieldLabel>
             <Textarea
               id="agent-instructions"
               rows={12}
-              placeholder="Die feste Rollenbeschreibung. Nie die Stimme des Assistenten."
+              placeholder="The permanent role description. Never the assistant’s persona."
               value={draft.instructions}
               aria-invalid={Boolean(errors.instructions)}
               onChange={(event) => set({ instructions: event.target.value })}
             />
             <FieldDescription>
-              {formatNumber(draft.instructions.length)} Zeichen. Sie stehen bei jedem Auftrag
-              wörtlich im Systemprompt.
+              {formatNumber(draft.instructions.length)} characters. Included verbatim in every
+              assignment system prompt.
             </FieldDescription>
             <FieldError>{errors.instructions}</FieldError>
           </Field>

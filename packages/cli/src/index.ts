@@ -596,7 +596,7 @@ memory
 
 program
   .command('config')
-  .description('read or write config, e.g. `config set voice.lang de-DE`')
+  .description('read or write config, e.g. `config set voice.lang en-GB`')
   .argument('<action>', 'get | set | path')
   .argument('[key]', 'dotted key, e.g. memory.recallLimit')
   .argument('[value]', 'new value, for `set`')

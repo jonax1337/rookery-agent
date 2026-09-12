@@ -49,7 +49,7 @@ export class TtsError extends Error {
   }
 }
 
-const DEFAULT_EDGE_VOICE = 'de-DE-FlorianMultilingualNeural';
+const DEFAULT_EDGE_VOICE = 'en-GB-RyanNeural';
 /** ElevenLabs' premade "George": a warm British narrator, closest to the brief. */
 const DEFAULT_ELEVENLABS_VOICE = 'JBFqnCBsd6RMkjVDRZzb';
 const DEFAULT_OPENAI_VOICE = 'onyx';
@@ -153,7 +153,7 @@ export async function elevenLabsVoices(): Promise<TtsVoice[]> {
         .join(', ');
       return {
         id: voice.voice_id,
-        name: voice.name + (traits ? ' (' + traits + ')' : '') + (voice.category === 'premade' ? '' : ' · eigene'),
+        name: voice.name + (traits ? ' (' + traits + ')' : '') + (voice.category === 'premade' ? '' : ' · custom'),
         lang: 'multi',
         gender: labels.gender ?? '',
       };

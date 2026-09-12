@@ -42,9 +42,9 @@ export interface NavGroupMeta {
 }
 
 export const NAV_GROUPS: NavGroupMeta[] = [
-  { id: 'work', label: 'Arbeiten' },
-  { id: 'operations', label: 'Betrieb' },
-  { id: 'knowledge', label: 'Firma & Wissen' },
+  { id: 'work', label: 'Work' },
+  { id: 'operations', label: 'Operations' },
+  { id: 'knowledge', label: 'Organization & Knowledge' },
   { id: 'secondary', label: null },
 ];
 
@@ -79,33 +79,33 @@ export interface RouteMeta {
 /** In sidebar order within each group; the palette lists them the same way. */
 export const ROUTE_META: RouteMeta[] = [
   /* ------------------------------- arbeiten ------------------------------- */
-  { path: '/dashboard', label: 'Übersicht', icon: LayoutDashboardIcon, group: 'work' },
-  { path: '/chats', label: 'Gespräche', icon: MessagesSquareIcon, group: 'work' },
+  { path: '/dashboard', label: 'Overview', icon: LayoutDashboardIcon, group: 'work' },
+  { path: '/chats', label: 'Conversations', icon: MessagesSquareIcon, group: 'work' },
   // The chat hub itself. It sits under Gespräche in the breadcrumb but is not
   // a sidebar entry - "Neues Gespräch" is a button, not a destination.
   { path: '/', label: 'Chat', parent: '/chats', icon: MessagesSquareIcon, hidden: true },
-  { path: '/c/:sessionId', label: 'Gespräch', parent: '/chats', icon: MessagesSquareIcon, hidden: true },
+  { path: '/c/:sessionId', label: 'Conversation', parent: '/chats', icon: MessagesSquareIcon, hidden: true },
   // No `group`, so no sidebar row: the primary action already carries a voice
   // button beside "Neues Gespräch", and one destination does not need two
   // permanent doors. It keeps its label and icon, so the breadcrumb still names
   // it and the command palette still finds it.
-  { path: '/voice', label: 'Sprechen', icon: AudioLinesIcon },
+  { path: '/voice', label: 'Voice', icon: AudioLinesIcon },
 
   /* -------------------------------- betrieb ------------------------------- */
-  { path: '/tasks', label: 'Aufgaben', icon: ListTodoIcon, group: 'operations' },
-  { path: '/tasks/new', label: 'Aufgabe anlegen', parent: '/tasks', hidden: true },
-  { path: '/tasks/:id', label: 'Aufgabe', parent: '/tasks', hidden: true },
-  { path: '/tasks/:id/edit', label: 'Aufgabe bearbeiten', parent: '/tasks', hidden: true },
+  { path: '/tasks', label: 'Tasks', icon: ListTodoIcon, group: 'operations' },
+  { path: '/tasks/new', label: 'Create task', parent: '/tasks', hidden: true },
+  { path: '/tasks/:id', label: 'Task', parent: '/tasks', hidden: true },
+  { path: '/tasks/:id/edit', label: 'Edit task', parent: '/tasks', hidden: true },
 
-  { path: '/assignments', label: 'Aufträge', icon: SendIcon, group: 'operations' },
-  { path: '/assignments/:id', label: 'Auftrag', parent: '/assignments', hidden: true },
+  { path: '/assignments', label: 'Assignments', icon: SendIcon, group: 'operations' },
+  { path: '/assignments/:id', label: 'Assignment', parent: '/assignments', hidden: true },
 
-  { path: '/cron', label: 'Zeitpläne', icon: CalendarClockIcon, group: 'operations' },
-  { path: '/cron/new', label: 'Zeitplan anlegen', parent: '/cron', hidden: true },
-  { path: '/cron/:id', label: 'Zeitplan', parent: '/cron', hidden: true },
-  { path: '/cron/:id/edit', label: 'Zeitplan bearbeiten', parent: '/cron', hidden: true },
+  { path: '/cron', label: 'Schedules', icon: CalendarClockIcon, group: 'operations' },
+  { path: '/cron/new', label: 'Create schedule', parent: '/cron', hidden: true },
+  { path: '/cron/:id', label: 'Schedule', parent: '/cron', hidden: true },
+  { path: '/cron/:id/edit', label: 'Edit schedule', parent: '/cron', hidden: true },
 
-  { path: '/gateways', label: 'Gateway', icon: RadioTowerIcon, group: 'operations' },
+  { path: '/gateways', label: 'Gateways', icon: RadioTowerIcon, group: 'operations' },
   { path: '/gateways/:id', label: 'Gateway', parent: '/gateways', hidden: true },
 
   /* --------------------------- firma & wissen ----------------------------- */
@@ -113,55 +113,55 @@ export const ROUTE_META: RouteMeta[] = [
   // the thing the sidebar calls "Firma".
   {
     path: '/org',
-    label: 'Firma',
+    label: 'Organization',
     icon: Building2Icon,
     group: 'knowledge',
     redirect: '/org/agents',
     children: ['/org/agents', '/org/teams', '/org/projects'],
   },
-  { path: '/org/agents', label: 'Agenten', parent: '/org' },
-  { path: '/org/agents/new', label: 'Agent einstellen', parent: '/org/agents', hidden: true },
+  { path: '/org/agents', label: 'Agents', parent: '/org' },
+  { path: '/org/agents/new', label: 'Create agent', parent: '/org/agents', hidden: true },
   { path: '/org/agents/:id', label: 'Agent', parent: '/org/agents', hidden: true },
-  { path: '/org/agents/:id/edit', label: 'Agent bearbeiten', parent: '/org/agents', hidden: true },
+  { path: '/org/agents/:id/edit', label: 'Edit agent', parent: '/org/agents', hidden: true },
   { path: '/org/teams', label: 'Teams', parent: '/org' },
-  { path: '/org/teams/new', label: 'Team anlegen', parent: '/org/teams', hidden: true },
-  { path: '/org/teams/:id/edit', label: 'Team bearbeiten', parent: '/org/teams', hidden: true },
-  { path: '/org/projects', label: 'Projekte', parent: '/org' },
-  { path: '/org/projects/new', label: 'Projekt anlegen', parent: '/org/projects', hidden: true },
-  { path: '/org/projects/:id/edit', label: 'Projekt bearbeiten', parent: '/org/projects', hidden: true },
+  { path: '/org/teams/new', label: 'Create team', parent: '/org/teams', hidden: true },
+  { path: '/org/teams/:id/edit', label: 'Edit team', parent: '/org/teams', hidden: true },
+  { path: '/org/projects', label: 'Projects', parent: '/org' },
+  { path: '/org/projects/new', label: 'Create project', parent: '/org/projects', hidden: true },
+  { path: '/org/projects/:id/edit', label: 'Edit project', parent: '/org/projects', hidden: true },
 
   // `/memory` is both the section and its first tab, so the section name and
   // the page name differ - hence `navLabel`, and `children` listing itself.
   {
     path: '/memory',
-    label: 'Erinnerungen',
-    navLabel: 'Gedächtnis',
+    label: 'Memories',
+    navLabel: 'Memory',
     icon: BrainIcon,
     group: 'knowledge',
     children: ['/memory', '/memory/graph', '/memory/sleep'],
   },
-  { path: '/memory/graph', label: 'Netz', parent: '/memory' },
-  { path: '/memory/sleep', label: 'Nächte', parent: '/memory' },
+  { path: '/memory/graph', label: 'Graph', parent: '/memory' },
+  { path: '/memory/sleep', label: 'Nights', parent: '/memory' },
 
-  { path: '/tools', label: 'Werkzeuge', icon: WrenchIcon, group: 'knowledge' },
-  { path: '/tools/new', label: 'Eigener Server', parent: '/tools', hidden: true },
-  { path: '/tools/:id', label: 'Werkzeug', parent: '/tools', hidden: true },
+  { path: '/tools', label: 'Tools', icon: WrenchIcon, group: 'knowledge' },
+  { path: '/tools/new', label: 'Custom server', parent: '/tools', hidden: true },
+  { path: '/tools/:id', label: 'Tool', parent: '/tools', hidden: true },
 
   { path: '/skills', label: 'Skills', icon: SparklesIcon, group: 'knowledge' },
-  { path: '/skills/new', label: 'Skill anlegen', parent: '/skills', hidden: true },
-  { path: '/skills/import', label: 'Importieren', parent: '/skills', hidden: true },
+  { path: '/skills/new', label: 'Create skill', parent: '/skills', hidden: true },
+  { path: '/skills/import', label: 'Import', parent: '/skills', hidden: true },
   { path: '/skills/:name', label: 'Skill', parent: '/skills', hidden: true },
-  { path: '/skills/:name/edit', label: 'Skill bearbeiten', parent: '/skills', hidden: true },
+  { path: '/skills/:name/edit', label: 'Edit skill', parent: '/skills', hidden: true },
 
   /* ------------------------------- unten ---------------------------------- */
   {
     path: '/settings',
-    label: 'Einstellungen',
+    label: 'Settings',
     icon: Settings2Icon,
     group: 'secondary',
     redirect: '/settings/identity',
   },
-  { path: '/settings/:section', label: 'Einstellungen', parent: '/settings', hidden: true },
+  { path: '/settings/:section', label: 'Settings', parent: '/settings', hidden: true },
 ];
 
 const BY_PATH = new Map(ROUTE_META.map((meta) => [meta.path, meta]));

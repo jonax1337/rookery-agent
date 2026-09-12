@@ -244,7 +244,7 @@ const orgConfigSchema = z
 /** "22:00", or empty for no quiet hours - never a bare hour or a 24:00. */
 const timeOfDaySchema = z
   .string()
-  .refine((value) => value === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(value), 'HH:MM oder leer');
+  .refine((value) => value === '' || /^([01]\d|2[0-3]):[0-5]\d$/.test(value), 'HH:MM or empty');
 
 /** Telegram ids: bounded so a pasted list cannot grow the allowlist without limit. */
 const telegramIdListSchema = z.array(z.number().int().positive()).max(8);

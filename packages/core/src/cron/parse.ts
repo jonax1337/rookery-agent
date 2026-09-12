@@ -226,17 +226,17 @@ export function upcomingCronRuns(schedule: CronSchedule | string, count: number,
   return runs;
 }
 
-const WEEKDAY_DE = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
-const MONTH_DE = [
-  'Januar', 'Februar', 'März', 'April', 'Mai', 'Juni',
-  'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember',
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
 const two = (value: number): string => String(value).padStart(2, '0');
 
 /**
- * A German one-liner for the common shapes ("täglich um 08:00", "alle 15
- * Minuten", "montags bis freitags um 09:30"). Anything more elaborate falls
+ * An English one-liner for the common shapes ("daily at 08:00", "every 15
+ * minutes", "Monday to Friday at 09:30"). Anything more elaborate falls
  * back to the expression itself, which is still exact.
  */
 export function describeCron(input: string | CronSchedule): string {
@@ -260,15 +260,15 @@ export function describeCron(input: string | CronSchedule): string {
   if (schedule.anyDayOfMonth && schedule.anyDayOfWeek && anyMonth) {
     if (everyHour) {
       const step = /^\*\/(\d+)$/.exec(minuteField);
-      if (everyMinute) return 'jede Minute';
-      if (step) return 'alle ' + step[1] + ' Minuten';
-      if (schedule.minutes.size === 1) return 'stündlich um Minute ' + [...schedule.minutes][0];
+      if (everyMinute) return 'every minute';
+      if (step) return 'every ' + step[1] + ' minutes';
+      if (schedule.minutes.size === 1) return 'hourly at minute ' + [...schedule.minutes][0];
     } else if (schedule.minutes.size === 1 && [...schedule.minutes][0] === 0) {
       const step = /^\*\/(\d+)$/.exec(hourField);
-      if (step) return 'alle ' + step[1] + ' Stunden';
+      if (step) return 'every ' + step[1] + ' hours';
     }
     const at = time();
-    if (at) return 'täglich um ' + at;
+    if (at) return 'daily at ' + at;
   }
 
   if (schedule.anyDayOfMonth && !schedule.anyDayOfWeek && anyMonth) {
@@ -278,11 +278,11 @@ export function describeCron(input: string | CronSchedule): string {
       const weekdays = days.join() === '1,2,3,4,5';
       const weekend = days.join() === '0,6';
       const label = weekdays
-        ? 'montags bis freitags'
+        ? 'Monday to Friday'
         : weekend
-          ? 'am Wochenende'
-          : days.map((day) => WEEKDAY_DE[day] + 's').join(', ');
-      return label + ' um ' + at;
+          ? 'weekends'
+          : days.map((day) => WEEKDAYS[day] + 's').join(', ');
+      return label + ' at ' + at;
     }
   }
 
@@ -290,10 +290,10 @@ export function describeCron(input: string | CronSchedule): string {
     const at = time();
     const days = [...schedule.daysOfMonth].sort((a, b) => a - b);
     if (at && days.length <= 4) {
-      const dayLabel = days.map((day) => day + '.').join(', ');
-      if (anyMonth) return 'monatlich am ' + dayLabel + ' um ' + at;
+      const dayLabel = days.join(', ');
+      if (anyMonth) return 'monthly on day ' + dayLabel + ' at ' + at;
       const months = [...schedule.months].sort((a, b) => a - b);
-      if (months.length === 1) return 'am ' + dayLabel + ' ' + MONTH_DE[months[0]! - 1] + ' um ' + at;
+      if (months.length === 1) return 'on ' + dayLabel + ' ' + MONTHS[months[0]! - 1] + ' at ' + at;
     }
   }
 

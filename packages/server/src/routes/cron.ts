@@ -100,7 +100,7 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
     if (!job) return notFound(reply, 'No schedule ' + request.params.id);
     if (cron.isRunning(job.id)) {
       reply.code(409);
-      return { error: 'Conflict', message: 'Der Zeitplan läuft gerade.' };
+      return { error: 'Conflict', message: 'The schedule is running.' };
     }
     void cron.runNow(job.id).catch((error: Error) => context.log.warn('Manual schedule run failed', { error: error.message }));
     reply.code(202);

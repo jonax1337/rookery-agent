@@ -174,7 +174,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'set_tool_server',
     description:
       'Switch a tool server on or off, for the assistant, the agents or both. Installing or ' +
-      "configuring keys is the user's job on the Werkzeuge page; you only flip switches. A " +
+      "configuring keys is the user's job on the Tools page; you only flip switches. A " +
       'server you switch on for yourself is attached the moment this answer ends, and you get ' +
       'to go on working with it in the same turn, so switch it on and continue instead of ' +
       'asking the user to try again.',
@@ -466,7 +466,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'run_schedule',
     description:
       'Fire a schedule right now, in the background; returns at once. The result appears in ' +
-      'your inbox and on the Zeitpläne page when the run is over.',
+      'your inbox and on the Schedules page when the run is over.',
     inputSchema: {
       type: 'object',
       properties: { id: str('Schedule id, prefix, or exact name.') },

@@ -76,8 +76,8 @@ export function ConfirmDialog({
   onCancel,
   title,
   description,
-  confirmLabel = 'Bestätigen',
-  cancelLabel = 'Abbrechen',
+  confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
   destructive = false,
   icon,
 }: ConfirmDialogProps) {
@@ -184,14 +184,14 @@ export interface BulkActionSpec<T> {
   rows: readonly T[];
   /**
    * The thing being acted on, for the title of a multi-row question:
-   * `{ singular: 'Agent', plural: 'Agenten' }`.
+   * `{ singular: 'agent', plural: 'agents' }`.
    */
   noun: { singular: string; plural: string };
   /** Names one row, for the title of a single-row question. */
   nameOf(row: T): string;
-  /** The deed as an infinitive: "archivieren", "entfernen", "auflösen". */
+  /** Action verb: "archive", "remove", "disband". */
   verb: string;
-  /** The deed as a past participle, for the success toast: "archiviert". */
+  /** Past participle for the success toast: "archived". */
   done: string;
   /** What actually happens, in one sentence. */
   description?: React.ReactNode;
@@ -239,9 +239,13 @@ export function useBulkAction(): BulkActionHandle {
 
       const first = rows[0];
       const title =
-        rows.length === 1 && first !== undefined
-          ? nameOf(first) + ' ' + verb + '?'
-          : formatNumber(rows.length) + ' ' + noun.plural + ' ' + verb + '?';
+        verb.charAt(0).toUpperCase() +
+        verb.slice(1) +
+        ' ' +
+        (rows.length === 1 && first !== undefined
+          ? '“' + nameOf(first) + '”'
+          : formatNumber(rows.length) + ' ' + noun.plural.toLocaleLowerCase('en-GB')) +
+        '?';
 
       const ok = await confirm({
         title,
@@ -263,7 +267,7 @@ export function useBulkAction(): BulkActionHandle {
       try {
         await spec.after?.();
       } catch (caught) {
-        reportFailure('Aktualisieren', caught);
+        reportFailure('Update', caught);
       }
 
       if (failures.length === 0) {
@@ -273,9 +277,9 @@ export function useBulkAction(): BulkActionHandle {
       } else {
         toast.error(
           formatNumber(failures.length) +
-            ' von ' +
+            ' of ' +
             formatNumber(rows.length) +
-            ' nicht ' +
+            ' not ' +
             done,
           { description: formatNumber(succeeded) + ' ' + done + '.' },
         );

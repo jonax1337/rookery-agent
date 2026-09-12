@@ -35,7 +35,7 @@ Rules:
 - Each memory is ONE self-contained sentence, understandable with no other context.
 - Write each memory in THE SAME LANGUAGE the user wrote in. Recall is lexical,
   so an English memory is invisible to a German question and vice versa.
-- Write in the third person about the user ("The user ..." / "Der Nutzer ...").
+- Write in the third person about the user ("The user ...").
 - Keep the user's own wording for names, tools and terms, so a later question
   phrased the same way actually finds this memory.
 - Resolve relative dates to absolute ones using the CURRENT DATE given below.
@@ -44,7 +44,7 @@ Rules:
 - Extracting nothing is the correct answer most of the time.
 
 Reply with a JSON array ONLY, no prose, no code fence:
-[{"kind":"preference","content":"Der Nutzer arbeitet hauptsaechlich mit TypeScript.","tags":["typescript"],"importance":0.8}]
+[{"kind":"preference","content":"The user primarily works with TypeScript.","tags":["typescript"],"importance":0.8}]
 An empty array is []`;
 
 /**

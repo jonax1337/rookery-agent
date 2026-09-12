@@ -44,7 +44,7 @@ export class CronStore {
     const job: CronJob = {
       id: randomUUID(),
       orgId: input.orgId,
-      name: input.name.trim() || 'Unbenannter Zeitplan',
+      name: input.name.trim() || 'Untitled schedule',
       schedule: input.schedule.trim(),
       kind: input.kind,
       prompt: input.prompt.trim(),

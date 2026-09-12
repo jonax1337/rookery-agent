@@ -57,9 +57,9 @@ export function NavStatus() {
   // real outage.
   const status = connected ? 'online' : offline ? 'offline' : 'connecting';
   const statusLabel =
-    status === 'online' ? 'Verbunden' : status === 'offline' ? 'Keine Verbindung' : 'Verbindet …';
+    status === 'online' ? 'Connected' : status === 'offline' ? 'Disconnected' : 'Connecting …';
   // The menu names the machine rather than describing the state again - the
-  // line above it already says "Verbunden". `0.0.0.0` means "every interface",
+  // line above it already says "Connected". `0.0.0.0` means "every interface",
   // which is not an address anyone can type, so the page's own hostname stands
   // in for it; the port is always the server's own.
   const address =
@@ -71,10 +71,10 @@ export function NavStatus() {
   const statusDetail =
     address ??
     (status === 'online'
-      ? 'Mit dem Rookery-Server verbunden'
+      ? 'Connected to the Rookery server'
       : status === 'offline'
-        ? 'Der Rookery-Server antwortet nicht'
-        : 'Verbindung wird aufgebaut');
+        ? 'The Rookery server is not responding'
+        : 'Connecting to the server');
 
   const reconnect = useCallback(() => {
     // The socket reconnects on a backoff timer by itself; `connect()` is the
@@ -125,7 +125,7 @@ export function NavStatus() {
               <>
                 <DropdownMenuGroup>
                   <DropdownMenuLabel className="text-xs text-muted-foreground">
-                    Anbieter
+                    Providers
                   </DropdownMenuLabel>
                   {providers.map((provider) => (
                     <ProviderQuotaSub key={provider.id} provider={provider} />
@@ -136,11 +136,11 @@ export function NavStatus() {
             )}
 
             <DropdownMenuLabel className="text-xs text-muted-foreground">
-              Erscheinungsbild
+              Appearance
             </DropdownMenuLabel>
             <DropdownMenuRadioGroup value={theme ?? 'system'} onValueChange={setTheme}>
-              <DropdownMenuRadioItem value="light">Hell</DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="dark">Dunkel</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="light">Light</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="dark">Dark</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="system">System</DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
             <DropdownMenuSeparator />
@@ -148,12 +148,12 @@ export function NavStatus() {
             <DropdownMenuItem asChild>
               <NavLink to="/settings">
                 <Settings2Icon />
-                Einstellungen
+                Settings
               </NavLink>
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={reconnect}>
               <RefreshCwIcon />
-              Neu verbinden
+              Reconnect
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -195,7 +195,7 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
     api
       .providerUsage(provider.id)
       .then(setQuota)
-      .catch(() => setError('Kontingent nicht abrufbar'))
+      .catch(() => setError('Usage unavailable'))
       .finally(() => setLoading(false));
   }, [loading, open, provider.id, quota]);
 
@@ -213,13 +213,13 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
         )}
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="w-64 p-3">
-        {loading && <p className="text-xs text-muted-foreground">Wird geladen …</p>}
+        {loading && <p className="text-xs text-muted-foreground">Loading …</p>}
         {!loading && error && <p className="mb-2 text-xs text-destructive">{error}</p>}
         {!loading && !error && quota?.error && (
           <p className="mb-2 text-xs text-destructive">{quota.error}</p>
         )}
         {!loading && !error && quota && !quota.error && quota.windows.length === 0 && (
-          <p className="text-xs text-muted-foreground">Kein Kontingent gemeldet.</p>
+          <p className="text-xs text-muted-foreground">No usage reported.</p>
         )}
         {!loading &&
           !error &&
@@ -234,7 +234,7 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
               <Progress value={window.percent} />
               {window.resetsAt && (
                 <p className="text-[11px] text-muted-foreground">
-                  Zurückgesetzt {formatDateTime(window.resetsAt)}
+                  Resets {formatDateTime(window.resetsAt)}
                 </p>
               )}
             </div>

@@ -109,6 +109,24 @@ for (const connected of [false, true]) {
   });
 }
 
+test('bulk confirmations use English verb-first titles', () => {
+  const titleFor = (rows, verb, plural) => callback(
+    'components/common/confirm-dialog.tsx',
+    'title',
+    {
+      rows,
+      first: rows[0],
+      noun: { singular: 'task', plural },
+      nameOf: (row) => row.name,
+      verb,
+      formatNumber: String,
+    },
+  );
+
+  assert.equal(titleFor([{ name: 'Research' }], 'archive', 'Agents'), 'Archive “Research”?');
+  assert.equal(titleFor([{ name: 'One' }, { name: 'Two' }], 'cancel', 'Tasks'), 'Cancel 2 tasks?');
+});
+
 for (const fails of [false, true]) {
   test(`shared form prevents duplicate writes and permits retry after ${fails ? 'failure' : 'success'}`, async () => {
     const inFlight = { current: false };

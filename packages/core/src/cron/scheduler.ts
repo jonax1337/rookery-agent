@@ -109,7 +109,7 @@ export class CronScheduler extends EventEmitter {
   start(): void {
     if (this.#started) return;
     this.#started = true;
-    const stale = this.#store.cron.failStaleRuns('Der Server wurde während des Laufs beendet.');
+    const stale = this.#store.cron.failStaleRuns('The server stopped during the run.');
     if (stale) this.#log.warn('Failed stale schedule runs from a previous process', { count: stale });
 
     const now = Date.now();
@@ -295,7 +295,7 @@ export class CronScheduler extends EventEmitter {
       this.#running.delete(job.id);
     }
     if (controller.signal.aborted && outcome.status === 'done' && !outcome.result) {
-      outcome = { ...outcome, status: 'failed', error: outcome.error ?? 'Der Lauf wurde abgebrochen.' };
+      outcome = { ...outcome, status: 'failed', error: outcome.error ?? 'The run was cancelled.' };
     }
 
     const finished = Date.now();
@@ -333,12 +333,12 @@ export class CronScheduler extends EventEmitter {
 
   /** What the assistant reads in its next conversation. */
   #postToInbox(job: CronJob, outcome: CronRunOutcome): void {
-    const when = new Date().toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
-    const head = 'Zeitplan „' + job.name + '“ (' + describeCron(job.schedule) + ') ist am ' + when;
+    const when = new Date().toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' });
+    const head = 'Schedule “' + job.name + '” (' + describeCron(job.schedule) + ') at ' + when;
     const body =
       outcome.status === 'done'
-        ? ' gelaufen. Ergebnis: ' + (clip(outcome.result ?? '', INBOX_BUDGET) || '(kein Text)')
-        : ' fehlgeschlagen: ' + (outcome.error ?? 'unbekannter Fehler');
+        ? ' completed. Result: ' + (clip(outcome.result ?? '', INBOX_BUDGET) || '(no text)')
+        : ' failed: ' + (outcome.error ?? 'unknown error');
     try {
       const message = this.#store.org.postMessage({ orgId: job.orgId, content: head + body });
       this.emit('message', { type: 'message', message } satisfies AgentEvent);
@@ -385,9 +385,9 @@ export function describeCronJob(job: CronJob, agentSlug?: string): string {
       : job.kind === 'sleep'
         ? 'the memory itself'
         : 'you';
-  const next = job.enabled && job.nextRunAt ? 'next ' + new Date(job.nextRunAt).toLocaleString('de-DE') : 'off';
+  const next = job.enabled && job.nextRunAt ? 'next ' + new Date(job.nextRunAt).toLocaleString('en-GB') : 'off';
   const last = job.lastRunAt
-    ? ', last ' + new Date(job.lastRunAt).toLocaleString('de-DE') + ' ' + (job.lastStatus ?? '')
+    ? ', last ' + new Date(job.lastRunAt).toLocaleString('en-GB') + ' ' + (job.lastStatus ?? '')
     : '';
   return (
     '- ' + job.id.slice(0, 8) + ' "' + job.name + '": ' + job.schedule + ' (' + describeCron(job.schedule) + ')' +

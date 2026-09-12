@@ -237,10 +237,10 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
   const saveConfig = useCallback(async (patch: Partial<PublicConfig>): Promise<boolean> => {
     try {
       setConfig(await api.updateConfig(patch));
-      toast('Einstellungen gespeichert');
+      toast('Settings saved');
       return true;
     } catch {
-      toast.error('Speichern fehlgeschlagen');
+      toast.error('Save failed');
       return false;
     }
   }, []);
@@ -285,7 +285,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       void api
         .patchSession(active, { projectId: next === NO_PROJECT ? null : next })
         .then(() => void sessions.refresh())
-        .catch(() => toast.error('Projekt konnte nicht gesetzt werden'));
+        .catch(() => toast.error('Project could not be set'));
     },
     [sessions],
   );
@@ -310,7 +310,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
 
   const onLearned = useCallback(
     (stored: MemoryRecord[]) => {
-      toast(stored.length + (stored.length === 1 ? ' Erinnerung' : ' Erinnerungen') + ' gelernt', {
+      toast(stored.length + (stored.length === 1 ? ' memory' : ' memories') + ' learned', {
         description: stored[0]?.content,
       });
       void memories.refresh();
@@ -384,7 +384,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
     effort: activeEffort,
     permission,
     projectId: activeProjectId,
-    lang: config?.voice.lang ?? 'de-DE',
+    lang: config?.voice.lang ?? 'en-GB',
     onThreadSwitch: goToChat,
   });
 
@@ -424,7 +424,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       ...(last
         ? {
             action: {
-              label: 'Nochmal senden',
+              label: 'Send again',
               onClick: () => chatRef.current.send(buildPayload(last.content)),
             },
           }
@@ -685,18 +685,18 @@ export function RookeryComposerSlots({ children }: { children: ReactNode }) {
   if (!raw) throw new Error('RookeryComposerSlots must be used within a RookeryProvider');
 
   const projectLabel =
-    org.projects.find((project) => project.id === turn.projectId)?.name ?? 'Kein Projekt';
+    org.projects.find((project) => project.id === turn.projectId)?.name ?? 'No project';
 
   const left = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <ControlMenuButton label="Projekt" value={projectLabel} />
+        <ControlMenuButton label="Project" value={projectLabel} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
-        <DropdownMenuLabel>Projekt</DropdownMenuLabel>
+        <DropdownMenuLabel>Project</DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuRadioGroup value={raw.projectId} onValueChange={raw.setProjectId}>
-          <DropdownMenuRadioItem value={NO_PROJECT}>Kein Projekt</DropdownMenuRadioItem>
+          <DropdownMenuRadioItem value={NO_PROJECT}>No project</DropdownMenuRadioItem>
           {org.projects
             .filter((project) => !project.archived)
             .map((project) => (
@@ -713,10 +713,10 @@ export function RookeryComposerSlots({ children }: { children: ReactNode }) {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <ControlMenuButton label="Zugriff" value={PERMISSION_LABEL[turn.permission]} />
+          <ControlMenuButton label="Access" value={PERMISSION_LABEL[turn.permission]} />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
-          <DropdownMenuLabel>Zugriff</DropdownMenuLabel>
+          <DropdownMenuLabel>Access</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuRadioGroup
             value={turn.permission}
@@ -755,8 +755,8 @@ export function RookeryComposerSlots({ children }: { children: ReactNode }) {
           <DropdownMenuSeparator />
           <DropdownMenuRadioGroup value={raw.effort} onValueChange={raw.setEffort}>
             <DropdownMenuRadioItem value={DEFAULT} className="flex-col items-start gap-0.5">
-              <span>Standard</span>
-              <span className="text-xs text-muted-foreground">Was der Anbieter vorsieht.</span>
+              <span>Default</span>
+              <span className="text-xs text-muted-foreground">Uses the provider default.</span>
             </DropdownMenuRadioItem>
             {EFFORT_LEVELS.map((level) => (
               <DropdownMenuRadioItem

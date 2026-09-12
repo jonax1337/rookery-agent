@@ -118,9 +118,9 @@ export function ServerOffline({
   return (
     <EmptyState
       icon={onRetry ? PlugZapIcon : ServerOffIcon}
-      title="Keine Verbindung zum Rookery-Server"
-      description="Die Daten auf dieser Seite sind womöglich veraltet. Läuft der Server noch?"
-      actionLabel={onRetry ? 'Erneut versuchen' : undefined}
+      title="No connection to the Rookery server"
+      description="The data on this page may be out of date. Is the server still running?"
+      actionLabel={onRetry ? 'Try again' : undefined}
       onAction={onRetry}
       size={size ?? 'default'}
       className={className}
@@ -147,13 +147,13 @@ export function NoResults({
   return (
     <EmptyState
       icon={SearchXIcon}
-      title="Nichts gefunden"
+      title="Nothing found"
       description={
         query
-          ? 'Zu „' + query + '“ passt hier nichts. Ein kürzerer Suchbegriff findet mehr.'
-          : 'Zu den gewählten Filtern passt nichts. Ein Filter weniger findet mehr.'
+          ? 'Nothing here matches “' + query + '”. Try a shorter search term.'
+          : 'Nothing matches the selected filters. Removing a filter may show more.'
       }
-      actionLabel={onReset ? 'Filter zurücksetzen' : undefined}
+      actionLabel={onReset ? 'Reset filters' : undefined}
       onAction={onReset}
       variant="plain"
       size={size}

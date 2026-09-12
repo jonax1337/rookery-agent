@@ -53,7 +53,7 @@ Datenbank).
 ## Konventionen
 
 - Identifier, Kommentare und Commit-Messages auf Englisch; UI-Strings und Nutzertexte
-  auf Deutsch.
+  auf Englisch.
 - UI: Stock assistant-ui + shadcn (radix-vega), echte Seiten statt Modals, moeglichst
   kein Customizing. Eine Seite baut kein Template nach — fehlt etwas, bekommt das
   Template unter `src/components/blocks/` bzw. `/common/` eine rueckwaertskompatible
@@ -62,9 +62,9 @@ Datenbank).
 - Keine erfundenen Zahlen: jede Kennzahl braucht eine belegte Quelle. Gesamtzahlen
   kommen aus `GET /api/stats`, nicht aus einer Liste, die der Server deckelt; wo nur
   eine gedeckelte Liste da ist, nennt die Karte ihre Basis.
-- Keine API-Keys im Code oder in Beispielen. Rookery liest/setzt bewusst weder
-  `ANTHROPIC_API_KEY` noch `OPENAI_API_KEY`; Provider-Auth laeuft ausschliesslich ueber
-  die OAuth-Sitzung der lokal eingeloggten `claude`- bzw. `codex`-CLI.
+- Keine API-Keys im Code oder in Beispielen. Modell-Provider-Auth laeuft ausschliesslich ueber
+  die OAuth-Sitzung der lokal eingeloggten `claude`- bzw. `codex`-CLI. Optionale
+  Sprachausgabe ueber OpenAI oder ElevenLabs liest ihren Key nur auf dem Server.
 - Package-Grenzen respektieren: `packages/core` kennt weder HTTP noch Terminal. HTTP-
   und Terminal-spezifischer Code gehoert in `packages/server` bzw. `packages/cli`.
 - Nach Aenderungen an `packages/core` betroffene Tests unter `packages/core/test`

@@ -71,7 +71,7 @@ export function FilterCombobox({
         showClear={showClear}
       />
       <ComboboxContent>
-        <ComboboxEmpty>Nichts gefunden</ComboboxEmpty>
+        <ComboboxEmpty>Nothing found</ComboboxEmpty>
         <ComboboxList>
           {(option: FilterOption) => (
             <ComboboxItem key={option.value} value={option}>

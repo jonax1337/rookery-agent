@@ -50,7 +50,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
  * The schedules: standing orders that fire while the server runs.
  *
  * Two tables, no chart. `GET /api/cron` hands out fifty runs across *all*
- * jobs, which is enough for a "Letzte Läufe" list and far too little for a
+ * jobs, which is enough for a "Recent runs" list and far too little for a
  * 30- or 90-day curve - a stacked area over that sample would draw a
  * plausible-looking shape out of an arbitrary window, so the second table
  * takes the chart's place (see serverGaps).
@@ -76,7 +76,7 @@ export function CronPage() {
       <Button size="sm" asChild>
         <NavLink to="/cron/new">
           <PlusIcon data-icon="inline-start" />
-          Zeitplan anlegen
+          Create schedule
         </NavLink>
       </Button>
     ),
@@ -125,7 +125,7 @@ export function CronPage() {
       mark(job.id, true);
       try {
         await api.updateCronJob(job.id, { enabled });
-        toast(enabled ? 'Zeitplan aktiviert' : 'Zeitplan pausiert', { description: job.name });
+        toast(enabled ? 'Schedule enabled' : 'Schedule paused', { description: job.name });
       } catch (caught) {
         // Roll the row back to whatever the hook still holds.
         setOptimistic((current) => {
@@ -133,7 +133,7 @@ export function CronPage() {
           delete next[job.id];
           return next;
         });
-        reportFailure('Ändern', caught);
+        reportFailure('Update', caught);
       } finally {
         mark(job.id, false);
       }
@@ -146,9 +146,9 @@ export function CronPage() {
       mark(job.id, true);
       try {
         await api.runCronJob(job.id);
-        toast('Zeitplan gestartet', { description: job.name });
+        toast('Schedule started', { description: job.name });
       } catch (caught) {
-        reportFailure('Starten', caught);
+        reportFailure('Start', caught);
       } finally {
         mark(job.id, false);
       }
@@ -159,20 +159,20 @@ export function CronPage() {
   const remove = useCallback(
     async (job: CronJob): Promise<void> => {
       const ok = await confirm({
-        title: 'Zeitplan löschen?',
+        title: 'Delete schedule?',
         description:
-          'Der Zeitplan „' +
+          'The schedule “' +
           job.name +
-          '“ feuert danach nicht mehr. Bereits gelaufene Aufträge und Gespräche bleiben erhalten.',
-        confirmLabel: 'Löschen',
+          '” will no longer run. Existing assignments and conversations will remain.',
+        confirmLabel: 'Delete',
         destructive: true,
       });
       if (!ok) return;
       try {
         await api.deleteCronJob(job.id);
-        toast('Zeitplan gelöscht', { description: job.name });
+        toast('Schedule deleted', { description: job.name });
       } catch (caught) {
-        reportFailure('Löschen', caught);
+        reportFailure('Delete', caught);
       }
     },
     [confirm],
@@ -200,7 +200,7 @@ export function CronPage() {
       jobColumn.columns([
         jobColumn.accessor('enabled', {
           id: 'enabled',
-          header: ({ column }) => <DataTableColumnHeader column={column} title="Aktiv" />,
+          header: ({ column }) => <DataTableColumnHeader column={column} title="Active" />,
           enableHiding: false,
           cell: ({ row }) => {
             const job = row.original;
@@ -208,7 +208,7 @@ export function CronPage() {
               <Switch
                 checked={job.enabled}
                 disabled={busy.has(job.id)}
-                aria-label={job.enabled ? 'Zeitplan pausieren' : 'Zeitplan aktivieren'}
+                aria-label={job.enabled ? 'Pause schedule' : 'Enable schedule'}
                 onCheckedChange={(checked) => void toggle(job, checked)}
               />
             );
@@ -225,7 +225,7 @@ export function CronPage() {
               </NavLink>
               {row.original.once ? (
                 <Badge variant="outline" className="font-normal">
-                  einmalig
+                  once
                 </Badge>
               ) : null}
             </div>
@@ -233,7 +233,7 @@ export function CronPage() {
         }),
         jobColumn.accessor((job) => ownerLabel(job, org.agentById(job.agentId)?.name), {
           id: 'owner',
-          header: ({ column }) => <DataTableColumnHeader column={column} title="Wer führt aus" />,
+          header: ({ column }) => <DataTableColumnHeader column={column} title="Run as" />,
           cell: ({ getValue }) => (
             <Badge variant="outline" className="font-normal">
               {getValue() as string}
@@ -242,7 +242,7 @@ export function CronPage() {
         }),
         jobColumn.accessor('schedule', {
           id: 'schedule',
-          header: ({ column }) => <DataTableColumnHeader column={column} title="Ausdruck" />,
+          header: ({ column }) => <DataTableColumnHeader column={column} title="Expression" />,
           cell: ({ row }) => (
             <Badge variant="secondary" className="font-mono font-normal">
               {row.original.schedule}
@@ -251,23 +251,23 @@ export function CronPage() {
         }),
         jobColumn.accessor((job) => job.nextRunAt ?? null, {
           id: 'nextRunAt',
-          header: ({ column }) => <DataTableColumnHeader column={column} title="Nächster Lauf" />,
+          header: ({ column }) => <DataTableColumnHeader column={column} title="Next run" />,
           cell: ({ row }) =>
             row.original.enabled ? (
               <span className="tabular-nums">{formatDateTime(row.original.nextRunAt)}</span>
             ) : (
-              <span className="text-muted-foreground">Pausiert</span>
+              <span className="text-muted-foreground">Paused</span>
             ),
         }),
         jobColumn.accessor((job) => statusLabel(job), {
           id: 'lastStatus',
-          header: ({ column }) => <DataTableColumnHeader column={column} title="Letzter Status" />,
+          header: ({ column }) => <DataTableColumnHeader column={column} title="Latest status" />,
           cell: ({ row }) => {
             const job = row.original;
             if (cron.running.has(job.id)) return <StatusBadge kind="cronRun" status="running" />;
             if (!job.lastStatus) return emptyCell();
             const badge = <StatusBadge kind="cronRun" status={job.lastStatus} />;
-            // The error text is the only thing that turns "Fehlgeschlagen"
+            // The error text is the only thing that turns "Failed"
             // into something actionable, and it is far too long for a cell.
             if (!job.lastError) return badge;
             return (
@@ -283,7 +283,7 @@ export function CronPage() {
         jobColumn.accessor('runCount', {
           id: 'runCount',
           header: ({ column }) => (
-            <DataTableColumnHeader column={column} title="Läufe" align="end" />
+            <DataTableColumnHeader column={column} title="Runs" align="end" />
           ),
           cell: ({ row }) => (
             <div className="text-right tabular-nums">{formatNumber(row.original.runCount)}</div>
@@ -295,12 +295,12 @@ export function CronPage() {
           return (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <RowMenuButton label={'Aktionen für ' + job.name} />
+                <RowMenuButton label={'Actions for ' + job.name} />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52">
                 <DropdownMenuItem onSelect={() => void navigate('/cron/' + job.id)}>
                   <SquareArrowOutUpRightIcon data-icon="inline-start" />
-                  Öffnen
+                  Open
                 </DropdownMenuItem>
                 <ManagedHint show={managed}>
                   <DropdownMenuItem
@@ -308,7 +308,7 @@ export function CronPage() {
                     onSelect={() => void navigate('/cron/' + job.id + '/edit')}
                   >
                     <PencilIcon data-icon="inline-start" />
-                    Bearbeiten
+                    Edit
                   </DropdownMenuItem>
                 </ManagedHint>
                 <DropdownMenuItem
@@ -316,11 +316,11 @@ export function CronPage() {
                   onSelect={() => void runNow(job)}
                 >
                   {running ? (
-                    <Spinner data-icon="inline-start" aria-label="Läuft" />
+                    <Spinner data-icon="inline-start" aria-label="Running" />
                   ) : (
                     <PlayIcon data-icon="inline-start" />
                   )}
-                  Jetzt ausführen
+                  Run now
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <ManagedHint show={managed}>
@@ -330,7 +330,7 @@ export function CronPage() {
                     onSelect={() => void remove(job)}
                   >
                     <Trash2Icon data-icon="inline-start" />
-                    Löschen
+                    Delete
                   </DropdownMenuItem>
                 </ManagedHint>
               </DropdownMenuContent>
@@ -348,12 +348,12 @@ export function CronPage() {
       runColumn.columns([
         runColumn.accessor((run) => cron.jobById(run.jobId)?.name ?? '', {
           id: 'job',
-          header: ({ column }) => <DataTableColumnHeader column={column} title="Zeitplan" />,
+          header: ({ column }) => <DataTableColumnHeader column={column} title="Schedule" />,
           cell: ({ row, getValue }) => {
             const name = getValue() as string;
             // A run whose job has since been deleted keeps its row rather than
             // disappearing - it happened, and the id is all that is left of it.
-            if (!name) return <span className="text-muted-foreground">Gelöschter Zeitplan</span>;
+            if (!name) return <span className="text-muted-foreground">Deleted schedule</span>;
             return (
               <NavLink to={'/cron/' + row.original.jobId} className="font-medium hover:underline">
                 {name}
@@ -375,14 +375,14 @@ export function CronPage() {
         }),
         runColumn.accessor((run) => CRON_TRIGGER_LABEL[run.trigger], {
           id: 'trigger',
-          header: ({ column }) => <DataTableColumnHeader column={column} title="Auslöser" />,
+          header: ({ column }) => <DataTableColumnHeader column={column} title="Trigger" />,
           cell: ({ getValue }) => (
             <span className="text-muted-foreground">{getValue() as string}</span>
           ),
         }),
         runColumn.accessor((run) => run.durationMs ?? null, {
           id: 'duration',
-          header: ({ column }) => <DataTableColumnHeader column={column} title="Dauer" align="end" />,
+          header: ({ column }) => <DataTableColumnHeader column={column} title="Duration" align="end" />,
           cell: ({ row }) => {
             const text = formatDuration(row.original.durationMs);
             if (!text) return emptyCell('end');
@@ -392,9 +392,9 @@ export function CronPage() {
         actionsColumn<CronRun>(
           (run) => {
             if (!cronRunReport(run)) return emptyCell();
-            return <DetailDrawerTrigger onClick={() => setReport(run)}>Bericht</DetailDrawerTrigger>;
+            return <DetailDrawerTrigger onClick={() => setReport(run)}>Report</DetailDrawerTrigger>;
           },
-          { header: 'Bericht' },
+          { header: 'Report' },
         ),
       ]),
     [cron, runColumn],
@@ -409,29 +409,29 @@ export function CronPage() {
       <StatCards
         items={[
           {
-            label: 'Aktiv',
+            label: 'Active',
             value: formatNumber(active),
-            headline: 'Feuern nach Plan',
-            footnote: 'Der Schlaf-Zeitplan des Systems ist nicht mitgezählt',
+            headline: 'Run on schedule',
+            footnote: 'The system memory sleep schedule is not included',
           },
           {
-            label: 'Pausiert',
+            label: 'Paused',
             value: formatNumber(paused),
-            headline: 'Abgeschaltet, aber erhalten',
-            footnote: 'Ein pausierter Zeitplan feuert erst wieder nach dem Einschalten',
+            headline: 'Disabled but retained',
+            footnote: 'A paused schedule will not run again until it is enabled',
           },
           {
-            label: 'Läuft gerade',
+            label: 'Running now',
             value: formatNumber(cron.running.size),
-            headline: cron.running.size > 0 ? 'Gerade in Arbeit' : 'Nichts in Arbeit',
-            footnote: 'Läufe, deren Auftrag noch nicht zurück ist',
+            headline: cron.running.size > 0 ? 'Work in progress' : 'No work in progress',
+            footnote: 'Runs whose assignments have not returned yet',
           },
           {
-            label: 'Fehlgeschlagen (24 h)',
+            label: 'Failed (24 h)',
             value: formatNumber(failed),
             ...cappedBadge(runsCapped),
-            headline: failed > 0 ? 'Einen Blick wert' : 'Ohne Zwischenfall',
-            footnote: 'Basis: die letzten 50 Läufe über alle Zeitpläne',
+            headline: failed > 0 ? 'Needs attention' : 'No incidents',
+            footnote: 'Based on the latest 50 runs across all schedules',
           },
         ]}
       />
@@ -441,17 +441,17 @@ export function CronPage() {
         columns={jobColumns}
         getRowId={(job) => job.id}
         idPrefix="zeitplaene"
-        tabLabel="Zeitpläne"
+        tabLabel="Schedules"
         tabs={[
-          { value: 'alle', label: 'Alle', count: jobs.length },
-          { value: 'aktiv', label: 'Aktiv', count: jobs.filter((job) => job.enabled).length },
-          { value: 'pausiert', label: 'Pausiert', count: jobs.filter((job) => !job.enabled).length },
-          { value: 'einmalig', label: 'Einmalig', count: jobs.filter((job) => job.once).length },
+          { value: 'alle', label: 'All', count: jobs.length },
+          { value: 'aktiv', label: 'Active', count: jobs.filter((job) => job.enabled).length },
+          { value: 'pausiert', label: 'Paused', count: jobs.filter((job) => !job.enabled).length },
+          { value: 'einmalig', label: 'One-time', count: jobs.filter((job) => job.once).length },
         ]}
         searchable
-        searchPlaceholder="Zeitpläne durchsuchen"
+        searchPlaceholder="Search schedules"
         columnLabels={JOB_COLUMN_LABELS}
-        rowLabel={{ singular: 'Zeitplan', plural: 'Zeitplänen' }}
+        rowLabel={{ singular: 'Schedule', plural: 'schedules' }}
         rowClickIgnoreColumns={['enabled', 'actions']}
         onRowClick={(job) => void navigate('/cron/' + job.id)}
         loading={cron.loading}
@@ -459,9 +459,9 @@ export function CronPage() {
         empty={
           <EmptyState
             icon={CalendarClockIcon}
-            title="Noch kein Zeitplan"
-            description="Ein Zeitplan erledigt etwas von selbst — ein Morgenbriefing um 08:00 oder eine Erinnerung für morgen Nachmittag. Auch im Chat anlegbar: „Jeden Morgen um 8 …“."
-            actionLabel="Zeitplan anlegen"
+            title="No schedules yet"
+            description="A schedule handles something automatically, such as a morning briefing at 8:00 AM or a reminder for tomorrow afternoon. You can also create one in chat: “Every morning at 8…”"
+            actionLabel="Create schedule"
             actionTo="/cron/new"
             variant="plain"
             size="sm"
@@ -470,7 +470,7 @@ export function CronPage() {
         filteredEmpty={<NoResults />}
       />
 
-      <SectionHeading title="Letzte Läufe" hint="Die letzten 50 Läufe über alle Zeitpläne.">
+      <SectionHeading title="Recent runs" hint="The latest 50 runs across all schedules.">
         <DataTable
           data={cron.runs}
           columns={runColumns}
@@ -479,16 +479,16 @@ export function CronPage() {
           initialSorting={[{ id: 'startedAt', desc: true }]}
           pageSize={10}
           capped={runsCapped}
-          rowLabel={{ singular: 'Lauf', plural: 'Läufen' }}
+          rowLabel={{ singular: 'Run', plural: 'runs' }}
           columnLabels={RUN_COLUMN_LABELS}
           loading={cron.loading}
           error={offline}
           empty={
             <EmptyState
               icon={HistoryIcon}
-              title="Noch kein Lauf"
-              description="Sobald ein Zeitplan feuert, steht sein Lauf hier — mit Bericht."
-              actionLabel="Zeitplan anlegen"
+              title="No runs yet"
+              description="When a schedule runs, its run and report appear here."
+              actionLabel="Create schedule"
               actionTo="/cron/new"
               variant="plain"
               size="sm"
@@ -506,7 +506,7 @@ export function CronPage() {
         onOpenChange={(open) => {
           if (!open) setReport(null);
         }}
-        title={report ? (cron.jobById(report.jobId)?.name ?? 'Lauf') : 'Lauf'}
+        title={report ? (cron.jobById(report.jobId)?.name ?? 'Run') : 'Run'}
         description={
           report
             ? formatDateTime(report.startedAt) + ' · ' + CRON_TRIGGER_LABEL[report.trigger]
@@ -538,21 +538,21 @@ export function CronPage() {
 
 /** German column names for the visibility menu. */
 const JOB_COLUMN_LABELS: Record<string, string> = {
-  enabled: 'Aktiv',
+  enabled: 'Active',
   name: 'Name',
-  owner: 'Wer führt aus',
-  schedule: 'Ausdruck',
-  nextRunAt: 'Nächster Lauf',
-  lastStatus: 'Letzter Status',
-  runCount: 'Läufe',
+  owner: 'Run as',
+  schedule: 'Expression',
+  nextRunAt: 'Next run',
+  lastStatus: 'Latest status',
+  runCount: 'Runs',
 };
 
 const RUN_COLUMN_LABELS: Record<string, string> = {
-  job: 'Zeitplan',
+  job: 'Schedule',
   status: 'Status',
   startedAt: 'Start',
-  trigger: 'Auslöser',
-  duration: 'Dauer',
+  trigger: 'Trigger',
+  duration: 'Duration',
 };
 
 /**
@@ -585,7 +585,7 @@ function ManagedHint({ show, children }: { show: boolean; children: ReactNode })
       </TooltipTrigger>
       <TooltipContent side="left">
         <ClockAlertIcon className="size-3.5" aria-hidden="true" />
-        Wird von der Gedächtnis-Einstellung verwaltet
+        Managed by the Memory setting
       </TooltipContent>
     </Tooltip>
   );

@@ -76,7 +76,7 @@ export function ContextIndicator({ context }: ContextIndicatorProps) {
           variant="ghost"
           size="sm"
           aria-label={
-            percent !== null ? 'Kontext: ' + percent + ' Prozent belegt' : 'Kontext, noch nicht gemessen'
+            percent !== null ? 'Context: ' + percent + ' percent used' : 'Context not measured yet'
           }
           className="h-7 gap-2 rounded-full px-2 text-xs font-medium text-muted-foreground tabular-nums hover:text-foreground"
         >
@@ -93,10 +93,10 @@ export function ContextIndicator({ context }: ContextIndicatorProps) {
       <PopoverContent align="end" side="top" sideOffset={8} className="w-72">
         <PopoverHeader className="gap-2.5 p-0">
           <div className="flex items-baseline justify-between gap-3">
-            <PopoverTitle className="text-sm font-semibold">Kontext</PopoverTitle>
+            <PopoverTitle className="text-sm font-semibold">Context</PopoverTitle>
             {percent !== null && (
               <span className={cn('text-sm font-medium tabular-nums', valueTone)}>
-                {percent} % belegt
+                {percent}% used
               </span>
             )}
           </div>
@@ -104,7 +104,7 @@ export function ContextIndicator({ context }: ContextIndicatorProps) {
           {percent !== null && (
             <Progress
               value={percent}
-              aria-label="Kontext belegt"
+              aria-label="Context used"
               className={cn('h-1.5', barTone(percent))}
             />
           )}
@@ -113,11 +113,11 @@ export function ContextIndicator({ context }: ContextIndicatorProps) {
             {context ? (
               <>
                 <span className="font-medium text-foreground">{formatNumber(context.tokens)}</span>
-                {window ? ' / ' + formatNumber(window) + ' Tokens' : ' Tokens'}
-                {' · letzte Antwort'}
+                {window ? ' / ' + formatNumber(window) + ' tokens' : ' tokens'}
+                {' · last response'}
               </>
             ) : (
-              'Gemessen wird nach der ersten Antwort.'
+              'Measured after the first response.'
             )}
           </PopoverDescription>
         </PopoverHeader>

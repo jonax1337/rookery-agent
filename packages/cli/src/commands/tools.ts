@@ -15,16 +15,16 @@ export async function toolsCommand(verb: string | undefined, id: string | undefi
   const states = toolServerStates(config);
 
   if (!verb || verb === 'list') {
-    process.stdout.write('\n' + heading('Werkzeuge') + '\n\n');
+    process.stdout.write('\n' + heading('Tools') + '\n\n');
     for (const state of states) {
       // Pad before colouring: escape codes would count towards the width.
       const [label, paint] = !state.installed
-        ? ['nicht installiert', theme.red]
+        ? ['not installed', theme.red]
         : state.missingEnv.length
-          ? ['Schlüssel fehlt: ' + state.missingEnv.join(', '), theme.yellow]
+          ? ['Missing key: ' + state.missingEnv.join(', '), theme.yellow]
           : state.enabled
-            ? ['an', theme.green]
-            : ['aus', theme.dim];
+            ? ['on', theme.green]
+            : ['off', theme.dim];
       const options = Object.entries(state.options)
         .map(([key, value]) => key + '=' + value)
         .join(' ');
@@ -43,13 +43,13 @@ export async function toolsCommand(verb: string | undefined, id: string | undefi
   if (!state) throw new CliError('No tool server "' + id + '". One of: ' + states.map((entry) => entry.id).join(', '));
   if (verb === 'enable' && !state.installed) throw new CliError(state.name + ' is not installed on this machine.');
   if (verb === 'enable' && state.missingEnv.length) {
-    throw new CliError(state.name + ' needs ' + state.missingEnv.join(', ') + ' first (Werkzeuge page, or the environment).');
+    throw new CliError(state.name + ' needs ' + state.missingEnv.join(', ') + ' first (Tools page, or the environment).');
   }
   const who = audience === 'assistant' || audience === 'agents' || audience === 'both' ? (audience as ToolServerAudience) : undefined;
   saveConfig({ tools: withToolServer(config, state.id, { enabled: verb === 'enable', ...(who ? { audience: who } : {}) }) });
   process.stdout.write(
-    theme.green(glyph.ok + ' ') + state.name + ' ' + (verb === 'enable' ? 'an' : 'aus') +
-      theme.dim(' für ' + (who ?? state.audience) + ', gilt ab dem nächsten Turn') + '\n',
+    theme.green(glyph.ok + ' ') + state.name + ' ' + (verb === 'enable' ? 'on' : 'off') +
+      theme.dim(' for ' + (who ?? state.audience) + ', applies from the next turn') + '\n',
   );
   return 0;
 }
@@ -59,7 +59,7 @@ export async function skillsCommand(): Promise<number> {
   const skills = new SkillStore(config.skillsDir).list();
   process.stdout.write('\n' + heading('Skills') + theme.dim('  ' + config.skillsDir) + '\n\n');
   if (!skills.length) {
-    process.stdout.write(theme.dim('  Noch keine. Ein Ordner mit SKILL.md pro Skill, oder die Seite Skills im Web.') + '\n\n');
+    process.stdout.write(theme.dim('  None yet. Add a folder with SKILL.md for each skill, or use the Skills page in the web app.') + '\n\n');
     return 0;
   }
   for (const skill of skills) {

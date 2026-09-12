@@ -119,7 +119,7 @@ export function StatCards({ items, children, className }: StatCardsProps) {
  */
 export function cappedBadge(capped: boolean): Pick<StatCardProps, 'badge'> {
   if (!capped) return {};
-  return { badge: <Badge variant="outline">gedeckelt</Badge> };
+  return { badge: <Badge variant="outline">capped</Badge> };
 }
 
 /**

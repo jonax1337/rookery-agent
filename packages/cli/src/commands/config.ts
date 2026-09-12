@@ -59,8 +59,8 @@ function configGet(key: string | undefined, options: ConfigOptions): number {
 }
 
 function configSet(key: string | undefined, raw: string | undefined, options: ConfigOptions): number {
-  if (!key) throw new CliError('Which key? e.g. `rookery config set voice.lang de-DE`');
-  if (raw === undefined) throw new CliError('Which value? e.g. `rookery config set voice.lang de-DE`');
+  if (!key) throw new CliError('Which key? e.g. `rookery config set voice.lang en-GB`');
+  if (raw === undefined) throw new CliError('Which value? e.g. `rookery config set voice.lang en-GB`');
 
   const config = loadConfig();
   const parts = key.split('.');

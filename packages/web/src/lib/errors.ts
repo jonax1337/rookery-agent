@@ -15,7 +15,7 @@ import { ApiError } from './api';
 
 /** What the reader is told when the server is not answering at all. */
 export const OFFLINE_MESSAGE =
-  'Der Rookery-Server antwortet nicht. Läuft er noch?';
+  'The Rookery server is not responding. Is it still running?';
 
 /**
  * One sentence for any thrown thing.
@@ -26,10 +26,10 @@ export const OFFLINE_MESSAGE =
 export function failureMessage(caught: unknown): string {
   if (caught instanceof ApiError) {
     if (caught.offline) return OFFLINE_MESSAGE;
-    return caught.message || 'Unbekannter Fehler';
+    return caught.message || 'Unknown error';
   }
   if (caught instanceof Error && caught.message) return caught.message;
-  return 'Unbekannter Fehler';
+  return 'Unknown error';
 }
 
 /**
@@ -43,5 +43,5 @@ export function failureMessage(caught: unknown): string {
  * ```
  */
 export function reportFailure(action: string, caught: unknown): void {
-  toast.error(action + ' fehlgeschlagen', { description: failureMessage(caught) });
+  toast.error(action + ' failed', { description: failureMessage(caught) });
 }

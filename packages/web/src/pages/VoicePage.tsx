@@ -169,7 +169,7 @@ export function VoicePage() {
     setVoiceSessionId(id);
     writeStored(VOICE_SESSION, id);
     void api
-      .patchSession(id, { title: 'Sprachgespräch · ' + new Date().toLocaleDateString('de-DE') })
+      .patchSession(id, { title: 'Voice conversation · ' + new Date().toLocaleDateString('en-GB') })
       .catch(() => undefined)
       .then(() => void refreshRef.current());
   }, []);
@@ -185,7 +185,7 @@ export function VoicePage() {
     });
   }, [voiceSessionId]);
 
-  const lang = config?.voice.lang ?? 'de-DE';
+  const lang = config?.voice.lang ?? 'en-GB';
   const wakeWord = config?.voice.wakeWord ?? '';
   const cleanText = config?.voice.speakCleanText !== false;
 
@@ -293,7 +293,7 @@ export function VoicePage() {
     }
     // Go live at once; the microphone prompt must not hold the screen hostage.
     setPhase('live');
-    const line = greeting() + ' Ich höre.';
+    const line = greeting() + ' Listening.';
     spokenRef.current = [normalise(line)];
     voice.speak(line);
     const granted = await mic.start();
@@ -373,9 +373,9 @@ export function VoicePage() {
       seen.set(assignment.id, assignment.status);
       if (!previous || previous === assignment.status) return;
       if (assignment.status === 'done') {
-        enqueue(assignment.agentName + ' ist fertig. Fragen Sie nach dem Ergebnis.');
+        enqueue(assignment.agentName + ' has finished. Ask for the result.');
       } else if (assignment.status === 'failed') {
-        enqueue(assignment.agentName + ' ist gescheitert.');
+        enqueue(assignment.agentName + ' has failed.');
       }
     });
   }, [enqueue, phase, socket]);
@@ -429,25 +429,25 @@ export function VoicePage() {
 
   const status = (() => {
     if (phase === 'gate') {
-      return stt.supported ? 'Sprachmodus' : 'Spracherkennung braucht Chrome oder Edge.';
+      return stt.supported ? 'Voice mode' : 'Speech recognition requires a supported browser, such as Chrome or Edge.';
     }
     if (voice.speaking) return assistantName;
     if (chat.busy) {
       // Name what is actually happening instead of pretending to think.
       const current = [...chat.activity].reverse().find((item) => !item.done && item.kind !== 'memory');
-      if (current?.kind === 'assignment') return current.label + ' arbeitet …';
+      if (current?.kind === 'assignment') return current.label + ' is working …';
       if (current?.kind === 'tool') return current.label + ' …';
-      return 'Denke nach …';
+      return 'Thinking …';
     }
-    if (muted) return 'Mikrofon aus';
+    if (muted) return 'Microphone off';
     if (stt.interim) return stt.interim;
-    if (!stt.supported) return 'Keine Spracherkennung in diesem Browser.';
-    return requireWake && wakeWord ? '„' + wakeWord + ', …“' : 'Ich höre zu.';
+    if (!stt.supported) return 'Speech recognition is unavailable in this browser.';
+    return requireWake && wakeWord ? '“' + wakeWord + ', …”' : 'Listening.';
   })();
 
   const warning = micDenied
-    ? 'Kein Mikrofonzugriff: der Orb bleibt ruhig, Zuhören klappt trotzdem.'
-    : stt.error ?? (voice.error ? 'Server-Stimme nicht erreichbar, Browser-Stimme übernimmt.' : null);
+    ? 'Microphone level access failed. The orb stays still; speech recognition may still work.'
+    : stt.error ?? (voice.error ? 'Server voice unavailable. Using the browser voice.' : null);
 
   const voiceLabel =
     VOICE_ENGINE_LABEL[voice.engine] +
@@ -485,7 +485,7 @@ export function VoicePage() {
           <span className="text-white/40" aria-hidden="true">
             ·
           </span>
-          <span>Sprechen</span>
+          <span>Voice</span>
         </div>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -493,7 +493,7 @@ export function VoicePage() {
               type="button"
               variant="ghost"
               size="icon"
-              aria-label="Sprachmodus beenden"
+              aria-label="Exit voice mode"
               className="rounded-full text-white/60 hover:bg-white/10 hover:text-white"
               onClick={exit}
             >
@@ -501,7 +501,7 @@ export function VoicePage() {
             </Button>
           </TooltipTrigger>
           <TooltipContent side="left">
-            Beenden <Kbd>Esc</Kbd>
+            Exit <Kbd>Esc</Kbd>
           </TooltipContent>
         </Tooltip>
       </div>
@@ -517,16 +517,16 @@ export function VoicePage() {
             </EmptyTitle>
             <EmptyDescription className="max-w-md text-white/50">
               {stt.supported
-                ? 'Mit einem Klick gehen Vollbild, Mikrofon und Stimme an. Stimme: ' +
+                ? 'Click to enable full screen, the microphone and speech. Voice: ' +
                   voiceLabel +
                   '.'
-                : 'Dieser Browser kann nicht zuhören. Chrome oder Edge können es.'}
+                : 'Speech recognition is unavailable in this browser. Try Chrome or Edge.'}
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
             <Button type="button" size="lg" disabled={!stt.supported} onClick={() => void start()}>
               <MicIcon />
-              Zuhören starten
+              Start listening
             </Button>
           </EmptyContent>
         </Empty>
@@ -541,7 +541,7 @@ export function VoicePage() {
         // something, and leaves the tab order alone the rest of the time.
         <button
           type="button"
-          aria-label={voice.speaking ? 'Sprachausgabe unterbrechen' : 'Antwort abbrechen'}
+          aria-label={voice.speaking ? 'Interrupt speech' : 'Cancel reply'}
           disabled={!voice.speaking && !chat.busy}
           className="absolute left-1/2 top-[calc(50%-6vmin)] size-[42vmin] -translate-x-1/2 -translate-y-1/2 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
           onClick={interrupt}
@@ -568,7 +568,7 @@ export function VoicePage() {
           </p>
           {heard || answer ? (
             <div className="mt-2 max-w-2xl space-y-2">
-              {heard ? <p className="text-sm text-white/55">„{heard}“</p> : null}
+              {heard ? <p className="text-sm text-white/55">“{heard}”</p> : null}
               {answer ? (
                 <p className="line-clamp-3 text-base leading-relaxed text-white/85 [mask-image:linear-gradient(to_bottom,black_70%,transparent)]">
                   {answer}
@@ -608,7 +608,7 @@ export function VoicePage() {
           >
             <ButtonGroup className="voice-bar rounded-full border p-1 backdrop-blur">
               <VoiceAction
-                label={muted ? 'Mikrofon einschalten' : 'Mikrofon stummschalten'}
+                label={muted ? 'Unmute microphone' : 'Mute microphone'}
                 shortcut="M"
                 pressed={muted}
                 onClick={() => setMuted((on) => !on)}
@@ -616,8 +616,8 @@ export function VoicePage() {
                 {muted ? <MicOffIcon /> : <MicIcon />}
               </VoiceAction>
               <VoiceAction
-                label="Sprechen stoppen"
-                shortcut="Leertaste"
+                label="Stop speaking"
+                shortcut="Space"
                 disabled={!voice.speaking && !chat.busy}
                 onClick={interrupt}
               >
@@ -627,29 +627,29 @@ export function VoicePage() {
               <ButtonGroupSeparator />
 
               <VoiceToggle
-                label="Aktivierungswort"
+                label="Wake word"
                 on={requireWake}
                 disabled={!wakeWord}
                 hint={
                   wakeWord
-                    ? 'Nur Äußerungen mit „' + wakeWord + '“ zählen'
-                    : 'Kein Aktivierungswort hinterlegt'
+                    ? 'Only utterances containing “' + wakeWord + '” are accepted'
+                    : 'No wake word configured'
                 }
                 onToggle={() => toggleWake(!requireWake)}
               />
               <VoiceToggle
-                label="Reinreden"
+                label="Barge in"
                 on={bargeIn}
-                hint="Das Mikrofon bleibt offen, während der Assistent spricht"
+                hint="Keep the microphone on while the assistant speaks"
                 onToggle={() => toggleBargeIn(!bargeIn)}
               />
 
               <ButtonGroupSeparator />
 
-              <VoiceAction label="Neues Gespräch" onClick={newConversation}>
+              <VoiceAction label="New conversation" onClick={newConversation}>
                 <RotateCcwIcon />
               </VoiceAction>
-              <VoiceAction label="Stimme und Aufnahme" onClick={() => setSettingsOpen(true)}>
+              <VoiceAction label="Voice and microphone" onClick={() => setSettingsOpen(true)}>
                 <SettingsIcon />
               </VoiceAction>
             </ButtonGroup>
@@ -658,13 +658,13 @@ export function VoicePage() {
           {/* The shortcuts stay put. They used to fade with the bar, which hid
               the one thing a person looks for when the screen stops reacting. */}
           <KbdGroup className="text-[11px] text-white/60">
-            <Kbd>Leertaste</Kbd>
-            <span>unterbricht</span>
+            <Kbd>Space</Kbd>
+            <span>interrupts</span>
             <Kbd>M</Kbd>
-            <span>schaltet das Mikrofon</span>
+            <span>toggles microphone</span>
             <Kbd>Esc</Kbd>
-            <span>beendet</span>
-            <span className="text-white/55">· Stimme: {voiceLabel}</span>
+            <span>exits</span>
+            <span className="text-white/55">· Voice: {voiceLabel}</span>
           </KbdGroup>
         </div>
       ) : null}
@@ -775,7 +775,7 @@ function VoiceToggle({
               on && 'border-transparent bg-white/20 text-white',
             )}
           >
-            {on ? 'an' : 'aus'}
+          {on ? 'on' : 'off'}
           </Badge>
         </Button>
       </TooltipTrigger>
@@ -842,7 +842,7 @@ function VoiceSettingsDrawer({
       engine === 'edge'
         ? catalogue.edge.filter(
             (entry) =>
-              entry.lang.toLowerCase().startsWith((voice.lang.split('-')[0] ?? 'de').toLowerCase()) ||
+              entry.lang.toLowerCase().startsWith((voice.lang.split('-')[0] ?? 'en').toLowerCase()) ||
               entry.id.includes('Multilingual'),
           )
         : engine === 'elevenlabs'
@@ -881,26 +881,25 @@ function VoiceSettingsDrawer({
       // The sheet portals out of the stage, so it carries the dark palette
       // with it instead of flashing white over a black screen.
       className="dark mx-auto max-w-xl"
-      title="Stimme und Aufnahme"
-      description={'Gilt sofort und überall. Engine: ' + VOICE_ENGINE_LABEL[engine] + '.'}
+      title="Voice and microphone"
+      description={'Applies immediately across the app. Engine: ' + VOICE_ENGINE_LABEL[engine] + '.'}
     >
       <FieldGroup className="pb-2">
         <FieldSet>
           {engine === 'browser' ? (
             <FieldDescription>
-              Die Browser-Stimme wählt das Betriebssystem. Eine andere Stimme gibt es unter
-              Einstellungen → Sprache.
+              The browser uses an operating system voice. Choose another under Settings → Voice.
             </FieldDescription>
           ) : (
             <Field>
-              <FieldLabel htmlFor="voice-pick">Stimme</FieldLabel>
+              <FieldLabel htmlFor="voice-pick">Voice</FieldLabel>
               <EntityCombobox
                 id="voice-pick"
                 options={options}
                 value={selected || null}
                 onChange={chooseVoice}
-                placeholder={catalogue ? 'Stimme suchen' : 'Katalog wird geladen …'}
-                emptyLabel="Keine Stimme gefunden"
+                placeholder={catalogue ? 'Search voices' : 'Loading catalogue …'}
+                emptyLabel="No voice found"
                 clearable={false}
               />
             </Field>
@@ -911,7 +910,7 @@ function VoiceSettingsDrawer({
               und mit `onCommit`, damit ein Zug nicht zwanzig PATCHes schickt. */}
           <SliderField
             id="voice-rate"
-            label="Tempo"
+            label="Speed"
             {...VOICE_RATE}
             value={rate}
             onChange={setRate}
@@ -920,7 +919,7 @@ function VoiceSettingsDrawer({
 
           <SliderField
             id="voice-pitch"
-            label="Tonhöhe"
+            label="Pitch"
             {...VOICE_PITCH}
             value={pitch}
             onChange={setPitch}
@@ -931,11 +930,11 @@ function VoiceSettingsDrawer({
         <FieldSet>
           <Field orientation="horizontal">
             <FieldContent>
-              <FieldLabel htmlFor="voice-wake">Aktivierungswort verlangen</FieldLabel>
+              <FieldLabel htmlFor="voice-wake">Require wake word</FieldLabel>
               <FieldDescription>
                 {wakeWord
-                  ? 'Nur Äußerungen mit „' + wakeWord + '“ werden gesendet.'
-                  : 'Kein Aktivierungswort hinterlegt — unter Einstellungen → Sprache.'}
+                  ? 'Only utterances containing “' + wakeWord + '” are sent.'
+                  : 'No wake word configured. Set one under Settings → Voice.'}
               </FieldDescription>
             </FieldContent>
             <Switch
@@ -948,10 +947,9 @@ function VoiceSettingsDrawer({
 
           <Field orientation="horizontal">
             <FieldContent>
-              <FieldLabel htmlFor="voice-barge">Reinreden</FieldLabel>
+              <FieldLabel htmlFor="voice-barge">Barge in</FieldLabel>
               <FieldDescription>
-                Das Mikrofon bleibt offen, während gesprochen wird. Mit Lautsprechern hört sich der
-                Assistent dabei gelegentlich selbst.
+                Keeps the microphone on during speech. With speakers, the assistant may occasionally hear its own voice.
               </FieldDescription>
             </FieldContent>
             <Switch id="voice-barge" checked={bargeIn} onCheckedChange={onBargeIn} />

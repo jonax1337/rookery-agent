@@ -60,7 +60,7 @@ export function DetailDrawer({
   description,
   children,
   footer,
-  closeLabel = 'Schließen',
+  closeLabel = 'Close',
   direction,
   className,
 }: DetailDrawerProps) {
@@ -82,7 +82,7 @@ export function DetailDrawer({
             readers instead of being invented into the visible layout.
           */}
           <DrawerDescription className={cn(!description && 'sr-only')}>
-            {description ?? 'Einzelheiten zum gewählten Eintrag'}
+            {description ?? 'Details for the selected item'}
           </DrawerDescription>
         </DrawerHeader>
         <div className="flex flex-col gap-4 overflow-y-auto px-4 text-sm">{children}</div>

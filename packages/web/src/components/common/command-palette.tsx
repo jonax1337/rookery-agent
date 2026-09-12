@@ -152,18 +152,18 @@ export function CommandPalette({
     <CommandDialog
       open={open}
       onOpenChange={setOpen}
-      title="Sprungpalette"
+      title="Command palette"
       showCloseButton
       className="[&_[data-slot=command-input-wrapper]]:pr-10"
-      description="Geladene Gespräche, Agenten, Aufgaben und Seiten durchsuchen"
+      description="Search loaded conversations, agents, tasks, and pages"
     >
       <Command>
-        <CommandInput value={query} onValueChange={setQuery} placeholder="Geladene Einträge durchsuchen…" />
+        <CommandInput value={query} onValueChange={setQuery} placeholder="Search loaded items…" />
         <CommandList className="max-h-[60svh]">
-          <CommandEmpty>Nichts gefunden.</CommandEmpty>
+          <CommandEmpty>Nothing found.</CommandEmpty>
 
           {actions.length > 0 && (
-            <CommandGroup heading="Aktionen">
+            <CommandGroup heading="Actions">
               {actions.map((action) => (
                 <CommandItem
                   key={action.id}
@@ -181,7 +181,7 @@ export function CommandPalette({
           {recentSessions.length > 0 && (
             <>
               <CommandSeparator />
-              <CommandGroup heading="Gespräche">
+              <CommandGroup heading="Conversations">
                 {recentSessions.map((session) => (
                   <CommandItem
                     key={session.id}
@@ -189,7 +189,7 @@ export function CommandPalette({
                     onSelect={() => go('/c/' + session.id)}
                   >
                     <MessageSquareIcon />
-                    <span className="truncate">{session.title || 'Ohne Titel'}</span>
+                    <span className="truncate">{session.title || 'Untitled'}</span>
                     <CommandShortcut>{relativeTime(session.updatedAt)}</CommandShortcut>
                   </CommandItem>
                 ))}
@@ -200,7 +200,7 @@ export function CommandPalette({
           {agents.length > 0 && (
             <>
               <CommandSeparator />
-              <CommandGroup heading="Agenten">
+              <CommandGroup heading="Agents">
                 {agents.map((agent) => (
                   <CommandItem
                     key={agent.id}
@@ -237,7 +237,7 @@ export function CommandPalette({
           {projects.length > 0 && (
             <>
               <CommandSeparator />
-              <CommandGroup heading="Projekte">
+              <CommandGroup heading="Projects">
                 {projects.map((project) => (
                   <CommandItem
                     key={project.id}
@@ -255,7 +255,7 @@ export function CommandPalette({
           {liveAssignments.length > 0 && (
             <>
               <CommandSeparator />
-              <CommandGroup heading="Aufträge">
+              <CommandGroup heading="Assignments">
                 {liveAssignments.map((assignment) => (
                   <CommandItem
                     key={assignment.id}
@@ -274,7 +274,7 @@ export function CommandPalette({
           {recentTasks.length > 0 && (
             <>
               <CommandSeparator />
-              <CommandGroup heading="Aufgaben">
+              <CommandGroup heading="Tasks">
                 {recentTasks.map((task) => (
                   <CommandItem
                     key={task.id}
@@ -290,7 +290,7 @@ export function CommandPalette({
           )}
 
           <CommandSeparator />
-          <CommandGroup heading="Seiten">
+          <CommandGroup heading="Pages">
             {pages.map((page) => (
               <CommandItem
                 key={page.path}

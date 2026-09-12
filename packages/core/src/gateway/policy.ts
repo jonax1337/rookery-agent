@@ -415,7 +415,7 @@ export function missingGatewaySettings(
   if (allowedIds(config).length === 0 && !config.pairing) {
     missing.push('gateways.telegram.allowedUserIds');
   }
-  if (silenced) missing.push('/aus bis zum Neustart');
+  if (silenced) missing.push('/off until restart');
   return missing;
 }
 

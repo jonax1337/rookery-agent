@@ -362,7 +362,7 @@ export class Assistant extends EventEmitter {
       }
       return this.cron.create({
         orgId: organization.id,
-        name: 'Schlaf des Gedächtnisses',
+        name: 'Memory sleep',
         schedule: sleep.schedule,
         kind: 'sleep',
         prompt: sleep.scope,
@@ -757,7 +757,7 @@ export class Assistant extends EventEmitter {
       for (const owner of owners) {
         const result = await this.sleep.run({ owner, trigger: 'schedule', signal });
         lines.push(labelForOwner(this, owner) + ': ' + (result.report ?? '-'));
-        if (result.status === 'failed') failed = result.error ?? 'Der Schlaflauf ist fehlgeschlagen.';
+        if (result.status === 'failed') failed = result.error ?? 'The sleep run failed.';
       }
       if (failed && lines.length <= 1) return { status: 'failed', error: failed };
       return { status: 'done', result: lines.join('\n') };
@@ -765,7 +765,7 @@ export class Assistant extends EventEmitter {
 
     if (job.kind === 'agent') {
       const agent = job.agentId ? this.store.org.getAgent(job.agentId) : null;
-      if (!agent || agent.archived) return { status: 'failed', error: 'Der Agent dieses Zeitplans existiert nicht mehr.' };
+      if (!agent || agent.archived) return { status: 'failed', error: 'The agent for this schedule no longer exists.' };
       let assignmentId: string | undefined;
       let text = '';
       let error: string | undefined;
@@ -779,14 +779,14 @@ export class Assistant extends EventEmitter {
 
     let sessionId = job.sessionId && this.store.getSession(job.sessionId) ? job.sessionId : undefined;
     if (!sessionId) {
-      sessionId = this.createSession({ title: 'Zeitplan: ' + job.name, projectId: job.projectId }).id;
+      sessionId = this.createSession({ title: 'Schedule: ' + job.name, projectId: job.projectId }).id;
       this.store.cron.updateJob(job.id, { sessionId }, false);
     }
-    const when = new Date().toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
+    const when = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
     const prompt =
-      'Automatischer Lauf des Zeitplans „' + job.name + '“ (' + describeCron(job.schedule) + '), ' + when + '. ' +
-      'Niemand liest gerade live mit: erledige den Auftrag jetzt und schließe mit einem kurzen Bericht ab, ' +
-      'den der Nutzer später liest.\n\n' + job.prompt;
+      'Automatic run of schedule “' + job.name + '” (' + describeCron(job.schedule) + '), ' + when + '. ' +
+      'Nobody is following live: carry out the assignment now and finish with a short report ' +
+      'for the user to read later.\n\n' + job.prompt;
     let text = '';
     let error: string | undefined;
     for await (const event of this.chat({ text: prompt, sessionId, projectId: job.projectId, permission: job.permission, signal })) {
@@ -857,9 +857,9 @@ export class Assistant extends EventEmitter {
   }
 }
 
-/** "Der Assistent" or the agent's name, for the schedule's report line. */
+/** "The assistant" or the agent's name, for the schedule's report line. */
 function labelForOwner(assistant: Assistant, owner: string): string {
-  if (owner === ASSISTANT_MEMORY_OWNER) return 'Assistent';
+  if (owner === ASSISTANT_MEMORY_OWNER) return 'Assistant';
   return assistant.store.org.getAgent(owner)?.name ?? owner.slice(0, 8);
 }
 

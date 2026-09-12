@@ -432,7 +432,7 @@ export class SleepRunner extends EventEmitter {
       const numbered = cluster.members
         .map((memory, index) => {
           const date = new Date(memory.createdAt).toISOString().slice(0, 10);
-          const lock = isProtected(memory) ? ' [geschuetzt]' : '';
+          const lock = isProtected(memory) ? ' [protected]' : '';
           return (
             index + 1 + '. [' + memory.kind + ', ' + memory.importance.toFixed(2) + ', ' + date + ']' +
             lock + ' ' + memory.content
@@ -440,7 +440,7 @@ export class SleepRunner extends EventEmitter {
         })
         .join('\n');
 
-      const raw = await ask(provider, CONDENSE_PROMPT + '\n\nERINNERUNGEN:\n' + numbered, model, signal);
+      const raw = await ask(provider, CONDENSE_PROMPT + '\n\nMEMORIES:\n' + numbered, model, signal);
       calls += 1;
       const parsed = parseObject(raw);
       if (!parsed || parsed.merge !== true) continue;
@@ -585,7 +585,7 @@ export class SleepRunner extends EventEmitter {
       const pair =
         '1. [' + a.kind + ', ' + new Date(a.createdAt).toISOString().slice(0, 10) + '] ' + a.content +
         '\n2. [' + b.kind + ', ' + new Date(b.createdAt).toISOString().slice(0, 10) + '] ' + b.content;
-      const raw = await ask(provider, RESOLVE_PROMPT + '\n\nDIE BEIDEN SAETZE:\n' + pair, model, signal);
+      const raw = await ask(provider, RESOLVE_PROMPT + '\n\nTHE TWO SENTENCES:\n' + pair, model, signal);
       calls += 1;
       const parsed = parseObject(raw);
       if (!parsed) continue;
@@ -697,7 +697,7 @@ export class SleepRunner extends EventEmitter {
       const numbered = batch
         .map((memory, index) => index + 1 + '. [' + memory.kind + '] ' + memory.content)
         .join('\n');
-      const raw = await ask(provider, LINK_PROMPT + '\n\nERINNERUNGEN:\n' + numbered, model, signal);
+      const raw = await ask(provider, LINK_PROMPT + '\n\nMEMORIES:\n' + numbered, model, signal);
       calls += 1;
       const parsed = parseObject(raw);
       if (!parsed) continue;
@@ -773,13 +773,13 @@ export class SleepRunner extends EventEmitter {
       .map((memory, index) => index + 1 + '. [' + memory.kind + '] ' + memory.content)
       .join('\n');
     const topics = entities.length
-      ? '\n\nHAEUFIGE THEMEN:\n' + entities.map((entity) => '- ' + entity.name).join('\n')
+      ? '\n\nCOMMON TOPICS:\n' + entities.map((entity) => '- ' + entity.name).join('\n')
       : '';
 
     const raw = await ask(
       provider,
       INSIGHT_PROMPT.replace('{{MAX}}', String(wanted)) +
-        '\n\nERINNERUNGEN DER LETZTEN TAGE:\n' + numbered + topics,
+        '\n\nMEMORIES FROM RECENT DAYS:\n' + numbered + topics,
       model,
       signal,
     );
@@ -843,7 +843,7 @@ export class SleepRunner extends EventEmitter {
   }
 
   #throwIfAborted(signal: AbortSignal): void {
-    if (signal.aborted) throw new Error('Der Schlaflauf wurde abgebrochen.');
+    if (signal.aborted) throw new Error('The sleep run was cancelled.');
   }
 
   #phase(runId: string, phase: SleepStage, counters: Partial<SleepRun>, cycle: number): void {
@@ -859,87 +859,85 @@ export class SleepRunner extends EventEmitter {
 
 /* -------------------------------- prompts -------------------------------- */
 
-const CONDENSE_PROMPT = `Du raeumst nachts das Langzeitgedaechtnis eines persoenlichen Assistenten auf.
+const CONDENSE_PROMPT = `You are tidying a personal assistant's long-term memory overnight.
 
-Unten stehen Erinnerungen, die dasselbe Thema betreffen. Entscheide, ob sie EINEN Sachverhalt
-beschreiben, der sich zu einem Satz zusammenfassen laesst.
+The memories below concern the same topic. Decide whether they describe ONE fact
+that can be condensed into one sentence.
 
-Fasse NUR zusammen, wenn:
-- die Saetze wirklich denselben Sachverhalt meinen, oder
-- ein neuerer Satz einen aelteren ueberholt (dann gilt der neuere).
+Merge ONLY when:
+- the sentences genuinely describe the same fact, or
+- a newer sentence supersedes an older one (the newer one takes precedence).
 
-Fasse NICHT zusammen, wenn es verschiedene Sachverhalte sind, die nur dasselbe Stichwort teilen.
-Im Zweifel nicht zusammenfassen - Trennen kostet nichts, falsches Verschmelzen verliert Wissen.
+Do NOT merge different facts that merely share a keyword.
+When in doubt, keep them separate: separation costs nothing; a false merge loses knowledge.
 
-Regeln:
-- Das Ergebnis ist EIN vollstaendiger Satz, verstaendlich ohne jeden weiteren Kontext.
-- Schreibe in derselben Sprache wie die Vorlagen.
-- Nenne unter "supersedes" die Nummern der Erinnerungen, die der neue Satz vollstaendig ersetzt.
-- Mit [geschuetzt] markierte Erinnerungen darfst du NIE unter "supersedes" nennen. Sie sind nur Kontext.
-- Nenne keine Nummer, deren Inhalt im neuen Satz nicht enthalten ist.
+Rules:
+- The result is ONE complete sentence, understandable without any other context.
+- Write in the same language as the source memories.
+- Under "supersedes", list the numbers of memories the new sentence fully replaces.
+- NEVER list memories marked [protected] under "supersedes". They are context only.
+- Do not list a number whose content is not included in the new sentence.
 
-Antworte NUR mit JSON, ohne Prosa, ohne Codefence:
+Reply ONLY with JSON, no prose or code fence:
 {"merge":true,"content":"...","kind":"fact","importance":0.7,"tags":["..."],"supersedes":[1,3]}
-oder
-{"merge":false,"reason":"verschiedene Sachverhalte"}`;
+or
+{"merge":false,"reason":"different facts"}`;
 
-const LINK_PROMPT = `Du verbindest nachts die Erinnerungen eines persoenlichen Assistenten.
+const LINK_PROMPT = `You are connecting a personal assistant's memories overnight.
 
-Unten stehen nummerierte Erinnerungen. Finde die Beziehungen zwischen ihnen.
+Find relationships between the numbered memories below.
 
-Beziehungen:
-- "refines":     from praezisiert to (gleicher Sachverhalt, mehr Detail)
-- "contradicts": from und to koennen nicht beide stimmen
-- "caused_by":   from ist so, WEIL to so ist
+Relationships:
+- "refines":     "from" adds detail to "to" (the same fact, more detail)
+- "contradicts": "from" and "to" cannot both be true
+- "caused_by":   "from" is true BECAUSE "to" is true
 
-Regeln:
-- Nur Beziehungen, die aus den Saetzen selbst hervorgehen. Nichts vermuten.
-- Hoechstens 12 Beziehungen. Keine ist eine gute Antwort.
-- "weight" ist deine Sicherheit zwischen 0 und 1.
-- Bestimme zusaetzlich fuer erkennbare Eigennamen, was sie sind:
-  person, project, tool, place, org oder topic.
+Rules:
+- Only relationships supported by the sentences themselves. Do not speculate.
+- At most 12 relationships. None is a valid answer.
+- "weight" is your confidence between 0 and 1.
+- Also classify recognisable proper names as:
+  person, project, tool, place, org or topic.
 
-Antworte NUR mit JSON, ohne Prosa, ohne Codefence:
+Reply ONLY with JSON, no prose or code fence:
 {"edges":[{"from":1,"to":4,"relation":"refines","weight":0.8}],
  "entities":[{"name":"Rookery","kind":"project"}]}
-Leer ist {"edges":[],"entities":[]}`;
+An empty result is {"edges":[],"entities":[]}`;
 
-const RESOLVE_PROMPT = `Du raeumst nachts einen Widerspruch im Gedaechtnis eines persoenlichen Assistenten auf.
+const RESOLVE_PROMPT = `You are resolving a contradiction in a personal assistant's memory overnight.
 
-Unten stehen zwei Saetze, die einander widersprechen. Entscheide, welcher gilt. Nicht entscheiden
-ist keine Option, ausser die beiden widersprechen einander in Wahrheit gar nicht.
+The two sentences below contradict each other. Decide which takes precedence. You must decide,
+unless they do not actually contradict each other.
 
-Woran du dich haeltst:
-- Der neuere Satz gewinnt, wenn beide dasselbe beschreiben und sich die Lage geaendert hat.
-  ("ist umgestiegen auf" schlaegt den aelteren Zustand.)
-- Der konkretere Satz gewinnt, wenn beide dieselbe Zeit meinen und einer davon ungenau ist.
-- "both" nur, wenn beide nebeneinander wahr sein koennen und die Kennzeichnung als Widerspruch
-  schlicht falsch war.
-- "merge" nur, wenn erst beide zusammen den Sachverhalt richtig beschreiben. Dann ist "content"
-  EIN vollstaendiger Satz in der Sprache der Vorlagen.
+Rules:
+- The newer sentence wins when both describe the same thing and circumstances have changed.
+  ("has switched to" supersedes the older state.)
+- The more specific sentence wins when both concern the same time and one is imprecise.
+- Use "both" only when both can be true together and the contradiction label was incorrect.
+- Use "merge" only when both together describe the fact correctly. Then "content" is
+  ONE complete sentence in the language of the source memories.
 
-Antworte NUR mit JSON, ohne Prosa, ohne Codefence:
+Reply ONLY with JSON, no prose or code fence:
 {"decision":"first"}
 {"decision":"second"}
 {"decision":"both"}
 {"decision":"merge","content":"..."}`;
 
-const INSIGHT_PROMPT = `Du ziehst nachts Bilanz ueber das Gedaechtnis eines persoenlichen Assistenten.
+const INSIGHT_PROMPT = `You are reflecting on a personal assistant's memory overnight.
 
-Unten stehen die Erinnerungen der letzten Tage. Frage: Was faellt UEBER die einzelnen Saetze
-hinaus auf? Ein Muster, eine Gewohnheit, ein roter Faden, ein Zusammenhang, den kein einzelner
-Satz ausspricht.
+The memories below come from recent days. What stands out BEYOND the individual sentences?
+Look for a pattern, habit, common thread or connection that no single sentence states.
 
-Regeln:
-- Hoechstens {{MAX}} Einsichten. Keine ist die richtige Antwort, wenn nichts auffaellt.
-- Jede Einsicht braucht mindestens ZWEI Belege: die Nummern, aus denen sie folgt.
-- Wiederhole niemals eine einzelne Erinnerung als Einsicht. Eine Einsicht sagt etwas Neues.
-- Ein Satz, dritte Person, dieselbe Sprache wie die Vorlagen.
-- Nichts erfinden, nichts vermuten. Nur was aus den Belegen wirklich folgt.
+Rules:
+- At most {{MAX}} insights. None is the right answer when nothing stands out.
+- Every insight needs at least TWO sources: the numbers supporting it.
+- Never repeat an individual memory as an insight. An insight says something new.
+- One sentence, third person, in the same language as the source memories.
+- Do not invent or speculate. Only state what the evidence actually supports.
 
-Antworte NUR mit JSON, ohne Prosa, ohne Codefence:
+Reply ONLY with JSON, no prose or code fence:
 {"insights":[{"content":"...","importance":0.8,"evidence":[1,4,7],"tags":["..."]}]}
-Leer ist {"insights":[]}`;
+An empty result is {"insights":[]}`;
 
 /* ------------------------------- helpers ------------------------------- */
 
@@ -1004,21 +1002,21 @@ export function describeSleep(counters: {
   conflictCount: number;
   resolvedCount?: number;
 }): string {
-  const parts: string[] = [counters.readCount + ' Erinnerungen gelesen'];
-  if (counters.mergedCount) parts.push(counters.mergedCount + ' verdichtet');
-  if (counters.dormantCount) parts.push(counters.dormantCount + ' aufgeraeumt');
-  if (counters.edgeCount) parts.push(counters.edgeCount + ' Verbindungen gezogen');
+  const parts: string[] = [counters.readCount + ' memories read'];
+  if (counters.mergedCount) parts.push(counters.mergedCount + ' condensed');
+  if (counters.dormantCount) parts.push(counters.dormantCount + ' tidied');
+  if (counters.edgeCount) parts.push(counters.edgeCount + ' connections added');
   if (counters.resolvedCount) {
-    parts.push(plural(counters.resolvedCount, 'Widerspruch', 'Widersprüche') + ' entschieden');
+    parts.push(plural(counters.resolvedCount, 'contradiction', 'contradictions') + ' resolved');
   }
   const openConflicts = Math.max(0, counters.conflictCount - (counters.resolvedCount ?? 0));
   if (openConflicts) {
-    parts.push(plural(openConflicts, 'Widerspruch', 'Widersprüche') + ' offen');
+    parts.push(plural(openConflicts, 'contradiction', 'contradictions') + ' open');
   }
   if (counters.insightCount) {
-    parts.push(plural(counters.insightCount, 'Einsicht', 'Einsichten') + ' notiert');
+    parts.push(plural(counters.insightCount, 'insight', 'insights') + ' recorded');
   }
-  return parts.length === 1 ? parts[0] + ', nichts zu tun.' : parts.join(', ') + '.';
+  return parts.length === 1 ? parts[0] + ', nothing to do.' : parts.join(', ') + '.';
 }
 
 /**
@@ -1042,7 +1040,7 @@ export function share(total: number, cycles: number, cycle: number, bias: 'early
   return upTo(cycle) - upTo(cycle - 1);
 }
 
-/** German plurals are not a suffix rule, so the forms are given outright. */
+/** Use explicit singular and plural forms. */
 function plural(count: number, one: string, many: string): string {
   return count + ' ' + (count === 1 ? one : many);
 }

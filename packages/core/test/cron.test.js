@@ -114,12 +114,16 @@ test('cron: syntax errors name the field, and descriptions read like a person', 
   assert.equal(parseCron('@hourly').expression, '0 * * * *');
   assert.equal(parseCron(' 0   8 * * MON-FRI ').expression, '0 8 * * mon-fri');
 
-  assert.equal(describeCron('0 8 * * 1-5'), 'montags bis freitags um 08:00');
-  assert.equal(describeCron('*/15 * * * *'), 'alle 15 Minuten');
-  assert.equal(describeCron('0 8 * * *'), 'täglich um 08:00');
-  assert.equal(describeCron('30 18 1 * *'), 'monatlich am 1. um 18:30');
-  assert.equal(describeCron('0 9 * * sat,sun'), 'am Wochenende um 09:00');
-  assert.equal(describeCron('0 12 * * 3'), 'Mittwochs um 12:00');
+  assert.equal(describeCron('0 8 * * 1-5'), 'Monday to Friday at 08:00');
+  assert.equal(describeCron('*/15 * * * *'), 'every 15 minutes');
+  assert.equal(describeCron('0 8 * * *'), 'daily at 08:00');
+  assert.equal(describeCron('30 18 1 * *'), 'monthly on day 1 at 18:30');
+  assert.equal(describeCron('0 9 * * sat,sun'), 'weekends at 09:00');
+  assert.equal(describeCron('0 12 * * 3'), 'Wednesdays at 12:00');
+  assert.equal(describeCron('* * * * *'), 'every minute');
+  assert.equal(describeCron('5 * * * *'), 'hourly at minute 5');
+  assert.equal(describeCron('0 */3 * * *'), 'every 3 hours');
+  assert.equal(describeCron('30 9 1 1 *'), 'on 1 January at 09:30');
 });
 
 /* ---------------------------------- CRUD --------------------------------- */
@@ -192,15 +196,15 @@ test('cron: a due job runs as the assistant in its own conversation and reports 
   assert.ok(after.nextRunAt > Date.now() - 60_000, 'rescheduled');
 
   const session = store.getSession(after.sessionId);
-  assert.equal(session.title, 'Zeitplan: Minutentakt');
+  assert.equal(session.title, 'Schedule: Minutentakt');
   assert.equal(store.getMessages(session.id).length, 2, 'prompt and answer are on record');
-  assert.match(fake.runs[0].prompt, /Automatischer Lauf des Zeitplans „Minutentakt“/);
+  assert.match(fake.runs[0].prompt, /Automatic run of schedule “Minutentakt”/);
   assert.match(fake.runs[0].prompt, /Sag hallo\./);
   assert.match(fake.runs[0].systemPrompt, /Your schedules \(cron jobs/);
 
   const inbox = store.org.inbox(org.id, null, { unreadOnly: true });
   assert.equal(inbox.length, 1);
-  assert.match(inbox[0].content, /Zeitplan „Minutentakt“ .* gelaufen/);
+  assert.match(inbox[0].content, /Schedule “Minutentakt” .* completed/);
 
   assert.ok(events.some((event) => event.run?.status === 'running'), 'announced the start');
   assert.ok(events.some((event) => event.run?.status === 'done'), 'announced the end');
@@ -245,7 +249,7 @@ test('cron: a one-shot job switches itself off, and a failure is recorded as suc
   assert.match(failed.error, /boom/);
   assert.equal(assistant.cron.get(failing.id).lastStatus, 'failed');
   const note = store.org.inbox(org.id, null).find((message) => message.content.includes('Kaputt'));
-  assert.match(note.content, /fehlgeschlagen/);
+  assert.match(note.content, /failed/);
   assistant.close();
 });
 

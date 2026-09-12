@@ -68,7 +68,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
     if (lastPath.current === pathname && lastLeaf.current === leaf) return;
     lastPath.current = pathname;
     lastLeaf.current = leaf;
-    setRouteMessage(leaf ? leaf + ' geöffnet' : '');
+    setRouteMessage(leaf ? leaf + ' opened' : '');
   }, [leaf, pathname]);
 
   const status = connected ? 'online' : offline ? 'offline' : 'connecting';
@@ -79,7 +79,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
     lastStatus.current = status;
     // The same three words the sidebar's foot uses, so both places agree.
     setConnectionMessage(
-      status === 'online' ? 'Verbunden' : status === 'offline' ? 'Keine Verbindung' : 'Verbindet …',
+      status === 'online' ? 'Connected' : status === 'offline' ? 'Disconnected' : 'Connecting …',
     );
   }, [status]);
 
@@ -91,7 +91,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
           variant="ghost"
           size="icon"
           onClick={toggleSidebar}
-          aria-label="Seitenleiste umschalten"
+          aria-label="Toggle sidebar"
         >
           <PanelLeftIcon />
         </Button>
@@ -101,7 +101,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
         />
         {parent?.to ? (
           <Button variant="ghost" size="icon" className="size-8 shrink-0 sm:hidden" asChild>
-            <Link to={parent.to} aria-label={'Zurück: ' + parent.label}>
+            <Link to={parent.to} aria-label={'Back: ' + parent.label}>
               <ArrowLeftIcon />
             </Link>
           </Button>
@@ -142,7 +142,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
 
         {!connected && (
           <Badge variant="destructive" className="ml-1">
-            Keine Verbindung
+            Disconnected
           </Badge>
         )}
 
@@ -173,9 +173,9 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
             className="hidden w-56 justify-start text-muted-foreground xl:flex"
           >
             <SearchIcon />
-            Suchen …
+            Search …
             <KbdGroup className="ml-auto">
-              <Kbd>Strg</Kbd>
+              <Kbd>Ctrl</Kbd>
               <Kbd>K</Kbd>
             </KbdGroup>
           </Button>
@@ -184,7 +184,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
             variant="ghost"
             size="icon"
             onClick={onSearch}
-            aria-label="Suchen"
+            aria-label="Search"
             className="xl:hidden"
           >
             <SearchIcon />

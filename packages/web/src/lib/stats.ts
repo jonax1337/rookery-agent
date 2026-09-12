@@ -5,9 +5,8 @@ import type { StatsDay } from './types';
  *
  * Two jobs live here. The first is arithmetic the UI kept re-deriving by
  * hand: day buckets, share-of-total, means, "how many since". The second is
- * formatting, always `de-DE` - the project writes German everywhere, and a
- * chart axis in `en-US` is the kind of detail that makes a local-first app
- * feel foreign.
+ * formatting, always `en-GB`, so every page uses the same English number and
+ * date conventions.
  *
  * Gap filling is deliberately the client's job. `GET /api/stats` leaves days
  * with nothing on them out of its series, because only the caller knows which
@@ -243,7 +242,7 @@ function numberFormat(options?: Intl.NumberFormatOptions): Intl.NumberFormat {
   const key = JSON.stringify(options ?? {});
   let format = numberFormats.get(key);
   if (!format) {
-    format = new Intl.NumberFormat('de-DE', options);
+    format = new Intl.NumberFormat('en-GB', options);
     numberFormats.set(key, format);
   }
   return format;
@@ -271,7 +270,7 @@ export function formatPercent(percent: number, fractionDigits = 0): string {
 /** `11. Sep. 2026`. Takes epoch ms, an ISO string or a `YYYY-MM-DD` day key. */
 export function formatDate(value: number | string | Date | undefined): string {
   if (!value) return '–';
-  return toDate(value).toLocaleDateString('de-DE', { dateStyle: 'medium' });
+  return toDate(value).toLocaleDateString('en-GB', { dateStyle: 'medium' });
 }
 
 /**
@@ -283,10 +282,10 @@ export function formatDate(value: number | string | Date | undefined): string {
  */
 export function formatDateTime(value: number | string | Date | undefined): string {
   if (!value) return '–';
-  return toDate(value).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
+  return toDate(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 /** Short enough for a chart axis: `11. Sep`. */
 export function formatDayAxis(value: number | string | Date): string {
-  return toDate(value).toLocaleDateString('de-DE', { day: 'numeric', month: 'short' });
+  return toDate(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }

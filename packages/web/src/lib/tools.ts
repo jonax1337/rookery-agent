@@ -15,23 +15,23 @@ import type { ToolServer, ToolServerAudience } from './types';
 export const AUDIENCE_VALUES: ToolServerAudience[] = ['assistant', 'agents', 'both'];
 
 export const AUDIENCE_LABEL: Record<ToolServerAudience, string> = {
-  assistant: 'Assistent',
-  agents: 'Agenten',
-  both: 'Assistent und Agenten',
+  assistant: 'Assistant',
+  agents: 'Agents',
+  both: 'Assistant and agents',
 };
 
 /** The short form, for a badge in a table cell or a radio option. */
 export const AUDIENCE_SHORT_LABEL: Record<ToolServerAudience, string> = {
-  assistant: 'Assistent',
-  agents: 'Agenten',
-  both: 'Beide',
+  assistant: 'Assistant',
+  agents: 'Agents',
+  both: 'Both',
 };
 
 /** One sentence under a radio option: what the choice actually decides. */
 export const AUDIENCE_HINT: Record<ToolServerAudience, string> = {
-  assistant: 'Nur im Chat und im Sprachmodus.',
-  agents: 'Nur in den Aufträgen der Agenten.',
-  both: 'Im Chat und in jedem Auftrag.',
+  assistant: 'Only in chat and voice mode.',
+  agents: 'Only in agent assignments.',
+  both: 'In chat and every assignment.',
 };
 
 /**
@@ -52,9 +52,9 @@ export const AUDIENCE_CHOICES: {
 }));
 
 export const INSTALL_LABEL: Record<ToolServer['install'], string> = {
-  bundled: 'mitgeliefert',
-  'on-demand': 'auf Abruf per npx',
-  custom: 'eigener Server',
+  bundled: 'bundled',
+  'on-demand': 'on demand via npx',
+  custom: 'custom server',
 };
 
 export type ToolStatusTone = 'on' | 'off' | 'blocked';
@@ -72,10 +72,10 @@ export interface ToolStatus {
  * so the state was only readable to someone who already knew the code.
  */
 export function toolStatus(tool: ToolServer): ToolStatus {
-  if (!tool.installed) return { label: 'Nicht installiert', tone: 'blocked' };
-  if (tool.missingEnv.length) return { label: 'Schlüssel fehlt', tone: 'blocked' };
-  if (tool.enabled) return { label: 'Bereit', tone: 'on' };
-  return { label: 'Aus', tone: 'off' };
+  if (!tool.installed) return { label: 'Not installed', tone: 'blocked' };
+  if (tool.missingEnv.length) return { label: 'Key missing', tone: 'blocked' };
+  if (tool.enabled) return { label: 'Ready', tone: 'on' };
+  return { label: 'Off', tone: 'off' };
 }
 
 export interface ToolStatusLook extends ToolStatus {

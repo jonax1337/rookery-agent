@@ -72,7 +72,7 @@ export function SkillImportPage() {
   const [filter, setFilter] = useState('');
 
   usePageMeta({
-    breadcrumb: [{ label: 'Skills', to: '/skills' }, { label: 'Importieren' }],
+    breadcrumb: [{ label: 'Skills', to: '/skills' }, { label: 'Import' }],
   });
 
   useEffect(() => {
@@ -91,14 +91,14 @@ export function SkillImportPage() {
       if ('skill' in result) {
         const name = result.skill.name;
         toast('Skill „' + name + '“ importiert', {
-          action: { label: 'Öffnen', onClick: () => void navigate('/skills/' + name) },
+          action: { label: 'Open', onClick: () => void navigate('/skills/' + name) },
         });
         setSource('');
       } else {
         // A collection, not a skill. The choice belongs on the page, not in a
         // toast that disappears while it is being read.
         setCandidates(result.candidates);
-        toast('Das ist eine Sammlung. Bitte einen Skill daraus wählen.');
+        toast('This is a collection. Select a skill from it.');
       }
     } catch (caught) {
       reportFailure('Import', caught);
@@ -118,18 +118,17 @@ export function SkillImportPage() {
   return (
     <PageBody width="3xl">
       <p className="text-sm text-muted-foreground">
-        Skills sind ein offenes Format: ein Ordner mit SKILL.md. Alles, was auf GitHub in diesem
-        Format liegt, lässt sich hier holen — aus Anthropics Sammlung, von skills.sh oder aus einem
-        eigenen Repo.
+        Skills use an open format: a folder containing SKILL.md. Import compatible folders from
+        Anthropic, skills.sh, or your own GitHub repository.
       </p>
 
       {/* ------------------------------ GitHub ------------------------------ */}
       <Card>
         <CardHeader>
-          <CardTitle>Aus GitHub</CardTitle>
+          <CardTitle>From GitHub</CardTitle>
           <CardDescription>
-            owner/repo, owner/repo/pfad/zum/skill oder die GitHub-URL. Bei einer Sammlung erscheint
-            die Auswahl darunter.
+            Enter owner/repo, owner/repo/path/to/skill, or a GitHub URL. Collections appear below
+            for selection.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -139,8 +138,8 @@ export function SkillImportPage() {
             </InputGroupAddon>
             <InputGroupInput
               value={source}
-              placeholder="owner/repo oder URL"
-              aria-label="Quelle des Skills"
+              placeholder="owner/repo or URL"
+              aria-label="Skill source"
               disabled={busy !== null}
               onChange={(event) => setSource(event.target.value)}
               onKeyDown={(event) => {
@@ -154,18 +153,18 @@ export function SkillImportPage() {
                 onClick={() => void run(source)}
               >
                 {busy === source.trim() ? (
-                  <Spinner data-icon="inline-start" aria-label="Wird geholt" />
+                  <Spinner data-icon="inline-start" aria-label="Importing" />
                 ) : (
                   <DownloadIcon data-icon="inline-start" />
                 )}
-                Importieren
+                Import
               </InputGroupButton>
             </InputGroupAddon>
           </InputGroup>
 
           {candidates !== null && candidates.length > 0 ? (
             <div className="flex flex-col gap-2">
-              <p className="text-sm font-medium">Mehrere Skills gefunden</p>
+              <p className="text-sm font-medium">Multiple skills found</p>
               <ItemGroup className="gap-2">
                 {candidates.map((candidate) => (
                   <Item key={candidate} variant="outline" size="sm">
@@ -179,8 +178,8 @@ export function SkillImportPage() {
                         disabled={busy !== null}
                         onClick={() => void run(candidate)}
                       >
-                        {busy === candidate ? <Spinner aria-label="Wird geholt" /> : null}
-                        Diesen nehmen
+                        {busy === candidate ? <Spinner aria-label="Importing" /> : null}
+                        Use this
                       </Button>
                     </ItemActions>
                   </Item>
@@ -192,8 +191,8 @@ export function SkillImportPage() {
           {candidates !== null && candidates.length === 0 ? (
             <EmptyState
               icon={FolderSearchIcon}
-              title="Dort liegt kein Skill"
-              description="Unter dieser Adresse gibt es weder eine SKILL.md noch Unterordner, die einen Skill enthalten könnten."
+              title="No skill found there"
+              description="This address contains neither a SKILL.md file nor subfolders that could contain a skill."
               variant="plain"
               size="sm"
             />
@@ -204,20 +203,19 @@ export function SkillImportPage() {
       {/* ------------------------------ Sammlung ---------------------------- */}
       <Card>
         <CardHeader>
-          <CardTitle>Anthropics Sammlung</CardTitle>
+          <CardTitle>Anthropic collection</CardTitle>
           <CardDescription>
-            Öffentliche Skills von Anthropic. Skills mit Skripten brauchen Python oder Node und eine
-            Shell, also Agenten mit Berechtigung „voll“; der Assistent selbst führt keine Skripte
-            aus.
+            Public Anthropic skills. Scripts may require Python or Node and an execution tool with
+            suitable permissions.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {catalogError ? (
             <EmptyState
               icon={SparklesIcon}
-              title="Die Sammlung lässt sich gerade nicht laden"
-              description="Die Liste kommt von GitHub. Ohne Netz oder mit einem Ausfall dort bleibt sie leer; ein eigener Pfad oben funktioniert trotzdem."
-              actionLabel="Erneut versuchen"
+              title="The collection cannot be loaded right now"
+              description="The list comes from GitHub. It remains empty without a network connection or during an outage there; a custom path above will still work."
+              actionLabel="Try again"
               onAction={() => void loadCatalog(true)}
               variant="plain"
               size="sm"
@@ -263,12 +261,12 @@ export function SkillImportPage() {
                         <ItemActions>
                           {entry.needsShell ? (
                             <Badge variant="outline" className="font-normal text-muted-foreground">
-                              Skripte
+                              Scripts
                             </Badge>
                           ) : null}
                           {already ? (
                             <Badge variant="secondary" className="font-normal">
-                              vorhanden
+                              Installed
                             </Badge>
                           ) : null}
                           <Button
@@ -278,11 +276,11 @@ export function SkillImportPage() {
                             onClick={() => void run(entry.source)}
                           >
                             {busy === entry.source ? (
-                              <Spinner data-icon="inline-start" aria-label="Wird geholt" />
+                              <Spinner data-icon="inline-start" aria-label="Importing" />
                             ) : (
                               <DownloadIcon data-icon="inline-start" />
                             )}
-                            Importieren
+                            Import
                           </Button>
                         </ItemActions>
                       </Item>

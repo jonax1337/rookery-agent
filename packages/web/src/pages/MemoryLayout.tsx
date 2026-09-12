@@ -87,9 +87,9 @@ const GROWTH_DAYS = 7;
 const SLEEP_PHASES = ['started', 'light', 'deep', 'rem', 'finished'] as const;
 
 const TABS = [
-  { to: '/memory', label: 'Erinnerungen', end: true },
-  { to: '/memory/graph', label: 'Netz', end: false },
-  { to: '/memory/sleep', label: 'Nächte', end: false },
+  { to: '/memory', label: 'Memories', end: true },
+  { to: '/memory/graph', label: 'Network', end: false },
+  { to: '/memory/sleep', label: 'Nights', end: false },
 ] as const;
 
 /** What the three child routes may reach back into the frame for. */
@@ -129,13 +129,13 @@ export function MemoryLayout() {
 
   const startNight = useCallback(async (): Promise<void> => {
     const ok = await sleep.start();
-    if (ok) toast('Die Nacht läuft', { description: 'Der Fortschritt steht über den Reitern.' });
-    else toast.error('Die Nacht konnte nicht gestartet werden');
+    if (ok) toast('Memory sleep is running', { description: 'Progress appears above the tabs.' });
+    else toast.error('Memory sleep could not be started');
   }, [sleep]);
 
   usePageMeta(
     {
-      breadcrumb: [{ label: 'Gedächtnis', to: '/memory' }, { label: active.label }],
+      breadcrumb: [{ label: 'Memory', to: '/memory' }, { label: active.label }],
       // "Merken" is the primary action; running a night is an operational one
       // and moves into the overflow menu rather than sitting glued beside it as
       // an equal. A night in progress is the exception - then the way to stop
@@ -144,22 +144,22 @@ export function MemoryLayout() {
         <>
           <Button size="sm" onClick={openRemember}>
             <PlusIcon data-icon="inline-start" />
-            Merken
+            Save memory
           </Button>
           {running && (
             <Button size="sm" variant="outline" onClick={() => void sleep.cancel()}>
               <Spinner data-icon="inline-start" aria-hidden="true" />
-              Aufwecken
+              Wake
             </Button>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="Weitere Aktionen für das Gedächtnis" />
+              <RowMenuButton tone="header" label="More Memory actions" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem disabled={busy || running} onSelect={() => void startNight()}>
                 {busy ? <Spinner aria-hidden="true" /> : <MoonIcon />}
-                Jetzt schlafen
+                Run memory sleep now
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -198,46 +198,46 @@ export function MemoryLayout() {
 
   const cards: StatCardProps[] = [
     {
-      label: 'Erinnerungen',
+      label: 'Memories',
       value: stats ? formatNumber(stats.total) : waiting,
       // "gelernt", nicht "dazugekommen": die Tagesreihe zählt jede neu
-      // angelegte Erinnerung, die Zahl darüber nur die noch wachen. Eine
-      // Nacht, die das Gelernte verdichtet oder einschläfert, senkt die Zahl,
+      // angelegte Memory, die Zahl darüber nur die noch wachen. Eine
+      // Night, die das Gelernte verdichtet oder einschläfert, senkt die Zahl,
       // ohne das Badge anzufassen - die Fußnote sagt das, statt die beiden
       // wie dieselbe Menge aussehen zu lassen.
       ...(growth !== null && growth > 0
         ? {
             badge: (
               <Badge variant="outline">
-                +{formatNumber(growth)} gelernt in {GROWTH_DAYS} Tagen
+                +{formatNumber(growth)} learned in {GROWTH_DAYS} days
               </Badge>
             ),
           }
         : {}),
-      headline: stats ? formatNumber(stats.forgotten) + ' vergessen' : ' ',
+      headline: stats ? formatNumber(stats.forgotten) + ' forgotten' : ' ',
       footnote:
-        'Wache Erinnerungen. Neu gelernt zählt auch inzwischen verdichtete Einträge.',
+        'Active memories. Newly learned also includes entries that have since been consolidated.',
       to: '/memory',
     },
     {
-      label: 'Angeheftet',
+      label: 'Pinned',
       value: stats ? formatNumber(stats.pinned) : waiting,
-      headline: 'Nachtfest',
-      footnote: 'Angeheftetes rührt das nächtliche Aufräumen nicht an',
+      headline: 'Protected overnight',
+      footnote: 'Pinned memories are untouched by nightly cleanup',
     },
     {
-      label: 'Schlafend',
+      label: 'Sleeping',
       value: stats ? formatNumber(stats.dormant) : waiting,
-      headline: 'Wird beim Erinnern übersprungen',
-      footnote: 'Nicht gelöscht — ein Klick holt eine schlafende Erinnerung zurück',
+      headline: 'Skipped during recall',
+      footnote: 'Not deleted — one click restores a sleeping memory',
     },
     {
-      label: 'Verbindungen',
+      label: 'Connections',
       value: stats ? formatNumber(stats.edges) : waiting,
       headline: stats
-        ? 'Über ' + formatNumber(stats.entities) + (stats.entities === 1 ? ' Thema' : ' Themen')
+        ? 'Across ' + formatNumber(stats.entities) + (stats.entities === 1 ? ' topic' : ' topics')
         : ' ',
-      footnote: 'Kanten zwischen zwei Erinnerungen, meist im Schlaf gezogen',
+      footnote: 'Connections between two memories, usually created during sleep',
       to: '/memory/graph',
     },
   ];
@@ -257,26 +257,26 @@ export function MemoryLayout() {
             </ItemMedia>
             <ItemContent>
               <ItemTitle className="flex flex-wrap items-center gap-2">
-                <Badge variant="secondary">{SLEEP_PHASE_LABEL[sleep.phase] ?? 'arbeitet'}</Badge>
+                <Badge variant="secondary">{SLEEP_PHASE_LABEL[sleep.phase] ?? 'is running'}</Badge>
                 {sleep.cycle > 0 ? (
                   <span className="text-xs font-normal text-muted-foreground tabular-nums">
-                    Zyklus {formatNumber(sleep.cycle)}
+                    Cycle {formatNumber(sleep.cycle)}
                   </span>
                 ) : null}
               </ItemTitle>
               <ItemDescription>
-                {SLEEP_PHASE_DETAIL[sleep.phase] ?? 'Das Gedächtnis wird gerade umgeräumt.'}
+                {SLEEP_PHASE_DETAIL[sleep.phase] ?? 'Memory is being reorganized.'}
               </ItemDescription>
               <Progress
                 value={phaseProgress(sleep.phase)}
-                aria-label="Fortschritt der Nacht"
+                aria-label="Memory sleep progress"
                 className="mt-2 h-1"
               />
             </ItemContent>
             <ItemActions>
               <Button size="sm" variant="outline" onClick={() => void sleep.cancel()}>
                 <SunIcon data-icon="inline-start" />
-                Aufwecken
+                Wake
               </Button>
             </ItemActions>
           </Item>
@@ -322,7 +322,7 @@ export function MemoryLayout() {
 /* -------------------------------- merken --------------------------------- */
 
 const rememberSchema = z.object({
-  content: z.string().trim().min(3, 'Ein Satz reicht — aber einer muss es sein.'),
+  content: z.string().trim().min(3, 'One sentence is enough, but it cannot be empty.'),
   kind: z.enum(['fact', 'preference', 'project', 'event', 'summary', 'insight']),
   tags: z.string(),
   importance: z.number().min(0).max(1),
@@ -385,10 +385,10 @@ function RememberDialog({ open, onOpenChange, onAdd }: RememberDialogProps) {
         ...(list.length ? { tags: list } : {}),
       });
       if (!ok) {
-        toast.error('Nicht gemerkt', { description: 'Der Server hat die Erinnerung nicht angenommen.' });
+        toast.error('Not saved', { description: 'The server did not accept the memory.' });
         return;
       }
-      toast('Gemerkt', { description: parsed.data.content });
+      toast('Remembered', { description: parsed.data.content });
       reset();
       onOpenChange(false);
     } finally {
@@ -400,9 +400,9 @@ function RememberDialog({ open, onOpenChange, onAdd }: RememberDialogProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Etwas merken</DialogTitle>
+          <DialogTitle>Save a memory</DialogTitle>
           <DialogDescription>
-            Von Hand Gemerktes bleibt im nächtlichen Aufräumen unangetastet.
+            Manually saved memories remain untouched during nightly cleanup.
           </DialogDescription>
         </DialogHeader>
 
@@ -416,23 +416,23 @@ function RememberDialog({ open, onOpenChange, onAdd }: RememberDialogProps) {
         >
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor={formId + '-content'}>Inhalt</FieldLabel>
+              <FieldLabel htmlFor={formId + '-content'}>Content</FieldLabel>
               <Textarea
                 id={formId + '-content'}
                 rows={3}
                 value={content}
                 aria-invalid={errors.content ? true : undefined}
                 onChange={(event) => setContent(event.target.value)}
-                placeholder="Zum Beispiel: Rookery läuft lokal, ohne Cloud."
+                placeholder="For example: The user prefers concise replies."
               />
               <FieldDescription>
-                Ein ganzer Satz erinnert sich besser als ein Stichwort.
+                A full sentence is easier to recall than a keyword.
               </FieldDescription>
               {errors.content ? <FieldError>{errors.content}</FieldError> : null}
             </Field>
 
             <Field>
-              <FieldLabel htmlFor={formId + '-kind-fact'}>Art</FieldLabel>
+              <FieldLabel htmlFor={formId + '-kind-fact'}>Type</FieldLabel>
               <RadioGroup
                 value={kind}
                 onValueChange={(value) => setKind(value as MemoryKind)}
@@ -450,20 +450,20 @@ function RememberDialog({ open, onOpenChange, onAdd }: RememberDialogProps) {
             </Field>
 
             <Field>
-              <FieldLabel htmlFor={formId + '-tags'}>Themen</FieldLabel>
+              <FieldLabel htmlFor={formId + '-tags'}>Topics</FieldLabel>
               <Input
                 id={formId + '-tags'}
                 value={tags}
                 onChange={(event) => setTags(event.target.value)}
-                placeholder="Rookery, Gedächtnis"
+                placeholder="Rookery, Memory"
               />
               <FieldDescription>
-                Kommagetrennt. Themen verbinden diese Erinnerung im Netz mit anderen.
+                Comma-separated. Topics connect this memory to others in the network.
               </FieldDescription>
             </Field>
 
             <Field>
-              <FieldLabel htmlFor={formId + '-importance'}>Wichtigkeit</FieldLabel>
+              <FieldLabel htmlFor={formId + '-importance'}>Importance</FieldLabel>
               <div className="flex items-center gap-3">
                 <Slider
                   id={formId + '-importance'}
@@ -479,7 +479,7 @@ function RememberDialog({ open, onOpenChange, onAdd }: RememberDialogProps) {
                 </Badge>
               </div>
               <FieldDescription>
-                Wichtiges wird eher erinnert und überlebt das Verdichten.
+                Important items are recalled more often and survive consolidation.
               </FieldDescription>
             </Field>
           </FieldGroup>
@@ -487,11 +487,11 @@ function RememberDialog({ open, onOpenChange, onAdd }: RememberDialogProps) {
 
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-            Abbrechen
+            Cancel
           </Button>
           <Button type="submit" form={formId} disabled={saving}>
-            {saving ? <Spinner aria-label="Wird gespeichert" data-icon="inline-start" /> : null}
-            Merken
+            {saving ? <Spinner aria-label="Saving" data-icon="inline-start" /> : null}
+            Save memory
           </Button>
         </DialogFooter>
       </DialogContent>

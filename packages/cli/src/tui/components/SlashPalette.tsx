@@ -55,9 +55,9 @@ export function SlashPalette({
           </Box>
         );
       })}
-      {hidden > 0 ? <Text color={ui.faint}>{'  +' + hidden + ' weitere'}</Text> : null}
+      {hidden > 0 ? <Text color={ui.faint}>{'  +' + hidden + ' more'}</Text> : null}
       <Text color={ui.faint}>
-        {'  ↑↓ wählen ' + glyph.dot + ' Tab übernehmen ' + glyph.dot + ' Esc schließen'}
+        {'  ↑↓ select ' + glyph.dot + ' Tab complete ' + glyph.dot + ' Esc close'}
       </Text>
     </Box>
   );

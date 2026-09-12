@@ -20,7 +20,7 @@ import type {
 /**
  * The canonical timestamp format, `11. Sep. 2026, 14:03`.
  *
- * It lives in `lib/stats.ts` with the rest of the `de-DE` formatting and is
+ * It lives in `lib/stats.ts` with the rest of the `en-GB` formatting and is
  * re-exported here (and from `lib/cron.ts`) so every caller reaches the same
  * implementation instead of a second copy drifting away from it.
  */
@@ -29,14 +29,14 @@ export { formatDateTime } from './stats';
 /** Relative time in the coarse buckets a conversation list actually needs. */
 export function relativeTime(timestamp: number, now = Date.now()): string {
   const seconds = Math.max(0, Math.round((now - timestamp) / 1000));
-  if (seconds < 45) return 'gerade eben';
+  if (seconds < 45) return 'just now';
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return minutes + ' Min.';
+  if (minutes < 60) return minutes + ' min';
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return hours + ' Std.';
+  if (hours < 24) return hours + ' hr';
   const days = Math.round(hours / 24);
-  if (days < 7) return days + ' Tg.';
-  return new Date(timestamp).toLocaleDateString('de-DE');
+  if (days < 7) return days + ' d';
+  return new Date(timestamp).toLocaleDateString('en-GB');
 }
 
 /**
@@ -56,11 +56,11 @@ export function relativeTime(timestamp: number, now = Date.now()): string {
  */
 export function timeAgo(timestamp: number, now = Date.now()): string {
   const span = relativeTime(timestamp, now);
-  if (span === 'gerade eben') return span;
+  if (span === 'just now') return span;
   // Past a week `relativeTime` hands back a date instead of a span - the one
   // case that takes "am". Every span it builds carries a space ("5 Min."), a
-  // `de-DE` date never does ("4.9.2026"), so the shape tells them apart.
-  return span.includes(' ') ? 'vor ' + span : 'am ' + span;
+  // `en-GB` date never does ("04/09/2026"), so the shape tells them apart.
+  return span.includes(' ') ? span + ' ago' : 'on ' + span;
 }
 
 export function formatDuration(ms?: number): string {
@@ -71,12 +71,12 @@ export function formatDuration(ms?: number): string {
 }
 
 export const MEMORY_KIND_LABEL: Record<MemoryKind, string> = {
-  fact: 'Fakt',
-  preference: 'Präferenz',
-  project: 'Projekt',
-  event: 'Ereignis',
-  summary: 'Zusammenfassung',
-  insight: 'Einsicht',
+  fact: 'Fact',
+  preference: 'Preference',
+  project: 'Project',
+  event: 'Event',
+  summary: 'Summary',
+  insight: 'Insight',
 };
 
 /**
@@ -90,27 +90,27 @@ export const MEMORY_KINDS = Object.keys(MEMORY_KIND_LABEL) as MemoryKind[];
 /** What an entity is a name for. */
 export const ENTITY_KIND_LABEL: Record<EntityKind, string> = {
   person: 'Person',
-  project: 'Projekt',
-  tool: 'Werkzeug',
-  place: 'Ort',
-  org: 'Organisation',
-  topic: 'Thema',
+  project: 'Project',
+  tool: 'Tool',
+  place: 'Place',
+  org: 'Organization',
+  topic: 'Topic',
 };
 
 /** How two memories relate, said the way a person would say it. */
 export const RELATION_LABEL: Record<MemoryRelation, string> = {
-  refines: 'präzisiert',
-  supersedes: 'ersetzt',
-  contradicts: 'widerspricht',
-  caused_by: 'liegt an',
-  co_occurs: 'hängt zusammen mit',
+  refines: 'refines',
+  supersedes: 'supersedes',
+  contradicts: 'contradicts',
+  caused_by: 'is caused by',
+  co_occurs: 'is related to',
 };
 
 /** Who wrote a memory. */
 export const ORIGIN_LABEL: Record<MemoryOrigin, string> = {
-  extract: 'aus einem Gespräch',
-  user: 'von dir',
-  sleep: 'im Schlaf verdichtet',
+  extract: 'from a conversation',
+  user: 'from you',
+  sleep: 'consolidated during sleep',
 };
 
 /**
@@ -118,35 +118,35 @@ export const ORIGIN_LABEL: Record<MemoryOrigin, string> = {
  * tidies, deep sleep files and decides, dream sleep connects and concludes.
  */
 export const SLEEP_PHASE_LABEL: Record<string, string> = {
-  started: 'schläft ein',
-  light: 'Leichtschlaf',
-  deep: 'Tiefschlaf',
-  rem: 'Traumschlaf',
-  finished: 'wacht auf',
-  undone: 'zurückgenommen',
+  started: 'falling asleep',
+  light: 'Light sleep',
+  deep: 'Deep sleep',
+  rem: 'REM sleep',
+  finished: 'waking up',
+  undone: 'undone',
 };
 
 /** What each stage is actually doing, one line for the card. */
 export const SLEEP_PHASE_DETAIL: Record<string, string> = {
-  started: 'sammelt sich',
-  light: 'räumt auf, ohne nachzudenken',
-  deep: 'verdichtet und entscheidet Widersprüche',
-  rem: 'verknüpft und zieht Schlüsse',
-  finished: 'fertig',
+  started: 'settling in',
+  light: 'tidying without reflection',
+  deep: 'consolidating and resolving contradictions',
+  rem: 'connecting memories and drawing conclusions',
+  finished: 'done',
 };
 
 export const PERMISSION_LABEL: Record<PermissionLevel, string> = {
-  chat: 'Nur Gespräch',
-  read: 'Lesen',
-  write: 'Schreiben',
-  full: 'Voll',
+  chat: 'Chat only',
+  read: 'Read',
+  write: 'Write',
+  full: 'Full',
 };
 
 export const PERMISSION_HINT: Record<PermissionLevel, string> = {
-  chat: 'Keine Werkzeuge. Reine Unterhaltung.',
-  read: 'Darf Dateien lesen und suchen, aber nichts ändern.',
-  write: 'Darf Dateien im Arbeitsverzeichnis ändern.',
-  full: 'Darf zusätzlich Befehle ausführen.',
+  chat: 'No tools. Conversation only.',
+  read: 'May read and search files, but cannot change them.',
+  write: 'May change files in the workspace.',
+  full: 'May also run commands.',
 };
 
 /**
@@ -176,8 +176,8 @@ export const PERMISSION_CHOICES: {
 }[] = [
   {
     value: STANDARD_CHOICE,
-    label: 'Standard',
-    description: 'Was in den Einstellungen als Vorgabe steht.',
+    label: 'Default',
+    description: 'Uses the default from Settings.',
   },
   ...(['chat', 'read', 'write', 'full'] as PermissionLevel[]).map((level) => ({
     value: level as PermissionChoice,
@@ -194,27 +194,27 @@ export const PROVIDER_LABEL: Record<ProviderId, string> = {
 export const EFFORT_LEVELS: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 export const EFFORT_LABEL: Record<EffortLevel, string> = {
-  low: 'Niedrig',
-  medium: 'Mittel',
-  high: 'Hoch',
-  xhigh: 'Sehr hoch',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Very high',
   max: 'Maximum',
 };
 
 export const EFFORT_HINT: Record<EffortLevel, string> = {
-  low: 'Schnell und knapp, kaum Nachdenken.',
-  medium: 'Ausgewogen für Alltagsfragen.',
-  high: 'Gründlich, für Analysen und Code.',
-  xhigh: 'Sehr gründlich, dauert entsprechend.',
-  max: 'Alles, was das Modell hat. Nicht jedes Modell kann das.',
+  low: 'Fast and concise, with little reasoning.',
+  medium: 'Balanced for everyday questions.',
+  high: 'Thorough, for analysis and code.',
+  xhigh: 'Very thorough, and correspondingly slower.',
+  max: 'Uses everything the model has. Not every model supports this.',
 };
 
 export const ASSIGNMENT_STATUS_LABEL: Record<AssignmentStatus, string> = {
-  pending: 'ausstehend',
-  running: 'läuft',
-  done: 'fertig',
-  failed: 'fehlgeschlagen',
-  cancelled: 'abgebrochen',
+  pending: 'pending',
+  running: 'running',
+  done: 'done',
+  failed: 'failed',
+  cancelled: 'cancelled',
 };
 
 /** Badge variant per status, so a failure reads as one at a glance. */
@@ -232,12 +232,12 @@ export const ASSIGNMENT_STATUS_VARIANT: Record<
 /* ----------------------------------- tasks ---------------------------------- */
 
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
-  open: 'Offen',
-  planned: 'Geplant',
-  running: 'Läuft',
-  done: 'Fertig',
-  failed: 'Fehlgeschlagen',
-  cancelled: 'Abgebrochen',
+  open: 'Open',
+  planned: 'Planned',
+  running: 'Running',
+  done: 'Done',
+  failed: 'Failed',
+  cancelled: 'Cancelled',
 };
 
 export const TASK_STATUS_VARIANT: Record<
@@ -278,9 +278,9 @@ export function isSettableTaskStatus(status: TaskStatus): status is SettableTask
 }
 
 export const TASK_PRIORITY_LABEL: Record<TaskPriority, string> = {
-  low: 'Niedrig',
+  low: 'Low',
   normal: 'Normal',
-  high: 'Hoch',
+  high: 'High',
 };
 
 export const TASK_PRIORITY_VARIANT: Record<
@@ -308,7 +308,7 @@ export const TASK_PRIORITY_RANK: Record<TaskPriority, number> = { high: 0, norma
  */
 export const SESSION_KIND_LABEL: Record<SessionKind, string> = {
   chat: 'Chat',
-  voice: 'Sprache',
+  voice: 'Voice',
 };
 
 export const SESSION_KIND_ICON: Record<SessionKind, LucideIcon> = {
@@ -322,7 +322,7 @@ export const SESSION_KIND_ICON: Record<SessionKind, LucideIcon> = {
  * The server stores an empty title until the first turn produces one, so every
  * list needs a stand-in, and three of them invented their own.
  */
-export const UNTITLED_SESSION = 'Neues Gespräch';
+export const UNTITLED_SESSION = 'New conversation';
 
 /* ------------------------------- schedules ------------------------------- */
 
@@ -334,7 +334,7 @@ export const UNTITLED_SESSION = 'Neues Gespräch';
  * what it is rather than left with an empty Wer-column.
  */
 export const CRON_JOB_KIND_LABEL: Record<CronJobKind, string> = {
-  assistant: 'Assistent',
+  assistant: 'Assistant',
   agent: 'Agent',
   sleep: 'System',
 };
@@ -350,9 +350,9 @@ export const CRON_JOB_KIND_LABEL: Record<CronJobKind, string> = {
  * are the same three sentences either way.
  */
 export const REQUESTER_LABEL: Record<RequesterKind, string> = {
-  user: 'Von Hand',
-  assistant: 'Vom Assistenten',
-  agent: 'Von einem Agenten',
+  user: 'Manually',
+  assistant: 'By the assistant',
+  agent: 'By an agent',
 };
 
 /* -------------------------------- sentinels ------------------------------- */
@@ -377,11 +377,11 @@ export const NO_PROJECT = '__none__';
  */
 export function greeting(now: Date = new Date()): string {
   const hour = now.getHours();
-  if (hour < 5) return 'Noch wach?';
-  if (hour < 11) return 'Guten Morgen.';
-  if (hour < 14) return 'Mahlzeit.';
-  if (hour < 18) return 'Guten Tag.';
-  return 'Guten Abend.';
+  if (hour < 5) return 'Still awake?';
+  if (hour < 11) return 'Good morning.';
+  if (hour < 14) return 'Hello.';
+  if (hour < 18) return 'Good afternoon.';
+  return 'Good evening.';
 }
 
 /* ------------------------------- recency --------------------------------- */
@@ -451,12 +451,12 @@ function recencyLabel(
   startOfYesterday: number,
   startOfWeek: number,
 ): string {
-  if (at === undefined || at >= startOfToday) return 'Heute';
-  if (at >= startOfYesterday) return 'Gestern';
+  if (at === undefined || at >= startOfToday) return 'Today';
+  if (at >= startOfYesterday) return 'Yesterday';
   // Only worth a "Diese Woche" row when the week actually started earlier
   // than yesterday; on a Monday everything older is simply "Früher".
-  if (at >= startOfWeek && startOfWeek < startOfYesterday) return 'Diese Woche';
-  return 'Früher';
+  if (at >= startOfWeek && startOfWeek < startOfYesterday) return 'This week';
+  return 'Earlier';
 }
 
 /** Cut a string for display without leaving a dangling word. */

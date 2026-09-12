@@ -54,7 +54,7 @@ interface ProjectDraft {
 const EMPTY: ProjectDraft = { name: '', description: '', path: '', archived: false };
 
 const schema = z.object({
-  name: z.string().trim().min(1, 'Ein Name ist Pflicht.'),
+  name: z.string().trim().min(1, 'A name is required.'),
 });
 
 function draftOf(project: Project): ProjectDraft {
@@ -106,39 +106,39 @@ export function ProjectFormPage() {
     else await api.createProject(toInput(patch));
     markSaved();
     await org.refresh();
-    toast(editing ? 'Projekt gespeichert' : 'Projekt angelegt');
+    toast(editing ? 'Project saved' : 'Project created');
     void navigate('/org/projects');
   });
 
   const remove = useCallback(async (): Promise<void> => {
     if (!id || !project) return;
     const ok = await confirm({
-      title: 'Projekt löschen?',
+      title: 'Delete project?',
       description:
-        'Das Projekt „' +
+        'The project “' +
         project.name +
-        '“ verschwindet aus allen Auswahllisten. Gespräche und Aufträge, die daran hingen, bleiben erhalten — sie sind danach ohne Projekt.',
-      confirmLabel: 'Löschen',
+        '” will disappear from all selection lists. Associated conversations and assignments will remain, but will no longer have a project.',
+      confirmLabel: 'Delete',
       destructive: true,
     });
     if (!ok) return;
     try {
       await api.deleteProject(id);
       await org.refresh();
-      toast('Projekt gelöscht', { description: project.name });
+      toast('Project deleted', { description: project.name });
       void navigate('/org/projects');
     } catch (caught) {
-      reportFailure('Löschen', caught);
+      reportFailure('Delete', caught);
     }
   }, [confirm, id, navigate, org, project]);
 
-  const leaf = editing ? (project?.name ?? 'Projekt bearbeiten') : 'Projekt anlegen';
+  const leaf = editing ? (project?.name ?? 'Edit project') : 'Create project';
 
   usePageMeta(
     {
       breadcrumb: [
-        { label: 'Firma', to: '/org/projects' },
-        { label: 'Projekte', to: '/org/projects' },
+        { label: 'Organization', to: '/org/projects' },
+        { label: 'Projects', to: '/org/projects' },
         { label: leaf },
       ],
       actions: (
@@ -151,7 +151,7 @@ export function ProjectFormPage() {
             editing
               ? [
                   {
-                    label: 'Projekt löschen',
+                    label: 'Project delete',
                     icon: Trash2Icon,
                     destructive: true,
                     onSelect: () => void remove(),
@@ -170,9 +170,9 @@ export function ProjectFormPage() {
       <PageBody width="2xl">
         <EmptyState
           icon={FolderIcon}
-          title="Dieses Projekt gibt es nicht mehr"
-          description="Es wurde gelöscht oder hat nie existiert."
-          actionLabel="Zu den Projekten"
+          title="This project no longer exists"
+          description="It was deleted or never existed."
+          actionLabel="View projects"
           actionTo="/org/projects"
         />
       </PageBody>
@@ -195,7 +195,7 @@ export function ProjectFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        description="Ein Projekt bündelt Gespräche und Aufträge — und sagt, in welchem Verzeichnis gearbeitet wird."
+        description="A project groups conversations and assignments and defines the directory where work happens."
       >
         <FieldSet>
           <Field>
@@ -210,11 +210,11 @@ export function ProjectFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="project-description">Beschreibung</FieldLabel>
+            <FieldLabel htmlFor="project-description">Description</FieldLabel>
             <Textarea
               id="project-description"
               rows={3}
-              placeholder="Worum es in diesem Projekt geht."
+              placeholder="What this project is about."
               value={draft.description}
               onChange={(event) => set({ description: event.target.value })}
             />
@@ -225,7 +225,7 @@ export function ProjectFormPage() {
 
         <FieldSet>
           <Field>
-            <FieldLabel htmlFor="project-path">Verzeichnis</FieldLabel>
+            <FieldLabel htmlFor="project-path">Directory</FieldLabel>
             <InputGroup>
               <InputGroupAddon align="inline-start">
                 <FolderIcon />
@@ -233,14 +233,14 @@ export function ProjectFormPage() {
               <InputGroupInput
                 id="project-path"
                 className="font-mono"
-                placeholder="E:\DEV\mein-projekt"
+                placeholder="E:\DEV\my-project"
                 value={draft.path}
                 onChange={(event) => set({ path: event.target.value })}
               />
             </InputGroup>
             <FieldDescription>
-              Leer lassen für den Arbeitsraum von Rookery. Ob es den Pfad gibt, zeigt sich erst
-              beim ersten Auftrag — der Server prüft das nicht vorab.
+              Leave empty to use the Rookery workspace. The path is checked only when an assignment
+              first runs.
             </FieldDescription>
           </Field>
         </FieldSet>
@@ -250,16 +250,16 @@ export function ProjectFormPage() {
         <FieldSet>
           {/*
             Im Neu-Modus abgeschaltet statt ausgeblendet: eine Feldzahl, die
-            sich zwischen Anlegen und Bearbeiten ändert, liest sich wie ein
+            sich zwischen Create und Edit ändert, liest sich wie ein
             anderes Formular.
           */}
           <Field orientation="horizontal">
             <FieldContent>
-              <FieldTitle>Archiviert</FieldTitle>
+              <FieldTitle>Archived</FieldTitle>
               <FieldDescription>
                 {editing
-                  ? 'Archivierte Projekte verschwinden aus den Auswahllisten, bleiben aber an ihren Aufträgen hängen.'
-                  : 'Ein neues Projekt ist immer aktiv. Archivieren geht später.'}
+                  ? 'Archived projects disappear from selection lists but remain linked to their assignments.'
+                  : 'A new project is always active. You can archive it later.'}
               </FieldDescription>
             </FieldContent>
             <Switch

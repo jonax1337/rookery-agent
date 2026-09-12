@@ -49,7 +49,7 @@ export function NavPrimary() {
   // belongs to it, because a radio group with no matching value would look
   // like nobody is selected at all.
   const agents = org.agents.filter((agent) => !agent.archived || agent.id === counterpart?.id);
-  const label = counterpart ? 'Neu mit ' + counterpart.name : 'Neues Gespräch';
+  const label = counterpart ? 'New with ' + counterpart.name : 'New conversation';
 
   return (
     <SidebarGroup>
@@ -78,14 +78,14 @@ export function NavPrimary() {
                       className="size-8 group-data-[collapsible=icon]:opacity-0"
                     >
                       <ChevronsUpDownIcon />
-                      <span className="sr-only">Gegenüber wählen</span>
+                      <span className="sr-only">Choose who to talk to</span>
                     </Button>
                   </DropdownMenuTrigger>
                 </TooltipTrigger>
-                <TooltipContent side="right">Gegenüber wählen</TooltipContent>
+                <TooltipContent side="right">Choose who to talk to</TooltipContent>
               </Tooltip>
               <DropdownMenuContent side="right" align="start" className="w-56">
-                <DropdownMenuLabel>Gespräch mit</DropdownMenuLabel>
+                <DropdownMenuLabel>Conversation with</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuRadioGroup
                   value={counterpart?.id ?? ASSISTANT}
@@ -118,11 +118,11 @@ export function NavPrimary() {
                 >
                   <NavLink to="/voice" onClick={() => setOpenMobile(false)}>
                     <AudioLinesIcon />
-                    <span className="sr-only">Sprechen</span>
+                    <span className="sr-only">Voice</span>
                   </NavLink>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="right">Sprechen</TooltipContent>
+              <TooltipContent side="right">Voice</TooltipContent>
             </Tooltip>
           </SidebarMenuItem>
         </SidebarMenu>

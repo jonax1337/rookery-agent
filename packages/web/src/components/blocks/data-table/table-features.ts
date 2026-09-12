@@ -99,5 +99,5 @@ export function rowSearchText(row: unknown): string {
 /** Case-insensitive "contains", the only match the toolbar search needs. */
 export function matchesSearch(haystack: string, needle: string): boolean {
   if (!needle) return true;
-  return haystack.toLocaleLowerCase('de-DE').includes(needle.toLocaleLowerCase('de-DE'));
+  return haystack.toLocaleLowerCase('en-GB').includes(needle.toLocaleLowerCase('en-GB'));
 }

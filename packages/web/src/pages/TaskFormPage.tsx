@@ -72,17 +72,17 @@ const EMPTY: TaskDraft = {
 };
 
 const schema = z.object({
-  title: z.string().trim().min(1, 'Ein Titel ist Pflicht.'),
+  title: z.string().trim().min(1, 'A title is required.'),
   description: z
     .string()
     .trim()
-    .min(1, 'Ohne Beschreibung hat der Planer nichts, woraus er einen Auftrag machen kann.'),
+    .min(1, 'A description is required so the planner can create an assignment.'),
 });
 
 const PRIORITY_OPTIONS: ChoiceOption<TaskPriority>[] = [
-  { value: 'high', label: TASK_PRIORITY_LABEL.high, description: 'Zuerst, vor allem anderen.' },
-  { value: 'normal', label: TASK_PRIORITY_LABEL.normal, description: 'Der Normalfall.' },
-  { value: 'low', label: TASK_PRIORITY_LABEL.low, description: 'Wenn Zeit dafür ist.' },
+  { value: 'high', label: TASK_PRIORITY_LABEL.high, description: 'First, before everything else.' },
+  { value: 'normal', label: TASK_PRIORITY_LABEL.normal, description: 'The default choice.' },
+  { value: 'low', label: TASK_PRIORITY_LABEL.low, description: 'When there is time for it.' },
 ];
 
 function draftOf(task: Task): TaskDraft {
@@ -159,15 +159,15 @@ export function TaskFormPage() {
       editing && id ? await api.updateTask(id, patch) : await api.createTask(toInput(patch));
     markSaved();
     await tasks.refresh();
-    toast(editing ? 'Aufgabe gespeichert' : 'Aufgabe angelegt');
+    toast(editing ? 'Task saved' : 'Task created');
     void navigate('/tasks/' + saved.id);
   });
 
-  const leaf = editing ? (task?.title ?? 'Aufgabe bearbeiten') : 'Aufgabe anlegen';
+  const leaf = editing ? (task?.title ?? 'Edit task') : 'Create task';
 
   usePageMeta(
     {
-      breadcrumb: [{ label: 'Aufgaben', to: '/tasks' }, { label: leaf }],
+      breadcrumb: [{ label: 'Tasks', to: '/tasks' }, { label: leaf }],
       actions: (
         <FormHeaderActions
           form={formId}
@@ -185,9 +185,9 @@ export function TaskFormPage() {
       <PageBody width="2xl">
         <EmptyState
           icon={ListTodoIcon}
-          title="Diese Aufgabe gibt es nicht mehr"
-          description="Sie wurde gelöscht oder hat nie existiert."
-          actionLabel="Zu den Aufgaben"
+          title="This task no longer exists"
+          description="It was deleted or never existed."
+          actionLabel="View tasks"
           actionTo="/tasks"
         />
       </PageBody>
@@ -211,11 +211,11 @@ export function TaskFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        description="Die Beschreibung muss für sich stehen: ein Agent sieht nichts als sie."
+        description="Make the description self-contained: it is the brief the agent receives."
       >
         <FieldSet>
           <Field>
-            <FieldLabel htmlFor="task-title">Titel</FieldLabel>
+            <FieldLabel htmlFor="task-title">Title</FieldLabel>
             <Input
               id="task-title"
               value={draft.title}
@@ -226,16 +226,16 @@ export function TaskFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="task-description">Beschreibung</FieldLabel>
+            <FieldLabel htmlFor="task-description">Description</FieldLabel>
             <Textarea
               id="task-description"
               rows={8}
-              placeholder="Ziel, Rahmenbedingungen, woran man merkt, dass es fertig ist."
+              placeholder="Goal, constraints, and how to know when it is complete."
               value={draft.description}
               aria-invalid={Boolean(errors.description)}
               onChange={(event) => set({ description: event.target.value })}
             />
-            <FieldDescription>Der Planer liest diesen Text.</FieldDescription>
+            <FieldDescription>The planner reads this text.</FieldDescription>
             <FieldError>{errors.description}</FieldError>
           </Field>
         </FieldSet>
@@ -244,7 +244,7 @@ export function TaskFormPage() {
 
         <FieldSet>
           <Field>
-            <FieldLabel htmlFor="task-priority-high">Priorität</FieldLabel>
+            <FieldLabel htmlFor="task-priority-high">Priority</FieldLabel>
             <ChoiceField
               id="task-priority"
               options={PRIORITY_OPTIONS}
@@ -254,32 +254,32 @@ export function TaskFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="task-project">Projekt</FieldLabel>
+            <FieldLabel htmlFor="task-project">Project</FieldLabel>
             <EntityCombobox
               id="task-project"
               options={projectOptions}
               value={draft.projectId}
               onChange={(projectId) => set({ projectId })}
-              placeholder="Kein Projekt"
-              emptyLabel="Kein Projekt gefunden"
+              placeholder="No project"
+              emptyLabel="No project found"
             />
             <FieldDescription>
-              Das Projekt entscheidet, in welchem Verzeichnis gearbeitet wird.
+              The project determines which directory the agent works in.
             </FieldDescription>
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="task-assignee">Zuständig</FieldLabel>
+            <FieldLabel htmlFor="task-assignee">Assignee</FieldLabel>
             <EntityCombobox
               id="task-assignee"
               options={agentOptions}
               value={draft.assigneeId}
               onChange={(assigneeId) => set({ assigneeId })}
-              placeholder="Noch offen"
-              emptyLabel="Kein Agent gefunden"
+              placeholder="Unassigned"
+              emptyLabel="No agent found"
             />
             <FieldDescription>
-              Offen lassen ist normal: „Planen“ entscheidet, wer übernimmt.
+              Leaving this unassigned is normal: “Plan” decides who takes it.
             </FieldDescription>
           </Field>
 
@@ -304,8 +304,8 @@ export function TaskFormPage() {
               </NativeSelect>
               <FieldDescription>
                 {draft.status === null
-                  ? 'Diesen Zustand setzt der Lauf selbst — von Hand gehen nur Offen, Fertig und Abgebrochen.'
-                  : 'Geplant, Läuft und Fehlgeschlagen setzt der Planer bzw. der Lauf selbst.'}
+                  ? 'The run sets this status automatically; only Open, Done, and Cancelled can be selected manually.'
+                  : 'Planned, Running, and Failed are set by the planner or the run itself.'}
               </FieldDescription>
             </Field>
           ) : null}

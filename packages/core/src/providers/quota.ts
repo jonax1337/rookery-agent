@@ -47,10 +47,10 @@ const CLAUDE_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 
 /** Only windows a person can act on; the endpoint also carries codename buckets. */
 const CLAUDE_WINDOWS: Record<string, string> = {
-  five_hour: '5 Stunden',
-  seven_day: 'Woche',
-  seven_day_opus: 'Woche · Opus',
-  seven_day_sonnet: 'Woche · Sonnet',
+  five_hour: '5 hours',
+  seven_day: 'Week',
+  seven_day_opus: 'Week · Opus',
+  seven_day_sonnet: 'Week · Sonnet',
 };
 
 /** "default_claude_max_5x" -> "Max 5×". */
@@ -89,7 +89,7 @@ async function fetchClaude(): Promise<ProviderQuota> {
   const oauth = asRecord(credentials?.claudeAiOauth);
   const token = oauth?.accessToken;
   if (typeof token !== 'string' || !token) {
-    return unavailable('claude', 'Claude Code ist nicht angemeldet.');
+    return unavailable('claude', 'Claude Code is not signed in.');
   }
   const response = await fetch(CLAUDE_USAGE_URL, {
     headers: { Authorization: 'Bearer ' + token, 'anthropic-beta': 'oauth-2025-04-20' },
@@ -133,16 +133,16 @@ function codexWindow(raw: unknown, fallbackKind: 'session' | 'weekly'): QuotaWin
   const seconds = typeof window.limit_window_seconds === 'number' ? window.limit_window_seconds : 0;
   const hours = seconds > 0 ? seconds / 3600 : 0;
   let kind: string = fallbackKind;
-  let label = fallbackKind === 'session' ? 'Sitzung' : 'Woche';
+  let label = fallbackKind === 'session' ? 'Session' : 'Week';
   if (hours > 0 && hours <= 6) {
     kind = 'session';
-    label = hours === Math.round(hours) ? hours + ' Stunden' : Math.round(hours * 60) + ' Minuten';
+    label = hours === Math.round(hours) ? hours + ' hours' : Math.round(hours * 60) + ' minutes';
   } else if (hours >= 6 * 24 && hours <= 8 * 24) {
     kind = 'weekly';
-    label = 'Woche';
+    label = 'Week';
   } else if (hours > 0) {
     kind = Math.round(hours) + 'h';
-    label = hours % 24 === 0 ? hours / 24 + ' Tage' : Math.round(hours) + ' Stunden';
+    label = hours % 24 === 0 ? hours / 24 + ' days' : Math.round(hours) + ' hours';
   }
   const resetsAt = normaliseReset(window.reset_at);
   return { kind, label, percent: clampPercent(window.used_percent), ...(resetsAt ? { resetsAt } : {}) };
@@ -165,7 +165,7 @@ async function fetchCodex(): Promise<ProviderQuota> {
   const tokens = asRecord(auth?.tokens);
   const token = tokens?.access_token;
   if (typeof token !== 'string' || !token) {
-    return unavailable('codex', 'Codex ist nicht angemeldet.');
+    return unavailable('codex', 'Codex is not signed in.');
   }
   const accountId = tokens?.account_id;
   const response = await fetch(CODEX_USAGE_URL, {
@@ -218,10 +218,10 @@ export async function providerQuota(provider: ProviderId, force = false): Promis
       ...unavailable(
         provider,
         status === 429
-          ? 'Kontingent derzeit nicht abrufbar (zu viele Anfragen).'
+          ? 'Usage limits are temporarily unavailable (too many requests).'
           : status === 401
-            ? 'Anmeldung abgelaufen; der nächste Chat frischt sie auf.'
-            : 'Kontingent derzeit nicht abrufbar.',
+            ? 'Sign-in expired; the next chat will refresh it.'
+            : 'Usage limits are temporarily unavailable.',
       ),
       // Keep the previous windows visible through a hiccup.
       windows: cached?.quota.windows ?? [],

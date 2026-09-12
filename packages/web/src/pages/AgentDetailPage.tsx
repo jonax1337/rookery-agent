@@ -184,7 +184,7 @@ export function AgentDetailPage() {
           setLive([]);
           void reload();
           void org.refresh();
-          toast('Auftrag abgeschlossen');
+          toast('Assignment completed');
         },
         onError: (message) => {
           setError(message);
@@ -206,11 +206,11 @@ export function AgentDetailPage() {
   const archive = useCallback(async (): Promise<void> => {
     if (!agent) return;
     const ok = await confirm({
-      title: agent.name + ' archivieren?',
+      title: agent.name + ' archive?',
       description:
-        'Archivierte Agenten nehmen keine Aufträge mehr an. Die bisherigen Aufträge und ' +
-        'Erinnerungen bleiben erhalten.',
-      confirmLabel: 'Archivieren',
+        'Archived agents no longer accept assignments. Their previous assignments and ' +
+        'memories will remain.',
+      confirmLabel: 'Archive',
       destructive: true,
       icon: ArchiveIcon,
     });
@@ -219,9 +219,9 @@ export function AgentDetailPage() {
       await api.updateAgent(agent.id, { archived: true });
       await org.refresh();
       await reload();
-      toast(agent.name + ' archiviert');
+      toast(agent.name + ' archived');
     } catch (caught) {
-      reportFailure('Archivieren', caught);
+      reportFailure('Archive', caught);
     }
   }, [agent, confirm, org, reload]);
 
@@ -231,15 +231,15 @@ export function AgentDetailPage() {
     {
       ...(agent ? { title: agent.name } : {}),
       breadcrumb: [
-        { label: 'Firma', to: '/org/agents' },
-        { label: 'Agenten', to: '/org/agents' },
+        { label: 'Organization', to: '/org/agents' },
+        { label: 'Agents', to: '/org/agents' },
         { label: agent?.name ?? 'Agent' },
       ],
       actions: agent ? (
         <>
           <Button size="sm" onClick={() => setAssignOpen(true)} disabled={agent.archived}>
             <SendIcon data-icon="inline-start" />
-            Auftrag geben
+            Create assignment
           </Button>
           <Button
             size="sm"
@@ -251,13 +251,13 @@ export function AgentDetailPage() {
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="Weitere Aktionen" />
+              <RowMenuButton tone="header" label="More actions" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem asChild>
                 <NavLink to={'/org/agents/' + agent.id + '/edit'}>
                   <PencilIcon data-icon="inline-start" />
-                  Bearbeiten
+                  Edit
                 </NavLink>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -267,7 +267,7 @@ export function AgentDetailPage() {
                 onSelect={() => void archive()}
               >
                 <ArchiveIcon data-icon="inline-start" />
-                Archivieren
+                Archive
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -283,7 +283,7 @@ export function AgentDetailPage() {
     const column = createRookeryColumnHelper<Assignment>();
     return column.columns([
       column.accessor('task', {
-        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Auftrag" />,
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Assignment" />,
         cell: ({ row }) => (
           <NavLink
             to={'/assignments/' + row.original.id}
@@ -301,7 +301,7 @@ export function AgentDetailPage() {
       column.accessor((row) => row.durationMs ?? 0, {
         id: 'durationMs',
         header: ({ column: head }) => (
-          <DataTableColumnHeader column={head} title="Dauer" align="end" />
+          <DataTableColumnHeader column={head} title="Duration" align="end" />
         ),
         cell: ({ row }) => (
           <span className="block text-right tabular-nums text-muted-foreground">
@@ -311,7 +311,7 @@ export function AgentDetailPage() {
       }),
       column.accessor('chars', {
         header: ({ column: head }) => (
-          <DataTableColumnHeader column={head} title="Zeichen" align="end" />
+          <DataTableColumnHeader column={head} title="Characters" align="end" />
         ),
         cell: ({ row }) => (
           <span className="block text-right tabular-nums text-muted-foreground">
@@ -320,7 +320,7 @@ export function AgentDetailPage() {
         ),
       }),
       column.accessor('createdAt', {
-        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Erteilt" />,
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Assigned" />,
         cell: ({ row }) => relativeTimeCell(row.original.createdAt),
       }),
     ]);
@@ -342,7 +342,7 @@ export function AgentDetailPage() {
         enableHiding: false,
       }),
       column.accessor('title', {
-        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Rolle" />,
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Role" />,
         cell: ({ row }) => <span className="text-muted-foreground">{row.original.title}</span>,
       }),
       column.accessor((row) => org.teams.find((team) => team.id === row.teamId)?.name ?? '', {
@@ -355,13 +355,13 @@ export function AgentDetailPage() {
               {team.name}
             </NavLink>
           ) : (
-            <span className="text-muted-foreground">Ohne Team</span>
+            <span className="text-muted-foreground">No team</span>
           );
         },
       }),
       column.accessor((row) => row.provider ?? '', {
         id: 'provider',
-        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Modell" />,
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Model" />,
         cell: ({ row }) => (
           <ProviderCell
             {...(row.original.provider ? { provider: row.original.provider } : {})}
@@ -371,10 +371,10 @@ export function AgentDetailPage() {
       }),
       column.accessor((row) => row.permission ?? '', {
         id: 'permission',
-        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Zugriff" />,
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Permission" />,
         cell: ({ row }) => (
           <span className="text-muted-foreground">
-            {row.original.permission ? PERMISSION_LABEL[row.original.permission] : 'Vorgabe'}
+            {row.original.permission ? PERMISSION_LABEL[row.original.permission] : 'Default'}
           </span>
         ),
       }),
@@ -383,7 +383,7 @@ export function AgentDetailPage() {
 
   // The same table the memory list draws, in its short form: the agent tab
   // used to call the weight "Gewicht" and print it as "0,73" where the list
-  // said "Wichtigkeit" and "73 %".
+  // said "Importance" and "73 %".
   const memoryColumns = useMemo(() => buildMemoryColumns({ compact: true }), []);
 
   /* --------------------------------- states ------------------------------ */
@@ -398,9 +398,9 @@ export function AgentDetailPage() {
         ) : (
           <EmptyState
             icon={UserRoundIcon}
-            title="Diesen Agenten gibt es nicht"
-            description="Der Eintrag wurde gelöscht, oder die Adresse stimmt nicht."
-            actionLabel="Zu den Agenten"
+            title="This agent does not exist"
+            description="The entry was deleted, or the address is incorrect."
+            actionLabel="View agents"
             actionTo="/org/agents"
           />
         )}
@@ -425,33 +425,33 @@ export function AgentDetailPage() {
 
   const cards: StatCardProps[] = [
     {
-      label: 'Aufträge',
+      label: 'Assignments',
       value: formatNumber(assignments.length),
       ...cappedBadge(assignmentsCapped),
-      headline: assignments.length === 0 ? 'Noch nichts erteilt' : 'Zuletzt erteilte Aufträge',
-      footnote: 'Der Server liefert die letzten ' + ASSIGNMENT_LIMIT,
+      headline: assignments.length === 0 ? 'Nothing assigned yet' : 'Last run erteilte Assignments',
+      footnote: 'The server returns the latest ' + ASSIGNMENT_LIMIT,
     },
     {
-      label: 'Fehlgeschlagen',
+      label: 'Failed',
       value: formatNumber(failedCount),
       ...(cancelledCount > 0
-        ? { badge: <Badge variant="outline">{cancelledCount} abgebrochen</Badge> }
+        ? { badge: <Badge variant="outline">{cancelledCount} cancelled</Badge> }
         : {}),
-      headline: failedCount === 0 ? 'Nichts ist schiefgegangen' : 'Abbrüche mit Fehlermeldung',
-      footnote: 'Unter den ' + assignments.length + ' geladenen Aufträgen',
+      headline: failedCount === 0 ? 'Nothing has failed' : 'Failures with error messages',
+      footnote: 'Among the ' + assignments.length + ' loaded assignments',
     },
     {
-      label: 'Mittlere Dauer',
+      label: 'Average duration',
       value: meanDuration || '–',
-      headline: doneDurations.length === 0 ? 'Noch nichts abgeschlossen' : 'Vom Start bis zur Antwort',
-      footnote: 'Über ' + doneDurations.length + ' abgeschlossene Aufträge',
+      headline: doneDurations.length === 0 ? 'Nothing completed yet' : 'From start to response',
+      footnote: 'Across ' + doneDurations.length + ' abgeschlossene Assignments',
     },
     {
-      label: 'Erinnerungen',
+      label: 'Memories',
       value: formatNumber(memories.length),
       ...cappedBadge(memoriesCapped),
-      headline: memories.length === 0 ? 'Noch nichts gelernt' : 'Eigenes Gedächtnis',
-      footnote: 'Der Server liefert die letzten ' + MEMORY_LIMIT,
+      headline: memories.length === 0 ? 'Nothing learned yet' : 'Own memory',
+      footnote: 'The server returns the latest ' + MEMORY_LIMIT,
     },
   ];
 
@@ -474,7 +474,7 @@ export function AgentDetailPage() {
         <Badge variant="outline" className="font-mono font-normal">
           {agent.slug}
         </Badge>
-        {agent.archived && <Badge variant="secondary">archiviert</Badge>}
+        {agent.archived && <Badge variant="secondary">archived</Badge>}
       </div>
 
       <div className="px-4 lg:px-6">
@@ -483,18 +483,18 @@ export function AgentDetailPage() {
           items={[
             {
               label: 'Team',
-              value: team?.name ?? 'Ohne Team',
+              value: team?.name ?? 'No team',
               icon: Building2Icon,
               ...(team ? { to: '/org/teams' } : {}),
             },
             {
-              label: 'Vorgesetzter',
-              value: manager?.name ?? 'Der Assistent',
+              label: 'Manager',
+              value: manager?.name ?? 'The assistant',
               icon: UsersIcon,
               ...(manager ? { to: '/org/agents/' + manager.id } : {}),
             },
             {
-              label: 'Anbieter',
+              label: 'Provider',
               value: (
                 <ProviderCell
                   layout="inline"
@@ -505,8 +505,8 @@ export function AgentDetailPage() {
               icon: CpuIcon,
             },
             {
-              label: 'Zugriff',
-              value: permission ? PERMISSION_LABEL[permission] : 'Vorgabe',
+              label: 'Permission',
+              value: permission ? PERMISSION_LABEL[permission] : 'Default',
               icon: ShieldIcon,
             },
           ]}
@@ -518,10 +518,10 @@ export function AgentDetailPage() {
       <div className="px-4 lg:px-6">
         <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
           <TabsList>
-            <TabsTrigger value="assignments">Aufträge</TabsTrigger>
-            <TabsTrigger value="reports">Direkt unterstellt</TabsTrigger>
-            <TabsTrigger value="memories">Gedächtnis</TabsTrigger>
-            <TabsTrigger value="instructions">Anweisungen</TabsTrigger>
+            <TabsTrigger value="assignments">Assignments</TabsTrigger>
+            <TabsTrigger value="reports">Direct reports</TabsTrigger>
+            <TabsTrigger value="memories">Memory</TabsTrigger>
+            <TabsTrigger value="instructions">Instructions</TabsTrigger>
           </TabsList>
 
           <TabsContent value="assignments" className="mt-4">
@@ -531,26 +531,26 @@ export function AgentDetailPage() {
               data={assignments}
               columns={assignmentColumns}
               searchable
-              searchPlaceholder="Aufträge durchsuchen"
+              searchPlaceholder="Assignments durchsuchen"
               searchText={(row) => row.task}
               initialSorting={[{ id: 'createdAt', desc: true }]}
               groupTime={(row) => row.createdAt}
               groupSortId="createdAt"
               capped={assignmentsCapped}
-              rowLabel={{ singular: 'Auftrag', plural: 'Aufträgen' }}
+              rowLabel={{ singular: 'Assignment', plural: 'assignments' }}
               columnLabels={{
-                task: 'Auftrag',
+                task: 'Assignment',
                 status: 'Status',
-                durationMs: 'Dauer',
-                chars: 'Zeichen',
-                createdAt: 'Erteilt',
+                durationMs: 'Duration',
+                chars: 'Characters',
+                createdAt: 'Assigned',
               }}
               empty={
                 <EmptyState
                   icon={InboxIcon}
-                  title={'Noch kein Auftrag für ' + agent.name}
-                  description="Aufträge laufen als eigener Prozess, unabhängig vom Gespräch."
-                  actionLabel="Auftrag geben"
+                  title={'No assignments for ' + agent.name}
+                  description="Assignments run in a separate process, independently of the conversation."
+                  actionLabel="Create assignment"
                   onAction={() => setAssignOpen(true)}
                   variant="plain"
                   size="sm"
@@ -567,13 +567,13 @@ export function AgentDetailPage() {
               columns={reportColumns}
               paginate={false}
               showColumnMenu={false}
-              rowLabel={{ singular: 'Agent', plural: 'Agenten' }}
+              rowLabel={{ singular: 'Agent', plural: 'Agents' }}
               empty={
                 <EmptyState
                   icon={UsersIcon}
-                  title={'Niemand berichtet an ' + agent.name}
-                  description="Ein Agent bekommt eine Vorgesetzte, indem sie in seinem Profil eingetragen wird."
-                  actionLabel="Agent einstellen"
+                  title={'No one reports to ' + agent.name}
+                  description="Assign a manager in an agent’s profile to make that agent a direct report."
+                  actionLabel="Hire agent"
                   actionTo="/org/agents/new"
                   variant="plain"
                   size="sm"
@@ -589,22 +589,22 @@ export function AgentDetailPage() {
               data={memories}
               columns={memoryColumns}
               searchable
-              searchPlaceholder="Erinnerungen durchsuchen"
+              searchPlaceholder="Search memories"
               searchText={(row) => row.content + ' ' + row.tags.join(' ')}
               initialSorting={[{ id: 'createdAt', desc: true }]}
               groupTime={(row) => row.createdAt}
               groupSortId="createdAt"
               capped={memoriesCapped}
-              rowLabel={{ singular: 'Erinnerung', plural: 'Erinnerungen' }}
+              rowLabel={{ singular: 'Memory', plural: 'Memories' }}
               columnLabels={MEMORY_COLUMN_LABELS}
               empty={
                 <EmptyState
                   icon={BrainIcon}
-                  title="Noch nichts gelernt"
+                  title="Nothing learned yet"
                   description={
-                    agent.name + ' legt Erinnerungen aus eigenen Aufträgen an, nicht aus dem Gespräch.'
+                    agent.name + ' learns from its own assignments, not from this conversation.'
                   }
-                  actionLabel="Auftrag geben"
+                  actionLabel="Create assignment"
                   onAction={() => setAssignOpen(true)}
                   variant="plain"
                   size="sm"
@@ -616,18 +616,18 @@ export function AgentDetailPage() {
           <TabsContent value="instructions" className="mt-4">
             <Card>
               <CardHeader>
-                <CardTitle>Anweisungen</CardTitle>
+                <CardTitle>Instructions</CardTitle>
                 <CardDescription>
-                  Der Auftrag im Wortlaut, mit dem {agent.name} jeden Lauf beginnt.
+                  The exact assignment text that {agent.name} starts every run with.
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 {instructions === '' ? (
                   <EmptyState
                     icon={PencilIcon}
-                    title="Keine Anweisungen hinterlegt"
-                    description="Ohne eigene Anweisungen arbeitet der Agent nur mit dem Auftragstext."
-                    actionLabel="Bearbeiten"
+                    title="No instructions provided"
+                    description="Without custom instructions, the agent works only from the assignment text."
+                    actionLabel="Edit"
                     actionTo={'/org/agents/' + agent.id + '/edit'}
                     variant="plain"
                     size="sm"
@@ -639,7 +639,7 @@ export function AgentDetailPage() {
                         click away instead of being cut off for good. */}
                     <Accordion type="single" collapsible>
                       <AccordionItem value="full" className="border-b-0">
-                        <AccordionTrigger>Ganzen Text zeigen</AccordionTrigger>
+                        <AccordionTrigger>Show full text</AccordionTrigger>
                         <AccordionContent>
                           <ResultMarkdown text={instructions} />
                         </AccordionContent>
@@ -659,24 +659,24 @@ export function AgentDetailPage() {
       <DetailDrawer
         open={assignOpen}
         onOpenChange={setAssignOpen}
-        title={'Auftrag an ' + agent.name}
-        description="Läuft als eigener Prozess, kalt gestartet, im Projektverzeichnis oder im Arbeitsraum."
+        title={'Assignment for ' + agent.name}
+        description="Runs as a fresh process in the project directory or workspace."
         className="data-[vaul-drawer-direction=right]:sm:max-w-xl"
         footer={
           <Button onClick={assign} disabled={busy || !task.trim()}>
             <SendIcon data-icon="inline-start" />
-            {busy ? 'Läuft …' : 'Losschicken'}
+            {busy ? 'Running…' : 'Start'}
           </Button>
         }
       >
         <FieldGroup>
           <Field>
-            <FieldLabel htmlFor="assign-task">Auftrag</FieldLabel>
+            <FieldLabel htmlFor="assign-task">Assignment</FieldLabel>
             <Textarea
               id="assign-task"
               rows={5}
               required
-              placeholder={'Was soll ' + agent.name + ' tun?'}
+              placeholder={'What should ' + agent.name + ' do?'}
               value={task}
               onChange={(event) => setTask(event.target.value)}
               disabled={busy}
@@ -684,13 +684,13 @@ export function AgentDetailPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="assign-project">Projekt</FieldLabel>
+            <FieldLabel htmlFor="assign-project">Project</FieldLabel>
             <Select value={projectId} onValueChange={setProjectId} disabled={busy}>
               <SelectTrigger id="assign-project" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={NO_PROJECT}>Kein Projekt</SelectItem>
+                <SelectItem value={NO_PROJECT}>No project</SelectItem>
                 {org.projects
                   .filter((project) => !project.archived)
                   .map((project) => (
@@ -702,8 +702,8 @@ export function AgentDetailPage() {
             </Select>
             <FieldDescription>
               {permission
-                ? 'Zugriff ' + PERMISSION_LABEL[permission] + ': ' + PERMISSION_HINT[permission]
-                : 'Der Lauf übernimmt die Zugriffsstufe aus den Einstellungen.'}
+                ? 'Permission ' + PERMISSION_LABEL[permission] + ': ' + PERMISSION_HINT[permission]
+                : 'The run uses the permission level from Settings.'}
             </FieldDescription>
           </Field>
         </FieldGroup>
@@ -714,7 +714,7 @@ export function AgentDetailPage() {
         {error ? (
           <Alert variant="destructive">
             <TriangleAlertIcon />
-            <AlertTitle>Der Auftrag ist gescheitert</AlertTitle>
+            <AlertTitle>The assignment failed</AlertTitle>
             <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
           </Alert>
         ) : null}

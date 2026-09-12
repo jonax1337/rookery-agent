@@ -26,11 +26,8 @@ import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
  */
 export function AppShell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
-  // Die Palette nimmt die geteilte Gesamtliste des Providers, nicht die
-  // 50 Zeilen des Chat-Hubs: dort stehen nur die Gespräche des gerade
-  // gewählten Gegenübers, und ein Sprungziel, das man erst finden kann,
-  // nachdem man den Gegenüber gewechselt hat, ist keins. Archivierte
-  // Gespräche bleiben draussen - sie sind bewusst weggelegt.
+  // Search all loaded conversations, rather than the chat hub's 50-row
+  // slice for the current counterpart. Archived conversations stay hidden.
   const allSessions = useAllSessionsState();
   const paletteSessions = useMemo(
     () => allSessions.sessions.filter((session) => !session.archived),
@@ -44,16 +41,16 @@ export function AppShell() {
   const actions: CommandAction[] = [
     {
       id: 'new-chat',
-      label: 'Neues Gespräch',
+      label: 'New conversation',
       icon: MessageSquarePlusIcon,
-      keywords: ['chat', 'unterhaltung'],
+      keywords: ['chat', 'conversation', 'unterhaltung'],
       run: newConversation,
     },
     {
       id: 'theme',
-      label: resolvedTheme === 'dark' ? 'Helles Erscheinungsbild' : 'Dunkles Erscheinungsbild',
+      label: resolvedTheme === 'dark' ? 'Light theme' : 'Dark theme',
       icon: resolvedTheme === 'dark' ? SunIcon : MoonIcon,
-      keywords: ['theme', 'dark', 'hell', 'dunkel'],
+      keywords: ['theme', 'light', 'dark', 'hell', 'dunkel'],
       run: () => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark'),
     },
   ];
@@ -61,14 +58,13 @@ export function AppShell() {
   return (
     <div className="[--header-height:calc(--spacing(14))]">
       <SidebarProvider className="flex h-svh flex-col overflow-hidden">
-        {/* Vor allem anderen, damit der erste Tabulatorsprung die Navigation
-            überspringen kann (WCAG 2.4.1). Sichtbar wird der Link erst im
-            Fokus; das Ziel ist der SidebarInset, also ein echtes <main>. */}
+          {/* First in tab order so keyboard users can skip navigation.
+            The link becomes visible on focus and targets the main element. */}
         <a
           href="#inhalt"
           className="sr-only z-50 focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-md focus:outline-2 focus:outline-offset-2 focus:outline-ring"
         >
-          Zum Inhalt springen
+          Skip to content
         </a>
         <SiteHeader onSearch={() => setPaletteOpen(true)} />
         <div className="flex min-h-0 flex-1">

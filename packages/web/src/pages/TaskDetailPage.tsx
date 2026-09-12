@@ -21,7 +21,6 @@ import { ApiError, api } from '@/lib/api';
 import { failureMessage, reportFailure } from '@/lib/errors';
 import {
   formatDuration,
-  relativeTime,
   REQUESTER_LABEL,
   TASK_STATUS_LABEL,
   timeAgo,
@@ -105,7 +104,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
  * does not carry - the assignee record and the assignment the task ran as.
  *
  * What a reload cannot bring back is the streamed text of a run in flight:
- * nothing persists it (see serverGaps). So the "Läufe" tab rehydrates the
+ * nothing persists it (see serverGaps). So the "Runs" tab rehydrates the
  * *status* of every open run from `TaskDetail.assignment` and `org.live` and
  * says plainly that the text is gone, rather than showing an empty box that
  * looks like a run producing nothing.
@@ -304,16 +303,16 @@ export function TaskDetailPage() {
           void reload();
           void tasks.refresh();
           void org.refresh();
-          toast('Aufgabe ausgeführt');
+          toast('Task completed');
         },
         onError: (message) => {
           setStreamError(message);
           setStarting(false);
-          toast.error('Ausführen fehlgeschlagen', { description: message });
+          toast.error('Run failed', { description: message });
         },
       },
     );
-    toast('Aufgabe gestartet');
+    toast('Task started');
   }, [id, reload, org, socket, tasks]);
 
   const plan = useCallback(async (): Promise<void> => {
@@ -327,11 +326,11 @@ export function TaskDetailPage() {
       setPlanOpen(false);
       if (hintRef.current) hintRef.current.value = '';
       // The planner's reasoning is persisted as `planNote` and shown under
-      // "Warum so geplant"; the toast only says where to look.
+      // "Why this plan"; the toast only says where to look.
       if (answer.children.length > 0) setTab('teilaufgaben');
-      toast('Plan steht', { description: answer.plan.reason });
+      toast('Plan ready', { description: answer.plan.reason });
     } catch (caught) {
-      reportFailure('Planen', caught);
+      reportFailure('Plan', caught);
     } finally {
       setPlanning(false);
     }
@@ -344,14 +343,14 @@ export function TaskDetailPage() {
         await api.updateTask(id, { status });
         await tasks.refresh();
         await reload();
-        toast(status === 'done' ? 'Aufgabe abgeschlossen' : 'Aufgabe abgebrochen');
+        toast(status === 'done' ? 'Task completed' : 'Task cancelled');
       } catch (caught) {
         // 409 is the one failure with a real explanation: the runner holds the
         // task and only "abbrechen" gets through while it does.
         const conflict = caught instanceof ApiError && caught.status === 409;
-        toast.error(conflict ? 'Die Aufgabe läuft gerade' : 'Status nicht geändert', {
+        toast.error(conflict ? 'The task is currently running' : 'Status unchanged', {
           description: conflict
-            ? 'Während ein Lauf arbeitet, lässt sich nur noch abbrechen.'
+            ? 'While a run is active, the task can only be cancelled.'
             : failureMessage(caught),
         });
       }
@@ -361,10 +360,10 @@ export function TaskDetailPage() {
 
   const cancelTask = useCallback(async (): Promise<void> => {
     const ok = await confirm({
-      title: 'Aufgabe abbrechen?',
-      description: 'Ein laufender Auftrag wird gestoppt. Das lässt sich nicht zurücknehmen.',
-      confirmLabel: 'Abbrechen',
-      cancelLabel: 'Weiterlaufen lassen',
+      title: 'Cancel task?',
+      description: 'Any running assignment will be stopped. This cannot be undone.',
+      confirmLabel: 'Cancel',
+      cancelLabel: 'Keep running',
       destructive: true,
       icon: BanIcon,
     });
@@ -383,57 +382,57 @@ export function TaskDetailPage() {
   usePageMeta(
     {
       ...(task ? { title: task.title } : {}),
-      breadcrumb: [{ label: 'Aufgaben', to: '/tasks' }, { label: task?.title ?? 'Aufgabe' }],
+      breadcrumb: [{ label: 'Tasks', to: '/tasks' }, { label: task?.title ?? 'Task' }],
       actions: task ? (
         <>
           <Button size="sm" disabled={isRunning || settled} onClick={run}>
             {isRunning ? (
-              <Spinner aria-label="Läuft" data-icon="inline-start" />
+              <Spinner aria-label="Running" data-icon="inline-start" />
             ) : (
               <PlayIcon data-icon="inline-start" />
             )}
-            {isRunning ? 'Läuft …' : 'Ausführen'}
+            {isRunning ? 'Running…' : 'Run'}
           </Button>
 
           <Popover open={planOpen} onOpenChange={setPlanOpen}>
             <PopoverTrigger asChild>
               <Button size="sm" variant="outline" disabled={isRunning || settled}>
                 {planning ? (
-                  <Spinner aria-label="Wird geplant" data-icon="inline-start" />
+                  <Spinner aria-label="Planning" data-icon="inline-start" />
                 ) : (
                   <WandSparklesIcon data-icon="inline-start" />
                 )}
-                Planen
+                Plan
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-80">
               <PopoverHeader>
-                <PopoverTitle>Planen</PopoverTitle>
+                <PopoverTitle>Plan</PopoverTitle>
                 <PopoverDescription>
-                  Ein Modell liest die Belegschaft und entscheidet: eine Person oder ein Schnitt
-                  in Teilaufgaben. Das dauert ein paar Sekunden.
+                  A model reviews the available agents and decides whether to assign one person
+                  or split the work into subtasks. This takes a few seconds.
                 </PopoverDescription>
               </PopoverHeader>
               <FieldGroup className="pt-3">
                 <Field>
-                  <FieldLabel htmlFor="aufgabe-hinweis">Hinweis an den Planer</FieldLabel>
+                  <FieldLabel htmlFor="aufgabe-hinweis">Guidance for the planner</FieldLabel>
                   <Input
                     id="aufgabe-hinweis"
                     ref={hintRef}
-                    placeholder="z. B. „bitte an Mara“"
+                    placeholder="e.g. “please assign this to Mara”"
                     disabled={planning}
                   />
                   <FieldDescription>
-                    Bleibt das Feld leer, entscheidet das Modell allein.
+                    Leave this blank to let the model decide.
                   </FieldDescription>
                 </Field>
                 <Button onClick={() => void plan()} disabled={planning}>
                   {planning ? (
-                    <Spinner aria-label="Wird geplant" data-icon="inline-start" />
+                    <Spinner aria-label="Planning" data-icon="inline-start" />
                   ) : (
                     <WandSparklesIcon data-icon="inline-start" />
                   )}
-                  {planning ? 'Wird geplant …' : 'Planen'}
+                  {planning ? 'Planning…' : 'Plan'}
                 </Button>
               </FieldGroup>
             </PopoverContent>
@@ -441,13 +440,13 @@ export function TaskDetailPage() {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="Weitere Aktionen" />
+              <RowMenuButton tone="header" label="More actions" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem asChild>
                 <NavLink to={'/tasks/' + task.id + '/edit'}>
                   <PencilIcon data-icon="inline-start" />
-                  Bearbeiten
+                  Edit
                 </NavLink>
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -455,7 +454,7 @@ export function TaskDetailPage() {
                 onSelect={() => void setStatus('done')}
               >
                 <CheckIcon data-icon="inline-start" />
-                Abschließen
+                Complete
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -464,7 +463,7 @@ export function TaskDetailPage() {
                 onSelect={() => void cancelTask()}
               >
                 <BanIcon data-icon="inline-start" />
-                Abbrechen
+                Cancel
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -493,26 +492,26 @@ export function TaskDetailPage() {
         rowActions: (child) => (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton label={'Aktionen für ' + child.title} />
+              <RowMenuButton label={'Actions for ' + child.title} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem asChild>
                 <NavLink to={'/tasks/' + child.id}>
                   <SquareArrowOutUpRightIcon data-icon="inline-start" />
-                  Öffnen
+                  Open
                 </NavLink>
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
                 <NavLink to={'/tasks/' + child.id + '/edit'}>
                   <PencilIcon data-icon="inline-start" />
-                  Bearbeiten
+                  Edit
                 </NavLink>
               </DropdownMenuItem>
               {child.assignmentId ? (
                 <DropdownMenuItem asChild>
                   <NavLink to={'/assignments/' + child.assignmentId}>
                     <SendIcon data-icon="inline-start" />
-                    Auftrag öffnen
+                    Open assignment
                   </NavLink>
                 </DropdownMenuItem>
               ) : null}
@@ -535,9 +534,9 @@ export function TaskDetailPage() {
       <PageBody width="3xl">
         <EmptyState
           icon={ClipboardListIcon}
-          title="Diese Aufgabe gibt es nicht"
-          description="Der Eintrag wurde gelöscht, oder die Adresse stimmt nicht."
-          actionLabel="Zu den Aufgaben"
+          title="This task does not exist"
+          description="The entry was deleted, or the address is incorrect."
+          actionLabel="View tasks"
           actionTo="/tasks"
         />
       </PageBody>
@@ -553,9 +552,9 @@ export function TaskDetailPage() {
         ) : (
           <EmptyState
             icon={ClipboardListIcon}
-            title="Diese Aufgabe gibt es nicht"
-            description="Der Eintrag wurde gelöscht, oder die Adresse stimmt nicht."
-            actionLabel="Zu den Aufgaben"
+            title="This task does not exist"
+            description="The entry was deleted, or the address is incorrect."
+            actionLabel="View tasks"
             actionTo="/tasks"
           />
         )}
@@ -575,47 +574,47 @@ export function TaskDetailPage() {
       label: 'Status',
       value: TASK_STATUS_LABEL[task.status],
       badge: <StatusBadge kind="priority" status={task.priority} />,
-      headline: assignee ? assignee.name + ' ist zuständig' : 'Noch niemand zuständig',
-      footnote: 'Zuletzt geändert ' + timeAgo(task.updatedAt),
+      headline: assignee ? assignee.name + ' is assigned' : 'No assignee yet',
+      footnote: 'Last updated ' + timeAgo(task.updatedAt),
     },
     {
-      label: 'Teilaufgaben',
+      label: 'Subtasks',
       value: children.length > 0 ? doneChildren + '/' + children.length : '–',
       headline:
         children.length === 0
-          ? 'Nicht aufgeteilt'
+          ? 'Not split into subtasks'
           : doneChildren === children.length
-            ? 'Alle erledigt'
-            : formatNumber(children.length - doneChildren) + ' noch offen',
-      footnote: children.length === 0 ? 'Planen schneidet sie zu' : 'Aus der geladenen Aufgabenliste',
+            ? 'All done'
+            : formatNumber(children.length - doneChildren) + ' still open',
+      footnote: children.length === 0 ? 'Planning defines the subtasks' : 'From the loaded task list',
     },
     {
-      label: 'Läufe',
+      label: 'Runs',
       value: formatNumber(runIds.length),
       // Not `RunningBadge`: this counts pending *and* running, which is a
-      // different state than "läuft". It borrows the look, not the word.
+      // different state than "running". It borrows the look, not the word.
       ...(openRuns > 0
         ? {
             badge: (
               <Badge variant="secondary" className="animate-pulse tabular-nums">
-                {openRuns} offen
+                {openRuns} open
               </Badge>
             ),
           }
         : {}),
-      headline: runIds.length === 0 ? 'Noch nichts ausgeführt' : 'Aufträge zu dieser Aufgabe',
-      footnote: 'Diese Aufgabe und ihre Teilaufgaben',
+      headline: runIds.length === 0 ? 'No runs yet' : 'Assignments for this task',
+      footnote: 'This task and its subtasks',
     },
     {
-      label: 'Laufzeit',
+      label: 'Duration',
       value: runtimeOf(task),
       headline:
         task.finishedAt && task.startedAt
-          ? 'Vom Start bis zum Ende'
+          ? 'From start to finish'
           : task.startedAt
-            ? 'Seit dem Start'
-            : 'Noch nicht gestartet',
-      footnote: task.startedAt ? 'Start ' + formatDateTime(task.startedAt) : 'Kein Startzeitpunkt',
+            ? 'Since the start'
+            : 'Not started yet',
+      footnote: task.startedAt ? 'Started ' + formatDateTime(task.startedAt) : 'No start time',
     },
   ];
 
@@ -629,27 +628,27 @@ export function TaskDetailPage() {
           columns={2}
           items={[
             {
-              label: 'Projekt',
-              value: project?.name ?? 'Kein Projekt',
+              label: 'Project',
+              value: project?.name ?? 'No project',
               icon: FolderIcon,
             },
             {
-              label: 'Zuständig',
-              value: assignee?.name ?? 'Noch offen',
+              label: 'Assignee',
+              value: assignee?.name ?? 'Unassigned',
               icon: UserRoundIcon,
               ...(assignee ? { to: '/org/agents/' + assignee.id } : {}),
             },
             {
-              label: 'Angelegt von',
+              label: 'Created by',
               value:
                 REQUESTER_LABEL[task.createdBy] +
                 (task.createdByAgentId
-                  ? ' · ' + (org.agentById(task.createdByAgentId)?.name ?? 'Unbekannt')
+                  ? ' · ' + (org.agentById(task.createdByAgentId)?.name ?? 'Unknown')
                   : ''),
               icon: PencilLineIcon,
             },
             {
-              label: 'Abhängigkeiten',
+              label: 'Dependencies',
               icon: LinkIcon,
               value:
                 task.dependsOn.length === 0 ? null : (
@@ -677,7 +676,7 @@ export function TaskDetailPage() {
         <div className="px-4 lg:px-6">
           <Alert variant="destructive">
             <BanIcon />
-            <AlertTitle>Die Aufgabe ist gescheitert</AlertTitle>
+            <AlertTitle>The task failed</AlertTitle>
             <AlertDescription className="whitespace-pre-wrap">
               {streamError ?? task.error}
             </AlertDescription>
@@ -690,9 +689,9 @@ export function TaskDetailPage() {
       <div className="px-4 lg:px-6">
         <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
           <TabsList>
-            <TabsTrigger value="ueberblick">Überblick</TabsTrigger>
+            <TabsTrigger value="ueberblick">Overview</TabsTrigger>
             <TabsTrigger value="teilaufgaben">
-              Teilaufgaben
+              Subtasks
               {children.length > 0 ? (
                 <Badge variant="secondary" className="tabular-nums">
                   {children.length}
@@ -700,7 +699,7 @@ export function TaskDetailPage() {
               ) : null}
             </TabsTrigger>
             <TabsTrigger value="laeufe">
-              Läufe
+              Runs
               {openRuns > 0 ? (
                 <Badge variant="secondary" className="animate-pulse tabular-nums">
                   {openRuns}
@@ -711,15 +710,15 @@ export function TaskDetailPage() {
                 </Badge>
               ) : null}
             </TabsTrigger>
-            <TabsTrigger value="ergebnis">Ergebnis</TabsTrigger>
+            <TabsTrigger value="ergebnis">Result</TabsTrigger>
           </TabsList>
 
           {/* ----------------------------- overview ---------------------------- */}
           <TabsContent value="ueberblick" className="mt-4 flex flex-col gap-4">
             <Card>
               <CardHeader>
-                <CardTitle>Beschreibung</CardTitle>
-                <CardDescription>Der Auftrag im Wortlaut, wie er eingetragen wurde.</CardDescription>
+                <CardTitle>Description</CardTitle>
+                <CardDescription>The original task description, as entered.</CardDescription>
               </CardHeader>
               <CardContent>
                 {task.description.trim() ? (
@@ -727,9 +726,9 @@ export function TaskDetailPage() {
                 ) : (
                   <EmptyState
                     icon={PencilIcon}
-                    title="Keine Beschreibung"
-                    description="Ohne Beschreibung arbeitet der Planer nur mit dem Titel."
-                    actionLabel="Bearbeiten"
+                    title="No description"
+                    description="Without a description, the planner only has the title."
+                    actionLabel="Edit"
                     actionTo={'/tasks/' + task.id + '/edit'}
                     variant="plain"
                     size="sm"
@@ -741,9 +740,9 @@ export function TaskDetailPage() {
             {task.planNote ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Warum so geplant</CardTitle>
+                  <CardTitle>Why this plan</CardTitle>
                   <CardDescription>
-                    Die Begründung des Planers für Zuschnitt und Zuständigkeit.
+                    The planner’s reasoning for the breakdown and assignee.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -762,18 +761,18 @@ export function TaskDetailPage() {
               columns={subtaskColumns}
               getRowId={(child) => child.id}
               searchable
-              searchPlaceholder="Teilaufgaben durchsuchen"
+              searchPlaceholder="Search subtasks"
               searchText={(child) => child.title + ' ' + child.description}
               initialSorting={[{ id: 'priority', desc: false }]}
               paginate={false}
               columnLabels={TASK_COLUMN_LABELS}
-              rowLabel={{ singular: 'Teilaufgabe', plural: 'Teilaufgaben' }}
+              rowLabel={{ singular: 'subtask', plural: 'subtasks' }}
               empty={
                 <EmptyState
                   icon={ListTodoIcon}
-                  title="Noch keine Teilaufgaben"
-                  description="Der Planer liest die Belegschaft und schneidet die Aufgabe zu — oder gibt sie einer einzigen Person."
-                  actionLabel="Planen"
+                  title="No subtasks yet"
+                  description="The planner reviews the available agents and breaks the task down, or assigns it to one person."
+                  actionLabel="Plan"
                   onAction={() => void plan()}
                   variant="plain"
                   size="sm"
@@ -789,15 +788,15 @@ export function TaskDetailPage() {
                 <LiveRunList
                   assignments={liveViews}
                   onCancel={cancelRun}
-                  title={rehydrated ? 'Läuft gerade' : 'Dieser Lauf'}
+                  title={rehydrated ? 'Currently running' : 'This run'}
                 />
                 {rehydrated ? (
                   // Honest about the gap instead of showing an empty box: the
                   // text deltas of a stream are not persisted anywhere, so
                   // after a reload only the status of the run survives.
                   <p className="text-xs text-muted-foreground">
-                    Nach einem Neuladen bleibt vom laufenden Auftrag nur sein Status — der
-                    bereits gestreamte Text wird nirgends gespeichert.
+                    After a reload, only the running assignment’s status is available;
+                    previously streamed text is not stored.
                   </p>
                 ) : null}
               </div>
@@ -806,7 +805,7 @@ export function TaskDetailPage() {
             {streamed.length > 0 && streamResult ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Während des Laufs</CardTitle>
+                  <CardTitle>During the run</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <ResultMarkdown text={streamResult} />
@@ -821,7 +820,7 @@ export function TaskDetailPage() {
               columns={runColumns}
               getRowId={(row) => row.id}
               searchable
-              searchPlaceholder="Aufträge durchsuchen"
+              searchPlaceholder="Search assignments"
               searchText={(row) => row.task}
               initialSorting={ASSIGNMENT_SORTING}
               paginate={false}
@@ -830,9 +829,9 @@ export function TaskDetailPage() {
               empty={
                 <EmptyState
                   icon={SendIcon}
-                  title="Noch kein Lauf"
-                  description="Ausführen gibt die Aufgabe an die zuständigen Agenten; jeder Lauf steht danach hier."
-                  actionLabel="Ausführen"
+                  title="No runs yet"
+                  description="Run sends the task to its assigned agents. Each run is then listed here."
+                  actionLabel="Run"
                   onAction={run}
                   variant="plain"
                   size="sm"
@@ -844,13 +843,13 @@ export function TaskDetailPage() {
           {/* ------------------------------ result ----------------------------- */}
           <TabsContent value="ergebnis" className="mt-4">
             {result ? (
-              <ResultCard text={result} description="Was am Ende des Laufs herauskam." />
+              <ResultCard text={result} description="What the run produced." />
             ) : (
               <EmptyState
                 icon={ClipboardListIcon}
-                title="Noch kein Ergebnis"
-                description="Sobald die Aufgabe gelaufen ist, steht die Antwort hier."
-                actionLabel="Ausführen"
+                title="No result yet"
+                description="The response will appear here once the task has run."
+                actionLabel="Run"
                 onAction={run}
               />
             )}
@@ -887,7 +886,7 @@ function TaskDetailSkeleton() {
  * How long the task took, or how long it has been going.
  *
  * `finishedAt - startedAt` is the only duration a task carries; while it runs
- * there is no end yet, so the card says "läuft seit" and leans on the same
+ * there is no end yet, so the card says when it started and uses the same
  * coarse buckets the rest of the app uses for elapsed time.
  */
 function runtimeOf(task: Task): string {
@@ -895,7 +894,7 @@ function runtimeOf(task: Task): string {
     return formatDuration(task.finishedAt - task.startedAt) || '–';
   }
   if (task.startedAt && task.status === 'running') {
-    return 'läuft seit ' + relativeTime(task.startedAt);
+    return 'Started ' + timeAgo(task.startedAt);
   }
   return '–';
 }

@@ -63,7 +63,7 @@ import { Textarea } from '@/components/ui/textarea';
  * The server owns the parser, so the form never guesses what an expression
  * means - it asks `GET /api/cron/preview` and shows the answer in its own
  * card. That card is also the gate: while the server says the expression is
- * wrong, "Speichern" is disabled, instead of letting the save go out and
+ * wrong, "Save" is disabled, instead of letting the save go out and
  * turning the refusal into a toast.
  *
  * The eight presets moved into the field itself. There used to be a second
@@ -72,9 +72,9 @@ import { Textarea } from '@/components/ui/textarea';
  */
 
 const PROMPT_PLACEHOLDER =
-  'Was bei jedem Lauf zu tun ist, so dass es ohne Rückfragen geht. Etwa: „Sieh dir die offenen ' +
-  'Aufgaben und die Aufträge der letzten 24 Stunden an und fasse in fünf Sätzen zusammen, was ' +
-  'passiert ist und was heute ansteht.“';
+  'What to do on every run, written so it can be completed without follow-up questions. For example: “Review the open ' +
+  'tasks and assignments from the past 24 hours, then summarize in five sentences what ' +
+  'happened and what is coming up today.”';
 
 type RunnerChoice = 'assistant' | 'agent';
 
@@ -104,9 +104,9 @@ const EMPTY: CronDraft = {
 
 const schema = z
   .object({
-    name: z.string().trim().min(1, 'Ein Name ist Pflicht.'),
-    schedule: z.string().trim().min(1, 'Ohne Ausdruck feuert nichts.'),
-    prompt: z.string().trim().min(1, 'Ohne Anweisung weiß der Lauf nicht, was er tun soll.'),
+    name: z.string().trim().min(1, 'A name is required.'),
+    schedule: z.string().trim().min(1, 'An expression is required.'),
+    prompt: z.string().trim().min(1, 'The run needs instructions.'),
     runner: z.enum(['assistant', 'agent']),
     agentId: z.string().nullable(),
   })
@@ -115,7 +115,7 @@ const schema = z
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['agentId'],
-        message: 'Ein Agentenzeitplan braucht einen Agenten.',
+        message: 'An agent schedule requires an agent.',
       });
     }
   });
@@ -123,13 +123,13 @@ const schema = z
 const RUNNER_OPTIONS: ChoiceOption<RunnerChoice>[] = [
   {
     value: 'assistant',
-    label: 'Der Assistent',
-    description: 'Arbeitet in einem eigenen Gespräch mit all seinen Werkzeugen.',
+    label: 'The assistant',
+    description: 'Works in a dedicated conversation with all available tools.',
   },
   {
     value: 'agent',
-    label: 'Ein Agent',
-    description: 'Bekommt bei jedem Lauf einen Auftrag im Projektverzeichnis.',
+    label: 'An agent',
+    description: 'Receives an assignment in the project directory on every run.',
   },
 ];
 
@@ -198,7 +198,7 @@ export function CronFormPage() {
     hydrate(job.id, () => draftOf(job));
   }, [hydrate, job]);
 
-  /* -------------------------------- Vorschau ------------------------------ */
+  /* -------------------------------- Preview ------------------------------ */
 
   // Debounced, because the endpoint is cheap but one request per keystroke is
   // not, and the answer for a half-typed expression is noise either way.
@@ -258,7 +258,7 @@ export function CronFormPage() {
       editing && id ? await api.updateCronJob(id, patch) : await api.createCronJob(toInput(patch));
     markSaved();
     await cron.refresh();
-    toast(editing ? 'Zeitplan gespeichert' : 'Zeitplan angelegt', {
+    toast(editing ? 'Schedule saved' : 'Schedule created', {
       ...(preview?.ok ? { description: preview.description } : {}),
     });
     void navigate('/cron/' + saved.id);
@@ -267,32 +267,32 @@ export function CronFormPage() {
   const remove = useCallback(async (): Promise<void> => {
     if (!id || !job) return;
     const ok = await confirm({
-      title: 'Zeitplan löschen?',
+      title: 'Delete schedule?',
       description:
-        'Der Zeitplan „' +
+        'The schedule “' +
         job.name +
-        '“ feuert danach nicht mehr. Bereits gelaufene Aufträge und Gespräche bleiben erhalten.',
-      confirmLabel: 'Löschen',
+        '” will no longer run. Existing assignments and conversations will remain.',
+      confirmLabel: 'Delete',
       destructive: true,
     });
     if (!ok) return;
     try {
       await api.deleteCronJob(id);
       await cron.refresh();
-      toast('Zeitplan gelöscht', { description: job.name });
+      toast('Schedule deleted', { description: job.name });
       void navigate('/cron');
     } catch (caught) {
-      reportFailure('Löschen', caught);
+      reportFailure('Delete', caught);
     }
   }, [confirm, cron, id, job, navigate]);
 
   /* --------------------------------- Kopf --------------------------------- */
 
-  const leaf = editing ? (job?.name ?? 'Zeitplan bearbeiten') : 'Zeitplan anlegen';
+  const leaf = editing ? (job?.name ?? 'Edit schedule') : 'Create schedule';
 
   usePageMeta(
     {
-      breadcrumb: [{ label: 'Zeitpläne', to: '/cron' }, { label: leaf }],
+      breadcrumb: [{ label: 'Schedules', to: '/cron' }, { label: leaf }],
       actions: (
         <FormHeaderActions
           form={formId}
@@ -303,7 +303,7 @@ export function CronFormPage() {
             editing
               ? [
                   {
-                    label: 'Löschen',
+                    label: 'Delete',
                     icon: Trash2Icon,
                     destructive: true,
                     onSelect: () => void remove(),
@@ -324,9 +324,9 @@ export function CronFormPage() {
       <PageBody width="3xl">
         <EmptyState
           icon={CalendarClockIcon}
-          title="Diesen Zeitplan gibt es nicht mehr"
-          description="Er wurde gelöscht oder hat nie existiert."
-          actionLabel="Zu den Zeitplänen"
+          title="This schedule no longer exists"
+          description="It was deleted or never existed."
+          actionLabel="View schedules"
           actionTo="/cron"
         />
       </PageBody>
@@ -334,16 +334,16 @@ export function CronFormPage() {
   }
 
   // `sleep` ist die Zeile des Systems: `ensureSleepSchedule` legt sie immer
-  // wieder an, und ihre Uhrzeit gehört den Gedächtnis-Einstellungen.
+  // wieder an, und ihre Uhrzeit gehört den Memory-Settings.
   if (job?.kind === 'sleep') {
     return (
       <PageBody width="3xl">
         <EmptyState
           icon={CalendarClockIcon}
-          title="Dieser Zeitplan gehört dem System"
-          description="Die Nacht des Gedächtnisses wird in den Einstellungen eingestellt, nicht hier."
-          actionLabel="Zu den Einstellungen"
-          actionTo="/settings/memory"
+          title="This schedule belongs to the system"
+          description="Configure the system sleep schedule under memory.sleep in your Rookery config.json."
+          actionLabel="Back to schedules"
+          actionTo="/cron"
         />
       </PageBody>
     );
@@ -357,7 +357,7 @@ export function CronFormPage() {
     );
   }
 
-  /* -------------------------------- Vorschau ------------------------------ */
+  /* -------------------------------- Preview ------------------------------ */
 
   const previewCard = (
     <Card>
@@ -366,7 +366,7 @@ export function CronFormPage() {
           <CardHeader>
             <CardTitle>{preview.description}</CardTitle>
             <CardDescription>
-              Die nächsten Termine, in der Zeitzone des Rechners, auf dem der Server läuft.
+              Upcoming times in the time zone of the computer running the server.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -386,9 +386,9 @@ export function CronFormPage() {
       ) : preview && !preview.ok ? (
         <CardContent>
           <Alert variant="destructive">
-            <AlertTitle>Der Ausdruck geht so nicht</AlertTitle>
+            <AlertTitle>This expression is invalid</AlertTitle>
             <AlertDescription>
-              {preview.error ?? 'Der Server konnte den Ausdruck nicht lesen.'}
+              {preview.error ?? 'The server could not parse the expression.'}
             </AlertDescription>
           </Alert>
         </CardContent>
@@ -412,22 +412,22 @@ export function CronFormPage() {
         aside={previewCard}
       >
         {/*
-          Die Legende steht hier und nicht als Kartenkopf: ohne sie begann die
-          Karte mit dem blossen Hinweissatz, waehrend die spaeteren Abschnitte
+          The Legende steht hier und nicht als Kartenkopf: ohne sie begann die
+          Karte mit dem blossen Guidancesatz, waehrend die spaeteren Abschnitte
           eine Ueberschrift trugen - der Aufbau wirkte oben abgeschnitten.
         */}
         <FieldSet>
-          <FieldLegend>Zeitplan</FieldLegend>
+          <FieldLegend>Schedule</FieldLegend>
           <FieldDescription>
-            Zeiten gelten in der Zeitzone des Rechners, auf dem der Server läuft.
+            Times use the time zone of the computer running the server.
           </FieldDescription>
           <Field>
-            <FieldLabel htmlFor="cron-schedule">Ausdruck</FieldLabel>
+            <FieldLabel htmlFor="cron-schedule">Expression</FieldLabel>
             <InputGroup>
               <InputGroupInput
                 id="cron-schedule"
                 className="font-mono"
-                placeholder="Minute Stunde Tag Monat Wochentag"
+                placeholder="Minute Hour Day Month Weekday"
                 value={draft.schedule}
                 aria-invalid={Boolean(errors.schedule) || invalidSchedule}
                 onChange={(event) => set({ schedule: event.target.value })}
@@ -436,12 +436,12 @@ export function CronFormPage() {
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <InputGroupButton>
-                      Vorlagen
+                      Templates
                       <ChevronDownIcon />
                     </InputGroupButton>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-64">
-                    <DropdownMenuLabel>Übliche Zeiten</DropdownMenuLabel>
+                    <DropdownMenuLabel>Common schedules</DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     {CRON_PRESETS.map((entry) => (
                       <DropdownMenuItem
@@ -456,17 +456,17 @@ export function CronFormPage() {
               </InputGroupAddon>
             </InputGroup>
             <FieldDescription>
-              Fünf Felder: Minute, Stunde, Tag, Monat, Wochentag. „0 8 * * 1-5“ ist werktags um
-              08:00. {checking ? 'Wird geprüft …' : ''}
+              Five fields: minute, hour, day, month, weekday. “0 8 * * 1-5” runs at 8:00 AM on
+              weekdays. {checking ? 'Checking…' : ''}
             </FieldDescription>
             <FieldError>{errors.schedule}</FieldError>
           </Field>
 
           <Field orientation="horizontal">
             <FieldContent>
-              <FieldTitle>Nur einmal ausführen</FieldTitle>
+              <FieldTitle>Run only once</FieldTitle>
               <FieldDescription>
-                Nach dem ersten Lauf schaltet sich der Zeitplan selbst ab.
+                The schedule disables itself after the first run.
               </FieldDescription>
             </FieldContent>
             <Switch
@@ -481,7 +481,7 @@ export function CronFormPage() {
 
         <FieldSet>
           <Field>
-            <FieldLabel htmlFor="cron-runner-assistant">Ausführung</FieldLabel>
+            <FieldLabel htmlFor="cron-runner-assistant">Execution</FieldLabel>
             <ChoiceField
               id="cron-runner"
               options={RUNNER_OPTIONS}
@@ -498,8 +498,8 @@ export function CronFormPage() {
                 options={agentOptions}
                 value={draft.agentId}
                 onChange={(agentId) => set({ agentId })}
-                placeholder="Agent wählen"
-                emptyLabel="Kein Agent gefunden"
+                placeholder="Select agent"
+                emptyLabel="No agent found"
                 invalid={Boolean(errors.agentId)}
               />
               <FieldError>{errors.agentId}</FieldError>
@@ -507,22 +507,22 @@ export function CronFormPage() {
           ) : null}
 
           <Field>
-            <FieldLabel htmlFor="cron-project">Projekt</FieldLabel>
+            <FieldLabel htmlFor="cron-project">Project</FieldLabel>
             <EntityCombobox
               id="cron-project"
               options={projectOptions}
               value={draft.projectId}
               onChange={(projectId) => set({ projectId })}
-              placeholder="Kein Projekt"
-              emptyLabel="Kein Projekt gefunden"
+              placeholder="No project"
+              emptyLabel="No project gefunden"
             />
             <FieldDescription>
-              Das Projekt entscheidet, in welchem Verzeichnis der Lauf arbeitet.
+              The project determines which directory the run uses.
             </FieldDescription>
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="cron-permission-standard">Zugriff</FieldLabel>
+            <FieldLabel htmlFor="cron-permission-standard">Permission</FieldLabel>
             <ChoiceField
               id="cron-permission"
               options={PERMISSION_CHOICES}
@@ -539,7 +539,7 @@ export function CronFormPage() {
             <FieldLabel htmlFor="cron-name">Name</FieldLabel>
             <Input
               id="cron-name"
-              placeholder="z. B. Morgenbriefing"
+              placeholder="e.g. Morning briefing"
               value={draft.name}
               aria-invalid={Boolean(errors.name)}
               onChange={(event) => set({ name: event.target.value })}
@@ -548,7 +548,7 @@ export function CronFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="cron-prompt">Anweisung</FieldLabel>
+            <FieldLabel htmlFor="cron-prompt">Instructions</FieldLabel>
             <Textarea
               id="cron-prompt"
               rows={10}
@@ -558,7 +558,7 @@ export function CronFormPage() {
               onChange={(event) => set({ prompt: event.target.value })}
             />
             <FieldDescription>
-              Jeder Lauf startet frisch: der Text muss ohne Rückfragen für sich stehen.
+              Write self-contained instructions that can run without follow-up questions.
             </FieldDescription>
             <FieldError>{errors.prompt}</FieldError>
           </Field>
@@ -569,9 +569,9 @@ export function CronFormPage() {
         <FieldSet>
           <Field orientation="horizontal">
             <FieldContent>
-              <FieldTitle>Aktiv</FieldTitle>
+              <FieldTitle>Active</FieldTitle>
               <FieldDescription>
-                Ausgeschaltet bleibt der Zeitplan erhalten, feuert aber nicht.
+                When disabled, the schedule remains saved but does not run.
               </FieldDescription>
             </FieldContent>
             <Switch

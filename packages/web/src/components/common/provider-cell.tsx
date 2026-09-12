@@ -37,7 +37,7 @@ export interface ProviderCellProps {
 export function ProviderCell({
   provider,
   model,
-  fallback = 'Vorgabe',
+  fallback = 'Default',
   layout = 'stacked',
   showModel = true,
   className,
@@ -46,7 +46,7 @@ export function ProviderCell({
     return <span className={cn('text-sm text-muted-foreground', className)}>{fallback}</span>;
   }
 
-  const modelLabel = model || 'Standardmodell';
+  const modelLabel = model || 'Default model';
 
   if (layout === 'inline') {
     return (

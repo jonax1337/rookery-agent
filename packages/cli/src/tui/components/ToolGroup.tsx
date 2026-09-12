@@ -99,7 +99,7 @@ export function ToolCallRow({ call, width, frame = 0, now }: ToolCallRowProps): 
       {hidden > 0 ? (
         <Box paddingLeft={2}>
           <Text color={ui.faint} dimColor>
-            {glyph.branch + ' +' + hidden + ' weitere Zeilen'}
+            {glyph.branch + ' +' + hidden + ' more lines'}
           </Text>
         </Box>
       ) : null}

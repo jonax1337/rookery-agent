@@ -4,685 +4,286 @@
 </p>
 
 <p align="center">
-  <b>Ein persönlicher KI-Assistent, der deine bestehenden Claude-Code- und Codex-Anmeldungen nutzt.</b><br>
-  Keine API-Keys. Keine Cloud-Konten. Alles läuft lokal.
+  <b>A personal AI assistant powered by your existing Claude Code and Codex CLI logins.</b><br>
+  Local orchestration and storage. No model API keys required.
 </p>
 
----
+## What Rookery does
 
-## Was das ist
+Rookery runs the installed `claude` and `codex` CLIs as child processes using their signed-in sessions. It adds persistent memory, an assistant identity, an organization of agents, a task board, schedules, tools, skills, and voice. The web app, terminal, and Telegram share the same core.
 
-Rookery ist eine Assistenz-Schicht über den CLIs, bei denen du ohnehin schon
-angemeldet bist. Statt einen API-Key zu verlangen, startet Rookery
-`claude -p` bzw. `codex exec` als Unterprozess und übernimmt deren
-OAuth-Sitzung. Wenn `claude` und `codex` in deinem Terminal funktionieren,
-funktioniert auch Rookery — dieselbe Abrechnung, dasselbe Abo, kein zusätzliches
-Geheimnis auf der Platte.
+The application and database run on your machine. Model requests still go to the selected provider; Telegram, network tools, and server speech engines also use external services. Provider usage follows the account signed in to each CLI.
 
-Dazu kommt das, was die reinen CLIs nicht haben:
+## Quick start
 
-- **Dauerhaftes Gedächtnis** über alle Gespräche hinweg, mit Bewertung und Begründung
-- **Ein fester Ansprechpartner** — eine Identität, die nie wechselt
-- **Drei Oberflächen** auf einem gemeinsamen Kern: CLI, Web-Interface, Sprache
-- **Sprachbetrieb** mit Aktivierungswort, Live-Pegel-Visualisierung und Vorlesen
-
-## Schnellstart
+Requirements: **Node.js 22.5 or newer** (for `node:sqlite`), npm, and at least one installed, signed-in provider CLI. For Claude Code, run `claude` and `/login`; for Codex, run `codex login`.
 
 ```bash
 npm install
 npm run build
-npm start          # API auf http://127.0.0.1:4317, liefert auch die Web-UI aus
+npm run doctor
+npm start
 ```
 
-Web-Interface unter <http://127.0.0.1:4317> öffnen — oder im Terminal bleiben.
-Die Seitenleiste ist in drei Gruppen sortiert: **Arbeiten** (Übersicht,
-Gespräche), **Betrieb** (Aufgaben, Aufträge, Zeitpläne, Gateway) und **Firma &
-Wissen** (Firma mit Agenten/Teams/Projekten, Gedächtnis mit
-Erinnerungen/Netz/Nächten, Werkzeuge, Skills). Oben starten „Neues Gespräch“
-und der Sprechen-Knopf, unten liegen Suche (`Strg`+`K`), Einstellungen und der
-Verbindungszustand.
-
-Unter **Gateway** (`/gateways`) lässt sich der Assistent auch von unterwegs
-erreichen — Telegram ist das erste Gateway. Einrichtung: bei
-[@BotFather](https://t.me/BotFather) einen Bot anlegen, den Token in den
-Gateway-Einstellungen eintragen und **Kopplung** einschalten, dem Bot `/id`
-schreiben, die zurückgemeldete Nummer freischalten — damit schließt sich die
-Kopplung wieder — und den Kanal einschalten. Kein Neustart, keine Datei von
-Hand. Details und das Sicherheitsmodell stehen in
-[`telegram-channel.md`](docs/concepts/telegram-channel.md).
-
-Die Gespräche haben eine **eigene Seite** (`/chats`) statt einer Liste in der
-Seitenleiste: mit Suche, Filtern nach Gegenüber und Projekt, Facetten für
-Assistent/Agenten/Sprache/Archiv und dem Verlauf jedes Gesprächs im Drawer.
+Open <http://127.0.0.1:4317>. The server serves both the API and the built web app.
 
 ```bash
-node packages/cli/dist/index.js          # interaktives Terminal
-node packages/cli/dist/index.js doctor   # prüft beide Anbieter
+npm run cli                       # interactive terminal
+npm run cli -- chat "Hello"        # one turn
+npm run cli -- --plain             # line-based terminal
 ```
 
-`packages/cli/package.json` deklariert die Kurzbefehle `rookery` und `rk`;
-`npm install` verlinkt beide nach `node_modules/.bin/`. Damit laufen alle
-`rookery …`-Beispiele in dieser README als `npx rookery …` bzw. `npm run cli --`.
-Für den blanken Befehl `npm link -w @rookery/cli` einmalig ausführen.
+The CLI package declares `rookery` and `rk`. npm links them under `node_modules/.bin`, so examples below work as `npx rookery ...` or `npm run cli -- ...`. Run `npm link -w @rookery/cli` if you want the bare command on your PATH.
 
-Das Terminal ist eine Vollbild-Oberfläche: Verlauf mit gerenderten Code-Blöcken,
-Live-Streaming, Statuszeile mit Name, Anbieter und Berechtigung, ein gerahmtes
-Eingabefeld mit Verlauf über die Pfeiltasten, und eine Slash-Palette, die sich
-beim Tippen von `/` öffnet. `/help` listet alle Befehle; dazu gehören u. a.
-`/usage` (Abo-Kontingent), `/inbox`, `/permission`, `/project`, `/doctor`,
-`/memory`, `/remember`, `/effort` und `/talk`. **Ctrl+C** bricht den laufenden
-Turn ab und kehrt zur Eingabe zurück; am leeren Prompt beendet es die Sitzung.
+The UI and built-in messages are English. New installations use English voice defaults. Existing conversations, memories, agent instructions, and explicitly saved voice settings are preserved. To switch an existing installation's speech, select English and an English voice under **Settings → Voice**; environment overrides also apply on startup.
 
-Läuft die CLI nicht in einem echten Terminal — in einer Pipe, in CI, mit
-`TERM=dumb` oder `ROOKERY_TUI=0` — schaltet sie automatisch auf den
-zeilenbasierten Modus um. Mit `--plain` lässt sich das erzwingen.
+## Web app
 
-Für die Entwicklung mit Hot Reload:
-
-```bash
-npm run build      # dev:all setzt einen gebauten Server voraus (packages/server/dist/main.js)
-npm run dev:all    # Server + Vite-Dev-Server, UI auf http://localhost:5317
-```
-
-### Entwicklung
-
-| Skript | Zweck |
+| Area | What you can do |
 |---|---|
-| `npm run build` | alle vier Pakete bauen, in Abhängigkeitsreihenfolge |
-| `npm run build:core` | nur `@rookery/core` bauen |
-| `npm run dev` | Server allein, mit Reload |
-| `npm run dev:web` | nur der Vite-Dev-Server für `packages/web` |
-| `npm run dev:all` | Server + Vite-Dev-Server zusammen (`scripts/dev.mjs`) |
-| `npm start` | gebauter Server, liefert auch die gebaute Web-UI aus |
-| `npm run cli` | `packages/cli/dist/index.js` |
-| `npm test` | Node-Test-Runner über `packages/core/test/*.test.js` |
-| `npm run typecheck` | `tsc -b` über core, server, cli |
-| `npm run doctor` | Anbieter-Diagnose, ohne den Server zu starten |
-| `npm run clean` | `scripts/clean.mjs` |
+| Chat and Conversations | Stream replies, resume conversations, filter by counterpart/project, inspect transcripts, and archive conversations |
+| Dashboard | Inspect totals and activity trends from `GET /api/stats` |
+| Tasks | Create, plan, run, finish, and cancel task-board entries |
+| Assignments | Follow agent runs, progress, reports, and failures |
+| Schedules | Configure recurring jobs, run them manually, and inspect history |
+| Gateways | Configure Telegram, controller IDs, pairing, and push notifications live |
+| Organization | Manage agents, teams, and projects |
+| Memory | Browse memories, explore their 3D graph, and inspect sleep runs |
+| Tools and Skills | Configure MCP servers and create, edit, or import instructions |
+| Settings | Configure identity, providers, memory, voice, and runtime options |
 
-### Voraussetzungen
+The sidebar provides navigation, new conversation and voice actions, connection status, and search (`Ctrl+K`). Summary totals come from database counts, not capped list responses. Cards based on a limited list describe that basis.
 
-| | |
-|---|---|
-| Node.js | 22.5 oder neuer (`node:sqlite` wird benötigt) |
-| Claude Code | installiert und angemeldet — `claude`, dann `/login` |
-| Codex CLI | installiert und angemeldet — `codex login` |
+## Telegram gateway
 
-Mindestens einer der beiden reicht. `rookery doctor` sagt dir genau, was fehlt.
+Configure Telegram under **Gateways → Telegram** (`/gateways/telegram`):
 
-## Architektur
+1. Create a bot with [BotFather](https://t.me/BotFather).
+2. Enter its token, enable the gateway and pairing, and save.
+3. Send `/id` to the bot in a private chat.
+4. Add the returned numeric user ID to allowed controllers. Adding a controller closes pairing.
+5. Save the controller list. Changes apply without restarting the server.
 
-```
-packages/core     Das Gehirn: Provider-Adapter, Gedächtnis, Persona, Runtime,
-                  die Organisation (org/: Store, Controller, Planner, MCP-Bridge)
-                  und die Computer-Steuerung (computer/). Kennt weder HTTP noch Terminal.
-packages/server   Fastify: REST + WebSocket + SSE, liefert die gebaute Web-UI aus.
-packages/cli      Das Terminal-Interface mit REPL und OS-Sprachausgabe.
-packages/web      React + Vite. Die Oberfläche steht auf den shadcn-Blocks
-                  dashboard-01 und sidebar-16: src/components/shell/ trägt die
-                  Navigation, src/components/blocks/ die Seiten-Templates
-                  (StatCards, Kurve, DataTable, Drawer, Formularrahmen), die
-                  jede Seite unter src/pages/ wiederverwendet.
-```
+Only allowed user IDs can control the assistant. Group chats and bot senders are rejected. Pairing identifies a controller; it does not grant access to chat or tools. An empty allowlist grants no control access.
 
-Kennzahlen kommen aus `GET /api/stats`: echte `COUNT(*)` über Gespräche,
-Nachrichten, Aufträge, Aufgaben, Cron-Läufe, Erinnerungen und Agenten, dazu
-Tagesreihen für die Kurven. Vorher summierte die Oberfläche über Listen, die
-der Server bei 500 abschneidet — die Zahlen wurden also still falsch, sobald
-genug zusammenkam.
+Telegram uses long polling, so no public webhook is required. Each controller gets a separate gateway conversation. Check the gateway permission setting when enabling the bot: its built-in default is `full`.
 
-Ein Turn durchläuft immer dieselben Schritte:
+Use `/start` for commands, `/new` for a fresh conversation, `/stop` to interrupt a turn, and `/status` for current state. `/off` stops the entire Telegram gateway, including push delivery and active turns, until the server process restarts. Earlier `/neu` and `/aus` commands remain accepted. To disable only push messages, use the gateway's push setting. Push settings cover assignments, schedules, sleep runs, and optional task updates, with quiet hours, recipient selection, and an hourly cap.
 
-```
-Eingabe → Recall (was weiß ich schon?) → Kontext bauen (inkl. Organigramm, Posteingang)
-        → Provider-CLI streamen, dabei Aufträge an Agenten
-        → (hat er ein Werkzeug dazugeschaltet: zweiter Durchgang mit diesem Werkzeug)
-        → speichern → lernen
+The token is stored in local configuration; browser config responses expose whether a token is set rather than returning the secret. Keep the Rookery home directory private. See [the gateway design document](docs/concepts/telegram-channel.md) for background.
+
+## Architecture and turn flow
+
+```text
+packages/core     Providers, memory, persona, runtime, organization, computer tools.
+                  No HTTP server or terminal UI dependencies.
+packages/server   Fastify REST, WebSocket, SSE, static hosting, TTS, gateways.
+packages/cli      Commander commands, Ink TUI, plain REPL, operating-system speech.
+packages/web      React + Vite, assistant-ui, shadcn and shared page templates.
 ```
 
-Der Lernschritt läuft **nach** der Antwort und blockiert dich nie.
+A turn recalls memories, builds context with identity and organization/inbox information, streams the provider CLI, stores the exchange, and starts background memory extraction. Assignments and tool activity arrive as events alongside the answer. Learning runs after the answer.
 
-Der zweite Durchgang ist die Ausnahme, nicht die Regel: Ein MCP-Server kann nur an
-einen Prozess gehängt werden, der noch nicht läuft. Legt der Assistent mitten im Turn
-einen Schalter um, weil ihm für die Aufgabe ein Werkzeug fehlt, würde die Arbeit sonst
-liegen bleiben, bis du nochmal fragst. Stattdessen läuft der Turn ein zweites Mal an,
-mit der Sitzung des Anbieters fortgesetzt und dem neuen Server dran; die beiden
-Antworten werden zu einer. Mehr als zwei Durchgänge gibt es nie.
+If the assistant enables a previously unavailable MCP tool server during a turn, the runtime can resume the provider once with updated tools. Output is combined into the same turn, bounded to two passes.
 
-## Ohne API-Keys — wie genau
+The assistant's working directory defaults to **`~/.rookery/workspace`**, independently of the launch directory. `ROOKERY_HOME` relocates the default workspace; `ROOKERY_WORKSPACE` or configuration can override it. Rookery creates workspace instructions when absent. Agents use their assigned project directories. This selects the working directory; it is not a filesystem isolation guarantee.
 
-Beide Adapter starten die echte CLI und lesen deren JSON-Stream:
+The assistant keeps its configured identity. You can start a separate direct conversation with an agent using `--agent` or `/talk`; an existing conversation keeps its counterpart. Switching provider starts a new provider conversation where necessary.
 
-```bash
+### Provider authentication
+
+The adapters launch real CLIs and consume their JSON streams:
+
+```text
 claude -p --output-format stream-json --verbose --include-partial-messages
 codex exec [resume <id>] --json --skip-git-repo-check --color never -s <sandbox>
 ```
 
-Rookery liest oder setzt weder `ANTHROPIC_API_KEY` noch `OPENAI_API_KEY` und
-übergibt `--bare` bewusst **nicht** — dieses Flag würde Claude Code zur
-API-Key-Authentifizierung zwingen statt die OAuth-Sitzung zu verwenden.
-Sitzungen werden über die native Sitzungs-ID der jeweiligen CLI fortgesetzt
-(`--resume` bzw. `codex exec resume`), sodass der Anbieter seinen eigenen
-Kontext behält.
+They use existing CLI authentication and native session IDs (`--resume` or `codex exec resume`). Model access requires no API-key setting in Rookery. Optional OpenAI and ElevenLabs **speech** engines are separate: they read keys on the server.
 
-## Gedächtnis
+Claude runs with `--setting-sources ""`. When Rookery supplies MCP servers, it also passes `--mcp-config` and `--strict-mcp-config`. Rookery replaces the coding system prompt for the assistant; project agents retain their coding role. A `CLAUDE.md` in the selected working directory can still be read by Claude.
 
-Das ist der Teil, der Rookery von einem CLI-Wrapper unterscheidet.
+### Permission levels
 
-**Gespeichert** wird in sechs Arten: `fact`, `preference`, `project`, `event`,
-`summary` und `insight` — letztere entsteht ausschließlich im Schlaf. Nach
-jedem Turn liest ein kleines Modell den Austausch und schlägt dauerhafte
-Erinnerungen vor. Davor liegt ein **Tor** (`memory/gate.ts`): höchstens drei
-Kandidaten pro Turn, nichts unter Wichtigkeit 0,4 ohne bekannte Entität, und
-ein Fast-Duplikat verstärkt die vorhandene Erinnerung, statt eine zweite
-anzulegen. Die Ähnlichkeit ist der Dice-Koeffizient über normalisierte
-Token-Mengen; dieselbe Aussage anders formuliert erzeugt also keinen zweiten
-Datensatz. Was das Modell als „bereits bekannt" sieht, sind die zum Turn
-**passenden** Erinnerungen, nicht die insgesamt wichtigsten — das war der
-Hauptgrund, aus dem die Datenbank früher immer weiter wuchs.
-
-**Abgerufen** wird über eine Mischung aus vier Signalen, nicht nur Textsuche:
-
-| Signal | Gewicht | Warum |
+| Level | Claude Code | Codex |
 |---|---|---|
-| BM25-Relevanz (SQLite FTS5) | 0,55 | Worüber wird gerade gesprochen |
-| Wichtigkeit | 0,20 | Harte Rahmenbedingungen schlagen Nebensächliches |
-| Aktualität (Halbwertszeit 30 Tage) | 0,15 | Neueres beschreibt dich meist besser |
-| Nutzung (log-skaliert) | 0,10 | Was sich bewährt hat, bleibt oben |
+| `chat` | `--restricted` and additional read/search/task tools blocked | `read-only` sandbox |
+| `read` | `--restricted`; edit/write/notebook-edit tools blocked | `read-only` sandbox |
+| `write` | `--restricted --permission-mode acceptEdits` | `workspace-write` sandbox |
+| `full` | `--dangerously-skip-permissions` | `danger-full-access` sandbox |
 
-Dazu kommt ein flacher **Tag-Treffer-Bonus** von +0,1, wenn ein Wort der
-aktuellen Frage einem Tag der Erinnerung entspricht, sowie ein **Kernprofil**:
-angeheftete Erinnerungen, Einsichten und bis zu fünf mit Wichtigkeit ≥ 0,7
-liegen unabhängig von der Frage in jedem Turn.
+The default agent permission is `read`; agents can override it. Claude's restricted levels disable shell access, while Codex uses its sandbox rather than the same tool restrictions. The assistant's MCP bridge and gateway policy impose their own boundaries. Prompt instructions to ask before irreversible actions do not replace those controls.
 
-Danach folgt ein **zweiter Sprung** über den Graphen. Aus den drei besten
-Treffern werden Erinnerungen nachgezogen, die eine Entität mit ihnen teilen
-(0,45 des Scores, gedämpft nach Häufigkeit der Entität) oder über eine
-`refines`- bzw. `caused_by`-Kante an ihnen hängen (0,6). Das schließt die
-Lücke, die reine Textsuche nicht schließen kann: die Frage nach einer
-Kategorie („welche Sprache bevorzugst du?") trifft kein Wort der Erinnerung an
-die Instanz („arbeitet mit TypeScript"), aber beide hängen an der Entität
-`typescript`. Von einem Widerspruchspaar geht nur der neuere Satz in den
-Prompt; der ältere bleibt sichtbar.
+## Memory
 
-Jede abgerufene Erinnerung trägt eine lesbare, englische Begründung —
-`strong text match`, `text match`, `high importance`, `recent`, `tag hit`
-oder als Rückfall `weak match` —, die im Gedächtnis-Panel und in `rookery
-memory search` sichtbar ist. Nichts passiert unsichtbar.
+Memories live in `~/.rookery/rookery.db`, using SQLite and built-in `node:sqlite` without a native database build step. Kinds are `fact`, `preference`, `project`, `event`, `summary`, and sleep-generated `insight`.
 
-Gespeichert wird in `~/.rookery/rookery.db` — SQLite über das eingebaute
-`node:sqlite`, also **ohne nativen Build-Schritt**. Vergessen ist ein
-Soft-Delete: die Erinnerung verschwindet aus dem Recall, bleibt aber prüfbar,
-bis du `--hard` verwendest.
+Extraction proposes durable memories after a turn. A gate limits candidates (three per turn by default), filters low-importance candidates without known entities, and reinforces near-duplicates instead of inserting another copy. Deduplication uses lexical similarity, not embeddings.
+
+Recall combines FTS5/BM25 relevance (0.55), importance (0.20), recency (0.15, with a 30-day half-life), and usage (0.10), plus tag matches. A core profile adds pinned memories, insights, and selected important facts independently of the query. Graph expansion follows shared entities and selected edges. Results include reasons such as `strong text match` or `high importance`.
+
+Each agent has its own memory owner; agent recall does not expose the assistant's personal bank. The graph connects memories to entities and other memories through `refines`, `supersedes`, `contradicts`, `caused_by`, and `co_occurs` edges. The graph is lazy-loaded and requires WebGL; the memory list remains available separately.
 
 ```bash
 rookery memory list
-rookery memory add "Ich bevorzuge knappe Antworten." --kind preference --importance 0.9
+rookery memory add "I prefer concise replies." --kind preference --importance 0.9
 rookery memory search deployment
-rookery memory forget <id> [--hard]
+rookery memory forget <id>             # soft-delete
+rookery memory forget <id> --hard      # permanent deletion
 rookery memory stats
 ```
 
-### Der Graph
+### Sleep
 
-Erinnerungen stehen nicht mehr allein. Jede hängt an **Entitäten** (Person,
-Projekt, Werkzeug, Ort, Organisation, Thema), und zwischen Erinnerungen gibt
-es gerichtete **Kanten**: `refines`, `supersedes`, `contradicts`, `caused_by`,
-`co_occurs`. Die Entitäten entstehen kostenlos aus den Tags, die die
-Extraktion ohnehin liefert; die Kanten zieht der Schlaflauf.
+The server creates a normal `sleep` schedule, defaulting to **03:30 in the server's local time**. It can be disabled or run manually. The server must be running for schedules to execute.
 
-Bewusst **ohne Embeddings**: die Provider-CLIs liefern Text, kein
-Embedding-Modell, und ein lokales wäre genau der native Build-Schritt, den
-`node:sqlite` vermeidet. Nähe kommt aus geteilten Entitäten, Duplikate aus
-lexikalischer Ähnlichkeit, Bedeutung aus nachts gezogenen Kanten.
+Sleep cycles contain light sleep (strength bookkeeping and dormancy), deep sleep (merging and resolving contradictions), and dream sleep (connections and insights). Defaults include two cycles and Sonnet for merging and insights; limits and models are configurable under `memory.sleep`.
 
-Die Web-UI zeigt das Gedächtnis unter **Gedächtnis** in drei Ansichten: das
-**Netz** als Kraftgraph **im Raum** (Entitäten als beschriftete Knotenpunkte,
-Erinnerungen als farbige Körper darum, Ziehen dreht, Rad zoomt), die
-**Zeitachse** (was wann gelernt wurde, mit den Nächten dazwischen) und die
-**Liste**. Ein Klick auf einen Knoten öffnet die Erinnerung mit ihren Themen,
-ihren Verbindungen und den Aktionen Anheften, Aufwecken, Vergessen.
+Dormant memories remain in the database and can be woken. Sleep does not retire user-authored or pinned memories; conflicts between two protected memories remain for the user to decide. Undo wakes memories marked dormant by the run and removes its recorded generated memories and edges. It is not a database snapshot: entity updates and deleted pre-existing contradiction edges are not restored. Cancelling a run keeps changes already completed. See [the sleep design document](docs/concepts/memory-graph-and-sleep.md), with code as the source of current behavior.
 
-Der Graph nutzt `3d-force-graph` über WebGL und wird erst beim Öffnen des
-Reiters geladen, liegt also in einem eigenen Bündel und kostet den Rest der
-Anwendung nichts.
+## Organization, tasks, and assignments
 
-### Schlaf
-
-Nachts um 03:30 räumt das Gedächtnis auf — als ganz normaler Zeitplan
-(`cron_jobs.kind = 'sleep'`), also sichtbar, abschaltbar und von Hand
-auslösbar wie jeder andere.
-
-Eine Nacht ist keine gleichförmige Liste von Schritten, sondern läuft in
-**Zyklen aus drei Phasen**, so wie Schlaf tatsächlich abläuft:
-
-| Phase | Was passiert | Modellaufrufe |
-|---|---|---|
-| **Leichtschlaf** | Buchhaltung: `stärke = 0,5·Wichtigkeit + 0,3·Nutzen + 0,2·Aktualität`; zu schwach und lange ungenutzt wird weggeräumt. Entitätszählung frisch. | 0 |
-| **Tiefschlaf** | Ablage: Bündel werden zu einem Satz, und Widersprüche werden **entschieden** — eine Seite gilt, die andere wird weggeräumt. | ≤ 12 + ≤ 5 |
-| **Traumschlaf** | Das Assoziative: Verbindungen über Themen hinweg, und am Ende der Nacht die Einsichten. | ≤ 3 + 1 |
-
-Die Phasen füttern einander, deshalb wiederholt sich der Zyklus (Standard
-zweimal): der Traumschlaf findet die Widersprüche, die der nächste Tiefschlaf
-entscheidet, und der Tiefschlaf hinterlässt ein aufgeräumteres Gedächtnis für
-den nächsten Traumschlaf. Das Aufrufbudget ist für den Tiefschlaf nach vorn
-und für den Traumschlaf nach hinten gewichtet.
-
-Vier Regeln machen einen unbeaufsichtigten Nachtlauf zumutbar:
-
-- **Nie gelöscht.** Erinnerungen werden weggeräumt (`dormant_at`): raus aus
-  dem Recall, weiter in der Datenbank, weiter sichtbar, ein Klick zurück.
-  Das gilt auch für die Verliererseite eines entschiedenen Widerspruchs.
-- **Jede Nacht umkehrbar.** Alles, was ein Lauf schreibt, trägt seine
-  `run_id`; „Rückgängig" ist eine Transaktion.
-- **Was du geschrieben hast, ist unantastbar.** `origin = 'user'` und
-  angeheftete Erinnerungen werden weder verdichtet noch weggeräumt. Im
-  Widerspruch gewinnen sie **ohne** Modellaufruf: was du selbst gesagt hast,
-  schlägt alles, was aus einem Gespräch abgeleitet wurde.
-- **Nur ein Widerspruch unter zwei geschützten Sätzen bleibt offen.** Den
-  entscheidest du, und der Bericht sagt es.
-
-Das Modell dafür ist standardmäßig **Sonnet**, nicht das billigste: sechzehn
-Aufrufe einmal pro Nacht sind günstig, ein falsch verschmolzenes Paar nicht.
-Beides ist konfigurierbar (`memory.sleep.model`, `memory.sleep.insightModel`).
-
-Das ausführliche Konzept steht in
-[`docs/concepts/memory-graph-and-sleep.md`](docs/concepts/memory-graph-and-sleep.md).
-
-## Ein Ansprechpartner
-
-Rookery ist **ein** persönlicher Assistent, kein Umschaltpult. Es gibt genau
-eine Identität — den Namen aus `assistantName` — und nichts kann sie
-wechseln: kein Dropdown, kein `/agent`, keine `@rolle`, kein Routing nach
-Stichworten. Wer dir antwortet, ist in jedem Turn dieselbe Instanz.
-
-Das ist nicht nur eine Frage des Tons. Ein Rollenwechsel konnte früher auch
-den Anbieter wechseln, und damit ging die `providerSessionId` verloren — der
-Gesprächsfaden der laufenden CLI-Sitzung riss mitten im Gespräch ab. Der
-Anbieter wechselt jetzt nur noch, wenn du es verlangst oder der aktuelle
-abgemeldet ist.
-
-Der Assistent läuft in einem eigenen Arbeitsraum, `~/.rookery/workspace`, mit
-einer eigenen `CLAUDE.md`. Er sieht nie das Verzeichnis, aus dem du Rookery
-gestartet hast. Für Projekte hat er Personal.
-
-## Die Firma: Agenten, Teams, Projekte
-
-Hinter dem Assistenten steht eine dauerhafte Organisation, die er selbst
-führt. Du legst sie an — im Web unter **Firma**, per `rookery org` oder indem
-du den Assistenten bittest, jemanden einzustellen:
-
-| Begriff | Bedeutung |
+| Term | Meaning |
 |---|---|
-| **Agent** | Fest angestellt: Name, Titel, Anweisungen, Anbieter, Modell, Berechtigung, Team, Vorgesetzter. Hat ein eigenes Gedächtnis. |
-| **Team** | Gruppe von Agenten mit Zweck und optionaler Leitung. |
-| **Projekt** | Vorhaben mit optionalem Verzeichnis. Aufträge dafür laufen in diesem Verzeichnis. |
-| **Auftrag** | Ein Lauf eines Agenten: eigener CLI-Prozess, kalt gestartet, mit Anweisung, Ergebnis, Status und Dauer. |
-| **Aufgabe** | Ein Eintrag auf dem Board: größeres Vorhaben, das geplant und dann als ein oder mehrere Aufträge ausgeführt wird. |
-| **Nachricht** | Kurznachricht zwischen Agent, Vorgesetztem und Assistent, landet im Posteingang. |
+| Agent | Persistent role, instructions, provider/model, permission, team, manager, and separate memory |
+| Team | Group of agents with a purpose and optional lead |
+| Project | Work context with an optional directory for assignments |
+| Assignment | One agent run with progress, report, status, and duration |
+| Task | Board entry planned and executed as one or more assignments |
+| Message | Communication between agents, managers, and the assistant |
 
-"Dauerhaft" heißt: der Agent ist ein Datensatz mit Rolle und Gedächtnis, keine
-laufende Sitzung. Jeder Auftrag startet einen frischen `claude -p`- bzw.
-`codex exec`-Prozess. Nach dem Auftrag lernt der Agent aus seinem Bericht
-dazu — in seinem eigenen Gedächtnis, getrennt von dem des Assistenten.
-
-Die Hierarchie ist echt: Agenten ohne Vorgesetzten berichten an den
-Assistenten. Ein Agent darf nur an seine direkten Mitarbeiter delegieren und
-nur nach oben, ins Team oder an den Assistenten schreiben. Delegationstiefe
-und gleichzeitige Prozesse sind begrenzt (`org.maxDelegationDepth`,
-`org.maxConcurrentAssignments`).
+A persistent agent is a stored role, not a permanently running provider process. Assignments launch fresh CLI processes. Delegation follows reporting relationships and is bounded by depth and concurrency limits. Defaults are four concurrent assignments, depth three, and a 45-minute timeout per assignment.
 
 ```bash
-rookery org                                   # Organigramm
-rookery org hire --name Mara --title "Backend Engineer" --instructions "…"
-rookery org projects add Rookery --path E:/DEV/rookery-agent
-rookery assign mara "Beschreibe die Server-Routen"   # Auftrag direkt geben
-rookery org assignments                       # was lief, wie lange, mit welchem Ergebnis
-rookery --agent mara                          # direkt mit Mara chatten
+rookery org
+rookery org hire --name Mara --title "Backend Engineer" --instructions "Maintain the server."
+rookery org projects add Example --path /path/to/project
+rookery assign mara "Describe the server routes" --project Example
+rookery org assignments
+rookery --agent mara
+rookery tasks add "Write release notes"
+rookery tasks plan <id>
+rookery tasks run <id>
 ```
 
-Weitere Unterbefehle: `rookery org agents|teams|projects|messages|assignment
-<id>`, `rookery sessions` / `rookery session <id>|rm`, `rookery config
-get|set|path`, `rookery serve --port --host --open`. `rookery --help` bzw.
-`<befehl> --help` listet alles.
+Use `rookery org --help`, `rookery tasks --help`, and `/help` for the full command set. The TUI shows streamed output, tool calls, live assignment rows, reported usage, and a slash-command palette. `Ctrl+C` interrupts a turn and exits when idle; `Ctrl+D` exits. Pipes, `TERM=dumb`, `ROOKERY_TUI=0`, or `--plain` use the line-based REPL.
 
-### Direkt-Chat mit jedem Agenten
+## Tools and skills
 
-Die Firma hat einen internen Chat. Im Web steht links eine Kontaktliste: der
-Assistent und jeder Agent, jeder mit eigenen Gesprächen. Schreibst du einen
-Agenten direkt an, antwortet er in eigener Stimme, mit seinem Gedächtnis,
-seinem Anbieter und Modell, und kann seinen eigenen Mitarbeitern Arbeit geben.
-Der Assistent bleibt der Chef, aber er ist nicht mehr der einzige, mit dem du
-reden kannst. In der CLI: `rookery --agent <slug>` oder `/talk <slug>`.
+**Tools** (`/tools`, `rookery tools`) are MCP servers configured for the assistant, agents, or both. The catalog includes computer control and browser tooling; availability depends on platform and installed server. Some servers start on demand through `npx`. Custom servers can be configured in the UI.
 
-### Das Aufgabenboard
+Rookery's organization and memory tools use its per-turn MCP bridge; the tool hub attaches additional MCP servers directly to each provider process for the configured audience. Provider-native tools are governed by the permission flags above, so MCP-only execution is a design intent, not a universal enforced guarantee. Toggles apply to subsequent provider processes, including the bounded second pass described above. Showing tool calls in web chat is a browser-local preference.
 
-Größere Arbeit landet als **Aufgabe** auf dem Board, von dir (Seite Aufgaben,
-`rookery tasks add`) oder vom Assistenten (`create_task`). Dann entscheidet
-**Planen**: ein kleines Modell liest das Organigramm mit Titeln und Anweisungen
-aller Agenten und schlägt vor, ob ein Agent die Aufgabe übernimmt oder ob sie in
-Teilaufgaben für mehrere Agenten zerfällt, samt Abhängigkeiten. Die Teilaufgaben
-liegen dann sichtbar auf dem Board und lassen sich noch umverteilen. **Ausführen**
-startet die Aufträge: unabhängige Teilaufgaben parallel, abhängige danach mit den
-Ergebnissen ihrer Vorgänger. Der Assistent macht dasselbe mit `plan_task` und
-`run_task`, wenn er eine Bitte als größeres Vorhaben erkennt.
+**Skills** (`/skills`, `rookery skills`) are folders under `~/.rookery/skills`, each containing a `SKILL.md` with name, description, and audience metadata, plus supporting files. Rookery advertises the catalog in context; `use_skill` loads instructions and the file list. Skills can be authored in the UI or imported from GitHub using a repository path or URL.
 
-```bash
-rookery tasks add "Release vorbereiten" --description "…" --project Rookery
-rookery tasks plan <id>        # Vorschlag: ein Agent oder Aufteilung
-rookery tasks run <id>         # ausführen, live mitverfolgen
-rookery tasks                  # das Board
-rookery tasks show <id>        # Details
-rookery tasks done <id>        # manuell abschliessen
-rookery tasks cancel <id>      # laufende Ausführung abbrechen
+`use_skill` returns instructions and a file list; it does not execute scripts. Running a script requires an available execution tool and its permissions. Project-scoped skill/MCP proposals under `docs/concepts` should not be assumed fully implemented.
+
+## Voice
+
+The full-screen `/voice` page uses its own voice conversation. Tap the orb to begin, speak, and hear streamed replies. The orb reflects microphone, thinking, and speaking activity. Space or the orb interrupts, `M` toggles the microphone, and Escape exits. Wake-word detection and barge-in are optional. A saved voice conversation can be resumed from its transcript.
+
+Voice turns request concise, speech-friendly replies without Markdown or code blocks. The `jarvis` style adds a composed butler register; `neutral` disables it. The optional browser audio effect adds EQ, compression, and a short room effect. Background assignment completion can be announced after the spoken turn ends.
+
+| Engine | Configuration |
+|---|---|
+| Edge (default) | Server `msedge-tts`; no API key; new default `en-GB-RyanNeural` |
+| ElevenLabs | Optional server-side `ELEVENLABS_API_KEY`; voice selection in Settings |
+| OpenAI | Optional server-side `OPENAI_API_KEY`; `gpt-4o-mini-tts` |
+| Browser | Browser `speechSynthesis`; also used when server speech fails |
+
+New installations use `voice.lang = "en-GB"`. Existing configured languages and voices remain selected. Browser recognition depends on browser support and microphone permission; the UI reports when unavailable. Chat supports push-to-talk dictation.
+
+The CLI uses OS speech: PowerShell `System.Speech` on Windows, `say` on macOS, and `spd-say` or eSpeak on Linux. Server TTS: `POST /api/tts` with `{ "text": "Hello" }`; `GET /api/tts/voices` lists capabilities.
+
+## Configuration
+
+The default file is `~/.rookery/config.json`. Startup precedence:
+
+```text
+built-in defaults → config.json → environment → explicit invocation overrides
 ```
 
-### Zeitpläne (Cron-Jobs)
+The server entry point first loads `<ROOKERY_HOME>/.env` (default `~/.rookery/.env`), then the checkout root's `.env`, resolved relative to the server module. Existing shell variables win; values from the home file take precedence over the checkout file. The loader supports simple `KEY=value` lines without interpolation. See [`.env.example`](.env.example). Direct CLI commands read their process environment and saved configuration; they do not run this `.env` loader.
 
-Manches soll ohne Anstoß passieren: ein Morgenbriefing um acht, ein
-Nachtlauf über die Builds, eine Erinnerung morgen um drei. Dafür gibt es
-**Zeitpläne**: eine Anweisung plus ein Cron-Ausdruck mit fünf Feldern
-(Minute, Stunde, Tag, Monat, Wochentag) in der lokalen Zeit des Rechners.
-`0 8 * * 1-5` ist werktags um 08:00, `*/30 * * * *` alle dreißig Minuten,
-`@daily` Mitternacht. Ein Zeitplan läuft, solange der Server läuft.
+Settings, runtime tool toggles, and the assistant's `update_settings` tool share the configuration update path. Changes are saved to `config.json` and applied to the shared runtime object. Startup overrides such as `--port` remain until explicitly changed and are not silently persisted. Resetting an optional value removes its saved override.
 
-Wer ausführt, entscheidet der Zeitplan: **der Assistent selbst**, als eigener
-Turn in einem Gespräch, das zum Zeitplan gehört und zwischen den Läufen
-erhalten bleibt (mit all seinen Werkzeugen, also auch Delegation), oder **ein
-Agent** als gewöhnlicher Auftrag im Projektverzeichnis. Jeder Lauf wird mit
-Ergebnis, Fehler und Dauer festgehalten und als Nachricht in den Posteingang
-des Assistenten gelegt, damit er im nächsten Gespräch weiß, was nachts
-passiert ist. `once` macht aus einem Plan eine einmalige Erinnerung: nach dem
-ersten Lauf schaltet er sich ab.
+Example configuration fragment:
 
-Angelegt wird ein Zeitplan auf der Seite **Zeitpläne** (mit Vorschau der
-nächsten Läufe), per `POST /api/cron`, oder im Chat: „Jeden Morgen um 8 fass
-mir zusammen, was ansteht.“ Der Assistent übersetzt das mit
-`create_schedule` selbst in einen Cron-Ausdruck; `list_schedules`,
-`update_schedule`, `delete_schedule` und `run_schedule` sind seine übrigen
-Griffe daran. Ein Lauf, den der Server verpasst hat, weil er nicht lief, wird
-nur nachgeholt, wenn er höchstens zehn Minuten zurückliegt; ältere werden
-übersprungen. Läuft ein Zeitplan noch, wenn er erneut fällig wäre, startet er
-nicht doppelt.
-
-## Wie der Assistent delegiert
-
-Der Assistent entscheidet selbst, wann er Arbeit abgibt. Jeder Provider-Prozess
-bekommt Rookerys Werkzeuge über einen MCP-Server namens `rookery`
-(`--mcp-config` bei Claude, `mcp_servers.*` bei Codex): `org_overview`,
-`assign`, `assignment_status`, `list_assignments`, `cancel_assignment`,
-`send_message`, `read_inbox`, das Aufgabenboard (`create_task`, `list_tasks`,
-`update_task`, `plan_task`, `run_task`), die Firma (`hire_agent`, `update_agent`,
-`create_team`, `update_team`, `create_project`, `update_project`), sein
-Gedächtnis (`remember`, `forget`, `search_memory`), die Einstellungen
-(`get_settings`, `update_settings`), den Werkzeug-Hub (`tool_servers`,
-`set_tool_server`), die Skills (`use_skill`) und die Zeitpläne
-(`create_schedule`, `list_schedules`, `update_schedule`, `delete_schedule`,
-`run_schedule`). Der Assistent hat damit dieselbe Kontrolle
-wie die Web-UI: er bricht festgefahrene Aufträge und laufende Aufgaben ab, liest
-die Auftragshistorie, archiviert Projekte, pflegt Erinnerungen von Hand und
-ändert Standard-Anbieter, Modell, Effort und die Firmenlimits. Agenten bekommen
-die Mitarbeiter-Variante: delegieren, Nachrichten, Board, kein Einstellen, kein
-Abbrechen, keine Einstellungen.
-
-Der MCP-Server ist ein dünner stdio-Prozess (`packages/core/dist/org/mcp-bridge.js`), der
-jeden Aufruf über eine lokale Pipe an den laufenden Rookery-Prozess reicht.
-Ruft der Assistent mehrere `assign` in einer Nachricht auf, laufen die
-Aufträge **gleichzeitig als eigene CLI-Prozesse**. Ihre Ereignisse werden in
-den Ereignisstrom des laufenden Turns gemischt: im Web und in der CLI siehst
-du live, wer gerade woran arbeitet, mit Zeichenzahl, Laufzeit und Vorschau.
-Zusätzlich erreicht jede Auftragsänderung alle offenen Verbindungen, damit die
-Seite **Aufträge** immer aktuell ist.
-
-Erreichbar ist das auch direkt: `POST /api/org/assignments` (SSE) und ein
-`{type:'assign'}`-WebSocket-Frame geben einem Agenten einen Auftrag, ohne den
-Assistenten zu bemühen.
-
-## Werkzeuge und Skills
-
-Unter **Werkzeuge** (`/tools`, `rookery tools`) liegt der MCP-Hub: ein Katalog
-von Servern, die der Assistent und seine Agenten in jedem Turn dazubekommen,
-im Chat, in der CLI und im Sprachmodus gleich, weil alle drei durch dieselbe
-`Assistant.chat` laufen. Pro Server: ein Schalter, für wen er gilt (Assistent,
-Agenten, beide), seine Optionen und seine Schlüssel. Der Assistent bekommt pro
-aktivem Server einen Absatz im Systemprompt, der ihm sagt, wofür die Werkzeuge
-gut sind. Er darf Schalter selbst umlegen (`tool_servers`, `set_tool_server`),
-aber nichts installieren und keine Schlüssel eintragen. Legt er selbst einen Schalter
-um, gilt er sofort: der Turn läuft mit dem neuen Server ein zweites Mal an und die
-Arbeit geht weiter. Ausserdem steht im Systemprompt, welche Server er noch dazuschalten
-könnte und welche erst du auf der Werkzeuge-Seite freischalten musst — ein Schalter, von
-dem er nichts weiss, ist für ihn eine Wand.
-
-| Server | Was | Installation |
-|---|---|---|
-| **Computer-Steuerung** | Bildschirm sehen, Maus und Tastatur, Bedienelemente über den Windows-Accessibility-Baum lesen und per Namen klicken. Befugnis staffelbar von „sehen und bedienen“ bis „alles“. Audit-Log unter `~/.rookery/run/computer-audit.jsonl`. | mitgeliefert: [`@zavora-ai/computer-use-mcp`](https://github.com/zavora-ai/computer-use-mcp) als Abhängigkeit von `@rookery/core`; Fallback ist Rookerys PowerShell-Server `packages/core/dist/computer/mcp-server.js` |
-| **Browser (Playwright)** | Ein echter Browser über den Accessibility-Baum der Seite: navigieren, lesen, Formulare, Klicks. Standard: Rookery startet Edge oder Chrome einmal mit eigenem Profil (`~/.rookery/browser-profile`, Debug-Port 9333), jeder Turn hängt sich per CDP daran, Tabs und Logins bleiben zwischen den Turns erhalten. Wahlweise frisch pro Turn, auch headless; Chromium per Vorbereitungsknopf. | mitgeliefert: [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) als Abhängigkeit von `@rookery/core` |
-| **Dateisystem** | Lesen, schreiben, suchen in freigegebenen Verzeichnissen. | auf Abruf |
-| **Context7** | Aktuelle Bibliotheks-Dokumentation nachschlagen. | auf Abruf |
-| **GitHub** | Repositories, Issues, Pull Requests; braucht einen Personal Access Token. | auf Abruf |
-| **Eigene** | Jeder stdio-MCP-Server: Befehl, Argumente, Hinweis für den Assistenten, Umgebungsvariablen. | eigene Sache |
-
-Wer das Repo klont, bekommt Computer-Steuerung und Browser mit `npm install`
-fertig mit, inklusive der nativen Binaries im Paket. Server „auf Abruf“ holt
-`npx` beim ersten Start. Konfiguriert wird alles in `tools.servers` der Config.
-Werkzeugaufrufe erscheinen im Web-Chat nicht, es sei denn, der Schalter
-„Werkzeugaufrufe im Chat anzeigen“ unter Einstellungen ist an (gilt nur für
-diesen Browser).
-
-Stopp in allen Oberflächen: der Stopp-Knopf im Chat, Esc in der CLI, ein Tipp
-auf den Orb im Sprachmodus. Das bricht den Turn samt Prozess ab. Der
-Systemprompt hält den Assistenten dazu an, vor Unumkehrbarem (Löschen, Senden,
-Bezahlen, ungespeichert schließen) eine Frage zu stellen.
-
-**Skills** (`/skills`, `rookery skills`) sind geschriebene Anleitungen für
-bestimmte Arten von Aufgaben: ein Ordner pro Skill unter `~/.rookery/skills`
-mit einer `SKILL.md` (Frontmatter `name`, `description`, `audience`) und
-beliebigen Dateien daneben. Rookery rendert sie selbst, unabhängig vom
-Anbieter: der Systemprompt trägt die Liste mit Beschreibungen, `use_skill`
-liefert die Anleitung samt Dateiliste. Der Assistent und die Agenten öffnen
-den passenden Skill, bevor sie mit so einer Aufgabe anfangen. Anlegen und
-bearbeiten geht auf der Seite Skills oder direkt im Ordner. Weil das Format
-der offene Agent-Skills-Standard ist, lässt sich jeder Skill von GitHub
-**importieren** (`/skills/import`): `owner/repo/pfad` oder die URL, etwa aus
-[Anthropics Sammlung](https://github.com/anthropics/skills) (PDF, Word, Excel,
-PowerPoint, Frontend-Design und mehr, als Regal vorausgewählt) oder aus dem
-[skills.sh](https://skills.sh)-Verzeichnis, dessen Einträge GitHub-Repos sind.
-Skills mit Skripten brauchen eine Shell und laufen damit nur in Aufträgen an
-Agenten mit Berechtigung `full`; der Assistent selbst führt keine Skripte aus.
-
-## Sprache
-
-- **Sprechen** (`/voice`, Knopf neben „Neues Gespräch“ oben in der
-  Seitenleiste): ein Vollbild mit nichts
-  als dem Orb. Einmal tippen, dann einfach reden. Jede fertige Äußerung wird ein Turn,
-  die Antwort wird Satz für Satz vorgelesen, während sie noch streamt, und das
-  Mikrofon geht wieder auf, sobald die Stimme schweigt. Tippen auf den Orb oder
-  Leertaste unterbricht, `M` schaltet das Mikrofon, Esc beendet. Die
-  Steuerleiste blendet sich aus, sobald die Maus ruht, und kommt bei jeder
-  Bewegung zurück. Das Aktivierungswort ist dort optional zuschaltbar.
-  Gesprochen wird ab dem ersten Halbsatz der Antwort, nicht erst am Ende.
-  Der Sprachmodus hat sein **eigenes Gespräch** mit dem Assistenten: eine
-  Session der Art `voice` (Titel „Sprachgespräch · Datum“), die auf `/chats`
-  hinter der Facette **Sprache** liegt, und in der der Assistent immer im
-  Sprech-Register antwortet, auch wenn man sie später im Chat öffnet — die
-  Mitschrift lässt sich dort lesen, ohne den Sprachmodus zu starten.
-  `GET /api/sessions?kind=voice|chat`
-  filtert danach, getrennt von den Text-Chats und nie mit
-  einem Agenten; der Reset-Knopf in der Leiste beginnt ein neues. Gesprochene
-  Turns laufen mit Effort `low`, solange keine Stufe gepinnt ist. Mit
-  **Reinreden** bleibt das Mikrofon offen, während die Stimme spricht: ein
-  Zwischenruf bricht die Antwort ab, das eigene Echo wird erkannt und ignoriert.
-  Delegiert der Assistent in einem gesprochenen Turn, nutzt er `assign` mit
-  `wait=false`: der Auftrag läuft im Hintergrund weiter, der Turn endet sofort,
-  und die Sprachseite sagt an, wenn ein Agent fertig ist. Fällt die
-  Server-Stimme aus, springt die Browser-Stimme nur für die laufende Antwort
-  ein; die nächste versucht es wieder. Ein älteres Sprachgespräch lässt sich
-  aus dem Chat heraus mit „Im Sprachmodus fortsetzen“ wieder aufnehmen
-  (`/voice?session=<id>`).
-- **Der Orb** ist ein WebGL-Shader ohne Abhängigkeiten und zeigt echten
-  Zustand: Mikrofonpegel beim Zuhören, rotierende Bögen beim Denken, Wellen im
-  Takt der Stimme beim Sprechen.
-- **Stimme**: Standard ist **Microsoft Edge Neural** über den Server
-  (`msedge-tts`, kostenlos, kein Key; voreingestellt ist
-  `de-DE-FlorianMultilingualNeural`). Optional **ElevenLabs**
-  (`ELEVENLABS_API_KEY`) oder **OpenAI gpt-4o-mini-tts** (`OPENAI_API_KEY`) in
-  der Umgebung des Servers oder in `~/.rookery/.env` bzw. `.env` im Repo;
-  der Browser sieht nie einen Key. ElevenLabs ist die Stimme mit Aura: die
-  vorgefertigten Stimmen (George, Daniel, Brian) stehen ohne Key im Picker,
-  mit Key kommt die eigene Voice Library dazu. Die Browser-eigene
-  `speechSynthesis` bleibt als Fallback und als vierte Engine.
-- **Sprechstil**: `voice.style` `jarvis` (Standard) lässt gesprochene Antworten
-  im Register eines gelassenen britischen Butlers formulieren; `neutral`
-  schaltet das ab. Der Chat bleibt unberührt.
-  Der **Jarvis-Effekt** (Präsenz-EQ, Kompression, kurzer Raum-Doppel) läuft im
-  Browser über Web Audio und ist abschaltbar. Alles unter Einstellungen →
-  Sprache, mit Probehören.
-- **Push-to-Talk** im Chat: das Diktier-Symbol im Eingabefeld.
-
-Schnittstelle: `POST /api/tts` mit `{ text }` liefert MP3,
-`GET /api/tts/voices` die verfügbaren Engines und Edge-Stimmen.
-
-Gesprochene Turns setzen `voice: true`. Der Assistent formuliert die Antwort
-dann bewusst anders: kurz, ohne Markdown, ohne Codeblöcke, mit dem Hinweis,
-dass Details auf dem Bildschirm stehen.
-
-Spracherkennung gibt es praktisch nur in Chrome und Edge. In Firefox und Safari
-zeigt Rookery das ehrlich an und bleibt per Tastatur voll bedienbar. Die
-Sprachausgabe der CLI nutzt stattdessen die Stimme des Betriebssystems
-(PowerShell `System.Speech` unter Windows, `say` unter macOS, `spd-say` unter Linux).
-
-## Konfiguration
-
-`~/.rookery/config.json`, überschreibbar per Umgebungsvariable (siehe
-`.env.example`) und im Einstellungsdialog der Web-UI. Die Reihenfolge, in der
-spätere Werte gewinnen: eingebaute Defaults → `config.json` → Umgebung →
-explizite Aufruf-Overrides. Gelesen wird `~/.rookery/.env` und ein `.env` im
-Repo-Root (Vorlage: `.env.example`); Werte, die die Shell schon gesetzt hat,
-gewinnen.
-
-Änderungen zur Laufzeit — der Einstellungsdialog, die Werkzeug-Schalter, das
-`update_settings`-Werkzeug des Assistenten — gehen alle durch `applyConfig`:
-geschrieben wird in `config.json`, aktualisiert wird das eine Konfigurations-
-objekt, das Runtime, Firma und Server gemeinsam halten. Ein Aufruf-Override wie
-`--port` überlebt das, ohne in der Datei zu landen; eine ausdrückliche Änderung
-sticht ihn trotzdem. Auf „Standard" zurückgesetzte Werte verschwinden ganz,
-statt als leerer String hängenzubleiben.
-
-Vollständiges Beispiel — kommentiert sind Werte, die vom Default abweichen:
-
-```jsonc
+```json
 {
-  "home": "~/.rookery",
-  "workspace": "~/.rookery/workspace", // Arbeitsraum des Assistenten
-  "port": 4317,
-  "host": "127.0.0.1",
-  "token": "",                     // Bearer-Secret; leer = nur localhost, keine Auth
-  "logLevel": "info",              // debug | info | warn | error | silent
   "assistantName": "Rookery",
-  "userName": "Jonas",
-  "formalAddress": true,           // immer "Sie" (Default: false)
-  "honorific": "Master",           // gelegentliche Anrede; leer = Name (Default: "")
-  "defaultProvider": "claude",     // claude | codex
-  "defaultModel": "",              // leer = Provider-Default
-  "defaultEffort": "",             // low | medium | high | xhigh | max, leer = Provider-Default
-  "defaultPermission": "read",     // chat | read | write | full
-  "memory": {
-    "enabled": true,
-    "recallLimit": 8,              // Erinnerungen pro Turn
-    "recallThreshold": 0.12,       // Mindest-Score für Injektion
-    "autoExtract": true,           // nach jedem Turn dazulernen
-    "workingWindow": 12,           // wörtlich behaltene Turns
-    "contextBudget": 6000          // Zeichenbudget für den Kontextblock
-  },
+  "defaultProvider": "claude",
+  "defaultPermission": "read",
   "voice": {
-    "enabled": true,
-    "engine": "edge",              // edge | elevenlabs | openai | browser
-    "edgeVoice": "de-DE-FlorianMultilingualNeural",
-    "elevenLabsVoiceId": "", "elevenLabsModel": "eleven_multilingual_v2",
-    "openaiVoice": "onyx",
-    "voiceName": "",               // bevorzugte browsereigene Stimme; leer = beste lokale Wahl
-    "lang": "de-DE", "wakeWord": "rookery", "rate": 1.02, "pitch": 0.95,
-    "speakCleanText": true,        // Markdown/Codeblöcke vor dem Sprechen entfernen
-    "jarvisEffect": true,
-    "style": "jarvis"              // jarvis | neutral, siehe Abschnitt "Sprache"
+    "lang": "en-GB",
+    "engine": "edge",
+    "edgeVoice": "en-GB-RyanNeural",
+    "style": "jarvis"
   },
   "org": {
-    "maxConcurrentAssignments": 4, // Agenten-Prozesse gleichzeitig
-    "maxDelegationDepth": 3,       // wie tief Agenten weiterdelegieren dürfen
-    "assignmentTimeoutMs": 2700000 // harte Grenze pro Auftrag (45 Minuten)
-  },
-  "tools": {                       // der MCP-Hub, siehe Abschnitt "Werkzeuge und Skills"
-    "servers": [
-      { "id": "computer", "enabled": true, "audience": "assistant", "options": { "profile": "ax" }, "env": {} }
-    ]
-  },
-  "skillsDir": "~/.rookery/skills"
+    "maxConcurrentAssignments": 4,
+    "maxDelegationDepth": 3,
+    "assignmentTimeoutMs": 2700000
+  }
 }
 ```
 
-### Berechtigungsstufen
+Use the UI or `rookery config get`, `rookery config set <key> <value>`, and `rookery config path`. Complete defaults/types: [`config.ts`](packages/core/src/config.ts) and [`types.ts`](packages/core/src/types.ts).
 
-Die Stufe bestimmt, was die darunterliegende CLI anfassen darf:
+### Remote access
 
-| Stufe | Claude Code | Codex |
-|---|---|---|
-| `chat` | `--restricted`, zusätzlich `Read`/`Glob`/`Grep`/`WebSearch`/`WebFetch`/`Task` per `--disallowedTools` gesperrt — rein konversationell | Sandbox `read-only` |
-| `read` | `--restricted --disallowedTools Edit,Write,NotebookEdit` — lesen und suchen, keine Änderungen | Sandbox `read-only` |
-| `write` | `--restricted --permission-mode acceptEdits` — Dateien ja, **Shell weiterhin nein** | Sandbox `workspace-write` |
-| `full` | `--dangerously-skip-permissions` | Sandbox `danger-full-access` |
+The server binds to `127.0.0.1` by default. With an empty `ROOKERY_TOKEN`, API access is unauthenticated; binding another host does **not** automatically enable authentication. Set a strong shared token before exposing the server beyond loopback.
 
-Standard ist `read`. Erst `full` erlaubt der CLI, Befehle auszuführen — auf
-jeder Stufe darunter bleibt `--restricted` gesetzt, ein Agent auf `write`
-kann also Dateien ändern, aber keine Shell erreichen. Setze `full` bewusst
-und nur für Agenten, deren Projekte du dafür freigeben willst. Jeder Agent
-kann eine eigene Stufe haben; ohne Angabe gilt der Standard.
-
-Beide CLIs laufen isoliert: Claude Code immer mit `--setting-sources ""`, also
-ohne deine globalen Einstellungen, und sobald der Turn MCP-Server mitbekommt
-zusätzlich mit `--mcp-config` und `--strict-mcp-config`, also ohne andere
-MCP-Server als die von Rookery übergebenen. Der Assistent ersetzt außerdem
-Claude Codes eigenen
-Coding-Agent-Systemprompt komplett (`--system-prompt`); deshalb redet er mit
-dir wie ein Mensch und nicht wie ein Werkzeug über Repositories. Agenten
-behalten den Coding-Prompt, weil sie in Projekten arbeiten. Die `CLAUDE.md` im jeweiligen Arbeitsverzeichnis wird
-weiterhin gelesen — im Arbeitsraum ist das Rookerys eigene, in einem
-Projektverzeichnis die des Projekts.
-
-### Fernzugriff
-
-Standardmäßig lauscht der Server nur auf `127.0.0.1` und verlangt keine
-Authentifizierung. Sobald du ihn ins Netz stellst, setze ein Token:
-
-```bash
-ROOKERY_TOKEN=ein-langes-zufaelliges-geheimnis ROOKERY_HOST=0.0.0.0 npm start
+```powershell
+$env:ROOKERY_HOST = '0.0.0.0'
+$env:ROOKERY_TOKEN = '<your-long-random-secret>'
+npm start
 ```
 
-Ist ein Token gesetzt, verlangen alle `/api/*`-Aufrufe einen
-`Authorization: Bearer`-Header und der WebSocket einen `?token=`-Parameter.
+API clients send `Authorization: Bearer <token>`. Browser WebSockets use the token query parameter. This is a shared-token model, not individual user accounts. Telegram controller IDs are a separate policy.
 
-## Fehlersuche
+## Development and checks
 
-| Symptom | Ursache und Behebung |
+```bash
+npm run build
+npm run dev:all
+```
+
+The combined script starts the built server plus Vite at <http://localhost:5317>. It does not watch or restart the backend: rebuild and restart after backend changes. For automatic backend restarts, run `npm run dev` alongside the core/server package `watch` commands. Vite proxies to `http://127.0.0.1:4317` by default; set `ROOKERY_BACKEND` when the backend uses another address.
+
+| Command | Purpose |
 |---|---|
-| `doctor` meldet „nicht angemeldet" | `claude` starten und `/login`, bzw. `codex login` |
-| „No AI provider is ready" | Beide CLIs abgemeldet oder nicht im PATH |
-| Web-UI zeigt Offline-Banner | Server läuft nicht — `npm start` |
-| Erster Turn dauert lange | Kaltstart der CLI plus Prompt-Caching; Folgeturns sind schneller |
-| Sprache reagiert nicht | Kein Chromium-Browser, oder Mikrofonzugriff abgelehnt |
-| `dev:all` bricht sofort ab | Server noch nicht gebaut — erst `npm run build`, dann `npm run dev:all` |
-| Web-UI fehlt, `/api/*` geht trotzdem | Kein `npm run build -w @rookery/web` gelaufen — der Server läuft bewusst auch ohne Web-Build im reinen API-Modus |
+| `npm run build` | Build core, server, CLI, and web in order |
+| `npm run build:core` | Build core only |
+| `npm run typecheck` | TypeScript project build/check for core, server, CLI |
+| `npm test` | Core tests |
+| `npm test -w @rookery/server` | Server integration tests |
+| `npm test -w @rookery/web` | Web utility and table tests |
+| `npm run tui:check -w @rookery/cli` | Render terminal components and check output |
+| `npm run tui:drive -w @rookery/cli` | Drive the terminal with stubbed provider events |
+| `npm run dev:web` | Vite development server only |
+| `npm run doctor` | Provider readiness and setup diagnostics |
+| `npm run clean` | Remove build artifacts |
 
-## Konzepte in Arbeit
+Build before tests that import `dist` output. The web build includes its own TypeScript check. Keep package boundaries intact and reuse `components/shell`, `components/blocks`, and `components/common` for pages. Built-in user-facing text is English.
 
-`docs/concepts/` sammelt Designdokumente für Ausbaustufen, die noch nicht
-oder nur teilweise umgesetzt sind — Konzept, kein Code, jeweils mit Stand und
-betroffenen Dateien im Kopf:
+## Troubleshooting
 
-- [`agent-performance-management.md`](docs/concepts/agent-performance-management.md) — Bewertung, Verlauf und Eskalationsstufen für Agenten
-- [`memory-graph-and-sleep.md`](docs/concepts/memory-graph-and-sleep.md) — Gedächtnis als Graph mit nächtlicher Verdichtung
-- [`project-scoped-skills-and-mcp.md`](docs/concepts/project-scoped-skills-and-mcp.md) — Skills und MCP-Server pro Projekt statt global
-- [`telegram-channel.md`](docs/concepts/telegram-channel.md) — Telegram als Fernsteuerung für den Assistenten
+| Symptom | Check |
+|---|---|
+| No provider ready | Install/sign in to a CLI and run `npm run doctor` |
+| Web app offline | Start server and check host, port, and token |
+| First turn is slow | CLI startup and prompt processing add latency |
+| No microphone response | Check recognition support and permission |
+| Speech still German after updating | Change saved language/voice and check environment overrides |
+| Telegram ignores messages | Use a private chat; check allowed ID, token, pairing, and status |
+| `dev:all` exits immediately | Run `npm run build` first |
+| API works but web app is missing | Build `@rookery/web`; server supports API-only operation |
 
-## Lizenz
+## Design documents
 
-MIT, siehe [`LICENSE`](LICENSE).
+[`docs/concepts`](docs/concepts) contains design history and proposals, some partly implemented. They may retain their original German text; current behavior is determined by code. Topics: [agent performance](docs/concepts/agent-performance-management.md), [memory and sleep](docs/concepts/memory-graph-and-sleep.md), [project-scoped skills and MCP](docs/concepts/project-scoped-skills-and-mcp.md), and [Telegram](docs/concepts/telegram-channel.md).
+
+## License
+
+MIT. See [`LICENSE`](LICENSE).

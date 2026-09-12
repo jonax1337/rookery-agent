@@ -14,7 +14,7 @@ export function cleanForSpeech(markdown: string): string {
   const fences = text.match(/```/g)?.length ?? 0;
   if (fences % 2 === 1) text = text.slice(0, text.lastIndexOf('```'));
   return text
-    .replace(/```[\s\S]*?```/g, ' Der Code steht auf dem Bildschirm. ')
+    .replace(/```[\s\S]*?```/g, ' The code is shown on screen. ')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')

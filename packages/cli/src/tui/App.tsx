@@ -145,7 +145,7 @@ export function App({
       }).then((spoken) => {
         if (!spoken.ok && spoken.detail !== 'aborted') {
           append([
-            { kind: 'activity', id: nextId(), icon: glyph.warn, text: 'Sprache: ' + spoken.detail },
+            { kind: 'activity', id: nextId(), icon: glyph.warn, text: 'Voice: ' + spoken.detail },
           ]);
         }
       });
@@ -229,7 +229,7 @@ export function App({
           kind: 'activity',
           id: nextId(),
           icon: glyph.warn,
-          text: 'Es läuft schon ein Zug — Ctrl+C unterbricht ihn',
+          text: 'A turn is already running — Ctrl+C interrupts it',
         },
       ]);
       return;
@@ -390,10 +390,10 @@ export function App({
 
   const hint = useMemo(() => {
     if (paletteOpen) return '';
-    if (turn.busy) return 'Ctrl+C unterbricht';
+    if (turn.busy) return 'Ctrl+C interrupts';
     return (
-      'Enter senden ' + glyph.dot + ' Shift+Enter neue Zeile ' + glyph.dot +
-      ' / Befehle ' + glyph.dot + ' Ctrl+D beenden'
+      'Enter send ' + glyph.dot + ' Shift+Enter newline ' + glyph.dot +
+      ' / Commands ' + glyph.dot + ' Ctrl+D exit'
     );
   }, [paletteOpen, turn.busy]);
 
@@ -465,7 +465,7 @@ export function App({
           value={draft}
           cursor={cursor}
           busy={turn.busy}
-          placeholder="Frag was, oder / für Befehle"
+          placeholder="Ask anything, or / for commands"
           hint={hint}
           caretVisible={caretVisible}
         />
@@ -516,7 +516,7 @@ export async function startTui(options: TuiOptions = {}): Promise<number> {
 
   const state: SessionState = {
     sessionId: options.session,
-    title: 'Neue Unterhaltung',
+    title: 'New conversation',
     assistantName,
     counterpart: assistantName,
     provider: parseProvider(options.provider) ?? config.defaultProvider,

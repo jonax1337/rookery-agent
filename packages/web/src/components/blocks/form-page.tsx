@@ -56,8 +56,8 @@ export interface FormActionsProps {
  */
 export function FormActions({
   form,
-  submitLabel = 'Speichern',
-  cancelLabel = 'Abbrechen',
+  submitLabel = 'Save',
+  cancelLabel = 'Cancel',
   onCancel,
   cancelTo,
   submitting = false,
@@ -98,7 +98,7 @@ export function FormActions({
           {cancelLabel}
         </Button>
         <Button type="submit" form={form} disabled={submitDisabled || submitting}>
-          {submitting ? <Spinner aria-label="Wird gespeichert" /> : null}
+          {submitting ? <Spinner aria-label="Saving" /> : null}
           {submitLabel}
         </Button>
       </div>
@@ -169,7 +169,7 @@ export function FormPage({
       {aside}
       {error ? (
         <Alert variant="destructive">
-          <AlertTitle>Nicht gespeichert</AlertTitle>
+          <AlertTitle>Not saved</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       ) : null}

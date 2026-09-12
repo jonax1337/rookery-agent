@@ -17,6 +17,18 @@ function home() {
   return mkdtempSync(join(tmpdir(), 'rookery-config-'));
 }
 
+test('voice defaults to British English and preserves a saved language and voice', () => {
+  const root = home();
+  const config = loadConfig({ home: root });
+  assert.equal(config.voice.lang, 'en-GB');
+  assert.equal(config.voice.edgeVoice, 'en-GB-RyanNeural');
+
+  saveConfig({ voice: { lang: 'de-DE', edgeVoice: 'de-DE-FlorianMultilingualNeural' } }, root);
+  const saved = loadConfig({ home: root });
+  assert.equal(saved.voice.lang, 'de-DE');
+  assert.equal(saved.voice.edgeVoice, 'de-DE-FlorianMultilingualNeural');
+});
+
 test('a runtime change reaches the file and the live object without replacing it', () => {
   const root = home();
   const config = loadConfig({ home: root });

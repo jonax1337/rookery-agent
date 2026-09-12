@@ -52,7 +52,7 @@ export async function registerSleepRoutes(app: FastifyInstance, context: ServerC
       const owner = request.body?.owner || request.query.owner || ASSISTANT_MEMORY_OWNER;
       if (context.assistant.sleep.isRunning(owner)) {
         reply.code(409);
-        return { error: 'Dieses Gedächtnis schläft bereits.' };
+        return { error: 'This memory bank is already sleeping.' };
       }
       const wait = request.query.wait === '1' || request.query.wait === 'true';
       if (wait) return context.assistant.sleepNow(owner);
@@ -73,7 +73,7 @@ export async function registerSleepRoutes(app: FastifyInstance, context: ServerC
       const result = context.assistant.undoSleep(request.params.id);
       if (!result) {
         reply.code(404);
-        return { error: 'Diesen Lauf gibt es nicht, oder er wurde bereits zurückgenommen.' };
+        return { error: 'This run does not exist or has already been undone.' };
       }
       return result;
     },

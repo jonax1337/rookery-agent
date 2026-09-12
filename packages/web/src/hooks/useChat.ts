@@ -202,8 +202,8 @@ export function useChat(
             pushActivity({
               id: 'memory:' + Date.now(),
               kind: 'memory',
-              label: 'Erinnerungen',
-              detail: event.count + ' abgerufen',
+              label: 'Memories',
+              detail: event.count + ' retrieved',
               done: true,
             });
           }

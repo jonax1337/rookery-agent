@@ -48,7 +48,7 @@ import { Textarea } from '@/components/ui/textarea';
  * wrong direction for the one question a team page raises - "who is in this
  * team?". Membership is a column on the agent, so each change is its own
  * `updateAgent` call and lands immediately; it is not part of the draft and
- * therefore not gated behind "Speichern".
+ * therefore not gated behind "Save".
  */
 
 interface TeamDraft {
@@ -60,7 +60,7 @@ interface TeamDraft {
 const EMPTY: TeamDraft = { name: '', purpose: '', leadId: null };
 
 const schema = z.object({
-  name: z.string().trim().min(1, 'Ein Name ist Pflicht.'),
+  name: z.string().trim().min(1, 'A name is required.'),
 });
 
 function draftOf(team: Team): TeamDraft {
@@ -101,7 +101,7 @@ export function TeamFormPage() {
     hydrate(team.id, () => draftOf(team));
   }, [hydrate, team]);
 
-  /* ------------------------------ Mitglieder ------------------------------ */
+  /* ------------------------------ Members ------------------------------ */
 
   const members = useMemo(
     () => org.agents.filter((agent) => agent.teamId === id && !agent.archived),
@@ -132,7 +132,7 @@ export function TeamFormPage() {
         await org.refresh();
         toast(done);
       } catch (caught) {
-        reportFailure('Änderung', caught);
+        reportFailure('Update', caught);
       } finally {
         setMoving(null);
       }
@@ -148,44 +148,44 @@ export function TeamFormPage() {
     else await api.createTeam(toInput(patch));
     markSaved();
     await org.refresh();
-    toast(editing ? 'Team gespeichert' : 'Team angelegt');
+    toast(editing ? 'Team saved' : 'Team created');
     void navigate('/org/teams');
   });
 
   const dissolve = useCallback(async (): Promise<void> => {
     if (!id || !team) return;
     const ok = await confirm({
-      title: 'Team auflösen?',
+      title: 'Disband team?',
       description:
         members.length === 0
-          ? 'Das Team „' + team.name + '“ ist leer und verschwindet vollständig.'
+          ? 'The team “' + team.name + '” is empty and will disappear completely.'
           : members.length +
-            (members.length === 1 ? ' Agent verliert' : ' Agenten verlieren') +
-            ' die Zuordnung zu „' +
+            (members.length === 1 ? ' agent will lose' : ' agents will lose') +
+            ' their association with “' +
             team.name +
-            '“. Die Agenten selbst bleiben bestehen.',
-      confirmLabel: 'Auflösen',
+            '”. The agents themselves will remain.',
+      confirmLabel: 'Disband',
       destructive: true,
     });
     if (!ok) return;
     try {
       await api.deleteTeam(id);
       await org.refresh();
-      toast('Team aufgelöst', { description: team.name });
+      toast('Team disbanded', { description: team.name });
       void navigate('/org/teams');
     } catch (caught) {
-      reportFailure('Auflösen', caught);
+      reportFailure('Disband', caught);
     }
   }, [confirm, id, members.length, navigate, org, team]);
 
   /* --------------------------------- Kopf --------------------------------- */
 
-  const leaf = editing ? (team?.name ?? 'Team bearbeiten') : 'Team anlegen';
+  const leaf = editing ? (team?.name ?? 'Edit team') : 'Create team';
 
   usePageMeta(
     {
       breadcrumb: [
-        { label: 'Firma', to: '/org/teams' },
+        { label: 'Organization', to: '/org/teams' },
         { label: 'Teams', to: '/org/teams' },
         { label: leaf },
       ],
@@ -199,7 +199,7 @@ export function TeamFormPage() {
             editing
               ? [
                   {
-                    label: 'Team auflösen',
+                    label: 'Team disband',
                     icon: Trash2Icon,
                     destructive: true,
                     onSelect: () => void dissolve(),
@@ -220,9 +220,9 @@ export function TeamFormPage() {
       <PageBody width="2xl">
         <EmptyState
           icon={UsersRoundIcon}
-          title="Dieses Team gibt es nicht mehr"
-          description="Es wurde aufgelöst oder hat nie existiert."
-          actionLabel="Zu den Teams"
+          title="This team no longer exists"
+          description="It was disbanded or never existed."
+          actionLabel="View teams"
           actionTo="/org/teams"
         />
       </PageBody>
@@ -245,7 +245,7 @@ export function TeamFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        description="Teams gruppieren Agenten und geben ihnen einen gemeinsamen Zweck."
+        description="Teams group agents around a shared purpose."
       >
         <FieldSet>
           <Field>
@@ -260,29 +260,28 @@ export function TeamFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="team-purpose">Zweck</FieldLabel>
+            <FieldLabel htmlFor="team-purpose">Purpose</FieldLabel>
             <Textarea
               id="team-purpose"
               rows={3}
-              placeholder="Wofür dieses Team zuständig ist."
+              placeholder="What this team is responsible for."
               value={draft.purpose}
               onChange={(event) => set({ purpose: event.target.value })}
             />
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="team-lead">Leitung</FieldLabel>
+            <FieldLabel htmlFor="team-lead">Lead</FieldLabel>
             <EntityCombobox
               id="team-lead"
               options={leadOptions}
               value={draft.leadId}
               onChange={(leadId) => set({ leadId })}
-              placeholder="Noch offen"
-              emptyLabel="Kein Agent gefunden"
+              placeholder="Unassigned"
+              emptyLabel="No agent found"
             />
             <FieldDescription>
-              Die Leitung muss nicht im Team sein — sie ist die Ansprechpartnerin, nicht die
-              Mitgliedschaft.
+              The lead need not belong to the team; this identifies its point of contact.
             </FieldDescription>
           </Field>
         </FieldSet>
@@ -292,7 +291,7 @@ export function TeamFormPage() {
             <FieldSeparator />
             <FieldSet>
               <Field>
-                <FieldLabel htmlFor="team-add-member">Mitglieder</FieldLabel>
+                <FieldLabel htmlFor="team-add-member">Members</FieldLabel>
                 {members.length ? (
                   <ItemGroup className="gap-2">
                     {members.map((agent) => (
@@ -308,11 +307,11 @@ export function TeamFormPage() {
                             size="sm"
                             disabled={moving === agent.id}
                             onClick={() =>
-                              void setTeamOf(agent.id, null, agent.name + ' ist jetzt ohne Team')
+                              void setTeamOf(agent.id, null, agent.name + ' is now without a team')
                             }
                           >
                             <UserMinusIcon data-icon="inline-start" />
-                            Entfernen
+                            Remove
                           </Button>
                         </ItemActions>
                       </Item>
@@ -321,8 +320,8 @@ export function TeamFormPage() {
                 ) : (
                   <EmptyState
                     icon={UsersRoundIcon}
-                    title="Noch niemand im Team"
-                    description="Über die Auswahl darunter kommt der erste Agent dazu."
+                    title="No team members yet"
+                    description="Use the selection below to add the first agent."
                     variant="plain"
                     size="sm"
                   />
@@ -338,14 +337,14 @@ export function TeamFormPage() {
                     void setTeamOf(
                       agentId,
                       id,
-                      (agent?.name ?? 'Agent') + ' gehört jetzt zu ' + draft.name,
+                      (agent?.name ?? 'Agent') + ' now belongs to ' + draft.name,
                     );
                   }}
-                  placeholder="Agent hinzufügen"
-                  emptyLabel="Alle Agenten sind schon hier"
+                  placeholder="Add agent"
+                  emptyLabel="All agents are already here"
                 />
                 <FieldDescription>
-                  Mitgliedschaften werden sofort gespeichert, unabhängig von den Feldern oben.
+                  Membership changes are saved immediately, independently of the fields above.
                 </FieldDescription>
               </Field>
             </FieldSet>

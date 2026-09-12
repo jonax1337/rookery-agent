@@ -65,7 +65,7 @@ import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/comp
  *
  * The thread itself is stock assistant-ui and stays that way: what is written
  * and how it is sent are the composer's business, and the four turn controls
- * (Projekt, Zugriff, Modell, Effort) live inside it because they are
+ * (Project, Permission, Model, Effort) live inside it because they are
  * parameters of the *next* message. This file only frames it.
  *
  * What the frame adds is everything a conversation needs that is not a
@@ -83,37 +83,37 @@ interface Suggestion {
 
 const ASSISTANT_SUGGESTIONS: Suggestion[] = [
   {
-    title: 'Fass zusammen,',
-    label: 'was du über mich weißt',
-    prompt: 'Fass kurz zusammen, was du über mich weißt.',
+    title: 'Summarize',
+    label: 'what you know about me',
+    prompt: 'Briefly summarize what you know about me.',
   },
   {
-    title: 'Plane meinen Tag',
-    label: 'mit drei Prioritäten',
-    prompt: 'Hilf mir, meinen Tag mit drei Prioritäten zu planen.',
+    title: 'Plan my day',
+    label: 'with three priorities',
+    prompt: 'Help me plan my day around three priorities.',
   },
   {
-    title: 'Erklär mir,',
-    label: 'wie du arbeitest',
-    prompt: 'Erklär mir kurz, wie du arbeitest und worauf du Zugriff hast.',
+    title: 'Explain',
+    label: 'how you work',
+    prompt: 'Briefly explain how you work and what you can access.',
   },
 ];
 
 const AGENT_SUGGESTIONS: Suggestion[] = [
   {
-    title: 'Stell dich vor,',
-    label: 'wofür bist du zuständig?',
-    prompt: 'Stell dich kurz vor: wofür bist du zuständig und wie arbeitest du?',
+    title: 'Introduce yourself',
+    label: 'what are you responsible for?',
+    prompt: 'Briefly introduce yourself: what are you responsible for, and how do you work?',
   },
   {
-    title: 'Woran arbeitest du',
-    label: 'gerade?',
-    prompt: 'Woran arbeitest du gerade, und was steht als Nächstes an?',
+    title: 'What are you working on',
+    label: 'right now?',
+    prompt: 'What are you working on right now, and what comes next?',
   },
   {
-    title: 'Ich habe eine Frage',
-    label: 'zu deinem Bereich',
-    prompt: 'Ich habe eine Frage zu deinem Bereich: ',
+    title: 'I have a question',
+    label: 'about your area',
+    prompt: 'I have a question about your area: ',
   },
 ];
 
@@ -137,7 +137,7 @@ export function ChatPage() {
   const session =
     sessions.sessions.find((entry) => entry.id === activeId) ??
     allSessions.sessionById(activeId ?? undefined);
-  const title = session?.title || (activeId ? 'Gespräch' : UNTITLED_SESSION);
+  const title = session?.title || (activeId ? 'Conversation' : UNTITLED_SESSION);
 
   /* ------------------------------- actions ------------------------------- */
 
@@ -146,10 +146,10 @@ export function ChatPage() {
   const confirmReset = React.useCallback(async () => {
     if (!activeId) return;
     const ok = await confirm({
-      title: 'Gespräch zurücksetzen?',
+      title: 'Reset conversation?',
       description:
-        'Alle Nachrichten dieses Gesprächs werden entfernt. Titel, Projekt und Gegenüber bleiben.',
-      confirmLabel: 'Zurücksetzen',
+        'All messages in this conversation will be removed. The title, project, and counterpart will remain.',
+      confirmLabel: 'Reset',
       destructive: true,
       icon: RotateCcwIcon,
     });
@@ -164,18 +164,18 @@ export function ChatPage() {
       // `/chats` and the rail's badge read the shared list, and neither
       // `PATCH` nor `DELETE /api/sessions/:id` sends anything over the socket.
       void allSessions.refresh();
-      toast('Gespräch zurückgesetzt');
+      toast('Conversation reset');
     } catch (caught) {
-      reportFailure('Zurücksetzen', caught);
+      reportFailure('Reset', caught);
     }
   }, [activeId, allSessions, chat, confirm, sessions]);
 
   const confirmDelete = React.useCallback(async () => {
     if (!activeId) return;
     const ok = await confirm({
-      title: 'Gespräch löschen?',
-      description: 'Dieses Gespräch und alle Nachrichten werden gelöscht.',
-      confirmLabel: 'Löschen',
+      title: 'Delete conversation?',
+      description: 'This conversation and all its messages will be deleted.',
+      confirmLabel: 'Delete',
       destructive: true,
     });
     if (!ok) return;
@@ -183,10 +183,10 @@ export function ChatPage() {
       await sessions.remove(activeId);
       chat.reset();
       void allSessions.refresh();
-      toast('Gespräch gelöscht');
+      toast('Conversation deleted');
       void navigate('/chats');
     } catch (caught) {
-      reportFailure('Löschen', caught);
+      reportFailure('Delete', caught);
     }
   }, [activeId, allSessions, chat, confirm, navigate, sessions]);
 
@@ -198,33 +198,33 @@ export function ChatPage() {
     {
       breadcrumb: counterpart
         ? [
-            { label: 'Gespräche', to: '/chats' },
+            { label: 'Conversations', to: '/chats' },
             { label: counterpart.name, to: '/org/agents/' + counterpart.id },
             { label: title },
           ]
-        : [{ label: 'Gespräche', to: '/chats' }, { label: title }],
+        : [{ label: 'Conversations', to: '/chats' }, { label: title }],
       actions: activeId ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <RowMenuButton tone="header" label="Weitere Aktionen" />
+            <RowMenuButton tone="header" label="More actions" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
             <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
               <PencilIcon />
-              Umbenennen
+              Rename
             </DropdownMenuItem>
 
             {/* Every open conversation can be carried on hands-free; a
                 spoken one is simply going back to where it started. */}
             <DropdownMenuItem onSelect={() => void navigate('/voice?session=' + activeId)}>
               <AudioLinesIcon />
-              {session?.kind === 'voice' ? 'Sprachgespräch fortsetzen' : 'Im Sprachmodus fortsetzen'}
+              {session?.kind === 'voice' ? 'Continue voice conversation' : 'Continue in voice mode'}
             </DropdownMenuItem>
 
             <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Projekt zuweisen</DropdownMenuSubTrigger>
+              <DropdownMenuSubTrigger>Assign project</DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="w-52">
-                {/* The same choice the composer's Projekt pill makes, through
+                {/* The same choice the composer's Project pill makes, through
                     the same call - the two can never disagree. */}
                 <DropdownMenuRadioGroup
                   value={turn.projectId ?? NO_PROJECT}
@@ -232,7 +232,7 @@ export function ChatPage() {
                     turn.chooseProject(value === NO_PROJECT ? null : value)
                   }
                 >
-                  <DropdownMenuRadioItem value={NO_PROJECT}>Kein Projekt</DropdownMenuRadioItem>
+                  <DropdownMenuRadioItem value={NO_PROJECT}>No project</DropdownMenuRadioItem>
                   {org.projects
                     .filter((entry) => !entry.archived || entry.id === turn.projectId)
                     .map((entry) => (
@@ -246,20 +246,20 @@ export function ChatPage() {
 
             <DropdownMenuItem onSelect={() => void confirmReset()}>
               <RotateCcwIcon />
-              Zurücksetzen
+              Reset
             </DropdownMenuItem>
 
             <DropdownMenuItem asChild>
               <NavLink to="/chats">
                 <MessagesSquareIcon />
-                Zu den Gesprächen
+                View conversations
               </NavLink>
             </DropdownMenuItem>
 
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => void confirmDelete()}>
               <Trash2Icon />
-              Löschen
+              Delete
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -286,11 +286,11 @@ export function ChatPage() {
       Welcome: () => (
         <EmptyState
           icon={counterpart ? BotIcon : FeatherIcon}
-          title={counterpart ? 'Gespräch mit ' + counterpart.name : greeting()}
+          title={counterpart ? 'Conversation with ' + counterpart.name : greeting()}
           description={
             counterpart
-              ? counterpart.title + ' · antwortet mit eigenem Gedächtnis'
-              : 'Womit kann ich helfen?'
+              ? counterpart.title + ' · responds with personal Memory'
+              : 'How can I help?'
           }
           variant="plain"
           className="px-2 sm:px-12"
@@ -348,7 +348,7 @@ export function ChatPage() {
               <TriangleAlertIcon className="text-destructive" />
             </ItemMedia>
             <ItemContent>
-              <ItemTitle className="text-destructive">Der Turn ist fehlgeschlagen</ItemTitle>
+              <ItemTitle className="text-destructive">The turn failed</ItemTitle>
               <ItemDescription className="text-foreground">{chat.error}</ItemDescription>
             </ItemContent>
           </Item>
@@ -369,7 +369,7 @@ export function ChatPage() {
         }}
       />
 
-      <span className="sr-only">Gespräch mit {counterpart?.name ?? assistantName}</span>
+      <span className="sr-only">Conversation with {counterpart?.name ?? assistantName}</span>
     </div>
   );
 }
@@ -430,16 +430,16 @@ function RenameDialog({ open, onOpenChange, title, onRename }: RenameDialogProps
       <DialogContent className="sm:max-w-md">
         <form onSubmit={(event) => void submit(event)}>
           <DialogHeader>
-            <DialogTitle>Gespräch umbenennen</DialogTitle>
+            <DialogTitle>Rename conversation</DialogTitle>
             <DialogDescription>
-              Unter diesem Namen steht das Gespräch in der Liste und im Kopf.
+              This name appears in the conversation list and page header.
             </DialogDescription>
           </DialogHeader>
 
           {/* FormField verdrahtet Label, Eingabe und Meldung: ohne
               `aria-describedby` hört jemand, der nach der Ablehnung zurück ins
               Feld tabbt, nur noch dessen Namen. */}
-          <FormField id="gespraech-titel" label="Titel" error={error} className="py-4">
+          <FormField id="gespraech-titel" label="Title" error={error} className="py-4">
             {(control) => (
               <Input
                 {...control}
@@ -457,11 +457,11 @@ function RenameDialog({ open, onOpenChange, title, onRename }: RenameDialogProps
           <DialogFooter>
             <DialogClose asChild>
               <Button type="button" variant="outline">
-                Abbrechen
+                Cancel
               </Button>
             </DialogClose>
             <Button type="submit" disabled={saving}>
-              Speichern
+              Save
             </Button>
           </DialogFooter>
         </form>

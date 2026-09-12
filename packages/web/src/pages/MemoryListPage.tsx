@@ -122,10 +122,10 @@ function StateBadges({ memory }: { memory: MemoryRecord }) {
   const plain = !memory.pinned && !memory.dormantAt && !memory.forgotten;
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {memory.pinned ? <Badge variant="secondary">angeheftet</Badge> : null}
-      {memory.dormantAt ? <Badge variant="outline">schläft</Badge> : null}
-      {memory.forgotten ? <Badge variant="destructive">vergessen</Badge> : null}
-      {plain ? <span className="text-sm text-muted-foreground">wach</span> : null}
+      {memory.pinned ? <Badge variant="secondary">pinned</Badge> : null}
+      {memory.dormantAt ? <Badge variant="outline">sleeping</Badge> : null}
+      {memory.forgotten ? <Badge variant="destructive">forgotten</Badge> : null}
+      {plain ? <span className="text-sm text-muted-foreground">awake</span> : null}
     </div>
   );
 }
@@ -138,7 +138,7 @@ export function MemoryListPage() {
   const [tab, setTab] = useState<string>('alle');
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Das Netz schickt eine Erinnerung als `/memory?erinnerung=<id>` herüber.
+  // Das Netz schickt eine Memory als `/memory?erinnerung=<id>` herüber.
   // Der Parameter wird sofort wieder entfernt, sonst zöge ein späteres
   // Schliessen der Schublade sie beim nächsten Rendern erneut auf - und der
   // Zurück-Knopf des Browsers landete auf derselben offenen Schublade.
@@ -174,7 +174,7 @@ export function MemoryListPage() {
     });
   }, [nodes]);
 
-  /* -------------------------------- Aktionen ------------------------------ */
+  /* -------------------------------- Actions ------------------------------ */
 
   const patch = useCallback<PatchFn>(
     async (id, changes, message) => {
@@ -184,7 +184,7 @@ export function MemoryListPage() {
         void graph.refresh();
         toast(message);
       } catch (caught) {
-        reportFailure('Ändern', caught);
+        reportFailure('Update', caught);
       }
     },
     [graph, memories],
@@ -193,17 +193,17 @@ export function MemoryListPage() {
   const forget = useCallback(
     async (memory: MemoryRecord): Promise<void> => {
       const ok = await confirm({
-        title: 'Erinnerung vergessen?',
+        title: 'Forget memory?',
         description:
-          'Sie fällt aus dem Erinnern heraus. Gelöscht wird sie nicht — mit „Vergessene zeigen“ steht sie weiter in dieser Tabelle.',
-        confirmLabel: 'Vergessen',
+          'It will be excluded from recall. It is not deleted and remains in this table when “Show forgotten” is enabled.',
+        confirmLabel: 'Forget',
         destructive: true,
       });
       if (!ok) return;
       await memories.forget(memory.id);
       void graph.refresh();
       setSelectedId((current) => (current === memory.id ? null : current));
-      toast('Vergessen', { description: memory.content });
+      toast('Forget', { description: memory.content });
     },
     [confirm, graph, memories],
   );
@@ -250,7 +250,7 @@ export function MemoryListPage() {
     const counts = new Map<string, number>();
     for (const item of memories.items) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
     return [
-      { value: 'alle', label: 'Alle', count: memories.items.length },
+      { value: 'alle', label: 'All', count: memories.items.length },
       ...MEMORY_KINDS.map((kind) => ({
         value: kind,
         label: MEMORY_KIND_LABEL[kind],
@@ -276,9 +276,9 @@ export function MemoryListPage() {
   ) : (
     <EmptyState
       icon={BrainIcon}
-      title="Noch nichts gemerkt"
-      description="Rookery lernt nach jedem Gespräch von selbst dazu. Was sofort sitzen soll, lässt sich hier von Hand merken."
-      actionLabel="Merken"
+      title="No memories yet"
+      description="Rookery learns automatically after every conversation. You can save anything that should be remembered immediately here."
+      actionLabel="Save memory"
       onAction={openRemember}
       variant="plain"
       size="sm"
@@ -291,25 +291,25 @@ export function MemoryListPage() {
 
       <div className="px-4 lg:px-6">
         <TrendChartCard
-          title="Gedächtnis wächst"
-          description="Neue Erinnerungen pro Tag, aufgeteilt danach, woher sie kommen."
-          descriptionShort="Pro Tag dazugelernt"
+          title="Memory growth"
+          description="New memories per day, grouped by source."
+          descriptionShort="Learned per day"
           data={growth}
           series={GROWTH_SERIES}
-          {...(graph.graph?.truncated ? { badge: <Badge variant="outline">gekürzt</Badge> } : {})}
+          {...(graph.graph?.truncated ? { badge: <Badge variant="outline">truncated</Badge> } : {})}
           empty={
             <EmptyState
               icon={BrainIcon}
-              title="In diesem Zeitraum kam nichts dazu"
-              description="Ein größerer Zeitraum zeigt womöglich mehr."
+              title="Nothing was learned during this period"
+              description="A longer period may show more."
               variant="plain"
               size="sm"
             />
           }
         />
         <p className="mt-2 text-xs text-muted-foreground">
-          Basis: die geladenen Knoten des Netzes
-          {nodes ? ' (' + formatNumber(nodes.length) + ')' : ''}, nicht die ganze Datenbank.
+          Based on the loaded network nodes
+          {nodes ? ' (' + formatNumber(nodes.length) + ')' : ''}, not the entire database.
         </p>
       </div>
 
@@ -321,16 +321,16 @@ export function MemoryListPage() {
         tabs={tabs}
         tab={tab}
         onTabChange={setTab}
-        tabLabel="Art der Erinnerung"
+        tabLabel="Memory type"
         searchable
         search={memories.query}
         onSearchChange={memories.setQuery}
-        searchPlaceholder="Erinnerungen durchsuchen"
+        searchPlaceholder="Search memories"
         searchServerSide
         columnLabels={MEMORY_COLUMN_LABELS}
         initialSorting={MEMORY_SORTING}
         capped={memories.capped}
-        rowLabel={{ singular: 'Erinnerung', plural: 'Erinnerungen' }}
+        rowLabel={{ singular: 'Memory', plural: 'Memories' }}
         loading={memories.loading && memories.items.length === 0}
         error={memories.error ? <ServerOffline onRetry={() => void memories.refresh()} /> : undefined}
         onRowClick={(memory) => setSelectedId(memory.id)}
@@ -343,7 +343,7 @@ export function MemoryListPage() {
               onCheckedChange={memories.setIncludeForgotten}
             />
             <Label htmlFor="vergessene" className="text-sm font-normal text-muted-foreground">
-              Vergessene zeigen
+              Show forgotten
             </Label>
           </div>
         }
@@ -354,24 +354,24 @@ export function MemoryListPage() {
               variant="outline"
               onClick={() => {
                 for (const memory of selected) {
-                  if (!memory.pinned) void patch(memory.id, { pinned: true }, 'Angeheftet');
+                  if (!memory.pinned) void patch(memory.id, { pinned: true }, 'Pinned');
                 }
                 clear();
               }}
             >
-              Anheften
+              Pin
             </Button>
             <Button
               size="sm"
               variant="outline"
               onClick={() => {
                 for (const memory of selected) {
-                  if (!memory.dormantAt) void patch(memory.id, { dormant: true }, 'Eingeschläfert');
+                  if (!memory.dormantAt) void patch(memory.id, { dormant: true }, 'Sleeping');
                 }
                 clear();
               }}
             >
-              Einschläfern
+              Put to sleep
             </Button>
           </>
         )}
@@ -417,19 +417,19 @@ function MemoryRowActions({
     <div className="flex justify-end">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <RowMenuButton label={'Aktionen für ' + shorten(memory.content, 60)} />
+          <RowMenuButton label={'Actions for ' + shorten(memory.content, 60)} />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-52">
           <DropdownMenuItem onSelect={onOpen}>
             <SquareArrowOutUpRightIcon data-icon="inline-start" />
-            Öffnen
+            Open
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() =>
               void onPatch(
                 memory.id,
                 { pinned: !memory.pinned },
-                memory.pinned ? 'Gelöst' : 'Angeheftet',
+                memory.pinned ? 'Unpinned' : 'Pinned',
               )
             }
           >
@@ -438,14 +438,14 @@ function MemoryRowActions({
             ) : (
               <PinIcon data-icon="inline-start" />
             )}
-            {memory.pinned ? 'Lösen' : 'Anheften'}
+            {memory.pinned ? 'Unpin' : 'Pin'}
           </DropdownMenuItem>
           <DropdownMenuItem
             onSelect={() =>
               void onPatch(
                 memory.id,
                 { dormant: !memory.dormantAt },
-                memory.dormantAt ? 'Geweckt' : 'Eingeschläfert',
+                memory.dormantAt ? 'Awake' : 'Sleeping',
               )
             }
           >
@@ -454,21 +454,21 @@ function MemoryRowActions({
             ) : (
               <MoonIcon data-icon="inline-start" />
             )}
-            {memory.dormantAt ? 'Wecken' : 'Einschläfern'}
+            {memory.dormantAt ? 'Wake' : 'Put to sleep'}
           </DropdownMenuItem>
           {memory.forgotten ? (
             <DropdownMenuItem
-              onSelect={() => void onPatch(memory.id, { forgotten: false }, 'Zurückgeholt')}
+              onSelect={() => void onPatch(memory.id, { forgotten: false }, 'Restored')}
             >
               <RotateCcwIcon data-icon="inline-start" />
-              Zurückholen
+              Restore
             </DropdownMenuItem>
           ) : (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={onForget}>
                 <Trash2Icon data-icon="inline-start" />
-                Vergessen
+                Forget
               </DropdownMenuItem>
             </>
           )}
@@ -564,7 +564,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
     if (!current) return;
     setSaving(true);
     try {
-      await onPatch(current.id, { content: content.trim(), kind, importance }, 'Gespeichert');
+      await onPatch(current.id, { content: content.trim(), kind, importance }, 'Saved');
     } finally {
       setSaving(false);
     }
@@ -591,10 +591,10 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
     <DetailDrawer
       open={id !== null}
       onOpenChange={onOpenChange}
-      title={current ? MEMORY_KIND_LABEL[current.kind] : 'Erinnerung'}
+      title={current ? MEMORY_KIND_LABEL[current.kind] : 'Memory'}
       description={
         current
-          ? ORIGIN_LABEL[current.origin] + ' · angelegt ' + formatDateTime(current.createdAt)
+          ? ORIGIN_LABEL[current.origin] + ' · created ' + formatDateTime(current.createdAt)
           : undefined
       }
       footer={
@@ -607,7 +607,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 void onPatch(
                   current.id,
                   { pinned: !current.pinned },
-                  current.pinned ? 'Gelöst' : 'Angeheftet',
+                  current.pinned ? 'Unpinned' : 'Pinned',
                 )
               }
             >
@@ -616,7 +616,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
               ) : (
                 <PinIcon data-icon="inline-start" />
               )}
-              {current.pinned ? 'Lösen' : 'Anheften'}
+              {current.pinned ? 'Unpin' : 'Pin'}
             </Button>
             <Button
               variant="outline"
@@ -625,7 +625,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 void onPatch(
                   current.id,
                   { dormant: !current.dormantAt },
-                  current.dormantAt ? 'Geweckt' : 'Eingeschläfert',
+                  current.dormantAt ? 'Awake' : 'Sleeping',
                 )
               }
             >
@@ -634,16 +634,16 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
               ) : (
                 <MoonIcon data-icon="inline-start" />
               )}
-              {current.dormantAt ? 'Wecken' : 'Einschläfern'}
+              {current.dormantAt ? 'Wake' : 'Put to sleep'}
             </Button>
             {current.forgotten ? (
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => void onPatch(current.id, { forgotten: false }, 'Zurückgeholt')}
+                onClick={() => void onPatch(current.id, { forgotten: false }, 'Restored')}
               >
                 <RotateCcwIcon data-icon="inline-start" />
-                Zurückholen
+                Restore
               </Button>
             ) : (
               <Button
@@ -653,7 +653,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 onClick={() => void onForget(current)}
               >
                 <Trash2Icon data-icon="inline-start" />
-                Vergessen
+                Forget
               </Button>
             )}
           </div>
@@ -663,7 +663,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
       {current ? (
         <>
           <Field>
-            <FieldLabel htmlFor="erinnerung-inhalt">Inhalt</FieldLabel>
+            <FieldLabel htmlFor="erinnerung-inhalt">Content</FieldLabel>
             <Textarea
               id="erinnerung-inhalt"
               rows={4}
@@ -673,7 +673,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="erinnerung-art">Art</FieldLabel>
+            <FieldLabel htmlFor="erinnerung-art">Type</FieldLabel>
             <Select value={kind} onValueChange={(value) => setKind(value as MemoryKind)}>
               <SelectTrigger id="erinnerung-art" className="w-full">
                 <SelectValue />
@@ -689,7 +689,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="erinnerung-wichtigkeit">Wichtigkeit</FieldLabel>
+            <FieldLabel htmlFor="erinnerung-wichtigkeit">Importance</FieldLabel>
             <div className="flex items-center gap-3">
               <Slider
                 id="erinnerung-wichtigkeit"
@@ -707,28 +707,28 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
           </Field>
 
           <Button size="sm" className="w-fit" disabled={!dirty || saving} onClick={() => void save()}>
-            Änderungen speichern
+            Save changes
           </Button>
 
           <MetaList
             columns={1}
             items={[
               { label: 'Status', value: <StateBadges memory={current} /> },
-              { label: 'Zugriffe', value: formatNumber(current.accessCount) },
-              { label: 'Nutzen', value: formatPercent(current.usefulness * 100) },
+              { label: 'Accesses', value: formatNumber(current.accessCount) },
+              { label: 'Usage', value: formatPercent(current.usefulness * 100) },
               {
-                label: 'Zuletzt genutzt',
-                value: current.lastAccessedAt ? formatDateTime(current.lastAccessedAt) : 'nie',
+                label: 'Last used',
+                value: current.lastAccessedAt ? formatDateTime(current.lastAccessedAt) : 'never',
               },
               {
-                label: 'Eingeschlafen',
+                label: 'Dormant since',
                 value: current.dormantAt ? formatDateTime(current.dormantAt) : null,
               },
             ]}
           />
 
           <section className="flex flex-col gap-2">
-            <h3 className="text-sm font-medium">Themen</h3>
+            <h3 className="text-sm font-medium">Topics</h3>
             {loading && !loaded ? (
               <Skeleton className="h-8 w-full" />
             ) : loaded?.entities.length ? (
@@ -747,9 +747,9 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
             ) : (
               <EmptyState
                 icon={TagIcon}
-                title="Noch keinem Thema zugeordnet"
-                description="Themen entstehen im Leichtschlaf, nicht beim Merken."
-                actionLabel="Zu den Nächten"
+                title="Not assigned to a topic yet"
+                description="No topics are linked to this memory yet."
+                actionLabel="View nights"
                 actionTo="/memory/sleep"
                 variant="plain"
                 size="sm"
@@ -758,7 +758,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
           </section>
 
           <section className="flex flex-col gap-2 pb-2">
-            <h3 className="text-sm font-medium">Verbindungen</h3>
+            <h3 className="text-sm font-medium">Connections</h3>
             {loading && !loaded ? (
               <Skeleton className="h-8 w-full" />
             ) : edges.length ? (
@@ -780,7 +780,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                         >
                           {edge.outgoing
                             ? RELATION_LABEL[edge.relation]
-                            : RELATION_LABEL[edge.relation] + ' diese Erinnerung'}
+                            : RELATION_LABEL[edge.relation] + ' this memory'}
                         </ItemDescription>
                         <ItemTitle className="line-clamp-2 text-left font-normal">
                           {edge.other.content}
@@ -793,9 +793,9 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
             ) : (
               <EmptyState
                 icon={SplineIcon}
-                title="Steht für sich"
-                description="Verbindungen zwischen Erinnerungen entstehen im Traumschlaf."
-                actionLabel="Zu den Nächten"
+                title="Standalone"
+                description="Connections between memories are created during dream sleep."
+                actionLabel="View nights"
                 actionTo="/memory/sleep"
                 variant="plain"
                 size="sm"

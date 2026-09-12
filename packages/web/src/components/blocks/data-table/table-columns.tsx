@@ -45,7 +45,7 @@ export function selectionColumn<TData extends RowData>(
   options: SelectionColumnOptions<TData> = {},
 ): RookeryColumnDef<TData> {
   const column = createRookeryColumnHelper<TData>();
-  const { rowLabel, allLabel = 'Alle Zeilen wählen' } = options;
+  const { rowLabel, allLabel = 'Select all rows' } = options;
 
   return column.display({
     id: 'select',
@@ -66,7 +66,7 @@ export function selectionColumn<TData extends RowData>(
         <Checkbox
           checked={row.getIsSelected()}
           onCheckedChange={(value) => row.toggleSelected(!!value)}
-          aria-label={rowLabel ? rowLabel((row as RookeryRow<TData>).original) : 'Zeile wählen'}
+          aria-label={rowLabel ? rowLabel((row as RookeryRow<TData>).original) : 'Select row'}
         />
       </div>
     ),
@@ -98,7 +98,7 @@ export function actionsColumn<TData extends RowData>(
   options: ActionsColumnOptions = {},
 ): RookeryColumnDef<TData> {
   const column = createRookeryColumnHelper<TData>();
-  const { header = 'Aktionen', id = 'actions' } = options;
+  const { header = 'Actions', id = 'actions' } = options;
 
   return column.display({
     id,
@@ -147,7 +147,7 @@ export function relativeTimeCell(
   at: number | null | undefined,
   options: RelativeTimeCellOptions = {},
 ): ReactNode {
-  const { fallback = 'nie', align = 'start' } = options;
+  const { fallback = 'never', align = 'start' } = options;
   const className = cn(
     'whitespace-nowrap text-muted-foreground tabular-nums',
     align === 'end' && 'block text-right',

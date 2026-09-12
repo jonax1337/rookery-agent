@@ -28,21 +28,21 @@ import type { Session } from '@/lib/types';
  */
 
 export const SESSION_COLUMN_LABELS: Record<string, string> = {
-  titel: 'Titel',
-  gegenueber: 'Gegenüber',
-  art: 'Art',
-  anbieter: 'Anbieter',
-  projekt: 'Projekt',
-  nachrichten: 'Nachrichten',
-  zuletzt: 'Zuletzt',
-  actions: 'Aktionen',
+  titel: 'Title',
+  gegenueber: 'Counterpart',
+  art: 'Type',
+  anbieter: 'Provider',
+  projekt: 'Project',
+  nachrichten: 'Messages',
+  zuletzt: 'Last updated',
+  actions: 'Actions',
 };
 
 /** Most recent first. The recency separators only hold in this order. */
 export const SESSION_SORTING = [{ id: 'zuletzt', desc: true }];
 
 /** An agent that no longer exists. Named, so both tables say the same thing. */
-export const UNKNOWN_AGENT = 'Unbekannter Agent';
+export const UNKNOWN_AGENT = 'Unknown agent';
 
 export interface CounterpartCellProps {
   /** Unset means the conversation is with the assistant. */
@@ -107,7 +107,7 @@ export function buildSessionColumns(
   if (selectable) {
     columns.push(
       selectionColumn<Session>({
-        rowLabel: (session) => (session.title || UNTITLED_SESSION) + ' wählen',
+        rowLabel: (session) => 'Select ' + (session.title || UNTITLED_SESSION),
       }),
     );
   }
@@ -115,13 +115,13 @@ export function buildSessionColumns(
   columns.push(
     column.accessor((session) => session.title || UNTITLED_SESSION, {
       id: 'titel',
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Titel" />,
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Title" />,
       enableHiding: false,
       cell: ({ row, getValue }) => {
         const title = String(getValue());
         const archived = row.original.archived ? (
           <Badge variant="outline" className="ml-2 px-1.5 text-muted-foreground">
-            Archiv
+            Archived
           </Badge>
         ) : null;
 
@@ -147,7 +147,7 @@ export function buildSessionColumns(
         session.agentId ? (agentName(session.agentId) ?? UNKNOWN_AGENT) : assistantName,
       {
         id: 'gegenueber',
-        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Gegenüber" />,
+        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Counterpart" />,
         cell: ({ row }) => (
           <CounterpartCell
             {...(row.original.agentId ? { agentId: row.original.agentId } : {})}
@@ -162,7 +162,7 @@ export function buildSessionColumns(
 
     column.accessor((session) => SESSION_KIND_LABEL[session.kind], {
       id: 'art',
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Art" />,
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Type" />,
       cell: ({ row }) => {
         const Icon = SESSION_KIND_ICON[row.original.kind];
         return (
@@ -179,12 +179,12 @@ export function buildSessionColumns(
     columns.push(
       column.accessor((session) => session.provider, {
         id: 'anbieter',
-        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Anbieter" />,
+        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Provider" />,
         cell: ({ row }) => (
           <ProviderCell
             provider={row.original.provider}
             {...(row.original.model ? { model: row.original.model } : {})}
-            fallback="Standard"
+            fallback="Default"
           />
         ),
       }),
@@ -195,7 +195,7 @@ export function buildSessionColumns(
     columns.push(
       column.accessor((session) => projectName(session), {
         id: 'projekt',
-        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Projekt" />,
+        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Project" />,
         cell: ({ getValue }) => {
           const name = String(getValue());
           return name ? (
@@ -214,7 +214,7 @@ export function buildSessionColumns(
     column.accessor((session) => session.messageCount, {
       id: 'nachrichten',
       header: ({ column: col }) => (
-        <DataTableColumnHeader column={col} title="Nachrichten" align="end" />
+        <DataTableColumnHeader column={col} title="Messages" align="end" />
       ),
       cell: ({ row }) => (
         <div className="text-right text-sm tabular-nums">
@@ -229,7 +229,7 @@ export function buildSessionColumns(
       // looking for the oldest row.
       sortDescFirst: true,
       header: ({ column: col }) => (
-        <DataTableColumnHeader column={col} title="Zuletzt" align="end" />
+        <DataTableColumnHeader column={col} title="Last updated" align="end" />
       ),
       cell: ({ row }) => relativeTimeCell(row.original.updatedAt, { align: 'end' }),
     }),
