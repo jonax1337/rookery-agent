@@ -1,9 +1,6 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://github.com/jonax1337/rookery-agent/raw/main/branding/logo-light.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://github.com/jonax1337/rookery-agent/raw/main/branding/logo.svg">
-    <img src="https://github.com/jonax1337/rookery-agent/raw/main/branding/logo.svg" alt="Rookery" width="260">
-  </picture>
+  <img src="branding/logo.png#gh-light-mode-only" alt="Rookery" width="260" height="77">
+  <img src="branding/logo-light.png#gh-dark-mode-only" alt="Rookery" width="260" height="77">
 </p>
 
 <p align="center">
