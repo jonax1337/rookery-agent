@@ -68,6 +68,12 @@ export interface GatewayStatus {
   running: boolean;
   botUsername?: string;
   allowedCount: number;
+  /**
+   * Stopped for a reason that will not pass on its own - a rejected token, a
+   * second process on the same bot. Distinct from "off": nothing is being
+   * retried, and only a new token or an off/on will start it again.
+   */
+  blocked: boolean;
   lastError?: string;
   lastEventAt?: number;
 }
@@ -154,6 +160,19 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   let offset = 0;
   let botUsername: string | undefined;
   let lastError: string | undefined;
+  /**
+   * Why the channel gave up for good, and on which token.
+   *
+   * Two failures never heal by themselves: a token Telegram does not know
+   * (401), and a second process polling the same bot (409). Retrying either
+   * on a timer is a log full of the same line forever. So the channel stops
+   * and stays stopped - but "stopped" must not mean "stopped for all time",
+   * or a fixed token would need a server restart to take effect. The token
+   * it failed with is therefore part of the record: change it and the block
+   * is void. Switching the channel off clears it too, because that is the
+   * gesture a person makes when they mean "try again from scratch".
+   */
+  let blocked: { reason: string; token: string } | undefined;
   let lastEventAt: number | undefined;
   /** `/aus` silences the channel until the process is restarted, not until the next config write. */
   let silenced = false;
@@ -507,8 +526,18 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         // Two processes polling the same bot steal each other's updates
         // forever. Stopping with a visible reason beats a silent tug of war.
         if (error instanceof TelegramApiError && error.conflict) {
-          lastError = 'Ein anderer Prozess fragt denselben Bot ab (409). Kanal gestoppt.';
+          lastError = 'Ein anderer Prozess fragt denselben Bot ab (409). Kanal angehalten.';
+          blocked = { reason: lastError, token: activeToken };
           log.error('Telegram polling conflict, gateway stopped', { error: error.message });
+          break;
+        }
+
+        // A token Telegram rejects will be rejected again in sixty seconds,
+        // and in sixty after that. Say so once and wait for a new one.
+        if (error instanceof TelegramApiError && error.unauthorized) {
+          lastError = 'Telegram kennt diesen Bot-Token nicht (401). Kanal angehalten.';
+          blocked = { reason: lastError, token: activeToken };
+          log.error('Telegram rejected the bot token, gateway stopped');
           break;
         }
 
@@ -528,6 +557,13 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     if (running) return;
     const config = settings();
     const secret = token();
+
+    // Whoever calls start directly gets the same answer refresh would give:
+    // a block only lifts when the token it named has changed.
+    if (blocked && blocked.token === secret) {
+      log.info('Telegram gateway stays stopped', { reason: blocked.reason });
+      return;
+    }
 
     // Say which condition was missing, never what the token was.
     const missing: string[] = [];
@@ -554,6 +590,16 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       const newest = (await client.getUpdates({ offset: -1, limit: 1, timeout: 0 })).at(-1);
       offset = newest ? newest.update_id + 1 : 0;
     } catch (error) {
+      // The same two hopeless cases, caught on the way up rather than in the
+      // loop: getMe is where a bad token usually announces itself.
+      if (error instanceof TelegramApiError && (error.unauthorized || error.conflict)) {
+        lastError = error.unauthorized
+          ? 'Telegram kennt diesen Bot-Token nicht (401). Kanal angehalten.'
+          : 'Ein anderer Prozess fragt denselben Bot ab (409). Kanal angehalten.';
+        blocked = { reason: lastError, token: secret };
+        log.error('Telegram gateway cannot run with these settings', { reason: lastError });
+        return;
+      }
       lastError = error instanceof TelegramApiError ? error.message : errorText(error);
       log.error('Telegram gateway failed to start', { error: lastError });
       return;
@@ -595,20 +641,29 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       (config.allowedUserIds.length > 0 || config.pairing) &&
       token() !== '' &&
       !silenced;
+
+    // Switching off is a reset: it clears a block, so turning the channel
+    // back on is a second chance without a server restart. A 409 usually
+    // ends that way - the other process is gone by the time anyone looks.
+    if (!wanted) {
+      blocked = undefined;
+      if (running) await stop();
+      return;
+    }
+    // Still blocked on the same token: nothing has changed that could help,
+    // so this stays a no-op rather than a fresh run into the same wall.
+    if (blocked && blocked.token === token()) return;
+    blocked = undefined;
     // A token pasted into the page while the channel runs is a different bot.
     // Without this the poller would keep talking to the old one until the
     // next restart, which is exactly the wait this settings field exists to
     // remove.
-    if (wanted && running && token() !== activeToken) {
+    if (running && token() !== activeToken) {
       await stop();
       await start();
       return;
     }
-    if (wanted && !running) {
-      await start();
-      return;
-    }
-    if (!wanted && running) await stop();
+    if (!running) await start();
   }
 
   return {
@@ -629,6 +684,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         running,
         botUsername,
         allowedCount: config.allowedUserIds.length,
+        blocked: blocked !== undefined && blocked.token === token(),
         lastError,
         lastEventAt,
       };

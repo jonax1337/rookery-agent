@@ -92,6 +92,11 @@ export class TelegramApiError extends Error {
   get forbidden(): boolean {
     return this.status === 403 || this.code === 403;
   }
+
+  /** Telegram does not know this token. No amount of retrying fixes that. */
+  get unauthorized(): boolean {
+    return this.status === 401 || this.code === 401;
+  }
 }
 
 export interface TelegramApi {

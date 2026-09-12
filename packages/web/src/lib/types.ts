@@ -690,6 +690,12 @@ export interface GatewayStatus {
   running: boolean;
   botUsername?: string;
   allowedCount: number;
+  /**
+   * Stopped for something that will not pass on its own - a rejected token,
+   * another process on the same bot. Nothing is being retried; it takes a new
+   * token or an off/on to start again.
+   */
+  blocked: boolean;
   lastError?: string;
   lastEventAt?: number;
 }

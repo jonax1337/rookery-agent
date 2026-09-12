@@ -55,7 +55,7 @@ function load(): Promise<void> {
   return inflight;
 }
 
-export interface GatewaysState {
+export interface UseGatewaysResult {
   gateways: GatewayStatus[];
   loading: boolean;
   error: ApiError | null;
@@ -65,7 +65,7 @@ export interface GatewaysState {
   test(id: GatewayId): Promise<GatewayTestResult>;
 }
 
-export function useGateways(): GatewaysState {
+export function useGateways(): UseGatewaysResult {
   const state = useSyncExternalStore(subscribe, () => snapshot);
 
   useEffect(() => {
@@ -80,7 +80,7 @@ export function useGateways(): GatewaysState {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
-  return useMemo<GatewaysState>(
+  return useMemo<UseGatewaysResult>(
     () => ({
       gateways: state.gateways,
       loading: state.loading,
@@ -97,7 +97,12 @@ export function useGateways(): GatewaysState {
   );
 }
 
-export interface GatewayState extends GatewaysState {
+/**
+ * Named for the hook, not for the domain: `lib/gateways.ts` owns the word
+ * "state" for what a channel is doing (läuft, aus, angehalten), and two
+ * different `GatewayState`s in one feature is one too many.
+ */
+export interface UseGatewayResult extends UseGatewaysResult {
   /** Undefined while loading, and for an id the roster does not know. */
   gateway: GatewayStatus | undefined;
 }
@@ -106,7 +111,7 @@ export interface GatewayState extends GatewaysState {
  * One entry out of the shared list. There is no `GET /api/gateways/:id`, and
  * with the roster already in memory there is no reason to want one.
  */
-export function useGateway(id: string | undefined): GatewayState {
+export function useGateway(id: string | undefined): UseGatewayResult {
   const state = useGateways();
   return useMemo(() => ({ ...state, gateway: state.gatewayById(id) }), [state, id]);
 }

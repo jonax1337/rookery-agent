@@ -28,6 +28,9 @@ export interface GatewayState {
 export function gatewayState(status: GatewayStatus): GatewayState {
   if (!status.enabled) return { label: 'Aus', tone: 'off' };
   if (status.running) return { label: 'Läuft', tone: 'running' };
+  // Ahead of the generic error: "Fehler" reads as something that might pass,
+  // and this is the state that has stopped trying and waits for a person.
+  if (status.blocked) return { label: 'Angehalten', tone: 'error' };
   if (status.lastError) return { label: 'Fehler', tone: 'error' };
   return { label: 'Eingerichtet', tone: 'ready' };
 }

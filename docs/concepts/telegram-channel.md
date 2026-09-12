@@ -121,7 +121,8 @@ dass hinter ihm etwas laeuft.
 | Jemand legt einen Account mit dem gleichen `@username` an | Es wird nie ein Username geprueft |
 | Bot wird in eine Gruppe gezogen | Nur `chat.type === 'private'`; zusaetzlich Gruppenbeitritt in BotFather abschalten (Bot Settings -> Allow Groups? -> off) |
 | Bot-Token geraet nach aussen | Token in `~/.rookery/config.json` neben dem Bearer-Token, nie in `publicConfig()`, nie in einer API-Antwort, nie in einer Logzeile. Bei Telegram steht der Token im Pfad der URL, also maskiert `telegram-api.ts` jeden String, der das Modul verlaesst – auch fetch-eigene Fehlertexte |
-| Zwei Rookery-Instanzen pollen denselben Bot | Telegram antwortet mit `409 Conflict`; der Kanal schaltet sich ab und meldet es, statt in eine Schleife zu laufen |
+| Zwei Rookery-Instanzen pollen denselben Bot | Telegram antwortet mit `409 Conflict`; der Kanal haelt an und meldet es, statt in eine Schleife zu laufen (6.1) |
+| Ungueltiger Token laeuft ewig gegen die Wand | `401` haelt den Kanal genauso an wie `409`, statt ihn im Minutentakt weiterprobieren zu lassen (6.1) |
 | Nach Neustart wird ein alter Befehl nachgeholt | Beim Start `deleteWebhook(drop_pending_updates=true)`, dann `getUpdates(offset=-1, limit=1)`, um den Offset hinter das letzte Update zu setzen. Der Rueckstand wird bewusst verworfen |
 | Nachrichtenflut startet viele Provider-Prozesse | Serielle Queue je Absender, Tiefe max. 3; darueber hinaus eine kurze Absage |
 | Telegram-Konto des Besitzers uebernommen | **Das ist das Restrisiko bei vollen Rechten.** Gegengewichte: Zwei-Faktor-Anmeldung beim Telegram-Konto ist Pflicht, `/stop` bricht laufende Turns ab, `/aus` legt den Kanal bis zum Neustart still, jede Nachricht steht mit Absender-ID im Audit-Log |
@@ -219,7 +220,13 @@ loop:
 - Netzfehler: exponentielles Warten 1 s -> 2 s -> 4 s … gedeckelt bei 60 s, Zaehler zurueck beim
   ersten Erfolg. Ein WLAN-Abriss darf keine Fehlerlawine ins Log schreiben.
 - `429` mit `parameters.retry_after` wird respektiert.
-- `409` beendet den Kanal (Abschnitt 4.2).
+- `409` (zweiter Prozess am selben Bot) und `401` (Telegram kennt den Token nicht) halten den
+  Kanal **an**. Beide heilen nicht von selbst, und ein Backoff waere hier nur ein Log voll
+  derselben Zeile. Angehalten ist aber nicht endgueltig: Vermerkt wird der Token, mit dem es
+  schiefging – ein neuer hebt die Sperre auf, und den Kanal aus- und wieder einzuschalten
+  ebenfalls, weil das die Geste fuer "nochmal von vorn" ist. Ohne diese beiden Ausnahmen haette
+  ein korrigierter Token einen Serverneustart gebraucht. Die Gateway-Seite zeigt den Zustand als
+  eigenes Wort ("Angehalten"), nicht als "Fehler" – "Fehler" liest sich wie etwas, das vergeht.
 - `offset` wird erst nach der Klassifikation eines Updates hochgesetzt, nicht davor. Ein Absturz
   mitten im Turn verliert damit hoechstens eine Antwort, nie die Zuordnung.
 - Der Poller haelt den Prozess nicht am Leben (`unref` auf allen Timern) und wird im
