@@ -1,0 +1,333 @@
+import { inQuietHours, pushRecipients, splitMessage } from '@rookery/core';
+import type { AgentEvent, NotifyEvent, TelegramPushConfig } from '@rookery/core';
+import type { ServerContext } from '../context.js';
+import type { GatewayHandle } from './telegram.js';
+
+/**
+ * The assistant's own initiative, and the state changes worth interrupting a
+ * phone for, turned into German push messages.
+ *
+ * `message`, `memory` and `changed` never reach here on purpose - those fire
+ * on every turn and every recall, and a phone that buzzed for each would be
+ * muted within the hour. What is reported is the handful of things that
+ * finish without anyone watching: an agent's assignment, a schedule, a
+ * night's sleep, a blocked task, and whatever `notify` decides to say.
+ *
+ * Everything composed here is plain text. The gateway's `send` is the single
+ * place where text becomes Telegram HTML, and it escapes what it is given -
+ * a line that arrived already escaped, or already carrying a tag, would reach
+ * the phone as visible `&amp;` and `<b>`.
+ */
+
+/** One thing worth telling the phone about, queued or sent as it happens. */
+interface PushItem {
+  /** Dedupe key: the same id within 10s is the same event told twice. */
+  id: string;
+  kind: 'assignment' | 'cron' | 'sleep' | 'task' | 'notify';
+  /** `notify` with urgency `high` - the only thing quiet hours do not hold back. */
+  urgent: boolean;
+  /** Full text, used as-is when this item is sent alone. */
+  message: string;
+  /** Which counting bucket this item falls into inside a batched digest. */
+  tallyKey: string;
+}
+
+/** How a `tallyKey` reads in a digest, singular and plural. */
+const TALLY_LABELS: Record<string, { one: string; many: string }> = {
+  'assignment:done': { one: 'Auftrag fertig', many: 'Aufträge fertig' },
+  'assignment:failed': { one: 'Auftrag fehlgeschlagen', many: 'Aufträge fehlgeschlagen' },
+  'assignment:cancelled': { one: 'Auftrag abgebrochen', many: 'Aufträge abgebrochen' },
+  'cron:done': { one: 'Zeitplan gelaufen', many: 'Zeitpläne gelaufen' },
+  'cron:failed': { one: 'Zeitplan fehlgeschlagen', many: 'Zeitpläne fehlgeschlagen' },
+  'sleep:done': { one: 'Schlaf beendet', many: 'Schlafläufe beendet' },
+  'sleep:failed': { one: 'Schlaf fehlgeschlagen', many: 'Schlafläufe fehlgeschlagen' },
+  'task:failed': { one: 'Aufgabe fehlgeschlagen', many: 'Aufgaben fehlgeschlagen' },
+  'notify:normal': { one: 'Hinweis', many: 'Hinweise' },
+};
+
+const HOUR_MS = 60 * 60 * 1000;
+/** How often the buffer gets a chance to drain once quiet hours or the rate cap let go. */
+const FLUSH_CHECK_MS = 60_000;
+
+function oneLine(text: string, max = 300): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
+}
+
+function clip(text: string, max: number): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? trimmed.slice(0, max) + '…' : trimmed;
+}
+
+function formatDuration(ms?: number): string {
+  if (!ms || ms < 0) return '';
+  const totalSeconds = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? minutes + ' Min. ' + seconds + ' Sek.' : seconds + ' Sek.';
+}
+
+/** A Telegram 403 reads differently depending on which layer surfaces it. */
+function isForbidden(error: unknown): boolean {
+  const status = (error as { status?: number; statusCode?: number } | undefined)?.status
+    ?? (error as { statusCode?: number } | undefined)?.statusCode;
+  if (status === 403) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b403\b/.test(message) || /forbidden/i.test(message);
+}
+
+/**
+ * Attach push delivery to one running gateway. Returns the unsubscribe
+ * function; call it once, on server shutdown or when the gateway is torn
+ * down, or the assistant's emitter keeps a listener for a channel nobody
+ * reads from any more.
+ */
+/** What an attachment hands back: how to stop it, and whether it could send. */
+export interface GatewayPush {
+  /** Unsubscribe from every event and stop the flush ticker. */
+  detach: () => void;
+  /**
+   * Whether a message handed over now would actually reach somebody. The
+   * `notify` tool asks this before telling the assistant it was sent: the
+   * listener is attached from server start onwards, so being attached proves
+   * nothing about the channel being on, configured or unblocked.
+   */
+  canDeliver: () => boolean;
+}
+
+export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle): GatewayPush {
+  const assistant = context.assistant;
+
+  // Buffered items: anything caught by quiet hours or the hourly cap waits
+  // here instead of being dropped. `sentAt` is the sliding window the cap is
+  // measured against; one entry per message (or digest) actually delivered.
+  const buffer: PushItem[] = [];
+  const sentAt: number[] = [];
+  const recentIds = new Map<string, number>();
+  // Recipients a 403 has already told us are gone; skipped, not retried, for
+  // the rest of this attachment's lifetime.
+  const disabled = new Set<number>();
+
+  const pushConfig = (): TelegramPushConfig => context.config.gateways.telegram.push;
+
+  const isQuietNow = (): boolean => {
+    const config = pushConfig();
+    const now = new Date();
+    return inQuietHours(now.getHours() * 60 + now.getMinutes(), config.quietFrom, config.quietUntil);
+  };
+
+  const isRateLimited = (): boolean => {
+    const cutoff = Date.now() - HOUR_MS;
+    for (let oldest = sentAt[0]; oldest !== undefined && oldest < cutoff; oldest = sentAt[0]) sentAt.shift();
+    const max = pushConfig().maxPerHour;
+    return max > 0 && sentAt.length >= max;
+  };
+
+  async function sendNow(text: string): Promise<void> {
+    const recipients = pushRecipients(context.config.gateways.telegram).filter((id) => !disabled.has(id));
+    if (recipients.length === 0) return;
+    sentAt.push(Date.now());
+    const parts = splitMessage(text);
+    for (const userId of recipients) {
+      for (const part of parts) {
+        try {
+          // One call per message, in order - Telegram has no batch send.
+          await gateway.send(userId, part);
+        } catch (error) {
+          if (isForbidden(error)) {
+            disabled.add(userId);
+            context.log.warn('Telegram-Push abgeschaltet: Empfänger hat den Bot blockiert (403)', { userId });
+          } else {
+            context.log.warn('Telegram-Push fehlgeschlagen', {
+              userId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  function buildDigest(items: PushItem[]): string {
+    const counts = new Map<string, number>();
+    for (const item of items) counts.set(item.tallyKey, (counts.get(item.tallyKey) ?? 0) + 1);
+    const parts: string[] = [];
+    for (const [key, count] of counts) {
+      const label = TALLY_LABELS[key];
+      parts.push(label ? count + ' ' + (count === 1 ? label.one : label.many) : String(count) + '×' + key);
+    }
+    return '🌙 Zusammenfassung: ' + parts.join(', ') + '.';
+  }
+
+  /** Send whatever is waiting, if quiet hours and the rate cap both allow it. */
+  function attemptFlush(): void {
+    if (buffer.length === 0 || isQuietNow() || isRateLimited()) return;
+    const items = buffer.splice(0, buffer.length);
+    // A lone buffered item keeps its own text; a digest is only for several
+    // at once, which is the case the summary format ("3 fertig, 1
+    // fehlgeschlagen") exists for.
+    const single = items.length === 1 ? items[0] : undefined;
+    void sendNow(single ? single.message : buildDigest(items));
+  }
+
+  const ticker = setInterval(attemptFlush, FLUSH_CHECK_MS);
+  ticker.unref?.();
+
+  function perKindEnabled(kind: PushItem['kind']): boolean {
+    const config = pushConfig();
+    switch (kind) {
+      case 'assignment':
+        return config.assignments;
+      case 'cron':
+        return config.cron;
+      case 'sleep':
+        return config.sleep;
+      case 'task':
+        return config.tasks;
+      case 'notify':
+        // No dedicated switch for the assistant's own notices - the master
+        // `enabled` below is the only gate, same as the config shape defines it.
+        return true;
+    }
+  }
+
+  function dispatch(item: PushItem): void {
+    if (!pushConfig().enabled || !perKindEnabled(item.kind)) return;
+
+    const last = recentIds.get(item.id);
+    if (last !== undefined && Date.now() - last < 10_000) return;
+    recentIds.set(item.id, Date.now());
+
+    // Give a backlog a chance to drain before deciding where this new item goes.
+    attemptFlush();
+
+    const quiet = !item.urgent && isQuietNow();
+    if (quiet || isRateLimited()) {
+      buffer.push(item);
+      return;
+    }
+    void sendNow(item.message);
+  }
+
+  const onAssignment = (event: AgentEvent): void => {
+    if (event.type !== 'assignment') return;
+    const view = event.assignment;
+    if (view.status !== 'done' && view.status !== 'failed' && view.status !== 'cancelled') return;
+
+    const label = view.status === 'done' ? 'fertig' : view.status === 'failed' ? 'fehlgeschlagen' : 'abgebrochen';
+    const duration = formatDuration(view.durationMs);
+    const header = '🤖 ' + view.agentName + ' – ' + label + (duration ? ' (' + duration + ')' : '');
+    const taskLine = oneLine(view.task);
+    // The event itself only carries a short preview; the full text a person
+    // would actually want lives on the stored record.
+    const body =
+      view.status === 'done'
+        ? assistant.store.org.getAssignment(view.id)?.result
+        : view.status === 'failed'
+          ? view.error
+          : undefined;
+    const bodyLine = body ? '\n\n' + clip(body, 600) : '';
+
+    dispatch({
+      id: 'assignment:' + view.id,
+      kind: 'assignment',
+      urgent: false,
+      message: header + '\n' + taskLine + bodyLine,
+      tallyKey: 'assignment:' + view.status,
+    });
+  };
+
+  const onCron = (event: AgentEvent): void => {
+    if (event.type !== 'cron') return;
+    if (event.deleted || !event.run || event.run.status === 'running') return;
+    // A `sleep`-kind schedule also fires its own `sleep` event with the real
+    // report; reporting the bare cron run too would say the same thing twice.
+    if (event.job.kind === 'sleep') return;
+
+    const label = event.run.status === 'done' ? 'gelaufen' : 'fehlgeschlagen';
+    const duration = formatDuration(event.run.durationMs);
+    const message =
+      '⏰ Zeitplan „' + event.job.name + '“ ist ' + label + (duration ? ' (' + duration + ')' : '') + '.';
+
+    dispatch({
+      id: 'cron:' + event.run.id,
+      kind: 'cron',
+      urgent: false,
+      message,
+      tallyKey: 'cron:' + event.run.status,
+    });
+  };
+
+  const onSleep = (event: AgentEvent): void => {
+    if (event.type !== 'sleep') return;
+    if (event.run.status === 'running') return;
+
+    const label = event.run.status === 'done' ? 'beendet' : 'fehlgeschlagen';
+    // The report field is the same two or three sentences the memory page
+    // shows for this run - reused rather than summarised again here.
+    const body = event.run.status === 'done' ? event.run.report ?? 'Der Lauf ist beendet.' : event.run.error ?? 'unbekannter Fehler';
+    const message = '🌙 Schlaf ' + label + '\n\n' + body;
+
+    dispatch({
+      id: 'sleep:' + event.run.id,
+      kind: 'sleep',
+      urgent: false,
+      message,
+      tallyKey: 'sleep:' + event.run.status,
+    });
+  };
+
+  const onTask = (event: AgentEvent): void => {
+    if (event.type !== 'task') return;
+    // `failed`, not `blocked`: the board has no blocked state, and a task
+    // that ran and did not make it is the one change on it worth a buzz.
+    // Everything else about a task is visible the next time the page is open.
+    if (event.task.status !== 'failed') return;
+
+    const message = '🚧 Aufgabe fehlgeschlagen: ' + oneLine(event.task.title, 200);
+    dispatch({
+      id: 'task:' + event.task.id + ':failed',
+      kind: 'task',
+      urgent: false,
+      message,
+      tallyKey: 'task:failed',
+    });
+  };
+
+  const onNotify = (event: NotifyEvent): void => {
+    dispatch({
+      id: 'notify:' + event.at,
+      kind: 'notify',
+      urgent: event.urgency === 'high',
+      // Verbatim: this is the assistant speaking in its own words, not a
+      // state-change line this module composed, so nothing is added to it.
+      message: event.text,
+      tallyKey: 'notify:normal',
+    });
+  };
+
+  assistant.on('assignment', onAssignment);
+  assistant.on('cron', onCron);
+  assistant.on('sleep', onSleep);
+  assistant.on('task', onTask);
+  assistant.on('notify', onNotify);
+
+  return {
+    detach: () => {
+      assistant.off('assignment', onAssignment);
+      assistant.off('cron', onCron);
+      assistant.off('sleep', onSleep);
+      assistant.off('task', onTask);
+      assistant.off('notify', onNotify);
+      clearInterval(ticker);
+    },
+    // The three ways a notice silently goes nowhere, asked in the same order
+    // `dispatch` and `sendNow` would hit them: the channel is not polling,
+    // push is switched off, or every recipient is gone or blocked us.
+    canDeliver: () =>
+      gateway.status().running &&
+      pushConfig().enabled &&
+      pushRecipients(context.config.gateways.telegram).some((id) => !disabled.has(id)),
+  };
+}

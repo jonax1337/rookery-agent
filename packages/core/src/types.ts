@@ -772,6 +772,7 @@ export interface RookeryConfig {
   memory: MemoryConfig;
   voice: VoiceConfig;
   org: OrgConfig;
+  gateways: GatewaysConfig;
   /** The MCP hub: which servers run for whom. */
   tools: ToolsConfig;
   /** Where skills live, one folder per skill. Defaults to `<home>/skills`. */
@@ -911,6 +912,83 @@ export interface OrgConfig {
   lazyCoding: boolean;
   /** Explicitly chosen company; the newest one otherwise. */
   activeOrganizationId?: string;
+}
+
+/** Which chat gateway a config section belongs to. Only Telegram for now. */
+export type GatewayId = 'telegram';
+
+export interface GatewaysConfig {
+  telegram: TelegramGatewayConfig;
+}
+
+export interface TelegramGatewayConfig {
+  /** Channel on/off. */
+  enabled: boolean;
+  /**
+   * The bot token from BotFather. It lives here, beside `RookeryConfig.token`
+   * and under the same file permissions, rather than in an environment file:
+   * both are local user state, and a channel that can only be set up by
+   * editing a dotfile and restarting cannot be set up from the page that
+   * exists to set it up. `TELEGRAM_BOT_TOKEN` still wins where it is set, for
+   * headless installs.
+   *
+   * It must never reach a browser. `publicConfig` blanks it on the way out,
+   * exactly as it drops the bearer token, and `GatewayStatus` reports only
+   * whether one is present and where it came from.
+   */
+  token: string;
+  /**
+   * Numeric Telegram user ids allowed to talk to the assistant through this
+   * gateway. Empty means off, on purpose: there is no "everyone" option,
+   * because a bot token that ends up in the wrong hands must not become an
+   * open door into the assistant.
+   */
+  allowedUserIds: number[];
+  /**
+   * Pairing mode: run the poller with an empty allowlist so `/id` can answer.
+   *
+   * Without it the first setup is a closed loop - the allowlist needs a
+   * number, the number comes from asking the bot, and the bot does not listen
+   * until the allowlist has a number in it. While this is on, every message
+   * still fails the guard as `not_allowed`; the single thing that comes back
+   * is the sender's own id, which tells them nothing they did not already
+   * know. What it does cost is the silence: a stranger who found the bot
+   * learns it is alive. Hence a switch the user throws on purpose, off by
+   * default, and cleared again as soon as the first id is allowed.
+   */
+  pairing: boolean;
+  /** Rights for turns that arrive through this channel. */
+  permission: PermissionLevel;
+  model?: string;
+  push: TelegramPushConfig;
+}
+
+export interface TelegramPushConfig {
+  enabled: boolean;
+  assignments: boolean;
+  cron: boolean;
+  sleep: boolean;
+  tasks: boolean;
+  /** "22:00"; empty means no quiet hours. */
+  quietFrom: string;
+  /** "08:00" */
+  quietUntil: string;
+  maxPerHour: number;
+  /** Subset of allowedUserIds; empty falls back to the first allowed id. */
+  recipients: number[];
+}
+
+/**
+ * The assistant's own initiative to reach the user: something worth saying
+ * without a conversation running. Carried from the `notify` tool through
+ * `Assistant`'s event stream to whatever channel is listening - Telegram
+ * push, today - which decides how (and whether quiet hours apply); nothing
+ * in core ever sends it anywhere itself.
+ */
+export interface NotifyEvent {
+  text: string;
+  urgency: 'normal' | 'high';
+  at: number;
 }
 
 /**

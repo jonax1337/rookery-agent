@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import type { EffortLevel, PermissionLevel, ProviderId, RookeryConfig } from './types.js';
+import type { EffortLevel, GatewaysConfig, PermissionLevel, ProviderId, RookeryConfig } from './types.js';
 
 /**
  * Config resolution order, later wins:
@@ -88,6 +88,26 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     assignmentTimeoutMs: 45 * 60 * 1000,
     lazyCoding: true,
   },
+  gateways: {
+    telegram: {
+      enabled: false,
+      token: '',
+      pairing: false,
+      allowedUserIds: [],
+      permission: 'full',
+      push: {
+        enabled: true,
+        assignments: true,
+        cron: true,
+        sleep: true,
+        tasks: false,
+        quietFrom: '22:00',
+        quietUntil: '08:00',
+        maxPerHour: 12,
+        recipients: [],
+      },
+    },
+  },
   tools: { servers: [] },
   skillsDir: join(DEFAULT_HOME, 'skills'),
 };
@@ -145,6 +165,14 @@ function envOverrides(): Partial<RookeryConfig> {
   if (env.ROOKERY_VOICE_ENGINE) voice.engine = env.ROOKERY_VOICE_ENGINE;
   if (env.ROOKERY_VOICE_EDGE_VOICE) voice.edgeVoice = env.ROOKERY_VOICE_EDGE_VOICE;
   if (Object.keys(voice).length) patch.voice = voice;
+  // The bot token normally lives in config.json, set from the gateway page.
+  // The environment still wins where it is set, like every other setting
+  // here - a headless install can hand it in without writing a config file,
+  // and the page says so rather than letting the variable shadow the field
+  // silently.
+  if (env.TELEGRAM_BOT_TOKEN) {
+    patch.gateways = { telegram: { token: env.TELEGRAM_BOT_TOKEN.trim() } } as GatewaysConfig;
+  }
   return patch as Partial<RookeryConfig>;
 }
 

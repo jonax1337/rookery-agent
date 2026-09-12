@@ -627,6 +627,90 @@ export interface OrgConfig {
   activeOrganizationId?: string;
 }
 
+/* ------------------------------- gateways -------------------------------- */
+
+/** Which chat gateway a config section belongs to. Only Telegram for now. */
+export type GatewayId = 'telegram';
+
+export interface GatewaysConfig {
+  telegram: TelegramGatewayConfig;
+}
+
+export interface TelegramGatewayConfig {
+  /** Channel on/off. */
+  enabled: boolean;
+  /**
+   * Write-only. `GET /api/config` always answers with an empty string, so the
+   * real token never reaches the browser. On a PATCH: a value sets it, `null`
+   * clears it, and an empty string - what an untouched form sends back -
+   * leaves the stored one alone.
+   */
+  token: string | null;
+  /**
+   * Run with an empty allowlist so `/id` can answer - the only way out of the
+   * setup loop, since the bot otherwise does not listen until an id is
+   * allowed. Every message still fails the guard; only `/id` replies.
+   */
+  pairing: boolean;
+  /**
+   * Numeric Telegram user ids allowed to talk to the assistant through this
+   * gateway. Empty means off - there is no "everyone" option.
+   */
+  allowedUserIds: number[];
+  /** Rights for turns that arrive through this channel. */
+  permission: PermissionLevel;
+  model?: string;
+  push: TelegramPushConfig;
+}
+
+export interface TelegramPushConfig {
+  enabled: boolean;
+  assignments: boolean;
+  cron: boolean;
+  sleep: boolean;
+  tasks: boolean;
+  /** "22:00"; empty means no quiet hours. */
+  quietFrom: string;
+  /** "08:00" */
+  quietUntil: string;
+  maxPerHour: number;
+  /** Subset of allowedUserIds; empty falls back to the first allowed id. */
+  recipients: number[];
+}
+
+/** `GET /api/gateways` - one entry per channel, its live state next to its label. */
+export interface GatewayStatus {
+  id: GatewayId;
+  label: string;
+  /** A bot token is set, wherever it came from - never the token itself. */
+  configured: boolean;
+  /** Where it came from: the settings page, the environment, or nowhere yet. */
+  tokenSource: 'config' | 'env' | 'none';
+  enabled: boolean;
+  running: boolean;
+  botUsername?: string;
+  allowedCount: number;
+  /**
+   * Stopped for something that will not pass on its own - a rejected token,
+   * another process on the same bot. Nothing is being retried; it takes a new
+   * token or an off/on to start again.
+   */
+  blocked: boolean;
+  lastError?: string;
+  lastEventAt?: number;
+}
+
+/**
+ * `POST /api/gateways/:id/test` - one push message, sent to the first push
+ * recipient. A channel that cannot send (not running, nobody to send to)
+ * answers with a 400 instead, which `request()` turns into a thrown
+ * `ApiError` - so there is no `ok: false` branch to model here.
+ */
+export interface GatewayTestResult {
+  ok: true;
+  recipient: number;
+}
+
 /** The subset of RookeryConfig the server exposes. It never includes the token. */
 export interface PublicConfig {
   /**
@@ -650,6 +734,7 @@ export interface PublicConfig {
   voice: VoiceConfig;
   memory: MemoryConfig;
   org: OrgConfig;
+  gateways: GatewaysConfig;
 }
 
 /* ------------------------------ tool hub ------------------------------ */

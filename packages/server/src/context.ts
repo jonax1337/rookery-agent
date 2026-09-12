@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
-import type { Assistant, Logger, RookeryConfig } from '@rookery/core';
+import type { Assistant, GatewaysConfig, Logger, RookeryConfig } from '@rookery/core';
 import type { WebSocket } from '@fastify/websocket';
+import type { GatewayHandle } from './gateways/telegram.js';
 
 /**
  * Everything a route needs, handed down explicitly instead of through Fastify
@@ -16,6 +17,12 @@ export interface ServerContext {
   readonly log: Logger;
   /** Every live websocket, used to broadcast background memory events. */
   readonly sockets: Set<WebSocket>;
+  /**
+   * Chat gateways attached to this server, Telegram today. The array itself
+   * is created before the context is, and filled in afterwards - a gateway
+   * needs the context to send anything, so the context cannot wait for it.
+   */
+  readonly gateways: GatewayHandle[];
 }
 
 /** Package version, read once from our own package.json. */
@@ -31,7 +38,12 @@ function readVersion(): string {
   }
 }
 
-/** The subset of the config that is safe to hand to a browser. Never the token. */
+/** Every gateway block with its secrets blanked, structure otherwise intact. */
+function redactGateways(gateways: GatewaysConfig): GatewaysConfig {
+  return { ...gateways, telegram: { ...gateways.telegram, token: '' } };
+}
+
+/** The subset of the config that is safe to hand to a browser. Never a token. */
 export function publicConfig(config: RookeryConfig): Record<string, unknown> {
   return {
     // Where this server listens. Read-only for the browser - PATCH ignores it,
@@ -51,5 +63,11 @@ export function publicConfig(config: RookeryConfig): Record<string, unknown> {
     voice: config.voice,
     memory: config.memory,
     org: config.org,
+    // The one settings block that carries a secret. It is blanked rather than
+    // dropped, so the page still sees the shape it edits; whether a token is
+    // actually set - and whether it came from the environment - is what
+    // GET /api/gateways answers. A PATCH that leaves the field empty keeps
+    // the stored token, which is what makes handing out an empty one safe.
+    gateways: redactGateways(config.gateways),
   };
 }

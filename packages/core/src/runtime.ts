@@ -7,6 +7,7 @@ import type {
   CronJob,
   CronRun,
   MemoryRecord,
+  NotifyEvent,
   PermissionLevel,
   ProviderId,
   RookeryConfig,
@@ -164,6 +165,14 @@ export class Assistant extends EventEmitter {
    * and can be started by hand from the memory page.
    */
   readonly sleep: SleepRunner;
+  /**
+   * Whether a notification would actually reach the user right now. Set by
+   * whoever owns the outgoing channels (the server, for its gateways); left
+   * unset, the `notify` tool falls back to "is anything listening at all".
+   * A function rather than a flag because the answer changes with a setting,
+   * a blocked recipient or a channel that was switched off mid-session.
+   */
+  notifyProbe?: () => boolean;
 
   constructor(options: AssistantOptions = {}) {
     super();
@@ -197,6 +206,13 @@ export class Assistant extends EventEmitter {
       logger: this.log,
       cron: this.cron,
       sleep: this.sleep,
+      // The `notify` tool asks this instead of a transport it cannot see. A
+      // listener on `notify` is the floor, not the answer: a push service
+      // attaches once at startup and stays attached while it is switched
+      // off, so a bare listener count would let the tool report "Sent" into
+      // a channel that drops the message. Whoever hosts the runtime sets
+      // `notifyProbe` to the honest test.
+      canNotify: () => (this.notifyProbe ? this.notifyProbe() : this.listenerCount('notify') > 0),
     });
     this.cron.on('cron', (event: AgentEvent) => this.emit('cron', event));
     this.cron.on('message', (event: AgentEvent) => this.emit('message', event));
@@ -208,6 +224,10 @@ export class Assistant extends EventEmitter {
     this.org.on('message', (event: AgentEvent) => this.emit('message', event));
     this.org.on('task', (event: AgentEvent) => this.emit('task', event));
     this.org.on('changed', (change: { kind: string; id: string }) => this.emit('changed', change));
+    // The assistant reaching out on its own initiative - no HTTP, no
+    // Telegram here, just an event a channel in another package can listen
+    // for and act on however it likes.
+    this.org.on('notify', (event: NotifyEvent) => this.emit('notify', event));
   }
 
   close(): void {

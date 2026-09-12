@@ -7,7 +7,8 @@ eingeloggten CLI, keine API-Keys). Monorepo mit npm-Workspaces:
 packages/core     Das Gehirn: Provider-Adapter, Gedaechtnis, Persona, Runtime, die
                   Organisation (org/: Store, Controller, Planner, MCP-Bruecke) und die
                   Computer-Steuerung (computer/). Kennt weder HTTP noch Terminal.
-packages/server   Fastify: REST + WebSocket + SSE, liefert die gebaute Web-UI aus.
+packages/server   Fastify: REST + WebSocket + SSE, liefert die gebaute Web-UI aus,
+                  dazu die Gateways (gateways/, z. B. Telegram) als weiterer Transport.
 packages/cli      Terminal-Interface (Ink-TUI, REPL, OS-Sprachausgabe).
 packages/web      React + Vite. Steht auf den shadcn-Blocks dashboard-01 und
                   sidebar-16: src/components/shell/ (Navigation, Kopf, Provider),

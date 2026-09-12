@@ -164,6 +164,7 @@ export {
   type SkillSourceEntry,
 } from './skills/import.js';
 export { EventQueue, clip, shorten } from './util/queue.js';
+export * from './gateway/policy.js';
 
 export {
   Assistant,
