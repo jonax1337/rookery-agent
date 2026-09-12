@@ -584,3 +584,26 @@ test('a tool switched on mid-turn is attached at once instead of next time', asy
   assert.deepEqual(second[0].mcpExtra.map((spec) => spec.name), ['custom-notes']);
   assistant.close();
 });
+
+
+test('chat retains completed and interrupted tool events on the persisted answer', async () => {
+  const fake = createFakeProvider();
+  const calls = [
+    { type: 'tool', name: 'lookup', id: 'one', status: 'start', detail: 'a question' },
+    { type: 'tool', name: 'tool', id: 'one', status: 'end', result: 'found', isError: false },
+    { type: 'tool', name: 'read', id: 'two', status: 'start', detail: 'notes' },
+  ];
+  fake.provider.run = async function* () {
+    yield* calls;
+    yield { type: 'error', message: 'interrupted', fatal: true };
+  };
+  const { assistant, store } = createAssistant(fake);
+  const events = [];
+  for await (const event of assistant.chat({ text: 'inspect notes' })) events.push(event);
+  const sessionId = events.find((event) => event.type === 'session').sessionId;
+  const messages = store.getMessages(sessionId);
+  assert.equal(messages.length, 2);
+  assert.deepEqual(messages[1].toolCalls, calls);
+  assert.equal(messages[1].content, '');
+  assistant.close();
+});

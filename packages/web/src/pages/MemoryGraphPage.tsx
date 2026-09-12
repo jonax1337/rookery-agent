@@ -126,7 +126,7 @@ export function MemoryGraphPage() {
               title="The network cannot be rendered here"
               description="This view requires WebGL. The same memories are available in full in the list."
               actionLabel="View memories"
-              actionTo="/memory"
+              actionTo="/memory/memories"
               variant="plain"
             />
           </div>

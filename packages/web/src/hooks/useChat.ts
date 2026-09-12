@@ -26,17 +26,6 @@ import type {
  * so a row updates in place while the list never reshuffles under the reader.
  */
 
-/** Per-browser switch for showing tool calls in the chat; off unless the user asks for it. */
-export const SHOW_TOOL_CALLS_KEY = 'rookery.showToolCalls';
-
-export function showToolCalls(): boolean {
-  try {
-    return localStorage.getItem(SHOW_TOOL_CALLS_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
 /** `mcp__playwright__browser_navigate` reads as `playwright · browser_navigate`. */
 export function prettyToolName(name: string): string {
   const match = /^mcp__([^_]+(?:_[^_]+)*)__(.+)$/.exec(name);
@@ -47,6 +36,7 @@ export interface ChatState {
   messages: Message[];
   streaming: string;
   thinking: string;
+  toolCalls: NonNullable<Message['toolCalls']>;
   busy: boolean;
   activity: ActivityItem[];
   recalled: MemoryRecord[];
@@ -97,6 +87,8 @@ export function useChat(
 
   const turnRef = useRef<string | null>(null);
   const bufferRef = useRef('');
+  const toolCallsRef = useRef<NonNullable<Message['toolCalls']>>([]);
+  const [toolCalls, setToolCalls] = useState<NonNullable<Message['toolCalls']>>([]);
 
   const pushActivity = useCallback((item: Omit<ActivityItem, 'at'>) => {
     setActivity((current) => {
@@ -130,9 +122,8 @@ export function useChat(
           break;
 
         case 'tool':
-          // Tool calls are plumbing. They stay out of the conversation unless
-          // this browser opted in (Einstellungen, "Werkzeugaufrufe anzeigen").
-          if (!showToolCalls()) break;
+          toolCallsRef.current = [...toolCallsRef.current, event];
+          setToolCalls(toolCallsRef.current);
           pushActivity({
             id: event.id ?? event.name + ':' + Date.now(),
             kind: 'tool',
@@ -223,7 +214,8 @@ export function useChat(
   const finish = useCallback(
     (text: string, onSpoken?: (text: string) => void, usage?: TurnUsage) => {
       const answer = text || bufferRef.current;
-      if (answer) {
+      const completedTools = toolCallsRef.current;
+      if (answer || completedTools.length) {
         setMessages((current) => [
           ...current,
           {
@@ -231,6 +223,7 @@ export function useChat(
             sessionId: sessionId ?? '',
             role: 'assistant',
             content: answer,
+            toolCalls: completedTools,
             createdAt: Date.now(),
             ...(usage ? { usage } : {}),
           },
@@ -238,6 +231,8 @@ export function useChat(
         onSpoken?.(answer);
       }
       bufferRef.current = '';
+      toolCallsRef.current = [];
+      setToolCalls([]);
       turnRef.current = null;
       setStreaming('');
       setThinking('');
@@ -256,6 +251,8 @@ export function useChat(
     setAgentMessages([]);
     setTasks([]);
     bufferRef.current = '';
+    toolCallsRef.current = [];
+    setToolCalls([]);
     setStreaming('');
     setBusy(true);
     setMessages((current) => [
@@ -324,6 +321,8 @@ export function useChat(
 
   const reset = useCallback(() => {
     bufferRef.current = '';
+    toolCallsRef.current = [];
+    setToolCalls([]);
     turnRef.current = null;
     setMessages([]);
     setStreaming('');
@@ -341,6 +340,7 @@ export function useChat(
     messages,
     streaming,
     thinking,
+    toolCalls,
     busy,
     activity,
     recalled,

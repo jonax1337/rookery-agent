@@ -433,10 +433,9 @@ export function VoicePage() {
     }
     if (voice.speaking) return assistantName;
     if (chat.busy) {
-      // Name what is actually happening instead of pretending to think.
-      const current = [...chat.activity].reverse().find((item) => !item.done && item.kind !== 'memory');
+      // Voice keeps tool activity out of the spoken and visual conversation.
+      const current = [...chat.activity].reverse().find((item) => !item.done && item.kind === 'assignment');
       if (current?.kind === 'assignment') return current.label + ' is working …';
-      if (current?.kind === 'tool') return current.label + ' …';
       return 'Thinking …';
     }
     if (muted) return 'Microphone off';

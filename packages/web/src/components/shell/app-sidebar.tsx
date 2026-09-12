@@ -186,9 +186,11 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
         ))}
       </SidebarContent>
 
-      <SidebarFooter>
-        <NavSecondary items={secondary} className="p-0" />
-        <NavStatus />
+      <SidebarFooter className="mt-auto shrink-0 gap-0 bg-sidebar p-0">
+        <NavSecondary items={secondary} />
+        <div className="border-t p-2">
+          <NavStatus />
+        </div>
       </SidebarFooter>
     </Sidebar>
   );

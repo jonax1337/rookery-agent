@@ -44,8 +44,8 @@ import { VoicePage } from './pages/VoicePage';
  * is a list of addresses - no adapters, because no page takes props any more.
  *
  * Two sections are nested layout routes rather than three sibling pages:
- * `/org` and `/memory` each keep a tab strip and a row of headline numbers
- * across their children, so the frame has to survive the tab change. Their
+ * `/org` and `/memory` each render overview statistics at their index and keep
+ * a tab strip across their children. Their
  * *form* and *detail* routes stay siblings on purpose - an agent's page brings
  * its own header and must not appear inside the company's tab frame.
  *
@@ -82,10 +82,9 @@ export default function App() {
         <Route path="/gateways/:id" element={<GatewayDetailPage />} />
 
         {/* --------------------------------- firma ---------------------- */}
-        {/* The three tables share numbers and a tab strip, so they are
-            children of one layout; `/org` itself is only the way in. */}
+        {/* The layout renders the overview at its index and frames the three tables. */}
         <Route path="/org" element={<OrgLayout />}>
-          <Route index element={<Navigate to="/org/agents" replace />} />
+          <Route index element={null} />
           <Route path="agents" element={<OrgAgentsPage />} />
           <Route path="teams" element={<OrgTeamsPage />} />
           <Route path="projects" element={<OrgProjectsPage />} />
@@ -101,10 +100,10 @@ export default function App() {
         <Route path="/org/projects/:id/edit" element={<ProjectFormPage />} />
 
         {/* ----------------------------- gedächtnis --------------------- */}
-        {/* The three children read the shared "Merken" dialog out of the
-            layout's outlet context - they only work underneath it. */}
+        {/* The layout renders the overview and shares the save-memory dialog. */}
         <Route path="/memory" element={<MemoryLayout />}>
-          <Route index element={<MemoryListPage />} />
+          <Route index element={null} />
+          <Route path="memories" element={<MemoryListPage />} />
           <Route path="graph" element={<MemoryGraphPage />} />
           <Route path="sleep" element={<MemorySleepPage />} />
         </Route>

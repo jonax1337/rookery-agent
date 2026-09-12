@@ -7,9 +7,9 @@ import {
   type ExternalStoreThreadData,
   type ThreadMessageLike,
 } from '@assistant-ui/react';
+import { prettyToolName } from '../hooks/useChat';
 import type { ChatState } from '../hooks/useChat';
 import type {
-  ActivityItem,
   EffortLevel,
   Message,
   PermissionLevel,
@@ -59,7 +59,7 @@ interface RookeryThreadMessage {
   role: 'user' | 'assistant';
   content: string;
   thinking?: string;
-  activity?: ActivityItem[];
+  toolCalls?: Message['toolCalls'];
   running?: boolean;
 }
 
@@ -76,17 +76,22 @@ function convertMessage(message: RookeryThreadMessage): ThreadMessageLike {
 
   const content: Part[] = [];
   if (message.thinking) content.push({ type: 'reasoning', text: message.thinking });
-  for (const item of message.activity ?? []) {
-    if (item.kind !== 'tool') continue;
-    content.push({
-      type: 'tool-call',
-      toolCallId: item.id,
-      toolName: item.label,
-      args: {},
-      argsText: item.detail ?? '',
-      result: item.done ? (item.detail ?? 'ok') : undefined,
+  const calls = new Map<string, Part>();
+  for (const event of message.toolCalls ?? []) {
+    const pending = event.status === 'end' && !event.id
+      ? [...calls.entries()].find(([, part]) => part.type === 'tool-call' && part.result === undefined && part.toolName === prettyToolName(event.name))?.[0]
+      : undefined;
+    const id = event.id ?? pending ?? `${event.name}:${calls.size}`;
+    const previous = calls.get(id);
+    const prior = previous?.type === 'tool-call' ? previous : undefined;
+    calls.set(id, {
+      type: 'tool-call', toolCallId: id,
+      toolName: prior?.toolName ?? prettyToolName(event.name),
+      args: {}, argsText: event.detail ?? prior?.argsText ?? '',
+      ...(event.status === 'end' ? { result: event.result ?? 'Completed', isError: event.isError } : {}),
     });
   }
+  content.push(...calls.values());
   if (message.content || content.length === 0) {
     content.push({ type: 'text', text: message.content });
   }
@@ -125,6 +130,7 @@ export function useRookeryRuntime({
       id: 'm' + index,
       role: message.role === 'user' ? 'user' : 'assistant',
       content: message.content,
+      toolCalls: message.toolCalls,
     }));
     if (chat.busy || chat.streaming) {
       base.push({
@@ -132,12 +138,12 @@ export function useRookeryRuntime({
         role: 'assistant',
         content: chat.streaming,
         thinking: chat.thinking,
-        activity: chat.activity,
+        toolCalls: chat.toolCalls,
         running: true,
       });
     }
     return base;
-  }, [chat.messages, chat.streaming, chat.thinking, chat.activity, chat.busy]);
+  }, [chat.messages, chat.streaming, chat.thinking, chat.toolCalls, chat.busy]);
 
   const threads = useMemo<ThreadData[]>(
     () =>

@@ -10,6 +10,7 @@ import type {
   TurnUsage,
 } from '../types.js';
 import { readJsonLines, resolveBinary, runCapture, spawnCli, type ResolvedBinary } from './process.js';
+import { discoverModels } from './catalogue.js';
 import { parseClaudeWindows, rememberQuota } from './quota.js';
 
 /**
@@ -20,8 +21,6 @@ import { parseClaudeWindows, rememberQuota } from './quota.js';
  * never read or set ANTHROPIC_API_KEY, and we never pass --bare, because that
  * flag deliberately forces API-key auth instead of the OAuth session.
  */
-
-const MODELS = ['fable', 'opus', 'sonnet', 'haiku'];
 
 /**
  * Map the Rookery permission ladder onto Claude Code's own flags.
@@ -68,8 +67,10 @@ export class ClaudeCodeProvider implements Provider {
     return this.#binary;
   }
 
-  models(): string[] {
-    return [...MODELS];
+  async models() {
+    const binary = this.#resolve();
+    if (!binary) throw new Error('The claude CLI is not installed.');
+    return discoverModels('claude', binary);
   }
 
   async status(): Promise<ProviderStatus> {
@@ -247,6 +248,8 @@ export class ClaudeCodeProvider implements Provider {
                 name: 'tool',
                 status: 'end',
                 id: block.tool_use_id as string | undefined,
+                result: typeof block.content === 'string' ? block.content.slice(0, 16000) : JSON.stringify(block.content)?.slice(0, 16000),
+                isError: block.is_error === true,
               };
             }
           }
@@ -309,7 +312,7 @@ function summariseInput(input: unknown): string | undefined {
   const record = input as Record<string, unknown>;
   const candidate =
     record.file_path ?? record.command ?? record.pattern ?? record.query ?? record.path;
-  if (typeof candidate !== 'string') return undefined;
+  if (typeof candidate !== 'string') return JSON.stringify(input).slice(0, 4000);
   return candidate.length > 120 ? candidate.slice(0, 117) + '...' : candidate;
 }
 

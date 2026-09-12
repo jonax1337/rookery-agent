@@ -87,7 +87,8 @@ const GROWTH_DAYS = 7;
 const SLEEP_PHASES = ['started', 'light', 'deep', 'rem', 'finished'] as const;
 
 const TABS = [
-  { to: '/memory', label: 'Memories', end: true },
+  { to: '/memory', label: 'Overview', end: true },
+  { to: '/memory/memories', label: 'Memories', end: false },
   { to: '/memory/graph', label: 'Network', end: false },
   { to: '/memory/sleep', label: 'Nights', end: false },
 ] as const;
@@ -166,7 +167,7 @@ export function MemoryLayout() {
         </>
       ),
     },
-    [busy, openRemember, running, sleep, startNight],
+    [active.label, busy, openRemember, running, sleep, startNight],
   );
 
   /* ------------------------------ die Zahlen ------------------------------ */
@@ -217,7 +218,7 @@ export function MemoryLayout() {
       headline: stats ? formatNumber(stats.forgotten) + ' forgotten' : ' ',
       footnote:
         'Active memories. Newly learned also includes entries that have since been consolidated.',
-      to: '/memory',
+      to: '/memory/memories',
     },
     {
       label: 'Pinned',
@@ -247,8 +248,6 @@ export function MemoryLayout() {
 
   return (
     <PageBody>
-      {isIndex && <StatCards items={cards} />}
-
       {running ? (
         <div className="px-4 lg:px-6">
           <Item variant="outline" size="sm">
@@ -293,7 +292,7 @@ export function MemoryLayout() {
         panel of that id the promise points at nothing.
       */}
       <Tabs value={active.to} className="min-h-0 flex-1 gap-4">
-          <div className="px-4 lg:px-6">
+          <div className="overflow-x-auto px-4 lg:px-6">
             <TabsList>
               {TABS.map((tab) => (
                 <TabsTrigger key={tab.to} value={tab.to} asChild>
@@ -310,7 +309,7 @@ export function MemoryLayout() {
           forceMount
           className="flex min-h-0 flex-1 flex-col gap-4 md:gap-6"
         >
-          <Outlet context={{ openRemember } satisfies MemoryOutletContext} />
+          {isIndex ? <StatCards items={cards} /> : <Outlet context={{ openRemember } satisfies MemoryOutletContext} />}
         </TabsContent>
       </Tabs>
 

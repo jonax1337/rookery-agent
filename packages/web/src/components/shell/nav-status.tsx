@@ -95,7 +95,12 @@ export function NavStatus() {
               <AssistantAvatar busy={chat.busy} label={assistantName} />
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">{assistantName}</span>
-                <span className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                <span className={cn(
+                  'mt-1 flex items-center gap-1.5 text-xs',
+                  status === 'online' && 'text-emerald-700 dark:text-emerald-400',
+                  status === 'offline' && 'text-destructive',
+                  status === 'connecting' && 'text-amber-700 dark:text-amber-400',
+                )}>
                   <StatusDot status={status} />
                   {statusLabel}
                 </span>
@@ -167,10 +172,8 @@ function StatusDot({ status }: { status: 'online' | 'offline' | 'connecting' }) 
     <span
       aria-hidden="true"
       className={cn(
-        'size-1.5 rounded-full',
-        status === 'online' && 'bg-primary',
-        status === 'offline' && 'bg-destructive',
-        status === 'connecting' && 'animate-pulse bg-muted-foreground',
+        'size-1.5 shrink-0 rounded-full bg-current',
+        status === 'connecting' && 'motion-safe:animate-pulse',
       )}
     />
   );

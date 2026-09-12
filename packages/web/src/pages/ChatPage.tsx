@@ -1,10 +1,7 @@
 import * as React from 'react';
 import { NavLink, useNavigate } from 'react-router';
-import { ThreadPrimitive } from '@assistant-ui/react';
 import {
   AudioLinesIcon,
-  BotIcon,
-  FeatherIcon,
   MessagesSquareIcon,
   PencilIcon,
   RotateCcwIcon,
@@ -28,14 +25,13 @@ import { usePageMeta } from '@/components/shell/page-meta';
 
 import { Thread, type ThreadComponents } from '@/components/assistant-ui/elements/thread.aui';
 import { useConfirm } from '@/components/common/confirm-dialog';
-import { EmptyState } from '@/components/common/empty-state';
+import { EmptyState, EmptyStateGreeting } from '@/components/assistant-ui/elements/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
 import { LiveRunList } from '@/components/common/live-run-list';
 import { RowMenuButton } from '@/components/common/row-menu-button';
 import { collectErrors, FormField } from '@/components/forms/form-kit';
 
 import { Button } from '@/components/ui/button';
-import { ButtonGroup } from '@/components/ui/button-group';
 import {
   Dialog,
   DialogClose,
@@ -75,52 +71,10 @@ import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/comp
  * of leaving the composer looking idle.
  */
 
-interface Suggestion {
-  title: string;
-  label: string;
-  prompt: string;
-}
-
-const ASSISTANT_SUGGESTIONS: Suggestion[] = [
-  {
-    title: 'Summarize',
-    label: 'what you know about me',
-    prompt: 'Briefly summarize what you know about me.',
-  },
-  {
-    title: 'Plan my day',
-    label: 'with three priorities',
-    prompt: 'Help me plan my day around three priorities.',
-  },
-  {
-    title: 'Explain',
-    label: 'how you work',
-    prompt: 'Briefly explain how you work and what you can access.',
-  },
-];
-
-const AGENT_SUGGESTIONS: Suggestion[] = [
-  {
-    title: 'Introduce yourself',
-    label: 'what are you responsible for?',
-    prompt: 'Briefly introduce yourself: what are you responsible for, and how do you work?',
-  },
-  {
-    title: 'What are you working on',
-    label: 'right now?',
-    prompt: 'What are you working on right now, and what comes next?',
-  },
-  {
-    title: 'I have a question',
-    label: 'about your area',
-    prompt: 'I have a question about your area: ',
-  },
-];
-
 export function ChatPage() {
   const navigate = useNavigate();
   const { chat, counterpart, turn } = useChatSession();
-  const { assistantName } = useConfig();
+  const { assistantName, config } = useConfig();
   const org = useOrgState();
   const sessions = useSessionsState();
   const allSessions = useAllSessionsState();
@@ -279,47 +233,27 @@ export function ChatPage() {
 
   /* ------------------------------- welcome ------------------------------- */
 
-  // Rebuilt only when the counterpart changes, so an ordinary turn never
-  // re-renders the thread through a fresh components object.
+  // Identity changes update the welcome; typing keeps the same component.
   const components = React.useMemo<ThreadComponents>(
     () => ({
       Welcome: () => (
-        <EmptyState
-          icon={counterpart ? BotIcon : FeatherIcon}
-          title={counterpart ? 'Conversation with ' + counterpart.name : greeting()}
-          description={
-            counterpart
-              ? counterpart.title + ' · responds with personal Memory'
-              : 'How can I help?'
-          }
-          variant="plain"
-          className="px-2 sm:px-12"
-          action={
-            <ButtonGroup orientation="vertical" className="w-full">
-              {(counterpart ? AGENT_SUGGESTIONS : ASSISTANT_SUGGESTIONS).map((suggestion) => (
-                <ThreadPrimitive.Suggestion
-                  key={suggestion.prompt}
-                  prompt={suggestion.prompt}
-                  send
-                  asChild
-                >
-                  <Button
-                    variant="outline"
-                    className="h-auto justify-start py-2 text-left font-normal whitespace-normal"
-                  >
-                    <span>
-                      <span className="font-medium">{suggestion.title}</span>{' '}
-                      <span className="text-muted-foreground">{suggestion.label}</span>
-                    </span>
-                  </Button>
-                </ThreadPrimitive.Suggestion>
-              ))}
-            </ButtonGroup>
-          }
-        />
+        <EmptyState className="mx-auto mb-8 max-w-none gap-4">
+          <div className="flex items-center gap-3 text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+            <span aria-hidden="true" className="h-px w-6 bg-border" />
+            {counterpart?.name ?? assistantName}
+            <span aria-hidden="true" className="h-px w-6 bg-border" />
+          </div>
+          <EmptyStateGreeting className="font-heading text-4xl leading-[1.1] tracking-[-0.035em] text-balance sm:text-5xl">
+            {greeting(new Date(), { honorific: config?.honorific, userName: config?.userName })}
+          </EmptyStateGreeting>
+          <p className="max-w-sm text-center text-sm leading-relaxed text-muted-foreground">
+            {counterpart ? `A question, an idea, or a next step — talk it through with ${counterpart.name}.`
+              : 'A thought, a plan, or a fresh start. What’s on your mind?'}
+          </p>
+        </EmptyState>
       ),
     }),
-    [counterpart],
+    [counterpart, assistantName, config?.honorific, config?.userName],
   );
 
   /* -------------------------------- page --------------------------------- */

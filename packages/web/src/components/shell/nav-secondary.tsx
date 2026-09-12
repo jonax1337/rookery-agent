@@ -40,14 +40,14 @@ export function NavSecondary({
           {items.map((item) => (
             <SidebarMenuItem key={item.title}>
               {item.url ? (
-                <SidebarMenuButton asChild size="sm" tooltip={item.title} isActive={item.isActive}>
+                <SidebarMenuButton asChild tooltip={item.title} isActive={item.isActive}>
                   <NavLink to={item.url} onClick={() => setOpenMobile(false)}>
                     <item.icon />
                     <span>{item.title}</span>
                   </NavLink>
                 </SidebarMenuButton>
               ) : (
-                <SidebarMenuButton size="sm" tooltip={item.title} onClick={item.onClick}>
+                <SidebarMenuButton tooltip={item.title} onClick={item.onClick}>
                   <item.icon />
                   <span>{item.title}</span>
                 </SidebarMenuButton>

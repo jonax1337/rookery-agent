@@ -375,13 +375,12 @@ export const NO_PROJECT = '__none__';
  * they disagreed by one bucket before this moved here. `/voice` appends its
  * own "Ich höre." rather than keeping a second table.
  */
-export function greeting(now: Date = new Date()): string {
+export function greeting(now: Date = new Date(), user?: { honorific?: string; userName?: string }): string {
   const hour = now.getHours();
-  if (hour < 5) return 'Still awake?';
-  if (hour < 11) return 'Good morning.';
-  if (hour < 14) return 'Hello.';
-  if (hour < 18) return 'Good afternoon.';
-  return 'Good evening.';
+  const line = hour < 5 ? 'Still awake?' : hour < 11 ? 'Good morning.'
+    : hour < 14 ? 'Hello.' : hour < 18 ? 'Good afternoon.' : 'Good evening.';
+  const address = user?.honorific?.trim() || user?.userName?.trim();
+  return address ? line.replace(/([.?])$/, (_, punctuation: string) => `, ${address}${punctuation}`) : line;
 }
 
 /* ------------------------------- recency --------------------------------- */

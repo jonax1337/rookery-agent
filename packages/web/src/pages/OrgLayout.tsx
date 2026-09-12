@@ -39,7 +39,7 @@ import { Textarea } from '@/components/ui/textarea';
  * team list, an agent list grouped by team, a project list - none of which
  * could be searched, sorted or filtered. The three lists are three routes now,
  * and this layout holds what they share: the headline numbers and the tab
- * strip. Headline numbers appear on Agents; navigation remains on every tab.
+ * strip. Headline numbers appear on Overview; navigation remains on every tab.
  *
  * The tabs are routes rather than local state: `/org/teams` is a place the
  * sidebar, the command palette and a bookmark can all point at. Radix' Tabs
@@ -83,10 +83,9 @@ export function OrgLayout() {
   const organization = org.snapshot?.organization ?? null;
   const [editOpen, setEditOpen] = useState(false);
 
-  const active = TABS.find((tab) => pathname.startsWith(tab.to))?.value ?? 'agents';
-  const activeTab = TABS.find((tab) => tab.value === active) ?? TABS[0];
-  /** Agents is where /org lands, so it is this section's front page. */
-  const isIndex = active === TABS[0]?.value;
+  const active = TABS.find((tab) => pathname.startsWith(tab.to))?.value ?? 'overview';
+  const activeTab = TABS.find((tab) => tab.value === active);
+  const isIndex = active === 'overview';
 
   /* -------------------------------- header -------------------------------- */
 
@@ -94,8 +93,8 @@ export function OrgLayout() {
     {
       ...(organization ? { title: organization.name } : {}),
       breadcrumb: [
-        { label: organization?.name ?? 'Organization', to: '/org/agents' },
-        { label: activeTab?.label ?? 'Agents' },
+        { label: organization?.name ?? 'Organization', to: '/org' },
+        { label: activeTab?.label ?? 'Overview' },
       ],
       // One primary button, then the overflow the detail pages already use.
       // Not a ButtonGroup: that welds a filled button to an outlined one, and
@@ -225,18 +224,16 @@ export function OrgLayout() {
       </div>
 
       {/*
-        Headline numbers belong to the section's front page.
-      */}
-      {isIndex && <StatCards items={cards} />}
-
-      {/*
         One Tabs root whose value comes from the route. `TabsContent` holds the
         outlet so the panel keeps the `aria-controls` relationship the triggers
         announce - a bare row of links would drop it.
       */}
       <Tabs value={active} className="gap-4">
-        <div className="px-4 lg:px-6">
+        <div className="overflow-x-auto px-4 lg:px-6">
           <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:rounded-full **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1">
+            <TabsTrigger value="overview" asChild>
+              <NavLink to="/org" end>Overview</NavLink>
+            </TabsTrigger>
             <TabsTrigger value="agents" asChild>
               <NavLink to="/org/agents">
                 Agents
@@ -259,7 +256,7 @@ export function OrgLayout() {
         </div>
 
         <TabsContent value={active} forceMount className="flex flex-col gap-4">
-          <Outlet />
+          {isIndex ? <StatCards items={cards} /> : <Outlet />}
         </TabsContent>
       </Tabs>
 

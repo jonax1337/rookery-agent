@@ -4,6 +4,29 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { build } from 'esbuild';
 
+test('organization and memory open overviews with three distinct child destinations', async () => {
+  const require = createRequire(import.meta.url);
+  const { outputFiles } = await build({
+    entryPoints: [fileURLToPath(new URL('../src/lib/nav.ts', import.meta.url))],
+    bundle: true, write: false, platform: 'node', format: 'cjs', packages: 'external',
+  });
+  const module = { exports: {} };
+  new Function('require', 'module', 'exports', outputFiles[0].text)(require, module, module.exports);
+  const { routeMeta, breadcrumbsFor } = module.exports;
+  for (const path of ['/org', '/memory']) {
+    const section = routeMeta(path);
+    assert.equal(section.label, 'Overview');
+    assert.equal(section.redirect, undefined);
+    assert.equal(new Set(section.children).size, 3);
+    for (const child of section.children) {
+      assert.notEqual(child, path);
+      assert.equal(routeMeta(child).parent, path);
+      assert.equal(breadcrumbsFor(child)[0].to, path);
+    }
+  }
+  assert.equal(routeMeta('/memory/memories').label, 'Memories');
+});
+
 test('page navigation resets the shared scroller while query-only filtering keeps its position', async () => {
   const require = createRequire(import.meta.url);
   let location = { pathname: '/settings/voice', search: '' };

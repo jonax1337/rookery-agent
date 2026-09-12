@@ -1,121 +1,91 @@
-import { CheckIcon, ChevronDownIcon } from 'lucide-react';
-import { PROVIDER_BRAND, PROVIDER_PLAN_LABEL, ProviderIcon } from '@/components/provider-icon';
+import { useEffect, useRef, useState } from 'react';
+import { LoaderCircleIcon, RefreshCwIcon } from 'lucide-react';
+import { PROVIDER_BRAND, ProviderIcon } from '@/components/provider-icon';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import type { ProviderId, ProviderStatus } from '@/lib/types';
-import { cn } from '@/lib/utils';
-
-const PROVIDERS: ProviderId[] = ['claude', 'codex'];
+import { ModelSelectorRoot, ModelSelectorTrigger, ModelSelectorValue, ModelSelectorContent,
+  ModelSelectorSearch, ModelSelectorList, ModelSelectorEmpty, ModelSelectorGroup,
+  ModelSelectorItem, ModelSelectorEffort } from '@/components/assistant-ui/elements/model-selector';
+import { api } from '@/lib/api';
+import { EFFORT_LABEL, EFFORT_LEVELS } from '@/lib/format';
+import type { EffortLevel, ProviderId, ProviderStatus } from '@/lib/types';
 
 interface ModelMenuProps {
   provider: ProviderId;
-  /** Undefined means the provider's own default model. */
   model: string | undefined;
   providers: ProviderStatus[];
+  effort: EffortLevel | undefined;
+  onEffortSelect(effort: EffortLevel | undefined): void;
   disabled?: boolean;
   onSelect(provider: ProviderId, model: string | undefined): void;
 }
 
-/**
- * Provider and model in one picker, grouped by the subscription that pays
- * for them: the first level stays two entries short, the models live one
- * level down. Choosing a model chooses its provider with it, so the two can
- * never disagree.
- */
-export function ModelMenu({ provider, model, providers, disabled, onSelect }: ModelMenuProps) {
-  const groups = PROVIDERS.map((id) => ({
-    id,
-    status: providers.find((entry) => entry.id === id),
-  }));
-  const label = model ?? 'Default';
+export function ModelMenu({ provider, model, providers, effort, onEffortSelect, disabled, onSelect }: ModelMenuProps) {
+  const [catalogue, setCatalogue] = useState(providers);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>();
+  const pending = useRef(false);
+  useEffect(() => { setCatalogue(providers); }, [providers]);
+  const current = catalogue.find((entry) => entry.id === provider);
+  const defaultModel = current?.modelOptions?.find((entry) => entry.isDefault && entry.id !== 'default');
+  const selected = model && model !== 'default'
+    ? current?.modelOptions?.find((entry) => entry.id === model)
+    : defaultModel;
+  const label = selected?.name ?? (model && model !== 'default' ? model : 'Choose model');
+  const options = catalogue.flatMap((status) => (status.modelOptions ?? []).filter((entry) => entry.id !== 'default').map((entry) => ({
+    id: status.id + ':' + entry.id, sourceId: entry.id, provider: status.id, name: entry.name,
+    icon: <ProviderIcon provider={status.id} />, keywords: [PROVIDER_BRAND[status.id]],
+    disabled: !status.available || !status.authenticated,
+    efforts: [{ id: 'auto', name: 'Auto' }, ...EFFORT_LEVELS.map((level) => ({ id: level, name: EFFORT_LABEL[level] }))],
+  })));
+  useEffect(() => {
+    if ((!model || model === 'default') && defaultModel) onSelect(provider, defaultModel.id);
+  }, [model, provider, defaultModel, onSelect]);
+  const refresh = async () => {
+    if (pending.current) return;
+    pending.current = true;
+    setLoading(true);
+    setError(undefined);
+    try { setCatalogue(await api.providers()); }
+    catch { setError('Could not load models. Try again.'); }
+    finally { pending.current = false; setLoading(false); }
+  };
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          disabled={disabled}
-          aria-label={'Choose model, currently ' + PROVIDER_BRAND[provider] + ' ' + label}
-          className="h-7 gap-1.5 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground"
-        >
-          <ProviderIcon provider={provider} className="size-3.5" />
-          <span className="max-w-36 truncate">{label}</span>
-          <ChevronDownIcon className="size-3.5 opacity-60" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64">
-        <div className="flex items-center gap-2.5 px-1.5 py-1.5">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted">
-            <ProviderIcon provider={provider} className="size-4" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium">{label}</span>
-            <span className="block truncate text-xs text-muted-foreground">
-              {PROVIDER_PLAN_LABEL[provider]}
-              {model ? '' : ' · Default model'}
-            </span>
-          </span>
+    <ModelSelectorRoot models={options} value={selected ? provider + ':' + selected.id : undefined}
+      onValueChange={(id) => {
+        const choice = options.find((entry) => entry.id === id);
+        if (choice) onSelect(choice.provider, choice.sourceId);
+      }}
+      effort={effort ?? 'auto'} onEffortChange={(value) => onEffortSelect(value === 'auto' ? undefined : value as EffortLevel)}
+      onOpenChange={(open) => { if (open) void refresh(); }}>
+      <ModelSelectorTrigger variant="ghost" size="sm" disabled={disabled}
+        aria-label={'Model and effort: ' + label + ', ' + (effort ? EFFORT_LABEL[effort] : 'Auto')}
+        className="max-w-64 rounded-lg text-muted-foreground">
+        <ModelSelectorValue placeholder={label} />
+      </ModelSelectorTrigger>
+      <ModelSelectorContent align="end" searchable className="w-80 max-w-[calc(100vw-2rem)]">
+        <div className="flex h-10 items-center justify-between px-3">
+          <span className="text-xs font-medium">Model & effort</span>
+          <Button variant="ghost" size="icon" className="size-7 rounded-lg" disabled={loading}
+            aria-label={loading ? 'Loading models' : 'Refresh models'} aria-busy={loading} onClick={() => void refresh()}>
+            {loading ? <LoaderCircleIcon className="size-3.5 motion-safe:animate-spin" /> : <RefreshCwIcon className="size-3.5" />}
+          </Button>
         </div>
-        <DropdownMenuSeparator />
-        <DropdownMenuGroup>
-          <DropdownMenuLabel>Choose model</DropdownMenuLabel>
-          {groups.map((group) => {
-            const unavailable = group.status ? !group.status.available : false;
-            const models = group.status?.models ?? [];
-            return (
-              <DropdownMenuSub key={group.id}>
-                <DropdownMenuSubTrigger disabled={unavailable} className="gap-2">
-                  <ProviderIcon provider={group.id} className="size-3.5" />
-                  <span className="truncate">{PROVIDER_PLAN_LABEL[group.id]}</span>
-                  {group.status && !group.status.authenticated && (
-                    <span className="ml-auto text-xs text-muted-foreground">not signed in</span>
-                  )}
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="w-64">
-                  <DropdownMenuItem
-                    onSelect={() => onSelect(group.id, undefined)}
-                    className="gap-2"
-                  >
-                    <ProviderIcon provider={group.id} className="size-3.5" />
-                    <span className="truncate">Default</span>
-                    <span className="truncate text-xs text-muted-foreground">
-                      chosen by {PROVIDER_BRAND[group.id]}
-                    </span>
-                    {group.id === provider && !model && <CheckIcon className="ml-auto size-4 shrink-0" />}
-                  </DropdownMenuItem>
-                  {models.map((name) => {
-                    const active = group.id === provider && name === model;
-                    return (
-                      <DropdownMenuItem
-                        key={name}
-                        onSelect={() => onSelect(group.id, name)}
-                        className={cn('gap-2', active && 'font-medium')}
-                      >
-                        <ProviderIcon provider={group.id} className="size-3.5" />
-                        <span className="truncate">{name}</span>
-                        {active && <CheckIcon className="ml-auto size-4 shrink-0" />}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            );
-          })}
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
+        <ModelSelectorSearch />
+        {error && <p role="alert" className="px-3 py-2 text-xs text-destructive">{error}</p>}
+        <ModelSelectorList>
+          <ModelSelectorEmpty>No matching models.</ModelSelectorEmpty>
+          {(['claude', 'codex'] as const).map((id) => (
+            <ModelSelectorGroup key={id} heading={PROVIDER_BRAND[id]}>
+              {options.filter((entry) => entry.provider === id).map((entry) => <ModelSelectorItem key={entry.id} model={entry} />)}
+              {catalogue.find((entry) => entry.id === id)?.modelsError && <p className="px-3 py-2 text-xs text-muted-foreground">
+                {catalogue.find((entry) => entry.id === id)?.modelsError}
+              </p>}
+            </ModelSelectorGroup>
+          ))}
+        </ModelSelectorList>
+        <ModelSelectorEffort label="Reasoning effort" className="flex-col items-stretch gap-2 [&_[role=radiogroup]]:flex-wrap" />
+      </ModelSelectorContent>
+    </ModelSelectorRoot>
   );
 }

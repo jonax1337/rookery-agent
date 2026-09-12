@@ -72,7 +72,6 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
-import { SHOW_TOOL_CALLS_KEY, showToolCalls } from '@/hooks/useChat';
 import { useVoiceOutput } from '@/hooks/useVoiceOutput';
 import { api } from '@/lib/api';
 import {
@@ -112,7 +111,7 @@ import { cn } from '@/lib/utils';
  *   always visible, and "Speichern" is gated on a deep comparison of draft
  *   against config rather than on "something was typed";
  * - two new sections appeared. `memory` was fully editable on the server and
- *   had no UI at all, and the local-only preferences (tool calls, appearance)
+ *   had no UI at all, and the local-only preferences (appearance)
  *   are now named as local instead of sitting next to server settings.
  *
  * What is deliberately *not* here: `memory.gate`, `memory.graph` and
@@ -1233,7 +1232,7 @@ const THEMES: { value: string; label: string; description: string }[] = [
 ];
 
 /**
- * The two preferences that never reach the server.
+ * Appearance preferences never reach the server.
  *
  * They sit in their own section instead of hanging below the tabs, because
  * the two storage models are genuinely different: everything else on this
@@ -1243,33 +1242,9 @@ const THEMES: { value: string; label: string; description: string }[] = [
  */
 function ViewSection() {
   const { theme, setTheme } = useTheme();
-  const [showTools, setShowTools] = useState<boolean>(() => showToolCalls());
 
   return (
     <>
-      <FieldSet>
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="set-show-tools">Show tool calls in chat</FieldLabel>
-            <FieldDescription>
-              When off, only agent assignments remain visible. When on, each tool call appears as a row. {LOCAL_HINT}
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="set-show-tools"
-            checked={showTools}
-            onCheckedChange={(on) => {
-              setShowTools(on);
-              try {
-                localStorage.setItem(SHOW_TOOL_CALLS_KEY, on ? '1' : '0');
-              } catch {
-                // Private mode: the switch still applies to this page load.
-              }
-            }}
-          />
-        </Field>
-      </FieldSet>
-
       <FieldSet>
         <FieldLegend variant="label">Theme</FieldLegend>
         <FieldDescription>{LOCAL_HINT}</FieldDescription>

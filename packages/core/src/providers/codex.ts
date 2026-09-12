@@ -12,6 +12,7 @@ import type {
   TurnUsage,
 } from '../types.js';
 import { readJsonLines, resolveBinary, runCapture, spawnCli, type ResolvedBinary } from './process.js';
+import { discoverModels } from './catalogue.js';
 
 /**
  * Codex CLI adapter.
@@ -53,13 +54,6 @@ function readCatalogue(): CachedModel[] {
   }
 }
 
-function cachedModels(): string[] {
-  return readCatalogue()
-    .filter((model) => model.visibility !== 'hide')
-    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
-    .map((model) => model.slug);
-}
-
 const EFFORT_LADDER: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
@@ -87,9 +81,6 @@ function configuredModel(): string | undefined {
     return undefined;
   }
 }
-
-/** Last resort when Codex has never been run and has no catalogue yet. */
-const FALLBACK_MODELS = ['gpt-5.5', 'gpt-5.3-codex-spark'];
 
 /** Map the Rookery permission ladder onto Codex sandbox policies. */
 function sandboxFor(level: PermissionLevel): string {
@@ -126,12 +117,14 @@ export class CodexProvider implements Provider {
     return this.#binary;
   }
 
-  models(): string[] {
-    const known = cachedModels();
-    const list = known.length ? known : [...FALLBACK_MODELS];
+  async models() {
+    const binary = this.#resolve();
+    if (!binary) throw new Error('The codex CLI is not installed.');
+    const models = await discoverModels('codex', binary);
     const configured = configuredModel();
-    if (configured && !list.includes(configured)) list.unshift(configured);
-    return list;
+    return models.some((model) => model.id === configured)
+      ? models.map((model) => ({ ...model, isDefault: model.id === configured }))
+      : models;
   }
 
   async status(): Promise<ProviderStatus> {
@@ -274,6 +267,8 @@ export class CodexProvider implements Provider {
               status: type === 'item.completed' ? 'end' : 'start',
               id: itemId,
               detail: typeof item.command === 'string' ? item.command.slice(0, 120) : undefined,
+              result: type === 'item.completed' && typeof item.aggregated_output === 'string' ? item.aggregated_output.slice(0, 16000) : undefined,
+              isError: type === 'item.completed' && typeof item.exit_code === 'number' && item.exit_code !== 0,
             };
             continue;
           }
@@ -285,6 +280,7 @@ export class CodexProvider implements Provider {
               status: type === 'item.completed' ? 'end' : 'start',
               id: itemId,
               detail: typeof item.path === 'string' ? item.path : undefined,
+              isError: item.status === 'failed',
             };
             continue;
           }
@@ -295,7 +291,9 @@ export class CodexProvider implements Provider {
               name: itemType === 'web_search' ? 'web_search' : String(item.tool ?? 'mcp'),
               status: type === 'item.completed' ? 'end' : 'start',
               id: itemId,
-              detail: typeof item.query === 'string' ? item.query.slice(0, 120) : undefined,
+              detail: typeof item.query === 'string' ? item.query.slice(0, 120) : JSON.stringify(item.arguments)?.slice(0, 4000),
+              result: type === 'item.completed' ? JSON.stringify(item.result ?? item.error)?.slice(0, 16000) : undefined,
+              isError: item.status === 'failed' || Boolean(item.error),
             };
             continue;
           }

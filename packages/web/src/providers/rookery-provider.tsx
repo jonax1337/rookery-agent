@@ -13,9 +13,6 @@ import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
 import {
-  EFFORT_HINT,
-  EFFORT_LABEL,
-  EFFORT_LEVELS,
   PERMISSION_HINT,
   PERMISSION_LABEL,
 } from '@/lib/format';
@@ -690,7 +687,7 @@ export function RookeryComposerSlots({ children }: { children: ReactNode }) {
   const left = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <ControlMenuButton label="Project" value={projectLabel} />
+        <ControlMenuButton className="h-8 rounded-lg px-2" label="Project" value={projectLabel} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuLabel>Project</DropdownMenuLabel>
@@ -713,7 +710,7 @@ export function RookeryComposerSlots({ children }: { children: ReactNode }) {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <ControlMenuButton label="Access" value={PERMISSION_LABEL[turn.permission]} />
+          <ControlMenuButton className="h-8 rounded-lg px-2" label="Access" value={PERMISSION_LABEL[turn.permission]} />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuLabel>Access</DropdownMenuLabel>
@@ -741,36 +738,10 @@ export function RookeryComposerSlots({ children }: { children: ReactNode }) {
         model={turn.model}
         providers={providers}
         onSelect={turn.chooseModel}
+        effort={turn.effort}
+        onEffortSelect={(value) => raw.setEffort(value ?? DEFAULT)}
       />
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <ControlMenuButton
-            label="Effort"
-            value={turn.effort ? EFFORT_LABEL[turn.effort] : 'Effort'}
-          />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-64">
-          <DropdownMenuLabel>Effort</DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          <DropdownMenuRadioGroup value={raw.effort} onValueChange={raw.setEffort}>
-            <DropdownMenuRadioItem value={DEFAULT} className="flex-col items-start gap-0.5">
-              <span>Default</span>
-              <span className="text-xs text-muted-foreground">Uses the provider default.</span>
-            </DropdownMenuRadioItem>
-            {EFFORT_LEVELS.map((level) => (
-              <DropdownMenuRadioItem
-                key={level}
-                value={level}
-                className="flex-col items-start gap-0.5"
-              >
-                <span>{EFFORT_LABEL[level]}</span>
-                <span className="text-xs text-muted-foreground">{EFFORT_HINT[level]}</span>
-              </DropdownMenuRadioItem>
-            ))}
-          </DropdownMenuRadioGroup>
-        </DropdownMenuContent>
-      </DropdownMenu>
 
       {/*
         How full the model's head is belongs to the turn being composed, so it

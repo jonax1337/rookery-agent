@@ -13,12 +13,22 @@ export async function registerProviderRoutes(
 ): Promise<void> {
   app.get(
     '/api/providers',
-    async (request: FastifyRequest<{ Querystring: { refresh?: string } }>) => {
+    async (request: FastifyRequest<{ Querystring: { refresh?: string } }>, reply) => {
+      reply.header('Cache-Control', 'no-store');
       const refresh = isTruthy(request.query.refresh);
       const registry = context.assistant.providers;
       if (refresh) registry.invalidate();
       const statuses = await registry.statuses(refresh);
-      return statuses.map((status) => ({ ...status, models: registry.get(status.id).models() }));
+      return Promise.all(statuses.map(async (status) => {
+        if (!status.available || !status.authenticated) return { ...status, models: [], modelOptions: [] };
+        try {
+          const modelOptions = (await registry.get(status.id).models()).map((model) =>
+            typeof model === 'string' ? { id: model, name: model } : model);
+          return { ...status, models: modelOptions.map((model) => model.id), modelOptions };
+        } catch (error) {
+          return { ...status, models: [], modelOptions: [], modelsError: (error as Error).message };
+        }
+      }));
     },
   );
 

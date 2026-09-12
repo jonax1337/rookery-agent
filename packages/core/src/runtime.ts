@@ -488,6 +488,7 @@ export class Assistant extends EventEmitter {
     const provider = this.providers.get(providerId);
     const started = Date.now();
     let answer = '';
+    const toolCalls: Extract<AgentEvent, { type: 'tool' }>[] = [];
     let providerSessionId = resumed ? session.providerSessionId : undefined;
     let failed = false;
     let usage: TurnUsage | undefined;
@@ -553,6 +554,10 @@ export class Assistant extends EventEmitter {
       try {
         for await (const event of queue.drain()) {
           switch (event.type) {
+            case 'tool':
+              toolCalls.push(event);
+              yield event;
+              break;
             case 'text':
               passText += event.delta;
               yield event;
@@ -611,7 +616,7 @@ export class Assistant extends EventEmitter {
       yield { type: 'status', label: 'tools', detail: fresh.join(', ') + ' attached, carrying on' };
     }
 
-    if (failed && !answer) {
+    if (failed && !answer && !toolCalls.length) {
       // Nothing usable came back; leave the session context untouched so the
       // next attempt can still resume cleanly.
       return;
@@ -627,7 +632,9 @@ export class Assistant extends EventEmitter {
       provider: providerId,
       model,
       usage: turnUsage,
+      toolCalls,
     });
+    if (failed && !answer) return;
     this.store.updateSession(session.id, { provider: providerId, model, providerSessionId });
 
     yield { type: 'done', text: answer, providerSessionId, usage: turnUsage };

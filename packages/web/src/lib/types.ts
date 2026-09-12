@@ -30,6 +30,8 @@ export interface Message {
   sessionId: string;
   role: Role;
   content: string;
+  /** Provider tool events retained with the answer, including interrupted calls. */
+  toolCalls?: Extract<AgentEvent, { type: 'tool' }>[];
   provider?: ProviderId;
   model?: string;
   agent?: string;
@@ -498,7 +500,7 @@ export type AgentEvent =
     }
   | { type: 'text'; delta: string }
   | { type: 'thinking'; delta: string }
-  | { type: 'tool'; name: string; status: 'start' | 'end'; detail?: string; id?: string }
+  | { type: 'tool'; name: string; status: 'start' | 'end'; detail?: string; id?: string; result?: string; isError?: boolean }
   | { type: 'status'; label: string; detail?: string }
   | { type: 'memory'; action: 'recalled' | 'stored'; count: number; items?: MemoryRecord[] }
   /** An assignment changed state. Rides the turn's stream and the broadcast. */
@@ -534,6 +536,13 @@ export interface ProviderQuota {
   error?: string;
 }
 
+export interface ProviderModel {
+  id: string;
+  name: string;
+  description?: string;
+  isDefault?: boolean;
+}
+
 export interface ProviderStatus {
   id: ProviderId;
   available: boolean;
@@ -543,6 +552,8 @@ export interface ProviderStatus {
   detail?: string;
   /** Model names this provider accepts, for the picker. */
   models?: string[];
+  modelOptions?: ProviderModel[];
+  modelsError?: string;
 }
 
 /** Reasoning effort ladder, shared by both providers. */

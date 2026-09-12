@@ -78,7 +78,7 @@ export function ContextIndicator({ context }: ContextIndicatorProps) {
           aria-label={
             percent !== null ? 'Context: ' + percent + ' percent used' : 'Context not measured yet'
           }
-          className="h-7 gap-2 rounded-full px-2 text-xs font-medium text-muted-foreground tabular-nums hover:text-foreground"
+          className="h-8 gap-2 rounded-lg px-2 text-xs font-medium text-muted-foreground tabular-nums hover:text-foreground"
         >
           <Progress
             value={percent ?? 0}

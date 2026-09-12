@@ -109,14 +109,13 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/gateways/:id', label: 'Gateway', parent: '/gateways', hidden: true },
 
   /* --------------------------- firma & wissen ----------------------------- */
-  // `/org` is a redirect, but it is the honest parent of the three tables and
-  // the thing the sidebar calls "Firma".
+  // Section links open their overview; each section has three child pages.
   {
     path: '/org',
-    label: 'Organization',
+    label: 'Overview',
+    navLabel: 'Organization',
     icon: Building2Icon,
     group: 'knowledge',
-    redirect: '/org/agents',
     children: ['/org/agents', '/org/teams', '/org/projects'],
   },
   { path: '/org/agents', label: 'Agents', parent: '/org' },
@@ -130,16 +129,15 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/org/projects/new', label: 'Create project', parent: '/org/projects', hidden: true },
   { path: '/org/projects/:id/edit', label: 'Edit project', parent: '/org/projects', hidden: true },
 
-  // `/memory` is both the section and its first tab, so the section name and
-  // the page name differ - hence `navLabel`, and `children` listing itself.
   {
     path: '/memory',
-    label: 'Memories',
+    label: 'Overview',
     navLabel: 'Memory',
     icon: BrainIcon,
     group: 'knowledge',
-    children: ['/memory', '/memory/graph', '/memory/sleep'],
+    children: ['/memory/memories', '/memory/graph', '/memory/sleep'],
   },
+  { path: '/memory/memories', label: 'Memories', parent: '/memory' },
   { path: '/memory/graph', label: 'Graph', parent: '/memory' },
   { path: '/memory/sleep', label: 'Nights', parent: '/memory' },
 
