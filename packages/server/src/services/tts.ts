@@ -1,5 +1,6 @@
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import type { VoiceConfig, VoiceEngine } from '@rookery/core';
+import { voiceKeys, type VoiceKeys } from './voice-keys.js';
 
 /**
  * Server-side text-to-speech.
@@ -14,8 +15,8 @@ import type { VoiceConfig, VoiceEngine } from '@rookery/core';
  *   openai      gpt-4o-mini-tts, which takes style instructions, so the
  *               butler register comes from a prompt. Needs OPENAI_API_KEY.
  *
- * Keys live in the environment only. Rookery's config has no API-key setting
- * on purpose, and a browser must never be able to read one back.
+ * Keys come from server-only storage or legacy environment variables.
+ * They never enter the assistant config or browser responses.
  *
  * Every engine returns MP3, so the client decodes one format.
  */
@@ -82,12 +83,12 @@ const SYNTH_TIMEOUT_MS = 25_000;
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
-export function ttsEngines(): Record<VoiceEngine, boolean> {
+export function ttsEngines(keys: VoiceKeys = voiceKeys()): Record<VoiceEngine, boolean> {
   return {
     browser: true,
     edge: true,
-    elevenlabs: Boolean(process.env.ELEVENLABS_API_KEY),
-    openai: Boolean(process.env.OPENAI_API_KEY),
+    elevenlabs: Boolean(keys.elevenlabs),
+    openai: Boolean(keys.openai),
   };
 }
 
@@ -127,8 +128,8 @@ let elevenCache: { at: number; key: string; voices: TtsVoice[] } | null = null;
  * even before a key exists; with a key the account's own library (cloned
  * voices included) comes along.
  */
-export async function elevenLabsVoices(): Promise<TtsVoice[]> {
-  const key = process.env.ELEVENLABS_API_KEY ?? '';
+export async function elevenLabsVoices(keys: VoiceKeys = voiceKeys()): Promise<TtsVoice[]> {
+  const key = keys.elevenlabs ?? '';
   if (elevenCache && elevenCache.key === key && Date.now() - elevenCache.at < VOICES_TTL_MS) {
     return elevenCache.voices;
   }
@@ -165,27 +166,27 @@ export async function elevenLabsVoices(): Promise<TtsVoice[]> {
   return voices;
 }
 
-export async function ttsCatalogue(): Promise<TtsCatalogue> {
+export async function ttsCatalogue(keys: VoiceKeys = voiceKeys()): Promise<TtsCatalogue> {
   // Each list is optional: offline or blocked, the page still shows the rest.
   const [edge, elevenlabs] = await Promise.all([
     edgeVoices().catch(() => [] as TtsVoice[]),
-    elevenLabsVoices().catch(() => [] as TtsVoice[]),
+    elevenLabsVoices(keys).catch(() => [] as TtsVoice[]),
   ]);
-  return { engines: ttsEngines(), edge, elevenlabs, openai: OPENAI_VOICES };
+  return { engines: ttsEngines(keys), edge, elevenlabs, openai: OPENAI_VOICES };
 }
 
 /* -------------------------------- synthesis ------------------------------- */
 
-export async function synthesize(voice: VoiceConfig, text: string): Promise<TtsAudio> {
+export async function synthesize(voice: VoiceConfig, text: string, keys: VoiceKeys = voiceKeys()): Promise<TtsAudio> {
   const body = text.trim();
   if (!body) throw new TtsError('Nothing to say', 400);
   switch (voice.engine) {
     case 'edge':
       return synthesizeEdge(voice, body);
     case 'elevenlabs':
-      return synthesizeElevenLabs(voice, body);
+      return synthesizeElevenLabs(voice, body, keys);
     case 'openai':
-      return synthesizeOpenAi(voice, body);
+      return synthesizeOpenAi(voice, body, keys);
     case 'browser':
       throw new TtsError('The browser engine synthesises locally; nothing to do here', 400);
     default:
@@ -258,13 +259,13 @@ async function withElevenLabsSlot<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-async function synthesizeElevenLabs(voice: VoiceConfig, text: string): Promise<TtsAudio> {
-  return withElevenLabsSlot(() => requestElevenLabs(voice, text));
+async function synthesizeElevenLabs(voice: VoiceConfig, text: string, keys: VoiceKeys): Promise<TtsAudio> {
+  return withElevenLabsSlot(() => requestElevenLabs(voice, text, keys));
 }
 
-async function requestElevenLabs(voice: VoiceConfig, text: string): Promise<TtsAudio> {
-  const key = process.env.ELEVENLABS_API_KEY;
-  if (!key) throw new TtsError('ELEVENLABS_API_KEY is not set on the server', 503);
+async function requestElevenLabs(voice: VoiceConfig, text: string, keys: VoiceKeys): Promise<TtsAudio> {
+  const key = keys.elevenlabs;
+  if (!key) throw new TtsError('Add an ElevenLabs key in Settings > Voice', 503);
   const voiceId = voice.elevenLabsVoiceId || DEFAULT_ELEVENLABS_VOICE;
   const model = process.env.ELEVENLABS_MODEL || voice.elevenLabsModel || 'eleven_multilingual_v2';
   const response = await fetch(
@@ -289,14 +290,14 @@ async function requestElevenLabs(voice: VoiceConfig, text: string): Promise<TtsA
     throw new TtsError('ElevenLabs unreachable: ' + error.message);
   });
   if (!response.ok) {
-    throw new TtsError('ElevenLabs ' + response.status + ': ' + (await errorText(response)));
+    throw new TtsError('ElevenLabs ' + response.status + ': ' + (await errorText(response)).replaceAll(key, "[redacted]"));
   }
   return { audio: Buffer.from(await response.arrayBuffer()), mime: 'audio/mpeg' };
 }
 
-async function synthesizeOpenAi(voice: VoiceConfig, text: string): Promise<TtsAudio> {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) throw new TtsError('OPENAI_API_KEY is not set on the server', 503);
+async function synthesizeOpenAi(voice: VoiceConfig, text: string, keys: VoiceKeys): Promise<TtsAudio> {
+  const key = keys.openai;
+  if (!key) throw new TtsError('Add an OpenAI key in Settings > Voice', 503);
   const response = await fetch('https://api.openai.com/v1/audio/speech', {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
@@ -313,7 +314,7 @@ async function synthesizeOpenAi(voice: VoiceConfig, text: string): Promise<TtsAu
     throw new TtsError('OpenAI unreachable: ' + error.message);
   });
   if (!response.ok) {
-    throw new TtsError('OpenAI ' + response.status + ': ' + (await errorText(response)));
+    throw new TtsError('OpenAI ' + response.status + ': ' + (await errorText(response)).replaceAll(key, "[redacted]"));
   }
   return { audio: Buffer.from(await response.arrayBuffer()), mime: 'audio/mpeg' };
 }

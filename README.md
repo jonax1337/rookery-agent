@@ -16,16 +16,54 @@ The application and database run on your machine. Model requests still go to the
 
 ## Quick start
 
+### Easy Windows installation
+
+**Distribution status:** this repository is currently private and the package is not published to npm. For now, use an authorized checkout ([From source](#from-source)) or a tarball shared by the maintainer ([npm distribution](#npm-distribution)).
+
+The following PowerShell one-liner is prepared for a publicly accessible repository; it will not work anonymously while this repository is private:
+
+```powershell
+irm https://raw.githubusercontent.com/jonax1337/rookery-agent/main/scripts/install.ps1 | iex
+```
+
+The installer installs Node.js LTS through winget if Node is missing, downloads and builds Rookery, installs its npm package, starts the server, opens Settings, and enables startup after Windows sign-in. Node installation may show the standard Windows approval dialog. No Git or `.env` editing is needed. An existing Node older than 22.5 must be updated first.
+
+If neither provider CLI is installed, the installer offers Codex or Claude Code and opens that CLI's login flow; you can also skip this step. Existing installations and logins are reused. Select your provider in **Settings**. Configure your name, assistant, models, and voice there; configure Telegram in **Gateways**. Default voice needs no key. Add optional OpenAI/ElevenLabs speech keys directly under **Settings → Voice → Speech service keys**.
+
+```powershell
+rookery setup           # start, open Settings, enable Windows autostart
+rookery start           # start in the background (safe to repeat)
+rookery autostart off   # disable future automatic starts; keep data/current server
+rookery autostart on    # enable again
+rookery doctor          # check installed provider CLIs and logins
+```
+
+Autostart runs as your Windows user **after sign-in**, not before login, and does not keep a sleeping or powered-off PC online. Background startup output goes to `~/.rookery/server.log`. Settings and data stay in `~/.rookery` when the package is upgraded. Disable autostart before `npm uninstall -g rookery-agent`. Re-run setup after moving Node or the installation. On macOS/Linux use `rookery setup --no-autostart` or `rookery serve`; automatic startup is currently Windows-only.
+
+### npm distribution
+
+The standalone package includes the built web app, server, core, and CLI. No build tools or repository checkout are needed by people installing a release tarball:
+
+```powershell
+npm install -g --ignore-scripts ./rookery-agent-0.1.0.tgz; if ($LASTEXITCODE -eq 0) { rookery setup }
+```
+
+Maintainers create it with `npm run package` (output: `dist/rookery-agent-0.1.0.tgz`). It is **not yet published to the npm registry**; use a locally built tarball or one shared by the maintainer. The dependencies ship compiled artifacts; skipping install scripts avoids `msedge-tts`'s upstream pnpm-only check. Use a persistent installation for autostart, not an `npx` cache directory.
+
+### From source
+
 Requirements: **Node.js 22.5 or newer** (for `node:sqlite`), npm, and at least one installed, signed-in provider CLI. For Claude Code, run `claude` and `/login`; for Codex, run `codex login`.
 
 ```bash
-npm install
+npm install --ignore-scripts
 npm run build
 npm run doctor
 npm start
 ```
 
 Open <http://127.0.0.1:4317>. The server serves both the API and the built web app.
+
+For background startup and Windows autostart from a built checkout, run `npm run setup`. Keep that checkout in place while autostart is enabled. The setup/start/autostart commands belong to the standalone launcher; the workspace CLI below provides the terminal commands.
 
 ```bash
 npm run cli                       # interactive terminal
@@ -99,7 +137,7 @@ claude -p --output-format stream-json --verbose --include-partial-messages
 codex exec [resume <id>] --json --skip-git-repo-check --color never -s <sandbox>
 ```
 
-They use existing CLI authentication and native session IDs (`--resume` or `codex exec resume`). Model access requires no API-key setting in Rookery. Optional OpenAI and ElevenLabs **speech** engines are separate: they read keys on the server.
+They use existing CLI authentication and native session IDs (`--resume` or `codex exec resume`). Model access requires no API-key setting in Rookery. Optional OpenAI and ElevenLabs **speech** engines are separate: their keys are configured in Settings → Voice and kept on the server.
 
 Claude runs with `--setting-sources ""`. When Rookery supplies MCP servers, it also passes `--mcp-config` and `--strict-mcp-config`. Rookery replaces the coding system prompt for the assistant; project agents retain their coding role. A `CLAUDE.md` in the selected working directory can still be read by Claude.
 
@@ -187,8 +225,8 @@ Voice turns request concise, speech-friendly replies without Markdown or code bl
 | Engine | Configuration |
 |---|---|
 | Edge (default) | Server `msedge-tts`; no API key; new default `en-GB-RyanNeural` |
-| ElevenLabs | Optional server-side `ELEVENLABS_API_KEY`; voice selection in Settings |
-| OpenAI | Optional server-side `OPENAI_API_KEY`; `gpt-4o-mini-tts` |
+| ElevenLabs | Key and voice selection in Settings → Voice |
+| OpenAI | Key in Settings → Voice; `gpt-4o-mini-tts` |
 | Browser | Browser `speechSynthesis`; also used when server speech fails |
 
 New installations use `voice.lang = "en-GB"`. Existing configured languages and voices remain selected. Browser recognition depends on browser support and microphone permission; the UI reports when unavailable. Chat supports push-to-talk dictation.
@@ -196,6 +234,8 @@ New installations use `voice.lang = "en-GB"`. Existing configured languages and 
 The CLI uses OS speech: PowerShell `System.Speech` on Windows, `say` on macOS, and `spd-say` or eSpeak on Linux. Server TTS: `POST /api/tts` with `{ "text": "Hello" }`; `GET /api/tts/voices` lists capabilities.
 
 ## Configuration
+
+Optional speech keys can be saved, replaced, or removed under **Settings → Voice → Speech service keys** without a restart. They are stored in `~/.rookery/voice-keys.json`, separately from assistant configuration, and API responses expose only their status. This is a local plaintext file: keep the Rookery home private. Saved keys take precedence over legacy `OPENAI_API_KEY` / `ELEVENLABS_API_KEY` environment values; removing a saved key restores that environment fallback. Empty password fields leave existing keys unchanged.
 
 The default file is `~/.rookery/config.json`. Startup precedence:
 
@@ -263,6 +303,9 @@ The combined script starts the built server plus Vite at <http://localhost:5317>
 | `npm run tui:drive -w @rookery/cli` | Drive the terminal with stubbed provider events |
 | `npm run dev:web` | Vite development server only |
 | `npm run doctor` | Provider readiness and setup diagnostics |
+| `npm run setup` | Start in the background, open Settings, and enable Windows autostart |
+| `npm run package` | Build and pack the standalone npm tarball into `dist` |
+| `npm run test:install` | Check installer arguments and Windows autostart shortcuts |
 | `npm run clean` | Remove build artifacts |
 
 Build before tests that import `dist` output. The web build includes its own TypeScript check. Keep package boundaries intact and reuse `components/shell`, `components/blocks`, and `components/common` for pages. Built-in user-facing text is English.

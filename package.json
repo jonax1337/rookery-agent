@@ -18,6 +18,9 @@
     "typecheck": "tsc -b packages/core packages/server packages/cli",
     "test": "node --test packages/core/test/*.test.js",
     "doctor": "node packages/cli/dist/index.js doctor",
+    "setup": "node scripts/rookery.mjs setup",
+    "package": "npm run build && node scripts/package.mjs && npm pack ./dist/npm --pack-destination ./dist",
+    "test:install": "node --test scripts/install.test.mjs",
     "clean": "node scripts/clean.mjs"
   },
   "devDependencies": {

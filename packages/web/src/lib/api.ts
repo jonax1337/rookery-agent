@@ -69,6 +69,11 @@ export class ApiError extends Error {
   }
 }
 
+export type VoiceKeyStatus = Record<'openai' | 'elevenlabs', {
+  configured: boolean;
+  source: 'saved' | 'environment' | 'none';
+}>;
+
 /** Set once at boot when the UI is served from somewhere other than the API. */
 let baseUrl = '';
 
@@ -237,6 +242,9 @@ export const api = {
   /* ---------------------------------- voice -------------------------------- */
 
   ttsVoices: () => request<TtsCatalogue>('/api/tts/voices'),
+  voiceKeys: () => request<VoiceKeyStatus>('/api/tts/keys'),
+  saveVoiceKeys: (patch: Partial<Record<'openai' | 'elevenlabs', string | null>>) =>
+    request<VoiceKeyStatus>('/api/tts/keys', { method: 'PATCH', body: JSON.stringify(patch) }),
 
   /* ---------------------------------- tools -------------------------------- */
 

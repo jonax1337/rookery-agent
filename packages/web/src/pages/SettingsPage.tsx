@@ -18,6 +18,7 @@ import { PageBody } from '@/components/blocks/page-body';
 import { EmptyState } from '@/components/common/empty-state';
 import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
 import { SliderField } from '@/components/forms/form-kit';
+import { VoiceKeys } from '@/components/forms/voice-keys';
 import { ProviderIcon } from '@/components/provider-icon';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
@@ -782,16 +783,14 @@ function VoiceSection({
           </ItemGroup>
         )}
 
-        {/* The missing key is a server-side fact, so it says which variable and
-            where - a badge alone leaves a person guessing. */}
         {missingVoiceEnv(voice.engine, catalogue) ? (
           <FieldDescription>
-            The server is missing{' '}
-            <code className="font-mono">{missingVoiceEnv(voice.engine, catalogue)}</code>{' '}
-            in <code className="font-mono">~/.rookery/.env</code>. The browser voice is used until the key is set and the server restarts.
+            Add a key under Speech service keys below to enable this engine. Until then, the browser voice is used.
           </FieldDescription>
         ) : null}
       </FieldSet>
+
+      <VoiceKeys onSaved={onRetry} />
 
       {!failed && voice.engine === 'edge' ? (
         <FieldSet>
