@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Reproduzierbare Vektor- und Icon-Exporte fuer Rookery, Konzept 01.",
+  "description": "Reproduzierbare Vektor- und Icon-Exporte fuer Rookery, Soft Rook.",
   "scripts": {
     "build": "node scripts/build-brand.mjs"
   },

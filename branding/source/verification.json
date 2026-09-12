@@ -1,20 +1,21 @@
 {
+  "concept": "Soft Rook",
   "svg": {
     "logo.svg": {
       "paths": 8,
-      "viewBox": "0 0 557 172"
+      "viewBox": "0 0 583 172"
     },
     "logo-light.svg": {
       "paths": 8,
-      "viewBox": "0 0 557 172"
+      "viewBox": "0 0 583 172"
     },
     "mark.svg": {
       "paths": 1,
-      "viewBox": "0 0 343 402"
+      "viewBox": "0 0 294 288"
     },
     "mark-light.svg": {
       "paths": 1,
-      "viewBox": "0 0 343 402"
+      "viewBox": "0 0 294 288"
     },
     "favicon.svg": {
       "paths": 1,
@@ -25,14 +26,14 @@
     "logo.png": {
       "size": [
         1600,
-        494
+        472
       ],
       "mode": "RGBA"
     },
     "logo-light.png": {
       "size": [
         1600,
-        494
+        472
       ],
       "mode": "RGBA"
     },
@@ -72,8 +73,21 @@
     ]
   },
   "wordmark": {
+    "text": "Rookery",
     "font": "Manrope",
     "weight": 700,
+    "kerning": "Native font layout",
+    "fontSha256": "d0639be45d0af36e798172419d7bd173c4bd4f29e2b76cbb69db1d11bf8b0a40",
+    "unitsPerEm": 2000,
+    "sourceBounds": {
+      "width": 7788.333333333333,
+      "height": 1920
+    },
+    "lockup": {
+      "width": 583,
+      "height": 172
+    },
     "method": "Typeset using the real variable font at weight 700; glyph outlines exported directly from font data. No raster tracing."
-  }
+  },
+  "publicCopiesMatch": true
 }

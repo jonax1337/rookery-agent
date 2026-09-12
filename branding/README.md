@@ -1,6 +1,6 @@
 # Rookery: das kleine Logo-Set
 
-Konzept 01, bereinigte Bildmarke und **Manrope 700** als sauber gesetzte Wortmarke. Die beiden Randartefakte der automatischen Vektorisierung sind entfernt. Alle SVGs bestehen aus echten Pfaden; die Wortmarke stammt direkt aus den Schriftkonturen.
+**Soft Rook** ist das Hauptlogo: die weich gezeichnete Rabenform aus dem [gewählten Entwurf](concepts/2026-09-12/01-soft-rook.png), als zwei glatte Bézier-Konturen umgesetzt, mit **Manrope 700** als sauber gesetzter Wortmarke. Alle SVGs bestehen aus echten Pfaden; die Wortmarke stammt direkt aus den Schriftkonturen.
 
 | Verwendung | Datei |
 |---|---|
@@ -18,4 +18,6 @@ Proportional skalieren, etwas freien Raum rundherum lassen. Das horizontale Logo
 
 Für die Nutzung der Logo-SVGs muss keine Schrift installiert sein. Die Wortmarke wurde mit [Manrope](https://github.com/google/fonts/tree/main/ofl/manrope), Gewicht 700, gesetzt und anschließend aus den Fontdaten in Pfade umgewandelt.
 
-Das ZIP enthält die sofort nutzbaren Dateien. Im Projekt liegen zusätzlich Quellen, Font mit unveränderter OFL-Lizenz und Generator unter `branding/source/` und `branding/scripts/`. Dort lassen sich die Exporte mit `npm ci --ignore-scripts` und `npm run build` reproduzieren.
+Im Projekt liegen zusätzlich Quellen, Font mit unveränderter OFL-Lizenz und Generator unter `branding/source/` und `branding/scripts/`. Die aktuelle Bildmarke ist in `source/soft-rook.json` definiert. Frühere Konzeptquellen bleiben als Referenz erhalten.
+
+Im Verzeichnis `branding/` lassen sich die Exporte mit `npm ci --ignore-scripts` und `npm run build` reproduzieren. Der Build kopiert die Logos und Icons auch nach `packages/web/public/`, sodass die Web-App dieselben Dateien verwendet.
