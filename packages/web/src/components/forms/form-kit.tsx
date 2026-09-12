@@ -153,6 +153,7 @@ export function useFormSubmit<T>(
   const [errors, setErrors] = useState<FieldErrors>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const inFlight = useRef(false);
 
   // `run` is written inline at every call site and closes over the draft, so
   // it changes identity on every keystroke. The ref keeps `submit` stable
@@ -170,6 +171,7 @@ export function useFormSubmit<T>(
   }, []);
 
   const submit = useCallback(async (): Promise<void> => {
+    if (inFlight.current) return;
     const parsed = schemaRef.current.safeParse(draftRef.current);
     if (!parsed.success) {
       setErrors(collectErrors(parsed.error));
@@ -177,12 +179,14 @@ export function useFormSubmit<T>(
     }
     setErrors({});
     setFailure(null);
+    inFlight.current = true;
     setSaving(true);
     try {
       await runRef.current(parsed.data);
     } catch (caught) {
       setFailure(failureMessage(caught));
     } finally {
+      inFlight.current = false;
       setSaving(false);
     }
   }, []);
@@ -367,6 +371,7 @@ export function ChoiceField<T extends string>({
               </FieldContent>
               <RadioGroupItem
                 id={optionId}
+                aria-label={option.label}
                 value={option.value}
                 disabled={option.disabled ?? false}
               />

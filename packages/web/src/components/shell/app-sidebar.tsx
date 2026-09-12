@@ -21,6 +21,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from '@/components/ui/sidebar';
 
 interface AppSidebarProps extends ComponentProps<typeof Sidebar> {
@@ -44,6 +45,7 @@ interface AppSidebarProps extends ComponentProps<typeof Sidebar> {
  */
 export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
   const { pathname } = useLocation();
+  const { setOpenMobile } = useSidebar();
   const tasks = useTasksState();
   const org = useOrgState();
   // The same list `/chats` shows, not the chat hub's own slice: that one holds
@@ -138,7 +140,7 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
-              <NavLink to="/dashboard">
+              <NavLink to="/dashboard" onClick={() => setOpenMobile(false)}>
                 {/*
                   The brand, not a stand-in for it. The rail collapses to icon
                   width, so the mark carries the collapsed state and the
@@ -177,15 +179,15 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
         </SidebarMenu>
       </SidebarHeader>
 
-      <SidebarContent>
+      <SidebarContent className="gap-0">
         <NavPrimary />
         {NAV_GROUPS.filter(isLabelled).map((group) => (
           <NavMain key={group.id} label={group.label} items={navItems(group.id).map(buildItem)} />
         ))}
-        <NavSecondary items={secondary} className="mt-auto" />
       </SidebarContent>
 
       <SidebarFooter>
+        <NavSecondary items={secondary} className="p-0" />
         <NavStatus />
       </SidebarFooter>
     </Sidebar>

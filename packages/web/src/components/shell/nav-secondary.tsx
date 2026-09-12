@@ -8,6 +8,7 @@ import {
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from '@/components/ui/sidebar';
 
 export interface NavSecondaryItem {
@@ -22,8 +23,7 @@ export interface NavSecondaryItem {
 }
 
 /**
- * The small block at the bottom of the rail (sidebar-16's `nav-secondary`),
- * pushed down by `mt-auto`.
+ * The small block in the rail's footer (sidebar-16's `nav-secondary`).
  *
  * "Suchen" has no URL: it opens the command palette the shell owns, which is
  * why an entry here may be a button instead of a link.
@@ -32,6 +32,7 @@ export function NavSecondary({
   items,
   ...props
 }: { items: NavSecondaryItem[] } & ComponentPropsWithoutRef<typeof SidebarGroup>) {
+  const { setOpenMobile } = useSidebar();
   return (
     <SidebarGroup {...props}>
       <SidebarGroupContent>
@@ -40,7 +41,7 @@ export function NavSecondary({
             <SidebarMenuItem key={item.title}>
               {item.url ? (
                 <SidebarMenuButton asChild size="sm" tooltip={item.title} isActive={item.isActive}>
-                  <NavLink to={item.url}>
+                  <NavLink to={item.url} onClick={() => setOpenMobile(false)}>
                     <item.icon />
                     <span>{item.title}</span>
                   </NavLink>

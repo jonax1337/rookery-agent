@@ -397,7 +397,7 @@ export function DataTable<TData extends RowData>({
     showColumnMenu && visibleColumns.length > 0 ? (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" aria-label="Spalten auswählen">
             <Columns3Icon data-icon="inline-start" />
             <span className="hidden lg:inline">Spalten</span>
             <ChevronDownIcon data-icon="inline-end" />
@@ -606,16 +606,21 @@ export function DataTable<TData extends RowData>({
                 {headerGroup.headers.map((header) => (
                   // `scope` is free here and stops being free the moment a
                   // group row spans the whole width below.
-                  <TableHead key={header.id} colSpan={header.colSpan} scope="col">
+                  <TableHead
+                    key={header.id}
+                    colSpan={header.colSpan}
+                    scope="col"
+                    className={cn(
+                      (header.column.id === 'select' || header.column.id === 'actions') && 'w-8',
+                    )}
+                  >
                     {header.isPlaceholder ? null : <FlexRender header={header} />}
                   </TableHead>
                 ))}
               </TableRow>
             ))}
           </TableHeader>
-          <TableBody className="**:data-[slot=table-cell]:first:w-8">
-            {renderBody()}
-          </TableBody>
+          <TableBody>{renderBody()}</TableBody>
         </Table>
       </div>
 

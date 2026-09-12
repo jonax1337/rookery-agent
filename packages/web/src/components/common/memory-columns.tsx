@@ -101,7 +101,7 @@ export function buildMemoryColumns(
       const memory = row.original;
       const emphasis = highlighted?.has(memory.id) ? 'font-medium text-primary' : '';
       if (!onOpen) {
-        return <span className={'line-clamp-2 leading-snug ' + emphasis}>{memory.content}</span>;
+        return <span className={'block min-w-48 max-w-[52ch] whitespace-normal break-words leading-snug ' + emphasis}>{memory.content}</span>;
       }
       return (
         <DetailDrawerTrigger

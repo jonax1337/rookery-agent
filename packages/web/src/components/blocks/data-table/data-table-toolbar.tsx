@@ -69,7 +69,7 @@ export function DataTableToolbar({
       <div className="flex flex-wrap items-center justify-between gap-2">
         {tabs ?? <div />}
         {hasRight ? (
-          <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
+          <div className={cn('flex flex-1 flex-wrap items-center justify-end gap-2', tabs && 'basis-full @5xl/main:basis-auto')}>
             {search ? (
               <InputGroup className="h-8 w-full sm:w-56">
                 <InputGroupAddon align="inline-start">

@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useLocation } from 'react-router';
 
 import { cn } from '@/lib/utils';
 
@@ -41,9 +42,16 @@ export interface PageBodyProps {
 
 export function PageBody({ width = 'full', className, children }: PageBodyProps) {
   const constrained = width !== 'full';
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { pathname } = useLocation();
+
+  // Nested routes reuse this scroller; filters on the same route keep their place.
+  useLayoutEffect(() => {
+    scrollRef.current?.scrollTo(0, 0);
+  }, [pathname]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+    <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       {/*
         The measure sits on the container-query element on purpose: a card row
         inside a 2xl page should count its columns against 2xl, not against the

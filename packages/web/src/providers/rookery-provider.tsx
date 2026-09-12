@@ -107,7 +107,7 @@ interface RookeryValue {
   config: PublicConfig | null;
   providers: ProviderStatus[];
   assistantName: string;
-  saveConfig(patch: Partial<PublicConfig>): Promise<void>;
+  saveConfig(patch: Partial<PublicConfig>): Promise<boolean>;
 
   chat: ChatState;
   /** Who the chat hub is writing to. Null means the assistant. */
@@ -234,12 +234,14 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
     if (connected) void reload();
   }, [connected, reload]);
 
-  const saveConfig = useCallback(async (patch: Partial<PublicConfig>): Promise<void> => {
+  const saveConfig = useCallback(async (patch: Partial<PublicConfig>): Promise<boolean> => {
     try {
       setConfig(await api.updateConfig(patch));
       toast('Einstellungen gespeichert');
+      return true;
     } catch {
       toast.error('Speichern fehlgeschlagen');
+      return false;
     }
   }, []);
 
@@ -571,7 +573,7 @@ export interface ConfigState {
   config: PublicConfig | null;
   providers: ProviderStatus[];
   assistantName: string;
-  save(patch: Partial<PublicConfig>): Promise<void>;
+  save(patch: Partial<PublicConfig>): Promise<boolean>;
 }
 
 export function useConfig(): ConfigState {

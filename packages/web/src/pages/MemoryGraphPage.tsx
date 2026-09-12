@@ -15,7 +15,6 @@ import { EmptyState } from '@/components/common/empty-state';
 import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ButtonGroup, ButtonGroupSeparator } from '@/components/ui/button-group';
 import { Field, FieldLabel } from '@/components/ui/field';
 import { Item, ItemContent, ItemGroup, ItemMedia, ItemTitle } from '@/components/ui/item';
 import { Spinner } from '@/components/ui/spinner';
@@ -69,7 +68,7 @@ export function MemoryGraphPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 px-4 lg:px-6">
       <div className="flex flex-wrap items-center gap-2">
-        <ButtonGroup>
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           <EntityCombobox
             id="netz-thema"
             options={entityOptions}
@@ -77,10 +76,9 @@ export function MemoryGraphPage() {
             onChange={(value) => graph.setEntity(value ?? '')}
             placeholder="Alle Themen"
             emptyLabel="Kein Thema gefunden"
-            className="w-56"
+            className="w-full sm:w-56"
           />
-          <ButtonGroupSeparator />
-          <Field orientation="horizontal" className="px-3">
+          <Field orientation="horizontal" className="w-auto">
             <Switch
               id="netz-schlafende"
               checked={graph.includeDormant}
@@ -90,7 +88,6 @@ export function MemoryGraphPage() {
               Schlafende zeigen
             </FieldLabel>
           </Field>
-          <ButtonGroupSeparator />
           <Button
             variant="outline"
             onClick={() => sceneRef.current?.fit()}
@@ -99,7 +96,7 @@ export function MemoryGraphPage() {
             <MaximizeIcon data-icon="inline-start" />
             Einpassen
           </Button>
-        </ButtonGroup>
+        </div>
 
         {data ? (
           <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground tabular-nums">
@@ -120,7 +117,7 @@ export function MemoryGraphPage() {
       */}
       <div
         ref={stageRef}
-        className="graph-stage relative aspect-video min-h-[480px] w-full overflow-hidden rounded-lg border bg-card"
+        className="graph-stage relative aspect-video min-h-80 w-full overflow-hidden rounded-lg border bg-card sm:min-h-[480px]"
       >
         {unavailable ? (
           <div className="absolute inset-0 flex items-center justify-center p-6">

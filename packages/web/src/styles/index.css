@@ -137,6 +137,52 @@
   body {
     @apply bg-background text-foreground antialiased;
   }
+
+  /* Native scrolling, with one theme-aware treatment for both axes. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--muted-foreground) 70%, transparent) transparent;
+  }
+
+  @supports selector(::-webkit-scrollbar) {
+    * {
+      /* Standard properties take precedence over the detailed Chromium styling. */
+      scrollbar-width: auto;
+      scrollbar-color: auto;
+    }
+    ::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    ::-webkit-scrollbar-track,
+    ::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      min-height: 32px;
+      min-width: 32px;
+      border: 2px solid transparent;
+      border-radius: 999px;
+      background: color-mix(in oklch, var(--muted-foreground) 70%, transparent);
+      background-clip: padding-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: var(--muted-foreground);
+    }
+    ::-webkit-scrollbar-thumb:active {
+      background-color: var(--foreground);
+    }
+    ::-webkit-scrollbar-button {
+      display: none;
+      width: 0;
+      height: 0;
+    }
+  }
+
+  @media (forced-colors: active) {
+    * { scrollbar-color: auto; }
+    ::-webkit-scrollbar-thumb { background-color: CanvasText; }
+  }
 }
 
 /*

@@ -39,8 +39,7 @@ import { Textarea } from '@/components/ui/textarea';
  * team list, an agent list grouped by team, a project list - none of which
  * could be searched, sorted or filtered. The three lists are three routes now,
  * and this layout holds what they share: the headline numbers and the tab
- * strip. The numbers are deliberately common to all three tabs, so switching
- * from Agenten to Projekte does not make the page jump.
+ * strip. Headline numbers appear on Agenten; navigation remains on every tab.
  *
  * The tabs are routes rather than local state: `/org/teams` is a place the
  * sidebar, the command palette and a bookmark can all point at. Radix' Tabs
@@ -58,12 +57,13 @@ interface OrgTab {
   value: string;
   to: string;
   label: string;
+  createLabel: string;
 }
 
 const TABS: readonly OrgTab[] = [
-  { value: 'agents', to: '/org/agents', label: 'Agenten' },
-  { value: 'teams', to: '/org/teams', label: 'Teams' },
-  { value: 'projects', to: '/org/projects', label: 'Projekte' },
+  { value: 'agents', to: '/org/agents', label: 'Agenten', createLabel: 'Agent einstellen' },
+  { value: 'teams', to: '/org/teams', label: 'Teams', createLabel: 'Team anlegen' },
+  { value: 'projects', to: '/org/projects', label: 'Projekte', createLabel: 'Projekt anlegen' },
 ];
 
 const organizationSchema = z.object({
@@ -103,9 +103,9 @@ export function OrgLayout() {
       actions: (
         <>
           <Button size="sm" asChild>
-            <NavLink to="/org/agents/new">
+            <NavLink to={(activeTab?.to ?? '/org/agents') + '/new'}>
               <PlusIcon data-icon="inline-start" />
-              Agent einstellen
+              {activeTab?.createLabel ?? 'Agent einstellen'}
             </NavLink>
           </Button>
           <DropdownMenu>
@@ -113,18 +113,14 @@ export function OrgLayout() {
               <RowMenuButton tone="header" label="Weitere Aktionen für die Firma" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuItem asChild>
-                <NavLink to="/org/teams/new">
-                  <PlusIcon />
-                  Team anlegen
-                </NavLink>
-              </DropdownMenuItem>
-              <DropdownMenuItem asChild>
-                <NavLink to="/org/projects/new">
-                  <PlusIcon />
-                  Projekt anlegen
-                </NavLink>
-              </DropdownMenuItem>
+              {TABS.filter((tab) => tab.value !== active).map((tab) => (
+                <DropdownMenuItem key={tab.value} asChild>
+                  <NavLink to={tab.to + '/new'}>
+                    <PlusIcon />
+                    {tab.createLabel}
+                  </NavLink>
+                </DropdownMenuItem>
+              ))}
               <DropdownMenuSeparator />
               <DropdownMenuItem disabled={!organization} onSelect={() => setEditOpen(true)}>
                 <PencilIcon />
@@ -135,7 +131,7 @@ export function OrgLayout() {
         </>
       ),
     },
-    [organization?.id, organization?.name, activeTab?.label],
+    [organization?.id, organization?.name, activeTab, active],
   );
 
   /* -------------------------------- numbers ------------------------------- */
@@ -164,7 +160,7 @@ export function OrgLayout() {
         counts.withoutTeam === 0
           ? 'Alle einem Team zugeordnet'
           : formatNumber(counts.withoutTeam) + ' ohne Team',
-      footnote: 'Nur die aktiven — archivierte liefert der Server nicht mit',
+      footnote: 'Aktive Agenten, ohne Archiv',
       to: '/org/agents',
     },
     {
@@ -174,7 +170,7 @@ export function OrgLayout() {
         counts.withoutLead === 0
           ? 'Jedes Team hat eine Leitung'
           : formatNumber(counts.withoutLead) + ' ohne Leitung',
-      footnote: 'Ein Team bündelt Agenten und gibt ihnen eine Ansprechpartnerin',
+      footnote: 'Teams der aktiven Firma',
       to: '/org/teams',
     },
     {
@@ -184,7 +180,7 @@ export function OrgLayout() {
         counts.withPath === 0
           ? 'Alle laufen im Arbeitsraum'
           : formatNumber(counts.withPath) + ' mit eigenem Verzeichnis',
-      footnote: 'Nur die aktiven — archivierte liefert der Server nicht mit',
+      footnote: 'Aktive Projekte, ohne Archiv',
       to: '/org/projects',
     },
     {
@@ -193,7 +189,7 @@ export function OrgLayout() {
       ...(running > 0 ? { badge: <RunningBadge count={running} /> } : {}),
       headline:
         running === 0 ? 'Gerade arbeitet niemand' : shorten(counts.busy.join(', '), 40),
-      footnote: 'Aus dem Livestream der Aufträge, nicht aus einer Liste',
+      footnote: 'Live aktualisiert',
       to: '/assignments',
     },
   ];
@@ -229,10 +225,7 @@ export function OrgLayout() {
       </div>
 
       {/*
-        The numbers and the view switcher belong to the section's front page.
-        On Teams and Projekte they were a second navigation the sidebar already
-        offers - its submenu stands open whenever /org/* is active - and the
-        same four cards above every one of the three tables said nothing new.
+        Headline numbers belong to the section's front page.
       */}
       {isIndex && <StatCards items={cards} />}
 
@@ -242,7 +235,6 @@ export function OrgLayout() {
         announce - a bare row of links would drop it.
       */}
       <Tabs value={active} className="gap-4">
-        {isIndex && (
         <div className="px-4 lg:px-6">
           <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:rounded-full **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1">
             <TabsTrigger value="agents" asChild>
@@ -265,7 +257,6 @@ export function OrgLayout() {
             </TabsTrigger>
           </TabsList>
         </div>
-        )}
 
         <TabsContent value={active} forceMount className="flex flex-col gap-4">
           <Outlet />

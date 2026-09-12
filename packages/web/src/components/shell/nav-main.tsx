@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { NavLink } from 'react-router';
+import { NavLink, useLocation } from 'react-router';
 import { ChevronRightIcon, type LucideIcon } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
@@ -13,6 +13,7 @@ import {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
+  useSidebar,
 } from '@/components/ui/sidebar';
 
 export interface NavSubItem {
@@ -48,25 +49,31 @@ export interface NavMainItem {
  * One labelled block of the navigation (sidebar-16's `nav-main`).
  *
  * An entry without `items` is a plain link; with them it grows the block's
- * chevron action and a `SidebarMenuSub`, which stays open while the section
- * is the active one. Badge and chevron would sit on the same absolute spot,
+ * chevron action and a `SidebarMenuSub`, which opens when entering the section
+ * or changing its route; the chevron can still collapse it. Badge and chevron sit on the same spot,
  * so no entry ever carries both - sections count nothing, leaves have no
  * children.
  */
 export function NavMain({ label, items }: { label: string; items: NavMainItem[] }) {
+  const { pathname } = useLocation();
+  const { setOpenMobile } = useSidebar();
   return (
-    <SidebarGroup>
-      <SidebarGroupLabel>{label}</SidebarGroupLabel>
+    <SidebarGroup className="py-1">
+      <SidebarGroupLabel className="h-6">{label}</SidebarGroupLabel>
       <SidebarMenu>
         {items.map((item) => (
-          <Collapsible key={item.title} asChild defaultOpen={item.isActive}>
+          <Collapsible
+            key={`${item.title}:${item.isActive ? pathname : ''}`}
+            asChild
+            defaultOpen={item.isActive}
+          >
             <SidebarMenuItem>
               <SidebarMenuButton
                 asChild
                 tooltip={item.badgeLabel ? item.title + ' — ' + item.badgeLabel : item.title}
                 isActive={item.isActive}
               >
-                <NavLink to={item.url}>
+                <NavLink to={item.url} onClick={() => setOpenMobile(false)}>
                   <item.icon />
                   <span>{item.title}</span>
                 </NavLink>
@@ -93,7 +100,7 @@ export function NavMain({ label, items }: { label: string; items: NavMainItem[] 
                       {item.items.map((subItem) => (
                         <SidebarMenuSubItem key={subItem.title}>
                           <SidebarMenuSubButton asChild isActive={subItem.isActive}>
-                            <NavLink to={subItem.url}>
+                            <NavLink to={subItem.url} onClick={() => setOpenMobile(false)}>
                               <span>{subItem.title}</span>
                             </NavLink>
                           </SidebarMenuSubButton>

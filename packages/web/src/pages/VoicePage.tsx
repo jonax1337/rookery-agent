@@ -475,7 +475,7 @@ export function VoicePage() {
       <VoiceOrb state={state} getLevel={getLevel} dim={phase === 'gate'} className="absolute inset-0" />
 
       {/* Top bar */}
-      <div className="absolute inset-x-0 top-0 flex items-center justify-between p-4 sm:p-6">
+      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between p-4 sm:p-6">
         {/* Every white on `--voice-ground` here is held at /55 or above: below
             that the 4,5:1 minimum breaks, and the orb behind the text is not a
             constant ground to borrow contrast from. */}
@@ -961,4 +961,3 @@ function VoiceSettingsDrawer({
     </DetailDrawer>
   );
 }
-

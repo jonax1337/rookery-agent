@@ -132,10 +132,9 @@ export function GatewayDetailPage() {
     try {
       // The whole gateways object goes out, but PATCH merges deeply - the
       // config's other channels (once there are any) survive untouched.
-      await save({ gateways: { telegram: pending } });
-      touched.current = false;
+      if (!(await save({ gateways: { telegram: pending } }))) return;
+      if (draftRef.current === pending) touched.current = false;
       await refresh();
-      toast('Gespeichert');
     } catch (caught) {
       reportFailure('Speichern', caught);
     } finally {
@@ -412,7 +411,7 @@ export function GatewayDetailPage() {
                       <FieldTitle>{PERMISSION_LABEL[level]}</FieldTitle>
                       <FieldDescription>{PERMISSION_HINT[level]}</FieldDescription>
                     </FieldContent>
-                    <RadioGroupItem value={level} id={'gw-permission-' + level} />
+                    <RadioGroupItem value={level} id={'gw-permission-' + level} aria-label={PERMISSION_LABEL[level]} />
                   </Field>
                 </FieldLabel>
               ))}

@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="branding/logo-light.svg" alt="Rookery" width="260">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/logo-light.svg">
+    <source media="(prefers-color-scheme: light)" srcset="branding/logo.svg">
+    <img src="branding/logo.svg" alt="Rookery" width="260">
+  </picture>
 </p>
 
 <p align="center">

@@ -18,6 +18,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from '@/components/ui/sidebar';
 
 /**
@@ -39,6 +40,7 @@ import {
 const ASSISTANT = '__assistant__';
 
 export function NavPrimary() {
+  const { setOpenMobile } = useSidebar();
   const { counterpart, newConversation, chooseCounterpart } = useChatSession();
   const { assistantName } = useConfig();
   const org = useOrgState();
@@ -56,7 +58,10 @@ export function NavPrimary() {
           <SidebarMenuItem className="flex items-center gap-2">
             <SidebarMenuButton
               tooltip={label}
-              onClick={newConversation}
+              onClick={() => {
+                newConversation();
+                setOpenMobile(false);
+              }}
               className="bg-primary text-primary-foreground hover:bg-primary/90 active:bg-primary/90 min-w-8 duration-200 ease-linear"
             >
               <PlusIcon />
@@ -84,9 +89,10 @@ export function NavPrimary() {
                 <DropdownMenuSeparator />
                 <DropdownMenuRadioGroup
                   value={counterpart?.id ?? ASSISTANT}
-                  onValueChange={(value) =>
-                    chooseCounterpart(value === ASSISTANT ? null : value)
-                  }
+                  onValueChange={(value) => {
+                    chooseCounterpart(value === ASSISTANT ? null : value);
+                    setOpenMobile(false);
+                  }}
                 >
                   <DropdownMenuRadioItem value={ASSISTANT}>
                     <FeatherIcon />
@@ -110,7 +116,7 @@ export function NavPrimary() {
                   variant="outline"
                   className="size-8 group-data-[collapsible=icon]:opacity-0"
                 >
-                  <NavLink to="/voice">
+                  <NavLink to="/voice" onClick={() => setOpenMobile(false)}>
                     <AudioLinesIcon />
                     <span className="sr-only">Sprechen</span>
                   </NavLink>

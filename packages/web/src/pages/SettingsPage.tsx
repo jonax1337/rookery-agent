@@ -277,8 +277,9 @@ export function SettingsPage() {
     try {
       // The whole draft goes out: `PATCH /api/config` merges deeply, so the
       // sub-objects this page never shows survive untouched.
-      await save(pending);
-      touched.current = false;
+      if (await save(pending)) {
+        if (draftRef.current === pending) touched.current = false;
+      }
     } finally {
       setSaving(false);
     }
@@ -599,7 +600,7 @@ function DefaultsSection({
                 <FieldContent>
                   <FieldTitle>{PROVIDER_LABEL[id]}</FieldTitle>
                 </FieldContent>
-                <RadioGroupItem value={id} id={'set-provider-' + id} />
+                <RadioGroupItem value={id} id={'set-provider-' + id} aria-label={PROVIDER_LABEL[id]} />
               </Field>
             </FieldLabel>
           ))}
@@ -640,7 +641,7 @@ function DefaultsSection({
                 <FieldTitle>Standard des Anbieters</FieldTitle>
                 <FieldDescription>Was der Anbieter vorsieht.</FieldDescription>
               </FieldContent>
-              <RadioGroupItem value={DEFAULT} id="set-effort-default" />
+              <RadioGroupItem value={DEFAULT} id="set-effort-default" aria-label="Standard des Anbieters" />
             </Field>
           </FieldLabel>
           {EFFORT_LEVELS.map((level) => (
@@ -650,7 +651,7 @@ function DefaultsSection({
                   <FieldTitle>{EFFORT_LABEL[level]}</FieldTitle>
                   <FieldDescription>{EFFORT_HINT[level]}</FieldDescription>
                 </FieldContent>
-                <RadioGroupItem value={level} id={'set-effort-' + level} />
+                <RadioGroupItem value={level} id={'set-effort-' + level} aria-label={EFFORT_LABEL[level]} />
               </Field>
             </FieldLabel>
           ))}
@@ -673,7 +674,7 @@ function DefaultsSection({
                   <FieldTitle>{PERMISSION_LABEL[level]}</FieldTitle>
                   <FieldDescription>{PERMISSION_HINT[level]}</FieldDescription>
                 </FieldContent>
-                <RadioGroupItem value={level} id={'set-permission-' + level} />
+                <RadioGroupItem value={level} id={'set-permission-' + level} aria-label={PERMISSION_LABEL[level]} />
               </Field>
             </FieldLabel>
           ))}
@@ -1294,7 +1295,7 @@ function ViewSection() {
                   <FieldTitle>{entry.label}</FieldTitle>
                   <FieldDescription>{entry.description}</FieldDescription>
                 </FieldContent>
-                <RadioGroupItem value={entry.value} id={'set-theme-' + entry.value} />
+                <RadioGroupItem value={entry.value} id={'set-theme-' + entry.value} aria-label={entry.label} />
               </Field>
             </FieldLabel>
           ))}

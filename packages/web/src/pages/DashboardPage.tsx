@@ -294,7 +294,7 @@ export function DashboardPage() {
       // lowers the number without touching the badge, and the footnote below
       // says so rather than letting the two look like the same quantity.
       ...(newMemories > 0
-        ? { badge: <Badge variant="outline">+{formatNumber(newMemories)} gelernt in 7 Tagen</Badge> }
+        ? { badge: <Badge variant="outline">+{formatNumber(newMemories)} gelernt · 7 Tage</Badge> }
         : {}),
       ...(memoryStats
         ? {
@@ -306,9 +306,7 @@ export function DashboardPage() {
           }
         : {}),
       footnote:
-        'Was ' +
-        assistantName +
-        ' wach im Kopf hat, ohne die vergessenen und die schlafenden. Das Badge zählt jede neu angelegte Erinnerung, auch die inzwischen verdichteten.',
+        'Aktiv, ohne schlafende und vergessene. Neu gelernt: auch inzwischen verdichtete.',
       to: '/memory',
     },
     {
@@ -327,7 +325,7 @@ export function DashboardPage() {
       ...(runningTasks > 0 ? { badge: <RunningBadge count={runningTasks} /> } : {}),
       headline: totals ? 'Von ' + formatNumber(totals.tasks) + ' Aufgaben insgesamt' : ' ',
       footnote:
-        'Offen, geplant und laufend zusammen, Teilaufgaben mitgezählt. Das Badge zählt nur Hauptaufgaben.',
+        'Offen, geplant oder laufend, inkl. Teilaufgaben. Laufend-Badge: nur Hauptaufgaben.',
       to: '/tasks',
     },
     {
@@ -344,14 +342,19 @@ export function DashboardPage() {
         : {}),
       headline: totals ? formatNumber(totals.messages) + ' Nachrichten insgesamt' : ' ',
       footnote:
-        'Alle Gespräche der Datenbank, ohne die abgelegten. Die Nachrichten darüber zählen auch die der abgelegten mit.',
+        'Gespräche ohne Archiv. Nachrichten inkl. Archiv.',
       to: '/chats',
     },
   ];
 
   /* ------------------------------- the table ------------------------------- */
 
-  const [tab, setTab] = useState<RecentTab>('tasks');
+  const [selectedTab, setTab] = useState<RecentTab | null>(null);
+  const tab: RecentTab = selectedTab ?? (
+    totals && totals.tasks === 0
+      ? (totals.assignments > 0 ? 'assignments' : 'sessions')
+      : 'tasks'
+  );
 
   const agentName = useCallback(
     (id: string | undefined) => org.agentById(id)?.name ?? 'Unbekannt',
@@ -535,7 +538,7 @@ export function DashboardPage() {
       <div className="px-4 lg:px-6">
         <TrendChartCard
           title="Aktivität"
-          description="Pro Tag angelegt. Gespräche und Nachrichten zählt die ganze Datenbank, abgelegte eingeschlossen; Aufträge nur die der aktiven Firma."
+          description="Pro Tag: Gespräche und Nachrichten inkl. Archiv; Aufträge der aktiven Firma."
           descriptionShort="Pro Tag angelegt"
           data={chartData}
           series={ACTIVITY_SERIES}

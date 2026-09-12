@@ -216,7 +216,7 @@ export function MemoryLayout() {
         : {}),
       headline: stats ? formatNumber(stats.forgotten) + ' vergessen' : ' ',
       footnote:
-        'Wach im Kopf, ohne die vergessenen und die schlafenden. Das Badge zählt jede neu angelegte Erinnerung, auch die inzwischen verdichteten.',
+        'Wache Erinnerungen. Neu gelernt zählt auch inzwischen verdichtete Einträge.',
       to: '/memory',
     },
     {
@@ -242,11 +242,7 @@ export function MemoryLayout() {
     },
   ];
 
-  // The numbers and the view switcher belong to the section's front page. On
-  // "Netz" and "Nächte" they were a second navigation the sidebar already
-  // offers - its submenu stands open whenever /memory/* is active - and four
-  // stat cards plus a tab bar above a 3D graph left the graph a letterbox.
-  // The subpages get the canvas instead.
+  // Keep the view switcher on every route; only the overview needs the cards.
   const isIndex = active.to === TABS[0]?.to;
 
   return (
@@ -297,7 +293,6 @@ export function MemoryLayout() {
         panel of that id the promise points at nothing.
       */}
       <Tabs value={active.to} className="min-h-0 flex-1 gap-4">
-        {isIndex && (
           <div className="px-4 lg:px-6">
             <TabsList>
               {TABS.map((tab) => (
@@ -309,7 +304,6 @@ export function MemoryLayout() {
               ))}
             </TabsList>
           </div>
-        )}
 
         <TabsContent
           value={active.to}
@@ -442,12 +436,12 @@ function RememberDialog({ open, onOpenChange, onAdd }: RememberDialogProps) {
               <RadioGroup
                 value={kind}
                 onValueChange={(value) => setKind(value as MemoryKind)}
-                className="grid grid-cols-2 gap-2 sm:grid-cols-3"
+                className="grid grid-cols-1 gap-2 sm:grid-cols-2"
               >
                 {MEMORY_KINDS.map((value) => (
                   <FieldLabel key={value} htmlFor={formId + '-kind-' + value}>
                     <Field orientation="horizontal">
-                      <RadioGroupItem id={formId + '-kind-' + value} value={value} />
+                      <RadioGroupItem id={formId + '-kind-' + value} value={value} aria-label={MEMORY_KIND_LABEL[value]} />
                       <FieldTitle>{MEMORY_KIND_LABEL[value]}</FieldTitle>
                     </Field>
                   </FieldLabel>

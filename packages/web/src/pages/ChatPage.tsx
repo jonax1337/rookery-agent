@@ -293,6 +293,7 @@ export function ChatPage() {
               : 'Womit kann ich helfen?'
           }
           variant="plain"
+          className="px-2 sm:px-12"
           action={
             <ButtonGroup orientation="vertical" className="w-full">
               {(counterpart ? AGENT_SUGGESTIONS : ASSISTANT_SUGGESTIONS).map((suggestion) => (
@@ -306,8 +307,10 @@ export function ChatPage() {
                     variant="outline"
                     className="h-auto justify-start py-2 text-left font-normal whitespace-normal"
                   >
-                    <span className="font-medium">{suggestion.title}</span>
-                    <span className="text-muted-foreground">{suggestion.label}</span>
+                    <span>
+                      <span className="font-medium">{suggestion.title}</span>{' '}
+                      <span className="text-muted-foreground">{suggestion.label}</span>
+                    </span>
                   </Button>
                 </ThreadPrimitive.Suggestion>
               ))}

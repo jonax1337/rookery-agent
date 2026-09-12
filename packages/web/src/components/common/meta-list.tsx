@@ -72,15 +72,15 @@ export function MetaList({
   return (
     <ItemGroup className={cn('grid gap-2', COLUMNS[columns], className)}>
       {shown.map((item) => (
-        <Item key={item.label} variant={variant === 'plain' ? 'default' : variant} size={size}>
+        <Item key={item.label} variant={variant === 'plain' ? 'default' : variant} size={size} className="min-w-0">
           {item.icon && (
             <ItemMedia variant="icon">
               <item.icon className="text-muted-foreground" />
             </ItemMedia>
           )}
-          <ItemContent>
+          <ItemContent className="min-w-0">
             <ItemDescription className="text-xs">{item.label}</ItemDescription>
-            <ItemTitle className={cn('font-normal', item.mono && 'font-mono text-xs')}>
+            <ItemTitle className={cn('max-w-full min-w-0 break-words font-normal', item.mono && 'font-mono text-xs')}>
               {item.to ? (
                 <NavLink to={item.to} className="hover:underline">
                   {item.value}

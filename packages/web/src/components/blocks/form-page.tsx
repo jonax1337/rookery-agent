@@ -139,9 +139,13 @@ export function FormPage({
   const fallbackId = useId();
   const id = formId ?? fallbackId;
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    void onSubmit();
+    const form = event.currentTarget;
+    await onSubmit();
+    requestAnimationFrame(() => {
+      if (form.isConnected) form.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+    });
   };
 
   return (

@@ -23,17 +23,18 @@ function isApiPath(url: string | undefined): boolean {
 export async function registerStatic(
   app: FastifyInstance,
   context: ServerContext,
+  root = webDistPath(),
 ): Promise<void> {
-  const root = webDistPath();
   const hasBuild = existsSync(root) && existsSync(`${root}/index.html`);
 
   if (hasBuild) {
     await app.register(fastifyStatic, {
       root,
       prefix: '/',
-      // Let unmatched paths fall through to the SPA handler below instead of
-      // being swallowed by a catch-all route.
-      wildcard: false,
+      // Resolve files per request so a rebuild can introduce new asset hashes.
+      // Missing files still reach the not-found handler below.
+      wildcard: true,
+      allowedPath: (path) => !isApiPath(path),
       index: ['index.html'],
     });
     context.log.info('Serving web client', { root });
@@ -55,15 +56,11 @@ export async function registerStatic(
 
     // A missing asset must 404 rather than fall through to the SPA shell.
     // Serving index.html for /assets/app.js only surfaces later as an opaque
-    // "expected a module, got text/html" error in the browser — which is
-    // exactly what a stale build looks like after the client is rebuilt while
-    // the server is still running.
+    // "expected a module, got text/html" error in the browser.
     if (looksLikeAsset(url)) {
       return reply.code(404).send({
         error: 'Asset not found',
-        message:
-          `${url} is not in the web build. If the client was rebuilt while the ` +
-          `server was running, restart the server so it picks up the new files.`,
+        message: `${url} is not in the web build.`,
       });
     }
 

@@ -80,7 +80,7 @@ export function GatewaysPage() {
             <DataTableColumnHeader column={col} title="Erlaubte IDs" align="end" />
           ),
           cell: ({ row }) => (
-            <span className="tabular-nums">{formatNumber(row.original.allowedCount)}</span>
+            <span className="block text-right tabular-nums">{formatNumber(row.original.allowedCount)}</span>
           ),
         }),
 

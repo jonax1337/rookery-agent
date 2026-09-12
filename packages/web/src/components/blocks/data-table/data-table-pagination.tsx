@@ -26,7 +26,7 @@ import { cn } from '@/lib/utils';
 
 /** How a table names its rows in the footer sentence. */
 export interface RowLabel {
-  /** "Gespräch" — used when exactly one row is shown. */
+  /** Base form, kept for callers that also use the label outside the footer. */
   singular: string;
   /** Dative plural: "… von 500 geladenen **Gesprächen**". */
   plural: string;
@@ -91,7 +91,7 @@ export function DataTablePagination({
   const pages = Math.max(1, pageCount);
   const canPrevious = pageIndex > 0;
   const canNext = pageIndex < pages - 1;
-  const noun = rowCount === 1 ? rowLabel.singular : rowLabel.plural;
+  const noun = rowLabel.plural;
 
   return (
     <div

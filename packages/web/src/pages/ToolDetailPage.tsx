@@ -25,7 +25,6 @@ import { failureMessage, reportFailure } from '@/lib/errors';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ButtonGroup, ButtonGroupText } from '@/components/ui/button-group';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   DropdownMenu,
@@ -230,43 +229,34 @@ export function ToolDetailPage() {
       breadcrumb: [{ label: 'Werkzeuge', to: '/tools' }, { label: tool?.name ?? 'Werkzeug' }],
       actions: tool ? (
         <div className="flex items-center gap-2">
-          <ButtonGroup>
-            <ButtonGroupText asChild>
-              <Label htmlFor="werkzeug-aktiv" className="gap-2 font-normal">
-                <Switch
-                  id="werkzeug-aktiv"
-                  checked={tool.enabled}
-                  disabled={!tool.installed}
-                  onCheckedChange={(on) => void toggle(on)}
-                />
-                Aktiv
-              </Label>
-            </ButtonGroupText>
-            {tool.prepare ? (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={preparing}
-                onClick={() => void runPrepare()}
-              >
-                {preparing ? (
-                  <Spinner aria-label="Läuft" data-icon="inline-start" />
-                ) : (
-                  <PackageIcon data-icon="inline-start" />
-                )}
-                {tool.prepare.label}
-              </Button>
-            ) : null}
-            <Button size="sm" type="submit" form={FORM_ID} disabled={!dirty || saving}>
-              {saving ? <Spinner aria-label="Wird gespeichert" data-icon="inline-start" /> : null}
-              Speichern
-            </Button>
-          </ButtonGroup>
+          <Label htmlFor="werkzeug-aktiv" className="flex h-8 items-center gap-2 rounded-md border px-2 font-normal">
+            <Switch
+              id="werkzeug-aktiv"
+              checked={tool.enabled}
+              disabled={!tool.installed}
+              onCheckedChange={(on) => void toggle(on)}
+            />
+            Aktiv
+          </Label>
+          <Button size="sm" type="submit" form={FORM_ID} disabled={!dirty || saving}>
+            {saving ? <Spinner aria-label="Wird gespeichert" data-icon="inline-start" /> : null}
+            Speichern
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <RowMenuButton tone="header" label="Weitere Aktionen" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
+              {tool.prepare ? (
+                <DropdownMenuItem
+                  disabled={preparing}
+                  onSelect={() => void runPrepare()}
+                  className="items-start whitespace-normal"
+                >
+                  {preparing ? <Spinner aria-label="Läuft" /> : <PackageIcon />}
+                  {tool.prepare.label}
+                </DropdownMenuItem>
+              ) : null}
               {tool.install === 'custom' ? (
                 <DropdownMenuItem variant="destructive" onSelect={() => void removeTool()}>
                   <Trash2Icon data-icon="inline-start" />
@@ -507,7 +497,7 @@ export function ToolDetailPage() {
                     <FieldTitle>{AUDIENCE_SHORT_LABEL[value]}</FieldTitle>
                     <FieldDescription>{AUDIENCE_HINT[value]}</FieldDescription>
                   </FieldContent>
-                  <RadioGroupItem value={value} id={'audience-' + value} />
+                  <RadioGroupItem value={value} id={'audience-' + value} aria-label={AUDIENCE_SHORT_LABEL[value]} />
                 </Field>
               </FieldLabel>
             ))}
@@ -554,7 +544,7 @@ export function ToolDetailPage() {
         <p className="text-sm text-muted-foreground">
           Noch nicht installiert.{' '}
           {tool.prepare
-            ? '„' + tool.prepare.label + '“ oben holt, was fehlt.'
+            ? '„' + tool.prepare.label + '“ im Menü „Weitere Aktionen“ holt, was fehlt.'
             : 'Der Server wird beim ersten Start per npx geholt.'}
         </p>
       ) : null}

@@ -87,6 +87,11 @@ export function CommandPalette({
   const navigate = useNavigate();
   const [uncontrolledOpen, setUncontrolledOpen] = React.useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
+  const [query, setQuery] = React.useState('');
+
+  React.useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
 
   const setOpen = React.useCallback(
     (next: boolean) => {
@@ -129,16 +134,16 @@ export function CommandPalette({
   // Newest first, because "the thing I just worked on" is the overwhelmingly
   // common target; the search field handles everything older.
   const recentSessions = React.useMemo(
-    () => [...sessions].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, PER_GROUP),
-    [sessions],
+    () => [...sessions].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, query.trim() ? undefined : PER_GROUP),
+    [sessions, query],
   );
   const recentTasks = React.useMemo(
-    () => [...tasks].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, PER_GROUP),
-    [tasks],
+    () => [...tasks].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, query.trim() ? undefined : PER_GROUP),
+    [tasks, query],
   );
   const liveAssignments = React.useMemo(
-    () => assignments.slice(0, PER_GROUP),
-    [assignments],
+    () => assignments.slice(0, query.trim() ? undefined : PER_GROUP),
+    [assignments, query],
   );
 
   const pages = React.useMemo(() => navigableRoutes(), []);
@@ -148,10 +153,12 @@ export function CommandPalette({
       open={open}
       onOpenChange={setOpen}
       title="Sprungpalette"
-      description="Gespräche, Agenten, Aufgaben und Seiten durchsuchen"
+      showCloseButton
+      className="[&_[data-slot=command-input-wrapper]]:pr-10"
+      description="Geladene Gespräche, Agenten, Aufgaben und Seiten durchsuchen"
     >
       <Command>
-        <CommandInput placeholder="Suchen oder springen…" />
+        <CommandInput value={query} onValueChange={setQuery} placeholder="Geladene Einträge durchsuchen…" />
         <CommandList className="max-h-[60svh]">
           <CommandEmpty>Nichts gefunden.</CommandEmpty>
 

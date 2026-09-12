@@ -49,7 +49,6 @@ import { reportFailure } from '@/lib/errors';
 import { ResultMarkdown } from '@/components/result-markdown';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ButtonGroup, ButtonGroupText } from '@/components/ui/button-group';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   DropdownMenu,
@@ -152,40 +151,36 @@ export function CronDetailPage() {
       ...(job ? { title: job.name } : {}),
       actions: job ? (
         <div className="flex items-center gap-2">
-          <ButtonGroup>
-            <ButtonGroupText asChild>
-              <Label htmlFor="zeitplan-aktiv" className="gap-2 font-normal">
-                <Switch
-                  id="zeitplan-aktiv"
-                  checked={job.enabled}
-                  disabled={busy}
-                  onCheckedChange={(checked) => void toggle(checked)}
-                />
-                Aktiv
-              </Label>
-            </ButtonGroupText>
-            <Button size="sm" disabled={running || busy} onClick={() => void runNow()}>
-              {running ? (
-                <Spinner aria-label="Läuft" data-icon="inline-start" />
-              ) : (
-                <PlayIcon data-icon="inline-start" />
-              )}
-              Jetzt ausführen
-            </Button>
-            <Button size="sm" variant="outline" disabled={managed} asChild={!managed}>
-              {managed ? (
-                <>
+          <Label htmlFor="zeitplan-aktiv" className="flex h-8 items-center gap-2 rounded-md border px-2 font-normal">
+            <Switch
+              id="zeitplan-aktiv"
+              checked={job.enabled}
+              disabled={busy}
+              onCheckedChange={(checked) => void toggle(checked)}
+            />
+            Aktiv
+          </Label>
+          <Button size="sm" disabled={running || busy} onClick={() => void runNow()}>
+            {running ? (
+              <Spinner aria-label="Läuft" data-icon="inline-start" />
+            ) : (
+              <PlayIcon data-icon="inline-start" />
+            )}
+            Jetzt ausführen
+          </Button>
+          <Button size="sm" variant="outline" disabled={managed} asChild={!managed}>
+            {managed ? (
+              <>
                   <PencilIcon data-icon="inline-start" />
                   Bearbeiten
-                </>
-              ) : (
-                <NavLink to={'/cron/' + job.id + '/edit'}>
+              </>
+            ) : (
+              <NavLink to={'/cron/' + job.id + '/edit'}>
                   <PencilIcon data-icon="inline-start" />
                   Bearbeiten
-                </NavLink>
-              )}
-            </Button>
-          </ButtonGroup>
+              </NavLink>
+            )}
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <RowMenuButton tone="header" label="Weitere Aktionen" />

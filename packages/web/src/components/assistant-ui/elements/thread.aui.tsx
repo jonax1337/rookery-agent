@@ -295,13 +295,15 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
 const ComposerAction: FC = () => {
   const slots = useComposerSlots();
   return (
-    <div className="aui-composer-action-wrapper relative flex items-center justify-between">
+    <div className="aui-composer-action-wrapper relative flex flex-wrap items-center gap-2">
       <div className="flex items-center gap-1.5">
         <ComposerAddAttachment />
         {slots.left}
       </div>
-      <div className="flex items-center gap-1.5">
+      <div className="order-last flex w-full flex-wrap items-center gap-1.5 @xl:order-none @xl:ml-auto @xl:w-auto">
         {slots.right}
+      </div>
+      <div className="ml-auto flex items-center gap-1.5 @xl:ml-0">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate asChild>

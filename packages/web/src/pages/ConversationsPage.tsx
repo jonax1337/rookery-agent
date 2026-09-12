@@ -433,7 +433,7 @@ export function ConversationsPage() {
                 totals === null
                   ? 'Zahlen werden geladen'
                   : formatNumber(totals.archivedSessions) + ' davon archiviert',
-              footnote: 'Gezählt in der Datenbank, nicht in der Liste',
+              footnote: 'Alle Gespräche, inkl. Archiv',
             },
             {
               label: 'Nachrichten',
@@ -444,7 +444,7 @@ export function ConversationsPage() {
                   : 'Im Schnitt ' +
                     formatNumber(Math.round(totals.messages / allConversations)) +
                     ' pro Gespräch',
-              footnote: 'Alle Nachrichten aller Gespräche',
+              footnote: 'Alle Nachrichten, inkl. Archiv',
             },
             {
               label: 'Sprachgespräche',
@@ -454,7 +454,7 @@ export function ConversationsPage() {
               ...cappedBadge(capped),
               headline: newestVoice ? 'Zuletzt ' + timeAgo(newestVoice.updatedAt) : 'Noch keins',
               footnote:
-                'In den ' + formatNumber(sessions.length) + ' geladenen Gesprächen gezählt',
+                'Basis: ' + formatNumber(sessions.length) + ' geladene Gespräche',
             },
             {
               label: 'Zuletzt aktiv',
