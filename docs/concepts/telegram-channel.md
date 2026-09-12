@@ -1,8 +1,8 @@
 # Telegram als Fernsteuerung
 
 Stand: 2026-09-11. **Umgesetzt**; dieses Dokument bleibt als Begruendung stehen. Der Code liegt in
-`packages/core/src/gateway/policy.ts` (Wache, Nachrichtenaufteilung, Ruhezeit - die reine
-Entscheidungslogik, siehe Abschnitt 3), `packages/core/src/types.ts`, `packages/core/src/config.ts`,
+`packages/core/src/gateway/policy.ts` (Wache, Nachrichtenaufteilung, Ruhezeit, Lebenszyklus - die
+reine Entscheidungslogik, siehe Abschnitt 3), `packages/core/src/types.ts`, `packages/core/src/config.ts`,
 `packages/core/src/memory/store.ts` und `packages/core/src/org/tools.ts` bzw. `org/controller.ts`
 (das `notify`-Werkzeug); der Transport in `packages/server/src/gateways/telegram.ts`,
 `telegram-api.ts` und `push.ts` sowie `routes/gateways.ts`; die Oberflaeche unter `/gateways` in
@@ -227,6 +227,11 @@ loop:
   ebenfalls, weil das die Geste fuer "nochmal von vorn" ist. Ohne diese beiden Ausnahmen haette
   ein korrigierter Token einen Serverneustart gebraucht. Die Gateway-Seite zeigt den Zustand als
   eigenes Wort ("Angehalten"), nicht als "Fehler" – "Fehler" liest sich wie etwas, das vergeht.
+  Die Entscheidung selbst (`wantsGatewayRunning`, `missingGatewaySettings`, `nextGatewayAction`
+  in `policy.ts`) ist reine Funktion ueber Zustand und Config: `refresh()` im Transport ruft sie
+  nur noch auf und fuehrt aus, was zurueckkommt, statt den Verzweigungsbaum selbst zu halten -
+  aus demselben Grund wie die Wache: so viele Aeste sind es wert, ohne `api.telegram.org` getestet
+  zu werden.
 - `offset` wird erst nach der Klassifikation eines Updates hochgesetzt, nicht davor. Ein Absturz
   mitten im Turn verliert damit hoechstens eine Antwort, nie die Zuordnung.
 - Der Poller haelt den Prozess nicht am Leben (`unref` auf allen Timern) und wird im

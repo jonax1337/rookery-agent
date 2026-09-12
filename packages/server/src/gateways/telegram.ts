@@ -2,8 +2,11 @@ import {
   ASSISTANT_MEMORY_OWNER,
   classifyUpdate,
   escapeHtml,
+  missingGatewaySettings,
+  nextGatewayAction,
   providerQuota,
   splitMessage,
+  type GatewayLifecycleState,
   type GatewayVerdict,
   type Session,
   type TelegramGatewayConfig,
@@ -565,16 +568,9 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       return;
     }
 
-    // Say which condition was missing, never what the token was.
-    const missing: string[] = [];
-    if (!secret) missing.push('gateways.telegram.token');
-    if (!config.enabled) missing.push('gateways.telegram.enabled');
-    // Pairing mode is the one reason to poll with nobody allowed: every
-    // message still fails the guard, and `/id` is the only thing that answers.
-    if (config.allowedUserIds.length === 0 && !config.pairing) {
-      missing.push('gateways.telegram.allowedUserIds');
-    }
-    if (silenced) missing.push('/aus bis zum Neustart');
+    // Say which condition was missing, never what the token was. The
+    // decision itself lives in core/gateway/policy.ts, tested there.
+    const missing = missingGatewaySettings(config, secret, silenced);
     if (missing.length > 0) {
       log.info('Telegram gateway not started', { missing });
       return;
@@ -636,34 +632,29 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
 
   async function refresh(): Promise<void> {
     const config = settings();
-    const wanted =
-      config.enabled &&
-      (config.allowedUserIds.length > 0 || config.pairing) &&
-      token() !== '' &&
-      !silenced;
+    const secret = token();
+    // The branch tree - switching off resets a block (that is the gesture
+    // for "try again from scratch"), a swapped token while running is a
+    // restart, a block on the same token is left alone - lives in
+    // core/gateway/policy.ts, tested there without a fake Telegram API.
+    const state: GatewayLifecycleState = { running, activeToken, blockedToken: blocked?.token };
+    const decision = nextGatewayAction(state, config, secret, silenced);
+    if (decision.clearBlock) blocked = undefined;
 
-    // Switching off is a reset: it clears a block, so turning the channel
-    // back on is a second chance without a server restart. A 409 usually
-    // ends that way - the other process is gone by the time anyone looks.
-    if (!wanted) {
-      blocked = undefined;
-      if (running) await stop();
-      return;
+    switch (decision.action) {
+      case 'stop':
+        await stop();
+        return;
+      case 'restart':
+        await stop();
+        await start();
+        return;
+      case 'start':
+        await start();
+        return;
+      case 'none':
+        return;
     }
-    // Still blocked on the same token: nothing has changed that could help,
-    // so this stays a no-op rather than a fresh run into the same wall.
-    if (blocked && blocked.token === token()) return;
-    blocked = undefined;
-    // A token pasted into the page while the channel runs is a different bot.
-    // Without this the poller would keep talking to the old one until the
-    // next restart, which is exactly the wait this settings field exists to
-    // remove.
-    if (running && token() !== activeToken) {
-      await stop();
-      await start();
-      return;
-    }
-    if (!running) await start();
   }
 
   return {

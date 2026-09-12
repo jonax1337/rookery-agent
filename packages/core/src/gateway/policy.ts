@@ -351,3 +351,111 @@ export function pushRecipients(config: TelegramGatewayConfig): number[] {
   }
   return chosen.length > 0 ? chosen : [owner];
 }
+
+/* ------------------------------------------------------------------ *
+ * Lifecycle
+ *
+ * Whether the poller should be running is a question about the config, the
+ * token and one piece of history - is it stopped and blocked, and on which
+ * token - not about sockets. It lives here for the same reason the guard
+ * does: a decision tree with this many branches is worth testing without a
+ * fake Telegram API, and the transport should be left with nothing to get
+ * wrong beyond "call the function, do what it says".
+ * ------------------------------------------------------------------ */
+
+/**
+ * What the transport remembers between one `refresh()` and the next - the
+ * three facts a decision needs that are not in the config.
+ */
+export interface GatewayLifecycleState {
+  /** Whether the poller is currently running. */
+  running: boolean;
+  /** The token the running poller was actually built with. */
+  activeToken: string;
+  /**
+   * Set when a failure that will not pass on its own (401, 409) stopped the
+   * channel, to the token that failed. Undefined when nothing is blocking a
+   * start.
+   */
+  blockedToken?: string;
+}
+
+/** Whether the channel should be polling at all, config and token combined. */
+export function wantsGatewayRunning(
+  config: TelegramGatewayConfig,
+  token: string,
+  silenced: boolean,
+): boolean {
+  // Boolean(...) at the edge: `config.pairing` is `undefined` on a config
+  // that never set it, and `false || undefined` is `undefined`, not `false` -
+  // a caller comparing this against `false` deserves an actual boolean.
+  return Boolean(
+    config.enabled &&
+      (allowedIds(config).length > 0 || config.pairing) &&
+      token !== '' &&
+      !silenced,
+  );
+}
+
+/**
+ * Why `start()` would refuse right now, in words a log line can show - never
+ * the token itself. Empty means nothing obviously stops it (the attempt can
+ * still fail once it reaches Telegram).
+ */
+export function missingGatewaySettings(
+  config: TelegramGatewayConfig,
+  token: string,
+  silenced: boolean,
+): string[] {
+  const missing: string[] = [];
+  if (!token) missing.push('gateways.telegram.token');
+  if (!config.enabled) missing.push('gateways.telegram.enabled');
+  // Pairing mode is the one reason to poll with nobody allowed: every
+  // message still fails the guard, and `/id` is the only thing that answers.
+  if (allowedIds(config).length === 0 && !config.pairing) {
+    missing.push('gateways.telegram.allowedUserIds');
+  }
+  if (silenced) missing.push('/aus bis zum Neustart');
+  return missing;
+}
+
+export type GatewayLifecycleAction = 'start' | 'stop' | 'restart' | 'none';
+
+export interface GatewayLifecycleDecision {
+  action: GatewayLifecycleAction;
+  /**
+   * Whether a stored block no longer applies and should be forgotten. True
+   * whenever the attempt is not the exact same token failing the exact same
+   * way again - which is the one case a fresh try cannot help, so the block
+   * survives untouched and `action` comes back `'none'`.
+   */
+  clearBlock: boolean;
+}
+
+/**
+ * What `refresh()` should do about a config or token change, decided once so
+ * the branches are not re-derived (and re-risked) at every call site.
+ *
+ * Switching the channel off is treated as a reset - it is the gesture for
+ * "try again from scratch", so it clears a block even though nothing about
+ * the failure itself has changed. A token swap while running is a different
+ * bot, not a setting to shrug off until the next restart, so it restarts
+ * rather than idling on the old connection.
+ */
+export function nextGatewayAction(
+  state: GatewayLifecycleState,
+  config: TelegramGatewayConfig,
+  token: string,
+  silenced: boolean,
+): GatewayLifecycleDecision {
+  if (!wantsGatewayRunning(config, token, silenced)) {
+    return { action: state.running ? 'stop' : 'none', clearBlock: true };
+  }
+  if (state.blockedToken !== undefined && state.blockedToken === token) {
+    return { action: 'none', clearBlock: false };
+  }
+  if (state.running && token !== state.activeToken) {
+    return { action: 'restart', clearBlock: true };
+  }
+  return { action: state.running ? 'none' : 'start', clearBlock: true };
+}

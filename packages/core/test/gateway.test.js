@@ -4,8 +4,11 @@ import {
   classifyUpdate,
   escapeHtml,
   inQuietHours,
+  missingGatewaySettings,
+  nextGatewayAction,
   pushRecipients,
   splitMessage,
+  wantsGatewayRunning,
 } from '../dist/index.js';
 
 /**
@@ -250,4 +253,98 @@ test('an empty allowlist leaves nobody to push to', () => {
 
 test('& is escaped first, so an already-escaped-looking input is not double-escaped', () => {
   assert.equal(escapeHtml('&<'), '&amp;&lt;');
+});
+
+/* ---------------------------- lifecycle ---------------------------- */
+
+const RUNNING = { running: true, activeToken: 'tok-a' };
+const STOPPED = { running: false, activeToken: '' };
+
+test('wants to run with a token, an allowed sender and nothing silencing it', () => {
+  assert.equal(wantsGatewayRunning(makeConfig(), 'tok-a', false), true);
+});
+
+test('does not want to run without a token', () => {
+  assert.equal(wantsGatewayRunning(makeConfig(), '', false), false);
+});
+
+test('does not want to run switched off, silenced, or with an empty allowlist', () => {
+  assert.equal(wantsGatewayRunning(makeConfig({ enabled: false }), 'tok-a', false), false);
+  assert.equal(wantsGatewayRunning(makeConfig(), 'tok-a', true), false);
+  assert.equal(wantsGatewayRunning(makeConfig({ allowedUserIds: [] }), 'tok-a', false), false);
+});
+
+test('pairing mode wants to run with an empty allowlist', () => {
+  assert.equal(wantsGatewayRunning(makeConfig({ allowedUserIds: [], pairing: true }), 'tok-a', false), true);
+});
+
+test('missing settings names every gap, not just the first one', () => {
+  const missing = missingGatewaySettings(
+    makeConfig({ enabled: false, allowedUserIds: [] }),
+    '',
+    true,
+  );
+  assert.deepEqual(missing.sort(), [
+    '/aus bis zum Neustart',
+    'gateways.telegram.allowedUserIds',
+    'gateways.telegram.enabled',
+    'gateways.telegram.token',
+  ]);
+});
+
+test('missing settings never names the token itself', () => {
+  const missing = missingGatewaySettings(makeConfig(), '', false);
+  assert.ok(!missing.some((entry) => entry.includes('tok-')));
+});
+
+test('missing settings is empty for pairing mode with nothing else wrong', () => {
+  assert.deepEqual(
+    missingGatewaySettings(makeConfig({ allowedUserIds: [], pairing: true }), 'tok-a', false),
+    [],
+  );
+});
+
+test('stopped and everything in place: start', () => {
+  const decision = nextGatewayAction(STOPPED, makeConfig(), 'tok-a', false);
+  assert.deepEqual(decision, { action: 'start', clearBlock: true });
+});
+
+test('running and nothing changed: none', () => {
+  const decision = nextGatewayAction(RUNNING, makeConfig(), 'tok-a', false);
+  assert.deepEqual(decision, { action: 'none', clearBlock: true });
+});
+
+test('running and switched off: stop, and the block clears', () => {
+  const state = { ...RUNNING, blockedToken: 'tok-a' };
+  const decision = nextGatewayAction(state, makeConfig({ enabled: false }), 'tok-a', false);
+  assert.deepEqual(decision, { action: 'stop', clearBlock: true });
+});
+
+test('stopped and switched off: none, but the block still clears', () => {
+  const state = { ...STOPPED, blockedToken: 'tok-a' };
+  const decision = nextGatewayAction(state, makeConfig({ enabled: false }), 'tok-a', false);
+  assert.deepEqual(decision, { action: 'none', clearBlock: true });
+});
+
+test('a new token while running is a restart, not a wait for the next boot', () => {
+  const decision = nextGatewayAction(RUNNING, makeConfig(), 'tok-b', false);
+  assert.deepEqual(decision, { action: 'restart', clearBlock: true });
+});
+
+test('blocked on the exact token that is still configured: none, block stays', () => {
+  const state = { ...STOPPED, blockedToken: 'tok-a' };
+  const decision = nextGatewayAction(state, makeConfig(), 'tok-a', false);
+  assert.deepEqual(decision, { action: 'none', clearBlock: false });
+});
+
+test('blocked on an old token that was since replaced: start, block clears', () => {
+  const state = { ...STOPPED, blockedToken: 'tok-old' };
+  const decision = nextGatewayAction(state, makeConfig(), 'tok-a', false);
+  assert.deepEqual(decision, { action: 'start', clearBlock: true });
+});
+
+test('turning the channel off lifts a block even on the same token', () => {
+  const state = { ...STOPPED, blockedToken: 'tok-a' };
+  const decision = nextGatewayAction(state, makeConfig({ enabled: false }), 'tok-a', false);
+  assert.deepEqual(decision, { action: 'none', clearBlock: true });
 });
