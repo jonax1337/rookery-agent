@@ -18,9 +18,7 @@ The application and database run on your machine. Model requests still go to the
 
 ### Easy Windows installation
 
-**Distribution status:** this repository is currently private and the package is not published to npm. For now, use an authorized checkout ([From source](#from-source)) or a tarball shared by the maintainer ([npm distribution](#npm-distribution)).
-
-The following PowerShell one-liner is prepared for a publicly accessible repository; it will not work anonymously while this repository is private:
+Run this in PowerShell. The installer downloads the public repository and sets up Rookery for your Windows user:
 
 ```powershell
 irm https://raw.githubusercontent.com/jonax1337/rookery-agent/main/scripts/install.ps1 | iex

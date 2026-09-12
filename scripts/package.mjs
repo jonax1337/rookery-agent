@@ -38,6 +38,8 @@ for (const file of ['README.md', 'LICENSE']) await cp(resolve(root, file), resol
 await writeFile(resolve(out, 'package.json'), JSON.stringify({
   name: manifest.name, version: manifest.version, description: manifest.description,
   license: manifest.license, type: 'module', engines: manifest.engines,
+  repository: { type: 'git', url: 'git+https://github.com/jonax1337/rookery-agent.git' },
+  homepage: 'https://github.com/jonax1337/rookery-agent#readme',
   bin: { rookery: 'scripts/rookery.mjs', rk: 'scripts/rookery.mjs' },
   files: ['packages/*/dist', 'packages/*/package.json', 'scripts/rookery.mjs'],
   dependencies,
