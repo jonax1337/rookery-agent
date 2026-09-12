@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, closeSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, closeSync, unlinkSync, writeFileSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -13,8 +14,39 @@ export function startupCommand(node, script, home) {
   return `$env:ROOKERY_HOME=${psQuote(home)}; & ${psQuote(node)} ${psQuote(script)} start`;
 }
 
+export function linuxService(node, server, home, path) {
+  const quote = (value) => {
+    if (/[\x00-\x1f\x7f]/.test(value)) throw new Error('Autostart paths cannot contain control characters.');
+    return '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%') + '"';
+  };
+  return `[Unit]\nDescription=Rookery personal assistant\n\n[Service]\nType=simple\nEnvironment=${quote('ROOKERY_HOME=' + home)}\nEnvironment=${quote('PATH=' + path)}\nExecStart=${quote(node).replaceAll('$', () => '$$')} ${quote(server).replaceAll('$', () => '$$')}\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`;
+}
+
+function linuxAutostart(enabled, home) {
+  const folder = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd/user');
+  const file = join(folder, 'rookery.service');
+  const systemctl = (...args) => execFileSync('systemctl', ['--user', ...args], { stdio: 'pipe' });
+  try { systemctl('show-environment'); }
+  catch { throw new Error('No systemd user session available. Use rookery setup --no-autostart, or run setup from a normal user login.'); }
+  if (enabled) {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(file, linuxService(process.execPath, entry, home, process.env.PATH || '/usr/local/bin:/usr/bin:/bin'), { mode: 0o600 });
+    systemctl('daemon-reload');
+    systemctl('enable', 'rookery.service');
+    console.log('Autostart enabled for your next Linux login. Logs: journalctl --user -u rookery.service');
+  } else {
+    if (existsSync(file)) {
+      systemctl('disable', 'rookery.service');
+      unlinkSync(file);
+      systemctl('daemon-reload');
+    }
+    console.log('Autostart disabled. Your data and current server are unchanged.');
+  }
+}
+
 export function autostart(enabled, home, startupFolder) {
-  if (process.platform !== 'win32') throw new Error('Automatic login startup currently supports Windows only. Use rookery serve on this platform.');
+  if (process.platform === 'linux') return linuxAutostart(enabled, home);
+  if (process.platform !== 'win32') throw new Error('Automatic startup supports Windows and Linux with systemd. Use rookery setup --no-autostart on this platform.');
   const folder = startupFolder ?? execFileSync('powershell.exe', ['-NoProfile', '-Command', "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); [Environment]::GetFolderPath('Startup')"], { encoding: 'utf8', windowsHide: true }).trim();
   if (!folder) throw new Error('Windows Startup folder is unavailable.');
   const shortcut = join(folder, 'Rookery.lnk');
@@ -80,7 +112,7 @@ async function main() {
     autostart(option === 'on', config.home);
     return;
   }
-  if (command === 'setup' && process.platform !== 'win32' && option !== '--no-autostart') throw new Error('Use rookery setup --no-autostart on macOS/Linux. Automatic startup currently supports Windows.');
+  if (command === 'setup' && !['win32', 'linux'].includes(process.platform) && option !== '--no-autostart') throw new Error('Use rookery setup --no-autostart on this platform. Automatic startup supports Windows and Linux with systemd.');
   const url = await start(config);
   console.log(`Rookery is running: ${url}`);
   if (command === 'setup') {
@@ -94,6 +126,6 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().catch((error) => { console.error(error.message); process.exitCode = 1; });
 }

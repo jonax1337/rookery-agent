@@ -1,10 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { psQuote, startupCommand, autostart } from './rookery.mjs';
+import { join, resolve } from 'node:path';
+import { psQuote, startupCommand, autostart, linuxService } from './rookery.mjs';
+
+test('Linux unit keeps paths literal and starts the foreground server as the current user', () => {
+  const unit = linuxService('/opt/Node App/node', '/home/user/$app%/main.js', '/home/user/"data"', '/usr/bin:/home/user/bin');
+  assert.ok(unit.includes('ExecStart="/opt/Node App/node" "/home/user/$$app%%/main.js"'));
+  assert.ok(unit.includes('Environment="ROOKERY_HOME=/home/user/\\"data\\""'));
+  assert.ok(unit.includes('WantedBy=default.target'));
+  assert.ok(!unit.includes('User=root'));
+  assert.throws(() => linuxService('/usr/bin/node', '/app/main.js', '/home/user\nExecStart=evil', '/usr/bin'), /control characters/);
+});
+
+test('npm-style symlink invokes the launcher', { skip: process.platform === 'win32' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rookery-bin-'));
+  try {
+    const bin = join(dir, 'rookery');
+    symlinkSync(resolve('scripts/rookery.mjs'), bin);
+    assert.throws(() => execFileSync(process.execPath, [bin, 'setup', '--bogus'], { stdio: 'pipe' }), (error) => {
+      assert.match(error.stderr.toString(), /Usage:/);
+      return error.status === 1;
+    });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('Windows startup preserves literal paths and home, including spaces and shell syntax', { skip: process.platform !== 'win32' }, () => {
   const value = "C:\\Users\\O'Brien $HOME `test` & (data)";

@@ -36,7 +36,26 @@ rookery autostart on    # enable again
 rookery doctor          # check installed provider CLIs and logins
 ```
 
-Autostart runs as your Windows user **after sign-in**, not before login, and does not keep a sleeping or powered-off PC online. Background startup output goes to `~/.rookery/server.log`. Settings and data stay in `~/.rookery` when the package is upgraded. Disable autostart before `npm uninstall -g rookery-agent`. Re-run setup after moving Node or the installation. On macOS/Linux use `rookery setup --no-autostart` or `rookery serve`; automatic startup is currently Windows-only.
+Autostart runs as your Windows user **after sign-in**, not before login, and does not keep a sleeping or powered-off PC online. Background startup output goes to `~/.rookery/server.log`. Settings and data stay in `~/.rookery` when the package is upgraded. Disable autostart before `npm uninstall -g rookery-agent`. Re-run setup after moving Node or the installation. On macOS use `rookery setup --no-autostart` or `rookery serve`.
+
+### Linux installation
+
+Requirements: Node.js **22.5+**, npm, curl, and tar. Run as your normal user, without sudo. From a checkout, run `bash scripts/install.sh`. The one-liner is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jonax1337/rookery-agent/main/scripts/install.sh | bash
+```
+
+The installer builds and installs the package under `~/.local`, offers a provider CLI and login if needed, and opens Settings. No Git or `.env` editing is needed. If `rookery` is not found in a new shell, add `~/.local/bin` to your shell's PATH; the absolute command is `~/.local/bin/rookery`.
+
+With a systemd user session, setup enables `rookery.service` for the **next login**. The initial server runs in the background immediately. The service runs as your user, retaining access to provider logins and the PATH captured during setup. Its unit is stored under `${XDG_CONFIG_HOME:-~/.config}/systemd/user/rookery.service`. After the next login, inspect it with:
+
+```bash
+systemctl --user status rookery.service
+journalctl --user -u rookery.service
+```
+
+For a headless machine that should start the service at boot before login and keep it running after logout, an administrator can enable lingering with `loginctl enable-linger "$USER"`. Setup does not change that system setting. Without systemd, the installer uses `setup --no-autostart`; run `rookery serve` under your existing service manager for automatic startup. `rookery autostart off` disables future starts without stopping the current server; `rookery autostart on` enables them again. Remove autostart before uninstalling with `npm uninstall -g --prefix "$HOME/.local" rookery-agent`.
 
 ### npm distribution
 
@@ -61,7 +80,7 @@ npm start
 
 Open <http://127.0.0.1:4317>. The server serves both the API and the built web app.
 
-For background startup and Windows autostart from a built checkout, run `npm run setup`. Keep that checkout in place while autostart is enabled. The setup/start/autostart commands belong to the standalone launcher; the workspace CLI below provides the terminal commands.
+For background startup and Windows/Linux autostart from a built checkout, run `npm run setup`. Keep that checkout in place while autostart is enabled. The setup/start/autostart commands belong to the standalone launcher; the workspace CLI below provides the terminal commands.
 
 ```bash
 npm run cli                       # interactive terminal
@@ -301,9 +320,9 @@ The combined script starts the built server plus Vite at <http://localhost:5317>
 | `npm run tui:drive -w @rookery/cli` | Drive the terminal with stubbed provider events |
 | `npm run dev:web` | Vite development server only |
 | `npm run doctor` | Provider readiness and setup diagnostics |
-| `npm run setup` | Start in the background, open Settings, and enable Windows autostart |
+| `npm run setup` | Start in the background, open Settings, and enable Windows/Linux autostart |
 | `npm run package` | Build and pack the standalone npm tarball into `dist` |
-| `npm run test:install` | Check installer arguments and Windows autostart shortcuts |
+| `npm run test:install` | Check installer arguments and Windows/Linux autostart configuration |
 | `npm run clean` | Remove build artifacts |
 
 Build before tests that import `dist` output. The web build includes its own TypeScript check. Keep package boundaries intact and reuse `components/shell`, `components/blocks`, and `components/common` for pages. Built-in user-facing text is English.
