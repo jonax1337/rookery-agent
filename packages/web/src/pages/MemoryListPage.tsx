@@ -23,11 +23,10 @@ import {
   RELATION_LABEL,
   shorten,
 } from '@/lib/format';
-import { bucketByDay, daysAgo, formatDateTime, formatNumber, formatPercent } from '@/lib/stats';
+import { formatDateTime, formatNumber, formatPercent } from '@/lib/stats';
 import type {
   MemoryKind,
   MemoryNeighbourhood,
-  MemoryOrigin,
   MemoryRecord,
   MemoryRelation,
   ScoredMemory,
@@ -35,7 +34,6 @@ import type {
 import { useMemoryState } from '@/providers/rookery-provider';
 import { DataTable, type DataTableTab } from '@/components/blocks/data-table/data-table';
 import { DetailDrawer } from '@/components/blocks/detail-drawer';
-import { TrendChartCard, type TrendSeries } from '@/components/blocks/trend-chart-card';
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, NoResults, ServerOffline } from '@/components/common/empty-state';
 import {
@@ -101,18 +99,6 @@ interface MemoryPatch {
 
 type PatchFn = (id: string, changes: MemoryPatch, message: string) => Promise<void>;
 
-const ORIGINS: MemoryOrigin[] = ['extract', 'user', 'sleep'];
-
-/** The bands of the growth curve, one per origin of a memory. */
-const GROWTH_SERIES: TrendSeries[] = [
-  { key: 'extract', label: ORIGIN_LABEL.extract, color: 'var(--chart-1)' },
-  { key: 'user', label: ORIGIN_LABEL.user, color: 'var(--chart-2)' },
-  { key: 'sleep', label: ORIGIN_LABEL.sleep, color: 'var(--chart-3)' },
-];
-
-/** The widest window the range switch offers - the curve is cut to it. */
-const CHART_DAYS = 90;
-
 function isScored(item: Row): item is ScoredMemory {
   return 'score' in item;
 }
@@ -153,26 +139,6 @@ export function MemoryListPage() {
 
   const query = memories.query.trim();
   const searching = query.length > 0;
-
-  /* --------------------------------- Kurve -------------------------------- */
-
-  // The curve rests on the net's nodes rather than on the table below it: the
-  // list is re-ranked by every search, which would make the shape jump around
-  // while somebody types. `GET /api/stats` does count memories per day in the
-  // database, but it cannot split them by origin - and the split is the whole
-  // point of this chart, so the base is the loaded nodes and the card says so.
-  const nodes = graph.graph?.memories;
-
-  const growth = useMemo(() => {
-    // An empty bank is not "ninety days of zero": the card should say that
-    // nothing was learned rather than draw a flat line along the floor.
-    if (!nodes?.length) return [];
-    return bucketByDay(nodes, (memory) => memory.createdAt, {
-      since: daysAgo(CHART_DAYS - 1),
-      seriesOf: (memory) => memory.origin,
-      keys: ORIGINS,
-    });
-  }, [nodes]);
 
   /* -------------------------------- Actions ------------------------------ */
 
@@ -288,30 +254,6 @@ export function MemoryListPage() {
   return (
     <>
       {dialog}
-
-      <div className="px-4 lg:px-6">
-        <TrendChartCard
-          title="Memory growth"
-          description="New memories per day, grouped by source."
-          descriptionShort="Learned per day"
-          data={growth}
-          series={GROWTH_SERIES}
-          {...(graph.graph?.truncated ? { badge: <Badge variant="outline">truncated</Badge> } : {})}
-          empty={
-            <EmptyState
-              icon={BrainIcon}
-              title="Nothing was learned during this period"
-              description="A longer period may show more."
-              variant="plain"
-              size="sm"
-            />
-          }
-        />
-        <p className="mt-2 text-xs text-muted-foreground">
-          Based on the loaded network nodes
-          {nodes ? ' (' + formatNumber(nodes.length) + ')' : ''}, not the entire database.
-        </p>
-      </div>
 
       <DataTable
         data={rows}

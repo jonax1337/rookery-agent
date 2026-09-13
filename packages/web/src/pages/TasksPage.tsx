@@ -112,6 +112,10 @@ export function TasksPage() {
    */
   const [pending, setPending] = useState<Record<string, TaskStatus>>({});
 
+  // `view` has to be in the deps: without it the header keeps the action row
+  // it was published with, the toggle stays stuck on `table`, and clicking
+  // "Table" while the board is up only deselects an already-selected item -
+  // Radix reports `''`, the guard drops it, and the board never gives way.
   usePageMeta({
     breadcrumb: [{ label: 'Tasks' }],
     actions: (
@@ -140,7 +144,7 @@ export function TasksPage() {
         </Button>
       </>
     ),
-  });
+  }, [view]);
 
   /*
    * The only real total in this API. `countByStatus` rests on a capped list,
