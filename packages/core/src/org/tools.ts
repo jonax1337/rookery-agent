@@ -393,6 +393,39 @@ export const ORG_TOOLS: ToolDefinition[] = [
     audience: ASSISTANT_ONLY,
   },
   {
+    name: 'project_mcp_servers',
+    description:
+      "The MCP servers listed in a project's own .mcp.json - the same file a person's own Claude " +
+      'Code session in that folder would read - and whether they are trusted yet. An untrusted or ' +
+      'changed file never starts its servers for an assignment. Call this before trust_project_mcp.',
+    inputSchema: {
+      type: 'object',
+      properties: { project: str('Project name or id.') },
+      required: ['project'],
+      additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
+  },
+  {
+    name: 'trust_project_mcp',
+    description:
+      "Approve or revoke a project's own .mcp.json, so its MCP servers do or do not start for " +
+      "assignments in that project. This starts real processes from a file inside the project's " +
+      'own folder, so show the user the server list and command lines from project_mcp_servers ' +
+      'before approving. A later edit to .mcp.json needs approving again; revoke turns the ' +
+      'servers off again without touching the file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: str('Project name or id.'),
+        decision: { type: 'string', enum: ['approve', 'revoke'], description: 'approve or revoke.' },
+      },
+      required: ['project', 'decision'],
+      additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
+  },
+  {
     name: 'list_schedules',
     description:
       'Your schedules (cron jobs): standing orders that fire on a timetable while the server ' +

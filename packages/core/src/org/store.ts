@@ -112,13 +112,21 @@ export class OrgStore {
 
   updateProject(
     id: string,
-    patch: { name?: string; description?: string | null; path?: string | null; archived?: boolean },
+    patch: {
+      name?: string;
+      description?: string | null;
+      path?: string | null;
+      archived?: boolean;
+      /** null revokes trust; undefined leaves it untouched. */
+      mcpTrust?: { fingerprint: string; approvedAt: number } | null;
+    },
   ): void {
     this.#update('projects', id, {
       name: patch.name?.trim(),
       description: patch.description,
       path: patch.path,
       archived: patch.archived === undefined ? undefined : patch.archived ? 1 : 0,
+      mcp_trust: patch.mcpTrust === undefined ? undefined : patch.mcpTrust === null ? null : JSON.stringify(patch.mcpTrust),
     });
   }
 
@@ -708,10 +716,25 @@ function mapProject(row: Row): Project {
     name: row.name as string,
     description: optional(row.description),
     path: optional(row.path),
+    mcpTrust: parseMcpTrust(row.mcp_trust),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     archived: Number(row.archived) === 1,
   };
+}
+
+/** A malformed or stale value is treated as "not decided" rather than thrown. */
+function parseMcpTrust(raw: unknown): Project['mcpTrust'] {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as { fingerprint?: unknown; approvedAt?: unknown };
+    if (typeof parsed.fingerprint === 'string' && typeof parsed.approvedAt === 'number') {
+      return { fingerprint: parsed.fingerprint, approvedAt: parsed.approvedAt };
+    }
+  } catch {
+    // fall through to undefined
+  }
+  return undefined;
 }
 
 function mapTeam(row: Row): Team {

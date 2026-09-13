@@ -11,6 +11,7 @@ import type {
   NotifyEvent,
   Organization,
   PermissionLevel,
+  Project,
   ProviderId,
   RequesterKind,
   RookeryConfig,
@@ -35,9 +36,15 @@ import { buildAgentPrompt, renderBoard, renderOrgOverview, renderSchedules, type
 import { buildTaskWaves, planTask, type TaskPlan } from './planner.js';
 import { toolsFor, type ToolAudience } from './tools.js';
 import { ensureToolServers, renderToolServers, toolServerStates, toolServersFor, withToolServer } from '../tools/hub.js';
-import { SkillStore, renderSkill, renderSkillsIndex } from '../skills/store.js';
+import { SkillStore, projectSkillsDir, renderSkill, renderSkillsIndex, type Skill } from '../skills/store.js';
 import { describeCronJob, type CronJobPatch, type CronScheduler } from '../cron/scheduler.js';
 import { describeCron } from '../cron/parse.js';
+import {
+  fingerprintMcpFile,
+  projectMcpStatus,
+  readProjectMcpFile,
+  renderProjectMcpServers,
+} from './project-mcp.js';
 
 /**
  * The rules of the company, and the machinery that runs an assignment.
@@ -367,11 +374,56 @@ export class OrgController extends EventEmitter {
       }
 
       case 'use_skill': {
-        const skill = this.#skills
-          .for(context.audience === 'agent' ? 'agent' : 'assistant')
-          .find((entry) => entry.name === text('name').toLowerCase());
+        // An agent's own instructions carry its project's skills too (Befund
+        // 4 in the concept doc): the tool must resolve against the running
+        // assignment's project, not only the one long-lived home store.
+        const project =
+          context.audience === 'agent' && context.projectId ? this.#store.org.getProject(context.projectId) : null;
+        const skills = context.audience === 'agent' ? this.#agentSkills(project) : this.#skills.for('assistant');
+        const skill = skills.find((entry) => entry.name === text('name').toLowerCase());
         if (!skill) return fail('No skill "' + text('name') + '". The list in your instructions is authoritative.');
         return { text: renderSkill(skill) };
+      }
+
+      case 'project_mcp_servers': {
+        if (context.audience !== 'assistant') return fail('Only the assistant reviews project MCP servers.');
+        const project = this.#store.org.findProject(context.orgId, text('project'));
+        if (!project) return fail('No project "' + text('project') + '".');
+        if (!project.path) return fail('Project "' + project.name + '" has no directory.');
+        const file = readProjectMcpFile(project.path);
+        if (!file || !file.servers.length) return { text: "No MCP servers in this project's .mcp.json." };
+        const status = projectMcpStatus(file, project.mcpTrust);
+        return {
+          text:
+            'Status: ' + status + '.\n' +
+            renderProjectMcpServers(file.servers) +
+            (status === 'trusted' ? '' : '\nUse trust_project_mcp to approve before these start for an assignment.'),
+        };
+      }
+
+      case 'trust_project_mcp': {
+        if (context.audience !== 'assistant') return fail('Only the assistant decides project trust.');
+        const project = this.#store.org.findProject(context.orgId, text('project'));
+        if (!project) return fail('No project "' + text('project') + '".');
+        const decision = text('decision');
+        if (decision !== 'approve' && decision !== 'revoke') return fail('decision must be approve or revoke.');
+        if (decision === 'revoke') {
+          this.#store.org.updateProject(project.id, { mcpTrust: null });
+          this.emit('changed', { kind: 'project', id: project.id });
+          return { text: 'Revoked trust for "' + project.name + '"; its MCP servers no longer start for assignments.' };
+        }
+        if (!project.path) return fail('Project "' + project.name + '" has no directory.');
+        const file = readProjectMcpFile(project.path);
+        if (!file || !file.servers.length) return fail("No MCP servers in this project's .mcp.json.");
+        this.#store.org.updateProject(project.id, {
+          mcpTrust: { fingerprint: fingerprintMcpFile(file.raw), approvedAt: Date.now() },
+        });
+        this.emit('changed', { kind: 'project', id: project.id });
+        return {
+          text:
+            'Trusted "' + project.name + '": ' + file.servers.length +
+            ' MCP server(s) start for its assignments from now on.',
+        };
       }
 
       case 'tool_servers':
@@ -810,6 +862,24 @@ export class OrgController extends EventEmitter {
         this.#log.warn('Tool server could not prepare', { id, error: error.message }),
       );
       const extra = toolServersFor(this.#config, 'agent', providerId);
+
+      // The project's own MCP servers - read from its `.mcp.json`, the same
+      // file a person's own session in that folder would read - only start
+      // once the assistant has approved this exact file (see
+      // trust_project_mcp). Untrusted or changed, they stay off and the
+      // agent is told why instead of silently missing tools it expects.
+      const projectMcp = project?.path ? readProjectMcpFile(project.path) : null;
+      const projectMcpState = projectMcpStatus(projectMcp, project?.mcpTrust);
+      const projectMcpSpecs = projectMcpState === 'trusted' && projectMcp ? projectMcp.servers : [];
+      const toolHints = [...extra.hints];
+      if (projectMcp?.servers.length && projectMcpState !== 'trusted') {
+        toolHints.push(
+          "This project's .mcp.json lists " + projectMcp.servers.length + ' MCP server(s) not yet trusted' +
+            (projectMcpState === 'changed' ? ' (the file changed since it was approved)' : '') +
+            '; the assistant can review them with project_mcp_servers and trust_project_mcp.',
+        );
+      }
+
       const systemPrompt = buildAgentPrompt({
         config: this.#config,
         agent,
@@ -819,8 +889,8 @@ export class OrgController extends EventEmitter {
         inbox,
         assignmentId: assignment.id,
         requestedBy: requester,
-        toolHints: extra.hints,
-        skillsIndex: renderSkillsIndex(this.#skills.for('agent')),
+        toolHints,
+        skillsIndex: renderSkillsIndex(this.#agentSkills(project)),
       });
       if (inbox.length) org.markRead(inbox.map((message) => message.id));
 
@@ -845,6 +915,7 @@ export class OrgController extends EventEmitter {
 
       try {
         const mcp = await this.#bridge.spec(token);
+        const mcpExtra = [...extra.specs, ...projectMcpSpecs];
         for await (const event of this.#registry.get(providerId).run({
           prompt: input.task,
           systemPrompt,
@@ -853,7 +924,7 @@ export class OrgController extends EventEmitter {
           cwd,
           permission: agent.permission ?? this.#config.defaultPermission,
           mcp,
-          mcpExtra: extra.specs.length ? extra.specs : undefined,
+          mcpExtra: mcpExtra.length ? mcpExtra : undefined,
           signal: controller.signal,
         })) {
           if (event.type === 'text') {
@@ -1279,6 +1350,18 @@ export class OrgController extends EventEmitter {
   }
 
   /* ------------------------------- internals ------------------------------ */
+
+  /**
+   * Skills for an agent turn: the home skills plus, when the project has a
+   * directory, its own `.claude/skills` - the project wins on a name clash.
+   * A fresh `SkillStore` is cheap (it only reads directories on demand), and
+   * the project changes per assignment, so this cannot be the one long-lived
+   * instance on `this.#skills`.
+   */
+  #agentSkills(project: Project | null | undefined): Skill[] {
+    if (!project?.path) return this.#skills.for('agent');
+    return new SkillStore([this.#config.skillsDir, projectSkillsDir(project.path)]).for('agent');
+  }
 
   #memoriesFor(agentId: string, task: string) {
     if (!this.#config.memory.enabled) return [];

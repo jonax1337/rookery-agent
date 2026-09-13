@@ -138,7 +138,7 @@ export async function importSkillFromGitHub(store: SkillStore, sourceText: strin
   const name = skillSlug(declared ?? source.path.split('/').pop() ?? source.repo);
   if (!name) throw new Error('Der Skill hat keinen brauchbaren Namen.');
 
-  const folder = resolve(store.dir, name);
+  const folder = resolve(store.dirs[0] as string, name);
   const prefix = source.path ? source.path + '/' : '';
   const staged: { target: string; data: Buffer }[] = [{ target: join(folder, 'SKILL.md'), data: Buffer.from(skillText, 'utf8') }];
   for (const entry of files) {

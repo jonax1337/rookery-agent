@@ -1,9 +1,14 @@
 # Projektbezogene Skills und MCP-Server
 
-Stand: 2026-09-11. Quick Concept, kein Code. Betrifft `packages/core/src/skills/store.ts`,
-`packages/core/src/org/controller.ts`, `packages/core/src/types.ts` (`Project`, `ToolServerConfig`),
-`packages/core/src/tools/catalog.ts`, `packages/core/src/providers/claude-code.ts`,
-`packages/server/src/schemas.ts` und die Projektseite der Web-UI.
+Stand: 2026-09-12. Stufe 1 (Projekt-Skills) und Stufe 2 (Projekt-MCP) aus Abschnitt 5 sind
+umgesetzt: `packages/core/src/skills/store.ts` (`SkillStore` nimmt eine geordnete Liste von
+Verzeichnissen), `packages/core/src/org/project-mcp.ts` (liest `.mcp.json` und bildet den
+Vertrauensstatus), `packages/core/src/org/controller.ts` (`#agentSkills`, `use_skill`,
+`project_mcp_servers`, `trust_project_mcp`, die Zusammenfuehrung in `run()`),
+`packages/core/src/org/store.ts` und `packages/core/src/types.ts` (`Project.mcpTrust`),
+`packages/core/src/memory/db.ts` (Schema 7). Offen ist Stufe 3 (Server-Scoping im Hub,
+`ToolServerConfig`) sowie eine sichtbare Flaeche auf der Projektseite der Web-UI - die
+Vertrauensentscheidung laeuft bisher ausschliesslich ueber die beiden neuen Assistenten-Tools.
 
 ## 1. Zielsetzung
 
@@ -66,19 +71,51 @@ Ordner, den der Nutzer vielleicht nur geklont hat. Also einmal pro Projekt frage
 Liste der Server und ihrer Kommandozeilen, und die Entscheidung am `Project` merken. Bei eigenen
 Projekten ist das ein Klick; bei fremden ist es die Frage, die man spaeter nicht bereut.
 
+## 4a. Egal mit welchem Provider - warum das kein Extra-Aufwand ist
+
+Rookery faehrt heute Claude Code und Codex, und wird nicht der letzte Provider bleiben. Beide
+Haelften dieses Konzepts sind trotzdem provider-agnostisch von Natur aus, weil Rookery die Arbeit
+zentral macht statt sich auf einen provider-eigenen Mechanismus zu verlassen:
+
+- **Skills** liest kein Provider je selbst. `SkillStore` rendert `SKILL.md`-Prosa in den
+  `systemPrompt`-String, den jeder `Provider.run()` sowieso schon entgegennimmt - Claude Code
+  haengt ihn per `--append-system-prompt` an, Codex stellt ihn in einen `<rookery-context>`-Block.
+  Eine Aenderung an `SkillStore` gilt deshalb automatisch fuer jeden Provider, ohne eine Zeile
+  provider-spezifischen Code.
+- **MCP-Server** laufen bereits heute providerweit ueber `ProviderTurnOptions.mcp` /
+  `mcpExtra: McpServerSpec[]` (`types.ts:679`). Claude Code serialisiert das nach `--mcp-config`
+  JSON (`claude-code.ts:mcpConfig`), Codex nach `-c mcp_servers.*`-TOML (`codex.ts:mcpArgs`). Ein
+  zukuenftiger Provider braucht dafuer nur seinen eigenen kleinen Serializer, keinen eigenen Weg,
+  `.mcp.json` zu lesen. `project-mcp.ts` liest die Datei genau einmal, zentral, in `McpServerSpec[]`
+  um - `.mcp.json` ist damit Rookerys eine Wahrheit fuer Projekt-MCP, unabhaengig davon, mit
+  welcher CLI ein Mensch dieselbe Datei in seiner eigenen Sitzung lesen wuerde.
+
+Die Regel fuer neuen Code an dieser Stelle: was ein Projekt bekommt, entscheidet sich in
+`org/controller.ts` bzw. `skills/store.ts`, nie in `providers/<name>.ts`. Ein Provider bekommt nur
+noch die schon aufbereitete Form (Prompt-Text, `McpServerSpec[]`) und muss nichts vom Projekt
+selbst wissen.
+
 ## 5. Ausbaustufen
 
-1. **Projekt-Skills.** `SkillStore` nimmt statt eines Wurzelordners eine geordnete Liste; bei
-   Namensgleichheit gewinnt das Projekt. Der Auftrag baut seinen Index aus `<home>/skills` plus
-   `<projekt>/.claude/skills`. Offener Punkt: `use_skill` loest heute gegen die eine
-   Controller-Instanz auf (Befund 4) und muss den laufenden Auftrag kennen, sonst findet der Agent
-   den Skill in seinem Index, aber nicht ueber das Werkzeug. Traegt den groessten Teil des Nutzens.
-2. **Projekt-MCP.** `Project` bekommt ein Feld fuer die getroffene Vertrauensentscheidung
-   (Zustimmung plus ein Fingerabdruck der `.mcp.json`, damit eine spaetere Aenderung erneut fragt).
-   Die Server aus der Datei kommen zu denen des Hubs dazu.
-3. **Projekt-Scoping im Hub.** `ToolServerConfig` lernt, auf welche Projekte ein Server begrenzt
-   ist. Groesster Brocken, unabhaengig von 1 und 2 nuetzlich, und die eigentliche Antwort auf
-   "dieser Server gehoert nur zu diesem Projekt".
+1. **Projekt-Skills.** ✅ Umgesetzt. `SkillStore` nimmt statt eines Wurzelordners eine geordnete
+   Liste (`SkillStore.dirs`); bei Namensgleichheit gewinnt das Projekt. Der Auftrag baut seinen
+   Index in `OrgController#agentSkills` aus `<home>/skills` plus `<projekt>/.claude/skills`
+   (`skills/store.ts:projectSkillsDir`). Der offene Punkt aus Befund 4 ist geloest: `use_skill`
+   kennt jetzt `context.projectId` und loest gegen den laufenden Auftrag auf, nicht mehr gegen die
+   eine Controller-Instanz.
+2. **Projekt-MCP.** ✅ Umgesetzt. `Project.mcpTrust` (`{ fingerprint, approvedAt }`) haelt die
+   getroffene Vertrauensentscheidung; `org/project-mcp.ts` liest `.mcp.json`, bildet den
+   Fingerabdruck und den Status (`none | pending | trusted | changed`). Die beiden
+   Assistenten-Tools `project_mcp_servers` (Liste, Status) und `trust_project_mcp`
+   (`approve` / `revoke`) sind der Zustimmungsweg; ein Auftrag bekommt die Server aus der Datei
+   nur bei Status `trusted`, sonst bleibt es beim Hub allein und der Agent bekommt einen Hinweis
+   im Prompt statt eines stillen Lochs. Offen: Die Vertrauensentscheidung ist bisher nur ueber die
+   Tools erreichbar, nicht auf der Projektseite der Web-UI - dort landet `mcpTrust` zwar in jeder
+   API-Antwort (`GET`/`PATCH /api/org/projects/:id`), aber es gibt noch keine Anzeige und keinen
+   Knopf dafuer.
+3. **Projekt-Scoping im Hub.** Offen. `ToolServerConfig` lernt, auf welche Projekte ein Server
+   begrenzt ist. Groesster Brocken, unabhaengig von 1 und 2 nuetzlich, und die eigentliche Antwort
+   auf "dieser Server gehoert nur zu diesem Projekt".
 
 ## 6. Verworfen
 

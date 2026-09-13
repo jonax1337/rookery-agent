@@ -11,6 +11,16 @@ import type { ToolServerAudience } from '../types.js';
  * skill loading: the assistant runs with its system prompt replaced and
  * without user settings, and Codex has no notion of them. The prompt carries
  * an index (name and description); `use_skill` returns the body.
+ *
+ * A `SkillStore` can hold more than one directory - the home skills plus, for
+ * an agent working in a project, that project's own `<project>/.claude/skills`
+ * (see `projectSkillsDir`). Directories are read in order and a later one
+ * wins on a name clash, so the project always overrides the home skill of
+ * the same name. This is read-only: `save`/`remove` always write to the
+ * first directory, so an agent's job never writes a skill into a project.
+ * The same read - never a native provider mechanism - is why this is
+ * identical for Claude Code, Codex or any other provider: they only ever see
+ * the rendered prompt text, never the directories themselves.
  */
 
 export interface Skill {
@@ -60,25 +70,37 @@ function asAudience(value: string | undefined): ToolServerAudience {
 }
 
 export class SkillStore {
-  readonly dir: string;
+  readonly dirs: readonly string[];
 
-  constructor(dir: string) {
-    this.dir = dir;
+  constructor(dirs: string | string[]) {
+    this.dirs = Array.isArray(dirs) ? dirs : [dirs];
   }
 
   list(): Skill[] {
-    if (!existsSync(this.dir)) return [];
-    const skills: Skill[] = [];
-    for (const name of readdirSync(this.dir)) {
-      const skill = this.get(name);
-      if (skill) skills.push(skill);
+    const byName = new Map<string, Skill>();
+    for (const dir of this.dirs) {
+      if (!existsSync(dir)) continue;
+      for (const name of readdirSync(dir)) {
+        const skill = this.#read(dir, name);
+        if (skill) byName.set(name, skill);
+      }
     }
-    return skills.sort((a, b) => a.name.localeCompare(b.name));
+    return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
   get(name: string): Skill | null {
     if (!NAME.test(name)) return null;
-    const folder = join(this.dir, name);
+    let found: Skill | null = null;
+    for (const dir of this.dirs) {
+      const skill = this.#read(dir, name);
+      if (skill) found = skill;
+    }
+    return found;
+  }
+
+  #read(dir: string, name: string): Skill | null {
+    if (!NAME.test(name)) return null;
+    const folder = join(dir, name);
     const file = join(folder, 'SKILL.md');
     if (!existsSync(file)) return null;
     const { meta, body } = parse(readFileSync(file, 'utf8'));
@@ -94,11 +116,12 @@ export class SkillStore {
     };
   }
 
+  /** Always the first directory: an agent's job never writes a skill into a project. */
   save(input: SkillInput): Skill {
     const name = skillSlug(input.name);
     if (!NAME.test(name)) throw new Error('A skill needs a name of letters, digits and dashes.');
     if (!input.description.trim()) throw new Error('A skill needs a one-line description.');
-    const folder = join(this.dir, name);
+    const folder = join(this.dirs[0] as string, name);
     mkdirSync(folder, { recursive: true });
     const text =
       '---\n' +
@@ -113,7 +136,7 @@ export class SkillStore {
 
   remove(name: string): boolean {
     if (!NAME.test(name)) return false;
-    const folder = join(this.dir, name);
+    const folder = join(this.dirs[0] as string, name);
     if (!existsSync(folder)) return false;
     rmSync(folder, { recursive: true, force: true });
     return true;
@@ -125,6 +148,11 @@ export class SkillStore {
       (skill) => skill.audience === 'both' || (who === 'assistant' ? skill.audience === 'assistant' : skill.audience === 'agents'),
     );
   }
+}
+
+/** Where a project's own skills live, read but never written by Rookery. */
+export function projectSkillsDir(projectPath: string): string {
+  return join(projectPath, '.claude', 'skills');
 }
 
 /** The index paragraph for a prompt; empty when there is nothing to open. */

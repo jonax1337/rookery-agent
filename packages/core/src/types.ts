@@ -381,6 +381,13 @@ export interface Project {
   description?: string;
   /** Directory assignments for this project run in. Unset: the workspace. */
   path?: string;
+  /**
+   * Whether this project's own `.mcp.json` may start processes for an
+   * assignment. Unset: not yet decided, so its servers stay off. The
+   * fingerprint is of the file's content, so an edit after approval is
+   * noticed and needs approving again.
+   */
+  mcpTrust?: { fingerprint: string; approvedAt: number };
   createdAt: number;
   updatedAt: number;
   archived: boolean;

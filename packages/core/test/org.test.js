@@ -1,7 +1,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';
-import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Assistant, BridgeServer, ProviderRegistry, Store, recall, toolsFor } from '../dist/index.js';
@@ -582,5 +582,91 @@ test('a tool switched on mid-turn is attached at once instead of next time', asy
   const second = fake.runs.filter((run) => run.mcp);
   assert.equal(second.length, 1, 'no continuation when no switch was flipped');
   assert.deepEqual(second[0].mcpExtra.map((spec) => spec.name), ['custom-notes']);
+  assistant.close();
+});
+
+/* --------------------------- project scoping ---------------------------- */
+
+test("an agent's own project skills override the home ones with the same name", async () => {
+  const fake = createFakeProvider();
+  const { assistant, store, home } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const homeSkill = join(home, 'skills', 'brief');
+  mkdirSync(homeSkill, { recursive: true });
+  writeFileSync(
+    join(homeSkill, 'SKILL.md'),
+    '---\nname: brief\ndescription: Home brief\naudience: agents\n---\n\nHOME\n',
+  );
+
+  const projectDir = mkdtempSync(join(tmpdir(), 'rookery-project-'));
+  const projectSkills = join(projectDir, '.claude', 'skills');
+  mkdirSync(join(projectSkills, 'brief'), { recursive: true });
+  writeFileSync(
+    join(projectSkills, 'brief', 'SKILL.md'),
+    '---\nname: brief\ndescription: Project brief\naudience: agents\n---\n\nPROJECT\n',
+  );
+  mkdirSync(join(projectSkills, 'deploy'), { recursive: true });
+  writeFileSync(
+    join(projectSkills, 'deploy', 'SKILL.md'),
+    '---\nname: deploy\ndescription: Project deploy\naudience: agents\n---\n\nDEPLOY\n',
+  );
+
+  const project = store.org.createProject({ orgId: org.id, name: 'Rook', path: projectDir });
+
+  for await (const _ of assistant.assign({ agent: 'mara', task: 'go', projectId: project.id })) void _;
+  const run = fake.runs.at(-1);
+  assert.match(run.systemPrompt, /brief: Project brief/, 'the project skill wins the name clash in the index');
+  assert.match(run.systemPrompt, /deploy: Project deploy/, 'a project-only skill is listed too');
+  assert.doesNotMatch(run.systemPrompt, /Home brief/);
+
+  const asMara = { orgId: org.id, audience: 'agent', agentId: mara.id, projectId: project.id, depth: 0, emit() {} };
+  const opened = await assistant.org.handle(asMara, 'use_skill', { name: 'brief' });
+  assert.match(opened.text, /PROJECT/);
+  assert.doesNotMatch(opened.text, /HOME/);
+  assistant.close();
+});
+
+test("a project's MCP servers only start once trust_project_mcp approves them, and a later edit needs approving again", async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  hire(assistant, { name: 'Mara' });
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+
+  const projectDir = mkdtempSync(join(tmpdir(), 'rookery-project-'));
+  const mcpFile = join(projectDir, '.mcp.json');
+  writeFileSync(mcpFile, JSON.stringify({ mcpServers: { docs: { command: 'node', args: ['server.js'] } } }));
+  const project = store.org.createProject({ orgId: org.id, name: 'Rook', path: projectDir });
+
+  for await (const _ of assistant.assign({ agent: 'mara', task: 'go', projectId: project.id })) void _;
+  assert.equal(fake.runs.at(-1).mcpExtra, undefined, 'untrusted: nothing attached');
+  assert.match(fake.runs.at(-1).systemPrompt, /not yet trusted/);
+
+  const pending = await assistant.org.handle(ctx, 'project_mcp_servers', { project: 'Rook' });
+  assert.match(pending.text, /Status: pending/);
+  assert.match(pending.text, /docs: node server\.js/);
+
+  const approved = await assistant.org.handle(ctx, 'trust_project_mcp', { project: 'Rook', decision: 'approve' });
+  assert.match(approved.text, /Trusted "Rook": 1 MCP server/);
+
+  fake.runs.length = 0;
+  for await (const _ of assistant.assign({ agent: 'mara', task: 'go', projectId: project.id })) void _;
+  assert.deepEqual(fake.runs.at(-1).mcpExtra.map((spec) => spec.name), ['docs'], 'trusted: attached this time');
+
+  // The file changes after approval: the fingerprint no longer matches.
+  writeFileSync(
+    mcpFile,
+    JSON.stringify({ mcpServers: { docs: { command: 'node', args: ['server.js'] }, extra: { command: 'sh' } } }),
+  );
+  fake.runs.length = 0;
+  for await (const _ of assistant.assign({ agent: 'mara', task: 'go', projectId: project.id })) void _;
+  assert.equal(fake.runs.at(-1).mcpExtra, undefined, 'changed: back to untrusted');
+  assert.match(fake.runs.at(-1).systemPrompt, /changed since it was approved/);
+
+  const revoked = await assistant.org.handle(ctx, 'trust_project_mcp', { project: 'Rook', decision: 'revoke' });
+  assert.match(revoked.text, /Revoked trust/);
+  assert.equal(store.org.getProject(project.id).mcpTrust, undefined);
   assistant.close();
 });
