@@ -32,6 +32,7 @@ function makeConfig(overrides = {}) {
     transcribe: 'auto',
     transcribeModel: 'onnx-community/whisper-base',
     maxAttachmentMb: 20,
+    stream: true,
     push: {
       enabled: false,
       assignments: false,

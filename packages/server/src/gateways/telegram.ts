@@ -1,7 +1,6 @@
 import {
   ASSISTANT_MEMORY_OWNER,
   classifyUpdate,
-  escapeHtml,
   isAudible,
   missingGatewaySettings,
   nextGatewayAction,
@@ -19,6 +18,7 @@ import type { ServerContext } from '../context.js';
 import { localModelReady, transcribe, SttError } from '../services/stt.js';
 import { voiceKeys } from '../services/voice-keys.js';
 import { humanDuration, humanSize, pruneInbox, saveAttachment } from './attachments.js';
+import { toTelegramHtml } from './markdown.js';
 import {
   findOrigin,
   noteMessages,
@@ -75,6 +75,18 @@ const TRANSCRIPT_ECHO = 600;
 /** Smallest gap between two rewrites of the live progress line. */
 const PROGRESS_EDIT_MS = 12_000;
 
+/**
+ * How soon the first words of a streamed answer go out, and how far apart
+ * every rewrite after them is.
+ *
+ * Telegram rate limits edits per chat, and a turn that produces a page of
+ * text would otherwise ask for a hundred of them. Half a second to first
+ * sight, then one and a half between updates: fast enough to read as typing,
+ * slow enough that a long answer costs tens of calls rather than hundreds.
+ */
+const STREAM_FIRST_MS = 500;
+const STREAM_EDIT_MS = 1500;
+
 /** How many rows a list command shows before it says "and more". */
 const LIST_LIMIT = 8;
 
@@ -130,6 +142,15 @@ const REACTION = {
 const BACKOFF_START_MS = 1000;
 const BACKOFF_MAX_MS = 60_000;
 
+/**
+ * How long after a start that failed on something transient before trying
+ * again, doubling up to the ceiling. Five seconds so a laptop whose network
+ * arrives a moment late is back within one, a minute so a Telegram outage is
+ * not hammered.
+ */
+const RETRY_START_MS = 5000;
+const RETRY_MAX_MS = 60_000;
+
 /** Telegram's typing bubble fades after a few seconds, so it is refreshed. */
 const TYPING_INTERVAL_MS = 4000;
 
@@ -175,7 +196,11 @@ export interface GatewayHandle {
   refresh(): Promise<void>;
   status(): GatewayStatus;
   /** Returns the ids of the messages that went out, newest call last. */
-  send(userId: number, text: string, options?: { origin?: Omit<MessageOrigin, 'at'> }): Promise<number[]>;
+  send(
+    userId: number,
+    text: string,
+    options?: { origin?: Omit<MessageOrigin, 'at'>; silent?: boolean },
+  ): Promise<number[]>;
 }
 
 interface SenderQueue {
@@ -184,31 +209,15 @@ interface SenderQueue {
 }
 
 /**
- * Markdown fences to Telegram HTML.
+ * One piece of Markdown as Telegram HTML.
  *
- * `splitMessage` guarantees every piece carries balanced fences, so a piece
- * can be converted on its own. Everything outside a block is escaped text;
- * inside, the block is escaped in one go and wrapped in `<pre>`, which is the
- * only tag Telegram renders as a code block.
+ * The conversion itself lives in `markdown.ts`; what matters here is that it
+ * is applied piece by piece. `splitMessage` guarantees every piece carries
+ * balanced code fences, so each one converts on its own without the fence
+ * state of its neighbours.
  */
 function toHtml(piece: string): string {
-  const out: string[] = [];
-  let code: string[] | undefined;
-  for (const line of piece.split('\n')) {
-    if (line.trimStart().startsWith('```')) {
-      if (code) {
-        out.push(`<pre>${escapeHtml(code.join('\n'))}</pre>`);
-        code = undefined;
-      } else {
-        code = [];
-      }
-      continue;
-    }
-    if (code) code.push(line);
-    else out.push(escapeHtml(line));
-  }
-  if (code) out.push(`<pre>${escapeHtml(code.join('\n'))}</pre>`);
-  return out.join('\n');
+  return toTelegramHtml(piece);
 }
 
 /** What Telegram accepts in one message, counted after escaping. */
@@ -238,6 +247,32 @@ export function htmlPieces(text: string): string[] {
     budget = Math.max(400, Math.floor(TELEGRAM_LIMIT / growth));
   }
   return splitMessage(text, 400).map(toHtml);
+}
+
+/**
+ * What a streamed message should say once the turn is over.
+ *
+ * Two texts describe the same turn and neither is the whole truth. The
+ * deltas are what the user actually watched being written, thinking out loud
+ * between tool calls included. The provider's `done` text is narrower:
+ * Claude Code reports its *result*, the closing answer alone, so taking it as
+ * the final state - which this used to do - wiped every intermediate step the
+ * moment the turn finished.
+ *
+ * So the streamed text stands, and the final answer is added only when it is
+ * not already in it. The comparison ignores whitespace, because the two
+ * renderings differ in line breaks far more often than in words.
+ *
+ * Exported for its own test: this is a one-line decision that costs a visible
+ * half of the conversation when it goes the wrong way.
+ */
+export function mergeFinalText(streamed: string, finalText: string): string {
+  const flat = (value: string): string => value.replace(/\s+/g, ' ').trim();
+  const final = finalText.trim();
+  const shown = streamed.trim();
+  if (!final) return shown;
+  if (!shown) return final;
+  return flat(shown).includes(flat(final)) ? shown : shown + '\n\n' + final;
 }
 
 /** A sleep that neither keeps the process alive nor outlives a stop(). */
@@ -344,6 +379,8 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
      * its way back to the right conversation days later.
      */
     origin?: Omit<MessageOrigin, 'at'>;
+    /** Land in the chat without making the phone ring. */
+    silent?: boolean;
   }
 
   async function deliver(chatId: number, text: string, options: SayOptions = {}): Promise<number[]> {
@@ -354,6 +391,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       const id = await client.sendMessage(chatId, piece, {
         parseMode: 'HTML',
         disablePreview: true,
+        ...(options.silent ? { silent: true } : {}),
         // Only the first piece quotes the original: Telegram would otherwise
         // draw the same quoted block above every part of a long answer.
         ...(ids.length === 0 && options.replyTo !== undefined ? { replyTo: options.replyTo } : {}),
@@ -447,6 +485,152 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     };
 
     return { show, clear };
+  }
+
+  /**
+   * The answer, written as it is produced.
+   *
+   * Telegram has no streaming. What it has is `editMessageText`, and what
+   * this does is rewrite one message on a timer while the deltas come in -
+   * which reads, on a phone, exactly like someone typing. The timer is the
+   * whole design constraint: edits are rate limited per chat, so the text is
+   * flushed at a distance rather than per token, and only when it actually
+   * changed.
+   *
+   * Long answers keep working because the pieces are recomputed from the
+   * whole text every flush. `splitMessage` is greedy from the front, so
+   * every piece but the last is settled once it exists: earlier messages are
+   * left alone, the last one is edited, and a new one is sent when the text
+   * grows past it. The `done` event has the last word - whatever the deltas
+   * added up to, the final text is what stands.
+   */
+  function startStream(chatId: number, replyTo?: number): {
+    push: (delta: string) => void;
+    finish: (finalText: string) => Promise<number[]>;
+    started: () => boolean;
+  } {
+    /** What has been sent so far, by index: message id and the text in it. */
+    const ids: number[] = [];
+    const texts: string[] = [];
+    let text = '';
+    let writtenAt = 0;
+    let timer: NodeJS.Timeout | undefined;
+    let writing = false;
+    /** A delta arrived while a write was in flight; write again afterwards. */
+    let again = false;
+    let closed = false;
+
+    async function write(): Promise<void> {
+      const client = api;
+      if (!client) return;
+      const body = text.trim();
+      if (!body) return;
+      writtenAt = Date.now();
+      const pieces = htmlPieces(body);
+      for (let index = 0; index < pieces.length; index += 1) {
+        const piece = pieces[index] as string;
+        if (index < ids.length) {
+          if (texts[index] === piece) continue;
+          await client.editMessageText(chatId, ids[index] as number, piece, {
+            parseMode: 'HTML',
+            disablePreview: true,
+          });
+          // Noted as written only once it is written. Marking it first would
+          // make a refused edit look like a finished one, and the next pass
+          // would skip exactly the piece that never arrived.
+          texts[index] = piece;
+          continue;
+        }
+        const id = await client.sendMessage(chatId, piece, {
+          parseMode: 'HTML',
+          disablePreview: true,
+          // Only the first message quotes what is being answered.
+          ...(ids.length === 0 && replyTo !== undefined ? { replyTo } : {}),
+        });
+        if (id === undefined) return;
+        ids.push(id);
+        texts.push(piece);
+        noteMessages(context, chatId, [id]);
+      }
+    }
+
+    /** One writer at a time, in the chat's own order. */
+    function run(): void {
+      if (writing) {
+        // Whatever arrived during this write is not lost: it is written by
+        // the pass that follows it.
+        again = true;
+        return;
+      }
+      writing = true;
+      void chain(chatId, async () => {
+        await write();
+      })
+        .catch((error: unknown) => {
+          // A refused edit is not worth the turn: the next pass rewrites the
+          // same text anyway, and the answer still arrives.
+          log.debug('Telegram stream update failed', { chatId, error: errorText(error) });
+        })
+        .finally(() => {
+          writing = false;
+          if (again) {
+            again = false;
+            arm();
+          }
+        });
+    }
+
+    /**
+     * Make sure what has arrived gets written, and soon.
+     *
+     * The first version of this dropped a delta that arrived inside the
+     * throttle window and waited for the next one to carry it - which is
+     * fine while text keeps coming and wrong the moment it stops. A model
+     * that writes a sentence and then reaches for a tool falls silent for
+     * seconds, and the sentence sat there half-written. So the wait is a
+     * timer rather than a test: every delta is followed by a write, at the
+     * earliest the throttle allows.
+     */
+    function arm(): void {
+      if (timer || closed) return;
+      // The first words go out quickly - that is the point of streaming -
+      // and everything after them at the slower, rate-limit-safe pace.
+      const wait = ids.length === 0 ? STREAM_FIRST_MS : STREAM_EDIT_MS;
+      const due = Math.max(0, writtenAt + wait - Date.now());
+      timer = setTimeout(() => {
+        timer = undefined;
+        run();
+      }, due);
+      timer.unref?.();
+    }
+
+    return {
+      started: () => ids.length > 0,
+
+      push(delta: string): void {
+        if (closed) return;
+        text += delta;
+        arm();
+      },
+
+      async finish(finalText: string): Promise<number[]> {
+        closed = true;
+        if (timer) clearTimeout(timer);
+        timer = undefined;
+
+        // The streamed text stands, and the provider's closing answer is
+        // added only when it is not already part of it. The reasoning, and
+        // the bug it repairs, are with `mergeFinalText`.
+        text = mergeFinalText(text, finalText);
+
+        await chain(chatId, async () => {
+          await write();
+        }).catch((error: unknown) => {
+          log.warn('Telegram stream could not be finished', { chatId, error: errorText(error) });
+        });
+        return ids;
+      },
+    };
   }
 
   /* --------------------------- sessions --------------------------- */
@@ -989,6 +1173,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     // one `finally` that stops the typing bubble and the progress timer.
     let session: Session | undefined;
     let origin: MessageOrigin | undefined;
+    let stream: ReturnType<typeof startStream> | undefined;
     try {
       // Files first: downloading and listening is part of the turn, and the
       // typing bubble and the progress note above already cover the wait.
@@ -1029,6 +1214,12 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         text: prompt.slice(0, AUDIT_TEXT),
       });
 
+      // A streamed answer quotes what it answers on its first message, the
+      // way a whole one would.
+      stream = config.stream
+        ? startStream(chatId, origin && job.messageId !== undefined ? job.messageId : undefined)
+        : undefined;
+
       for await (const event of context.assistant.chat({
         text: prompt,
         sessionId: session.id,
@@ -1036,7 +1227,13 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         model: config.model,
         signal: turn.signal,
       })) {
-        if (event.type === 'done') {
+        if (event.type === 'text') {
+          if (!stream) continue;
+          // The progress line was standing in for an answer that had not
+          // started. It has started.
+          progress.clear();
+          stream.push(event.delta);
+        } else if (event.type === 'done') {
           answer = event.text;
         } else if (event.type === 'error') {
           // Never swallowed: an error the user does not see is an answer that
@@ -1062,6 +1259,11 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       if (turns.get(userId) === turn) turns.delete(userId);
     }
 
+    // Whatever was streamed is written out one last time, cancelled turns
+    // included: half an answer that stands is better than half an answer
+    // that is quietly wound back.
+    const streamed = stream ? await stream.finish(answer) : [];
+
     if (turn.signal.aborted) {
       react(chatId, job.messageId, REACTION.failed);
       say(chatId, 'Cancelled.');
@@ -1086,8 +1288,15 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       ...(origin && job.messageId !== undefined ? { replyTo: job.messageId } : {}),
     };
 
-    if (answer.trim().length > 0) say(chatId, answer, answered);
-    else say(chatId, 'No answer was returned.', answered);
+    if (streamed.length > 0) {
+      // The answer is already on the screen. What is left is filing it, so
+      // that a reply to it finds its way back to this conversation.
+      if (answered.origin) rememberOrigin(context, chatId, streamed, answered.origin);
+    } else if (answer.trim().length > 0) {
+      say(chatId, answer, answered);
+    } else {
+      say(chatId, 'No answer was returned.', answered);
+    }
   }
 
   /* ---------------------------- dispatch ---------------------------- */
@@ -1307,6 +1516,38 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
 
   /* ---------------------------- lifecycle ---------------------------- */
 
+  /** Pending retry after a start that failed for a reason that may pass. */
+  let retryTimer: NodeJS.Timeout | undefined;
+  let retryDelay = RETRY_START_MS;
+
+  function clearRetry(): void {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = undefined;
+    retryDelay = RETRY_START_MS;
+  }
+
+  /**
+   * Try again later, further apart each time.
+   *
+   * Only from the transient branch of `start`: a rejected token and a second
+   * poller on the same bot are handled by `blocked`, which this must never
+   * paper over. The timer is unref'd, so a process with nothing else to do
+   * still exits.
+   */
+  function scheduleRetry(): void {
+    if (retryTimer || silenced) return;
+    const wait = retryDelay;
+    retryDelay = Math.min(retryDelay * 2, RETRY_MAX_MS);
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      if (running || blocked) return;
+      void start().catch((error: unknown) => {
+        log.warn('Telegram gateway retry failed', { error: errorText(error) });
+      });
+    }, wait);
+    retryTimer.unref?.();
+  }
+
   async function start(): Promise<void> {
     if (running) return;
     const config = settings();
@@ -1344,11 +1585,20 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
           ? 'Telegram rejected this bot token (401). Gateway stopped.'
           : 'Another process is polling the same bot (409). Gateway stopped.';
         blocked = { reason: lastError, token: secret };
+        clearRetry();
         log.error('Telegram gateway cannot run with these settings', { reason: lastError });
         return;
       }
+      // Everything else is weather: a DNS hiccup, a laptop whose network
+      // came up a second after the server did, Telegram having a moment.
+      // The first version gave up here and stayed down until somebody
+      // noticed and restarted - which is how a channel that exists to be
+      // reachable ends up silently unreachable for a day. So it tries
+      // again, further apart each time, for as long as the config still
+      // wants it running.
       lastError = error instanceof TelegramApiError ? error.message : errorText(error);
-      log.error('Telegram gateway failed to start', { error: lastError });
+      log.error('Telegram gateway failed to start', { error: lastError, retryInMs: retryDelay });
+      scheduleRetry();
       return;
     }
 
@@ -1367,10 +1617,24 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       log.warn('Telegram command menu could not be published', { error: errorText(error) });
     });
 
+    // What an empty chat shows above the Start button - which is exactly
+    // what a chat looks like after `/clear`.
+    void client
+      .setMyDescription(
+        `${context.config.assistantName}, your assistant. Write, send a photo or a document, or ` +
+          'record a voice message. Replies to my notifications are answered about that ' +
+          'notification. /help lists everything.',
+        `${context.config.assistantName} · your assistant, on your own machine`,
+      )
+      .catch((error: unknown) => {
+        log.debug('Telegram description could not be set', { error: errorText(error) });
+      });
+
     api = client;
     activeToken = secret;
     lastError = undefined;
     running = true;
+    clearRetry();
     controller = new AbortController();
     log.info('Telegram gateway started', {
       bot: botUsername,
@@ -1381,6 +1645,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   }
 
   async function stop(): Promise<void> {
+    clearRetry();
     controller?.abort();
     for (const turn of turns.values()) turn.abort();
     turns.clear();
@@ -1460,7 +1725,11 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
      * notification is only half sent until replying to it leads somewhere:
      * push hands them straight to the origin registry.
      */
-    async send(userId: number, text: string, options: { origin?: Omit<MessageOrigin, 'at'> } = {}): Promise<number[]> {
+    async send(
+      userId: number,
+      text: string,
+      options: { origin?: Omit<MessageOrigin, 'at'>; silent?: boolean } = {},
+    ): Promise<number[]> {
       let ids: number[] = [];
       await chain(userId, async () => {
         ids = await deliver(userId, text, options);

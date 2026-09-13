@@ -117,6 +117,9 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       transcribe: 'auto',
       transcribeModel: 'onnx-community/whisper-base',
       maxAttachmentMb: 20,
+      // On: an answer that appears as it is written reads like someone
+      // typing, which is the closest Telegram gets to a live answer.
+      stream: true,
       // Mail first, machinery quiet: the phone hears from the assistant and
       // the team leads, the way a person would be told. What ran, when and
       // for how long is what the web app is open for - a buzz per finished
@@ -129,6 +132,10 @@ export const DEFAULT_CONFIG: RookeryConfig = {
         tasks: false,
         mail: true,
         mailFrom: 'leads',
+        // Both off: they are the two switches that turn a phone into a log
+        // viewer, and that has to be a decision somebody makes on purpose.
+        activity: false,
+        tools: false,
         quietFrom: '22:00',
         quietUntil: '08:00',
         maxPerHour: 12,

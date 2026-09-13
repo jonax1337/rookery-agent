@@ -1156,6 +1156,14 @@ export interface TelegramGatewayConfig {
    * is 20 MB, so anything above that is a promise the Bot API cannot keep.
    */
   maxAttachmentMb: number;
+  /**
+   * Write the answer as it is produced, by rewriting one message, instead of
+   * sending it whole at the end. Telegram has no streaming of its own; this
+   * is `editMessageText` on a timer, and the timer is why it can be switched
+   * off - a slow line or a rate-limited account is better served by one
+   * message that arrives once.
+   */
+  stream: boolean;
   push: TelegramPushConfig;
 }
 
@@ -1219,6 +1227,20 @@ export interface TelegramPushConfig {
   tasks: boolean;
   /** Mail the user is To or Cc on, pushed to the phone. See `mailFrom`. */
   mail: boolean;
+  /**
+   * The running commentary the web app shows as toasts: a memory stored, a
+   * skill written, an agent or a project saved. Off by default - this is a
+   * line per thing that happens, and the phone is not a log viewer - but on
+   * it is the closest thing to watching over the assistant's shoulder.
+   */
+  activity: boolean;
+  /**
+   * Every tool the assistant reaches for, one short line each, batched.
+   * Louder than `activity` by an order of magnitude, and never buffered:
+   * when it is quiet hours these are dropped rather than delivered later,
+   * because a tool call from this morning is not news.
+   */
+  tools: boolean;
   /**
    * Which senders a mail push is worth it for. 'assistant' is the quiet
    * default: the assistant is the only one who writes to the user on their

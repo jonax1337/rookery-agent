@@ -5,7 +5,8 @@ import { EventEmitter } from 'node:events';
 import { DEFAULT_CONFIG } from '@rookery/core';
 import { registerGatewayRoutes } from '../dist/routes/gateways.js';
 import { attachGatewayPush } from '../dist/gateways/push.js';
-import { COMMANDS, htmlPieces } from '../dist/gateways/telegram.js';
+import { COMMANDS, htmlPieces, mergeFinalText } from '../dist/gateways/telegram.js';
+import { toTelegramHtml } from '../dist/gateways/markdown.js';
 import { findOrigin, noteMessages, openThread, originContext, rememberOrigin, takeMessages } from '../dist/gateways/threads.js';
 
 test('script watchdogs stay quiet on empty success while failures still notify', async (t) => {
@@ -362,4 +363,186 @@ test('the chat ledger remembers what is standing in the chat, once each and boun
   const kept = takeMessages(context, 9);
   assert.equal(kept.length, 1000);
   assert.equal(kept.at(-1), 1200, 'the newest message has to survive the ring');
+});
+
+test('the activity feed batches, stays out of quiet hours, and never eats the mail budget', async (t) => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.gateways.telegram.allowedUserIds = [7];
+  Object.assign(config.gateways.telegram.push, {
+    enabled: true,
+    mail: true,
+    activity: true,
+    tools: true,
+    quietFrom: '00:00',
+    quietUntil: '00:00',
+    // One message an hour: the cap that mail has to survive.
+    maxPerHour: 1,
+  });
+
+  const assistant = new EventEmitter();
+  assistant.store = {
+    getMemory: () => null,
+    org: { getAgent: () => null, getProject: () => null, listTeams: () => [], listAgents: () => [] },
+  };
+  const sent = [];
+  const push = attachGatewayPush({ config, assistant, log: { warn() {}, info() {} } }, {
+    status: () => ({ running: true }),
+    send: async (_id, text) => { sent.push(text); return []; },
+  });
+  t.after(() => push.detach());
+
+  // A burst of tool calls: several lines, one message, and only the starts.
+  for (const name of ['Read', 'Grep', 'Edit']) {
+    assistant.emit('tool', { type: 'tool', name, status: 'start', detail: name.toLowerCase() + ' target' });
+    assistant.emit('tool', { type: 'tool', name, status: 'end', detail: 'done' });
+  }
+  assistant.emit('memory', { sessionId: 's1', stored: [{ id: 'm1', content: 'Jonas prefers short answers.' }] });
+  assistant.emit('changed', { kind: 'skill', id: 'telegram-triage' });
+
+  await new Promise((resolve) => setTimeout(resolve, 3300));
+
+  assert.equal(sent.length, 1, 'a burst has to arrive as one message, not one per line');
+  const feed = sent[0];
+  assert.equal((feed.match(/🔧/g) ?? []).length, 3, 'only the start of each call is worth a line');
+  assert.match(feed, /Read · read target/);
+  assert.match(feed, /Jonas prefers short answers\./);
+  assert.match(feed, /Skill saved · telegram-triage/);
+
+  // And the mail that arrives afterwards still gets through, even though the
+  // hourly cap is one: the feed is not counted against it.
+  assistant.emit('mail', {
+    type: 'mail',
+    mail: {
+      id: 'm-1',
+      orgId: 'org',
+      fromKind: 'assistant',
+      subject: 'Still reaches you',
+      body: 'The feed must not use up the budget that exists for this.',
+      recipients: [{ recipientKind: 'user', box: 'to' }],
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /Still reaches you/);
+});
+
+test('the feed is dropped in quiet hours rather than delivered at breakfast', async (t) => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.gateways.telegram.allowedUserIds = [7];
+  const now = new Date();
+  const from = String(now.getHours()).padStart(2, '0') + ':00';
+  const until = String((now.getHours() + 2) % 24).padStart(2, '0') + ':00';
+  Object.assign(config.gateways.telegram.push, {
+    enabled: true, activity: true, tools: true, quietFrom: from, quietUntil: until, maxPerHour: 10,
+  });
+
+  const assistant = new EventEmitter();
+  assistant.store = { getMemory: () => null, org: { getAgent: () => null, getProject: () => null, listTeams: () => [] } };
+  const sent = [];
+  const push = attachGatewayPush({ config, assistant, log: { warn() {}, info() {} } }, {
+    status: () => ({ running: true }),
+    send: async (_id, text) => { sent.push(text); return []; },
+  });
+  t.after(() => push.detach());
+
+  assistant.emit('tool', { type: 'tool', name: 'Read', status: 'start', detail: 'config.json' });
+  await new Promise((resolve) => setTimeout(resolve, 3300));
+  assert.deepEqual(sent, [], 'a tool call from the middle of the night is not news in the morning');
+});
+
+test('a finished turn keeps what was streamed, and never loses the closing answer', () => {
+  // The bug this guards: Claude Code's `done` text is its *result* - the
+  // closing answer alone - so taking it as the final state wiped the
+  // thinking-out-loud between tool calls that the user had just watched
+  // being written.
+  const thinking = 'Let me look at the config first.';
+  const answer = 'The port is 4317.';
+
+  // The usual case: the deltas carried both, so nothing is added.
+  assert.equal(mergeFinalText(thinking + '\n\n' + answer, answer), thinking + '\n\n' + answer);
+
+  // Line breaks differ between the two renderings more often than words do.
+  assert.equal(mergeFinalText(thinking + '\n\n' + answer, 'The port is\n4317.'), thinking + '\n\n' + answer);
+
+  // Nothing streamed (a provider without deltas): the answer alone.
+  assert.equal(mergeFinalText('', answer), answer);
+  assert.equal(mergeFinalText('   ', answer), answer);
+
+  // Streamed text that does not contain the answer keeps both, in order.
+  assert.equal(mergeFinalText(thinking, answer), thinking + '\n\n' + answer);
+
+  // A turn that produced no closing answer keeps what it showed.
+  assert.equal(mergeFinalText(thinking, ''), thinking);
+});
+
+/* ------------------------------------------------------------------ *
+ * Markdown
+ *
+ * The models write Markdown; Telegram reads its own small HTML dialect and
+ * answers a 400 for anything outside it - which does not degrade to plain
+ * text, it loses the message. So these tests are as much about what is
+ * never produced as about what is.
+ * ------------------------------------------------------------------ */
+
+test('Markdown arrives as the formatting Telegram actually renders', () => {
+  assert.equal(toTelegramHtml('**bold** and *italic* and `code`'), '<b>bold</b> and <i>italic</i> and <code>code</code>');
+  assert.equal(toTelegramHtml('__also bold__ and _also italic_'), '<b>also bold</b> and <i>also italic</i>');
+  assert.equal(toTelegramHtml('***both***'), '<b><i>both</i></b>');
+  assert.equal(toTelegramHtml('~~gone~~'), '<s>gone</s>');
+
+  // Telegram has no headings, no bullets and no rules, so they become the
+  // things it does have.
+  assert.equal(toTelegramHtml('## Heading'), '<b>Heading</b>');
+  assert.equal(toTelegramHtml('- one\n- two'), '• one\n• two');
+  assert.equal(toTelegramHtml('1. first\n2. second'), '1. first\n2. second');
+  assert.equal(toTelegramHtml('- [x] done\n- [ ] open'), '☑ done\n☐ open');
+  assert.equal(toTelegramHtml('---'), '—');
+  assert.equal(toTelegramHtml('> quoted'), '<blockquote>quoted</blockquote>');
+
+  assert.equal(
+    toTelegramHtml('```ts\nconst a = 1;\n```'),
+    '<pre><code class="language-ts">const a = 1;</code></pre>',
+  );
+  assert.equal(toTelegramHtml('```\nplain\n```'), '<pre>plain</pre>');
+});
+
+test('Markdown conversion never invents a tag Telegram would refuse', () => {
+  // Escaping still happens, and happens before anything else.
+  assert.equal(toTelegramHtml('a < b & c > d'), 'a &lt; b &amp; c &gt; d');
+  assert.equal(toTelegramHtml('<script>alert(1)</script>'), '&lt;script&gt;alert(1)&lt;/script&gt;');
+  // Inside a code span and a code block too.
+  assert.equal(toTelegramHtml('`<b>`'), '<code>&lt;b&gt;</code>');
+
+  // Only links a phone may safely open.
+  assert.equal(toTelegramHtml('[docs](https://example.com/x)'), '<a href="https://example.com/x">docs</a>');
+  assert.equal(toTelegramHtml('[bad](javascript:alert(1))'), '[bad](javascript:alert(1))');
+
+  // Identifiers and arithmetic are not italics.
+  assert.equal(toTelegramHtml('call some_function_name now'), 'call some_function_name now');
+  assert.equal(toTelegramHtml('2 * 3 * 4'), '2 * 3 * 4');
+
+  // Markers inside code spans belong to the code.
+  assert.equal(toTelegramHtml('`**not bold**`'), '<code>**not bold**</code>');
+});
+
+test('a half-written answer still converts to something Telegram accepts', () => {
+  // This is the streaming case: the text stops mid-marker every 1.5 seconds,
+  // and an unbalanced tag would make Telegram refuse the edit - the message
+  // would look frozen for the rest of the turn.
+  const partials = [
+    'Let me check **the',
+    'Let me check **the config',
+    '# Heading without an end',
+    'a [link](https://exa',
+    '```ts\nconst x = 1;',
+    '> a quote that stops',
+    'some `code that never closes',
+    '~~strike',
+  ];
+  for (const partial of partials) {
+    const html = toTelegramHtml(partial);
+    const opened = (html.match(/<(b|i|s|code|pre|a|blockquote)\b/g) ?? []).length;
+    const closed = (html.match(/<\/(b|i|s|code|pre|a|blockquote)>/g) ?? []).length;
+    assert.equal(opened, closed, 'unbalanced tags for: ' + partial + ' -> ' + html);
+  }
 });

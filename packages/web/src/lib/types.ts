@@ -760,6 +760,8 @@ export interface TelegramGatewayConfig {
   transcribeModel: string;
   /** Ceiling for one attachment, in MB. Telegram itself stops at 20. */
   maxAttachmentMb: number;
+  /** Rewrite one message as the answer is produced, instead of sending it whole. */
+  stream: boolean;
   push: TelegramPushConfig;
 }
 
@@ -779,6 +781,10 @@ export interface TelegramPushConfig {
   mail: boolean;
   /** Whose mail is worth a push: the assistant, plus team leads, or everyone. */
   mailFrom: 'assistant' | 'leads' | 'all';
+  /** Memories stored, skills written, records saved - the app's toasts. */
+  activity: boolean;
+  /** Every tool call, one short line, batched. Loud by nature. */
+  tools: boolean;
   /** "22:00"; empty means no quiet hours. */
   quietFrom: string;
   /** "08:00" */

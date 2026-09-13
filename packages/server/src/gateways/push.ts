@@ -1,5 +1,5 @@
 import { inQuietHours, pushRecipients, splitMessage } from '@rookery/core';
-import type { AgentEvent, Mail, NotifyEvent, TelegramPushConfig } from '@rookery/core';
+import type { AgentEvent, Mail, MemoryLearnedEvent, NotifyEvent, TelegramPushConfig } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import type { MessageOrigin } from './threads.js';
 import type { GatewayHandle } from './telegram.js';
@@ -8,11 +8,22 @@ import type { GatewayHandle } from './telegram.js';
  * The assistant's own initiative, and the state changes worth interrupting a
  * phone for, turned into English push messages.
  *
- * `message`, `memory` and `changed` never reach here on purpose - those fire
- * on every turn and every recall, and a phone that buzzed for each would be
- * muted within the hour. What is reported is the handful of things that
- * finish without anyone watching: an agent's assignment, a schedule, a
- * night's sleep, a blocked task, and whatever `notify` decides to say.
+ * There are two lanes, and the difference between them is the whole design.
+ *
+ * The first is for things that *finish* while nobody is watching: an agent's
+ * assignment, a schedule, a night's sleep, a failed task, a mail, whatever
+ * `notify` decides to say. Each is worth interrupting a phone for, so each is
+ * rate limited, held back during quiet hours, and folded into a digest when
+ * several pile up.
+ *
+ * The second is the running commentary - what the web app shows as toasts,
+ * and, switched on separately, every tool the assistant reaches for. Those
+ * fire on every turn, so the first lane's rules would be exactly wrong for
+ * them: they are batched into one message every few seconds, dropped rather
+ * than buffered in quiet hours, and counted against a ceiling of their own so
+ * a busy afternoon cannot use up the budget that exists so a mail gets
+ * through. Both are off by default; on, they turn the phone into something
+ * closer to a screen you can watch.
  *
  * Mail addressed to the user is the one item here that is somebody writing
  * rather than something finishing, and it is the channel the defaults lean
@@ -75,6 +86,19 @@ const MAIL_BODY_LIMIT = 12_000;
 const MAIL_CLIPPED_NOTE = '\n\n[…] The rest of this mail is in your inbox.';
 
 const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * The activity feed's own shape: how long lines are collected before they go
+ * out together, how many fit in one message, and how many messages an hour
+ * the lane may spend before it goes quiet on its own.
+ *
+ * Three seconds is long enough that a turn's burst of tool calls arrives as
+ * one message and short enough to still read as live. Forty an hour is a
+ * ceiling nobody reaches by working - only by looping.
+ */
+const FEED_WINDOW_MS = 3000;
+const FEED_MAX_LINES = 10;
+const FEED_MAX_PER_HOUR = 40;
 /** How often the buffer gets a chance to drain once quiet hours or the rate cap let go. */
 const FLUSH_CHECK_MS = 60_000;
 
@@ -160,17 +184,23 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     return max > 0 && sentAt.length >= max;
   };
 
-  async function sendNow(text: string, origin: Omit<MessageOrigin, 'at'>): Promise<void> {
+  async function sendNow(
+    text: string,
+    origin: Omit<MessageOrigin, 'at'>,
+    options: { counted?: boolean; silent?: boolean } = {},
+  ): Promise<void> {
     const recipients = pushRecipients(context.config.gateways.telegram).filter((id) => !disabled.has(id));
     if (recipients.length === 0) return;
-    sentAt.push(Date.now());
+    // The commentary has a budget of its own and must not eat the one that
+    // decides whether a mail gets through.
+    if (options.counted !== false) sentAt.push(Date.now());
     const parts = splitMessage(text);
     for (const userId of recipients) {
       for (const part of parts) {
         try {
           // One call per message, in order - Telegram has no batch send.
           // The gateway files each message under this origin as it goes.
-          await gateway.send(userId, part, { origin });
+          await gateway.send(userId, part, { origin, ...(options.silent ? { silent: true } : {}) });
         } catch (error) {
           if (isForbidden(error)) {
             disabled.add(userId);
@@ -256,6 +286,157 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       return;
     }
     void sendNow(item.message, item.origin);
+  }
+
+  /* ------------------------------- the feed ------------------------------- */
+
+  /**
+   * The running commentary: what the web app shows as toasts, and - when it
+   * is switched on - every tool the assistant reaches for.
+   *
+   * A lane of its own, deliberately, because everything the digest machinery
+   * above does is wrong for this kind of line. A tool call is worth seeing
+   * while it happens and worthless twenty minutes later, so these are never
+   * buffered: in quiet hours they are dropped, not delivered at breakfast.
+   * They are not counted against the hourly cap either, or a busy turn would
+   * use up the budget that exists so a mail gets through. What keeps them
+   * from flooding the phone instead is shape: lines are collected for a few
+   * seconds and sent as one message, and the lane has its own ceiling per
+   * hour after which it goes quiet on its own.
+   */
+  const feed: string[] = [];
+  const feedSentAt: number[] = [];
+  let feedTimer: NodeJS.Timeout | undefined;
+  let feedMuted = false;
+
+  function feedHasRoom(): boolean {
+    const cutoff = Date.now() - HOUR_MS;
+    for (let oldest = feedSentAt[0]; oldest !== undefined && oldest < cutoff; oldest = feedSentAt[0]) feedSentAt.shift();
+    return feedSentAt.length < FEED_MAX_PER_HOUR;
+  }
+
+  function flushFeed(): void {
+    if (feedTimer) clearTimeout(feedTimer);
+    feedTimer = undefined;
+    const lines = feed.splice(0, FEED_MAX_LINES);
+    const dropped = feed.length;
+    feed.length = 0;
+    if (lines.length === 0) return;
+    if (!feedHasRoom()) {
+      // Said once per hour, not once per line: a flood that also floods the
+      // warning about the flood is the worst of both.
+      if (!feedMuted) {
+        feedMuted = true;
+        context.log.warn('Telegram activity feed muted for this hour', { cap: FEED_MAX_PER_HOUR });
+      }
+      return;
+    }
+    feedMuted = false;
+    feedSentAt.push(Date.now());
+    const text = lines.join('\n') + (dropped > 0 ? `\n… and ${dropped} more` : '');
+    // Silently: commentary belongs in the chat, not on the lock screen.
+    void sendNow(text, { kind: 'notify', snippet: text, title: 'Activity' }, { counted: false, silent: true });
+  }
+
+  function note(line: string): void {
+    if (!pushConfig().enabled || isQuietNow()) return;
+    feed.push(line);
+    if (feed.length >= FEED_MAX_LINES) {
+      flushFeed();
+      return;
+    }
+    if (!feedTimer) {
+      feedTimer = setTimeout(flushFeed, FEED_WINDOW_MS);
+      feedTimer.unref?.();
+    }
+  }
+
+  /** Seen this id a moment ago? Records get saved twice more often than you think. */
+  function fresh(key: string): boolean {
+    const last = recentIds.get(key);
+    if (last !== undefined && Date.now() - last < 10_000) return false;
+    recentIds.set(key, Date.now());
+    return true;
+  }
+
+  /**
+   * One tool call in one line: what it was, and the one detail that says
+   * which one. `Read · package.json` rather than a paragraph of arguments -
+   * this is a feed to glance at, and the transcript is in the web app.
+   */
+  const onToolCall = (event: AgentEvent): void => {
+    if (event.type !== 'tool' || !pushConfig().tools) return;
+    // Only the start. Reporting the end as well would double every line and
+    // say nothing the first one did not.
+    if (event.status !== 'start') return;
+    const detail = event.detail ? ' · ' + oneLine(event.detail, 70) : '';
+    note('🔧 ' + oneLine(event.name, 40) + detail);
+  };
+
+  /** What the turn learned, as the memory page would put it. */
+  const onMemoryLearned = (event: MemoryLearnedEvent): void => {
+    if (!pushConfig().activity) return;
+    const stored = event.stored ?? [];
+    for (const record of stored.slice(0, 3)) {
+      if (!fresh('memory:' + record.id)) continue;
+      note('🧠 ' + oneLine(record.content, 120));
+    }
+    if (stored.length > 3) note(`🧠 … and ${stored.length - 3} more memories`);
+  };
+
+  /**
+   * A record was written. The id alone means nothing to a person, so each
+   * kind is resolved to its name and anything that cannot be resolved is
+   * left out rather than reported as a uuid.
+   */
+  const onChanged = (change: { kind: string; id: string }): void => {
+    if (!pushConfig().activity || !change?.id) return;
+    const org = assistant.store.org;
+    let line: string | undefined;
+    switch (change.kind) {
+      case 'skill':
+        // The id *is* the name for a skill, which is why this one reads well.
+        line = '📝 Skill saved · ' + oneLine(change.id, 60);
+        break;
+      case 'memory': {
+        const record = assistant.store.getMemory(change.id);
+        if (record) line = '🧠 ' + oneLine(record.content, 120);
+        break;
+      }
+      case 'agent': {
+        const agent = org.getAgent(change.id);
+        if (agent) line = '👤 Agent saved · ' + oneLine(agent.name, 60);
+        break;
+      }
+      case 'project': {
+        const project = org.getProject(change.id);
+        if (project) line = '📁 Project saved · ' + oneLine(project.name, 60);
+        break;
+      }
+      case 'team': {
+        const orgId = activeOrgId();
+        const team = orgId ? org.listTeams(orgId).find((entry) => entry.id === change.id) : undefined;
+        if (team) line = '👥 Team saved · ' + oneLine(team.name, 60);
+        break;
+      }
+      case 'tools':
+        line = '🧰 Tool server changed · ' + oneLine(change.id, 60);
+        break;
+      default:
+        // Everything else - a task, a mail, an assignment - has a proper
+        // notification of its own above. This lane is for what does not.
+        break;
+    }
+    if (line && fresh('changed:' + change.kind + ':' + change.id)) note(line);
+  };
+
+  /** The active organisation's id, or nothing to look records up in. */
+  function activeOrgId(): string | undefined {
+    try {
+      return assistant.org.activeOrganization().id;
+    } catch {
+      return undefined;
+    }
   }
 
   const onAssignment = (event: AgentEvent): void => {
@@ -437,6 +618,9 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
   assistant.on('task', onTask);
   assistant.on('mail', onMail);
   assistant.on('notify', onNotify);
+  assistant.on('tool', onToolCall);
+  assistant.on('memory', onMemoryLearned);
+  assistant.on('changed', onChanged);
 
   return {
     detach: () => {
@@ -446,6 +630,10 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       assistant.off('task', onTask);
       assistant.off('mail', onMail);
       assistant.off('notify', onNotify);
+      assistant.off('tool', onToolCall);
+      assistant.off('memory', onMemoryLearned);
+      assistant.off('changed', onChanged);
+      if (feedTimer) clearTimeout(feedTimer);
       clearInterval(ticker);
     },
     // The three ways a notice silently goes nowhere, asked in the same order

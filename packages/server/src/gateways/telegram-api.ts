@@ -56,6 +56,11 @@ export interface TelegramSendOptions {
    * mail readable as a reply to yesterday's mail.
    */
   replyTo?: number;
+  /**
+   * Deliver without a sound. For the running commentary: it belongs in the
+   * chat, it does not belong on the lock screen.
+   */
+  silent?: boolean;
   signal?: AbortSignal;
 }
 
@@ -137,6 +142,8 @@ export interface TelegramApi {
   setMessageReaction(chatId: number, messageId: number, emoji?: string, signal?: AbortSignal): Promise<void>;
   /** Publish the command list, which is what draws Telegram's own menu. */
   setMyCommands(commands: Array<{ command: string; description: string }>, signal?: AbortSignal): Promise<void>;
+  /** What an empty chat shows above the Start button, and the profile page. */
+  setMyDescription(description: string, shortDescription: string, signal?: AbortSignal): Promise<void>;
   /** Where a file id can be fetched from, for the next hour or so. */
   getFile(fileId: string, signal?: AbortSignal): Promise<TelegramFile>;
   /** The bytes themselves, refused rather than truncated when too large. */
@@ -269,6 +276,7 @@ export function createTelegramApi(token: string): TelegramApi {
       const payload: Record<string, unknown> = { chat_id: chatId, text };
       if (options.parseMode) payload.parse_mode = options.parseMode;
       if (options.disablePreview) payload.link_preview_options = { is_disabled: true };
+      if (options.silent) payload.disable_notification = true;
       if (options.replyTo !== undefined) {
         // `allow_sending_without_reply` so a deleted original costs the
         // quoted line rather than the whole answer.
@@ -308,6 +316,14 @@ export function createTelegramApi(token: string): TelegramApi {
 
     async setMyCommands(commands, signal) {
       await call<boolean>('setMyCommands', { commands }, { signal });
+    },
+
+    async setMyDescription(description, shortDescription, signal) {
+      // Two calls, because Telegram keeps the long text (empty chat) and the
+      // short one (profile card) apart, and a failure of one should not cost
+      // the other.
+      await call<boolean>('setMyDescription', { description }, { signal });
+      await call<boolean>('setMyShortDescription', { short_description: shortDescription }, { signal });
     },
 
     async getFile(fileId, signal) {

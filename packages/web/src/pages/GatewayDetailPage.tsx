@@ -460,6 +460,24 @@ export function GatewayDetailPage() {
           </Field>
 
           <FieldSet>
+            <FieldLegend variant="label">In the chat</FieldLegend>
+            <FieldDescription>How an answer arrives on the phone.</FieldDescription>
+
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="gw-stream">Write as it is produced</FieldLabel>
+                <FieldDescription>
+                  One message, rewritten while the answer is written, instead of a wall of text at the end.
+                  Telegram has no streaming of its own, so this is an edit every second and a half — switch it
+                  off on a slow line or a rate-limited account.
+                </FieldDescription>
+              </FieldContent>
+              <Switch id="gw-stream" checked={draft.stream} onCheckedChange={(on) => set({ stream: on })} />
+            </Field>
+
+          </FieldSet>
+
+          <FieldSet>
             <FieldLegend variant="label">Files and speech</FieldLegend>
             <FieldDescription>
               What arrives from the phone besides text. Files are saved in the workspace under{' '}
@@ -701,6 +719,37 @@ export function GatewayDetailPage() {
                 onCheckedChange={(on) => setPush({ sleep: on })}
               />
             </Field>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="gw-push-activity">Activity</FieldLabel>
+                <FieldDescription>
+                  What the app shows as a toast, as it happens: a memory stored, a skill written, an agent or
+                  project saved. Collected for a few seconds and sent as one message.
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="gw-push-activity"
+                checked={draft.push.activity}
+                onCheckedChange={(on) => setPush({ activity: on })}
+              />
+            </Field>
+
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="gw-push-tools">Tool calls</FieldLabel>
+                <FieldDescription>
+                  Every tool the assistant reaches for, one short line each — <code>Read · package.json</code>.
+                  Loud by nature, and never held for later: during quiet hours these are dropped rather than
+                  delivered in the morning.
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="gw-push-tools"
+                checked={draft.push.tools}
+                onCheckedChange={(on) => setPush({ tools: on })}
+              />
+            </Field>
+
             <Field orientation="horizontal">
               <FieldContent>
                 <FieldLabel htmlFor="gw-push-tasks">Tasks</FieldLabel>

@@ -558,6 +558,12 @@ export class Assistant extends EventEmitter {
           switch (event.type) {
             case 'tool':
               toolCalls.push(event);
+              // Also on the assistant's own emitter, not just this stream:
+              // a channel that is not the one that started the turn - the
+              // phone, watching a schedule run - has no other way to see
+              // what is being done. Nobody has to listen; the web UI reads
+              // these off the turn stream it already holds.
+              this.emit('tool', event);
               yield event;
               break;
             case 'text':

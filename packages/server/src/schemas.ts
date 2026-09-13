@@ -269,6 +269,8 @@ const telegramPushConfigSchema = z
     tasks: z.boolean(),
     mail: z.boolean(),
     mailFrom: z.enum(['assistant', 'leads', 'all']),
+    activity: z.boolean(),
+    tools: z.boolean(),
     quietFrom: timeOfDaySchema,
     quietUntil: timeOfDaySchema,
     maxPerHour: z.number().int().min(1).max(60),
@@ -302,6 +304,7 @@ const telegramConfigSchema = z
       .regex(/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/, 'owner/model'),
     // Telegram hands a bot at most 20 MB, so the ceiling is a real one.
     maxAttachmentMb: z.number().int().min(1).max(20),
+    stream: z.boolean(),
     push: telegramPushConfigSchema,
   })
   .partial();

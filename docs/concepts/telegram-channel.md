@@ -266,15 +266,45 @@ sendChatAction(typing)   alle 4 s, solange der Turn laeuft (Telegram vergisst es
 for await (event of assistant.chat({ text, sessionId, permission, signal })) …
 ```
 
-Gestreamt wird nicht. Telegram kennt kein stueckweises Nachliefern, und `editMessageText` im
-Sekundentakt laeuft in die Ratenbegrenzung. Also: Tipp-Anzeige waehrend des Laufs, am Ende der Text
-aus dem `done`-Ereignis.
+**Gestreamt wird doch** (`gateways.telegram.stream`, Standard an) – nur nicht so, wie Telegram es
+nicht kann. Es gibt kein stueckweises Nachliefern; es gibt `editMessageText`. Also waechst *eine*
+Nachricht mit: die Deltas aus `assistant.chat` laufen in einen Puffer, der nach 0,5 s zum ersten
+Mal und danach alle 1,5 s geschrieben wird. Das liest sich auf dem Handy wie Tippen und kostet bei
+einer langen Antwort Dutzende Aufrufe statt Hunderte – die Ratengrenze ist der ganze Grund fuer den
+Takt, und der Schalter ist fuer die langsame Leitung da.
+
+Zwei Dinge daran waren im ersten Anlauf falsch und sind es wert, festgehalten zu werden. Erstens
+war die Drosselung eine *Pruefung* statt eines *Timers*: Ein Delta, das innerhalb des Fensters
+ankam, wartete auf das naechste – was gut geht, solange Text kommt, und in dem Moment schiefgeht, in
+dem er aufhoert. Ein Modell, das einen Satz schreibt und dann zu einem Werkzeug greift, verstummt
+fuer Sekunden, und der Satz stand halb da. Jetzt folgt auf jedes Delta ein Schreibvorgang, fruehestens
+nach dem Drosselabstand. Zweitens ueberschrieb der Schlussdurchlauf den gestreamten Text mit dem
+`done`-Text – und der ist bei Claude Code das `result`-Feld, also *nur die Schlussantwort*. Damit
+verschwand jeder Zwischenschritt in der Sekunde, in der der Turn fertig war. `mergeFinalText` haelt
+es jetzt andersherum: Was gestreamt wurde, steht; die Schlussantwort wird nur ergaenzt, wenn sie
+nicht ohnehin schon drinsteht (verglichen ohne Ruecksicht auf Zeilenumbrueche).
+
+Lange Antworten funktionieren weiter, weil bei jedem Schreiben die Stuecke aus dem *ganzen* Text
+neu berechnet werden. `splitMessage` schneidet gierig von vorn, also steht jedes Stueck ausser dem
+letzten fest, sobald es existiert: Fruehere Nachrichten bleiben unberuehrt, die letzte wird
+editiert, und waechst der Text darueber hinaus, kommt eine neue dazu. Das letzte Wort hat das
+`done`-Ereignis – was die Deltas ergeben haben, zaehlt weniger als der fertige Text.
+
+Ist Streaming aus, bleibt es beim alten Weg: Tipp-Anzeige waehrend des Laufs, am Ende der Text aus
+dem `done`-Ereignis.
 
 - **Laenge**: Aufteilen bei 4096 Zeichen, bevorzugt an Absatz-, sonst an Zeilengrenzen, Codebloecke
   nicht mittendrin trennen.
-- **Formatierung**: `parse_mode: 'HTML'` mit vollstaendigem Escaping von `&`, `<`, `>`, Codebloecke
-  als `<pre>`. MarkdownV2 verlangt das Maskieren von siebzehn Zeichen und zerbricht an jeder zweiten
-  Modellantwort; HTML hat drei.
+- **Formatierung**: `parse_mode: 'HTML'` mit vollstaendigem Escaping von `&`, `<`, `>`. MarkdownV2
+  verlangt das Maskieren von siebzehn Zeichen und zerbricht an jeder zweiten Modellantwort; HTML hat
+  drei. Die Umwandlung selbst steht in `gateways/markdown.ts`: Die Modelle schreiben Markdown,
+  Telegram liest seinen eigenen kleinen HTML-Dialekt, und dazwischen lag lange nichts – `**fett**`
+  kam als `**fett**` an. Der Konverter macht aus Ueberschriften fette Zeilen, aus Aufzaehlungen `•`,
+  aus Trennlinien einen Gedankenstrich, und uebersetzt fett, kursiv, durchgestrichen, Code, Zitate,
+  Spoiler und Links. Zwei Regeln tragen ihn: **nur Tags, die Telegram kennt** (alles andere ist kein
+  Schoenheitsfehler, sondern ein 400 – die Nachricht geht komplett verloren), und **nie ein
+  unbalanciertes Tag**, weil derselbe Konverter auch auf halb geschriebenem Text laeuft (siehe
+  Streaming oben). Ein angefangenes `**` bleibt darum ein Sternchen, bis sein Partner eintrifft.
 - **Lange Laeufe**: Meldet der Turn nach 20 Sekunden noch nichts, erscheint *eine* Zeile, die
   danach per `editMessageText` fortgeschrieben wird (fruehestens alle 12 s, und nur wenn sich der
   Text aendert) – nicht mehr eine Zwischenmeldung nach der anderen. Auf dem Handy ist der Stapel
@@ -315,7 +345,7 @@ fremden Text. Nach 30 Tagen kehrt ein Besen beim Start durch.
 1,5 s gesammelt und als *eine* Nachricht uebergeben; sonst antwortet der erste Turn, bevor das
 dritte Bild da ist.
 
-**Sprachnachrichten** werden transkribiert, bevor der Turn laeuft (`services/stt.ts`, siehe 6.7),
+**Sprachnachrichten** werden transkribiert, bevor der Turn laeuft (`services/stt.ts`, siehe 6.6),
 und das Transkript kommt dem Nutzer als `🎤 …` zurueck: eine Erkennung, die niemand pruefen kann,
 ist ein missverstandener Satz, den der Assistent mit ernster Miene beantwortet.
 
@@ -465,7 +495,36 @@ und `assignments`, `cron`, `sleep` und `tasks` stehen neu auf `false`. Was gelau
 lange, steht in der Web-App; ein Summen pro erledigtem Auftrag ist der schnellste Weg, einen Kanal
 stummzuschalten.
 
-### 7.2 Drosselung, Ruhezeiten, Empfaenger
+### 7.2 Die Kommentarspur: Aktivitaet und Werkzeugaufrufe
+
+Zwei Schalter, beide standardmaessig aus, beide fuer dasselbe Beduerfnis: sehen, was gerade
+passiert, statt nur zu erfahren, was fertig ist.
+
+| Schalter | Quelle | Beispielzeile |
+|---|---|---|
+| `push.activity` | `memory`- und `changed`-Ereignisse – also genau das, was die Web-App unten als Toast zeigt | `🧠 Jonas bevorzugt kurze Antworten.` / `📝 Skill saved · telegram-triage` |
+| `push.tools` | `tool`-Ereignisse, nur `start` | `🔧 Read · package.json` |
+
+Dafuer sendet `Assistant.chat()` Werkzeugaufrufe zusaetzlich auf dem eigenen Emitter aus, nicht nur
+in den Turn-Stream: Ein Kanal, der den Turn nicht gestartet hat – das Handy, das einem Zeitplan
+zusieht – haette sonst keine Moeglichkeit, davon zu erfahren. Die Web-UI liest die Ereignisse
+weiterhin aus ihrem eigenen Stream; niemand muss zuhoeren.
+
+Die Spur laeuft **neben** der Meldungslogik aus 7.1, nicht durch sie, und das ist der ganze Punkt:
+
+- **Gebuendelt**: Zeilen werden drei Sekunden gesammelt und als *eine* Nachricht geschickt, hoechstens
+  zehn Zeilen, der Rest als "… and N more". Ein Turn mit zwanzig Werkzeugaufrufen ist damit zwei
+  Nachrichten, nicht zwanzig.
+- **Lautlos**: `disable_notification`. Ein Mitschrieb gehoert in den Chat, nicht auf den Sperrbildschirm.
+- **Nie gepuffert**: In der Ruhezeit werden die Zeilen *verworfen* statt aufgehoben. Ein Werkzeugaufruf
+  von heute Nacht ist morgens keine Nachricht mehr – und eine Zusammenfassung "137 Werkzeugaufrufe"
+  hilft niemandem.
+- **Eigenes Kontingent**: Vierzig Nachrichten pro Stunde, und vor allem zaehlen sie *nicht* gegen
+  `maxPerHour`. Sonst haette ein betriebsamer Nachmittag genau das Budget aufgebraucht, das es gibt,
+  damit eine Mail durchkommt. Ist das Kontingent erschoepft, schweigt die Spur bis zur naechsten
+  Stunde und sagt es einmal im Log.
+
+### 7.3 Drosselung, Ruhezeiten, Empfaenger
 
 ```ts
 export interface TelegramPushConfig {
@@ -505,7 +564,7 @@ export interface TelegramPushConfig {
 - **Zustellfehler**: Blockiert der Empfaenger den Bot (`403`), wird der Push fuer diese ID
   abgeschaltet und es entsteht eine Warnzeile – nicht endlos weiterversuchen.
 
-### 7.3 Das `notify`-Werkzeug
+### 7.4 Das `notify`-Werkzeug
 
 Damit Jarvis von sich aus schreiben kann, kommt ein Werkzeug in `ORG_TOOLS` hinzu:
 
@@ -543,8 +602,9 @@ an dieselbe Stelle, ohne dass `core` davon erfaehrt.
 | `packages/server/src/gateways/telegram.ts` | neu | Poller, Aufruf der Wache aus `policy.ts`, Turn-Bruecke, Versand |
 | `packages/server/src/gateways/telegram-api.ts` | neu | Duenne Huelle um `api.telegram.org` mit Timeout, Backoff und Token-Maskierung |
 | `packages/server/src/gateways/push.ts` | neu | Ereignis-Abonnent, Ruhezeiten, Drosselung, Zusammenfassung; vermerkt zu jeder Meldung ihre Herkunft (6.5) |
+| `packages/server/src/gateways/markdown.ts` | neu | Markdown zu Telegrams HTML-Dialekt; balanciert auch auf halbem Text (6.3) |
 | `packages/server/src/gateways/attachments.ts` | neu | Ablage im Workspace-Posteingang, Endungen, Besen nach 30 Tagen (6.4) |
-| `packages/server/src/gateways/threads.ts` | neu | Herkunfts-Register, Faden pro Thema, Nachlesen des Originals aus dem Store (6.5) |
+| `packages/server/src/gateways/threads.ts` | neu | Herkunfts-Register, Nachrichten-Ledger, Faden pro Thema, Nachlesen des Originals aus dem Store (6.5) |
 | `packages/server/src/services/stt.ts` | neu | Spracherkennung: lokales Whisper, OpenAI, ElevenLabs; ffmpeg-Dekodierung (6.6) |
 | `packages/server/src/routes/gateways.ts` | neu | `GET /api/gateways`, `POST /api/gateways/:id/test` |
 | `packages/server/src/server.ts` | geaendert | Kanal starten neben `cron.start()`, Routen registrieren, im `onClose` stoppen |
