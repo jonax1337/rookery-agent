@@ -43,6 +43,7 @@ await writeFile(resolve(out, 'package.json'), JSON.stringify({
   license: manifest.license, type: 'module', engines: manifest.engines,
   repository: { type: 'git', url: 'git+https://github.com/jonax1337/rookery-agent.git' },
   homepage: 'https://github.com/jonax1337/rookery-agent#readme',
+  bugs: { url: 'https://github.com/jonax1337/rookery-agent/issues' },
   bin: { rookery: 'scripts/rookery.mjs', rk: 'scripts/rookery.mjs' },
   files: ['packages/*/dist', 'packages/*/package.json', 'scripts/rookery.mjs', 'docs/migration.md'],
   dependencies,
