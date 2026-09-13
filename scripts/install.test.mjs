@@ -1,10 +1,73 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, existsSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, existsSync, rmSync, symlinkSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { psQuote, startupCommand, autostart, linuxService } from './rookery.mjs';
+import { DatabaseSync } from 'node:sqlite';
+import { psQuote, startupCommand, autostart, linuxService, parseMigrationArgs } from './rookery.mjs';
+
+test('migration arguments require an explicit source and opt-in apply', () => {
+  assert.deepEqual(parseMigrationArgs(['hermes']), { source: 'hermes', sourcePath: undefined, apply: false });
+  assert.deepEqual(parseMigrationArgs(['openclaw', '--apply', '--from', '/a profile']), { source: 'openclaw', sourcePath: '/a profile', apply: true });
+  assert.deepEqual(parseMigrationArgs(['hermes', '--file', 'SOUL.md', '--job', 'tea']), { source: 'hermes', sourcePath: undefined, apply: false, selection: { files: ['SOUL.md'], jobs: ['tea'] } });
+  assert.throws(() => parseMigrationArgs(['hermes', '--job', 'tea', '--job', 'tea']), /Duplicate selection/);
+  for (const args of [[], ['other'], ['hermes', '--from'], ['hermes', '--from', '--apply'], ['hermes', '--apply', '--apply'], ['hermes', '--unknown'], ['hermes', '--from', 'a', '--from', 'b']]) {
+    assert.throws(() => parseMigrationArgs(args), /Usage:/);
+  }
+});
+
+test('migration launcher previews without importing and applies only with --apply', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rookery-migrate-cli-'));
+  const home = join(dir, 'rookery');
+  const source = join(dir, 'hermes profile');
+  const workspace = join(home, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(join(source, 'memories'), { recursive: true });
+  mkdirSync(join(source, 'cron'));
+  writeFileSync(join(workspace, 'SOUL.md'), '# Soul\nExisting persona.\n');
+  writeFileSync(join(source, 'SOUL.md'), '# Soul\nYou are Ada, a patient companion.\n');
+  writeFileSync(join(source, 'memories', 'USER.md'), '# User\nThe user prefers tea.\n');
+  writeFileSync(join(source, '.env'), 'TOKEN=never-import-this\n');
+  writeFileSync(join(source, 'cron', 'jobs.json'), JSON.stringify({ jobs: [{ id: 'tea', name: 'Tea reminder', prompt: 'Remind the user to make tea.', schedule: { kind: 'cron', expr: '0 15 * * *' }, enabled: true }] }));
+  const env = { ...process.env, ROOKERY_HOME: home, ROOKERY_WORKSPACE: workspace };
+  const run = (...args) => execFileSync(process.execPath, ['scripts/rookery.mjs', 'migrate', 'hermes', '--from', source, ...args], { env, encoding: 'utf8', stdio: 'pipe' });
+  try {
+    assert.throws(() => execFileSync(process.execPath, ['scripts/rookery.mjs', 'migrate', 'hermes', '--from', join(dir, 'missing')], { env, stdio: 'pipe' }), (error) => {
+      assert.match(error.stderr.toString(), /no applicable plan/);
+      return error.status === 1;
+    });
+    const preview = run();
+    assert.match(preview, /Migration preview:/);
+    assert.match(preview, /No files imported/);
+    assert.match(preview, /Tea reminder/);
+    assert.match(preview, /import paused/);
+    assert.ok(!existsSync(join(home, 'rookery.db')));
+    assert.equal(readFileSync(join(workspace, 'SOUL.md'), 'utf8'), '# Soul\nExisting persona.\n');
+    const selected = run('--file', 'USER.md', '--apply');
+    assert.match(selected, /Imported 1 files/);
+    assert.equal(readFileSync(join(workspace, 'SOUL.md'), 'utf8'), '# Soul\nExisting persona.\n');
+    assert.ok(!existsSync(join(home, 'rookery.db')));
+    const applied = run('--apply');
+    assert.match(applied, /Imported \d+ files/);
+    assert.match(applied, /Imported 1 paused schedules/);
+    assert.match(applied, /Backup and migration report:/);
+    assert.equal(readFileSync(join(workspace, 'SOUL.md'), 'utf8'), readFileSync(join(source, 'SOUL.md'), 'utf8'));
+    assert.equal(readFileSync(join(workspace, 'USER.md'), 'utf8'), readFileSync(join(source, 'memories', 'USER.md'), 'utf8'));
+    assert.equal(readFileSync(join(source, '.env'), 'utf8'), 'TOKEN=never-import-this\n');
+    assert.ok(!existsSync(join(workspace, '.env')));
+    assert.ok(!existsSync(join(home, 'server.log')));
+    const db = new DatabaseSync(join(home, 'rookery.db'), { readOnly: true });
+    try {
+      const job = db.prepare('SELECT prompt, enabled, permission, next_run_at, run_count FROM cron_jobs WHERE name = ?').get('Tea reminder');
+      assert.equal(job.prompt, 'Remind the user to make tea.');
+      assert.equal(job.enabled, 0);
+      assert.equal(job.permission, 'chat');
+      assert.equal(job.next_run_at, null);
+      assert.equal(job.run_count, 0);
+    } finally { db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('Linux unit keeps paths literal and starts the foreground server as the current user', () => {
   const unit = linuxService('/opt/Node App/node', '/home/user/$app%/main.js', '/home/user/"data"', '/usr/bin:/home/user/bin');

@@ -118,6 +118,35 @@ const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
 /** `null` clears a nullable column server-side; `undefined` leaves it alone. */
 export type Nullable<T> = T | null;
 
+export interface AssistantProfile {
+  files: { name: string; content: string }[];
+  warnings: string[];
+}
+
+export type MigrationSource = 'hermes' | 'openclaw';
+export interface MigrationSelection { files: string[]; jobs: string[] }
+export interface MigrationPreview {
+  source: MigrationSource;
+  sourcePath: string;
+  fingerprint: string;
+  files: { sourcePath: string; targetPath: string; bytes: number; conflict: boolean }[];
+  jobs?: {
+    name: string; schedule: string; prompt: string; sourceId: string;
+    kind?: 'assistant' | 'script';
+    remainingRuns?: number;
+    script?: { path: string; runtime: 'python' | 'node' | 'bash' | 'powershell'; noAgent?: boolean };
+    assets?: { sourcePath: string; targetPath: string; bytes: number }[];
+  }[];
+  warnings: string[];
+  canImport: boolean;
+}
+export interface MigrationResult {
+  files: string[];
+  jobs?: string[];
+  backupPath?: string;
+  warnings: string[];
+}
+
 export interface ProjectInput {
   name: string;
   description?: string;
@@ -216,6 +245,13 @@ export const api = {
     request<{ ok: boolean; version: string; providers: ProviderStatus[] }>('/api/health'),
 
   getConfig: () => request<PublicConfig>('/api/config'),
+  getProfile: () => request<AssistantProfile>('/api/profile'),
+  saveProfileFile: (name: string, content: string) =>
+    request<{ ok: true }>('/api/profile/' + encodeURIComponent(name), { method: 'PATCH', ...json({ content }) }),
+  previewMigration: (source: MigrationSource, sourcePath?: string) =>
+    request<MigrationPreview>('/api/migration/preview', { method: 'POST', ...json({ source, sourcePath }) }),
+  importMigration: (preview: MigrationPreview, selection: MigrationSelection) =>
+    request<MigrationResult>('/api/migration/import', { method: 'POST', ...json({ source: preview.source, sourcePath: preview.sourcePath, expectedFingerprint: preview.fingerprint, selection }) }),
   updateConfig: (patch: Partial<PublicConfig>) =>
     request<PublicConfig>('/api/config', { method: 'PATCH', ...json(patch) }),
 

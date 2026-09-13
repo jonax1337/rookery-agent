@@ -15,6 +15,48 @@ async function load(file, bindings) {
   return module.exports;
 }
 
+test('sources map only trailing link lists and preserve streaming, user text, and copy content', async () => {
+  const { splitMessageSources } = await load('runtime/message-sources.ts', {});
+  const markdown = 'An answer.\n\n## Sources\n- [Alpha](https://example.com/a_(b))\n- [Beta](https://example.org)\n- [Alpha](https://example.com/a_(b))';
+  const result = splitMessageSources(markdown);
+  assert.equal(result.text, 'An answer.');
+  assert.deepEqual(result.sources.map(({ title, url }) => [title, url]), [
+    ['Alpha', 'https://example.com/a_(b)'], ['Beta', 'https://example.org/'],
+  ]);
+  for (const heading of ['**Sources:**', 'Quellen:', '### References']) {
+    assert.equal(splitMessageSources(`${heading}\n1. <https://example.com>`).sources.length, 1);
+  }
+  const references = splitMessageSources('See [Alpha][a].\n\n## Sources\n- [Alpha][a]\n\n[a]: https://example.com');
+  assert.equal(references.sources.length, 1);
+  assert.match(references.text, /\[a\]: https:\/\/example.com/);
+  for (const input of [
+    'An ordinary [link](https://example.com).',
+    '```md\n## Sources\n- [Alpha](https://example.com)\n```',
+    '## Sources\n- [Alpha](javascript:alert)',
+    '## Sources\n- [Alpha](https://user:password@example.com)',
+    '## Sources\n- [Alpha](https://example.com)\n- [Incomplete](https://',
+    '## Sources\n- [Alpha](https://example.com) — context that must survive.',
+    '## Sources\n- [Alpha](https://example.com)\n\nA final explanation.',
+  ]) assert.deepEqual(splitMessageSources(input), { text: input, sources: [] });
+
+  const { useRookeryRuntime } = await load('runtime/useRookeryRuntime.ts', {
+    react: { useMemo: (fn) => fn() },
+    '@assistant-ui/react': { useExternalStoreRuntime: (args) => args,
+      WebSpeechDictationAdapter: class {}, WebSpeechSynthesisAdapter: class {} },
+  });
+  const runtime = useRookeryRuntime({
+    chat: { messages: [{ role: 'assistant', content: markdown }], busy: false },
+    sessions: { sessions: [], activeId: 'session' },
+  });
+  const message = runtime.convertMessage(runtime.messages[0]);
+  assert.equal(message.content.filter((part) => part.type === 'source').length, 2);
+  assert.equal(message.metadata.custom.originalMarkdown, markdown);
+  for (const fields of [{ role: 'assistant', running: true }, { role: 'user' }]) {
+    const plain = runtime.convertMessage({ id: 'test', content: markdown, ...fields });
+    assert.deepEqual(plain.content, [{ type: 'text', text: markdown }]);
+  }
+});
+
 test('tools survive streaming, completion, the next turn and transcript reload despite the old opt-out', async (t) => {
   const previousStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
   Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: () => '0' } });

@@ -166,7 +166,7 @@ export const messageSchema = z.object({
 
 /* -------------------------------- schedules -------------------------------- */
 
-export const cronKindSchema = z.enum(['assistant', 'agent']);
+export const cronKindSchema = z.enum(['assistant', 'agent', 'script']);
 
 /** POST /api/cron */
 export const cronJobSchema = z.object({
@@ -185,7 +185,7 @@ export const cronJobSchema = z.object({
 export const patchCronJobSchema = z.object({
   name: z.string().min(1).max(120).optional(),
   schedule: z.string().min(1).max(120).optional(),
-  prompt: z.string().min(1).max(20_000).optional(),
+  prompt: z.string().max(20_000).optional(),
   kind: cronKindSchema.optional(),
   agentId: nullableText,
   projectId: nullableText,

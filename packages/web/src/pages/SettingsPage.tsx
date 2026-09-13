@@ -4,6 +4,7 @@ import {
   AudioLinesIcon,
   BrainIcon,
   Building2Icon,
+  ImportIcon,
   PaletteIcon,
   SlidersHorizontalIcon,
   SquareIcon,
@@ -19,6 +20,8 @@ import { EmptyState } from '@/components/common/empty-state';
 import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
 import { SliderField } from '@/components/forms/form-kit';
 import { VoiceKeys } from '@/components/forms/voice-keys';
+import { AssistantProfile } from '@/components/forms/assistant-profile';
+import { AssistantMigration } from '@/components/forms/assistant-migration';
 import { ProviderIcon } from '@/components/provider-icon';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
@@ -60,7 +63,6 @@ import {
   ItemMedia,
   ItemTitle,
 } from '@/components/ui/item';
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
   Select,
@@ -136,6 +138,12 @@ const SECTIONS = [
     label: 'Identity',
     description: 'The assistant name and how it addresses the user.',
     icon: UserRoundIcon,
+  },
+  {
+    slug: 'migration',
+    label: 'Migration',
+    description: 'Bring your assistant from OpenClaw or Hermes.',
+    icon: ImportIcon,
   },
   {
     slug: 'defaults',
@@ -396,7 +404,8 @@ export function SettingsPage() {
             <SectionSkeleton />
           ) : (
             <>
-              {current.slug === 'identity' ? <IdentitySection draft={draft} set={set} /> : null}
+              {current.slug === 'identity' ? <><IdentitySection draft={draft} set={set} /><AssistantProfile /></> : null}
+              {current.slug === 'migration' ? <AssistantMigration /> : null}
               {current.slug === 'defaults' ? (
                 <DefaultsSection draft={draft} providers={providers} set={set} />
               ) : null}
@@ -427,7 +436,7 @@ export function SettingsPage() {
 /* ------------------------------ section nav ------------------------------ */
 
 /**
- * The left column. A list of `Item`s on a wide screen, a `NativeSelect` on a
+ * The left column. A list of `Item`s on a wide screen, a `Select` on a
  * phone - a six-entry rail would eat the whole first screen there.
  */
 function SectionNav({
@@ -439,20 +448,12 @@ function SectionNav({
 }) {
   return (
     <>
-      <NativeSelect
-        className="w-full md:hidden"
-        aria-label="Settings section"
-        value={current.slug}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        {SECTIONS.map((entry) => (
-          <NativeSelectOption key={entry.slug} value={entry.slug}>
-            {entry.label}
-          </NativeSelectOption>
-        ))}
-      </NativeSelect>
+      <Select value={current.slug} onValueChange={onChange}>
+        <SelectTrigger className="w-full md:hidden" aria-label="Settings section"><SelectValue /></SelectTrigger>
+        <SelectContent>{SECTIONS.map((entry) => <SelectItem key={entry.slug} value={entry.slug}>{entry.label}</SelectItem>)}</SelectContent>
+      </Select>
 
-      <ItemGroup className="hidden gap-1 self-start md:sticky md:top-4 md:flex">
+      <ItemGroup className="hidden gap-1 self-start md:sticky md:top-6 md:flex">
         {SECTIONS.map((entry) => {
           const selected = entry.slug === current.slug;
           return (
@@ -512,7 +513,7 @@ function IdentitySection({
           onChange={(event) => set({ assistantName: event.target.value })}
         />
         <FieldDescription>
-          Used in the system prompt, sidebar and above spoken replies.
+          Display name in the sidebar and spoken replies. Also used by default profile templates; imported Markdown keeps its own identity.
         </FieldDescription>
       </Field>
 

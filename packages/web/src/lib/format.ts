@@ -334,6 +334,7 @@ export const UNTITLED_SESSION = 'New conversation';
  * what it is rather than left with an empty Wer-column.
  */
 export const CRON_JOB_KIND_LABEL: Record<CronJobKind, string> = {
+  script: 'Imported script',
   assistant: 'Assistant',
   agent: 'Agent',
   sleep: 'System',

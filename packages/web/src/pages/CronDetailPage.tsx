@@ -93,6 +93,22 @@ export function CronDetailPage() {
   }, [live, running, reload]);
 
   const job = detail?.job;
+  const scriptNeedsReview = job?.kind === 'script' && job.permission !== 'full';
+  const exhausted = job?.remainingRuns === 0;
+
+  const reviewScript = useCallback(async (): Promise<void> => {
+    if (!id || !job?.script) return;
+    const approved = await confirm({
+      title: 'Grant this script Full access?',
+      description: 'The script runs directly on this computer with your user permissions. Review the source below, its dependencies and any external actions before granting access. This does not start or enable the schedule.',
+      confirmLabel: 'Grant Full access',
+    });
+    if (!approved) return;
+    setBusy(true);
+    try { await api.updateCronJob(id, { permission: 'full' }); await reload(); }
+    catch (caught) { reportFailure('Review script', caught); }
+    finally { setBusy(false); }
+  }, [confirm, id, job, reload]);
 
   const runNow = useCallback(async (): Promise<void> => {
     if (!id) return;
@@ -155,12 +171,12 @@ export function CronDetailPage() {
             <Switch
               id="zeitplan-aktiv"
               checked={job.enabled}
-              disabled={busy}
+              disabled={busy || scriptNeedsReview || exhausted}
               onCheckedChange={(checked) => void toggle(checked)}
             />
             Active
           </Label>
-          <Button size="sm" disabled={running || busy} onClick={() => void runNow()}>
+          <Button size="sm" disabled={running || busy || scriptNeedsReview || exhausted} onClick={() => void runNow()}>
             {running ? (
               <Spinner aria-label="Running" data-icon="inline-start" />
             ) : (
@@ -199,7 +215,7 @@ export function CronDetailPage() {
         </div>
       ) : undefined,
     },
-    [busy, job, managed, running, remove, runNow, toggle],
+    [busy, job, managed, running, remove, runNow, toggle, scriptNeedsReview, exhausted],
   );
 
   /* -------------------------------- Spalten ------------------------------- */
@@ -331,6 +347,26 @@ export function CronDetailPage() {
     <PageBody>
       {dialog}
 
+      {job.script && (
+        <div className="px-4 lg:px-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Imported script</CardTitle>
+              <CardDescription>
+                {job.script.noAgent ? 'Runs without a model. Empty output stays quiet.' : 'Runs before the assistant and passes its output as context.'}
+                {' '}Review dependencies and paths from the previous installation. Provider credentials and source environment files are not imported. Runs stop after two minutes.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="break-all font-mono text-xs">{job.script.path}</p>
+              {detail.scriptError && <p className="text-sm text-destructive">{detail.scriptError}</p>}
+              {detail.scriptSource !== undefined && <details><summary className="cursor-pointer text-sm">Review script source</summary><pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded border p-3 text-xs">{detail.scriptSource}</pre></details>}
+              {scriptNeedsReview && <Button disabled={busy || Boolean(detail.scriptError)} onClick={() => void reviewScript()}>Review and grant Full access</Button>}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       <StatCards
         items={[
           {
@@ -338,7 +374,7 @@ export function CronDetailPage() {
             value: formatNumber(job.runCount),
             badge: job.once ? <Badge variant="outline">once</Badge> : undefined,
             headline: job.lastRunAt ? 'Last run ' + timeAgo(job.lastRunAt) : 'Not run yet',
-            footnote: 'Created on ' + formatDateTime(job.createdAt),
+            footnote: job.remainingRuns !== undefined ? job.remainingRuns + ' runs remaining' : 'Created on ' + formatDateTime(job.createdAt),
           },
           {
             label: 'Latest status',
@@ -384,7 +420,7 @@ export function CronDetailPage() {
               <EmptyState
                 icon={PencilIcon}
                 title="No custom instructions provided"
-                description="Without instructions, this schedule does not perform any custom work."
+                description={job.script ? 'The imported script defines the work.' : 'Without instructions, this schedule does not perform any custom work.'}
                 variant="plain"
                 size="sm"
                 {...(managed
@@ -476,8 +512,7 @@ export function CronDetailPage() {
             icon={HistoryIcon}
             title="Not run yet"
             description="When this schedule runs, automatically or manually, its run and report appear here."
-            actionLabel="Run now"
-            onAction={() => void runNow()}
+            {...(!scriptNeedsReview && !exhausted ? { actionLabel: 'Run now', onAction: () => void runNow() } : {})}
             variant="plain"
             size="sm"
           />

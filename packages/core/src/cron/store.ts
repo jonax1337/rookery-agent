@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type {
   CronJob,
   CronJobKind,
+  CronScript,
   CronRun,
   CronRunStatus,
   CronTrigger,
@@ -31,6 +32,8 @@ export class CronStore {
     name: string;
     schedule: string;
     kind: CronJobKind;
+    script?: CronScript;
+    remainingRuns?: number;
     prompt: string;
     agentId?: string;
     projectId?: string;
@@ -47,6 +50,8 @@ export class CronStore {
       name: input.name.trim() || 'Untitled schedule',
       schedule: input.schedule.trim(),
       kind: input.kind,
+      script: input.script,
+      remainingRuns: input.remainingRuns,
       prompt: input.prompt.trim(),
       agentId: blank(input.agentId),
       projectId: blank(input.projectId),
@@ -63,8 +68,8 @@ export class CronStore {
       .prepare(
         `INSERT INTO cron_jobs
            (id, org_id, name, schedule, kind, prompt, agent_id, project_id, permission, enabled, once,
-            created_by, created_at, updated_at, next_run_at, run_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+            created_by, created_at, updated_at, next_run_at, run_count, script_json, remaining_runs)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       )
       .run(
         job.id,
@@ -82,6 +87,8 @@ export class CronStore {
         now,
         now,
         job.nextRunAt ?? null,
+        job.script ? JSON.stringify(job.script) : null,
+        job.remainingRuns ?? null,
       );
     return job;
   }
@@ -131,6 +138,8 @@ export class CronStore {
       name?: string;
       schedule?: string;
       kind?: CronJobKind;
+      script?: CronScript | null;
+      remainingRuns?: number | null;
       prompt?: string;
       agentId?: string | null;
       projectId?: string | null;
@@ -153,6 +162,8 @@ export class CronStore {
         name: patch.name?.trim(),
         schedule: patch.schedule?.trim(),
         kind: patch.kind,
+        script_json: patch.script === undefined ? undefined : patch.script === null ? null : JSON.stringify(patch.script),
+        remaining_runs: patch.remainingRuns,
         prompt: patch.prompt?.trim(),
         agent_id: patch.agentId,
         project_id: patch.projectId,
@@ -292,6 +303,8 @@ function mapJob(row: Row): CronJob {
     name: row.name as string,
     schedule: row.schedule as string,
     kind: (row.kind as CronJobKind) ?? 'assistant',
+    script: row.script_json ? JSON.parse(String(row.script_json)) as CronScript : undefined,
+    remainingRuns: optionalNumber(row.remaining_runs),
     prompt: row.prompt as string,
     agentId: optional(row.agent_id),
     projectId: optional(row.project_id),

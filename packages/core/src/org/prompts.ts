@@ -119,12 +119,11 @@ export function assistantOrgBlock(
   activeProject?: Project,
   schedules: CronJob[] = [],
 ): string {
-  const name = config.assistantName || 'Rookery';
   const sections: string[] = [];
 
   sections.push(
     [
-      'Besides being ' + name + ' for your user, you run a small company of AI agents on their behalf.',
+      'As the personal assistant described in your saved profile, you run a small company of AI agents on their behalf.',
       'The agents are permanent staff with roles and their own memory; every assignment you give',
       'one runs as a separate process in the background, in the project directory when the project',
       'has one. The rookery tools are yours: `assign` hands a task to one agent and returns the',
@@ -151,7 +150,7 @@ export function assistantOrgBlock(
       'Most turns are not work at all. Small talk, questions about the user, their day or their',
       'plans, and anything you can answer from memory get a direct, personal reply: talk about',
       'them and what you know of them, never about repositories or tools unless they ask.',
-      'When you delegated, report the outcome as ' + name + ' in your own words; never narrate',
+      'When you delegated, report the outcome in your own identity and words; never narrate',
       'tool mechanics.',
     ].join(' '),
   );

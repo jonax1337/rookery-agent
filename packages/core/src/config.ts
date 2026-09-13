@@ -1,7 +1,8 @@
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import type { EffortLevel, GatewaysConfig, PermissionLevel, ProviderId, RookeryConfig } from './types.js';
+import { ensureProfile } from './profile.js';
 
 /**
  * Config resolution order, later wins:
@@ -79,8 +80,8 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     elevenLabsVoiceId: '',
     elevenLabsModel: 'eleven_multilingual_v2',
     openaiVoice: 'onyx',
-    jarvisEffect: true,
-    style: 'jarvis',
+    jarvisEffect: false,
+    style: 'neutral',
   },
   org: {
     maxConcurrentAssignments: 4,
@@ -234,7 +235,17 @@ export function loadConfig(overrides: Partial<RookeryConfig> = {}): RookeryConfi
   if (!config.defaultModel) delete config.defaultModel;
   if (!config.defaultEffort) delete config.defaultEffort;
 
+  const upgradingLegacy = existsSync(join(config.home, 'rookery.db')) || existsSync(join(config.workspace, 'CLAUDE.md'));
+  // Existing users keep the previous persona and spoken register when upgrading.
+  if (upgradingLegacy && !existsSync(join(config.workspace, 'SOUL.md'))) {
+    const previous = merge(merge(merge({ voice: { jarvisEffect: true, style: 'jarvis' } }, fileConfig), envPatch), overrides);
+    config.voice = merge(config.voice, previous.voice);
+    // Persist the previous defaults once, so subsequent loads preserve the old voice too.
+    mkdirSync(config.home, { recursive: true });
+    writeFileSync(path, JSON.stringify(merge(fileConfig, { voice: { jarvisEffect: config.voice.jarvisEffect, style: config.voice.style } }), null, 2) + '\n', 'utf8');
+  }
   ensureHome(config.home, config.workspace);
+  ensureProfile(config, upgradingLegacy);
   OVERRIDES.set(config, overrides);
   return config;
 }
@@ -252,6 +263,7 @@ export function ensureHome(home: string, workspace = join(home, 'workspace')): s
 /** Persist a partial config back to ~/.rookery/config.json. */
 export function saveConfig(patch: Partial<RookeryConfig>, home?: string): RookeryConfig {
   const root = home ?? loadConfig().home;
+  loadConfig({ home: root });
   ensureHome(root);
   const path = configPath(root);
   const existing: unknown = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
@@ -292,4 +304,16 @@ export function applyConfig(config: RookeryConfig, patch: Partial<RookeryConfig>
 }
 export function databasePath(config: RookeryConfig): string {
   return join(config.home, 'rookery.db');
+}
+
+/** Projectless staff must not auto-load the assistant's private AGENTS.md or profile. */
+export function agentWorkspace(config: RookeryConfig, id: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Invalid agent workspace ID.');
+  const path = join(config.home, 'agent-workspaces', id);
+  mkdirSync(path, { recursive: true });
+  const fromAssistant = relative(realpathSync(config.workspace), realpathSync(path));
+  if (!fromAssistant || (!isAbsolute(fromAssistant) && fromAssistant !== '..' && !fromAssistant.startsWith('..' + sep))) {
+    throw new Error('Agent workspaces must be outside the assistant workspace. Configure a separate assistant workspace.');
+  }
+  return path;
 }

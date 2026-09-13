@@ -240,6 +240,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
 
   const onCron = (event: AgentEvent): void => {
     if (event.type !== 'cron') return;
+    if (event.job.kind === 'script' && event.run?.status === 'done' && !event.run.result?.trim()) return;
     if (event.deleted || !event.run || event.run.status === 'running') return;
     // A `sleep`-kind schedule also fires its own `sleep` event with the real
     // report; reporting the bare cron run too would say the same thing twice.

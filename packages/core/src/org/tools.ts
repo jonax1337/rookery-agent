@@ -24,6 +24,18 @@ const str = (description: string): Record<string, unknown> => ({ type: 'string',
 
 export const ORG_TOOLS: ToolDefinition[] = [
   {
+    name: 'read_profile',
+    description: 'Read saved identity or memory notes. Names: IDENTITY.md, SOUL.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md or memory/*.md. Use offsets to read beyond context excerpts.',
+    inputSchema: { type: 'object', properties: { name: str('Workspace-relative profile file name.'), offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 24000 } }, required: ['name'], additionalProperties: false },
+    audience: ASSISTANT_ONLY,
+  },
+  {
+    name: 'search_profile',
+    description: 'Search portable Markdown profile and memory notes imported from Hermes or OpenClaw. Returns file names and excerpt offsets for read_profile. Native learned memories use search_memory.',
+    inputSchema: { type: 'object', properties: { query: str('Words to find in the portable notes.') }, required: ['query'], additionalProperties: false },
+    audience: ASSISTANT_ONLY,
+  },
+  {
     name: 'org_overview',
     description:
       'The company you run: teams, agents (with slug, title and manager), projects, and assignments ' +

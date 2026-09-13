@@ -17,7 +17,7 @@ import type {
   TurnUsage,
 } from './types.js';
 import { ASSISTANT_MEMORY_OWNER } from './types.js';
-import { databasePath, loadConfig } from './config.js';
+import { agentWorkspace, databasePath, loadConfig } from './config.js';
 import { createLogger, silentLogger, type Logger } from './logger.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Store } from './memory/store.js';
@@ -33,6 +33,7 @@ import { dormantToolsHint, ensureToolServers, toolServersFor } from './tools/hub
 import { SkillStore, renderSkillsIndex } from './skills/store.js';
 import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
+import { runCronScript } from './cron/script.js';
 import { EventQueue } from './util/queue.js';
 
 /**
@@ -468,6 +469,7 @@ export class Assistant extends EventEmitter {
         })
       : buildSystemPrompt({
           config: this.config,
+          query: prompt,
           memories,
           history,
           resumed,
@@ -497,7 +499,7 @@ export class Assistant extends EventEmitter {
 
     // An agent in a chat may look at its project; the assistant stays in the
     // workspace and is a person, not Claude Code's coding agent.
-    const cwd = agent && project?.path ? project.path : this.config.workspace;
+    const cwd = agent ? (project?.path || agentWorkspace(this.config, agent.id)) : this.config.workspace;
 
     // What this pass of the provider is run with. A turn usually has exactly
     // one pass; see the continuation below for why it sometimes has two.
@@ -604,6 +606,7 @@ export class Assistant extends EventEmitter {
       attached = new Set(next.specs.map((spec) => spec.name));
       passSystemPrompt = buildSystemPrompt({
         config: this.config,
+        query: prompt,
         memories,
         resumed: true,
         voice: input.voice ?? session.kind === 'voice',
@@ -753,6 +756,12 @@ export class Assistant extends EventEmitter {
    */
   async #runScheduled(job: CronJob, run: CronRun, signal: AbortSignal): Promise<CronRunOutcome> {
     void run;
+    if (job.kind === 'script') {
+      const result = await runCronScript(this.config.home, job, signal);
+      if (result.silent) return { status: 'done', result: '', silent: true };
+      if (job.script?.noAgent) return { status: 'done', result: result.output };
+      job = { ...job, prompt: job.prompt + '\n\nThe imported pre-check script produced this data:\n' + result.output };
+    }
     if (job.kind === 'sleep') {
       // The night shift. `prompt` carries the scope, not an instruction:
       // "assistant", "all", or one agent id.
@@ -801,6 +810,7 @@ export class Assistant extends EventEmitter {
       else if (event.type === 'error' && event.fatal) error = event.message;
     }
     if (error && !text) return { status: 'failed', error, sessionId };
+    if (job.kind === 'script' && text.trim() === '[SILENT]') return { status: 'done', result: '', silent: true, sessionId };
     return { status: 'done', result: text, sessionId };
   }
 

@@ -1,8 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
+import { EventEmitter } from 'node:events';
 import { DEFAULT_CONFIG } from '@rookery/core';
 import { registerGatewayRoutes } from '../dist/routes/gateways.js';
+import { attachGatewayPush } from '../dist/gateways/push.js';
+
+test('script watchdogs stay quiet on empty success while failures still notify', async (t) => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.gateways.telegram.allowedUserIds = [7];
+  Object.assign(config.gateways.telegram.push, { enabled: true, cron: true, quietFrom: '00:00', quietUntil: '00:00', maxPerHour: 0 });
+  const assistant = new EventEmitter();
+  const sent = [];
+  const push = attachGatewayPush({ config, assistant, log: { warn() {} } }, { status: () => ({ running: true }), send: async (_id, text) => { sent.push(text); } });
+  t.after(() => push.detach());
+  const job = { id: 'watcher', name: 'Watch', kind: 'script' };
+  assistant.emit('cron', { type: 'cron', job, run: { id: 'quiet', status: 'done', result: '' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent.length, 0);
+  assistant.emit('cron', { type: 'cron', job, run: { id: 'broken', status: 'failed', error: 'missing dependency' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /failed/);
+});
 
 test('gateway test messages use English and only reach an allowed recipient', async (t) => {
   const app = Fastify();

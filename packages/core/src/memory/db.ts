@@ -8,7 +8,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export type Db = DatabaseSync;
 
@@ -404,6 +404,13 @@ function migrate(db: Db): void {
     CREATE INDEX IF NOT EXISTS idx_cron_runs_job
       ON cron_runs(job_id, started_at DESC);
   `);
+
+  if (!hasColumn(db, 'cron_jobs', 'script_json')) {
+    db.exec('ALTER TABLE cron_jobs ADD COLUMN script_json TEXT');
+  }
+  if (!hasColumn(db, 'cron_jobs', 'remaining_runs')) {
+    db.exec('ALTER TABLE cron_jobs ADD COLUMN remaining_runs INTEGER');
+  }
 
   if (!hasColumn(db, 'messages', 'tool_calls')) {
     db.exec('ALTER TABLE messages ADD COLUMN tool_calls TEXT');

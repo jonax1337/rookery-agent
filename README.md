@@ -24,12 +24,12 @@ Run this in PowerShell. The installer downloads the public repository and sets u
 irm https://raw.githubusercontent.com/jonax1337/rookery-agent/main/scripts/install.ps1 | iex
 ```
 
-The installer installs Node.js LTS through winget if Node is missing, downloads and builds Rookery, installs its npm package, starts the server, opens Settings, and enables startup after Windows sign-in. Node installation may show the standard Windows approval dialog. No Git or `.env` editing is needed. An existing Node older than 22.5 must be updated first.
+The installer installs Node.js LTS through winget if Node is missing, downloads and builds Rookery, installs its npm package, starts the server, opens the migration/start-fresh choice in Settings, and enables startup after Windows sign-in. Node installation may show the standard Windows approval dialog. No Git or `.env` editing is needed. An existing Node older than 22.5 must be updated first.
 
 If neither provider CLI is installed, the installer offers Codex or Claude Code and opens that CLI's login flow; you can also skip this step. Existing installations and logins are reused. Select your provider in **Settings**. Configure your name, assistant, models, and voice there; configure Telegram in **Gateways**. Default voice needs no key. Add optional OpenAI/ElevenLabs speech keys directly under **Settings → Voice → Speech service keys**.
 
 ```powershell
-rookery setup           # start, open Settings, enable Windows autostart
+rookery setup           # start, open migration/start-fresh choice, enable autostart
 rookery start           # start in the background (safe to repeat)
 rookery autostart off   # disable future automatic starts; keep data/current server
 rookery autostart on    # enable again
@@ -46,7 +46,7 @@ Requirements: Node.js **22.5+**, npm, curl, and tar. Run as your normal user, wi
 curl -fsSL https://raw.githubusercontent.com/jonax1337/rookery-agent/main/scripts/install.sh | bash
 ```
 
-The installer builds and installs the package under `~/.local`, offers a provider CLI and login if needed, and opens Settings. No Git or `.env` editing is needed. If `rookery` is not found in a new shell, add `~/.local/bin` to your shell's PATH; the absolute command is `~/.local/bin/rookery`.
+The installer builds and installs the package under `~/.local`, offers a provider CLI and login if needed, and opens the migration/start-fresh choice in Settings. No Git or `.env` editing is needed. If `rookery` is not found in a new shell, add `~/.local/bin` to your shell's PATH; the absolute command is `~/.local/bin/rookery`.
 
 With a systemd user session, setup enables `rookery.service` for the **next login**. The initial server runs in the background immediately. The service runs as your user, retaining access to provider logins and the PATH captured during setup. Its unit is stored under `${XDG_CONFIG_HOME:-~/.config}/systemd/user/rookery.service`. After the next login, inspect it with:
 
@@ -92,6 +92,24 @@ The CLI package declares `rookery` and `rk`. npm links them under `node_modules/
 
 The UI and built-in messages are English. New installations use English voice defaults. Existing conversations, memories, agent instructions, and explicitly saved voice settings are preserved. To switch an existing installation's speech, select English and an English voice under **Settings → Voice**; environment overrides also apply on startup.
 
+## Bring your agent from Hermes or OpenClaw
+
+Setup opens **Settings → Migration** (`/settings/migration`). Choose Hermes or OpenClaw, review the detected files and any conflicts, select the individual files and jobs you want, then import. Choose **Start fresh** to keep Rookery's new neutral profile. You can return to Migration later and edit the Markdown files under **Settings → Identity**.
+
+Rookery preserves identity, personality, user knowledge, and Markdown memory in its assistant workspace: `IDENTITY.md`, `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `MEMORY.md`, and `memory/`. Imported instructions use Rookery's tools and permissions; source files stay untouched. Replaced files are backed up. Sessions, credentials, services, and executable skills are not automatically transferred.
+
+Compatible recurring cron jobs transfer as **paused schedules** for review. Five-field cron expressions with assistant text prompts, Hermes script bundles and remaining repeat counts are supported; unsupported timings and execution features appear in the migration warnings. Review permissions, tools, and delivery in **Schedules** before enabling them. Script jobs require source review and an explicit Full access grant before execution.
+
+The standalone launcher also supports a local preview and explicit import:
+
+```bash
+rookery migrate hermes
+rookery migrate openclaw --from /path/to/openclaw/workspace
+rookery migrate hermes --from /path/to/hermes/profile --apply
+```
+
+Without `--apply`, no source files are imported. From a built checkout use `node scripts/rookery.mjs migrate ...`. See [migration and portable identity](docs/migration.md) for source paths, file mappings, backups, and limitations. Preserving persona and knowledge does not guarantee identical answers across models and harnesses.
+
 ## Web app
 
 | Area | What you can do |
@@ -105,7 +123,7 @@ The UI and built-in messages are English. New installations use English voice de
 | Organization | Manage agents, teams, and projects |
 | Memory | Browse memories, explore their 3D graph, and inspect sleep runs |
 | Tools and Skills | Configure MCP servers and create, edit, or import instructions |
-| Settings | Configure identity, providers, memory, voice, and runtime options |
+| Settings | Import a Hermes/OpenClaw profile, edit identity Markdown, and configure providers, memory, voice, and runtime options |
 
 The sidebar provides navigation, new conversation and voice actions, connection status, and search (`Ctrl+K`). Summary totals come from database counts, not capped list responses. Cards based on a limited list describe that basis.
 
@@ -141,7 +159,7 @@ A turn recalls memories, builds context with identity and organization/inbox inf
 
 If the assistant enables a previously unavailable MCP tool server during a turn, the runtime can resume the provider once with updated tools. Output is combined into the same turn, bounded to two passes.
 
-The assistant's working directory defaults to **`~/.rookery/workspace`**, independently of the launch directory. `ROOKERY_HOME` relocates the default workspace; `ROOKERY_WORKSPACE` or configuration can override it. Rookery creates workspace instructions when absent. Agents use their assigned project directories. This selects the working directory; it is not a filesystem isolation guarantee.
+The assistant's working directory defaults to **`~/.rookery/workspace`**, independently of the launch directory. `ROOKERY_HOME` relocates the default workspace; `ROOKERY_WORKSPACE` or configuration can override it. Rookery creates workspace instructions when absent. Agents use their assigned project directories, or a separate `~/.rookery/agent-workspaces/<agent-id>` directory when no project is selected. This selects the working directory; it is not a filesystem isolation guarantee.
 
 The assistant keeps its configured identity. You can start a separate direct conversation with an agent using `--agent` or `/talk`; an existing conversation keeps its counterpart. Switching provider starts a new provider conversation where necessary.
 
@@ -171,7 +189,7 @@ The default agent permission is `read`; agents can override it. Claude's restric
 
 ## Memory
 
-Memories live in `~/.rookery/rookery.db`, using SQLite and built-in `node:sqlite` without a native database build step. Kinds are `fact`, `preference`, `project`, `event`, `summary`, and sleep-generated `insight`.
+Rookery combines portable Markdown knowledge in the assistant workspace (`USER.md`, `MEMORY.md`, and `memory/`) with its existing structured memory in `~/.rookery/rookery.db`. Identity and core Markdown knowledge are loaded for assistant turns; detailed Markdown notes can be retrieved through the assistant's Rookery MCP profile tools. The SQLite bank uses built-in `node:sqlite` without a native database build step. Its kinds are `fact`, `preference`, `project`, `event`, `summary`, and sleep-generated `insight`.
 
 Extraction proposes durable memories after a turn. A gate limits candidates (three per turn by default), filters low-importance candidates without known entities, and reinforces near-duplicates instead of inserting another copy. Deduplication uses lexical similarity, not embeddings.
 

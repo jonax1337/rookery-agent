@@ -8,6 +8,7 @@ import {
   type ThreadMessageLike,
 } from '@assistant-ui/react';
 import { prettyToolName } from '../hooks/useChat';
+import { splitMessageSources } from './message-sources';
 import type { ChatState } from '../hooks/useChat';
 import type {
   EffortLevel,
@@ -92,14 +93,17 @@ function convertMessage(message: RookeryThreadMessage): ThreadMessageLike {
     });
   }
   content.push(...calls.values());
-  if (message.content || content.length === 0) {
-    content.push({ type: 'text', text: message.content });
+  const answer = message.running ? { text: message.content, sources: [] } : splitMessageSources(message.content);
+  if (answer.text || content.length === 0) {
+    content.push({ type: 'text', text: answer.text });
   }
+  content.push(...answer.sources);
 
   return {
     id: message.id,
     role: 'assistant',
     content,
+    metadata: { custom: { originalMarkdown: message.content } },
     status: message.running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
   };
 }

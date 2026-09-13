@@ -179,7 +179,7 @@ test('the assistant runs in the workspace with Rookery tools attached', async ()
   assert.equal(run.cwd, join(home, 'workspace'), 'never the directory Rookery started in');
   assert.equal(run.mcp.name, 'rookery');
   assert.ok(run.mcp.env.ROOKERY_BRIDGE_TOKEN, 'the turn is registered with the bridge');
-  assert.match(run.systemPrompt, /You run a company/);
+  assert.match(run.systemPrompt, /you run a small company of AI agents/);
   assert.equal(events.at(-1).type, 'done');
   assistant.close();
 });
@@ -525,8 +525,9 @@ test('a direct chat with an agent speaks as the agent, with its memory and tools
   assert.match(run.systemPrompt, /You are Mara, Designer/);
   assert.match(run.systemPrompt, /Love whitespace/);
   assert.match(run.systemPrompt, /serif fonts/, 'the agent brings its own memory');
-  assert.doesNotMatch(run.systemPrompt, /You run a company/);
+  assert.doesNotMatch(run.systemPrompt, /you run a small company of AI agents/);
   assert.equal(run.systemPromptMode, 'append');
+  assert.equal(run.cwd, join(assistant.config.home, 'agent-workspaces', mara.id));
   const session = store.getSession(events.find((e) => e.type === 'session').sessionId);
   assert.equal(session.agentId, mara.id);
   assert.equal(assistant.listSessions(10, mara.id).length, 1);

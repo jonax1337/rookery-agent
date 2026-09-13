@@ -207,7 +207,7 @@ export function CronPage() {
             return (
               <Switch
                 checked={job.enabled}
-                disabled={busy.has(job.id)}
+                disabled={busy.has(job.id) || job.kind === 'script' && job.permission !== 'full' || job.remainingRuns === 0}
                 aria-label={job.enabled ? 'Pause schedule' : 'Enable schedule'}
                 onCheckedChange={(checked) => void toggle(job, checked)}
               />
@@ -312,7 +312,7 @@ export function CronPage() {
                   </DropdownMenuItem>
                 </ManagedHint>
                 <DropdownMenuItem
-                  disabled={running || busy.has(job.id)}
+                  disabled={running || busy.has(job.id) || job.kind === 'script' && job.permission !== 'full' || job.remainingRuns === 0}
                   onSelect={() => void runNow(job)}
                 >
                   {running ? (

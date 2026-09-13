@@ -10,6 +10,28 @@ const launcher = fileURLToPath(import.meta.url);
 export const psQuote = (value) => "'" + value.replaceAll("'", "''") + "'";
 const encode = (text) => Buffer.from(text, 'utf16le').toString('base64');
 
+export function parseMigrationArgs(args) {
+  const [source, ...options] = args;
+  const usage = 'Usage: rookery migrate <hermes|openclaw> [--from <path>] [--file <target-path>] [--job <source-id>] [--apply]';
+  if (!['hermes', 'openclaw'].includes(source)) throw new Error(usage);
+  let sourcePath;
+  let apply = false;
+  let selection;
+  for (let i = 0; i < options.length; i++) {
+    if (options[i] === '--apply' && !apply) apply = true;
+    else if (options[i] === '--from' && sourcePath === undefined && options[i + 1] && !options[i + 1].startsWith('--')) sourcePath = options[++i];
+    else if (['--file', '--job'].includes(options[i]) && options[i + 1] && !options[i + 1].startsWith('--')) {
+      selection ??= { files: [], jobs: [] };
+      const group = options[i] === '--file' ? selection.files : selection.jobs;
+      const value = options[++i];
+      if (group.includes(value)) throw new Error('Duplicate selection. ' + usage);
+      group.push(value);
+    }
+    else throw new Error(usage);
+  }
+  return { source, sourcePath, apply, ...(selection ? { selection } : {}) };
+}
+
 export function startupCommand(node, script, home) {
   return `$env:ROOKERY_HOME=${psQuote(home)}; & ${psQuote(node)} ${psQuote(script)} start`;
 }
@@ -96,8 +118,38 @@ async function start(config) {
 
 async function main() {
   const [command, option, ...extra] = process.argv.slice(2);
+  if (command === 'migrate') {
+    const { source, sourcePath, apply, selection } = parseMigrationArgs(process.argv.slice(3));
+    const { loadConfig } = await import('../packages/core/dist/config.js');
+    const { previewMigration, importMigration } = await import('../packages/core/dist/migration.js');
+    const { loadDotEnv } = await import('../packages/server/dist/env.js');
+    loadDotEnv();
+    const config = loadConfig();
+    const preview = previewMigration(config, source, sourcePath);
+    if (selection && (selection.files.some(path => !preview.files.some(file => file.targetPath === path)) || selection.jobs.some(id => !preview.jobs.some(job => job.sourceId === id)))) throw new Error('Unknown selected file or job. Run a preview without selection flags to see available entries.');
+    console.log(`Migration preview: ${source} from ${preview.sourcePath}`);
+    for (const file of preview.files.filter(file => !selection || selection.files.includes(file.targetPath))) console.log(`  ${file.sourcePath} -> ${file.targetPath} (${file.bytes} bytes${file.conflict ? ', replaces existing file with backup' : ''})`);
+    for (const job of preview.jobs.filter(job => !selection || selection.jobs.includes(job.sourceId))) {
+      console.log(`  Schedule [${job.sourceId}] ${JSON.stringify(job.name)}: ${job.schedule} (import paused${job.remainingRuns === undefined ? '' : ', ' + job.remainingRuns + ' runs remaining'})\n    Prompt: ${JSON.stringify(job.prompt)}`);
+      if (job.script) console.log(`    Script: ${job.script.runtime}, ${job.script.noAgent ? 'script only' : 'script followed by assistant'}`);
+      for (const file of job.assets ?? []) console.log(`    ${file.sourcePath} -> ${file.targetPath} (${file.bytes} bytes)`);
+    }
+    for (const warning of preview.warnings) console.log(`Warning: ${warning}`);
+    if (!preview.canImport) throw new Error('Migration has no applicable plan. Resolve the preview warnings first.');
+    if (!apply) {
+      console.log('No files imported or schedules created. Review this preview, then repeat with --apply to import.');
+      return;
+    }
+    const result = importMigration(config, source, sourcePath, preview.fingerprint, selection);
+    console.log(`Imported ${result.files.length} files. Source files are unchanged.`);
+    if (result.jobs.length) console.log(`Imported ${result.jobs.length} paused schedules. Review timing, tools, permissions and delivery in Schedules before enabling.`);
+    if (result.backupPath) console.log(`Backup and migration report: ${result.backupPath}`);
+    for (const warning of result.warnings) console.log(`Warning: ${warning}`);
+    console.log('Open Settings → Identity to review your agent. Start a new conversation for the cleanest transition.');
+    return;
+  }
   if (!['setup', 'start', 'autostart'].includes(command)) {
-    if (command === '--help' || command === '-h') console.log('Installation: rookery setup [--no-autostart] | start | autostart on|off\n');
+    if (command === '--help' || command === '-h') console.log('Installation: rookery setup [--no-autostart] | start | autostart on|off\nMigration: rookery migrate <hermes|openclaw> [--from <path>] [--file <target-path>] [--job <source-id>] [--apply]\n');
     await import('../packages/cli/dist/index.js');
     return;
   }
@@ -117,11 +169,11 @@ async function main() {
   console.log(`Rookery is running: ${url}`);
   if (command === 'setup') {
     if (option !== '--no-autostart') autostart(true, config.home);
-    console.log('Configure your assistant in Settings and Telegram in Gateways. No .env is needed.\nInstall and sign in to Claude Code or Codex, then select that provider in Settings.\nRun rookery doctor to check provider readiness.');
+    console.log('Choose to migrate from Hermes or OpenClaw, or start fresh, at Settings → Migration.\nReview your assistant in Settings → Identity and configure Telegram in Gateways. No .env is needed.\nInstall and sign in to Claude Code or Codex, then select that provider in Settings.\nRun rookery doctor to check provider readiness.');
     const browser = process.platform === 'win32'
-      ? spawn('powershell.exe', ['-NoProfile', '-Command', `Start-Process ${psQuote(url + '/settings')}`], { windowsHide: true, stdio: 'ignore' })
-      : spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url + '/settings'], { stdio: 'ignore' });
-    browser.on('error', () => console.log(`Open ${url}/settings in your browser.`));
+      ? spawn('powershell.exe', ['-NoProfile', '-Command', `Start-Process ${psQuote(url + '/settings/migration')}`], { windowsHide: true, stdio: 'ignore' })
+      : spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url + '/settings/migration'], { stdio: 'ignore' });
+    browser.on('error', () => console.log(`Open ${url}/settings/migration in your browser.`));
     browser.unref();
   }
 }

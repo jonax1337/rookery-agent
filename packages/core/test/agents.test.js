@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildSystemPrompt,
   buildAgentPrompt,
@@ -8,7 +11,7 @@ import {
   toSpeakableText,
   deriveTitle,
   toolsFor,
-  DEFAULT_CONFIG,
+  DEFAULT_CONFIG as BUILTIN_CONFIG,
   COMPUTER_TOOLS,
   computerEngine,
   computerPromptBlock,
@@ -26,6 +29,8 @@ import {
   parseKeyCombo,
   parseKeySequence,
 } from '../dist/index.js';
+
+const DEFAULT_CONFIG = { ...BUILTIN_CONFIG, workspace: mkdtempSync(join(tmpdir(), 'rookery-prompt-')) };
 
 const now = Date.now();
 const org = { id: 'org1', name: 'Rookery & Co.', mission: 'Testing.', createdAt: now, updatedAt: now };

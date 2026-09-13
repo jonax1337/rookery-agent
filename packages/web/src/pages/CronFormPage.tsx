@@ -76,7 +76,7 @@ const PROMPT_PLACEHOLDER =
   'tasks and assignments from the past 24 hours, then summarize in five sentences what ' +
   'happened and what is coming up today.”';
 
-type RunnerChoice = 'assistant' | 'agent';
+type RunnerChoice = 'assistant' | 'agent' | 'script';
 
 interface CronDraft {
   name: string;
@@ -106,11 +106,12 @@ const schema = z
   .object({
     name: z.string().trim().min(1, 'A name is required.'),
     schedule: z.string().trim().min(1, 'An expression is required.'),
-    prompt: z.string().trim().min(1, 'The run needs instructions.'),
-    runner: z.enum(['assistant', 'agent']),
+    prompt: z.string().trim(),
+    runner: z.enum(['assistant', 'agent', 'script']),
     agentId: z.string().nullable(),
   })
   .superRefine((value, context) => {
+    if (value.runner !== 'script' && !value.prompt) context.addIssue({ code: z.ZodIssueCode.custom, path: ['prompt'], message: 'The run needs instructions.' });
     if (value.runner === 'agent' && !value.agentId) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -138,7 +139,7 @@ function draftOf(job: CronJob): CronDraft {
     name: job.name,
     schedule: job.schedule,
     prompt: job.prompt,
-    runner: job.kind === 'agent' ? 'agent' : 'assistant',
+    runner: job.kind === 'script' ? 'script' : job.kind === 'agent' ? 'agent' : 'assistant',
     agentId: job.agentId ?? null,
     projectId: job.projectId ?? null,
     permission: job.permission ?? STANDARD_CHOICE,
@@ -157,6 +158,7 @@ function buildPatch(draft: CronDraft): CronJobPatch {
     name: draft.name.trim(),
     schedule: draft.schedule.trim(),
     prompt: draft.prompt.trim(),
+    ...(draft.runner === 'script' ? { kind: 'script' as const } : {}),
     agentId: draft.runner === 'agent' ? draft.agentId : null,
     projectId: draft.projectId,
     permission: draft.permission === STANDARD_CHOICE ? null : draft.permission,
@@ -482,12 +484,12 @@ export function CronFormPage() {
         <FieldSet>
           <Field>
             <FieldLabel htmlFor="cron-runner-assistant">Execution</FieldLabel>
-            <ChoiceField
+            {job?.script ? <FieldDescription>Imported {job.script.runtime} script. Review the source and grant Full access on the schedule page.</FieldDescription> : <ChoiceField
               id="cron-runner"
               options={RUNNER_OPTIONS}
               value={draft.runner}
               onChange={(runner) => set({ runner })}
-            />
+            />}
           </Field>
 
           {draft.runner === 'agent' ? (
@@ -517,18 +519,18 @@ export function CronFormPage() {
               emptyLabel="No project gefunden"
             />
             <FieldDescription>
-              The project determines which directory the run uses.
+              {job?.script ? 'The script runs in its imported directory. The project applies to the assistant follow-up.' : 'The project determines which directory the run uses.'}
             </FieldDescription>
           </Field>
 
           <Field>
             <FieldLabel htmlFor="cron-permission-standard">Permission</FieldLabel>
-            <ChoiceField
+            {job?.script ? <FieldDescription>{job.permission === 'full' ? 'Full access granted.' : 'Review the script on its schedule page before granting Full access.'}</FieldDescription> : <ChoiceField
               id="cron-permission"
               options={PERMISSION_CHOICES}
               value={draft.permission}
               onChange={(permission) => set({ permission })}
-            />
+            />}
           </Field>
         </FieldSet>
 
@@ -577,6 +579,7 @@ export function CronFormPage() {
             <Switch
               id="cron-enabled"
               checked={draft.enabled}
+              disabled={job?.kind === 'script' && job.permission !== 'full' || job?.remainingRuns === 0}
               onCheckedChange={(enabled) => set({ enabled })}
             />
           </Field>

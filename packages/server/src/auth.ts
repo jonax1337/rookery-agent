@@ -7,6 +7,14 @@ import type {
 } from 'fastify';
 import type { ServerContext } from './context.js';
 
+/** Protect local profile data and host execution even when no bearer token is configured. */
+export async function requireSameOrigin(request: FastifyRequest): Promise<void> {
+  const origin = request.headers.origin;
+  if (!origin && request.headers['sec-fetch-site'] !== 'cross-site') return;
+  if (origin === `${request.protocol}://${request.headers.host}`) return;
+  throw Object.assign(new Error('This operation requires the same origin as the Rookery server.'), { statusCode: 403 });
+}
+
 /**
  * Auth is one shared bearer token, not user accounts.
  *

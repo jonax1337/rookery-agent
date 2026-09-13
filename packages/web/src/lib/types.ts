@@ -388,7 +388,7 @@ export interface TaskPlanResult {
  * them, it carries no prompt a person wrote, and it must not be offered for
  * deletion in the schedules table.
  */
-export type CronJobKind = 'assistant' | 'agent' | 'sleep';
+export type CronJobKind = 'assistant' | 'agent' | 'sleep' | 'script';
 export type CronRunStatus = 'running' | 'done' | 'failed';
 export type CronTrigger = 'schedule' | 'manual';
 
@@ -400,6 +400,8 @@ export interface CronJob {
   /** Five-field cron expression, local time. */
   schedule: string;
   kind: CronJobKind;
+  script?: { path: string; runtime: 'python' | 'node' | 'bash' | 'powershell'; noAgent?: boolean };
+  remainingRuns?: number;
   prompt: string;
   agentId?: string;
   projectId?: string;
@@ -444,6 +446,8 @@ export interface CronOverview {
 /** GET /api/cron/:id */
 export interface CronJobDetail {
   job: CronJob;
+  scriptSource?: string;
+  scriptError?: string;
   runs: CronRun[];
   running: boolean;
   agent: Agent | null;

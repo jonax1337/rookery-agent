@@ -8,8 +8,10 @@ import {
 import { File } from "@/components/file";
 import { ThreadFollowupSuggestions } from "@/components/assistant-ui/elements/follow-up-suggestions.aui";
 import { Image } from "@/components/image";
+import { Sources } from "@/components/assistant-ui/elements/sources.aui";
 import { MarkdownText } from "@/components/markdown-text";
 import { useComposerSlots } from "@/components/assistant-ui/composer-slots";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import {
   Reasoning,
   ReasoningContent,
@@ -373,10 +375,20 @@ const AssistantMessage: FC = () => {
             reasoning: ["group-chainOfThought", "group-reasoning"],
             "tool-call": ["group-chainOfThought", "group-tool"],
             "standalone-tool-call": [],
+            source: ["group-sources"],
           })}
         >
           {({ part, children }) => {
             switch (part.type) {
+              case "group-sources":
+                return (
+                  <section aria-label="Sources" className="mt-3">
+                    <p className="text-muted-foreground mb-1 text-xs font-medium">Sources</p>
+                    <div className="flex flex-wrap gap-2">{children}</div>
+                  </section>
+                );
+              case "source":
+                return <Sources {...part} />;
               case "group-chainOfThought":
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
               case "group-tool":
@@ -455,22 +467,25 @@ const AssistantMessage: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
+  const copyText = useAuiState((s) => {
+    const original = s.message.metadata.custom.originalMarkdown;
+    return typeof original === "string" ? original : s.message.content
+      .filter((part) => part.type === "text").map((part) => part.text).join("\n\n");
+  });
+  const { isCopied, copyToClipboard } = useCopyToClipboard();
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning
       autohide="not-last"
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ms-1 flex gap-1 duration-200"
     >
-      <ActionBarPrimitive.Copy asChild>
-        <TooltipIconButton tooltip="Copy">
-          <AuiIf condition={(s) => s.message.isCopied}>
-            <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
-          </AuiIf>
-          <AuiIf condition={(s) => !s.message.isCopied}>
-            <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />
-          </AuiIf>
-        </TooltipIconButton>
-      </ActionBarPrimitive.Copy>
+      <TooltipIconButton tooltip="Copy" disabled={!copyText} onClick={() => copyToClipboard(copyText)}>
+        {isCopied ? (
+          <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
+        ) : (
+          <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />
+        )}
+      </TooltipIconButton>
       <AuiIf condition={(s) => s.thread.capabilities.reload}>
       <ActionBarPrimitive.Reload asChild>
         <TooltipIconButton tooltip="Regenerate">
