@@ -139,6 +139,8 @@ export type AgentEvent =
   | { type: 'assignment'; assignment: AssignmentView }
   /** A message between agents, their manager or the assistant was posted. */
   | { type: 'message'; message: AgentMessage }
+  /** Mail was sent: the user, the assistant, or an agent, to To + Cc. */
+  | { type: 'mail'; mail: Mail }
   /** A task on the board was created or changed state. */
   | { type: 'task'; task: Task }
   /** A schedule was created, edited, deleted, or one of its runs changed state. */
@@ -490,6 +492,49 @@ export interface AgentMessage {
   assignmentId?: string;
   content: string;
   createdAt: number;
+  readAt?: number;
+}
+
+/**
+ * Company mail: To + Cc, a subject, threading, and per-recipient read state -
+ * the real replacement for `AgentMessage`. Mailing an agent's To line
+ * triggers a real run of that agent (see org/controller.ts `#deliverMail`);
+ * Cc only ever delivers, it never starts anything.
+ */
+
+/** Whose mailbox: the user, the assistant, or one agent (`id` set). */
+export interface MailWho {
+  kind: RequesterKind;
+  /** Agent id. Set only when `kind` is 'agent'. */
+  id?: string;
+}
+
+export interface Mail {
+  id: string;
+  orgId: string;
+  fromKind: RequesterKind;
+  /** Set only when `fromKind` is 'agent'. */
+  fromAgentId?: string;
+  subject: string;
+  body: string;
+  /** Shared by every mail in a reply chain; equals `id` for the root mail. */
+  threadId: string;
+  inReplyTo?: string;
+  /** Auto-trigger hop count, the loop guard for mail-triggered runs. */
+  depth: number;
+  /** The run this mail's body came from, when it is an automatic reply. */
+  assignmentId?: string;
+  createdAt: number;
+  recipients: MailRecipient[];
+}
+
+export interface MailRecipient {
+  id: string;
+  mailId: string;
+  recipientKind: RequesterKind;
+  /** Set only when `recipientKind` is 'agent'. */
+  recipientId?: string;
+  box: 'to' | 'cc';
   readAt?: number;
 }
 

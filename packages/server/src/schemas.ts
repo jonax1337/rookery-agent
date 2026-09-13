@@ -22,8 +22,6 @@ export const chatInputSchema = z.object({
   effort: effortSchema.optional(),
   permission: permissionSchema.optional(),
   projectId: z.string().min(1).optional(),
-  /** Talk to this agent instead of the assistant (new sessions only). */
-  agentId: z.string().min(1).optional(),
   voice: z.boolean().optional(),
 });
 
@@ -43,7 +41,6 @@ export const createSessionSchema = z.object({
   provider: providerIdSchema.optional(),
   model: z.string().min(1).optional(),
   projectId: z.string().min(1).optional(),
-  agentId: z.string().min(1).optional(),
 });
 
 export const patchSessionSchema = z.object({
@@ -162,14 +159,17 @@ export const planTaskSchema = z.object({
   hint: z.string().optional(),
 });
 
-export const messageSchema = z.object({
-  /** Agent id; omitted means the assistant. */
-  toAgentId: z.string().optional(),
-  content: z.string().min(1, 'content must not be empty'),
+/** POST /api/org/mail */
+export const sendMailSchema = z.object({
+  to: z.array(z.string().min(1)).min(1, 'to must not be empty'),
+  cc: z.array(z.string().min(1)).optional(),
+  subject: z.string().min(1, 'subject must not be empty'),
+  body: z.string().min(1, 'body must not be empty'),
+  inReplyTo: z.string().min(1).optional(),
 });
 
-/** POST /api/org/messages/read */
-export const markMessagesReadSchema = z.object({
+/** POST /api/org/mail/read */
+export const markMailReadSchema = z.object({
   ids: z.array(z.string()).min(1, 'ids must not be empty'),
 });
 

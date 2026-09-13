@@ -73,7 +73,7 @@ import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/comp
 
 export function ChatPage() {
   const navigate = useNavigate();
-  const { chat, counterpart, turn } = useChatSession();
+  const { chat, turn } = useChatSession();
   const { assistantName, config } = useConfig();
   const org = useOrgState();
   const sessions = useSessionsState();
@@ -150,13 +150,7 @@ export function ChatPage() {
   // so the menu is absent rather than disabled.
   usePageMeta(
     {
-      breadcrumb: counterpart
-        ? [
-            { label: 'Conversations', to: '/chats' },
-            { label: counterpart.name, to: '/org/agents/' + counterpart.id },
-            { label: title },
-          ]
-        : [{ label: 'Conversations', to: '/chats' }, { label: title }],
+      breadcrumb: [{ label: 'Conversations', to: '/chats' }, { label: title }],
       actions: activeId ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -240,20 +234,19 @@ export function ChatPage() {
         <EmptyState className="mx-auto mb-8 max-w-none gap-4">
           <div className="flex items-center gap-3 text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
             <span aria-hidden="true" className="h-px w-6 bg-border" />
-            {counterpart?.name ?? assistantName}
+            {assistantName}
             <span aria-hidden="true" className="h-px w-6 bg-border" />
           </div>
           <EmptyStateGreeting className="font-heading text-4xl leading-[1.1] tracking-[-0.035em] text-balance sm:text-5xl">
             {greeting(new Date(), { honorific: config?.honorific, userName: config?.userName })}
           </EmptyStateGreeting>
           <p className="max-w-sm text-center text-sm leading-relaxed text-muted-foreground">
-            {counterpart ? `A question, an idea, or a next step — talk it through with ${counterpart.name}.`
-              : 'A thought, a plan, or a fresh start. What’s on your mind?'}
+            A thought, a plan, or a fresh start. What’s on your mind?
           </p>
         </EmptyState>
       ),
     }),
-    [counterpart, assistantName, config?.honorific, config?.userName],
+    [assistantName, config?.honorific, config?.userName],
   );
 
   /* -------------------------------- page --------------------------------- */
@@ -303,7 +296,7 @@ export function ChatPage() {
         }}
       />
 
-      <span className="sr-only">Conversation with {counterpart?.name ?? assistantName}</span>
+      <span className="sr-only">Conversation with {assistantName}</span>
     </div>
   );
 }

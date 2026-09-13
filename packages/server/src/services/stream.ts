@@ -95,6 +95,8 @@ export type ServerFrame =
   | { type: 'assignment'; event: AgentEvent }
   /** Broadcast: a message between agents or to the assistant was posted. */
   | { type: 'message'; event: AgentEvent }
+  /** Broadcast: mail was sent - a new mail in someone's inbox or outbox. */
+  | { type: 'mail'; event: AgentEvent }
   /** Broadcast: a task on the board was created or changed state. */
   | { type: 'task'; event: AgentEvent }
   /** Broadcast: a schedule was created, edited, deleted, or a run of it changed state. */

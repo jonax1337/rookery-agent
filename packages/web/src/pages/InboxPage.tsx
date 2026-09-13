@@ -1,117 +1,279 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { InboxIcon, SendIcon } from 'lucide-react';
+import { useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
-import { relativeTime } from '@/lib/format';
-import type { AgentMessage } from '@/lib/types';
-import { useConfig, useMailState, useOrgState } from '@/providers/rookery-provider';
+import type { Mail, RequesterKind } from '@/lib/types';
+import { useConfig, useConnection, useMailState, useOrgState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
-import { PageBody } from '@/components/blocks/page-body';
-import { EmptyState, ServerOffline } from '@/components/common/empty-state';
-import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
-import { Badge } from '@/components/ui/badge';
+import { ServerOffline } from '@/components/common/empty-state';
+import type { EntityOption } from '@/components/forms/entity-combobox';
 import { Button } from '@/components/ui/button';
-import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from '@/components/ui/item';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Badge } from '@/components/ui/badge';
+import { Field, FieldLabel } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 
+import { MailDisplay } from '@/components/mail/mail-display';
+import { MailList } from '@/components/mail/mail-list';
+import { MailNav } from '@/components/mail/mail-nav';
+import { MultiEntityCombobox } from '@/components/mail/multi-entity-combobox';
+
 /**
- * The user's own postbox.
+ * Company mail - a real mail program, not a note list.
  *
- * `AgentMessage`/`GET,POST /api/org/messages` were built for the assign/cron
- * flow to hand something back to a person, but nothing ever rendered them -
- * so a schedule saying "I'll get back to you" silently wrote a row nobody
- * ever saw. This is that row's screen: every message the company has posted,
- * newest first, plus a form to write one back to a specific agent.
+ * Chat stopped being how anyone talks to an agent; this is what replaced it.
+ * A mailbox switcher picks whose mail is on screen - the user's own (the only
+ * writable one), the assistant's, or any agent's, all real subject/To/Cc mail
+ * with per-recipient read state. Mailing an agent's To line kicks off a real
+ * run of theirs behind the scenes; its result comes back as a reply here.
  *
- * A top-level page, not an Organization one: the assistant itself writes into
- * this same inbox (a night's summary, a schedule reporting back), not only
- * agents - so it is a personal mailbox for whoever is signed in, and nesting
- * it under Organization misfiled it as an org-management screen it never was.
- * `OrgLayout`'s tab frame (Agents/Teams/Projects) is genuinely about the
- * company; this page is not part of that trio and was already a full-page
- * sibling of it before this move, same as `/org/chat`.
- *
- * Composing always targets an agent (the picker is not clearable): a note
- * with no recipient would be indistinguishable from a schedule's or an
- * agent's own report landing in this same inbox, which is exactly the signal
- * `RookeryProvider` uses to toast a background reply app-wide.
+ * `?mailbox=<id>` pre-selects a mailbox and `?compose=<agentId>` opens Compose
+ * with that agent already in To - the two entry points `AgentDetailPage` and
+ * `OrgAgentsPage` use instead of the "Chat" button they used to have.
  */
+
+function snippetOf(body: string): string {
+  return body.replace(/\s+/g, ' ').trim();
+}
 
 export function InboxPage() {
   const org = useOrgState();
   const { assistantName } = useConfig();
-  const mail = useMailState();
+  const { socket } = useConnection();
+  const mailBadge = useMailState();
 
-  const [messages, setMessages] = useState<AgentMessage[] | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const mailboxId = searchParams.get('mailbox') ?? 'user';
+  const composeAgentId = searchParams.get('compose');
+  const interactive = mailboxId === 'user';
+
+  const [box, setBox] = useState<'inbox' | 'outbox'>('inbox');
+  const [mails, setMails] = useState<Mail[] | null>(null);
   const [offline, setOffline] = useState(false);
-  const [toAgentId, setToAgentId] = useState<string | null>(null);
-  const [content, setContent] = useState('');
+  const [search, setSearch] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
-  const load = useCallback(async (): Promise<void> => {
-    try {
-      const list = await api.messages(200);
-      setMessages(list);
-      setOffline(false);
-
-      const unreadIds = list
-        .filter((message) => !message.toAgentId && message.readAt == null)
-        .map((message) => message.id);
-      if (unreadIds.length > 0) {
-        await api.markMessagesRead(unreadIds);
-        const readAt = Date.now();
-        setMessages((current) =>
-          current?.map((message) =>
-            unreadIds.includes(message.id) ? { ...message, readAt } : message,
-          ) ?? null,
-        );
-      }
-      // The badge in the rail is only a convenience count; the page just made
-      // it stale in one direction or the other, so it re-reads the server.
-      void mail.refresh();
-    } catch {
-      setOffline(true);
-    }
-  }, [mail]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeTo, setComposeTo] = useState<EntityOption[]>([]);
+  const [composeCc, setComposeCc] = useState<EntityOption[]>([]);
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
 
   usePageMeta({ breadcrumb: [{ label: 'Inbox' }] }, []);
 
-  const agentOptions: EntityOption[] = useMemo(
-    () =>
-      org.agents
-        .filter((agent) => !agent.archived)
-        .map((agent) => ({ value: agent.id, label: agent.name, hint: agent.title })),
-    [org.agents],
-  );
+  /* ------------------------------- naming --------------------------------- */
 
   const nameOf = useCallback(
-    (agentId: string | undefined): string => (agentId ? org.agentById(agentId)?.name ?? 'Former agent' : assistantName),
+    (kind: RequesterKind, id?: string): string => {
+      if (kind === 'user') return 'You';
+      if (kind === 'assistant') return assistantName;
+      return id ? (org.agentById(id)?.name ?? 'Former agent') : 'Former agent';
+    },
     [org, assistantName],
   );
 
-  // `fromAgentId` unset is ambiguous by itself: the compose form below always
-  // sets `toAgentId`, so a row with both unset came from a schedule, a night,
-  // or the assistant, never from the user typing here - and a row with
-  // `toAgentId` set but no sender is the one shape only the user can produce.
-  const senderLabel = (message: AgentMessage): string =>
-    message.fromAgentId ? nameOf(message.fromAgentId) : message.toAgentId ? 'You' : assistantName;
+  const mailboxLabel = useCallback(
+    (id: string): string => nameOf(id === 'user' || id === 'assistant' ? id : 'agent', id),
+    [nameOf],
+  );
 
-  const send = async (): Promise<void> => {
-    const trimmed = content.trim();
-    if (!trimmed || !toAgentId) return;
+  const senderLabel = useCallback((mail: Mail): string => nameOf(mail.fromKind, mail.fromAgentId), [nameOf]);
+
+  const namesFor = useCallback(
+    (mail: Mail, box: 'to' | 'cc'): string[] =>
+      mail.recipients
+        .filter((recipient) => recipient.box === box)
+        .map((recipient) => nameOf(recipient.recipientKind, recipient.recipientId)),
+    [nameOf],
+  );
+
+  const recipientSummary = useCallback(
+    (mail: Mail): string => {
+      const to = namesFor(mail, 'to');
+      const cc = namesFor(mail, 'cc');
+      return 'To: ' + (to.join(', ') || '—') + (cc.length > 0 ? ' · Cc: ' + cc.join(', ') : '');
+    },
+    [namesFor],
+  );
+
+  const toLine = useCallback((mail: Mail): string => 'To: ' + (namesFor(mail, 'to').join(', ') || '—'), [namesFor]);
+  const ccLine = useCallback((mail: Mail): string | null => {
+    const cc = namesFor(mail, 'cc');
+    return cc.length > 0 ? 'Cc: ' + cc.join(', ') : null;
+  }, [namesFor]);
+
+  /** The mailbox owner's own recipient row on a mail, when there is one. */
+  const ownRecipient = useCallback(
+    (mail: Mail) =>
+      mail.recipients.find((recipient) =>
+        mailboxId === 'user'
+          ? recipient.recipientKind === 'user'
+          : mailboxId === 'assistant'
+            ? recipient.recipientKind === 'assistant'
+            : recipient.recipientKind === 'agent' && recipient.recipientId === mailboxId,
+      ),
+    [mailboxId],
+  );
+
+  const isUnread = useCallback(
+    (mail: Mail): boolean => (ownRecipient(mail)?.readAt ?? null) == null,
+    [ownRecipient],
+  );
+
+  /** Token `api.sendMail` understands for who sent this mail. */
+  const senderToken = (mail: Mail): string => (mail.fromKind === 'agent' ? (mail.fromAgentId ?? 'assistant') : mail.fromKind);
+
+  /**
+   * Who a reply goes to. Replying to your own sent mail answers the people it
+   * was addressed to, the way a mail client does - taking the sender literally
+   * there would post the reply straight back into your own inbox.
+   */
+  const replyTargets = (mail: Mail): string[] => {
+    if (mail.fromKind !== 'user') return [senderToken(mail)];
+    return mail.recipients
+      .filter((recipient) => recipient.box === 'to' && recipient.recipientKind !== 'user')
+      .map((recipient) =>
+        recipient.recipientKind === 'agent' ? (recipient.recipientId ?? 'assistant') : recipient.recipientKind,
+      );
+  };
+
+  const replyTargetLabel = (mail: Mail): string | null => {
+    const names = replyTargets(mail).map((token) =>
+      token === 'assistant' ? assistantName : (org.agentById(token)?.name ?? 'Former agent'),
+    );
+    return names.length > 0 ? names.join(', ') : null;
+  };
+
+  /* -------------------------------- options -------------------------------- */
+
+  // "You" is left out: mailing yourself is not what compose is for.
+  const recipientOptions: EntityOption[] = useMemo(
+    () => [
+      { value: 'assistant', label: assistantName },
+      ...org.agents.filter((agent) => !agent.archived).map((agent) => ({ value: agent.id, label: agent.name })),
+    ],
+    [org.agents, assistantName],
+  );
+
+  /* --------------------------------- load ---------------------------------- */
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      const list = await api.mail(mailboxId, box, 200);
+      setMails(list);
+      setOffline(false);
+    } catch {
+      setOffline(true);
+    }
+  }, [mailboxId, box]);
+
+  useEffect(() => {
+    setMails(null);
+    setSelectedId(null);
+    void load();
+  }, [load]);
+
+  useEffect(() => socket.onMail(() => void load()), [socket, load]);
+
+  const filtered = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const list = mails ?? [];
+    if (!query) return list;
+    return list.filter(
+      (mail) =>
+        mail.subject.toLowerCase().includes(query) ||
+        mail.body.toLowerCase().includes(query) ||
+        senderLabel(mail).toLowerCase().includes(query),
+    );
+  }, [mails, search, senderLabel]);
+
+  useEffect(() => {
+    if (selectedId && !filtered.some((mail) => mail.id === selectedId)) setSelectedId(null);
+  }, [filtered, selectedId]);
+
+  const selected = useMemo(() => filtered.find((mail) => mail.id === selectedId) ?? null, [filtered, selectedId]);
+
+  /* -------------------------------- actions --------------------------------- */
+
+  const selectMailbox = useCallback(
+    (id: string): void => {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          if (id === 'user') next.delete('mailbox');
+          else next.set('mailbox', id);
+          next.delete('compose');
+          return next;
+        },
+        { replace: true },
+      );
+      setBox('inbox');
+    },
+    [setSearchParams],
+  );
+
+  const select = useCallback(
+    (id: string): void => {
+      setSelectedId(id);
+      if (!interactive || box !== 'inbox') return;
+      const mail = mails?.find((entry) => entry.id === id);
+      const own = mail ? ownRecipient(mail) : undefined;
+      if (!mail || !own || own.readAt != null) return;
+      setMails((current) =>
+        current?.map((entry) =>
+          entry.id === id
+            ? {
+                ...entry,
+                recipients: entry.recipients.map((recipient) =>
+                  recipient.id === own.id ? { ...recipient, readAt: Date.now() } : recipient,
+                ),
+              }
+            : entry,
+        ) ?? null,
+      );
+      void api
+        .markMailRead([own.id])
+        .then(() => void mailBadge.refresh())
+        .catch(() => undefined);
+    },
+    [interactive, box, mails, ownRecipient, mailBadge],
+  );
+
+  const resetCompose = (): void => {
+    setComposeTo([]);
+    setComposeCc([]);
+    setSubject('');
+    setBody('');
+  };
+
+  const submitCompose = async (): Promise<void> => {
+    const trimmedSubject = subject.trim();
+    const trimmedBody = body.trim();
+    if (!trimmedBody || composeTo.length === 0 || sending) return;
     setSending(true);
     try {
-      const message = await api.postMessage({ toAgentId, content: trimmed });
-      setMessages((current) => (current ? [message, ...current] : [message]));
-      setContent('');
-      toast('Note sent to ' + nameOf(toAgentId));
+      await api.sendMail({
+        to: composeTo.map((option) => option.value),
+        ...(composeCc.length > 0 ? { cc: composeCc.map((option) => option.value) } : {}),
+        subject: trimmedSubject || '(No subject)',
+        body: trimmedBody,
+      });
+      resetCompose();
+      setComposeOpen(false);
+      toast('Mail sent');
+      void load();
     } catch (caught) {
       reportFailure('Send', caught);
     } finally {
@@ -119,77 +281,170 @@ export function InboxPage() {
     }
   };
 
-  if (messages === null) {
+  const reply = async (text: string): Promise<void> => {
+    if (!selected) return;
+    const to = replyTargets(selected);
+    if (to.length === 0) return;
+    setSending(true);
+    try {
+      const replySubject = selected.subject.startsWith('Re: ') ? selected.subject : 'Re: ' + selected.subject;
+      await api.sendMail({
+        to,
+        subject: replySubject,
+        body: text,
+        inReplyTo: selected.id,
+      });
+      toast('Reply sent');
+      void load();
+    } catch (caught) {
+      reportFailure('Reply', caught);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  // `?compose=<agentId>` opens Compose pre-filled, from AgentDetailPage/OrgAgentsPage.
+  useEffect(() => {
+    if (!composeAgentId) return;
+    const agent = org.agentById(composeAgentId);
+    setComposeTo([{ value: composeAgentId, label: agent?.name ?? 'Former agent' }]);
+    setComposeOpen(true);
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete('compose');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [composeAgentId, org, setSearchParams]);
+
+  /* --------------------------------- render --------------------------------- */
+
+  if (mails === null) {
     return (
-      <PageBody width="3xl">
-        <div className="flex flex-col gap-3 px-4 lg:px-6">
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
-        </div>
-      </PageBody>
+      <div className="flex flex-col gap-3 p-4 lg:p-6">
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-16 w-full" />
+      </div>
+    );
+  }
+
+  if (offline) {
+    return (
+      <div className="p-4 lg:p-6">
+        <ServerOffline onRetry={() => void load()} />
+      </div>
     );
   }
 
   return (
-    <PageBody width="3xl">
-      <div className="flex flex-col gap-3 px-4 lg:px-6">
-        <h2 className="text-sm font-medium">Write a note</h2>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
-          <EntityCombobox
-            options={agentOptions}
-            value={toAgentId}
-            onChange={setToAgentId}
-            placeholder="To…"
-            clearable={false}
-            className="sm:w-56"
-          />
-          <Textarea
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            placeholder={toAgentId ? 'Note for ' + nameOf(toAgentId) + '…' : 'Pick an agent first…'}
-            className="min-h-20 flex-1"
-          />
+    <div className="flex min-h-0 flex-1">
+      <MailNav
+        agents={org.agents.filter((agent) => !agent.archived)}
+        assistantName={assistantName}
+        mailboxId={mailboxId}
+        onSelect={selectMailbox}
+      />
+
+      {/* `min-w-0`: without it this flex child keeps its `min-width: auto` and
+          a long unwrapped mail line stretches the panel group past the window,
+          pushing the reading pane off screen and defeating every `truncate`. */}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b px-3 py-2">
+          <span className="text-sm font-medium">{mailboxLabel(mailboxId)}</span>
+          {!interactive && (
+            <Badge variant="outline" className="text-muted-foreground">
+              Read-only
+            </Badge>
+          )}
         </div>
-        <div className="flex justify-end">
-          <Button size="sm" onClick={() => void send()} disabled={sending || !content.trim() || !toAgentId}>
-            <SendIcon data-icon="inline-start" />
-            Send
-          </Button>
-        </div>
+
+        <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+          <ResizablePanel defaultSize="38" minSize="24">
+            <MailList
+              mails={filtered}
+              selectedId={selectedId}
+              onSelect={select}
+              box={box}
+              onBoxChange={setBox}
+              interactive={interactive}
+              onCompose={() => setComposeOpen(true)}
+              search={search}
+              onSearch={setSearch}
+              senderLabel={senderLabel}
+              recipientSummary={recipientSummary}
+              isUnread={isUnread}
+            />
+          </ResizablePanel>
+          <ResizableHandle withHandle />
+          <ResizablePanel defaultSize="62" minSize="30">
+            <MailDisplay
+              mail={selected}
+              senderLabel={senderLabel}
+              toLine={toLine}
+              ccLine={ccLine}
+              interactive={interactive}
+              replyTargetName={selected ? replyTargetLabel(selected) : null}
+              onReply={reply}
+              sending={sending}
+            />
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
 
-      <div className="px-4 lg:px-6">
-        {offline ? (
-          <ServerOffline onRetry={() => void load()} />
-        ) : messages.length === 0 ? (
-          <EmptyState
-            icon={InboxIcon}
-            title="No messages yet"
-            description="Notes to and from agents, and schedules reporting back, show up here."
-          />
-        ) : (
-          <ItemGroup>
-            {messages.map((message) => {
-              const unread = !message.toAgentId && message.readAt == null;
-              return (
-                <Item key={message.id} size="sm" variant={unread ? 'outline' : 'default'}>
-                  <ItemContent>
-                    <ItemTitle>
-                      {senderLabel(message)} → {nameOf(message.toAgentId)}
-                      {unread && <Badge variant="secondary">New</Badge>}
-                    </ItemTitle>
-                    <ItemDescription className="whitespace-pre-wrap">{message.content}</ItemDescription>
-                  </ItemContent>
-                  <span className="shrink-0 self-start pt-1 text-xs text-muted-foreground">
-                    {relativeTime(message.createdAt)}
-                  </span>
-                </Item>
-              );
-            })}
-          </ItemGroup>
-        )}
-      </div>
-    </PageBody>
+      <Dialog
+        open={composeOpen}
+        onOpenChange={(open) => {
+          setComposeOpen(open);
+          if (!open) resetCompose();
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New mail</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <Field>
+              <FieldLabel>To</FieldLabel>
+              <MultiEntityCombobox
+                options={recipientOptions}
+                value={composeTo}
+                onChange={setComposeTo}
+                placeholder="Add recipient…"
+              />
+            </Field>
+            <Field>
+              <FieldLabel>Cc</FieldLabel>
+              <MultiEntityCombobox
+                options={recipientOptions}
+                value={composeCc}
+                onChange={setComposeCc}
+                placeholder="Add Cc…"
+              />
+            </Field>
+            <Field>
+              <FieldLabel>Subject</FieldLabel>
+              <Input value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="Subject" />
+            </Field>
+            <Field>
+              <FieldLabel>Body</FieldLabel>
+              <Textarea
+                value={body}
+                onChange={(event) => setBody(event.target.value)}
+                placeholder="Write your message…"
+                className="min-h-32"
+              />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => void submitCompose()} disabled={sending || !body.trim() || composeTo.length === 0}>
+              Send
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

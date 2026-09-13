@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router';
 import { AudioLinesIcon, PlusIcon } from 'lucide-react';
-import { useChatSession, useSessionsState } from '@/providers/rookery-provider';
+import { useChatSession } from '@/providers/rookery-provider';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
@@ -21,27 +21,13 @@ import {
  * rail collapses to icons.
  *
  * The button always starts a brand-new assistant conversation and always
- * reads "New conversation" - it used to switch to "New with {agent.name}"
- * when an agent happened to be selected, back when the sidebar also carried
- * a dropdown to change who the chat hub was talking to. That dropdown is
- * gone: picking a counterpart now only happens on `/org/chat`,
- * `OrgAgentsPage`'s row menu and `AgentDetailPage`'s Chat button, none of
- * which touch this button. Leaving the label counterpart-dependent after
- * that made it read as if it would start a chat with whatever agent was
- * merely selected elsewhere in the app, which it never did.
- *
- * `newConversation()` itself only ever reset the open transcript, not
- * `counterpartId` - so if `/org/chat` or an agent's page had left a
- * counterpart selected, this button's next turn would still have gone to
- * that agent despite the button now unconditionally saying "New
- * conversation". Clearing the counterpart here first is what makes the
- * label true again.
+ * reads "New conversation" - chat is assistant-only, so there is no
+ * counterpart to switch and no label to keep in sync with one.
  */
 
 export function NavPrimary() {
   const { setOpenMobile } = useSidebar();
   const { newConversation } = useChatSession();
-  const { selectCounterpart } = useSessionsState();
 
   const label = 'New conversation';
 
@@ -53,7 +39,6 @@ export function NavPrimary() {
             <SidebarMenuButton
               tooltip={label}
               onClick={() => {
-                selectCounterpart(null);
                 newConversation();
                 setOpenMobile(false);
               }}

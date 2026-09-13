@@ -5,24 +5,21 @@ import type { Message, Session } from '../lib/types';
 /**
  * Session list plus the active session and its transcript.
  *
- * A session belongs to exactly one counterpart: the assistant, or one agent.
- * `counterpartId` (null = the assistant) is what the chat hub is talking to
- * right now, and the list only ever holds that counterpart's conversations -
- * changing it refetches. Opening an existing thread adopts that thread's own
- * counterpart, because a conversation keeps who it is with for life.
+ * Chat is assistant-only: the list always holds the assistant's own
+ * conversations. Agent communication runs through mail instead (`Mail`,
+ * `InboxPage`), never through a chat thread.
  */
 export function useSessions(onOffline?: (offline: boolean) => void) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [counterpartId, setCounterpartId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async (): Promise<Session[]> => {
     try {
-      // Nur die Chats des aktuellen Gegenübers. Die Sprachgespräche wurden hier
-      // einmal zusätzlich geholt; seit /chats sie über die geteilte Gesamtliste
-      // zeigt, hatte dieser zweite Abruf keinen Leser mehr.
-      const list = await api.sessions(50, counterpartId ?? 'assistant', 'chat');
+      // Nur die Sitzungen. Die Sprachgespräche wurden hier einmal zusätzlich
+      // geholt; seit /chats sie über die geteilte Gesamtliste zeigt, hatte
+      // dieser zweite Abruf keinen Leser mehr.
+      const list = await api.sessions(50, 'assistant', 'chat');
       setSessions(list);
       onOffline?.(false);
       return list;
@@ -32,7 +29,7 @@ export function useSessions(onOffline?: (offline: boolean) => void) {
     } finally {
       setLoading(false);
     }
-  }, [counterpartId, onOffline]);
+  }, [onOffline]);
 
   useEffect(() => {
     void refresh();
@@ -40,14 +37,14 @@ export function useSessions(onOffline?: (offline: boolean) => void) {
 
   const create = useCallback(async (): Promise<Session | null> => {
     try {
-      const session = await api.createSession(counterpartId ? { agentId: counterpartId } : {});
+      const session = await api.createSession({});
       setSessions((current) => [session, ...current]);
       setActiveId(session.id);
       return session;
     } catch {
       return null;
     }
-  }, [counterpartId]);
+  }, []);
 
   const remove = useCallback(
     async (id: string): Promise<void> => {
@@ -71,8 +68,6 @@ export function useSessions(onOffline?: (offline: boolean) => void) {
       try {
         const { session, messages } = await api.session(id);
         setActiveId(id);
-        // The thread decides the counterpart, not the other way round.
-        setCounterpartId(session.agentId ?? null);
         return { session, messages };
       } catch {
         return null;
@@ -90,18 +85,10 @@ export function useSessions(onOffline?: (offline: boolean) => void) {
     );
   }, []);
 
-  /** Switch who the chat hub is talking to and start from a blank thread. */
-  const selectCounterpart = useCallback((id: string | null): void => {
-    setCounterpartId(id);
-    setActiveId(null);
-  }, []);
-
   return {
     sessions,
     activeId,
     setActiveId,
-    counterpartId,
-    selectCounterpart,
     loading,
     refresh,
     create,

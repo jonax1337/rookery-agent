@@ -51,7 +51,9 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'every fact, file and constraint it needs. Call assign several times in one message to run ' +
       "agents in parallel. Returns the agent's complete report. With wait=false it returns at once " +
       'with the assignment id and the agent keeps working in the background; check on it with ' +
-      'assignment_status.',
+      'assignment_status. In a chat, name yourself as the agent with wait=false to spin off real ' +
+      "work in the background while the conversation keeps going - your report posts back into " +
+      'the same chat once it finishes. A self-assignment must use wait=false.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -111,32 +113,51 @@ export const ORG_TOOLS: ToolDefinition[] = [
     audience: ASSISTANT_ONLY,
   },
   {
-    name: 'send_message',
+    name: 'send_mail',
     description:
-      'Leave a short message for an agent, or for the assistant (to: "assistant"). Messages wait ' +
-      "in the recipient's inbox until their next assignment or turn. Not for handing out work - " +
-      'use assign for that.',
+      'Send company mail: a subject, a body, To and optionally Cc. Addressing an agent\'s To starts a ' +
+      'real run of that agent with the mail as its task, and its finished result comes back to you ' +
+      'automatically as a reply. Cc only delivers to the mailbox - it never starts anything, so loop ' +
+      'someone in on Cc when they should just know. Address "user" to write to the user directly, or ' +
+      '"assistant" for the assistant. Not for handing out work you need to wait on - use assign for that.',
     inputSchema: {
       type: 'object',
       properties: {
-        to: str('Agent slug or name, or "assistant".'),
-        content: str('The message.'),
+        to: str('Comma-separated agent slugs/names, "user" and/or "assistant".'),
+        cc: str('Comma-separated agent slugs/names, "user" and/or "assistant". Optional.'),
+        subject: str('Subject line.'),
+        body: str('The mail body.'),
+        inReplyTo: str('Id of the mail this replies to, to keep the thread together. Optional.'),
       },
-      required: ['to', 'content'],
+      required: ['to', 'subject', 'body'],
       additionalProperties: false,
     },
     audience: BOTH,
   },
   {
-    name: 'read_inbox',
-    description: 'Unread messages addressed to you. Reading marks them as read.',
+    name: 'read_mail',
+    description: 'Unread mail addressed to you, by To or Cc. Reading marks it as read.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     audience: BOTH,
   },
+  {
+    name: 'read_mail_thread',
+    description:
+      'The full text of one mail conversation, oldest first - only the mails you sent or were To or ' +
+      'Cc on. A mail that starts an assignment names its thread; call this when the answer depends on ' +
+      'what was already said, and skip it when the mail stands on its own.',
+    inputSchema: {
+      type: 'object',
+      properties: { thread: str('Thread id, or the id of any mail in it.') },
+      required: ['thread'],
+      additionalProperties: false,
+    },
+    audience: BOTH,
+  },
   // ASSISTANT_ONLY on purpose: an agent that thinks something deserves the
-  // user's attention writes to its manager (send_message), same as any other
-  // report. Only the assistant decides whether that is worth a push to the
-  // phone - agents never reach the user directly.
+  // user's attention mails its manager, same as any other report, or the
+  // user directly (send_mail allows that). Only the assistant decides
+  // whether that is also worth a push to the phone.
   {
     name: 'notify',
     description:

@@ -105,21 +105,21 @@ test('cron: imported scripts require review, keep silent gates, and forward pre-
   assert.equal(direct.status, 'done');
   assert.equal(direct.result, 'watcher result');
   assert.equal(fake.runs.length, 0, 'script-only jobs never invoke a provider');
-  const inboxCount = store.org.inbox(orgId, null).length;
+  const mailboxCount = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
   writeFileSync(path, 'console.log(JSON.stringify({wakeAgent:false}))');
   await assistant.cron.runNow(job.id);
-  assert.equal(store.org.inbox(orgId, null).length, inboxCount, 'gate suppresses inbox noise');
+  assert.equal(store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length, mailboxCount, 'gate suppresses inbox noise');
   writeFileSync(path, '');
   await assistant.cron.runNow(job.id);
-  assert.equal(store.org.inbox(orgId, null).length, inboxCount, 'empty script-only output stays quiet');
+  assert.equal(store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length, mailboxCount, 'empty script-only output stays quiet');
   assistant.cron.update(job.id, { script: { ...job.script, noAgent: false } });
   writeFileSync(path, 'console.log("sensor data from script")');
   assert.equal((await assistant.cron.runNow(job.id)).status, 'done');
   assert.match(fake.runs.at(-1).prompt, /sensor data from script/);
-  const beforeSilentAgent = store.org.inbox(orgId, null).length;
+  const beforeSilentAgent = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
   fake.provider.run = async function* () { yield { type: 'done', text: '[SILENT]' }; };
   await assistant.cron.runNow(job.id);
-  assert.equal(store.org.inbox(orgId, null).length, beforeSilentAgent, 'Hermes silent agent responses stay quiet');
+  assert.equal(store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length, beforeSilentAgent, 'Hermes silent agent responses stay quiet');
   writeFileSync(path, 'console.error("dependency missing");process.exit(3)');
   const failed = await assistant.cron.runNow(job.id);
   assert.equal(failed.status, 'failed');
@@ -320,9 +320,9 @@ test('cron: a due job runs as the assistant in its own conversation and reports 
   assert.match(fake.runs[0].prompt, /Sag hallo\./);
   assert.match(fake.runs[0].systemPrompt, /Your schedules \(cron jobs/);
 
-  const inbox = store.org.inbox(org.id, null, { unreadOnly: true });
+  const inbox = store.org.mailbox(org.id, { kind: 'user' }, 'inbox', { unreadOnly: true });
   assert.equal(inbox.length, 1);
-  assert.match(inbox[0].content, /Schedule “Minutentakt” .* completed/);
+  assert.match(inbox[0].subject, /Schedule "Minutentakt" completed/);
 
   assert.ok(events.some((event) => event.run?.status === 'running'), 'announced the start');
   assert.ok(events.some((event) => event.run?.status === 'done'), 'announced the end');
@@ -366,8 +366,8 @@ test('cron: a one-shot job switches itself off, and a failure is recorded as suc
   assert.equal(failed.status, 'failed');
   assert.match(failed.error, /boom/);
   assert.equal(assistant.cron.get(failing.id).lastStatus, 'failed');
-  const note = store.org.inbox(org.id, null).find((message) => message.content.includes('Kaputt'));
-  assert.match(note.content, /failed/);
+  const note = store.org.mailbox(org.id, { kind: 'user' }, 'inbox').find((mail) => mail.subject.includes('Kaputt'));
+  assert.match(note.subject, /failed/);
   assistant.close();
 });
 

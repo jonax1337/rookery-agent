@@ -324,6 +324,35 @@ export interface AgentMessage {
   readAt?: number;
 }
 
+export interface MailRecipient {
+  id: string;
+  mailId: string;
+  recipientKind: RequesterKind;
+  /** Set only when `recipientKind` is 'agent'. */
+  recipientId?: string;
+  box: 'to' | 'cc';
+  readAt?: number;
+}
+
+export interface Mail {
+  id: string;
+  orgId: string;
+  fromKind: RequesterKind;
+  /** Set only when `fromKind` is 'agent'. */
+  fromAgentId?: string;
+  subject: string;
+  body: string;
+  /** Shared by every mail in a reply chain; equals `id` for the root mail. */
+  threadId: string;
+  inReplyTo?: string;
+  /** Auto-trigger hop count, the loop guard for mail-triggered runs. */
+  depth: number;
+  /** The run this mail's body came from, when it is an automatic reply. */
+  assignmentId?: string;
+  createdAt: number;
+  recipients: MailRecipient[];
+}
+
 /* ----------------------------------- tasks ---------------------------------- */
 
 export type TaskStatus = 'open' | 'planned' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -531,6 +560,8 @@ export type AgentEvent =
   | { type: 'assignment'; assignment: AssignmentView }
   /** A message between agents, their manager or the assistant was posted. */
   | { type: 'message'; message: AgentMessage }
+  /** Mail was sent - a new mail in someone's inbox or outbox. */
+  | { type: 'mail'; mail: Mail }
   /** A task on the board was created or changed state. */
   | { type: 'task'; task: Task }
   /** A schedule was created, edited, deleted, or one of its runs changed state. */
@@ -996,6 +1027,8 @@ export type ServerFrame =
   | { type: 'memory'; event: { sessionId: string; stored: MemoryRecord[] } }
   | { type: 'assignment'; event: AgentEvent }
   | { type: 'message'; event: AgentEvent }
+  /** Broadcast: mail was sent - a new mail in someone's inbox or outbox. */
+  | { type: 'mail'; event: AgentEvent }
   /** Broadcast: a task on the board was created or changed state. */
   | { type: 'task'; event: AgentEvent }
   /** Broadcast: a schedule or one of its runs changed. */

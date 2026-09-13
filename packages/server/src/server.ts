@@ -153,6 +153,9 @@ export async function buildServer(
   const onMessage = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'message', event });
   };
+  const onMail = (event: AgentEvent): void => {
+    for (const socket of context.sockets) sendFrame(socket, { type: 'mail', event });
+  };
   const onChanged = (change: { kind: string; id: string }): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'changed', change });
   };
@@ -169,6 +172,7 @@ export async function buildServer(
   };
   assistant.on('assignment', onAssignment);
   assistant.on('message', onMessage);
+  assistant.on('mail', onMail);
   assistant.on('changed', onChanged);
   assistant.on('task', onTask);
   assistant.on('cron', onCron);
@@ -263,6 +267,7 @@ export async function buildServer(
     assistant.off('memory', onMemory);
     assistant.off('assignment', onAssignment);
     assistant.off('message', onMessage);
+    assistant.off('mail', onMail);
     assistant.off('changed', onChanged);
     assistant.off('task', onTask);
     assistant.off('cron', onCron);

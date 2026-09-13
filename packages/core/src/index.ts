@@ -78,12 +78,11 @@ export {
 export { BridgeServer, bridgeScriptPath, type ToolCallResult, type ToolHandler } from './org/bridge.js';
 export {
   assistantOrgBlock,
-  buildAgentChatPrompt,
   buildAgentPrompt,
   renderBoard,
   renderInbox,
+  renderMail,
   renderOrgOverview,
-  type AgentChatPromptInput,
   type AgentPromptInput,
   type OrgSnapshot,
 } from './org/prompts.js';

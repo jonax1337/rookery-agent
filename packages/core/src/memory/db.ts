@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
 
@@ -8,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export type Db = DatabaseSync;
 
@@ -446,10 +447,84 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE projects ADD COLUMN mcp_trust TEXT');
   }
 
+  // Schema 10 -> 11: mail replaces agent_messages. To + Cc, a subject, a
+  // thread, and per-recipient read state - things one row per message
+  // (agent_messages) cannot express. agent_messages stays untouched rather
+  // than dropped; nothing reads or writes it once the org tools switch over.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mail (
+      id            TEXT PRIMARY KEY,
+      org_id        TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      from_kind     TEXT NOT NULL,
+      from_agent_id TEXT,
+      subject       TEXT NOT NULL,
+      body          TEXT NOT NULL,
+      thread_id     TEXT NOT NULL,
+      in_reply_to   TEXT,
+      depth         INTEGER NOT NULL DEFAULT 0,
+      assignment_id TEXT,
+      created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mail_thread ON mail(org_id, thread_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS mail_recipients (
+      id             TEXT PRIMARY KEY,
+      mail_id        TEXT NOT NULL REFERENCES mail(id) ON DELETE CASCADE,
+      recipient_kind TEXT NOT NULL,
+      recipient_id   TEXT,
+      box            TEXT NOT NULL,
+      read_at        INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_mail_recipients_box
+      ON mail_recipients(recipient_kind, recipient_id, read_at, mail_id);
+  `);
+
+  migrateAgentMessagesToMail(db);
+
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',
     String(SCHEMA_VERSION),
   );
+}
+
+/**
+ * One-time copy of every `agent_messages` row into `mail` + `mail_recipients`,
+ * guarded by a `meta` flag so a restart never duplicates it. Reuses each
+ * message's own id as its mail id (both are already unique, and it makes the
+ * migration trivially idempotent to reason about even without the flag).
+ */
+function migrateAgentMessagesToMail(db: Db): void {
+  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_migrated_v1'").get() as
+    | { value: string }
+    | undefined;
+  if (done) return;
+
+  const rows = db.prepare('SELECT * FROM agent_messages').all() as Record<string, unknown>[];
+  const insertMail = db.prepare(
+    `INSERT INTO mail (id, org_id, from_kind, from_agent_id, subject, body, thread_id, in_reply_to, depth, assignment_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`,
+  );
+  const insertRecipient = db.prepare(
+    `INSERT INTO mail_recipients (id, mail_id, recipient_kind, recipient_id, box, read_at)
+     VALUES (?, ?, ?, ?, 'to', ?)`,
+  );
+  for (const row of rows) {
+    const id = row.id as string;
+    const orgId = row.org_id as string;
+    const fromAgentId = (row.from_agent_id as string | null) ?? null;
+    const toAgentId = (row.to_agent_id as string | null) ?? null;
+    const assignmentId = (row.assignment_id as string | null) ?? null;
+    const createdAt = row.created_at as number;
+    const readAt = (row.read_at as number | null) ?? null;
+    const content = String(row.content ?? '');
+    const subject = content.slice(0, 60).trim() || '(no subject)';
+    const fromKind = fromAgentId ? 'agent' : 'assistant';
+    const recipientKind = toAgentId ? 'agent' : 'user';
+    insertMail.run(id, orgId, fromKind, fromAgentId, subject, content, id, assignmentId, createdAt);
+    insertRecipient.run(randomUUID(), id, recipientKind, toAgentId, readAt);
+  }
+
+  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_migrated_v1', '1')").run();
 }
 
 /** Rebuild the FTS index. Used by the CLI after a bulk import. */

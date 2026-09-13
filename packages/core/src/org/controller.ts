@@ -8,6 +8,8 @@ import type {
   AssignmentStatus,
   AssignmentView,
   EffortLevel,
+  Mail,
+  MailWho,
   MemoryKind,
   NotifyEvent,
   Organization,
@@ -33,7 +35,7 @@ import { admitCandidates, linkEntities } from '../memory/gate.js';
 import type { SleepRunner } from '../memory/sleep.js';
 import { clip, shorten, tail } from '../util/queue.js';
 import type { BridgeServer, ToolCallResult, ToolHandler } from './bridge.js';
-import { buildAgentPrompt, renderBoard, renderOrgOverview, renderSchedules, type OrgSnapshot } from './prompts.js';
+import { buildAgentPrompt, renderBoard, renderMail, renderOrgOverview, renderSchedules, type OrgSnapshot } from './prompts.js';
 import { buildTaskWaves, planTask, type TaskPlan } from './planner.js';
 import { toolsFor, type ToolAudience } from './tools.js';
 import { ensureToolServers, renderToolServers, toolServerStates, toolServersFor, withToolServer } from '../tools/hub.js';
@@ -73,6 +75,8 @@ export interface ToolContext {
   depth: number;
   emit: (event: AgentEvent) => void;
   signal?: AbortSignal;
+  /** Set when the running assignment itself came from mail; carries the auto-trigger loop guard. */
+  sourceMail?: { id: string; threadId: string; depth: number };
 }
 
 export interface RunAssignmentInput {
@@ -87,6 +91,11 @@ export interface RunAssignmentInput {
   depth: number;
   emit: (event: AgentEvent) => void;
   signal?: AbortSignal;
+  /**
+   * Set when this assignment was started by mailing the agent's To line.
+   * On success, `run()` mails the result back to the sender as a reply.
+   */
+  sourceMail?: { id: string; threadId: string; depth: number; fromKind: RequesterKind; fromAgentId?: string; subject: string };
 }
 
 export interface OrgControllerOptions {
@@ -107,6 +116,13 @@ export interface OrgControllerOptions {
    * controller has no notion of transport, so it asks rather than looks.
    */
   canNotify?: () => boolean;
+  /**
+   * Runs one assistant turn for a mail addressed to it and returns the reply
+   * body. The assistant is not an agent and has no `run()` of its own, so
+   * without this a mail to it would sit unanswered until the user's next chat;
+   * the runtime owns `chat()` and passes this in, the way it passes `cron`.
+   */
+  runAssistantMail?: (input: { mail: Mail; senderLabel: string; thread: Mail[] }) => Promise<string>;
 }
 
 /** Emit a progress line roughly every this many characters of agent output. */
@@ -124,6 +140,7 @@ export class OrgController extends EventEmitter {
   readonly #cron: CronScheduler | undefined;
   readonly #sleep: SleepRunner | undefined;
   readonly #canNotify: (() => boolean) | undefined;
+  readonly #runAssistantMail: OrgControllerOptions['runAssistantMail'];
   #running = 0;
   #waiting: (() => void)[] = [];
   /** Cancel hooks of assignments that are queued or running, by assignment id. */
@@ -142,6 +159,7 @@ export class OrgController extends EventEmitter {
     this.#cron = options.cron;
     this.#sleep = options.sleep;
     this.#canNotify = options.canNotify;
+    this.#runAssistantMail = options.runAssistantMail;
   }
 
   get bridge(): BridgeServer {
@@ -347,23 +365,30 @@ export class OrgController extends EventEmitter {
       case 'update_settings':
         return this.#updateSettings(context, args);
 
-      case 'send_message':
-        return this.#sendMessage(context, text('to'), text('content'));
+      case 'send_mail':
+        return this.#sendMail(context, text('to'), text('cc'), text('subject'), text('body'), text('inReplyTo') || undefined);
 
-      case 'read_inbox': {
-        const messages = this.#store.org.inbox(context.orgId, context.agentId ?? null, { unreadOnly: true });
-        if (!messages.length) return { text: 'No unread messages.' };
-        this.#store.org.markRead(messages.map((message) => message.id));
-        const byId = new Map(
-          this.#store.org.listAgents(context.orgId, { includeArchived: true }).map((agent) => [agent.id, agent]),
-        );
+      case 'read_mail': {
+        const who: MailWho = context.audience === 'agent' ? { kind: 'agent', id: context.agentId } : { kind: 'assistant' };
+        const mail = this.#store.org.unreadMailFor(context.orgId, who);
+        if (!mail.length) return { text: 'No unread mail.' };
+        this.#store.org.markMailReadFor(mail, who);
+        return { text: renderMail(mail, this.snapshot(context.orgId), 'Unread mail:') };
+      }
+
+      case 'read_mail_thread': {
+        const reference = text('thread');
+        if (!reference) return fail('Name the thread to read.');
+        const who: MailWho = context.audience === 'agent' ? { kind: 'agent', id: context.agentId } : { kind: 'assistant' };
+        // Either id works: a mail names its own thread, and the id an agent
+        // has to hand is usually the mail it was woken with.
+        const threadId = this.#store.org.getMail(reference)?.threadId ?? reference;
+        const thread = this.#store.org.thread(context.orgId, threadId, { who });
+        if (!thread.length) return { text: 'No mail in that thread, or none of it was addressed to you.' };
+        // Asked for in full, answered in full: the prompt's 600-character
+        // preview is the wrong answer to "give me the whole thread".
         return {
-          text: messages
-            .map((message) => {
-              const from = message.fromAgentId ? (byId.get(message.fromAgentId)?.slug ?? 'unknown') : 'assistant';
-              return '- [' + new Date(message.createdAt).toISOString() + '] from ' + from + ': ' + message.content;
-            })
-            .join('\n'),
+          text: clip(renderMail(thread, this.snapshot(context.orgId), 'The thread, oldest first:', 4000), RESULT_BUDGET),
         };
       }
 
@@ -696,8 +721,12 @@ export class OrgController extends EventEmitter {
     }
 
     if (context.audience === 'agent') {
-      if (agent.id === context.agentId) return fail('You cannot assign work to yourself.');
-      if (agent.managerId !== context.agentId) {
+      if (agent.id === context.agentId) {
+        // A self-assignment only makes sense detached: waiting on it would
+        // just be the same process blocking on itself for no reason, and in
+        // a chat turn there is no coding tool to do the work with anyway.
+        if (wait) return fail('A self-assignment has to run in the background - call assign with wait=false.');
+      } else if (agent.managerId !== context.agentId) {
         const reports = this.#store.org.listAgents(context.orgId, { managerId: context.agentId }).map((r) => r.slug);
         return fail(
           'You may only assign work to your direct reports' +
@@ -734,14 +763,37 @@ export class OrgController extends EventEmitter {
       // Detached: the turn ends while the agent works. Its progress reaches
       // every socket through the org-level assignment events; the turn's own
       // stream and abort signal must not be tied to it.
+      const isSelf = agent.id === context.agentId;
       const started = this.run({ ...runInput, emit: () => undefined });
-      started.catch((error: unknown) => {
-        this.#log.warn('Detached assignment failed', { agent: agent.slug, error: String(error) });
-      });
+      started
+        .then((assignment) => {
+          if (!isSelf) return undefined;
+          // A self-assignment has nobody else waiting on assignment_status,
+          // so it reports for itself the same way mail-triggered work does:
+          // a mail addressed to the user.
+          const body =
+            assignment.status === 'done'
+              ? clip(assignment.result ?? '', RESULT_BUDGET)
+              : 'Could not finish: ' + (assignment.error ?? assignment.status) + '.';
+          return this.#deliverMail({
+            orgId: context.orgId,
+            from: { kind: 'agent', id: agent.id },
+            to: [{ kind: 'user' }],
+            cc: [],
+            subject: 'Re: background task',
+            body,
+            depth: 0,
+            emit: () => undefined,
+          });
+        })
+        .catch((error: unknown) => {
+          this.#log.warn('Detached assignment failed', { agent: agent.slug, error: String(error) });
+        });
       return {
-        text:
-          'Handed to ' + agent.name + ' (' + agent.slug + '). The assignment runs in the background; ' +
-          'assignment_status reports on it, and the user is told when it finishes.',
+        text: isSelf
+          ? 'Started in the background - I will follow up in this chat once it is done.'
+          : 'Handed to ' + agent.name + ' (' + agent.slug + '). The assignment runs in the background; ' +
+            'assignment_status reports on it, and the user is told when it finishes.',
       };
     }
 
@@ -765,38 +817,222 @@ export class OrgController extends EventEmitter {
     };
   }
 
-  async #sendMessage(context: ToolContext, to: string, content: string): Promise<ToolCallResult> {
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
-    if (!content) return fail('The message is empty.');
+  /** "user", "assistant", or an agent by slug/name/id - the tokens send_mail's to/cc take. */
+  #resolveMailTarget(orgId: string, token: string): MailWho | null {
+    const lower = token.toLowerCase();
+    if (lower === 'user') return { kind: 'user' };
+    if (lower === 'assistant') return { kind: 'assistant' };
+    const agent = this.#store.org.findAgent(orgId, token);
+    return agent ? { kind: 'agent', id: agent.id } : null;
+  }
 
-    let toAgentId: string | undefined;
-    if (to && to.toLowerCase() !== 'assistant') {
-      const recipient = this.#store.org.findAgent(context.orgId, to);
-      if (!recipient) return fail('No agent "' + to + '".');
-      if (context.audience === 'agent') {
-        const self = context.agentId ? this.#store.org.getAgent(context.agentId) : null;
-        const allowed =
-          recipient.id === self?.managerId ||
-          recipient.managerId === context.agentId ||
-          (Boolean(self?.teamId) && recipient.teamId === self?.teamId);
-        if (!allowed) return fail('You may message your manager, your team, your reports, or the assistant.');
+  #mailWhoLabel(who: MailWho): string {
+    if (who.kind !== 'agent') return who.kind;
+    return (who.id ? this.#store.org.getAgent(who.id)?.slug : undefined) ?? 'unknown agent';
+  }
+
+  /**
+   * Deliver mail and, per the user's rule, start a real run for every To
+   * target that is an agent - never for Cc. Shared by the tool path
+   * (`#sendMail`, permission-checked) and `sendUserMail` (the user may mail
+   * anyone) and the automatic reply `run()` sends back when it finishes work
+   * that arrived as mail.
+   */
+  async #deliverMail(params: {
+    orgId: string;
+    from: MailWho;
+    to: MailWho[];
+    cc: MailWho[];
+    subject: string;
+    body: string;
+    inReplyTo?: string;
+    threadId?: string;
+    depth: number;
+    parentAssignmentId?: string;
+    projectId?: string;
+    /**
+     * This mail is a finished run's own reply. It is delivered, but it wakes
+     * nobody: an answer is not new work, and letting one start a run is what
+     * turns two colleagues into an infinite exchange of pleasantries.
+     */
+    autoReply?: boolean;
+    emit: (event: AgentEvent) => void;
+  }): Promise<Mail> {
+    const threadId =
+      params.threadId ?? (params.inReplyTo ? (this.#store.org.getMail(params.inReplyTo)?.threadId ?? params.inReplyTo) : undefined);
+    const mail = this.#store.org.sendMail({
+      orgId: params.orgId,
+      from: params.from,
+      subject: params.subject,
+      body: params.body,
+      to: params.to,
+      cc: params.cc,
+      threadId,
+      inReplyTo: params.inReplyTo,
+      depth: params.depth,
+      assignmentId: params.parentAssignmentId,
+    });
+    this.#announce({ type: 'mail', mail }, params.emit);
+
+    if (!params.autoReply && params.depth < this.#config.org.maxDelegationDepth) {
+      const senderLabel = this.#mailWhoLabel(params.from);
+      for (const target of params.to) {
+        if (target.kind === 'assistant' && this.#runAssistantMail) {
+          this.#runAssistantMail({
+            mail,
+            senderLabel,
+            thread: this.#store.org
+              .thread(params.orgId, mail.threadId, { who: { kind: 'assistant' } })
+              .filter((entry) => entry.id !== mail.id),
+          })
+            .then((reply) => {
+              if (!reply.trim()) return;
+              return this.#deliverMail({
+                orgId: params.orgId,
+                from: { kind: 'assistant' },
+                to: [params.from],
+                cc: [],
+                subject: mail.subject.startsWith('Re: ') ? mail.subject : 'Re: ' + mail.subject,
+                body: reply,
+                inReplyTo: mail.id,
+                threadId: mail.threadId,
+                depth: params.depth + 1,
+                autoReply: true,
+                emit: () => undefined,
+              }).then(() => undefined);
+            })
+            .catch((error: unknown) => {
+              this.#log.warn('Mail-triggered assistant turn failed', { error: String(error) });
+            });
+          continue;
+        }
+        if (target.kind !== 'agent' || !target.id) continue;
+        const agent = this.#store.org.getAgent(target.id);
+        if (!agent) continue;
+        this.run({
+          orgId: params.orgId,
+          agent,
+          task:
+            'Handle mail ' + mail.id + ' from ' + senderLabel + '.\nSubject: ' + mail.subject + '\n\n' + params.body,
+          projectId: params.projectId,
+          parentId: params.parentAssignmentId,
+          requesterKind: params.from.kind,
+          requesterAgentId: params.from.kind === 'agent' ? params.from.id : undefined,
+          depth: params.depth,
+          emit: () => undefined,
+          sourceMail: {
+            id: mail.id,
+            threadId: mail.threadId,
+            depth: params.depth,
+            fromKind: params.from.kind,
+            fromAgentId: params.from.id,
+            subject: mail.subject,
+          },
+        }).catch((error: unknown) => {
+          this.#log.warn('Mail-triggered run failed', { agent: agent.slug, error: String(error) });
+        });
       }
-      toAgentId = recipient.id;
+    }
+    return mail;
+  }
+
+  async #sendMail(
+    context: ToolContext,
+    toRaw: string,
+    ccRaw: string,
+    subject: string,
+    body: string,
+    inReplyTo?: string,
+  ): Promise<ToolCallResult> {
+    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
+    if (!toRaw) return fail('Name at least one recipient in "to".');
+    if (!subject) return fail('The mail needs a subject.');
+    if (!body) return fail('The mail is empty.');
+
+    const toTokens = toRaw.split(',').map((v) => v.trim()).filter(Boolean);
+    const ccTokens = ccRaw.split(',').map((v) => v.trim()).filter(Boolean);
+
+    const to: MailWho[] = [];
+    for (const token of toTokens) {
+      const target = this.#resolveMailTarget(context.orgId, token);
+      if (!target) return fail('No agent "' + token + '".');
+      to.push(target);
+    }
+    const cc: MailWho[] = [];
+    for (const token of ccTokens) {
+      const target = this.#resolveMailTarget(context.orgId, token);
+      if (!target) return fail('No agent "' + token + '".');
+      cc.push(target);
     }
 
-    const message = this.#store.org.postMessage({
+    if (context.audience === 'agent') {
+      const self = context.agentId ? this.#store.org.getAgent(context.agentId) : null;
+      for (const target of [...to, ...cc]) {
+        if (target.kind !== 'agent') continue; // user and assistant are always reachable
+        const recipient = this.#store.org.getAgent(target.id ?? '');
+        const allowed =
+          recipient?.id === self?.managerId ||
+          recipient?.managerId === context.agentId ||
+          (Boolean(self?.teamId) && recipient?.teamId === self?.teamId);
+        if (!allowed) return fail('You may mail your manager, your team, your reports, the assistant, or the user.');
+      }
+    }
+
+    const from: MailWho = context.audience === 'agent' ? { kind: 'agent', id: context.agentId } : { kind: 'assistant' };
+    const depth = context.sourceMail ? context.sourceMail.depth + 1 : 0;
+    const mail = await this.#deliverMail({
       orgId: context.orgId,
-      fromAgentId: context.agentId,
-      toAgentId,
-      assignmentId: context.parentAssignmentId,
-      content,
+      from,
+      to,
+      cc,
+      subject,
+      body,
+      inReplyTo,
+      threadId: inReplyTo ? undefined : context.sourceMail?.threadId,
+      depth,
+      parentAssignmentId: context.parentAssignmentId,
+      projectId: context.projectId,
+      emit: context.emit,
     });
-    this.#announce({ type: 'message', message }, context.emit);
-    return { text: 'Message left for ' + (toAgentId ? to : 'the assistant') + '.' };
+    return { text: 'Mail sent to ' + [...to, ...cc].map((who) => this.#mailWhoLabel(who)).join(', ') + ': "' + mail.subject + '".' };
+  }
+
+  /**
+   * The user sends mail to anyone, no permission circle applied - for a
+   * future `POST /api/org/mail` route to call directly, the way
+   * `POST /api/org/messages` bypassed the tool-context path before it.
+   */
+  async sendUserMail(input: {
+    orgId: string;
+    to: string[];
+    cc?: string[];
+    subject: string;
+    body: string;
+    inReplyTo?: string;
+    projectId?: string;
+    emit?: (event: AgentEvent) => void;
+  }): Promise<Mail> {
+    const resolve = (token: string): MailWho => {
+      const target = this.#resolveMailTarget(input.orgId, token);
+      if (!target) throw new Error('No agent "' + token + '".');
+      return target;
+    };
+    return this.#deliverMail({
+      orgId: input.orgId,
+      from: { kind: 'user' },
+      to: input.to.map(resolve),
+      cc: (input.cc ?? []).map(resolve),
+      subject: input.subject,
+      body: input.body,
+      inReplyTo: input.inReplyTo,
+      depth: 0,
+      projectId: input.projectId,
+      emit: input.emit ?? (() => undefined),
+    });
   }
 
   /** Emit into the turn that caused an event, and to everyone listening on the controller. */
-  #announce(event: Extract<AgentEvent, { type: 'assignment' | 'message' }>, emit: (event: AgentEvent) => void): void {
+  #announce(event: Extract<AgentEvent, { type: 'assignment' | 'message' | 'mail' }>, emit: (event: AgentEvent) => void): void {
     emit(event);
     this.emit(event.type, event);
   }
@@ -865,7 +1101,8 @@ export class OrgController extends EventEmitter {
 
       const snapshot = this.snapshot(input.orgId);
       const memories = this.#memoriesFor(agent.id, input.task);
-      const inbox = org.inbox(input.orgId, agent.id, { unreadOnly: true });
+      const mailWho: MailWho = { kind: 'agent', id: agent.id };
+      const unreadMail = org.unreadMailFor(input.orgId, mailWho);
       const requester =
         input.requesterKind === 'agent'
           ? (org.getAgent(input.requesterAgentId ?? '')?.name ?? 'your manager')
@@ -901,13 +1138,24 @@ export class OrgController extends EventEmitter {
         snapshot,
         project: project ?? undefined,
         memories,
-        inbox,
+        mail: unreadMail,
         assignmentId: assignment.id,
         requestedBy: requester,
+        sourceMailSubject: input.sourceMail?.subject,
+        sourceMailId: input.sourceMail?.id,
+        sourceMailThreadId: input.sourceMail?.threadId,
+        // Everything said before the mail that woke this run, minus that mail
+        // itself - it is already the task above. Listed as an index only; the
+        // prompt points at `read_mail_thread` for the text.
+        sourceMailThread: input.sourceMail
+          ? org
+              .thread(input.orgId, input.sourceMail.threadId, { who: mailWho })
+              .filter((entry) => entry.id !== input.sourceMail?.id)
+          : undefined,
         toolHints,
         skillsIndex: renderSkillsIndex(this.#agentSkills(project)),
       });
-      if (inbox.length) org.markRead(inbox.map((message) => message.id));
+      if (unreadMail.length) org.markMailReadFor(unreadMail, mailWho);
 
       const timer = setTimeout(() => controller.abort(), this.#config.org.assignmentTimeoutMs);
       timer.unref?.();
@@ -922,6 +1170,9 @@ export class OrgController extends EventEmitter {
         depth: input.depth,
         emit: input.emit,
         signal: controller.signal,
+        sourceMail: input.sourceMail
+          ? { id: input.sourceMail.id, threadId: input.sourceMail.threadId, depth: input.sourceMail.depth }
+          : undefined,
       });
 
       let text = '';
@@ -986,6 +1237,25 @@ export class OrgController extends EventEmitter {
       );
       if (this.#config.memory.enabled && this.#config.memory.autoExtract) {
         void this.#learn(agent, input.task, text, providerId);
+      }
+      if (input.sourceMail) {
+        const sourceMail = input.sourceMail;
+        this.#deliverMail({
+          orgId: input.orgId,
+          from: { kind: 'agent', id: agent.id },
+          to: [{ kind: sourceMail.fromKind, id: sourceMail.fromAgentId }],
+          cc: [],
+          subject: 'Re: ' + sourceMail.subject,
+          body: text,
+          inReplyTo: sourceMail.id,
+          threadId: sourceMail.threadId,
+          depth: sourceMail.depth + 1,
+          projectId: project?.id,
+          autoReply: true,
+          emit: input.emit,
+        }).catch((error: unknown) => {
+          this.#log.warn('Mail reply failed', { agent: agent.slug, error: String(error) });
+        });
       }
       return done;
     } catch (error) {

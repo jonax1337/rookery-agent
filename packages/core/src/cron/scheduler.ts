@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import type { AgentEvent, CronJob, CronJobKind, CronScript, CronRun, CronTrigger, PermissionLevel, RequesterKind } from '../types.js';
+import type { AgentEvent, CronJob, CronJobKind, CronScript, CronRun, CronTrigger, MailWho, PermissionLevel, RequesterKind } from '../types.js';
 import type { Logger } from '../logger.js';
 import { silentLogger } from '../logger.js';
 import type { Store } from '../memory/store.js';
@@ -353,19 +353,21 @@ export class CronScheduler extends EventEmitter {
     return finishedRun;
   }
 
-  /** What the assistant reads in its next conversation. */
+  /** What the user reads in their mailbox, from whoever ran the job. */
   #postToInbox(job: CronJob, outcome: CronRunOutcome): void {
     const when = new Date().toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' });
-    const head = 'Schedule “' + job.name + '” (' + describeCron(job.schedule) + ') at ' + when;
+    const subject = 'Schedule "' + job.name + '" ' + (outcome.status === 'done' ? 'completed' : 'failed');
     const body =
       outcome.status === 'done'
-        ? ' completed. Result: ' + (clip(outcome.result ?? '', INBOX_BUDGET) || '(no text)')
-        : ' failed: ' + (outcome.error ?? 'unknown error');
+        ? 'Completed at ' + when + ' (' + describeCron(job.schedule) + '). Result: ' +
+          (clip(outcome.result ?? '', INBOX_BUDGET) || '(no text)')
+        : 'Failed at ' + when + ' (' + describeCron(job.schedule) + '): ' + (outcome.error ?? 'unknown error');
     try {
-      const message = this.#store.org.postMessage({ orgId: job.orgId, content: head + body });
-      this.emit('message', { type: 'message', message } satisfies AgentEvent);
+      const from: MailWho = job.kind === 'agent' && job.agentId ? { kind: 'agent', id: job.agentId } : { kind: 'assistant' };
+      const mail = this.#store.org.sendMail({ orgId: job.orgId, from, to: [{ kind: 'user' }], subject, body });
+      this.emit('mail', { type: 'mail', mail } satisfies AgentEvent);
     } catch (error) {
-      this.#log.warn('Could not post schedule outcome to the inbox', { error: (error as Error).message });
+      this.#log.warn('Could not post schedule outcome to mail', { error: (error as Error).message });
     }
   }
 

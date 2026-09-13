@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from 'react';
-import { NavLink, useParams } from 'react-router';
+import { NavLink, useNavigate, useParams } from 'react-router';
 import {
   ArchiveIcon,
   BrainIcon,
   Building2Icon,
   CpuIcon,
   InboxIcon,
-  MessagesSquareIcon,
+  MailPlusIcon,
   PencilIcon,
   SendIcon,
   ShieldIcon,
@@ -76,7 +76,7 @@ import {
 } from '@/lib/format';
 import { average, formatNumber } from '@/lib/stats';
 import type { AgentDetail, Agent, Assignment, AssignmentView } from '@/lib/types';
-import { useChatSession, useConfig, useConnection, useOrgState } from '@/providers/rookery-provider';
+import { useConfig, useConnection, useOrgState } from '@/providers/rookery-provider';
 
 /**
  * One member of staff: who they are, what they are working on, what they know.
@@ -104,10 +104,10 @@ type TabValue = 'assignments' | 'reports' | 'memories' | 'instructions';
 
 export function AgentDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const org = useOrgState();
   const { socket } = useConnection();
   const { config } = useConfig();
-  const { chooseCounterpart } = useChatSession();
   const { confirm, dialog } = useConfirm();
   // The stop button of `LiveRunList` asks the same question on every page that
   // renders it; this page used to be one of the two that cancelled silently.
@@ -257,10 +257,18 @@ export function AgentDetailPage() {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => chooseCounterpart(agent.id)}
+            onClick={() => void navigate('/inbox?mailbox=' + agent.id)}
           >
-            <MessagesSquareIcon data-icon="inline-start" />
-            Chat
+            <InboxIcon data-icon="inline-start" />
+            View mailbox
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void navigate('/inbox?compose=' + agent.id)}
+          >
+            <MailPlusIcon data-icon="inline-start" />
+            Write mail
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -287,7 +295,7 @@ export function AgentDetailPage() {
         </>
       ) : null,
     },
-    [agent?.id, agent?.archived, archive, chooseCounterpart],
+    [agent?.id, agent?.archived, archive, navigate],
   );
 
   /* -------------------------------- columns ------------------------------ */

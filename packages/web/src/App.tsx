@@ -19,7 +19,6 @@ import { MemoryListPage } from './pages/MemoryListPage';
 import { MemorySleepPage } from './pages/MemorySleepPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { OrgAgentsPage } from './pages/OrgAgentsPage';
-import { OrgChatPage } from './pages/OrgChatPage';
 import { OrgLayout } from './pages/OrgLayout';
 import { OrgProjectsPage } from './pages/OrgProjectsPage';
 import { OrgTeamsPage } from './pages/OrgTeamsPage';
@@ -104,12 +103,6 @@ export default function App() {
         <Route path="/org/teams/:id/edit" element={<TeamFormPage />} />
         <Route path="/org/projects/new" element={<ProjectFormPage />} />
         <Route path="/org/projects/:id/edit" element={<ProjectFormPage />} />
-        {/* The Teams-style directory: also a sibling, for the same reason -
-            a two-pane thread would not fit the tab frame's three-table
-            shape. The postbox used to live here too; it is `/inbox` now,
-            a top-level page rather than an Organization one. */}
-        <Route path="/org/chat" element={<OrgChatPage />} />
-
         {/* ----------------------------- gedächtnis --------------------- */}
         {/* The layout renders the overview and shares the save-memory dialog. */}
         <Route path="/memory" element={<MemoryLayout />}>

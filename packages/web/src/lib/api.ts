@@ -20,6 +20,7 @@ import type {
   GatewayId,
   GatewayStatus,
   GatewayTestResult,
+  Mail,
   MemoryEntity,
   MemoryGraph,
   MemoryKind,
@@ -569,6 +570,15 @@ export const api = {
   /** Marks a batch of inbox rows read; the inbox page calls this once per load. */
   markMessagesRead: (ids: string[]) =>
     request<{ ok: true }>('/api/org/messages/read', { method: 'POST', ...json({ ids }) }),
+
+  /** `mailbox` is an agent id, `"user"` or `"assistant"`. */
+  mail: (mailbox: string, box: 'inbox' | 'outbox', limit = 100) =>
+    request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&box=' + box + '&limit=' + limit),
+  sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string }) =>
+    request<Mail>('/api/org/mail', { method: 'POST', ...json(input) }),
+  /** Marks a batch of mailbox rows read; the mailbox page calls this once per load. */
+  markMailRead: (ids: string[]) =>
+    request<{ ok: true }>('/api/org/mail/read', { method: 'POST', ...json({ ids }) }),
 };
 
 /**

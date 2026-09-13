@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react';
-import { BotIcon, FeatherIcon } from 'lucide-react';
 
 import { DetailDrawerTrigger } from '@/components/blocks/detail-drawer';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
@@ -22,14 +21,13 @@ import type { Session } from '@/lib/types';
  *
  * The conversations list and the dashboard's "Zuletzt" tab wrote it twice and
  * disagreed about the words: the kind column said "Sprache"/"Chat" on one page
- * and "Gesprochen"/"Getippt" on the other, and a deleted agent was
- * "Unbekannter Agent" here and "Unbekannt" there. The labels now come from
- * `SESSION_KIND_LABEL`, and the counterpart from one cell.
+ * and "Gesprochen"/"Getippt" on the other. The labels now come from
+ * `SESSION_KIND_LABEL`. Chat is assistant-only, so there is no counterpart
+ * column any more - every row is with the assistant.
  */
 
 export const SESSION_COLUMN_LABELS: Record<string, string> = {
   titel: 'Title',
-  gegenueber: 'Counterpart',
   art: 'Type',
   anbieter: 'Provider',
   projekt: 'Project',
@@ -41,41 +39,7 @@ export const SESSION_COLUMN_LABELS: Record<string, string> = {
 /** Most recent first. The recency separators only hold in this order. */
 export const SESSION_SORTING = [{ id: 'zuletzt', desc: true }];
 
-/** An agent that no longer exists. Named, so both tables say the same thing. */
-export const UNKNOWN_AGENT = 'Unknown agent';
-
-export interface CounterpartCellProps {
-  /** Unset means the conversation is with the assistant. */
-  agentId?: string;
-  /** The agent's name, already resolved. `undefined` means it is gone. */
-  agentName?: string;
-  /** What the assistant is called in this installation. */
-  assistantName: string;
-}
-
-/**
- * Who the conversation is with: an agent, or the assistant itself.
- *
- * The glyph carries the distinction before the name is read - a bot for an
- * agent, the assistant's own feather for the assistant.
- */
-export function CounterpartCell({ agentId, agentName, assistantName }: CounterpartCellProps) {
-  const name = agentId ? (agentName ?? UNKNOWN_AGENT) : assistantName;
-  return (
-    <div className="w-36">
-      <Badge variant="outline" className="px-1.5 text-muted-foreground">
-        {agentId ? <BotIcon /> : <FeatherIcon />}
-        <span className="truncate">{name}</span>
-      </Badge>
-    </div>
-  );
-}
-
 export interface SessionColumnsOptions {
-  /** What the assistant is called; the counterpart of an agent-less session. */
-  assistantName: string;
-  /** Resolves an agent's name. `undefined` for one that was deleted. */
-  agentName(id: string): string | undefined;
   /** Prepends the checkbox column. */
   selectable?: boolean;
   /** Makes the title open the drawer. Without it it is plain text. */
@@ -92,8 +56,6 @@ export function buildSessionColumns(
   options: SessionColumnsOptions,
 ): RookeryColumnDef<Session>[] {
   const {
-    assistantName,
-    agentName,
     selectable = false,
     onOpenDetail,
     projectName,
@@ -141,24 +103,6 @@ export function buildSessionColumns(
         );
       },
     }),
-
-    column.accessor(
-      (session) =>
-        session.agentId ? (agentName(session.agentId) ?? UNKNOWN_AGENT) : assistantName,
-      {
-        id: 'gegenueber',
-        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Counterpart" />,
-        cell: ({ row }) => (
-          <CounterpartCell
-            {...(row.original.agentId ? { agentId: row.original.agentId } : {})}
-            {...(row.original.agentId
-              ? { agentName: agentName(row.original.agentId) ?? UNKNOWN_AGENT }
-              : {})}
-            assistantName={assistantName}
-          />
-        ),
-      },
-    ),
 
     column.accessor((session) => SESSION_KIND_LABEL[session.kind], {
       id: 'art',

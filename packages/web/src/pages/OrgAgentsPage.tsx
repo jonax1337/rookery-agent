@@ -5,7 +5,7 @@ import {
   Building2Icon,
   CpuIcon,
   InboxIcon,
-  MessagesSquareIcon,
+  MailPlusIcon,
   PencilIcon,
   ShieldIcon,
   SquareArrowOutUpRightIcon,
@@ -19,7 +19,7 @@ import { reportFailure } from '@/lib/errors';
 import { PERMISSION_LABEL, relativeTime, shorten } from '@/lib/format';
 import { formatDateTime, formatNumber } from '@/lib/stats';
 import type { Agent, Assignment, PermissionLevel } from '@/lib/types';
-import { useChatSession, useOrgState } from '@/providers/rookery-provider';
+import { useOrgState } from '@/providers/rookery-provider';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import {
@@ -97,7 +97,6 @@ const PERMISSIONS: readonly PermissionLevel[] = ['chat', 'read', 'write', 'full'
 export function OrgAgentsPage() {
   const org = useOrgState();
   const navigate = useNavigate();
-  const { chooseCounterpart } = useChatSession();
   const { confirm, dialog } = useConfirm();
   const bulk = useBulkAction();
 
@@ -282,9 +281,13 @@ export function OrgAgentsPage() {
                   Edit
                 </NavLink>
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => chooseCounterpart(agent.id)}>
-                <MessagesSquareIcon />
-                Chat with {shorten(agent.name, 18)}
+              <DropdownMenuItem onSelect={() => void navigate('/inbox?mailbox=' + agent.id)}>
+                <InboxIcon />
+                View mailbox
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void navigate('/inbox?compose=' + agent.id)}>
+                <MailPlusIcon />
+                Write mail
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => void archive(agent)}>
@@ -295,7 +298,7 @@ export function OrgAgentsPage() {
           </DropdownMenu>
         )),
       ]),
-    [archive, chooseCounterpart, navigate, org],
+    [archive, navigate, org],
   );
 
   /* --------------------------------- rows --------------------------------- */

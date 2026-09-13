@@ -13,25 +13,18 @@ export async function registerSessionRoutes(
   app: FastifyInstance,
   context: ServerContext,
 ): Promise<void> {
-  // `?agent=<id>` lists direct chats with one agent, `?agent=assistant`
-  // the conversations with the assistant, nothing lists everything.
-  // `?includeArchived=1` adds the ones filed away, for an archive view.
+  // Chat is the assistant's own hub now; `?includeArchived=1` adds the ones
+  // filed away, for an archive view.
   app.get(
     '/api/sessions',
     async (
       request: FastifyRequest<{
-        Querystring: { limit?: string; agent?: string; kind?: string; includeArchived?: string };
+        Querystring: { limit?: string; kind?: string; includeArchived?: string };
       }>,
     ) => {
       const limit = clampLimit(request.query.limit, 50, 500);
-      const agent = request.query.agent;
       const kind = request.query.kind === 'voice' || request.query.kind === 'chat' ? request.query.kind : undefined;
-      return context.assistant.listSessions(
-        limit,
-        agent === 'assistant' ? null : agent || undefined,
-        kind,
-        isTruthy(request.query.includeArchived),
-      );
+      return context.assistant.listSessions(limit, undefined, kind, isTruthy(request.query.includeArchived));
     },
   );
 

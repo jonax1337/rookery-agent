@@ -123,7 +123,7 @@ export const ROUTE_META: RouteMeta[] = [
     navLabel: 'Organization',
     icon: Building2Icon,
     group: 'knowledge',
-    children: ['/org/agents', '/org/teams', '/org/projects', '/org/chat'],
+    children: ['/org/agents', '/org/teams', '/org/projects'],
   },
   { path: '/org/agents', label: 'Agents', parent: '/org' },
   { path: '/org/agents/new', label: 'Create agent', parent: '/org/agents', hidden: true },
@@ -135,11 +135,6 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/org/projects', label: 'Projects', parent: '/org' },
   { path: '/org/projects/new', label: 'Create project', parent: '/org/projects', hidden: true },
   { path: '/org/projects/:id/edit', label: 'Edit project', parent: '/org/projects', hidden: true },
-  // Directory + thread for talking to an agent. A sibling of `/org`, not
-  // nested under its tab frame - like the agent/team/project detail pages,
-  // it brings its own header. The postbox that used to sit beside it moved
-  // to the top-level `/inbox` entry above.
-  { path: '/org/chat', label: 'Chat', parent: '/org' },
 
   {
     path: '/memory',

@@ -56,7 +56,6 @@ import {
   buildSessionColumns,
   SESSION_COLUMN_LABELS,
   SESSION_SORTING,
-  UNKNOWN_AGENT,
 } from '@/components/common/session-columns';
 
 import { Button } from '@/components/ui/button';
@@ -103,19 +102,15 @@ import {
  * `session.kind` and its own name for a deleted agent.
  */
 
-/** The "everything" entry of the two filter comboboxes. */
+/** The "everything" entry of the project filter combobox. */
 const ANY = '__any__';
-/** The counterpart value that means the assistant rather than an agent. */
-const ASSISTANT = 'assistant';
 
-type Tab = 'alle' | 'assistent' | 'agenten' | 'sprache' | 'archiv';
+type Tab = 'alle' | 'sprache' | 'archiv';
 
-const TABS: Tab[] = ['alle', 'assistent', 'agenten', 'sprache', 'archiv'];
+const TABS: Tab[] = ['alle', 'sprache', 'archiv'];
 
 const TAB_LABEL: Record<Tab, string> = {
   alle: 'All',
-  assistent: 'Assistant',
-  agenten: 'Agents',
   sprache: 'Voice',
   archiv: 'Archive',
 };
@@ -157,7 +152,6 @@ export function ConversationsPage() {
 
   const [params, setParams] = useSearchParams();
   const tab = readTab(params.get('art'));
-  const counterpart = params.get('gegenueber') ?? ANY;
 
   const [project, setProject] = React.useState<string>(ANY);
   const [period, setPeriod] = React.useState<Period>('alle');
@@ -184,17 +178,9 @@ export function ConversationsPage() {
     (value: string) => setParam('art', value === 'alle' ? null : value),
     [setParam],
   );
-  const setCounterpart = React.useCallback(
-    (value: string) => setParam('gegenueber', value === ANY ? null : value),
-    [setParam],
-  );
 
   const filtersActive =
-    tab !== 'alle' ||
-    counterpart !== ANY ||
-    project !== ANY ||
-    period !== 'alle' ||
-    search.trim() !== '';
+    tab !== 'alle' || project !== ANY || period !== 'alle' || search.trim() !== '';
 
   const resetFilters = React.useCallback(() => {
     setProject(ANY);
@@ -204,7 +190,6 @@ export function ConversationsPage() {
       (current) => {
         const next = new URLSearchParams(current);
         next.delete('art');
-        next.delete('gegenueber');
         return next;
       },
       { replace: true },
@@ -219,10 +204,6 @@ export function ConversationsPage() {
     const since = periodStart(period);
     return sessions.filter((session) => {
       if (!matchesTab(session, tab)) return false;
-      if (counterpart !== ANY) {
-        const own = session.agentId ?? ASSISTANT;
-        if (own !== counterpart) return false;
-      }
       if (project !== ANY) {
         const own = session.projectId ?? NO_PROJECT;
         if (own !== project) return false;
@@ -231,7 +212,7 @@ export function ConversationsPage() {
       if (since !== null && session.updatedAt < since) return false;
       return true;
     });
-  }, [counterpart, period, project, sessions, tab]);
+  }, [period, project, sessions, tab]);
 
   /* ------------------------------- actions ------------------------------- */
 
@@ -332,8 +313,6 @@ export function ConversationsPage() {
   const columns = React.useMemo(
     () =>
       buildSessionColumns({
-        assistantName,
-        agentName: (id) => org.agentById(id)?.name,
         selectable: true,
         showProvider: true,
         onOpenDetail: (session) => {
@@ -359,16 +338,7 @@ export function ConversationsPage() {
           />
         ),
       }),
-    [
-      assignProject,
-      assistantName,
-      confirmDelete,
-      confirmReset,
-      navigate,
-      open,
-      org,
-      setArchived,
-    ],
+    [assignProject, confirmDelete, confirmReset, navigate, open, org, setArchived],
   );
 
   /* -------------------------------- meta --------------------------------- */
@@ -493,22 +463,9 @@ export function ConversationsPage() {
         search={search}
         onSearchChange={setSearch}
         searchPlaceholder="Search conversations"
-        searchText={(session) => searchTextOf(session, org.agentById, assistantName)}
+        searchText={(session) => searchTextOf(session, assistantName)}
         filters={
           <>
-            <FilterCombobox
-              label="Counterpart"
-              value={counterpart}
-              onChange={(next) => setCounterpart(next ?? ANY)}
-              showClear={false}
-              options={[
-                { value: ANY, label: 'All counterparts' },
-                { value: ASSISTANT, label: assistantName },
-                ...org.agents
-                  .filter((agent) => !agent.archived)
-                  .map((agent) => ({ value: agent.id, label: agent.name })),
-              ]}
-            />
             <FilterCombobox
               label="Project"
               value={project}
@@ -600,7 +557,7 @@ export function ConversationsPage() {
           <EmptyState
             icon={SearchXIcon}
             title="No conversations match this selection"
-            description="Change the search, time period, counterpart, or tab."
+            description="Change the search, time period, or tab."
             actionLabel={filtersActive ? 'Reset filters' : undefined}
             onAction={resetFilters}
             variant="plain"
@@ -616,10 +573,6 @@ export function ConversationsPage() {
           if (!next) setDetailId(null);
         }}
         focusTitle={renaming}
-        assistantName={assistantName}
-        agentName={
-          detail?.agentId ? (org.agentById(detail.agentId)?.name ?? UNKNOWN_AGENT) : assistantName
-        }
         projects={org.projects}
         onRename={async (id, title) => {
           const renamed = await update(id, { title });
@@ -646,8 +599,6 @@ interface ConversationDrawerProps {
   onOpenChange(open: boolean): void;
   /** Opened through "Rename": the title field takes the caret. */
   focusTitle: boolean;
-  assistantName: string;
-  agentName: string;
   projects: { id: string; name: string; archived: boolean }[];
   onRename(id: string, title: string): Promise<unknown>;
   onProject(session: Session, value: string): void;
@@ -668,8 +619,6 @@ function ConversationDrawer({
   open,
   onOpenChange,
   focusTitle,
-  assistantName,
-  agentName,
   projects,
   onRename,
   onProject,
@@ -794,11 +743,6 @@ function ConversationDrawer({
       <MetaList
         columns={1}
         items={[
-          {
-            label: 'Counterpart',
-            value: session.agentId ? agentName : assistantName,
-            ...(session.agentId ? { to: '/org/agents/' + session.agentId } : {}),
-          },
           { label: 'Type', value: SESSION_KIND_LABEL[session.kind] },
           {
             label: 'Provider & Model',
@@ -929,10 +873,6 @@ function matchesTab(session: Session, tab: Tab): boolean {
   // Every other facet is a view of the conversations still in use.
   if (session.archived) return false;
   switch (tab) {
-    case 'assistent':
-      return session.agentId === undefined && session.kind === 'chat';
-    case 'agenten':
-      return session.agentId !== undefined;
     case 'sprache':
       return session.kind === 'voice';
     default:
@@ -941,7 +881,7 @@ function matchesTab(session: Session, tab: Tab): boolean {
 }
 
 function tabCounts(sessions: readonly Session[]): Record<Tab, number> {
-  const counts: Record<Tab, number> = { alle: 0, assistent: 0, agenten: 0, sprache: 0, archiv: 0 };
+  const counts: Record<Tab, number> = { alle: 0, sprache: 0, archiv: 0 };
   for (const session of sessions) {
     for (const tab of TABS) if (matchesTab(session, tab)) counts[tab] += 1;
   }
@@ -976,18 +916,7 @@ function monthStart(): number {
   return date.getTime();
 }
 
-/**
- * What the toolbar search looks at.
- *
- * The row's own fields plus the counterpart's name, because "was habe ich mit
- * Mara besprochen" is the question this page exists for - and `agentId` alone
- * is a string nobody types.
- */
-function searchTextOf(
-  session: Session,
-  agentById: (id: string | undefined) => { name: string } | undefined,
-  assistantName: string,
-): string {
-  const counterpart = session.agentId ? (agentById(session.agentId)?.name ?? '') : assistantName;
-  return [session.title, counterpart, session.model ?? '', session.cwd].join(' ');
+/** What the toolbar search looks at: the row's own fields plus the assistant's name. */
+function searchTextOf(session: Session, assistantName: string): string {
+  return [session.title, assistantName, session.model ?? '', session.cwd].join(' ');
 }

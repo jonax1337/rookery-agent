@@ -4,6 +4,9 @@ import type {
   AgentMessage,
   Assignment,
   AssignmentStatus,
+  Mail,
+  MailRecipient,
+  MailWho,
   Organization,
   PermissionLevel,
   Project,
@@ -537,6 +540,177 @@ export class OrgStore {
     for (const id of ids) statement.run(now, id);
   }
 
+  /* ----------------------------------- mail ------------------------------------ */
+
+  /**
+   * Send mail: one `mail` row plus one `mail_recipients` row per to/cc
+   * target. Delivery only - the auto-trigger rule (a To agent gets a real
+   * run) lives in org/controller.ts, which is the one place that knows
+   * about running assignments.
+   */
+  sendMail(input: {
+    orgId: string;
+    from: MailWho;
+    subject: string;
+    body: string;
+    to: MailWho[];
+    cc?: MailWho[];
+    /** Continues an existing thread; defaults to this mail's own id. */
+    threadId?: string;
+    inReplyTo?: string;
+    depth?: number;
+    assignmentId?: string;
+  }): Mail {
+    const now = Date.now();
+    const id = randomUUID();
+    const subject = input.subject.trim() || '(no subject)';
+    const threadId = input.threadId ?? id;
+    this.#db
+      .prepare(
+        `INSERT INTO mail (id, org_id, from_kind, from_agent_id, subject, body, thread_id, in_reply_to, depth, assignment_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.orgId,
+        input.from.kind,
+        input.from.kind === 'agent' ? (input.from.id ?? null) : null,
+        subject,
+        input.body,
+        threadId,
+        input.inReplyTo ?? null,
+        input.depth ?? 0,
+        input.assignmentId ?? null,
+        now,
+      );
+
+    const insertRecipient = this.#db.prepare(
+      `INSERT INTO mail_recipients (id, mail_id, recipient_kind, recipient_id, box, read_at)
+       VALUES (?, ?, ?, ?, ?, NULL)`,
+    );
+    const targets: { who: MailWho; box: 'to' | 'cc' }[] = [
+      ...input.to.map((who) => ({ who, box: 'to' as const })),
+      ...(input.cc ?? []).map((who) => ({ who, box: 'cc' as const })),
+    ];
+    const recipients: MailRecipient[] = targets.map(({ who, box }) => {
+      const recipientId = who.kind === 'agent' ? who.id : undefined;
+      const recipient: MailRecipient = { id: randomUUID(), mailId: id, recipientKind: who.kind, recipientId, box };
+      insertRecipient.run(recipient.id, id, recipient.recipientKind, recipient.recipientId ?? null, recipient.box);
+      return recipient;
+    });
+
+    return {
+      id,
+      orgId: input.orgId,
+      fromKind: input.from.kind,
+      fromAgentId: input.from.kind === 'agent' ? input.from.id : undefined,
+      subject,
+      body: input.body,
+      threadId,
+      inReplyTo: input.inReplyTo,
+      depth: input.depth ?? 0,
+      assignmentId: input.assignmentId,
+      createdAt: now,
+      recipients,
+    };
+  }
+
+  /** One mail with its recipients, or null. */
+  getMail(id: string): Mail | null {
+    const row = this.#db.prepare('SELECT * FROM mail WHERE id = ?').get(id) as Row | undefined;
+    if (!row) return null;
+    const recipients = this.#db.prepare('SELECT * FROM mail_recipients WHERE mail_id = ?').all(id) as Row[];
+    return mapMail(row, recipients.map(mapMailRecipient));
+  }
+
+  /**
+   * A mailbox as one of the company sees it: `inbox` is everything addressed
+   * to `who` via To or Cc; `outbox` is everything `who` sent. Newest first.
+   */
+  mailbox(orgId: string, who: MailWho, box: 'inbox' | 'outbox', opts: { unreadOnly?: boolean; limit?: number } = {}): Mail[] {
+    const limit = opts.limit ?? 50;
+    const agentId = who.id ?? null;
+    let ids: string[];
+    if (box === 'outbox') {
+      ids = (
+        who.kind === 'agent'
+          ? this.#db
+              .prepare('SELECT id FROM mail WHERE org_id = ? AND from_kind = ? AND from_agent_id = ? ORDER BY created_at DESC LIMIT ?')
+              .all(orgId, who.kind, agentId, limit)
+          : this.#db
+              .prepare('SELECT id FROM mail WHERE org_id = ? AND from_kind = ? ORDER BY created_at DESC LIMIT ?')
+              .all(orgId, who.kind, limit)
+      ).map((row) => (row as { id: string }).id);
+    } else {
+      ids = (
+        who.kind === 'agent'
+          ? this.#db
+              .prepare(
+                `SELECT m.id FROM mail m JOIN mail_recipients r ON r.mail_id = m.id
+                  WHERE m.org_id = ? AND r.recipient_kind = ? AND r.recipient_id = ? AND (? = 0 OR r.read_at IS NULL)
+                  ORDER BY m.created_at DESC LIMIT ?`,
+              )
+              .all(orgId, who.kind, agentId, opts.unreadOnly ? 1 : 0, limit)
+          : this.#db
+              .prepare(
+                `SELECT m.id FROM mail m JOIN mail_recipients r ON r.mail_id = m.id
+                  WHERE m.org_id = ? AND r.recipient_kind = ? AND (? = 0 OR r.read_at IS NULL)
+                  ORDER BY m.created_at DESC LIMIT ?`,
+              )
+              .all(orgId, who.kind, opts.unreadOnly ? 1 : 0, limit)
+      ).map((row) => (row as { id: string }).id);
+    }
+    return ids.map((id) => this.getMail(id)).filter((mail): mail is Mail => mail !== null);
+  }
+
+  /**
+   * One conversation, oldest first. A mail-triggered run only ever gets the
+   * mail that woke it; without the thread behind it an agent answers a reply
+   * having never seen what it replies to.
+   */
+  thread(orgId: string, threadId: string, opts: { who?: MailWho; limit?: number } = {}): Mail[] {
+    const rows = this.#db
+      .prepare('SELECT id FROM mail WHERE org_id = ? AND thread_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(orgId, threadId, opts.limit ?? 20) as Row[];
+    const mail = rows
+      .map((row) => this.getMail(row.id as string))
+      .filter((entry): entry is Mail => entry !== null)
+      .reverse();
+    const who = opts.who;
+    if (!who) return mail;
+    // Their own view of the conversation: what they wrote, and what they were
+    // on. A thread can carry mail they were never a party to.
+    const isWho = (kind: RequesterKind, id?: string): boolean =>
+      kind === who.kind && (who.kind !== 'agent' || id === who.id);
+    return mail.filter(
+      (entry) =>
+        isWho(entry.fromKind, entry.fromAgentId) ||
+        entry.recipients.some((recipient) => isWho(recipient.recipientKind, recipient.recipientId)),
+    );
+  }
+
+  /** Unread mail addressed to `who` via To or Cc - the "waiting for you" prompt block. */
+  unreadMailFor(orgId: string, who: MailWho): Mail[] {
+    return this.mailbox(orgId, who, 'inbox', { unreadOnly: true });
+  }
+
+  markMailRead(recipientRowIds: string[]): void {
+    if (!recipientRowIds.length) return;
+    const statement = this.#db.prepare('UPDATE mail_recipients SET read_at = ? WHERE id = ? AND read_at IS NULL');
+    const now = Date.now();
+    for (const id of recipientRowIds) statement.run(now, id);
+  }
+
+  /** Convenience over markMailRead: marks every recipient row in `mail` that belongs to `who`. */
+  markMailReadFor(mail: Mail[], who: MailWho): void {
+    const ids = mail.flatMap((entry) =>
+      entry.recipients
+        .filter((recipient) => recipient.recipientKind === who.kind && (who.kind !== 'agent' || recipient.recipientId === who.id))
+        .map((recipient) => recipient.id),
+    );
+    this.markMailRead(ids);
+  }
+
   /* ----------------------------------- tasks ---------------------------------- */
 
   createTask(input: {
@@ -906,6 +1080,34 @@ function mapMessage(row: Row): AgentMessage {
     assignmentId: optional(row.assignment_id),
     content: row.content as string,
     createdAt: Number(row.created_at),
+    readAt: row.read_at ? Number(row.read_at) : undefined,
+  };
+}
+
+function mapMail(row: Row, recipients: MailRecipient[]): Mail {
+  return {
+    id: row.id as string,
+    orgId: row.org_id as string,
+    fromKind: row.from_kind as RequesterKind,
+    fromAgentId: optional(row.from_agent_id),
+    subject: row.subject as string,
+    body: row.body as string,
+    threadId: row.thread_id as string,
+    inReplyTo: optional(row.in_reply_to),
+    depth: Number(row.depth ?? 0),
+    assignmentId: optional(row.assignment_id),
+    createdAt: Number(row.created_at),
+    recipients,
+  };
+}
+
+function mapMailRecipient(row: Row): MailRecipient {
+  return {
+    id: row.id as string,
+    mailId: row.mail_id as string,
+    recipientKind: row.recipient_kind as RequesterKind,
+    recipientId: optional(row.recipient_id),
+    box: row.box as 'to' | 'cc',
     readAt: row.read_at ? Number(row.read_at) : undefined,
   };
 }

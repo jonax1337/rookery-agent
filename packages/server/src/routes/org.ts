@@ -1,13 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { AssignmentStatus, TaskStatus } from '@rookery/core';
+import type { AssignmentStatus, MailWho, TaskStatus } from '@rookery/core';
 import { fingerprintMcpFile, projectMcpStatus, readProjectMcpFile } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import {
   agentSchema,
   assignInputSchema,
   formatIssues,
-  markMessagesReadSchema,
-  messageSchema,
+  markMailReadSchema,
+  sendMailSchema,
   organizationSchema,
   parseOrThrow,
   patchTaskSchema,
@@ -345,29 +345,44 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     return reply;
   });
 
-  /* ---------------------------------- messages -------------------------------- */
+  /* ------------------------------------ mail ----------------------------------- */
 
-  app.get('/api/org/messages', async (request: FastifyRequest<{ Querystring: { limit?: string } }>) => {
+  const resolveMailbox = (token: string): MailWho | null => {
+    if (token === 'user') return { kind: 'user' };
+    if (token === 'assistant') return { kind: 'assistant' };
+    return store.getAgent(token) ? { kind: 'agent', id: token } : null;
+  };
+
+  app.get(
+    '/api/org/mail',
+    async (request: FastifyRequest<{ Querystring: { mailbox?: string; box?: string; limit?: string } }>, reply: FastifyReply) => {
+      const token = request.query.mailbox ?? 'user';
+      const who = resolveMailbox(token);
+      if (!who) return notFound(reply, 'No agent ' + token);
+      const box = request.query.box === 'outbox' ? 'outbox' : 'inbox';
+      const orgId = context.assistant.org.activeOrganization().id;
+      return store.mailbox(orgId, who, box, { limit: clampLimit(request.query.limit, 100, 500) });
+    },
+  );
+
+  app.post('/api/org/mail', async (request: FastifyRequest, reply: FastifyReply) => {
+    const input = parseOrThrow(sendMailSchema, request.body ?? {});
     const orgId = context.assistant.org.activeOrganization().id;
-    return store.listMessages(orgId, clampLimit(request.query.limit, 100, 500));
+    try {
+      // The controller's own broadcast (forwarded through the assistant's
+      // `mail` event) reaches every socket; nothing to emit here.
+      const mail = await context.assistant.org.sendUserMail({ orgId, ...input });
+      reply.code(201);
+      return mail;
+    } catch (error) {
+      return badRequest(reply, (error as Error).message);
+    }
   });
 
-  app.post('/api/org/messages', async (request: FastifyRequest, reply: FastifyReply) => {
-    const input = parseOrThrow(messageSchema, request.body ?? {});
-    const orgId = context.assistant.org.activeOrganization().id;
-    if (input.toAgentId && !store.getAgent(input.toAgentId)) return notFound(reply, 'No agent ' + input.toAgentId);
-    // A message from the UI is the user speaking through the assistant's desk:
-    // it has no sending agent, and it lands in the recipient's inbox.
-    const message = store.postMessage({ orgId, toAgentId: input.toAgentId, content: input.content });
-    context.assistant.emit('message', { type: 'message', message });
-    reply.code(201);
-    return message;
-  });
-
-  /** Marks a batch of inbox rows read - the CEO's inbox page calls this on load. */
-  app.post('/api/org/messages/read', async (request: FastifyRequest) => {
-    const input = parseOrThrow(markMessagesReadSchema, request.body ?? {});
-    store.markRead(input.ids);
+  /** Marks a batch of mailbox rows read - the mailbox page calls this on load. */
+  app.post('/api/org/mail/read', async (request: FastifyRequest) => {
+    const input = parseOrThrow(markMailReadSchema, request.body ?? {});
+    store.markMailRead(input.ids);
     return { ok: true };
   });
 }
