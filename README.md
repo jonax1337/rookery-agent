@@ -191,7 +191,25 @@ The default agent permission is `read`; agents can override it. Claude's restric
 
 Rookery combines portable Markdown knowledge in the assistant workspace (`USER.md`, `MEMORY.md`, and `memory/`) with its existing structured memory in `~/.rookery/rookery.db`. Identity and core Markdown knowledge are loaded for assistant turns; detailed Markdown notes can be retrieved through the assistant's Rookery MCP profile tools. The SQLite bank uses built-in `node:sqlite` without a native database build step. Its kinds are `fact`, `preference`, `project`, `event`, `summary`, and sleep-generated `insight`.
 
-Extraction proposes durable memories after a turn. A gate limits candidates (three per turn by default), filters low-importance candidates without known entities, and reinforces near-duplicates instead of inserting another copy. Deduplication uses lexical similarity, not embeddings.
+Extraction proposes durable memories; a gate decides what is written. **A candidate must quote the words it stands on, and those words must appear in what the user actually wrote** — the assistant's own answer does not count as a source, so a conclusion it reached itself is never stored as something the user said. Anything that cannot be quoted is dropped unstored. The quote is kept on the record and shown in the memory inspector, so a claim stays checkable long after the conversation is gone. Agents follow the same rule against the assignment and the report they were given.
+
+Beyond that the gate limits candidates (three per turn by default), filters low-importance candidates without known entities, and reinforces near-duplicates instead of inserting another copy. Comparison is lexical throughout, not embeddings: a quote is matched as unbroken runs of normalised words, so a smoothed quotation passes and one assembled from scattered words does not.
+
+```mermaid
+flowchart TD
+  day["After each turn<br/>small model, one exchange"] --> budget
+  night["Nightly replay<br/>strong model, whole conversation"] --> budget
+  budget{"Room left in this<br/>turn's budget?"} -->|no| drop
+  budget -->|yes| quoted{"Quoted verbatim from<br/>what the user wrote?"}
+  quoted -->|no| drop(["dropped, never stored"])
+  quoted -->|yes| weak{"Important enough, or<br/>names a known topic?"}
+  weak -->|no| drop
+  weak -->|yes| twin{"Already in the bank,<br/>in other words?"}
+  twin -->|yes| reinforce(["reinforces what is there"])
+  twin -->|no| store(["stored, with its quote"])
+```
+
+Memories added by hand carry no quote and are not subject to the rule; they are also protected from everything the nightly run does.
 
 Recall combines FTS5/BM25 relevance (0.55), importance (0.20), recency (0.15, with a 30-day half-life), and usage (0.10), plus tag matches. A core profile adds pinned memories, insights, and selected important facts independently of the query. Graph expansion follows shared entities and selected edges. Results include reasons such as `strong text match` or `high importance`.
 
@@ -210,9 +228,27 @@ rookery memory stats
 
 The server creates a normal `sleep` schedule, defaulting to **03:30 in the server's local time**. It can be disabled or run manually. The server must be running for schedules to execute.
 
-Sleep cycles contain light sleep (strength bookkeeping and dormancy), deep sleep (merging and resolving contradictions), and dream sleep (connections and insights). Defaults include two cycles and Sonnet for merging and insights; limits and models are configurable under `memory.sleep`.
+A night opens by going back over the day, then runs cycles of light sleep (strength bookkeeping and dormancy), deep sleep (merging and resolving contradictions), and dream sleep (connections and insights). Defaults are two cycles and Sonnet for merging, insights and skill work; limits and models are configurable under `memory.sleep`.
 
-Dormant memories remain in the database and can be woken. Sleep does not retire user-authored or pinned memories; conflicts between two protected memories remain for the user to decide. Undo wakes memories marked dormant by the run and removes its recorded generated memories and edges. It is not a database snapshot: entity updates and deleted pre-existing contradiction edges are not restored. Cancelling a run keeps changes already completed. See [the sleep design document](docs/concepts/memory-graph-and-sleep.md), with code as the source of current behavior.
+```mermaid
+flowchart TD
+  A(["Night starts"]) --> B["Replay — once, before the cycles<br/>sort the day's conversations cheaply,<br/>read the promising ones in full"]
+  B --> C["Light sleep<br/>weak and unused memories fall asleep"]
+  C --> D["Deep sleep<br/>merge what repeats, settle contradictions"]
+  D --> E["Dream sleep<br/>connect memories across distance"]
+  E --> F{"Last cycle?"}
+  F -->|"no — round again"| C
+  F -->|yes| G["Insights<br/>what the period adds up to"]
+  G --> H["Repair skills<br/>corrections, moved sources, failed runs"]
+  H --> I["Write skills<br/>distil what the bank keeps circling"]
+  I --> J(["Done"])
+```
+
+**Replay** exists because the per-turn extractor sees one exchange at a time through a small model, so whatever only becomes visible across a whole conversation is out of its reach. At night the transcripts are read again without that constraint. Cost is contained by sorting first: a cheap pass sees only the user's turns, heavily clipped, and answers whether anything durable is likely to be there; only what survives is read in full. A conversation with fewer than two user turns costs no model call at all. The evidence rule is not relaxed — the night must quote the user exactly as the day does. `memory.sleep.replaySessions` caps the deep reads per night (twelve by default).
+
+**Skill work** runs last, and repair before invention: a stale procedure misleads whoever opens it next, which is worse than one that was never written. Three signals mark a skill for revision — a correction the replay found in the day's conversations, a source memory that was superseded, retired or edited, and a run that had the skill open and then failed, with its error text. Looking at a signal consumes it, so one dormant memory cannot present the same skill night after night.
+
+Dormant memories remain in the database and can be woken. Sleep does not retire user-authored or pinned memories, and never overwrites a skill a person wrote; conflicts between two protected memories remain for the user to decide. Undo wakes memories marked dormant by the run, removes the memories and edges it generated — including what its replay harvested — and restores any skill it wrote or rewrote from the snapshot taken beforehand. It is not a database snapshot: entity updates and deleted pre-existing contradiction edges are not restored. Cancelling a run keeps changes already completed. See [the sleep design document](docs/concepts/memory-graph-and-sleep.md) and [the evidence and self-written skills document](docs/concepts/confirmed-memory-and-self-written-skills.md), with code as the source of current behavior.
 
 ## Organization, tasks, and assignments
 
@@ -247,7 +283,11 @@ Use `rookery org --help`, `rookery tasks --help`, and `/help` for the full comma
 
 Rookery's organization and memory tools use its per-turn MCP bridge; the tool hub attaches additional MCP servers directly to each provider process for the configured audience. Provider-native tools are governed by the permission flags above, so MCP-only execution is a design intent, not a universal enforced guarantee. Toggles apply to subsequent provider processes, including the bounded second pass described above. Showing tool calls in web chat is a browser-local preference.
 
-**Skills** (`/skills`, `rookery skills`) are folders under `~/.rookery/skills`, each containing a `SKILL.md` with name, description, and audience metadata, plus supporting files. Rookery advertises the catalog in context; `use_skill` loads instructions and the file list. Skills can be authored in the UI or imported from GitHub using a repository path or URL.
+**Skills** (`/skills`, `rookery skills`) are folders under `~/.rookery/skills`, each containing a `SKILL.md` with name, description, audience and origin metadata, plus supporting files. Rookery advertises the catalog in context; `use_skill` loads instructions and the file list.
+
+Skills arrive three ways. You can author them in the UI or import them from GitHub using a repository path or URL. The assistant and its agents can write one themselves with `write_skill` when a procedure turns out to recur. And the nightly run distils one out of what the memory keeps circling, then keeps it up to date as described under [Sleep](#sleep). The `origin` field records which of the three wrote the current text (`user`, `agent`, `sleep`), and the Skills page shows it.
+
+Two rules bound the unattended paths: **a skill you wrote is never overwritten** — the store refuses and the night logs the refusal — and every unattended write keeps the previous `SKILL.md` first, so undoing the night that made it puts the old text back. Skills written during an assignment always land in the home directory, never in a project's own `.claude/skills`. Editing a night-written skill in the UI makes it yours, which also protects it from further rewriting.
 
 `use_skill` returns instructions and a file list; it does not execute scripts. Running a script requires an available execution tool and its permissions. Project-scoped skill/MCP proposals under `docs/concepts` should not be assumed fully implemented.
 
@@ -360,7 +400,7 @@ Build before tests that import `dist` output. The web build includes its own Typ
 
 ## Design documents
 
-[`docs/concepts`](docs/concepts) contains design history and proposals, some partly implemented. They may retain their original German text; current behavior is determined by code. Topics: [agent performance](docs/concepts/agent-performance-management.md), [memory and sleep](docs/concepts/memory-graph-and-sleep.md), [project-scoped skills and MCP](docs/concepts/project-scoped-skills-and-mcp.md), and [Telegram](docs/concepts/telegram-channel.md).
+[`docs/concepts`](docs/concepts) contains design history and proposals, some partly implemented. They may retain their original German text; current behavior is determined by code. Topics: [agent performance](docs/concepts/agent-performance-management.md), [memory and sleep](docs/concepts/memory-graph-and-sleep.md), [evidence-backed memory and self-written skills](docs/concepts/confirmed-memory-and-self-written-skills.md), [project-scoped skills and MCP](docs/concepts/project-scoped-skills-and-mcp.md), and [Telegram](docs/concepts/telegram-channel.md).
 
 ## License
 
