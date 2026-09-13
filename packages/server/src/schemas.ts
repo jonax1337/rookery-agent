@@ -322,6 +322,8 @@ export const patchToolServerSchema = z
     audience: audienceSchema,
     options: z.record(z.string().max(2000)),
     env: z.record(z.string().max(4000)),
+    /** Project ids this server is limited to; empty means every project. */
+    projectIds: z.array(z.string().min(1)).max(500),
   })
   .partial();
 

@@ -3,6 +3,7 @@ import { NavLink, useNavigate, useParams } from 'react-router';
 import {
   CheckIcon,
   ExternalLinkIcon,
+  FolderIcon,
   PackageIcon,
   PlugIcon,
   RotateCcwIcon,
@@ -22,10 +23,12 @@ import { MetaList } from '@/components/common/meta-list';
 import { RowMenuButton } from '@/components/common/row-menu-button';
 import { FormField, FormFieldsSkeleton, useDraft } from '@/components/forms/form-kit';
 import { failureMessage, reportFailure } from '@/lib/errors';
+import { useOrgState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -99,6 +102,8 @@ interface Draft {
    * key whose value arrives empty (`withToolServer` in core).
    */
   env: Record<string, string>;
+  /** Empty means every project. */
+  projectIds: string[];
 }
 
 /** What a finished preparation had to say, held for the drawer. */
@@ -114,6 +119,7 @@ function makeDraft(tool: ToolServer): Draft {
       tool.optionDefs.map((option) => [option.key, tool.options[option.key] ?? option.default]),
     ),
     env: {},
+    projectIds: tool.projectIds,
   };
 }
 
@@ -122,11 +128,14 @@ export function ToolDetailPage() {
   const navigate = useNavigate();
   const { tool, loading, error, refresh, setEnabled, update, remove, prepare } = useTool(id);
   const { dialog, removeTool: dropTool } = useRemoveTool(remove, refresh);
+  const org = useOrgState();
+  const projects = org.projects.filter((project) => !project.archived);
 
   const { draft, dirty, set, hydrate, markSaved } = useDraft<Draft>({
     audience: 'assistant',
     options: {},
     env: {},
+    projectIds: [],
   });
 
   // Bumped after a save so the draft refills from the record that came back -
@@ -159,7 +168,7 @@ export function ToolDetailPage() {
       for (const [name, value] of Object.entries(draft.env)) {
         if (value.trim()) env[name] = value.trim();
       }
-      await update(tool.id, { audience: draft.audience, options: draft.options, env });
+      await update(tool.id, { audience: draft.audience, options: draft.options, env, projectIds: draft.projectIds });
       markSaved();
       setGeneration((current) => current + 1);
       toast('Saved', { description: 'Takes effect on the next turn.' });
@@ -350,6 +359,15 @@ export function ToolDetailPage() {
             icon: PlugIcon,
           },
           {
+            label: 'Projects',
+            value: tool.projectIds.length
+              ? tool.projectIds
+                  .map((id) => org.projects.find((project) => project.id === id)?.name ?? id)
+                  .join(', ')
+              : 'All projects',
+            icon: FolderIcon,
+          },
+          {
             label: 'Project page',
             // An external address, so a plain anchor - `MetaList.to` routes
             // inside the app and would swallow it.
@@ -501,6 +519,39 @@ export function ToolDetailPage() {
               </FieldLabel>
             ))}
           </RadioGroup>
+        </FieldSet>
+
+        <FieldSet>
+          <FieldLegend variant="label">Projects</FieldLegend>
+          <FieldDescription>
+            Limit this server to specific projects. Leave every box unchecked to keep it available
+            everywhere, including the workspace.
+          </FieldDescription>
+          {projects.length ? (
+            projects.map((project) => (
+              <FieldLabel key={project.id} htmlFor={'project-' + project.id}>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldTitle>{project.name}</FieldTitle>
+                  </FieldContent>
+                  <Checkbox
+                    id={'project-' + project.id}
+                    checked={draft.projectIds.includes(project.id)}
+                    onCheckedChange={(checked) =>
+                      set({
+                        projectIds:
+                          checked === true
+                            ? [...draft.projectIds, project.id]
+                            : draft.projectIds.filter((entry) => entry !== project.id),
+                      })
+                    }
+                  />
+                </Field>
+              </FieldLabel>
+            ))
+          ) : (
+            <FieldDescription>No projects exist yet.</FieldDescription>
+          )}
         </FieldSet>
 
         {tool.optionDefs.map((option) => (

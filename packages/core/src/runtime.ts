@@ -454,13 +454,13 @@ export class Assistant extends EventEmitter {
     // The hub decides which extra MCP servers this turn gets, and the prompt
     // carries one paragraph per server plus the index of skills to open.
     const who = agent ? 'agent' : 'assistant';
-    await ensureToolServers(this.config, who, providerId, (id, error) =>
+    await ensureToolServers(this.config, who, providerId, project?.id, (id, error) =>
       this.log.warn('Tool server could not prepare', { id, error: error.message }),
     );
-    const extra = toolServersFor(this.config, who, providerId);
+    const extra = toolServersFor(this.config, who, providerId, project?.id);
     // The assistant also hears about the servers it could attach but has not:
     // a switch it does not know about is a wall it cannot climb.
-    const toolHints = [...extra.hints, dormantToolsHint(this.config, who)].filter(Boolean);
+    const toolHints = [...extra.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean);
     const skillsIndex = renderSkillsIndex(this.skills.for(who));
     const systemPrompt = agent
       ? buildAgentChatPrompt({
@@ -595,11 +595,11 @@ export class Assistant extends EventEmitter {
       // session resumed, and the two answers are joined.
       if (failed || agent || pass === MAX_PROVIDER_PASSES) break;
       if (input.signal?.aborted) break;
-      const next = toolServersFor(this.config, who, providerId);
+      const next = toolServersFor(this.config, who, providerId, project?.id);
       const fresh = next.specs.map((spec) => spec.name).filter((name) => !attached.has(name));
       if (!fresh.length) break;
 
-      await ensureToolServers(this.config, who, providerId, (id, error) =>
+      await ensureToolServers(this.config, who, providerId, project?.id, (id, error) =>
         this.log.warn('Tool server could not prepare', { id, error: error.message }),
       );
       passExtra = next;
@@ -611,7 +611,7 @@ export class Assistant extends EventEmitter {
         resumed: true,
         voice: input.voice ?? session.kind === 'voice',
         orgBlock: assistantOrgBlock(this.config, snapshot, [], project, this.cron.list(organization.id)),
-        toolHints: [...next.hints, dormantToolsHint(this.config, who)].filter(Boolean),
+        toolHints: [...next.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean),
         skillsIndex,
         store: this.store,
       });

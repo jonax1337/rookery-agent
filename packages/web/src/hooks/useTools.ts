@@ -79,6 +79,7 @@ export interface ToolsState {
       audience?: ToolServerAudience;
       options?: Record<string, string>;
       env?: Record<string, string>;
+      projectIds?: string[];
     },
   ): Promise<ToolServer>;
   addCustom(input: CustomToolInput): Promise<ToolServer>;

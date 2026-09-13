@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AssignmentStatus, TaskStatus } from '@rookery/core';
+import { fingerprintMcpFile, projectMcpStatus, readProjectMcpFile } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import {
   agentSchema,
@@ -41,6 +42,10 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
   const notFound = (reply: FastifyReply, what: string): { error: string; message: string } => {
     reply.code(404);
     return { error: 'Not found', message: what };
+  };
+  const badRequest = (reply: FastifyReply, what: string): { error: string; message: string } => {
+    reply.code(400);
+    return { error: 'Bad request', message: what };
   };
 
   /* ---------------------------------- company --------------------------------- */
@@ -85,6 +90,45 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     store.deleteProject(request.params.id);
     changed('project', request.params.id);
     return { ok: true };
+  });
+
+  /**
+   * A project's own `.mcp.json` - the same file a person's own Claude Code
+   * session in that folder would read - and whether it is trusted to start
+   * processes for an assignment. Read-only status here; trust/revoke below
+   * are the only writes, and they never touch the file itself.
+   */
+  app.get('/api/org/projects/:id/mcp', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const project = store.getProject(request.params.id);
+    if (!project) return notFound(reply, 'No project ' + request.params.id);
+    const file = project.path ? readProjectMcpFile(project.path) : null;
+    return {
+      status: projectMcpStatus(file, project.mcpTrust),
+      servers: (file?.servers ?? []).map((server) => ({
+        name: server.name,
+        command: server.command,
+        args: server.args,
+      })),
+    };
+  });
+
+  app.post('/api/org/projects/:id/mcp/trust', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const project = store.getProject(request.params.id);
+    if (!project) return notFound(reply, 'No project ' + request.params.id);
+    if (!project.path) return badRequest(reply, 'Project "' + project.name + '" has no directory.');
+    const file = readProjectMcpFile(project.path);
+    if (!file || !file.servers.length) return badRequest(reply, "No MCP servers in this project's .mcp.json.");
+    store.updateProject(project.id, { mcpTrust: { fingerprint: fingerprintMcpFile(file.raw), approvedAt: Date.now() } });
+    changed('project', project.id);
+    return store.getProject(project.id);
+  });
+
+  app.delete('/api/org/projects/:id/mcp/trust', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const project = store.getProject(request.params.id);
+    if (!project) return notFound(reply, 'No project ' + request.params.id);
+    store.updateProject(project.id, { mcpTrust: null });
+    changed('project', project.id);
+    return store.getProject(project.id);
   });
 
   /* ----------------------------------- teams ---------------------------------- */

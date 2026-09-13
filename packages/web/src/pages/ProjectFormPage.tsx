@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useId } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { FolderIcon, Trash2Icon } from 'lucide-react';
+import { FolderIcon, PlugIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
 import { api, type ProjectInput, type ProjectPatch } from '@/lib/api';
-import { reportFailure } from '@/lib/errors';
-import type { Project } from '@/lib/types';
+import { failureMessage, reportFailure } from '@/lib/errors';
+import type { Project, ProjectMcpInfo } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
 import { PageBody } from '@/components/blocks/page-body';
 import { FormPage } from '@/components/blocks/form-page';
@@ -19,18 +19,23 @@ import {
   useDraft,
   useFormSubmit,
 } from '@/components/forms/form-kit';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Field,
   FieldContent,
   FieldDescription,
   FieldError,
   FieldLabel,
+  FieldLegend,
   FieldSeparator,
   FieldSet,
   FieldTitle,
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
+import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -74,6 +79,13 @@ function buildPatch(draft: ProjectDraft): ProjectPatch {
     archived: draft.archived,
   };
 }
+
+const MCP_STATUS_LABEL: Record<ProjectMcpInfo['status'], string> = {
+  none: 'No servers',
+  pending: 'Not yet trusted',
+  trusted: 'Trusted',
+  changed: 'Changed since approval',
+};
 
 function toInput(patch: ProjectPatch): ProjectInput {
   return {
@@ -131,6 +143,56 @@ export function ProjectFormPage() {
       reportFailure('Delete', caught);
     }
   }, [confirm, id, navigate, org, project]);
+
+  const [mcp, setMcp] = useState<ProjectMcpInfo | null>(null);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [mcpBusy, setMcpBusy] = useState(false);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+
+  const loadMcp = useCallback(async (): Promise<void> => {
+    if (!id || !project?.path) return;
+    setMcpLoading(true);
+    try {
+      setMcp(await api.projectMcp(id));
+      setMcpError(null);
+    } catch (caught) {
+      setMcpError(failureMessage(caught));
+    } finally {
+      setMcpLoading(false);
+    }
+  }, [id, project?.path]);
+
+  useEffect(() => {
+    void loadMcp();
+  }, [loadMcp]);
+
+  const trustMcp = useCallback(async (): Promise<void> => {
+    if (!id) return;
+    setMcpBusy(true);
+    try {
+      await api.trustProjectMcp(id);
+      await loadMcp();
+      toast('MCP servers trusted');
+    } catch (caught) {
+      reportFailure('Trust', caught);
+    } finally {
+      setMcpBusy(false);
+    }
+  }, [id, loadMcp]);
+
+  const revokeMcp = useCallback(async (): Promise<void> => {
+    if (!id) return;
+    setMcpBusy(true);
+    try {
+      await api.revokeProjectMcp(id);
+      await loadMcp();
+      toast('MCP trust revoked');
+    } catch (caught) {
+      reportFailure('Revoke', caught);
+    } finally {
+      setMcpBusy(false);
+    }
+  }, [id, loadMcp]);
 
   const leaf = editing ? (project?.name ?? 'Edit project') : 'Create project';
 
@@ -244,6 +306,69 @@ export function ProjectFormPage() {
             </FieldDescription>
           </Field>
         </FieldSet>
+
+        {editing && project?.path ? (
+          <>
+            <FieldSeparator />
+            <FieldSet>
+              <FieldLegend variant="label">MCP servers</FieldLegend>
+              <FieldDescription>
+                Servers listed in this project&rsquo;s own .mcp.json - the same file a person&rsquo;s
+                own Claude Code session in this folder would read. Starting them for an assignment
+                needs approval here first, and an edit to the file needs approving again.
+              </FieldDescription>
+              {mcpLoading ? (
+                <Spinner aria-label="Loading" />
+              ) : mcpError ? (
+                <p className="text-sm text-destructive">{mcpError}</p>
+              ) : mcp && mcp.servers.length ? (
+                <Card>
+                  <CardHeader className="flex-row items-center justify-between gap-3">
+                    <div>
+                      <CardTitle>
+                        <Badge
+                          variant={
+                            mcp.status === 'trusted'
+                              ? 'secondary'
+                              : mcp.status === 'changed'
+                                ? 'destructive'
+                                : 'outline'
+                          }
+                        >
+                          {MCP_STATUS_LABEL[mcp.status]}
+                        </Badge>
+                      </CardTitle>
+                      <CardDescription>
+                        {mcp.servers.length} server{mcp.servers.length === 1 ? '' : 's'} declared.
+                      </CardDescription>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={mcp.status === 'trusted' ? 'outline' : 'default'}
+                      disabled={mcpBusy}
+                      onClick={() => void (mcp.status === 'trusted' ? revokeMcp() : trustMcp())}
+                    >
+                      {mcpBusy ? <Spinner aria-label="Working" data-icon="inline-start" /> : <PlugIcon />}
+                      {mcp.status === 'trusted' ? 'Revoke' : 'Trust'}
+                    </Button>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="flex flex-col gap-1.5">
+                      {mcp.servers.map((server) => (
+                        <li key={server.name} className="font-mono text-xs">
+                          {server.name}: {server.command} {server.args.join(' ')}
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              ) : (
+                <FieldDescription>No .mcp.json in this directory.</FieldDescription>
+              )}
+            </FieldSet>
+          </>
+        ) : null}
 
         <FieldSeparator />
 

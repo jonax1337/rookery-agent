@@ -1,14 +1,15 @@
 # Projektbezogene Skills und MCP-Server
 
-Stand: 2026-09-12. Stufe 1 (Projekt-Skills) und Stufe 2 (Projekt-MCP) aus Abschnitt 5 sind
-umgesetzt: `packages/core/src/skills/store.ts` (`SkillStore` nimmt eine geordnete Liste von
-Verzeichnissen), `packages/core/src/org/project-mcp.ts` (liest `.mcp.json` und bildet den
-Vertrauensstatus), `packages/core/src/org/controller.ts` (`#agentSkills`, `use_skill`,
-`project_mcp_servers`, `trust_project_mcp`, die Zusammenfuehrung in `run()`),
-`packages/core/src/org/store.ts` und `packages/core/src/types.ts` (`Project.mcpTrust`),
-`packages/core/src/memory/db.ts` (Schema 7). Offen ist Stufe 3 (Server-Scoping im Hub,
-`ToolServerConfig`) sowie eine sichtbare Flaeche auf der Projektseite der Web-UI - die
-Vertrauensentscheidung laeuft bisher ausschliesslich ueber die beiden neuen Assistenten-Tools.
+Stand: 2026-09-13. Alle drei Ausbaustufen aus Abschnitt 5 sind umgesetzt:
+`packages/core/src/skills/store.ts` (`SkillStore` nimmt eine geordnete Liste von Verzeichnissen),
+`packages/core/src/org/project-mcp.ts` (liest `.mcp.json` und bildet den Vertrauensstatus),
+`packages/core/src/org/controller.ts` (`#agentSkills`, `use_skill`, `project_mcp_servers`,
+`trust_project_mcp`, die Zusammenfuehrung in `run()`), `packages/core/src/org/store.ts` und
+`packages/core/src/types.ts` (`Project.mcpTrust`, `ToolServerConfig.projectIds`),
+`packages/core/src/memory/db.ts` (Schema 9), `packages/core/src/tools/hub.ts`
+(`toolServersFor`/`ensureToolServers`/`dormantToolsHint` kennen jetzt `projectId`), dazu die
+Projektseite und die Werkzeug-Detailseite der Web-UI (`ProjectFormPage.tsx`,
+`ToolDetailPage.tsx`) und die drei neuen Routen unter `/api/org/projects/:id/mcp*`.
 
 ## 1. Zielsetzung
 
@@ -105,17 +106,18 @@ selbst wissen.
    eine Controller-Instanz.
 2. **Projekt-MCP.** ✅ Umgesetzt. `Project.mcpTrust` (`{ fingerprint, approvedAt }`) haelt die
    getroffene Vertrauensentscheidung; `org/project-mcp.ts` liest `.mcp.json`, bildet den
-   Fingerabdruck und den Status (`none | pending | trusted | changed`). Die beiden
-   Assistenten-Tools `project_mcp_servers` (Liste, Status) und `trust_project_mcp`
-   (`approve` / `revoke`) sind der Zustimmungsweg; ein Auftrag bekommt die Server aus der Datei
-   nur bei Status `trusted`, sonst bleibt es beim Hub allein und der Agent bekommt einen Hinweis
-   im Prompt statt eines stillen Lochs. Offen: Die Vertrauensentscheidung ist bisher nur ueber die
-   Tools erreichbar, nicht auf der Projektseite der Web-UI - dort landet `mcpTrust` zwar in jeder
-   API-Antwort (`GET`/`PATCH /api/org/projects/:id`), aber es gibt noch keine Anzeige und keinen
-   Knopf dafuer.
-3. **Projekt-Scoping im Hub.** Offen. `ToolServerConfig` lernt, auf welche Projekte ein Server
-   begrenzt ist. Groesster Brocken, unabhaengig von 1 und 2 nuetzlich, und die eigentliche Antwort
-   auf "dieser Server gehoert nur zu diesem Projekt".
+   Fingerabdruck und den Status (`none | pending | trusted | changed`). Zwei Wege dorthin: die
+   Assistenten-Tools `project_mcp_servers` / `trust_project_mcp` im Chat, und auf der Projektseite
+   (`ProjectFormPage.tsx`) eine Karte mit Serverliste, Status-Badge und Trust-/Revoke-Knopf, die
+   `GET`/`POST`/`DELETE /api/org/projects/:id/mcp*` traegt. Ein Auftrag bekommt die Server aus der
+   Datei nur bei Status `trusted`, sonst bleibt es beim Hub allein und der Agent bekommt einen
+   Hinweis im Prompt statt eines stillen Lochs.
+3. **Projekt-Scoping im Hub.** ✅ Umgesetzt. `ToolServerConfig.projectIds` begrenzt einen Server auf
+   bestimmte Projekte; leer bleibt das alte Verhalten (ueberall verfuegbar). `toolServersFor`,
+   `ensureToolServers` und `dormantToolsHint` (`tools/hub.ts`) nehmen dafuer ein optionales
+   `projectId` an - ein Server, der zu einem anderen Projekt gehoert, taucht weder als angehaengt
+   noch als "koenntest du noch anhaengen" auf, er ist fuer dieses Gespraech schlicht nicht da. Die
+   Werkzeug-Detailseite (`ToolDetailPage.tsx`) traegt dafuer eine Checkliste der Projekte.
 
 ## 6. Verworfen
 

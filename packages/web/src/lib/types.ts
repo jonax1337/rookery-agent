@@ -218,9 +218,23 @@ export interface Project {
   description?: string;
   /** Directory assignments for this project run in. Unset: the workspace. */
   path?: string;
+  /** Whether this project's own `.mcp.json` may start processes. Unset: not yet decided. */
+  mcpTrust?: { fingerprint: string; approvedAt: number };
   createdAt: number;
   updatedAt: number;
   archived: boolean;
+}
+
+export interface ProjectMcpServer {
+  name: string;
+  command: string;
+  args: string[];
+}
+
+/** GET /api/org/projects/:id/mcp */
+export interface ProjectMcpInfo {
+  status: 'none' | 'pending' | 'trusted' | 'changed';
+  servers: ProjectMcpServer[];
 }
 
 export interface Team {
@@ -790,6 +804,8 @@ export interface ToolServer {
   missingEnv: string[];
   installed: boolean;
   active: boolean;
+  /** Project ids this server is limited to; empty means every project. */
+  projectIds: string[];
   prepare?: { label: string };
   custom?: { name: string; command: string; args: string[]; hint: string };
 }

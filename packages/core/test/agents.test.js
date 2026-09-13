@@ -179,6 +179,44 @@ test('the tool hub resolves catalogue and custom servers per audience', () => {
   assert.equal(toolServerStates({ ...base, tools: without }).some((s) => s.id === 'custom-my-notion'), false);
 });
 
+test('a server scoped to specific projects only serves those, and is left out of the dormant hint elsewhere', () => {
+  const base = { ...DEFAULT_CONFIG, tools: { servers: [] } };
+  const token = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+  delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+  try {
+    // Active and scoped: attached only where it actually applies.
+    let tools = withToolServer(base, 'github', { enabled: true, env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'x' } });
+    tools = withToolServer({ ...base, tools }, 'github', { projectIds: ['proj-a'] });
+    const active = { ...base, tools };
+
+    assert.deepEqual(toolServerStates(active).find((s) => s.id === 'github').projectIds, ['proj-a']);
+    assert.deepEqual(toolServersFor(active, 'assistant', 'claude').specs, [], 'no project: scoped server withheld');
+    assert.deepEqual(
+      toolServersFor(active, 'assistant', 'claude', 'proj-b').specs,
+      [],
+      'a different project: still withheld',
+    );
+    assert.deepEqual(
+      toolServersFor(active, 'assistant', 'claude', 'proj-a').specs.map((spec) => spec.name),
+      ['github'],
+      'the matching project: attached',
+    );
+
+    // Not enabled (missing its key) and scoped: a real wall, but only in the
+    // project it belongs to - elsewhere it is left out entirely rather than
+    // listed as blocked, since it is not this conversation's wall to climb.
+    const blocked = { ...base, tools: withToolServer(base, 'github', { enabled: true, projectIds: ['proj-a'] }) };
+    assert.ok(!dormantToolsHint(blocked, 'assistant').includes('github (GitHub)'), 'no project: left out');
+    assert.ok(!dormantToolsHint(blocked, 'assistant', 'proj-b').includes('github (GitHub)'), 'other project: left out');
+    assert.ok(
+      dormantToolsHint(blocked, 'assistant', 'proj-a').includes('github (GitHub): needs GITHUB_PERSONAL_ACCESS_TOKEN'),
+      'its own project: still a wall',
+    );
+  } finally {
+    if (token) process.env.GITHUB_PERSONAL_ACCESS_TOKEN = token;
+  }
+});
+
 test('a skill source is owner/repo, a path below it, or a GitHub URL', () => {
   assert.deepEqual(parseSkillSource('anthropics/skills/skills/pdf'), { owner: 'anthropics', repo: 'skills', path: 'skills/pdf' });
   assert.deepEqual(parseSkillSource('vercel-labs/skills'), { owner: 'vercel-labs', repo: 'skills', path: '' });

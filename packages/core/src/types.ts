@@ -914,6 +914,11 @@ export interface ToolServerConfig {
   env: Record<string, string>;
   /** Custom servers only: how to start it and what to tell the model. */
   custom?: { name: string; command: string; args: string[]; hint: string };
+  /**
+   * Project ids this server is limited to. Empty or unset: every project
+   * (and the workspace), the behaviour before this field existed.
+   */
+  projectIds?: string[];
 }
 
 export interface ToolsConfig {

@@ -97,6 +97,15 @@ export {
   type TaskPlan,
 } from './org/planner.js';
 export { MCP_SERVER_NAME, ORG_TOOLS, toolsFor, type ToolAudience, type ToolDefinition } from './org/tools.js';
+export {
+  fingerprintMcpFile,
+  projectMcpPath,
+  projectMcpStatus,
+  readProjectMcpFile,
+  renderProjectMcpServers,
+  type ProjectMcpFile,
+  type ProjectMcpStatus,
+} from './org/project-mcp.js';
 
 // Schedules: standing orders that fire on a cron expression while the server runs.
 export { CronStore } from './cron/store.js';

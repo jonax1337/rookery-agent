@@ -867,10 +867,10 @@ export class OrgController extends EventEmitter {
             ? 'the user, directly'
             : 'the assistant';
 
-      await ensureToolServers(this.#config, 'agent', providerId, (id, error) =>
+      await ensureToolServers(this.#config, 'agent', providerId, project?.id, (id, error) =>
         this.#log.warn('Tool server could not prepare', { id, error: error.message }),
       );
-      const extra = toolServersFor(this.#config, 'agent', providerId);
+      const extra = toolServersFor(this.#config, 'agent', providerId, project?.id);
 
       // The project's own MCP servers - read from its `.mcp.json`, the same
       // file a person's own session in that folder would read - only start

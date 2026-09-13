@@ -23,6 +23,8 @@ export interface ToolServerState {
   installed: boolean;
   /** True when the server would actually start for its audience right now. */
   active: boolean;
+  /** Project ids this server is limited to; empty means every project. */
+  projectIds: string[];
   entry?: ToolCatalogEntry;
   custom?: ToolServerConfig['custom'];
 }
@@ -83,6 +85,7 @@ export function toolServerStates(config: RookeryConfig): ToolServerState[] {
       missingEnv: missing,
       installed,
       active: stored.enabled && installed && missing.length === 0,
+      projectIds: stored.projectIds ?? [],
       entry,
       custom: stored.custom,
     });
@@ -93,16 +96,21 @@ export function toolServerStates(config: RookeryConfig): ToolServerState[] {
 const serves = (audience: ToolServerAudience, who: 'assistant' | 'agent'): boolean =>
   audience === 'both' || (who === 'assistant' ? audience === 'assistant' : audience === 'agents');
 
+/** Whether a server's project scope covers this turn: unscoped serves everyone. */
+const scoped = (projectIds: string[], projectId: string | undefined): boolean =>
+  projectIds.length === 0 || (projectId !== undefined && projectIds.includes(projectId));
+
 /** The servers one audience gets this turn, and the prompt paragraphs that go with them. */
 export function toolServersFor(
   config: RookeryConfig,
   who: 'assistant' | 'agent',
   provider?: ProviderId,
+  projectId?: string,
 ): { specs: McpServerSpec[]; hints: string[] } {
   const specs: McpServerSpec[] = [];
   const hints: string[] = [];
   for (const state of toolServerStates(config)) {
-    if (!state.active || !serves(state.audience, who)) continue;
+    if (!state.active || !serves(state.audience, who) || !scoped(state.projectIds, projectId)) continue;
     const stored = toolServerConfig(config, state.id);
     let spec: McpServerSpec | null = null;
     let hint = '';
@@ -130,14 +138,18 @@ export function toolServersFor(
  * that needs the user on the Tools page; only the second is a real wall,
  * and then the model can say exactly what is missing.
  *
- * Agents get nothing here: only the assistant may flip a switch.
+ * Agents get nothing here: only the assistant may flip a switch. A server
+ * scoped to other projects is left out entirely rather than listed as
+ * blocked - it is not a wall in this conversation, it simply belongs
+ * elsewhere.
  */
-export function dormantToolsHint(config: RookeryConfig, who: 'assistant' | 'agent'): string {
+export function dormantToolsHint(config: RookeryConfig, who: 'assistant' | 'agent', projectId?: string): string {
   if (who !== 'assistant') return '';
   const ready: string[] = [];
   const blocked: string[] = [];
   for (const state of toolServerStates(config)) {
     if (state.active && serves(state.audience, 'assistant')) continue;
+    if (!scoped(state.projectIds, projectId)) continue;
     const what = state.id + ' (' + state.name + ')';
     if (!state.installed) blocked.push(what + ': not installed on this machine');
     else if (state.missingEnv.length) blocked.push(what + ': needs ' + state.missingEnv.join(', '));
@@ -172,10 +184,13 @@ export async function ensureToolServers(
   config: RookeryConfig,
   who: 'assistant' | 'agent',
   provider?: ProviderId,
+  projectId?: string,
   onError?: (id: string, error: Error) => void,
 ): Promise<void> {
   const jobs = toolServerStates(config)
-    .filter((state) => state.active && serves(state.audience, who) && state.entry?.ensure)
+    .filter(
+      (state) => state.active && serves(state.audience, who) && scoped(state.projectIds, projectId) && state.entry?.ensure,
+    )
     .map(async (state) => {
       const stored = toolServerConfig(config, state.id);
       try {
@@ -191,7 +206,7 @@ export async function ensureToolServers(
 export function withToolServer(
   config: RookeryConfig,
   id: string,
-  patch: Partial<Pick<ToolServerConfig, 'enabled' | 'audience' | 'options' | 'env' | 'custom'>>,
+  patch: Partial<Pick<ToolServerConfig, 'enabled' | 'audience' | 'options' | 'env' | 'custom' | 'projectIds'>>,
 ): RookeryConfig['tools'] {
   const current = toolServerConfig(config, id);
   const next: ToolServerConfig = {
@@ -201,6 +216,7 @@ export function withToolServer(
     options: { ...current.options, ...(patch.options ?? {}) },
     env: { ...current.env, ...(patch.env ?? {}) },
     ...(patch.custom ? { custom: patch.custom } : {}),
+    ...(patch.projectIds !== undefined ? { projectIds: patch.projectIds } : {}),
   };
   // An empty value removes a key, so a cleared API key does not linger.
   for (const [key, value] of Object.entries(next.env)) if (!value) delete next.env[key];

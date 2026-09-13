@@ -31,6 +31,7 @@ import type {
   OrgSnapshot,
   PermissionLevel,
   Project,
+  ProjectMcpInfo,
   ProviderId,
   ProviderQuota,
   ProviderStatus,
@@ -287,7 +288,13 @@ export const api = {
   tools: () => request<ToolServer[]>('/api/tools'),
   updateTool: (
     id: string,
-    patch: { enabled?: boolean; audience?: ToolServerAudience; options?: Record<string, string>; env?: Record<string, string> },
+    patch: {
+      enabled?: boolean;
+      audience?: ToolServerAudience;
+      options?: Record<string, string>;
+      env?: Record<string, string>;
+      projectIds?: string[];
+    },
   ) => request<ToolServer>('/api/tools/' + id, { method: 'PATCH', ...json(patch) }),
   addCustomTool: (input: CustomToolInput) =>
     request<ToolServer>('/api/tools/custom', { method: 'POST', ...json(input) }),
@@ -480,6 +487,12 @@ export const api = {
     request<Project>('/api/org/projects/' + id, { method: 'PATCH', ...json(patch) }),
   deleteProject: (id: string) =>
     request<{ ok: true }>('/api/org/projects/' + id, { method: 'DELETE' }),
+  /** A project's own `.mcp.json`: whether it is trusted, and what it lists. */
+  projectMcp: (id: string) => request<ProjectMcpInfo>('/api/org/projects/' + id + '/mcp'),
+  trustProjectMcp: (id: string) =>
+    request<Project>('/api/org/projects/' + id + '/mcp/trust', { method: 'POST' }),
+  revokeProjectMcp: (id: string) =>
+    request<Project>('/api/org/projects/' + id + '/mcp/trust', { method: 'DELETE' }),
 
   createTeam: (input: TeamInput) =>
     request<Team>('/api/org/teams', { method: 'POST', ...json(input) }),
