@@ -43,7 +43,7 @@ export function useSpeech(config: VoiceConfig | undefined): SpeechState {
         const byName = list.find((voice) => voice.name === wantedName);
         if (byName) return byName;
       }
-      const lang = config?.lang ?? 'de-DE';
+      const lang = config?.lang ?? 'en-GB';
       return (
         list.find((voice) => voice.lang === lang) ??
         list.find((voice) => voice.lang.startsWith(lang.split('-')[0] ?? '')) ??
@@ -73,7 +73,7 @@ export function useSpeech(config: VoiceConfig | undefined): SpeechState {
       const utterance = new SpeechSynthesisUtterance(body);
       const voice = pickVoice(window.speechSynthesis.getVoices());
       if (voice) utterance.voice = voice;
-      utterance.lang = voice?.lang ?? config?.lang ?? 'de-DE';
+      utterance.lang = voice?.lang ?? config?.lang ?? 'en-GB';
       utterance.rate = config?.rate ?? 1;
       utterance.pitch = config?.pitch ?? 1;
 

@@ -9,6 +9,9 @@ import {
   rowPaginationFeature,
   rowSelectionFeature,
   rowSortingFeature,
+  sortFn_alphanumeric,
+  sortFn_datetime,
+  sortFn_text,
   tableFeatures,
 } from '@tanstack/react-table';
 import type { Cell, Column, ColumnDef, Row, RowData, Table } from '@tanstack/react-table';
@@ -36,6 +39,11 @@ export const tableFeaturesSet = tableFeatures({
   filteredRowModel: createFilteredRowModel(),
   paginatedRowModel: createPaginatedRowModel(),
   sortedRowModel: createSortedRowModel(),
+  sortFns: {
+    alphanumeric: sortFn_alphanumeric,
+    datetime: sortFn_datetime,
+    text: sortFn_text,
+  },
 });
 
 export type RookeryFeatures = typeof tableFeaturesSet;
@@ -91,5 +99,5 @@ export function rowSearchText(row: unknown): string {
 /** Case-insensitive "contains", the only match the toolbar search needs. */
 export function matchesSearch(haystack: string, needle: string): boolean {
   if (!needle) return true;
-  return haystack.toLocaleLowerCase('de-DE').includes(needle.toLocaleLowerCase('de-DE'));
+  return haystack.toLocaleLowerCase('en-GB').includes(needle.toLocaleLowerCase('en-GB'));
 }

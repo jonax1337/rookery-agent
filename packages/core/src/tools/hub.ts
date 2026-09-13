@@ -127,7 +127,7 @@ export function toolServersFor(
  * is switched off simply does not exist in the prompt, so the obvious detour
  * around a wall - attach the browser and carry on - never occurs to it. The
  * distinction that matters is between a server it can attach itself and one
- * that needs the user on the Werkzeuge page; only the second is a real wall,
+ * that needs the user on the Tools page; only the second is a real wall,
  * and then the model can say exactly what is missing.
  *
  * Agents get nothing here: only the assistant may flip a switch.
@@ -156,7 +156,7 @@ export function dormantToolsHint(config: RookeryConfig, who: 'assistant' | 'agen
   }
   if (blocked.length) {
     lines.push(
-      'out of reach until the user acts on the Werkzeuge page: ' + blocked.join('; ') + '.',
+      'out of reach until the user acts on the Tools page: ' + blocked.join('; ') + '.',
       'When one of these is the only route left, name exactly what is missing.',
     );
   }

@@ -21,10 +21,10 @@ export function NotFoundPage() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
 
-  usePageMeta({ breadcrumb: [{ label: 'Nicht gefunden' }] });
+  usePageMeta({ breadcrumb: [{ label: 'Not found' }] });
 
   // The palette belongs to the shell and takes no handle from a page. It does
-  // listen for Strg/Cmd+K on the document, though, so the button presses the
+  // listen for Ctrl/Cmd+K on the document, though, so the button presses the
   // same key a person would - no new prop through two components for one link.
   const openPalette = (): void => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }));
@@ -34,22 +34,22 @@ export function NotFoundPage() {
     <PageBody width="2xl">
       <EmptyState
         icon={CompassIcon}
-        title="Diese Seite gibt es nicht"
+        title="This page does not exist"
         description={
           <>
-            Unter <span className="font-mono text-foreground">{pathname}</span> liegt nichts. Der Link
-            ist veraltet oder vertippt.
+            <span className="font-mono text-foreground">{pathname}</span> was not found. The link may
+            be outdated or mistyped.
           </>
         }
         action={
           <div className="flex flex-wrap items-center justify-center gap-2">
             <Button type="button" onClick={() => void navigate('/dashboard')}>
-              Zur Übersicht
+              Go to dashboard
             </Button>
             <Button type="button" variant="outline" onClick={openPalette}>
-              Suchen
+              Search
               <KbdGroup>
-                <Kbd>Strg</Kbd>
+                <Kbd>Ctrl</Kbd>
                 <Kbd>K</Kbd>
               </KbdGroup>
             </Button>

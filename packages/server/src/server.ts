@@ -10,6 +10,7 @@ import { registerStatic } from './static.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerConfigRoutes } from './routes/config.js';
+import { registerProfileRoutes } from './routes/profile.js';
 import { registerProviderRoutes } from './routes/providers.js';
 import { registerSessionRoutes } from './routes/sessions.js';
 import { registerMemoryRoutes } from './routes/memories.js';
@@ -110,6 +111,7 @@ export async function buildServer(
   await registerHealthRoutes(app, context);
   await registerStatsRoutes(app, context);
   await registerConfigRoutes(app, context);
+  await registerProfileRoutes(app, context);
   await registerProviderRoutes(app, context);
   await registerSessionRoutes(app, context);
   await registerMemoryRoutes(app, context);

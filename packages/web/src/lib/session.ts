@@ -19,8 +19,8 @@ export const sessionTitleSchema = z.object({
   title: z
     .string()
     .trim()
-    .min(1, 'Ein Gespräch braucht einen Titel.')
-    .max(SESSION_TITLE_MAX, 'Höchstens ' + SESSION_TITLE_MAX + ' Zeichen.'),
+    .min(1, 'A conversation needs a title.')
+    .max(SESSION_TITLE_MAX, 'No more than ' + SESSION_TITLE_MAX + ' characters.'),
 });
 
 export type SessionTitleInput = z.infer<typeof sessionTitleSchema>;

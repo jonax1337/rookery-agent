@@ -8,8 +8,10 @@ import {
 import { File } from "@/components/file";
 import { ThreadFollowupSuggestions } from "@/components/assistant-ui/elements/follow-up-suggestions.aui";
 import { Image } from "@/components/image";
+import { Sources } from "@/components/assistant-ui/elements/sources.aui";
 import { MarkdownText } from "@/components/markdown-text";
 import { useComposerSlots } from "@/components/assistant-ui/composer-slots";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import {
   Reasoning,
   ReasoningContent,
@@ -17,12 +19,8 @@ import {
   ReasoningText,
   ReasoningTrigger,
 } from "@/components/assistant-ui/elements/reasoning.aui";
-import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
-import {
-  ToolGroupContent,
-  ToolGroupRoot,
-  ToolGroupTrigger,
-} from "@/components/assistant-ui/elements/tool-group.aui";
+import { ToolGroupRoot, ToolGroupTrigger, ToolGroupContent } from "@/components/assistant-ui/elements/tool-group.aui";
+import { CompactToolCall } from "@/components/assistant-ui/elements/compact-tool-call";
 import { TooltipIconButton } from "@/components/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -37,7 +35,6 @@ import {
   ErrorPrimitive,
   groupPartByType,
   MessagePrimitive,
-  SuggestionPrimitive,
   ThreadPrimitive,
   type FileMessagePartComponent,
   type ImageMessagePartComponent,
@@ -116,7 +113,7 @@ const ThreadHistorySkeleton: FC = () => (
     role="status"
     className="animate-in fade-in fill-mode-both flex flex-col gap-y-6 [animation-delay:150ms] [animation-duration:200ms]"
   >
-    <span className="sr-only">Gespräch wird geladen</span>
+    <span className="sr-only">Loading conversation</span>
     <Skeleton className="ml-auto h-9 w-2/5 rounded-xl motion-reduce:animate-none" />
     <div className="flex flex-col gap-y-2">
       <Skeleton className="h-4 w-11/12 motion-reduce:animate-none" />
@@ -156,19 +153,19 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
       style={{
         ["--thread-max-width" as string]: "44rem",
         ["--composer-bg" as string]: "var(--color-card)",
-        ["--composer-radius" as string]: "1.5rem",
+        ["--composer-radius" as string]: "1rem",
         ["--composer-padding" as string]: "8px",
       }}
     >
       <ThreadPrimitive.Viewport
         turnAnchor="top"
         data-slot="aui_thread-viewport"
-        className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
+        className="relative flex flex-1 flex-col overflow-x-hidden overflow-y-auto scroll-smooth motion-reduce:scroll-auto"
       >
         <div
           className={cn(
             "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4",
-            isEmpty && "justify-center",
+            isEmpty && "justify-start pt-[clamp(2rem,25dvh,16rem)]",
           )}
         >
           <AuiIf condition={isNewChatView}>
@@ -197,9 +194,6 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
             <Composer autoFocus={autoFocus} />
-            <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
-              <ThreadSuggestions />
-            </AuiIf>
           </ThreadPrimitive.ViewportFooter>
         </div>
       </ThreadPrimitive.Viewport>
@@ -222,7 +216,7 @@ const ThreadScrollToBottom: FC = () => {
   return (
     <ThreadPrimitive.ScrollToBottom asChild>
       <TooltipIconButton
-        tooltip="Nach unten"
+        tooltip="Scroll to bottom"
         variant="outline"
         className="aui-thread-scroll-to-bottom dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
       >
@@ -236,34 +230,8 @@ const ThreadWelcome: FC = () => {
   return (
     <div className="aui-thread-welcome-root mb-6 flex flex-col items-center px-4 text-center">
       <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-medium tracking-tight duration-200">
-        Womit kann ich helfen?
+        How can I help?
       </h1>
-    </div>
-  );
-};
-
-const ThreadSuggestions: FC = () => {
-  return (
-    <div className="aui-thread-welcome-suggestions flex w-full flex-wrap items-center justify-center gap-2 px-4">
-      <ThreadPrimitive.Suggestions>
-        {() => <ThreadSuggestionItem />}
-      </ThreadPrimitive.Suggestions>
-    </div>
-  );
-};
-
-const ThreadSuggestionItem: FC = () => {
-  return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both duration-200">
-      <SuggestionPrimitive.Trigger send asChild>
-        <Button
-          variant="ghost"
-          className="aui-thread-welcome-suggestion text-foreground hover:bg-muted border-border/60 h-auto gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-normal whitespace-nowrap transition-colors"
-        >
-          <SuggestionPrimitive.Title className="aui-thread-welcome-suggestion-text-1" />
-          <SuggestionPrimitive.Description className="aui-thread-welcome-suggestion-text-2 empty:hidden" />
-        </Button>
-      </SuggestionPrimitive.Trigger>
     </div>
   );
 };
@@ -278,12 +246,12 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
         >
           <ComposerAttachments />
           <ComposerPrimitive.Input
-            placeholder="Nachricht schreiben…"
+            placeholder="Write a message…"
             className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
             rows={1}
             autoFocus={autoFocus}
             enterKeyHint="send"
-            aria-label="Nachricht"
+            aria-label="Message"
           />
           <ComposerAction />
         </div>
@@ -295,24 +263,28 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
 const ComposerAction: FC = () => {
   const slots = useComposerSlots();
   return (
-    <div className="aui-composer-action-wrapper relative flex items-center justify-between">
+    <div className="aui-composer-action-wrapper relative flex flex-wrap items-center gap-2">
       <div className="flex items-center gap-1.5">
-        <ComposerAddAttachment />
+        <AuiIf condition={(s) => s.thread.capabilities.attachments}>
+          <ComposerAddAttachment />
+        </AuiIf>
         {slots.left}
       </div>
-      <div className="flex items-center gap-1.5">
+      <div className="order-last flex w-full flex-wrap items-center gap-1.5 @xl:order-none @xl:ml-auto @xl:w-auto">
         {slots.right}
+      </div>
+      <div className="ml-auto flex items-center gap-1.5 @xl:ml-0">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate asChild>
               <TooltipIconButton
-                tooltip="Diktieren"
+                tooltip="Dictate"
                 side="bottom"
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-7 rounded-full"
-                aria-label="Diktat starten"
+                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-8 rounded-lg"
+                aria-label="Start dictation"
               >
                 <MicIcon className="aui-composer-dictate-icon size-4" />
               </TooltipIconButton>
@@ -321,13 +293,13 @@ const ComposerAction: FC = () => {
           <AuiIf condition={(s) => s.composer.dictation != null}>
             <ComposerPrimitive.StopDictation asChild>
               <TooltipIconButton
-                tooltip="Diktat beenden"
+                tooltip="Stop dictation"
                 side="bottom"
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-stop-dictation text-destructive size-7 rounded-full"
-                aria-label="Diktat beenden"
+                className="aui-composer-stop-dictation text-destructive size-8 rounded-lg"
+                aria-label="Stop dictation"
               >
                 <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
               </TooltipIconButton>
@@ -337,13 +309,13 @@ const ComposerAction: FC = () => {
         <AuiIf condition={(s) => !s.thread.isRunning}>
           <ComposerPrimitive.Send asChild>
             <TooltipIconButton
-              tooltip="Senden"
+              tooltip="Send"
               side="bottom"
               type="button"
               variant="default"
               size="icon"
-              className="aui-composer-send size-7 rounded-full"
-              aria-label="Senden"
+              className="aui-composer-send size-8 rounded-lg"
+              aria-label="Send"
             >
               <ArrowUpIcon className="aui-composer-send-icon size-4" />
             </TooltipIconButton>
@@ -355,8 +327,8 @@ const ComposerAction: FC = () => {
               type="button"
               variant="default"
               size="icon"
-              className="aui-composer-cancel size-7 rounded-full"
-              aria-label="Abbrechen"
+              className="aui-composer-cancel size-8 rounded-lg"
+              aria-label="Cancel"
             >
               <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
             </Button>
@@ -379,7 +351,7 @@ const MessageError: FC = () => {
 
 const AssistantMessage: FC = () => {
   const {
-    ToolFallback: ToolFallbackComponent = ToolFallback,
+    ToolFallback: ToolFallbackComponent = CompactToolCall,
     ToolGroup,
     ReasoningGroup,
   } = useContext(ThreadComponentsContext);
@@ -396,17 +368,27 @@ const AssistantMessage: FC = () => {
     >
       <div
         data-slot="aui_assistant-message-content"
-        className="text-foreground px-2 leading-relaxed wrap-break-word"
+        className="text-foreground min-w-0 px-2 text-[15px] leading-7 wrap-break-word"
       >
         <MessagePrimitive.GroupedParts
           groupBy={groupPartByType({
             reasoning: ["group-chainOfThought", "group-reasoning"],
             "tool-call": ["group-chainOfThought", "group-tool"],
             "standalone-tool-call": [],
+            source: ["group-sources"],
           })}
         >
           {({ part, children }) => {
             switch (part.type) {
+              case "group-sources":
+                return (
+                  <section aria-label="Sources" className="mt-3">
+                    <p className="text-muted-foreground mb-1 text-xs font-medium">Sources</p>
+                    <div className="flex flex-wrap gap-2">{children}</div>
+                  </section>
+                );
+              case "source":
+                return <Sources {...part} />;
               case "group-chainOfThought":
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
               case "group-tool":
@@ -414,11 +396,8 @@ const AssistantMessage: FC = () => {
                   return <ToolGroup group={part}>{children}</ToolGroup>;
                 }
                 return (
-                  <ToolGroupRoot variant="ghost">
-                    <ToolGroupTrigger
-                      count={part.indices.length}
-                      active={part.status.type === "running"}
-                    />
+                  <ToolGroupRoot variant="ghost" className="my-2">
+                    <ToolGroupTrigger count={part.indices.length} active={part.status.type === "running"} />
                     <ToolGroupContent>{children}</ToolGroupContent>
                   </ToolGroupRoot>
                 );
@@ -463,7 +442,7 @@ const AssistantMessage: FC = () => {
                   <span
                     data-slot="aui_assistant-message-indicator"
                     className="animate-pulse font-sans"
-                    aria-label="Assistent arbeitet"
+                    aria-label="Assistant is working"
                   >
                     {"●"}
                   </span>
@@ -488,31 +467,36 @@ const AssistantMessage: FC = () => {
 };
 
 const AssistantActionBar: FC = () => {
+  const copyText = useAuiState((s) => {
+    const original = s.message.metadata.custom.originalMarkdown;
+    return typeof original === "string" ? original : s.message.content
+      .filter((part) => part.type === "text").map((part) => part.text).join("\n\n");
+  });
+  const { isCopied, copyToClipboard } = useCopyToClipboard();
   return (
     <ActionBarPrimitive.Root
       hideWhenRunning
       autohide="not-last"
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ms-1 flex gap-1 duration-200"
     >
-      <ActionBarPrimitive.Copy asChild>
-        <TooltipIconButton tooltip="Kopieren">
-          <AuiIf condition={(s) => s.message.isCopied}>
-            <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
-          </AuiIf>
-          <AuiIf condition={(s) => !s.message.isCopied}>
-            <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />
-          </AuiIf>
-        </TooltipIconButton>
-      </ActionBarPrimitive.Copy>
+      <TooltipIconButton tooltip="Copy" disabled={!copyText} onClick={() => copyToClipboard(copyText)}>
+        {isCopied ? (
+          <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
+        ) : (
+          <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />
+        )}
+      </TooltipIconButton>
+      <AuiIf condition={(s) => s.thread.capabilities.reload}>
       <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Neu generieren">
+        <TooltipIconButton tooltip="Regenerate">
           <RefreshCwIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Reload>
+      </AuiIf>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
           <TooltipIconButton
-            tooltip="Mehr"
+            tooltip="More"
             className="data-[state=open]:bg-accent"
           >
             <MoreHorizontalIcon />
@@ -527,7 +511,7 @@ const AssistantActionBar: FC = () => {
           <ActionBarPrimitive.ExportMarkdown asChild>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none">
               <DownloadIcon className="size-4" />
-              Als Markdown exportieren
+              Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
         </ActionBarMorePrimitive.Content>
@@ -583,11 +567,13 @@ const UserActionBar: FC = () => {
       autohide="not-last"
       className="aui-user-action-bar-root flex flex-col items-end"
     >
+      <AuiIf condition={(s) => s.thread.capabilities.edit}>
       <ActionBarPrimitive.Edit asChild>
-        <TooltipIconButton tooltip="Bearbeiten" className="aui-user-action-edit">
+        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
           <PencilIcon />
         </TooltipIconButton>
       </ActionBarPrimitive.Edit>
+      </AuiIf>
     </ActionBarPrimitive.Root>
   );
 };
@@ -610,12 +596,12 @@ const EditComposer: FC = () => {
               size="sm"
               className="h-8 rounded-full px-3.5"
             >
-              Abbrechen
+              Cancel
             </Button>
           </ComposerPrimitive.Cancel>
           <ComposerPrimitive.Send asChild>
             <Button size="sm" className="h-8 rounded-full px-3.5">
-              Aktualisieren
+              Update
             </Button>
           </ComposerPrimitive.Send>
         </div>
@@ -638,7 +624,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
       {...rest}
     >
       <BranchPickerPrimitive.Previous asChild>
-        <TooltipIconButton tooltip="Zurück">
+        <TooltipIconButton tooltip="Previous">
           <ChevronLeftIcon />
         </TooltipIconButton>
       </BranchPickerPrimitive.Previous>
@@ -646,7 +632,7 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
         <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
       </span>
       <BranchPickerPrimitive.Next asChild>
-        <TooltipIconButton tooltip="Weiter">
+        <TooltipIconButton tooltip="Next">
           <ChevronRightIcon />
         </TooltipIconButton>
       </BranchPickerPrimitive.Next>

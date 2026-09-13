@@ -17,6 +17,8 @@ export interface Message {
   sessionId: string;
   role: Role;
   content: string;
+  /** Provider tool events retained with the answer, including interrupted calls. */
+  toolCalls?: Extract<AgentEvent, { type: 'tool' }>[];
   provider?: ProviderId;
   model?: string;
   /** Provenance only, never identity. Unset for an ordinary turn. */
@@ -47,7 +49,7 @@ export interface TurnUsage {
 export interface QuotaWindow {
   /** Stable key, e.g. `five_hour`, `seven_day`, `weekly`. */
   kind: string;
-  /** Human label, e.g. "5 Stunden". */
+  /** Human label, e.g. "5 hours". */
   label: string;
   /** 0..100, how much of the window is used up. */
   percent: number;
@@ -124,7 +126,7 @@ export type AgentEvent =
   /** Model reasoning trace, when the provider exposes it. */
   | { type: 'thinking'; delta: string }
   /** The provider started or finished running one of its own tools. */
-  | { type: 'tool'; name: string; status: 'start' | 'end'; detail?: string; id?: string }
+  | { type: 'tool'; name: string; status: 'start' | 'end'; detail?: string; id?: string; result?: string; isError?: boolean }
   /** Rookery-level progress: memory recall, delegation, lifecycle. */
   | { type: 'status'; label: string; detail?: string }
   /** A memory record was written or recalled. */
@@ -538,7 +540,13 @@ export interface Task {
  * of its own in a conversation dedicated to the job, or one agent as an
  * assignment. Either way the outcome lands in the assistant's inbox.
  */
-export type CronJobKind = 'assistant' | 'agent' | 'sleep';
+export type CronJobKind = 'assistant' | 'agent' | 'sleep' | 'script';
+export interface CronScript {
+  /** Absolute path to the reviewed copy under Rookery's imported-scripts directory. */
+  path: string;
+  runtime: 'python' | 'node' | 'bash' | 'powershell';
+  noAgent?: boolean;
+}
 export type CronRunStatus = 'running' | 'done' | 'failed';
 /** Whether the clock started a run or somebody pressed "run now". */
 export type CronTrigger = 'schedule' | 'manual';
@@ -555,6 +563,9 @@ export interface CronJob {
   /** Five-field cron expression, normalised. */
   schedule: string;
   kind: CronJobKind;
+  script?: CronScript;
+  /** Remaining attempts for a finite schedule; omitted means unlimited. */
+  remainingRuns?: number;
   /** What to do, written for whoever runs it. */
   prompt: string;
   /** The agent, for the `agent` kind. */
@@ -732,6 +743,13 @@ export type PermissionLevel = 'chat' | 'read' | 'write' | 'full';
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
+export interface ProviderModel {
+  id: string;
+  name: string;
+  description?: string;
+  isDefault?: boolean;
+}
+
 export interface ProviderStatus {
   id: ProviderId;
   available: boolean;
@@ -750,7 +768,7 @@ export interface Provider {
   /** Run one turn, streaming normalised events. */
   run(options: ProviderTurnOptions): AsyncGenerator<AgentEvent, void, unknown>;
   /** Models this provider accepts, for UI pickers. */
-  models(): string[];
+  models(): string[] | Promise<ProviderModel[]>;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1022,7 +1040,7 @@ export interface VoiceConfig {
   speakCleanText: boolean;
   /** Which synthesiser produces the voice. */
   engine: VoiceEngine;
-  /** Edge neural voice short name, e.g. `de-DE-FlorianMultilingualNeural`. */
+  /** Edge neural voice short name, e.g. `en-GB-RyanNeural`. */
   edgeVoice: string;
   /** ElevenLabs voice id; empty falls back to the library's default voice. */
   elevenLabsVoiceId: string;

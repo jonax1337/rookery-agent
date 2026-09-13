@@ -26,15 +26,15 @@ import { cn } from '@/lib/utils';
 
 /** How a table names its rows in the footer sentence. */
 export interface RowLabel {
-  /** "Gespräch" — used when exactly one row is shown. */
+  /** Base form, kept for callers that also use the label outside the footer. */
   singular: string;
-  /** Dative plural: "… von 500 geladenen **Gesprächen**". */
+  /** English plural: "… of 500 loaded conversations". */
   plural: string;
 }
 
 /** What a table calls its rows when it does not say. The status line in
  *  `data-table.tsx` reads the same default, so both sentences agree. */
-export const DEFAULT_ROW_LABEL: RowLabel = { singular: 'Eintrag', plural: 'Einträgen' };
+export const DEFAULT_ROW_LABEL: RowLabel = { singular: 'item', plural: 'items' };
 
 export const DEFAULT_PAGE_SIZES = [10, 20, 30, 50] as const;
 
@@ -91,7 +91,7 @@ export function DataTablePagination({
   const pages = Math.max(1, pageCount);
   const canPrevious = pageIndex > 0;
   const canNext = pageIndex < pages - 1;
-  const noun = rowCount === 1 ? rowLabel.singular : rowLabel.plural;
+  const noun = rowLabel.plural;
 
   return (
     <div
@@ -99,18 +99,18 @@ export function DataTablePagination({
     >
       <div className="flex flex-1 flex-wrap items-center gap-2 text-sm text-muted-foreground">
         <span>
-          {formatNumber(rowCount)} von {formatNumber(loadedCount)} geladenen {noun}
+          {formatNumber(rowCount)} of {formatNumber(loadedCount)} loaded {noun}
         </span>
-        {capped ? <Badge variant="outline">gedeckelt</Badge> : null}
+        {capped ? <Badge variant="outline">capped</Badge> : null}
         {selectedCount > 0 ? (
-          <span className="tabular-nums">· {formatNumber(selectedCount)} ausgewählt</span>
+          <span className="tabular-nums">· {formatNumber(selectedCount)} selected</span>
         ) : null}
       </div>
 
       <div className="flex w-full items-center gap-6 lg:w-fit">
         <div className="hidden items-center gap-2 lg:flex">
           <Label htmlFor={`${idPrefix}-zeilen`} className="text-sm font-medium">
-            Zeilen pro Seite
+            Rows per page
           </Label>
           <Select
             value={`${pageSize}`}
@@ -132,7 +132,7 @@ export function DataTablePagination({
         </div>
 
         <div className="flex w-fit items-center justify-center text-sm font-medium whitespace-nowrap">
-          Seite {formatNumber(pageIndex + 1)} von {formatNumber(pages)}
+          Page {formatNumber(pageIndex + 1)} of {formatNumber(pages)}
         </div>
 
         <Pagination className="ml-auto w-fit justify-end lg:ml-0">
@@ -145,7 +145,7 @@ export function DataTablePagination({
                 disabled={!canPrevious}
                 onClick={() => onPageChange(0)}
               >
-                <span className="sr-only">Zur ersten Seite</span>
+                <span className="sr-only">Go to first page</span>
                 <ChevronsLeftIcon />
               </Button>
             </PaginationItem>
@@ -157,7 +157,7 @@ export function DataTablePagination({
                 disabled={!canPrevious}
                 onClick={() => onPageChange(pageIndex - 1)}
               >
-                <span className="sr-only">Vorherige Seite</span>
+                <span className="sr-only">Go to previous page</span>
                 <ChevronLeftIcon />
               </Button>
             </PaginationItem>
@@ -169,7 +169,7 @@ export function DataTablePagination({
                 disabled={!canNext}
                 onClick={() => onPageChange(pageIndex + 1)}
               >
-                <span className="sr-only">Nächste Seite</span>
+                <span className="sr-only">Go to next page</span>
                 <ChevronRightIcon />
               </Button>
             </PaginationItem>
@@ -181,7 +181,7 @@ export function DataTablePagination({
                 disabled={!canNext}
                 onClick={() => onPageChange(pages - 1)}
               >
-                <span className="sr-only">Zur letzten Seite</span>
+                <span className="sr-only">Go to last page</span>
                 <ChevronsRightIcon />
               </Button>
             </PaginationItem>

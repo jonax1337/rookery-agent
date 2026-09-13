@@ -17,7 +17,7 @@ import type {
   TurnUsage,
 } from './types.js';
 import { ASSISTANT_MEMORY_OWNER } from './types.js';
-import { databasePath, loadConfig } from './config.js';
+import { agentWorkspace, databasePath, loadConfig } from './config.js';
 import { createLogger, silentLogger, type Logger } from './logger.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Store } from './memory/store.js';
@@ -33,6 +33,7 @@ import { dormantToolsHint, ensureToolServers, toolServersFor } from './tools/hub
 import { SkillStore, renderSkillsIndex } from './skills/store.js';
 import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
+import { runCronScript } from './cron/script.js';
 import { EventQueue } from './util/queue.js';
 
 /**
@@ -362,7 +363,7 @@ export class Assistant extends EventEmitter {
       }
       return this.cron.create({
         orgId: organization.id,
-        name: 'Schlaf des Gedächtnisses',
+        name: 'Memory sleep',
         schedule: sleep.schedule,
         kind: 'sleep',
         prompt: sleep.scope,
@@ -468,6 +469,7 @@ export class Assistant extends EventEmitter {
         })
       : buildSystemPrompt({
           config: this.config,
+          query: prompt,
           memories,
           history,
           resumed,
@@ -488,6 +490,7 @@ export class Assistant extends EventEmitter {
     const provider = this.providers.get(providerId);
     const started = Date.now();
     let answer = '';
+    const toolCalls: Extract<AgentEvent, { type: 'tool' }>[] = [];
     let providerSessionId = resumed ? session.providerSessionId : undefined;
     let failed = false;
     let usage: TurnUsage | undefined;
@@ -496,7 +499,7 @@ export class Assistant extends EventEmitter {
 
     // An agent in a chat may look at its project; the assistant stays in the
     // workspace and is a person, not Claude Code's coding agent.
-    const cwd = agent && project?.path ? project.path : this.config.workspace;
+    const cwd = agent ? (project?.path || agentWorkspace(this.config, agent.id)) : this.config.workspace;
 
     // What this pass of the provider is run with. A turn usually has exactly
     // one pass; see the continuation below for why it sometimes has two.
@@ -553,6 +556,10 @@ export class Assistant extends EventEmitter {
       try {
         for await (const event of queue.drain()) {
           switch (event.type) {
+            case 'tool':
+              toolCalls.push(event);
+              yield event;
+              break;
             case 'text':
               passText += event.delta;
               yield event;
@@ -599,6 +606,7 @@ export class Assistant extends EventEmitter {
       attached = new Set(next.specs.map((spec) => spec.name));
       passSystemPrompt = buildSystemPrompt({
         config: this.config,
+        query: prompt,
         memories,
         resumed: true,
         voice: input.voice ?? session.kind === 'voice',
@@ -611,7 +619,7 @@ export class Assistant extends EventEmitter {
       yield { type: 'status', label: 'tools', detail: fresh.join(', ') + ' attached, carrying on' };
     }
 
-    if (failed && !answer) {
+    if (failed && !answer && !toolCalls.length) {
       // Nothing usable came back; leave the session context untouched so the
       // next attempt can still resume cleanly.
       return;
@@ -627,7 +635,9 @@ export class Assistant extends EventEmitter {
       provider: providerId,
       model,
       usage: turnUsage,
+      toolCalls,
     });
+    if (failed && !answer) return;
     this.store.updateSession(session.id, { provider: providerId, model, providerSessionId });
 
     yield { type: 'done', text: answer, providerSessionId, usage: turnUsage };
@@ -746,6 +756,12 @@ export class Assistant extends EventEmitter {
    */
   async #runScheduled(job: CronJob, run: CronRun, signal: AbortSignal): Promise<CronRunOutcome> {
     void run;
+    if (job.kind === 'script') {
+      const result = await runCronScript(this.config.home, job, signal);
+      if (result.silent) return { status: 'done', result: '', silent: true };
+      if (job.script?.noAgent) return { status: 'done', result: result.output };
+      job = { ...job, prompt: job.prompt + '\n\nThe imported pre-check script produced this data:\n' + result.output };
+    }
     if (job.kind === 'sleep') {
       // The night shift. `prompt` carries the scope, not an instruction:
       // "assistant", "all", or one agent id.
@@ -757,7 +773,7 @@ export class Assistant extends EventEmitter {
       for (const owner of owners) {
         const result = await this.sleep.run({ owner, trigger: 'schedule', signal });
         lines.push(labelForOwner(this, owner) + ': ' + (result.report ?? '-'));
-        if (result.status === 'failed') failed = result.error ?? 'Der Schlaflauf ist fehlgeschlagen.';
+        if (result.status === 'failed') failed = result.error ?? 'The sleep run failed.';
       }
       if (failed && lines.length <= 1) return { status: 'failed', error: failed };
       return { status: 'done', result: lines.join('\n') };
@@ -765,7 +781,7 @@ export class Assistant extends EventEmitter {
 
     if (job.kind === 'agent') {
       const agent = job.agentId ? this.store.org.getAgent(job.agentId) : null;
-      if (!agent || agent.archived) return { status: 'failed', error: 'Der Agent dieses Zeitplans existiert nicht mehr.' };
+      if (!agent || agent.archived) return { status: 'failed', error: 'The agent for this schedule no longer exists.' };
       let assignmentId: string | undefined;
       let text = '';
       let error: string | undefined;
@@ -779,14 +795,14 @@ export class Assistant extends EventEmitter {
 
     let sessionId = job.sessionId && this.store.getSession(job.sessionId) ? job.sessionId : undefined;
     if (!sessionId) {
-      sessionId = this.createSession({ title: 'Zeitplan: ' + job.name, projectId: job.projectId }).id;
+      sessionId = this.createSession({ title: 'Schedule: ' + job.name, projectId: job.projectId }).id;
       this.store.cron.updateJob(job.id, { sessionId }, false);
     }
-    const when = new Date().toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' });
+    const when = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
     const prompt =
-      'Automatischer Lauf des Zeitplans „' + job.name + '“ (' + describeCron(job.schedule) + '), ' + when + '. ' +
-      'Niemand liest gerade live mit: erledige den Auftrag jetzt und schließe mit einem kurzen Bericht ab, ' +
-      'den der Nutzer später liest.\n\n' + job.prompt;
+      'Automatic run of schedule “' + job.name + '” (' + describeCron(job.schedule) + '), ' + when + '. ' +
+      'Nobody is following live: carry out the assignment now and finish with a short report ' +
+      'for the user to read later.\n\n' + job.prompt;
     let text = '';
     let error: string | undefined;
     for await (const event of this.chat({ text: prompt, sessionId, projectId: job.projectId, permission: job.permission, signal })) {
@@ -794,6 +810,7 @@ export class Assistant extends EventEmitter {
       else if (event.type === 'error' && event.fatal) error = event.message;
     }
     if (error && !text) return { status: 'failed', error, sessionId };
+    if (job.kind === 'script' && text.trim() === '[SILENT]') return { status: 'done', result: '', silent: true, sessionId };
     return { status: 'done', result: text, sessionId };
   }
 
@@ -857,9 +874,9 @@ export class Assistant extends EventEmitter {
   }
 }
 
-/** "Der Assistent" or the agent's name, for the schedule's report line. */
+/** "The assistant" or the agent's name, for the schedule's report line. */
 function labelForOwner(assistant: Assistant, owner: string): string {
-  if (owner === ASSISTANT_MEMORY_OWNER) return 'Assistent';
+  if (owner === ASSISTANT_MEMORY_OWNER) return 'Assistant';
   return assistant.store.org.getAgent(owner)?.name ?? owner.slice(0, 8);
 }
 

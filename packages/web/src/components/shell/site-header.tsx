@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router';
-import { PanelLeftIcon, SearchIcon } from 'lucide-react';
+import { ArrowLeftIcon, PanelLeftIcon, SearchIcon } from 'lucide-react';
 import { useBreadcrumbs } from '@/lib/nav';
 import { useConfig, useConnection } from '@/providers/rookery-provider';
 import { usePageMetaValue } from '@/components/shell/page-meta';
@@ -43,6 +43,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
   const fallback = useBreadcrumbs(title);
   const crumbs = breadcrumb ?? fallback;
   const leaf = crumbs[crumbs.length - 1]?.label;
+  const parent = crumbs.slice(0, -1).reverse().find((crumb) => crumb.to && crumb.to !== pathname);
 
   useEffect(() => {
     document.title = leaf ? leaf + ' · ' + assistantName : assistantName;
@@ -62,10 +63,12 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
    */
   const [routeMessage, setRouteMessage] = useState('');
   const lastPath = useRef(pathname);
+  const lastLeaf = useRef(leaf);
   useEffect(() => {
-    if (lastPath.current === pathname) return;
+    if (lastPath.current === pathname && lastLeaf.current === leaf) return;
     lastPath.current = pathname;
-    setRouteMessage(leaf ? leaf + ' geöffnet' : '');
+    lastLeaf.current = leaf;
+    setRouteMessage(leaf ? leaf + ' opened' : '');
   }, [leaf, pathname]);
 
   const status = connected ? 'online' : offline ? 'offline' : 'connecting';
@@ -76,33 +79,40 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
     lastStatus.current = status;
     // The same three words the sidebar's foot uses, so both places agree.
     setConnectionMessage(
-      status === 'online' ? 'Verbunden' : status === 'offline' ? 'Keine Verbindung' : 'Verbindet …',
+      status === 'online' ? 'Connected' : status === 'offline' ? 'Disconnected' : 'Connecting …',
     );
   }, [status]);
 
   return (
-    <header className="sticky top-0 z-50 flex w-full items-center border-b bg-background">
-      <div className="flex h-(--header-height) w-full items-center gap-2 px-4">
+    <header className="sticky top-0 z-50 flex w-full shrink-0 items-center border-b bg-background">
+      <div className="flex min-h-(--header-height) w-full flex-wrap items-center gap-2 px-4 py-2 sm:h-(--header-height) sm:flex-nowrap sm:py-0">
         <Button
           className="h-8 w-8"
           variant="ghost"
           size="icon"
           onClick={toggleSidebar}
-          aria-label="Seitenleiste umschalten"
+          aria-label="Toggle sidebar"
         >
           <PanelLeftIcon />
         </Button>
         <Separator
           orientation="vertical"
-          className="mr-2 data-vertical:h-4 data-vertical:self-auto"
+          className="mr-2 hidden data-vertical:h-4 data-vertical:self-auto sm:block"
         />
+        {parent?.to ? (
+          <Button variant="ghost" size="icon" className="size-8 shrink-0 sm:hidden" asChild>
+            <Link to={parent.to} aria-label={'Back: ' + parent.label}>
+              <ArrowLeftIcon />
+            </Link>
+          </Button>
+        ) : null}
 
-        <Breadcrumb className="hidden sm:block">
-          <BreadcrumbList>
+        <Breadcrumb className="hidden min-w-0 flex-1 sm:block">
+          <BreadcrumbList className="flex-nowrap">
             {crumbs.map((crumb, index) => (
               <Fragment key={crumb.label + index}>
                 {index > 0 && <BreadcrumbSeparator />}
-                <BreadcrumbItem>
+                <BreadcrumbItem className="min-w-0">
                   {/*
                     The last crumb is where you already stand, so it never
                     becomes a link - not even when a page hands one a `to`.
@@ -111,10 +121,10 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
                   */}
                   {crumb.to && index < crumbs.length - 1 ? (
                     <BreadcrumbLink asChild>
-                      <Link to={crumb.to}>{crumb.label}</Link>
+                      <Link to={crumb.to} className="truncate">{crumb.label}</Link>
                     </BreadcrumbLink>
                   ) : (
-                    <BreadcrumbPage>{crumb.label}</BreadcrumbPage>
+                    <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
                   )}
                 </BreadcrumbItem>
               </Fragment>
@@ -128,11 +138,11 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
           takes no room in this flex row, and without it no page in the app
           would have a level-one heading at all.
         */}
-        <h1 className="text-base font-medium sm:sr-only">{leaf}</h1>
+        <h1 className="min-w-0 flex-1 truncate text-base font-medium sm:sr-only">{leaf}</h1>
 
         {!connected && (
           <Badge variant="destructive" className="ml-1">
-            Keine Verbindung
+            Disconnected
           </Badge>
         )}
 
@@ -149,20 +159,23 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
           built for buttons of one variant - a filled primary glued to an
           outlined secondary reads as a control missing a border.
         */}
-        <div className="ml-auto flex items-center gap-2">
-          {actions}
-
+        {actions ? (
+          <div className="order-last flex w-full min-w-0 flex-wrap items-center justify-end gap-2 [&>div]:max-w-full [&>div]:flex-wrap has-[>[data-size=icon-sm]:only-child]:order-none has-[>[data-size=icon-sm]:only-child]:w-auto sm:order-none sm:ml-auto sm:w-auto">
+            {actions}
+          </div>
+        ) : null}
+        <div className="ml-auto flex shrink-0 items-center gap-2 sm:ml-0">
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={onSearch}
-            className="hidden w-56 justify-start text-muted-foreground sm:flex"
+            className="hidden w-56 justify-start text-muted-foreground xl:flex"
           >
             <SearchIcon />
-            Suchen …
+            Search …
             <KbdGroup className="ml-auto">
-              <Kbd>Strg</Kbd>
+              <Kbd>Ctrl</Kbd>
               <Kbd>K</Kbd>
             </KbdGroup>
           </Button>
@@ -171,8 +184,8 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
             variant="ghost"
             size="icon"
             onClick={onSearch}
-            aria-label="Suchen"
-            className="sm:hidden"
+            aria-label="Search"
+            className="xl:hidden"
           >
             <SearchIcon />
           </Button>

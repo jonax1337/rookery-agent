@@ -21,6 +21,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from '@/components/ui/sidebar';
 
 interface AppSidebarProps extends ComponentProps<typeof Sidebar> {
@@ -44,6 +45,7 @@ interface AppSidebarProps extends ComponentProps<typeof Sidebar> {
  */
 export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
   const { pathname } = useLocation();
+  const { setOpenMobile } = useSidebar();
   const tasks = useTasksState();
   const org = useOrgState();
   // The same list `/chats` shows, not the chat hub's own slice: that one holds
@@ -76,9 +78,9 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
             ...(capped
               ? {
                   label:
-                    'mindestens ' +
+                    'at least ' +
                     formatNumber(openConversations) +
-                    ' offene Gespräche, die Liste endet bei ' +
+                    ' open conversations; the list is limited to ' +
                     formatNumber(limit),
                 }
               : {}),
@@ -89,7 +91,7 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
       ? {
           '/tasks': {
             node: formatNumber(runningTasks),
-            label: 'laufende Hauptaufgaben, Teilaufgaben sind nicht mitgezählt',
+            label: 'running top-level tasks; subtasks are not included',
           },
         }
       : {}),
@@ -138,7 +140,7 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
-              <NavLink to="/dashboard">
+              <NavLink to="/dashboard" onClick={() => setOpenMobile(false)}>
                 {/*
                   The brand, not a stand-in for it. The rail collapses to icon
                   width, so the mark carries the collapsed state and the
@@ -177,16 +179,18 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
         </SidebarMenu>
       </SidebarHeader>
 
-      <SidebarContent>
+      <SidebarContent className="gap-0">
         <NavPrimary />
         {NAV_GROUPS.filter(isLabelled).map((group) => (
           <NavMain key={group.id} label={group.label} items={navItems(group.id).map(buildItem)} />
         ))}
-        <NavSecondary items={secondary} className="mt-auto" />
       </SidebarContent>
 
-      <SidebarFooter>
-        <NavStatus />
+      <SidebarFooter className="mt-auto shrink-0 gap-0 bg-sidebar p-0">
+        <NavSecondary items={secondary} />
+        <div className="border-t p-2">
+          <NavStatus />
+        </div>
       </SidebarFooter>
     </Sidebar>
   );

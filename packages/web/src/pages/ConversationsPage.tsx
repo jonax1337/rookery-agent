@@ -113,21 +113,21 @@ type Tab = 'alle' | 'assistent' | 'agenten' | 'sprache' | 'archiv';
 const TABS: Tab[] = ['alle', 'assistent', 'agenten', 'sprache', 'archiv'];
 
 const TAB_LABEL: Record<Tab, string> = {
-  alle: 'Alle',
-  assistent: 'Assistent',
-  agenten: 'Agenten',
-  sprache: 'Sprache',
-  archiv: 'Archiv',
+  alle: 'All',
+  assistent: 'Assistant',
+  agenten: 'Agents',
+  sprache: 'Voice',
+  archiv: 'Archive',
 };
 
 type Period = 'alle' | 'heute' | 'woche' | 'monat' | 'aelter';
 
 const PERIOD_LABEL: Record<Period, string> = {
-  alle: 'Jederzeit',
-  heute: 'Heute',
-  woche: 'Diese Woche',
-  monat: 'Dieser Monat',
-  aelter: 'Älter',
+  alle: 'Any time',
+  heute: 'Today',
+  woche: 'This week',
+  monat: 'This month',
+  aelter: 'Older',
 };
 
 export function ConversationsPage() {
@@ -269,7 +269,7 @@ export function ConversationsPage() {
   const assignProject = React.useCallback(
     (session: Session, value: string) => {
       void update(session.id, { projectId: value === NO_PROJECT ? null : value }).catch(
-        (caught: unknown) => reportFailure('Projekt setzen', caught),
+        (caught: unknown) => reportFailure('Set project', caught),
       );
     },
     [update],
@@ -278,8 +278,8 @@ export function ConversationsPage() {
   const setArchived = React.useCallback(
     (session: Session, archived: boolean) => {
       void update(session.id, { archived })
-        .then(() => toast(archived ? 'Gespräch archiviert' : 'Gespräch zurückgeholt'))
-        .catch((caught: unknown) => reportFailure(archived ? 'Archivieren' : 'Zurückholen', caught));
+        .then(() => toast(archived ? 'Conversation archived' : 'Conversation restored'))
+        .catch((caught: unknown) => reportFailure(archived ? 'Archive' : 'Restore', caught));
     },
     [update],
   );
@@ -287,10 +287,10 @@ export function ConversationsPage() {
   const confirmReset = React.useCallback(
     async (session: Session) => {
       const ok = await confirm({
-        title: 'Gespräch zurücksetzen?',
+        title: 'Reset conversation?',
         description:
-          'Alle Nachrichten dieses Gesprächs werden entfernt. Titel, Projekt und Gegenüber bleiben.',
-        confirmLabel: 'Zurücksetzen',
+          'All messages in this conversation will be removed. The title, project, and counterpart will remain.',
+        confirmLabel: 'Reset',
         destructive: true,
         icon: RotateCcwIcon,
       });
@@ -298,9 +298,9 @@ export function ConversationsPage() {
       try {
         await reset(session.id);
         syncOpenThread(session.id, { cleared: true });
-        toast('Gespräch zurückgesetzt');
+        toast('Conversation reset');
       } catch (caught) {
-        reportFailure('Zurücksetzen', caught);
+        reportFailure('Reset', caught);
       }
     },
     [confirm, reset, syncOpenThread],
@@ -309,9 +309,9 @@ export function ConversationsPage() {
   const confirmDelete = React.useCallback(
     async (session: Session) => {
       const ok = await confirm({
-        title: 'Gespräch löschen?',
-        description: 'Dieses Gespräch und alle Nachrichten werden gelöscht.',
-        confirmLabel: 'Löschen',
+        title: 'Delete conversation?',
+        description: 'This conversation and all its messages will be deleted.',
+        confirmLabel: 'Delete',
         destructive: true,
       });
       if (!ok) return;
@@ -319,9 +319,9 @@ export function ConversationsPage() {
         await remove(session.id);
         setDetailId((current) => (current === session.id ? null : current));
         syncOpenThread(session.id, { dropped: true });
-        toast('Gespräch gelöscht');
+        toast('Conversation deleted');
       } catch (caught) {
-        reportFailure('Löschen', caught);
+        reportFailure('Delete', caught);
       }
     },
     [confirm, remove, syncOpenThread],
@@ -376,7 +376,7 @@ export function ConversationsPage() {
   usePageMeta({
     // One crumb, like every other top-level list: the dashboard gave up its
     // own "Rookery" root, and a single page carrying one would be the outlier.
-    breadcrumb: [{ label: 'Gespräche' }],
+    breadcrumb: [{ label: 'Conversations' }],
     // One primary action, with its variant on the split. Speaking and writing
     // both start a conversation, so the voice entry belongs on this button
     // rather than glued beside it as a second, equal-looking one.
@@ -384,17 +384,17 @@ export function ConversationsPage() {
       <>
         <Button size="sm" onClick={newConversation}>
           <PlusIcon data-icon="inline-start" />
-          Neues Gespräch
+          New conversation
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <RowMenuButton tone="header" label="Weitere Möglichkeiten, ein Gespräch zu beginnen" />
+            <RowMenuButton tone="header" label="More ways to start a conversation" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem asChild>
               <NavLink to="/voice">
                 <AudioLinesIcon />
-                Sprachgespräch
+                Voice conversation
               </NavLink>
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -427,51 +427,51 @@ export function ConversationsPage() {
         <StatCards
           items={[
             {
-              label: 'Gespräche',
+              label: 'Conversations',
               value: allConversations === null ? '–' : formatNumber(allConversations),
               headline:
                 totals === null
-                  ? 'Zahlen werden geladen'
-                  : formatNumber(totals.archivedSessions) + ' davon archiviert',
-              footnote: 'Gezählt in der Datenbank, nicht in der Liste',
+                  ? 'Loading totals'
+                  : formatNumber(totals.archivedSessions) + ' archived',
+              footnote: 'All conversations, including archive',
             },
             {
-              label: 'Nachrichten',
+              label: 'Messages',
               value: totals === null ? '–' : formatNumber(totals.messages),
               headline:
                 totals === null || allConversations === null || allConversations === 0
-                  ? 'Noch nichts geschrieben'
-                  : 'Im Schnitt ' +
+                  ? 'Nothing written yet'
+                  : 'Average ' +
                     formatNumber(Math.round(totals.messages / allConversations)) +
-                    ' pro Gespräch',
-              footnote: 'Alle Nachrichten aller Gespräche',
+                    ' per conversation',
+              footnote: 'All messages, including archive',
             },
             {
-              label: 'Sprachgespräche',
+              label: 'Voice conversations',
               value: formatNumber(voice.length),
               // This one has no COUNT(*) behind it: /api/stats knows sessions,
               // not their kind. So it says which list it counted.
               ...cappedBadge(capped),
-              headline: newestVoice ? 'Zuletzt ' + timeAgo(newestVoice.updatedAt) : 'Noch keins',
+              headline: newestVoice ? 'Last run ' + timeAgo(newestVoice.updatedAt) : 'None yet',
               footnote:
-                'In den ' + formatNumber(sessions.length) + ' geladenen Gesprächen gezählt',
+                'Based on ' + formatNumber(sessions.length) + ' loaded conversations',
             },
             {
-              label: 'Zuletzt aktiv',
+              label: 'Last active',
               value: newest ? relativeTime(newest.updatedAt) : '–',
               headline: newest ? (
                 <span className="line-clamp-1">{newest.title || UNTITLED_SESSION}</span>
               ) : (
-                'Noch kein Gespräch'
+                'No conversations yet'
               ),
-              footnote: 'Zuletzt geöffnet',
+              footnote: 'Last opened',
             },
           ]}
         />
       )}
 
       {/*
-        No chart. "Gespräche pro Tag" would need a window the table does not
+        No chart. "Conversations pro Tag" would need a window the table does not
         have and would say less than the first row of it - and the table is
         what this page is for.
       */}
@@ -481,7 +481,7 @@ export function ConversationsPage() {
         columns={columns}
         getRowId={(session) => session.id}
         idPrefix="gespraeche"
-        tabLabel="Reiter"
+        tabLabel="Tab"
         tabs={TABS.map((value) => ({
           value,
           label: TAB_LABEL[value],
@@ -492,17 +492,17 @@ export function ConversationsPage() {
         searchable
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Gespräche durchsuchen"
+        searchPlaceholder="Search conversations"
         searchText={(session) => searchTextOf(session, org.agentById, assistantName)}
         filters={
           <>
             <FilterCombobox
-              label="Gegenüber"
+              label="Counterpart"
               value={counterpart}
               onChange={(next) => setCounterpart(next ?? ANY)}
               showClear={false}
               options={[
-                { value: ANY, label: 'Alle Gegenüber' },
+                { value: ANY, label: 'All counterparts' },
                 { value: ASSISTANT, label: assistantName },
                 ...org.agents
                   .filter((agent) => !agent.archived)
@@ -510,21 +510,21 @@ export function ConversationsPage() {
               ]}
             />
             <FilterCombobox
-              label="Projekt"
+              label="Project"
               value={project}
               onChange={(next) => setProject(next ?? ANY)}
               showClear={false}
               options={[
-                { value: ANY, label: 'Alle Projekte' },
-                { value: NO_PROJECT, label: 'Kein Projekt' },
+                { value: ANY, label: 'All projects' },
+                { value: NO_PROJECT, label: 'No project' },
                 ...org.projects
                   .filter((entry) => !entry.archived)
                   .map((entry) => ({ value: entry.id, label: entry.name })),
               ]}
             />
             <Select value={period} onValueChange={(value) => setPeriod(value as Period)}>
-              <SelectTrigger size="sm" className="w-36" aria-label="Zeitraum">
-                <SelectValue placeholder="Zeitraum" />
+              <SelectTrigger size="sm" className="w-36" aria-label="Time period">
+                <SelectValue placeholder="Time period" />
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
@@ -539,7 +539,7 @@ export function ConversationsPage() {
           </>
         }
         /*
-          Keine Primaeraktion in der Werkzeugleiste: "Neues Gespräch" steht im
+          Keine Primaeraktion in der Werkzeugleiste: "New conversation" steht im
           Seitenkopf. Der zweite Knopf war nicht nur doppelt, er drueckte die
           Leiste schon bei 1440 px in eine zweite Reihe.
         */
@@ -555,13 +555,13 @@ export function ConversationsPage() {
             onClick={() =>
               void bulk.run({
                 rows: selected,
-                noun: { singular: 'Gespräch', plural: 'Gespräche' },
+                noun: { singular: 'Conversation', plural: 'Conversations' },
                 nameOf: (session) => session.title || UNTITLED_SESSION,
-                verb: 'löschen',
-                done: 'gelöscht',
-                confirmLabel: 'Löschen',
+                verb: 'delete',
+                done: 'deleted',
+                confirmLabel: 'Delete',
                 description:
-                  'Die gewählten Gespräche und alle ihre Nachrichten werden gelöscht.',
+                  'The selected conversations and all their messages will be deleted.',
                 run: async (session) => {
                   await remove(session.id);
                   syncOpenThread(session.id, { dropped: true });
@@ -571,26 +571,26 @@ export function ConversationsPage() {
             }
           >
             <Trash2Icon data-icon="inline-start" />
-            Löschen
+            Delete
           </Button>
         )}
         onRowClick={open}
         rowClickIgnoreColumns={['select', 'titel', 'actions']}
         rowClassName={(session) => (session.archived ? 'opacity-70' : undefined)}
         capped={capped}
-        rowLabel={{ singular: 'Gespräch', plural: 'Gesprächen' }}
+        rowLabel={{ singular: 'Conversation', plural: 'conversations' }}
         loading={loading}
         {...(error ? { error: <ServerOffline onRetry={() => void refresh()} /> } : {})}
         empty={
           <EmptyState
             icon={MessagesSquareIcon}
-            title="Noch keine Gespräche"
-            description="Stell die erste Frage — alles, was ihr besprecht, sammelt sich hier."
-            actionLabel="Neues Gespräch"
+            title="No conversations yet"
+            description="Ask the first question — everything you discuss will be collected here."
+            actionLabel="New conversation"
             onAction={newConversation}
             action={
               <Button variant="outline" asChild>
-                <NavLink to="/voice">Sprechen</NavLink>
+                <NavLink to="/voice">Speak</NavLink>
               </Button>
             }
             variant="plain"
@@ -599,9 +599,9 @@ export function ConversationsPage() {
         filteredEmpty={
           <EmptyState
             icon={SearchXIcon}
-            title="Kein Gespräch passt zu dieser Auswahl"
-            description="Ändere Suche, Zeitraum, Gegenüber oder Reiter."
-            actionLabel={filtersActive ? 'Filter zurücksetzen' : undefined}
+            title="No conversations match this selection"
+            description="Change the search, time period, counterpart, or tab."
+            actionLabel={filtersActive ? 'Reset filters' : undefined}
             onAction={resetFilters}
             variant="plain"
             size="sm"
@@ -644,7 +644,7 @@ interface ConversationDrawerProps {
   session: Session | null;
   open: boolean;
   onOpenChange(open: boolean): void;
-  /** Opened through "Umbenennen": the title field takes the caret. */
+  /** Opened through "Rename": the title field takes the caret. */
   focusTitle: boolean;
   assistantName: string;
   agentName: string;
@@ -677,8 +677,8 @@ function ConversationDrawer({
   onReset,
   onDelete,
 }: ConversationDrawerProps) {
-  // Die Zeile bleibt stehen, bis die Schublade zugefahren ist; sonst
-  // verschwaende der Inhalt im selben Bild und die Bewegung fiele aus.
+  // The Zeile bleibt stehen, bis die Schublade zugefahren ist; sonst
+  // verschwaende der Content im selben Bild und die Bewegung fiele aus.
   const session = useDrawerSubject(chosen);
   const [title, setTitle] = React.useState('');
   const [titleError, setTitleError] = React.useState<string | null>(null);
@@ -698,11 +698,11 @@ function ConversationDrawer({
 
   async function commitTitle(): Promise<void> {
     if (!session) return;
-    // Dieselbe Regel wie im Umbenennen-Dialog des Chats: bis dahin nahm dieses
-    // Feld Titel an, die die andere Oberflaeche abgelehnt haette.
+    // Dieselbe Regel wie im Rename-Dialog des Chats: bis dahin nahm dieses
+    // Feld Title an, die die andere Oberflaeche abgelehnt haette.
     const parsed = sessionTitleSchema.safeParse({ title });
     if (!parsed.success) {
-      setTitleError(parsed.error.issues[0]?.message ?? 'Ein Gespräch braucht einen Titel.');
+      setTitleError(parsed.error.issues[0]?.message ?? 'A conversation needs a title.');
       if (!title.trim()) setTitle(session.title);
       return;
     }
@@ -726,25 +726,25 @@ function ConversationDrawer({
       onOpenChange={onOpenChange}
       title={session.title || UNTITLED_SESSION}
       description={
-        'Angelegt am ' +
+        'Created on ' +
         formatDateTime(session.createdAt) +
         ' · ' +
         formatNumber(session.messageCount) +
-        (session.messageCount === 1 ? ' Nachricht' : ' Nachrichten')
+        (session.messageCount === 1 ? ' message' : ' messages')
       }
       footer={
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => onOpen(session)}>
             <SquareArrowOutUpRightIcon data-icon="inline-start" />
-            {session.kind === 'voice' ? 'Mitschrift öffnen' : 'Öffnen'}
+            {session.kind === 'voice' ? 'Open transcript' : 'Open'}
           </Button>
           <Button variant="outline" onClick={() => onReset(session)}>
             <RotateCcwIcon data-icon="inline-start" />
-            Zurücksetzen
+            Reset
           </Button>
           <Button variant="ghost" className="text-destructive" onClick={() => onDelete(session)}>
             <Trash2Icon data-icon="inline-start" />
-            Löschen
+            Delete
           </Button>
         </div>
       }
@@ -753,7 +753,7 @@ function ConversationDrawer({
         {/* FormField haengt die Meldung per `aria-describedby` an die Eingabe:
             `role="alert"` liest sie einmal vor, danach fand sie niemand mehr,
             der ins abgelehnte Feld zuruecksprang. */}
-        <FormField id="gespraech-titel" label="Titel" error={titleError}>
+        <FormField id="gespraech-titel" label="Title" error={titleError}>
           {(control) => (
             <Input
               {...control}
@@ -773,16 +773,16 @@ function ConversationDrawer({
         </FormField>
 
         <Field>
-          <FieldLabel htmlFor="gespraech-projekt">Projekt</FieldLabel>
+          <FieldLabel htmlFor="gespraech-projekt">Project</FieldLabel>
           <FilterCombobox
             id="gespraech-projekt"
-            label="Projekt"
+            label="Project"
             value={session.projectId ?? NO_PROJECT}
             onChange={(next) => onProject(session, next ?? NO_PROJECT)}
             showClear={false}
             className="w-full"
             options={[
-              { value: NO_PROJECT, label: 'Kein Projekt' },
+              { value: NO_PROJECT, label: 'No project' },
               ...projects
                 .filter((entry) => !entry.archived || entry.id === session.projectId)
                 .map((entry) => ({ value: entry.id, label: entry.name })),
@@ -795,28 +795,28 @@ function ConversationDrawer({
         columns={1}
         items={[
           {
-            label: 'Gegenüber',
+            label: 'Counterpart',
             value: session.agentId ? agentName : assistantName,
             ...(session.agentId ? { to: '/org/agents/' + session.agentId } : {}),
           },
-          { label: 'Art', value: SESSION_KIND_LABEL[session.kind] },
+          { label: 'Type', value: SESSION_KIND_LABEL[session.kind] },
           {
-            label: 'Anbieter & Modell',
+            label: 'Provider & Model',
             value: (
               <ProviderCell
                 provider={session.provider}
                 {...(session.model ? { model: session.model } : {})}
                 layout="inline"
-                fallback="Standard"
+                fallback="Default"
               />
             ),
           },
-          { label: 'Projekt', value: projectName ?? 'Kein Projekt' },
-          { label: 'Verzeichnis', value: session.cwd, mono: true },
-          { label: 'Nachrichten', value: formatNumber(session.messageCount) },
-          { label: 'Angelegt', value: formatDateTime(session.createdAt) },
-          { label: 'Zuletzt aktiv', value: formatDateTime(session.updatedAt) },
-          { label: 'Abgelegt', value: session.archived ? 'Im Archiv' : null },
+          { label: 'Project', value: projectName ?? 'No project' },
+          { label: 'Directory', value: session.cwd, mono: true },
+          { label: 'Messages', value: formatNumber(session.messageCount) },
+          { label: 'Created', value: formatDateTime(session.createdAt) },
+          { label: 'Last active', value: formatDateTime(session.updatedAt) },
+          { label: 'Archived', value: session.archived ? 'Archived' : null },
           {
             label: 'Provider-Sitzung',
             value: session.providerSessionId ?? null,
@@ -856,26 +856,26 @@ function RowMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <RowMenuButton label={'Aktionen für ' + (session.title || UNTITLED_SESSION)} />
+        <RowMenuButton label={'Actions for ' + (session.title || UNTITLED_SESSION)} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
         <DropdownMenuItem onSelect={onOpen}>
           <SquareArrowOutUpRightIcon />
-          {session.kind === 'voice' ? 'Mitschrift öffnen' : 'Öffnen'}
+          {session.kind === 'voice' ? 'Open transcript' : 'Open'}
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={onRename}>
           <PencilIcon />
-          Umbenennen
+          Rename
         </DropdownMenuItem>
 
         <DropdownMenuSub>
-          <DropdownMenuSubTrigger>Projekt zuweisen</DropdownMenuSubTrigger>
+          <DropdownMenuSubTrigger>Assign project</DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="w-52">
             <DropdownMenuRadioGroup
               value={session.projectId ?? NO_PROJECT}
               onValueChange={onProject}
             >
-              <DropdownMenuRadioItem value={NO_PROJECT}>Kein Projekt</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value={NO_PROJECT}>No project</DropdownMenuRadioItem>
               {projects
                 .filter((entry) => !entry.archived || entry.id === session.projectId)
                 .map((entry) => (
@@ -891,23 +891,23 @@ function RowMenu({
             back into the microphone, for both kinds. */}
         <DropdownMenuItem onSelect={onVoice}>
           <AudioLinesIcon />
-          {session.kind === 'voice' ? 'Sprachgespräch fortsetzen' : 'Im Sprachmodus fortsetzen'}
+          {session.kind === 'voice' ? 'Continue voice conversation' : 'Continue in voice mode'}
         </DropdownMenuItem>
 
         <DropdownMenuItem onSelect={() => onArchive(!session.archived)}>
           {session.archived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
-          {session.archived ? 'Zurückholen' : 'Archivieren'}
+          {session.archived ? 'Restore' : 'Archive'}
         </DropdownMenuItem>
 
         <DropdownMenuItem onSelect={onReset}>
           <RotateCcwIcon />
-          Zurücksetzen
+          Reset
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onSelect={onDelete}>
           <Trash2Icon />
-          Löschen
+          Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

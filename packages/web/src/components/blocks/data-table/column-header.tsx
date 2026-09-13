@@ -100,16 +100,16 @@ export function DataTableColumnHeader({
             <>
               <DropdownMenuItem onSelect={() => column.toggleSorting(false)}>
                 <ArrowUpIcon data-icon="inline-start" />
-                Aufsteigend
+                Ascending
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => column.toggleSorting(true)}>
                 <ArrowDownIcon data-icon="inline-start" />
-                Absteigend
+                Descending
               </DropdownMenuItem>
               {sorted === false ? null : (
                 <DropdownMenuItem onSelect={() => column.clearSorting()}>
                   <ChevronsUpDownIcon data-icon="inline-start" />
-                  Sortierung aufheben
+                Clear sorting
                 </DropdownMenuItem>
               )}
             </>
@@ -118,7 +118,7 @@ export function DataTableColumnHeader({
           {canHide ? (
             <DropdownMenuItem onSelect={() => column.toggleVisibility(false)}>
               <EyeOffIcon data-icon="inline-start" />
-              Ausblenden
+              Hide
             </DropdownMenuItem>
           ) : null}
         </DropdownMenuContent>

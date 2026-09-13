@@ -14,7 +14,7 @@ export default defineConfig({
   server: {
     port: 5317,
     proxy: {
-      '/api': { target: BACKEND, changeOrigin: true },
+      '/api': { target: BACKEND, changeOrigin: false },
       '/ws': { target: BACKEND, ws: true, changeOrigin: true },
     },
   },

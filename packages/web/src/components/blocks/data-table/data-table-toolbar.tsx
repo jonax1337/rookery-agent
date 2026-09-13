@@ -69,7 +69,7 @@ export function DataTableToolbar({
       <div className="flex flex-wrap items-center justify-between gap-2">
         {tabs ?? <div />}
         {hasRight ? (
-          <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
+          <div className={cn('flex flex-1 flex-wrap items-center justify-end gap-2', tabs && 'basis-full @5xl/main:basis-auto')}>
             {search ? (
               <InputGroup className="h-8 w-full sm:w-56">
                 <InputGroupAddon align="inline-start">
@@ -78,15 +78,15 @@ export function DataTableToolbar({
                 <InputGroupInput
                   className="h-8"
                   value={search.value}
-                  placeholder={search.placeholder ?? 'Durchsuchen'}
-                  aria-label={search.placeholder ?? 'Durchsuchen'}
+                  placeholder={search.placeholder ?? 'Search'}
+                  aria-label={search.placeholder ?? 'Search'}
                   onChange={(event) => search.onChange(event.target.value)}
                 />
                 {search.value ? (
                   <InputGroupAddon align="inline-end">
                     <InputGroupButton
                       size="icon-xs"
-                      aria-label="Suche leeren"
+                      aria-label="Clear search"
                       onClick={() => search.onChange('')}
                     >
                       <XIcon />
@@ -105,7 +105,7 @@ export function DataTableToolbar({
       {hasSelection ? (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2">
           <span className="text-sm font-medium tabular-nums">
-            {formatNumber(selection.count)} ausgewählt
+            {formatNumber(selection.count)} selected
           </span>
           <Separator orientation="vertical" className="h-4" />
           {selection.actions}
@@ -116,7 +116,7 @@ export function DataTableToolbar({
             onClick={selection.onClear}
           >
             <XIcon data-icon="inline-start" />
-            Auswahl aufheben
+            Clear selection
           </Button>
         </div>
       ) : null}

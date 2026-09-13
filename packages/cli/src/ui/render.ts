@@ -374,7 +374,7 @@ export function memoryLine(memory: MemoryRecord | ScoredMemory): string {
 }
 
 export function transcriptBlock(message: Message): string {
-  const stamp = new Date(message.createdAt).toLocaleString();
+  const stamp = new Date(message.createdAt).toLocaleString('en-GB');
   const who =
     message.role === 'user'
       ? theme.amberBold('you')

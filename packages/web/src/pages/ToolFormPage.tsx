@@ -57,8 +57,8 @@ const EMPTY: ToolDraft = {
 };
 
 const schema = z.object({
-  name: z.string().trim().min(1, 'Ein Name ist Pflicht.'),
-  command: z.string().trim().min(1, 'Ohne Befehl gibt es nichts zu starten.'),
+  name: z.string().trim().min(1, 'A name is required.'),
+  command: z.string().trim().min(1, 'A command is required.'),
 });
 
 /** Whitespace-separated, the way a shell would read it. */
@@ -86,18 +86,18 @@ export function ToolFormPage() {
       audience: draft.audience,
     });
     markSaved();
-    toast('Server angelegt', { description: created.name });
+    toast('Server created', { description: created.name });
     void navigate('/tools/' + created.id);
   });
 
   usePageMeta(
     {
-      breadcrumb: [{ label: 'Werkzeuge', to: '/tools' }, { label: 'Eigener Server' }],
+      breadcrumb: [{ label: 'Tools', to: '/tools' }, { label: 'Custom server' }],
       actions: (
         <FormHeaderActions
           form={formId}
           cancelTo="/tools"
-          submitLabel="Anlegen"
+          submitLabel="Create"
           submitting={saving}
           submitDisabled={!dirty || saving}
         />
@@ -113,14 +113,14 @@ export function ToolFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        description="Jeder stdio-MCP-Server geht. Schlüssel und Umgebungsvariablen lassen sich danach auf der Seite des Servers eintragen."
+        description="Any stdio MCP server works. Keys and environment variables can be added on the server page afterward."
       >
         <FieldSet>
           <Field>
             <FieldLabel htmlFor="tool-name">Name</FieldLabel>
             <Input
               id="tool-name"
-              placeholder="z. B. Notion"
+              placeholder="e.g. Notion"
               value={draft.name}
               aria-invalid={Boolean(errors.name)}
               onChange={(event) => set({ name: event.target.value })}
@@ -129,7 +129,7 @@ export function ToolFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="tool-command">Befehl</FieldLabel>
+            <FieldLabel htmlFor="tool-command">Command</FieldLabel>
             <InputGroup>
               <InputGroupAddon align="inline-start">
                 <TerminalIcon />
@@ -144,13 +144,13 @@ export function ToolFormPage() {
               />
             </InputGroup>
             <FieldDescription>
-              Das Programm selbst, ohne Argumente — auf diesem Rechner ausführbar.
+              The program itself, without arguments, available as an executable on this machine.
             </FieldDescription>
             <FieldError>{errors.command}</FieldError>
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="tool-args">Argumente</FieldLabel>
+            <FieldLabel htmlFor="tool-args">Arguments</FieldLabel>
             <Input
               id="tool-args"
               className="font-mono"
@@ -158,7 +158,7 @@ export function ToolFormPage() {
               value={draft.args}
               onChange={(event) => set({ args: event.target.value })}
             />
-            <FieldDescription>Durch Leerzeichen getrennt.</FieldDescription>
+            <FieldDescription>Separated by spaces.</FieldDescription>
             {args.length ? (
               <div className="flex flex-wrap gap-1.5">
                 {args.map((arg, index) => (
@@ -171,7 +171,7 @@ export function ToolFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="tool-audience-assistant">Für wen</FieldLabel>
+            <FieldLabel htmlFor="tool-audience-assistant">Audience</FieldLabel>
             <ChoiceField
               id="tool-audience"
               options={AUDIENCE_CHOICES}
@@ -181,17 +181,17 @@ export function ToolFormPage() {
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="tool-hint">Hinweis</FieldLabel>
+            <FieldLabel htmlFor="tool-hint">Guidance</FieldLabel>
             <Textarea
               id="tool-hint"
               rows={3}
-              placeholder="Wofür diese Werkzeuge gut sind und wann er sie nehmen soll."
+              placeholder="What these tools are useful for and when they should be used."
               value={draft.hint}
               onChange={(event) => set({ hint: event.target.value })}
             />
             <FieldDescription>
-              Steht im Systemprompt neben den Werkzeugnamen — daran entscheidet sich, ob der Server
-              je benutzt wird.
+              Shown alongside tool names in the system prompt, helping the assistant decide when to
+              use this server.
             </FieldDescription>
           </Field>
         </FieldSet>

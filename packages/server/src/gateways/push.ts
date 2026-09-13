@@ -5,7 +5,7 @@ import type { GatewayHandle } from './telegram.js';
 
 /**
  * The assistant's own initiative, and the state changes worth interrupting a
- * phone for, turned into German push messages.
+ * phone for, turned into English push messages.
  *
  * `message`, `memory` and `changed` never reach here on purpose - those fire
  * on every turn and every recall, and a phone that buzzed for each would be
@@ -34,15 +34,15 @@ interface PushItem {
 
 /** How a `tallyKey` reads in a digest, singular and plural. */
 const TALLY_LABELS: Record<string, { one: string; many: string }> = {
-  'assignment:done': { one: 'Auftrag fertig', many: 'Aufträge fertig' },
-  'assignment:failed': { one: 'Auftrag fehlgeschlagen', many: 'Aufträge fehlgeschlagen' },
-  'assignment:cancelled': { one: 'Auftrag abgebrochen', many: 'Aufträge abgebrochen' },
-  'cron:done': { one: 'Zeitplan gelaufen', many: 'Zeitpläne gelaufen' },
-  'cron:failed': { one: 'Zeitplan fehlgeschlagen', many: 'Zeitpläne fehlgeschlagen' },
-  'sleep:done': { one: 'Schlaf beendet', many: 'Schlafläufe beendet' },
-  'sleep:failed': { one: 'Schlaf fehlgeschlagen', many: 'Schlafläufe fehlgeschlagen' },
-  'task:failed': { one: 'Aufgabe fehlgeschlagen', many: 'Aufgaben fehlgeschlagen' },
-  'notify:normal': { one: 'Hinweis', many: 'Hinweise' },
+  'assignment:done': { one: 'assignment completed', many: 'assignments completed' },
+  'assignment:failed': { one: 'assignment failed', many: 'assignments failed' },
+  'assignment:cancelled': { one: 'assignment cancelled', many: 'assignments cancelled' },
+  'cron:done': { one: 'schedule completed', many: 'schedules completed' },
+  'cron:failed': { one: 'schedule failed', many: 'schedules failed' },
+  'sleep:done': { one: 'sleep run completed', many: 'sleep runs completed' },
+  'sleep:failed': { one: 'sleep run failed', many: 'sleep runs failed' },
+  'task:failed': { one: 'task failed', many: 'tasks failed' },
+  'notify:normal': { one: 'notice', many: 'notices' },
 };
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -64,7 +64,7 @@ function formatDuration(ms?: number): string {
   const totalSeconds = Math.round(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return minutes > 0 ? minutes + ' Min. ' + seconds + ' Sek.' : seconds + ' Sek.';
+  return minutes > 0 ? minutes + ' min ' + seconds + ' sec' : seconds + ' sec';
 }
 
 /** A Telegram 403 reads differently depending on which layer surfaces it. */
@@ -136,9 +136,9 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
         } catch (error) {
           if (isForbidden(error)) {
             disabled.add(userId);
-            context.log.warn('Telegram-Push abgeschaltet: Empfänger hat den Bot blockiert (403)', { userId });
+            context.log.warn('Telegram push disabled: recipient blocked the bot (403)', { userId });
           } else {
-            context.log.warn('Telegram-Push fehlgeschlagen', {
+            context.log.warn('Telegram push failed', {
               userId,
               error: error instanceof Error ? error.message : String(error),
             });
@@ -157,7 +157,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       const label = TALLY_LABELS[key];
       parts.push(label ? count + ' ' + (count === 1 ? label.one : label.many) : String(count) + '×' + key);
     }
-    return '🌙 Zusammenfassung: ' + parts.join(', ') + '.';
+    return '🌙 Summary: ' + parts.join(', ') + '.';
   }
 
   /** Send whatever is waiting, if quiet hours and the rate cap both allow it. */
@@ -165,8 +165,8 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     if (buffer.length === 0 || isQuietNow() || isRateLimited()) return;
     const items = buffer.splice(0, buffer.length);
     // A lone buffered item keeps its own text; a digest is only for several
-    // at once, which is the case the summary format ("3 fertig, 1
-    // fehlgeschlagen") exists for.
+    // at once, which is the case the summary format ("3 completed, 1
+    // failed") exists for.
     const single = items.length === 1 ? items[0] : undefined;
     void sendNow(single ? single.message : buildDigest(items));
   }
@@ -215,7 +215,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     const view = event.assignment;
     if (view.status !== 'done' && view.status !== 'failed' && view.status !== 'cancelled') return;
 
-    const label = view.status === 'done' ? 'fertig' : view.status === 'failed' ? 'fehlgeschlagen' : 'abgebrochen';
+    const label = view.status === 'done' ? 'completed' : view.status === 'failed' ? 'failed' : 'cancelled';
     const duration = formatDuration(view.durationMs);
     const header = '🤖 ' + view.agentName + ' – ' + label + (duration ? ' (' + duration + ')' : '');
     const taskLine = oneLine(view.task);
@@ -240,15 +240,16 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
 
   const onCron = (event: AgentEvent): void => {
     if (event.type !== 'cron') return;
+    if (event.job.kind === 'script' && event.run?.status === 'done' && !event.run.result?.trim()) return;
     if (event.deleted || !event.run || event.run.status === 'running') return;
     // A `sleep`-kind schedule also fires its own `sleep` event with the real
     // report; reporting the bare cron run too would say the same thing twice.
     if (event.job.kind === 'sleep') return;
 
-    const label = event.run.status === 'done' ? 'gelaufen' : 'fehlgeschlagen';
+    const label = event.run.status === 'done' ? 'completed' : 'failed';
     const duration = formatDuration(event.run.durationMs);
     const message =
-      '⏰ Zeitplan „' + event.job.name + '“ ist ' + label + (duration ? ' (' + duration + ')' : '') + '.';
+      '⏰ Schedule “' + event.job.name + '” ' + label + (duration ? ' (' + duration + ')' : '') + '.';
 
     dispatch({
       id: 'cron:' + event.run.id,
@@ -263,11 +264,11 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     if (event.type !== 'sleep') return;
     if (event.run.status === 'running') return;
 
-    const label = event.run.status === 'done' ? 'beendet' : 'fehlgeschlagen';
+    const label = event.run.status === 'done' ? 'completed' : 'failed';
     // The report field is the same two or three sentences the memory page
     // shows for this run - reused rather than summarised again here.
-    const body = event.run.status === 'done' ? event.run.report ?? 'Der Lauf ist beendet.' : event.run.error ?? 'unbekannter Fehler';
-    const message = '🌙 Schlaf ' + label + '\n\n' + body;
+    const body = event.run.status === 'done' ? event.run.report ?? 'The run is complete.' : event.run.error ?? 'unknown error';
+    const message = '🌙 Sleep ' + label + '\n\n' + body;
 
     dispatch({
       id: 'sleep:' + event.run.id,
@@ -285,7 +286,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     // Everything else about a task is visible the next time the page is open.
     if (event.task.status !== 'failed') return;
 
-    const message = '🚧 Aufgabe fehlgeschlagen: ' + oneLine(event.task.title, 200);
+    const message = '🚧 Task failed: ' + oneLine(event.task.title, 200);
     dispatch({
       id: 'task:' + event.task.id + ':failed',
       kind: 'task',

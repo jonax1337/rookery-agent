@@ -45,7 +45,7 @@ import type { ToolServer } from '@/lib/types';
 /**
  * The MCP hub as one table.
  *
- * The page used to be two Cards - "Katalog" and "Eigene Server" - with no
+ * The page used to be two Cards - "Katalog" and "Custom servers" - with no
  * shared filter, no search and a bare coloured dot for the state. It is the
  * longest list in the project, so it gets the block's facet tabs, one search
  * over name and description, and a state that is spelled out.
@@ -56,10 +56,10 @@ const column = createRookeryColumnHelper<ToolServer>();
 const COLUMN_LABELS: Record<string, string> = {
   name: 'Name',
   status: 'Status',
-  audience: 'Für wen',
-  install: 'Herkunft',
-  enabled: 'Aktiv',
-  actions: 'Aktionen',
+  audience: 'Audience',
+  install: 'Source',
+  enabled: 'Active',
+  actions: 'Actions',
 };
 
 type Tab = 'alle' | 'aktiv' | 'schluessel' | 'eigene';
@@ -82,12 +82,12 @@ export function ToolsPage() {
   const [result, setResult] = useState<PrepareResult | null>(null);
 
   usePageMeta({
-    breadcrumb: [{ label: 'Werkzeuge' }],
+    breadcrumb: [{ label: 'Tools' }],
     actions: (
       <Button asChild size="sm">
         <NavLink to="/tools/new">
           <PlusIcon data-icon="inline-start" />
-          Eigenen Server anlegen
+          Add custom server
         </NavLink>
       </Button>
     ),
@@ -97,9 +97,9 @@ export function ToolsPage() {
     async (tool: ToolServer, on: boolean): Promise<void> => {
       try {
         await setEnabled(tool.id, on);
-        toast(tool.name + (on ? ' eingeschaltet' : ' ausgeschaltet'));
+        toast(tool.name + (on ? ' enabled' : ' disabled'));
       } catch (caught) {
-        reportFailure('Ändern', caught);
+        reportFailure('Update', caught);
       }
     },
     [setEnabled],
@@ -125,7 +125,7 @@ export function ToolsPage() {
   const columns = useMemo(
     () =>
       column.columns([
-        selectionColumn<ToolServer>({ rowLabel: (tool) => tool.name + ' wählen' }),
+        selectionColumn<ToolServer>({ rowLabel: (tool) => tool.name + ' selected' }),
 
         column.accessor('name', {
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Name" />,
@@ -145,7 +145,7 @@ export function ToolsPage() {
           enableHiding: false,
         }),
 
-        // Sorted by the caption, so "Schlüssel fehlt" and "Bereit" group up.
+        // Sorted by the caption, so "Keys missing" and "Bereit" group up.
         column.accessor((tool) => toolStatus(tool).label, {
           id: 'status',
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Status" />,
@@ -161,7 +161,7 @@ export function ToolsPage() {
         }),
 
         column.accessor('audience', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Für wen" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Audience" />,
           cell: ({ row }) => (
             <Badge variant="outline" className="font-normal text-muted-foreground">
               {AUDIENCE_LABEL[row.original.audience]}
@@ -170,7 +170,7 @@ export function ToolsPage() {
         }),
 
         column.accessor('install', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Herkunft" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Source" />,
           cell: ({ row }) => (
             <Badge variant="outline" className="font-normal text-muted-foreground">
               {INSTALL_LABEL[row.original.install]}
@@ -179,12 +179,12 @@ export function ToolsPage() {
         }),
 
         column.accessor('enabled', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Aktiv" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Active" />,
           cell: ({ row }) => (
             <Switch
               checked={row.original.enabled}
               disabled={!row.original.installed}
-              aria-label={row.original.name + ' einschalten'}
+              aria-label={row.original.name + ' enable'}
               onCheckedChange={(on) => void toggle(row.original, on)}
             />
           ),
@@ -195,12 +195,12 @@ export function ToolsPage() {
           return (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <RowMenuButton label={'Aktionen für ' + tool.name} busy={busy} />
+                <RowMenuButton label={'Actions for ' + tool.name} busy={busy} />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <DropdownMenuItem onSelect={() => void navigate('/tools/' + tool.id)}>
                   <SquareArrowOutUpRightIcon />
-                  Öffnen
+                  Open
                 </DropdownMenuItem>
                 {tool.prepare ? (
                   <DropdownMenuItem
@@ -218,7 +218,7 @@ export function ToolsPage() {
                   <DropdownMenuItem asChild>
                     <a href={tool.homepage} target="_blank" rel="noreferrer">
                       <ExternalLinkIcon />
-                      Projektseite öffnen
+                      Open project page
                     </a>
                   </DropdownMenuItem>
                 ) : null}
@@ -226,12 +226,12 @@ export function ToolsPage() {
                 {tool.install === 'custom' ? (
                   <DropdownMenuItem variant="destructive" onSelect={() => void removeTool(tool)}>
                     <Trash2Icon />
-                    Entfernen
+                    Remove
                   </DropdownMenuItem>
                 ) : (
                   <DropdownMenuItem onSelect={() => void removeTool(tool)}>
                     <RotateCcwIcon />
-                    Auf Standard zurücksetzen
+                    Restore default
                   </DropdownMenuItem>
                 )}
               </DropdownMenuContent>
@@ -248,7 +248,7 @@ export function ToolsPage() {
       aktiv: tools.filter((tool) => tool.active).length,
       schluessel: tools.filter((tool) => tool.missingEnv.length > 0).length,
       eigene: tools.filter((tool) => tool.install === 'custom').length,
-      nichtInstalliert: tools.filter((tool) => !tool.installed).length,
+      nichtInstalled: tools.filter((tool) => !tool.installed).length,
     }),
     [tools],
   );
@@ -271,27 +271,27 @@ export function ToolsPage() {
   // about its base the way the paged lists do.
   const cards: StatCardProps[] = [
     {
-      label: 'Aktiv',
+      label: 'Active',
       value: formatNumber(counts.aktiv),
-      headline: 'Von ' + formatNumber(counts.alle) + ' im Katalog',
-      footnote: 'Eingeschaltet, installiert und mit allen nötigen Schlüsseln',
+      headline: 'Of ' + formatNumber(counts.alle) + ' in the catalog',
+      footnote: 'Enabled, installed, and configured with all required keys',
     },
     {
-      label: 'Braucht Schlüssel',
+      label: 'Requires keys',
       value: formatNumber(counts.schluessel),
       badge:
-        counts.schluessel > 0 ? <Badge variant="destructive">bleibt aus</Badge> : undefined,
-      headline: counts.schluessel > 0 ? 'Warten auf Zugangsdaten' : 'Nichts offen',
+        counts.schluessel > 0 ? <Badge variant="destructive">remains disabled</Badge> : undefined,
+      headline: counts.schluessel > 0 ? 'Waiting for credentials' : 'Nothing pending',
     },
     {
-      label: 'Nicht installiert',
-      value: formatNumber(counts.nichtInstalliert),
-      headline: 'Werden beim Vorbereiten geholt',
+      label: 'Not installed',
+      value: formatNumber(counts.nichtInstalled),
+      headline: 'Downloaded during setup',
     },
     {
-      label: 'Eigene Server',
+      label: 'Custom servers',
       value: formatNumber(counts.eigene),
-      headline: 'Selbst eingetragen',
+      headline: 'Added manually',
       to: '/tools',
     },
   ];
@@ -310,22 +310,22 @@ export function ToolsPage() {
         onRowClick={(tool) => void navigate('/tools/' + tool.id)}
         rowClickIgnoreColumns={['select', 'name', 'enabled', 'actions']}
         tabs={[
-          { value: 'alle', label: 'Alle', count: counts.alle },
-          { value: 'aktiv', label: 'Aktiv', count: counts.aktiv },
-          { value: 'schluessel', label: 'Braucht Schlüssel', count: counts.schluessel },
-          { value: 'eigene', label: 'Eigene', count: counts.eigene },
+          { value: 'alle', label: 'All', count: counts.alle },
+          { value: 'aktiv', label: 'Active', count: counts.aktiv },
+          { value: 'schluessel', label: 'Requires keys', count: counts.schluessel },
+          { value: 'eigene', label: 'Custom', count: counts.eigene },
         ]}
         tab={tab}
         onTabChange={(value) => setTab(value as Tab)}
-        tabLabel="Auswahl der Werkzeuge"
+        tabLabel="Tool selection"
         searchable
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Werkzeuge durchsuchen"
+        searchPlaceholder="Tools durchsuchen"
         searchText={(tool) => tool.name + ' ' + tool.description + ' ' + tool.id}
         columnLabels={COLUMN_LABELS}
         initialSorting={[{ id: 'name', desc: false }]}
-        rowLabel={{ singular: 'Werkzeug', plural: 'Werkzeugen' }}
+        rowLabel={{ singular: 'Tool', plural: 'tools' }}
         loading={loading}
         error={error ? <ServerOffline onRetry={() => void refresh()} /> : undefined}
         bulkActions={(selected, clear) => (
@@ -340,7 +340,7 @@ export function ToolsPage() {
                 clear();
               }}
             >
-              Einschalten
+              Enable
             </Button>
             <Button
               size="sm"
@@ -352,16 +352,16 @@ export function ToolsPage() {
                 clear();
               }}
             >
-              Ausschalten
+              Disable
             </Button>
           </>
         )}
         empty={
           <EmptyState
             icon={WrenchIcon}
-            title="Keine Werkzeuge in dieser Auswahl"
-            description="In dieser Registerkarte steht gerade nichts. Der vollständige Katalog liegt unter „Alle“."
-            actionLabel="Alle anzeigen"
+            title="No tools in this selection"
+            description="There is nothing in this tab right now. The complete catalog is available under “All”."
+            actionLabel="Show all"
             onAction={() => {
               setTab('alle');
               setSearch('');
@@ -384,13 +384,13 @@ export function ToolsPage() {
         onOpenChange={(open) => {
           if (!open) setResult(null);
         }}
-        title={result ? result.tool.name + ' vorbereiten' : 'Vorbereitung'}
+        title={result ? result.tool.name + ' set up' : 'Setup'}
         description={
-          result ? (result.ok ? 'Abgeschlossen.' : 'Fehlgeschlagen.') : undefined
+          result ? (result.ok ? 'Completed.' : 'Failed.') : undefined
         }
       >
         <pre className="rounded-lg bg-muted/60 p-3 font-mono text-xs whitespace-pre-wrap">
-          {result?.output.trim() || 'Keine Ausgabe.'}
+          {result?.output.trim() || 'No output.'}
         </pre>
       </DetailDrawer>
     </PageBody>

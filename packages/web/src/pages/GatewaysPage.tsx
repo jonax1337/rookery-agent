@@ -36,16 +36,16 @@ const column = createRookeryColumnHelper<GatewayStatus>();
 
 const COLUMN_LABELS: Record<string, string> = {
   label: 'Name',
-  status: 'Zustand',
-  allowedCount: 'Erlaubte IDs',
-  actions: 'Aktionen',
+  status: 'Status',
+  allowedCount: 'Allowed IDs',
+  actions: 'Actions',
 };
 
 export function GatewaysPage() {
   const navigate = useNavigate();
   const { gateways, loading, error, refresh } = useGateways();
 
-  usePageMeta({ breadcrumb: [{ label: 'Gateway' }] });
+  usePageMeta({ breadcrumb: [{ label: 'Gateways' }] });
 
   const columns = useMemo(
     () =>
@@ -60,10 +60,10 @@ export function GatewaysPage() {
           enableHiding: false,
         }),
 
-        // Sorted by the caption, so "Aus" and "Läuft" group up like on Werkzeuge.
+        // Sorted by the caption, so "Aus" and "Läuft" group up like on Tools.
         column.accessor((gateway) => gatewayStateLook(gateway).label, {
           id: 'status',
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Zustand" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Status" />,
           cell: ({ row }) => {
             const look = gatewayStateLook(row.original);
             return (
@@ -77,22 +77,22 @@ export function GatewaysPage() {
 
         column.accessor('allowedCount', {
           header: ({ column: col }) => (
-            <DataTableColumnHeader column={col} title="Erlaubte IDs" align="end" />
+            <DataTableColumnHeader column={col} title="Allowed IDs" align="end" />
           ),
           cell: ({ row }) => (
-            <span className="tabular-nums">{formatNumber(row.original.allowedCount)}</span>
+            <span className="block text-right tabular-nums">{formatNumber(row.original.allowedCount)}</span>
           ),
         }),
 
         actionsColumn<GatewayStatus>((gateway) => (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton label={'Aktionen für ' + gateway.label} />
+              <RowMenuButton label={'Actions for ' + gateway.label} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem onSelect={() => void navigate('/gateways/' + gateway.id)}>
                 <SquareArrowOutUpRightIcon />
-                Öffnen
+                Open
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -118,8 +118,8 @@ export function GatewaysPage() {
         empty={
           <EmptyState
             icon={RadioTowerIcon}
-            title="Noch kein Gateway eingerichtet"
-            description="Ein Gateway verbindet den Assistenten mit einem Kanal wie Telegram."
+            title="No gateway configured yet"
+            description="A gateway connects the assistant to a channel such as Telegram."
             variant="plain"
             size="sm"
           />

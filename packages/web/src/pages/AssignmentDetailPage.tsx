@@ -123,37 +123,37 @@ export function AssignmentDetailPage() {
 
   /* -------------------------------- header ------------------------------- */
 
-  const title = assignment ? shorten(assignment.task, 60) : 'Auftrag';
+  const title = assignment ? shorten(assignment.task, 60) : 'Assignment';
 
   usePageMeta(
     {
       ...(assignment ? { title } : {}),
-      breadcrumb: [{ label: 'Aufträge', to: '/assignments' }, { label: title }],
+      breadcrumb: [{ label: 'Assignments', to: '/assignments' }, { label: title }],
       actions: assignment ? (
         <>
           {open ? (
             <Button size="sm" variant="destructive" onClick={() => void cancel()}>
               <BanIcon data-icon="inline-start" />
-              Abbrechen
+              Cancel
             </Button>
           ) : null}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="Weitere Aktionen" />
+              <RowMenuButton tone="header" label="More actions" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               {task ? (
                 <DropdownMenuItem asChild>
                   <NavLink to={'/tasks/' + task.id}>
                     <ListTodoIcon data-icon="inline-start" />
-                    Zur Aufgabe
+                    View task
                   </NavLink>
                 </DropdownMenuItem>
               ) : null}
               <DropdownMenuItem asChild>
                 <NavLink to={'/org/agents/' + assignment.agentId}>
                   <UserRoundIcon data-icon="inline-start" />
-                  Agent öffnen
+                  Open agent
                 </NavLink>
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -190,9 +190,9 @@ export function AssignmentDetailPage() {
         ) : (
           <EmptyState
             icon={SendIcon}
-            title="Diesen Auftrag gibt es nicht"
-            description="Der Eintrag wurde gelöscht, oder die Adresse stimmt nicht."
-            actionLabel="Zu den Aufträgen"
+            title="This assignment does not exist"
+            description="The entry was deleted, or the address is incorrect."
+            actionLabel="View assignments"
             actionTo="/assignments"
           />
         )}
@@ -217,35 +217,35 @@ export function AssignmentDetailPage() {
       label: 'Status',
       value: ASSIGNMENT_STATUS_LABEL[status],
       ...(open ? { badge: <RunningBadge count={1} /> } : {}),
-      headline: agent ? agent.name + ' führt aus' : 'Agent unbekannt',
-      footnote: 'Angelegt ' + timeAgo(assignment.createdAt),
+      headline: agent ? agent.name + ' is handling it' : 'Agent unknown',
+      footnote: 'Created ' + timeAgo(assignment.createdAt),
     },
     {
-      label: 'Dauer',
+      label: 'Duration',
       value: formatDuration(durationMs) || '–',
       headline:
         open && assignment.startedAt
-          ? 'Läuft seit ' + relativeTime(assignment.startedAt)
+          ? 'Running since ' + relativeTime(assignment.startedAt)
           : durationMs
-            ? 'Vom Start bis zur Antwort'
-            : 'Noch nicht gelaufen',
+            ? 'From start to response'
+            : 'Not started yet',
       footnote: assignment.startedAt
-        ? 'Start ' + formatDateTime(assignment.startedAt)
-        : 'Kein Startzeitpunkt',
+        ? 'Started ' + formatDateTime(assignment.startedAt)
+        : 'No start time',
     },
     {
-      label: 'Zeichen',
+      label: 'Characters',
       value: chars > 0 ? formatNumber(chars) : '–',
-      headline: chars > 0 ? 'Länge der Antwort' : 'Noch nichts geschrieben',
+      headline: chars > 0 ? 'Response length' : 'Nothing written yet',
       // Not a hedge but the plain truth: the assignment row carries `chars`
       // and nothing else - no tokens, no cost (see serverGaps).
-      footnote: 'Der Server zählt Zeichen, keine Tokens',
+      footnote: 'The server counts characters, not tokens',
     },
     {
-      label: 'Weitergegeben',
+      label: 'Delegated',
       value: formatNumber(children.length),
-      headline: children.length === 0 ? 'Alles selbst erledigt' : 'Unteraufträge an andere Agenten',
-      footnote: 'Direkt aus diesem Auftrag heraus',
+      headline: children.length === 0 ? 'Completed without delegation' : 'Subassignments delegated to other agents',
+      footnote: 'Directly from this assignment',
     },
   ];
 
@@ -262,7 +262,7 @@ export function AssignmentDetailPage() {
         ) : null}
         {assignment.depth > 0 ? (
           <Badge variant="secondary" className="tabular-nums">
-            Ebene {assignment.depth}
+            Level {assignment.depth}
           </Badge>
         ) : null}
       </div>
@@ -274,11 +274,11 @@ export function AssignmentDetailPage() {
         items={[
           {
             label: 'Agent',
-            value: agent?.name ?? 'Unbekannt',
+            value: agent?.name ?? 'Unknown',
             ...(agent ? { to: '/org/agents/' + agent.id } : {}),
           },
           {
-            label: 'Anbieter',
+            label: 'Provider',
             value: (
               <ProviderCell
                 layout="inline"
@@ -287,20 +287,20 @@ export function AssignmentDetailPage() {
               />
             ),
           },
-          { label: 'Modell', value: assignment.model ?? 'Standardmodell', mono: true },
-          { label: 'Projekt', value: project?.name ?? 'Kein Projekt' },
-          { label: 'Ebene', value: assignment.depth > 0 ? String(assignment.depth) : 'Direkt' },
+          { label: 'Model', value: assignment.model ?? 'Default model', mono: true },
+          { label: 'Project', value: project?.name ?? 'No project' },
+          { label: 'Level', value: assignment.depth > 0 ? String(assignment.depth) : 'Direct' },
           {
-            label: 'Angefordert von',
+            label: 'Requested by',
             value:
               REQUESTER_LABEL[assignment.requesterKind] +
               (assignment.requesterAgentId
-                ? ' · ' + (org.agentById(assignment.requesterAgentId)?.name ?? 'Unbekannt')
+                ? ' · ' + (org.agentById(assignment.requesterAgentId)?.name ?? 'Unknown')
                 : ''),
           },
-          { label: 'Angelegt', value: formatDateTime(assignment.createdAt) },
-          { label: 'Gestartet', value: assignment.startedAt ? formatDateTime(assignment.startedAt) : null },
-          { label: 'Beendet', value: assignment.finishedAt ? formatDateTime(assignment.finishedAt) : null },
+          { label: 'Created', value: formatDateTime(assignment.createdAt) },
+          { label: 'Started', value: assignment.startedAt ? formatDateTime(assignment.startedAt) : null },
+          { label: 'Finished', value: assignment.finishedAt ? formatDateTime(assignment.finishedAt) : null },
         ]}
       />
 
@@ -310,15 +310,15 @@ export function AssignmentDetailPage() {
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
         <TabsList>
-          <TabsTrigger value="ergebnis">Ergebnis</TabsTrigger>
+          <TabsTrigger value="ergebnis">Result</TabsTrigger>
           {error ? (
             <TabsTrigger value="fehler">
-              Fehler
+              Error
               <Badge variant="destructive">1</Badge>
             </TabsTrigger>
           ) : null}
           <TabsTrigger value="weitergegeben">
-            Weitergegeben
+            Delegated
             {children.length > 0 ? (
               <Badge variant="secondary" className="tabular-nums">
                 {children.length}
@@ -331,16 +331,16 @@ export function AssignmentDetailPage() {
           {result ? (
             <ResultCard
               text={result}
-              description="Was der Agent am Ende des Laufs zurückgegeben hat."
+              description="What the agent returned at the end of the run."
             />
           ) : (
             <EmptyState
               icon={SendIcon}
-              title="Noch kein Ergebnis"
+              title="No result yet"
               description={
                 open
-                  ? 'Der Auftrag läuft noch. Sobald der Agent fertig ist, steht die Antwort hier.'
-                  : 'Dieser Auftrag hat keine Antwort hinterlassen.'
+                  ? 'The assignment is still running. Its report appears here when the agent finishes.'
+                  : 'This assignment did not leave a response.'
               }
               variant="outline"
               size="sm"
@@ -352,7 +352,7 @@ export function AssignmentDetailPage() {
           <TabsContent value="fehler" className="mt-4">
             <Alert variant="destructive">
               <TriangleAlertIcon />
-              <AlertTitle>Der Auftrag ist gescheitert</AlertTitle>
+              <AlertTitle>The assignment failed</AlertTitle>
               <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
             </Alert>
           </TabsContent>
@@ -366,7 +366,7 @@ export function AssignmentDetailPage() {
             columns={childColumns}
             getRowId={(row) => row.id}
             searchable
-            searchPlaceholder="Aufträge durchsuchen"
+            searchPlaceholder="Assignments durchsuchen"
             searchText={(row) => row.task}
             initialSorting={ASSIGNMENT_SORTING}
             paginate={false}
@@ -375,8 +375,8 @@ export function AssignmentDetailPage() {
             empty={
               <EmptyState
                 icon={SendIcon}
-                title="Dieser Auftrag wurde nicht weitergegeben"
-                description="Ein Agent kann Teile seiner Arbeit an andere abgeben; dieser hat alles selbst erledigt."
+                title="This assignment was not delegated"
+                description="An agent can delegate parts of the work to others; this agent completed everything directly."
                 variant="plain"
                 size="sm"
               />

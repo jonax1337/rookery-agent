@@ -8,7 +8,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 9;
 
 export type Db = DatabaseSync;
 
@@ -406,7 +406,18 @@ function migrate(db: Db): void {
       ON cron_runs(job_id, started_at DESC);
   `);
 
-  // Schema 6 -> 7: a project remembers whether its own `.mcp.json` was approved.
+  if (!hasColumn(db, 'cron_jobs', 'script_json')) {
+    db.exec('ALTER TABLE cron_jobs ADD COLUMN script_json TEXT');
+  }
+  if (!hasColumn(db, 'cron_jobs', 'remaining_runs')) {
+    db.exec('ALTER TABLE cron_jobs ADD COLUMN remaining_runs INTEGER');
+  }
+
+  if (!hasColumn(db, 'messages', 'tool_calls')) {
+    db.exec('ALTER TABLE messages ADD COLUMN tool_calls TEXT');
+  }
+
+  // Schema 8 -> 9: a project remembers whether its own `.mcp.json` was approved.
   // Runs after the projects table exists (created above), so a fresh database
   // gets the column from CREATE TABLE and this is a no-op for it.
   if (!hasColumn(db, 'projects', 'mcp_trust')) {

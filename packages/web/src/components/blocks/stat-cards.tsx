@@ -16,9 +16,8 @@ import { cn } from '@/lib/utils';
 /**
  * The headline number row from `dashboard-01/components/section-cards.tsx`.
  *
- * Grid and typography are verbatim - the container-query column counts
- * (`@xl/main:grid-cols-2`, `@5xl/main:grid-cols-4`) and the card gradient are
- * what make the row read as the block it came from.
+ * Compact stock cards keep the headline row above the page's actual work.
+ * Column counts follow the page container, including narrow detail pages.
  *
  * What is NOT here is the trend badge. The original's "+12.5% gegenüber
  * Vormonat" needs a previous-period value, and the server has none: nothing
@@ -49,18 +48,22 @@ export function StatCard({ label, value, badge, headline, footnote, to, classNam
   const hasFooter = headline !== undefined || footnote !== undefined;
 
   return (
-    <Card className={cn('@container/card', to && 'relative', className)}>
-      <CardHeader>
+    <Card size="sm" className={cn('@container/card min-w-0', to && 'relative', className)}>
+      <CardHeader className="flex flex-col gap-1">
         <CardDescription>{label}</CardDescription>
-        <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
+        <CardTitle className="max-w-full break-words font-semibold tabular-nums group-data-[size=sm]/card:text-2xl">
           {value}
         </CardTitle>
-        {badge ? <CardAction>{badge}</CardAction> : null}
+        {badge ? (
+          <CardAction className="mt-1 max-w-full self-start **:data-[slot=badge]:max-w-full **:data-[slot=badge]:whitespace-normal">
+            {badge}
+          </CardAction>
+        ) : null}
       </CardHeader>
       {hasFooter ? (
-        <CardFooter className="flex-col items-start gap-1.5 text-sm">
+        <CardFooter className="flex-col items-start gap-1 text-xs leading-relaxed">
           {headline !== undefined ? (
-            <div className="line-clamp-1 flex gap-2 font-medium">{headline}</div>
+            <div className="max-w-full break-words font-medium">{headline}</div>
           ) : null}
           {footnote !== undefined ? <div className="text-muted-foreground">{footnote}</div> : null}
         </CardFooter>
@@ -93,7 +96,7 @@ export function StatCards({ items, children, className }: StatCardsProps) {
   return (
     <div
       className={cn(
-        'grid grid-cols-1 gap-4 px-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs lg:px-6 @xl/main:grid-cols-2 @5xl/main:grid-cols-4 dark:*:data-[slot=card]:bg-card',
+        'grid grid-cols-1 gap-4 px-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs lg:px-6 @xl/main:grid-cols-2 @4xl/main:grid-cols-4 dark:*:data-[slot=card]:bg-card',
         className,
       )}
     >
@@ -116,7 +119,7 @@ export function StatCards({ items, children, className }: StatCardsProps) {
  */
 export function cappedBadge(capped: boolean): Pick<StatCardProps, 'badge'> {
   if (!capped) return {};
-  return { badge: <Badge variant="outline">gedeckelt</Badge> };
+  return { badge: <Badge variant="outline">capped</Badge> };
 }
 
 /**
@@ -130,7 +133,7 @@ export function StatCardsSkeleton({ cards = 4 }: { cards?: number }) {
   return (
     <StatCards>
       {Array.from({ length: cards }, (_, index) => (
-        <Card key={index} className="@container/card">
+        <Card key={index} size="sm" className="@container/card">
           <CardHeader>
             <Skeleton className="h-4 w-24" />
             <Skeleton className="mt-2 h-8 w-20" />

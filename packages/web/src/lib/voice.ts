@@ -30,27 +30,27 @@ export const VOICE_ENGINES: readonly VoiceEngineMeta[] = [
   {
     id: 'edge',
     label: 'Microsoft Edge Neural',
-    description: 'Kostenlos, ohne Schlüssel, Dutzende Stimmen. Die Vorgabe.',
+    description: 'Free, no key required, with dozens of voices. The default.',
     icon: CloudIcon,
   },
   {
     id: 'elevenlabs',
     label: 'ElevenLabs',
-    description: 'Die natürlichste Stimme, mit eigener Bibliothek. Braucht einen Schlüssel.',
+    description: 'The most natural voice, with its own library. Requires a key.',
     icon: SparklesIcon,
     env: 'ELEVENLABS_API_KEY',
   },
   {
     id: 'openai',
     label: 'OpenAI gpt-4o-mini-tts',
-    description: 'Schnell und gleichmäßig, mit steuerbarem Ton. Braucht einen Schlüssel.',
+    description: 'Fast and consistent, with adjustable tone. Requires a key.',
     icon: AudioLinesIcon,
     env: 'OPENAI_API_KEY',
   },
   {
     id: 'browser',
     label: 'Browser',
-    description: 'Was das Betriebssystem mitbringt. Läuft ohne Server, klingt aber danach.',
+    description: 'Uses the operating system voices. Works without the server.',
     icon: MonitorIcon,
   },
 ];

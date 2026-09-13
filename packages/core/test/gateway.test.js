@@ -285,7 +285,7 @@ test('missing settings names every gap, not just the first one', () => {
     true,
   );
   assert.deepEqual(missing.sort(), [
-    '/aus bis zum Neustart',
+    '/off until restart',
     'gateways.telegram.allowedUserIds',
     'gateways.telegram.enabled',
     'gateways.telegram.token',

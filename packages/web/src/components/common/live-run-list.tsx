@@ -74,7 +74,7 @@ export function LiveRunList({
   assignments,
   onCancel,
   variant = 'card',
-  title = 'Aufträge',
+  title = 'Assignments',
   className,
 }: LiveRunListProps) {
   const tree = React.useMemo(() => toTree(assignments), [assignments]);
@@ -94,16 +94,16 @@ export function LiveRunList({
   if (variant === 'plain') return <div className={className}>{body}</div>;
 
   return (
-    <Card className={cn('py-3', className)} aria-label="Aufträge dieses Turns">
+    <Card className={cn('py-3', className)} aria-label="Assignments for this turn">
       <CardHeader className="flex flex-wrap items-center gap-2 border-b px-3!">
         <CardTitle className="text-sm">{title}</CardTitle>
         <Badge variant="secondary" className="tabular-nums">
-          {assignments.length} {assignments.length === 1 ? 'Auftrag' : 'Aufträge'}
+          {assignments.length} {assignments.length === 1 ? 'assignment' : 'assignments'}
         </Badge>
 
         <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-          {running > 0 ? running + ' laufen · ' + done + ' fertig' : done + ' fertig'}
-          {failed > 0 && <span className="text-destructive"> · {failed} fehlgeschlagen</span>}
+          {running > 0 ? running + ' running · ' + done + ' done' : done + ' done'}
+          {failed > 0 && <span className="text-destructive"> · {failed} failed</span>}
         </span>
       </CardHeader>
 
@@ -116,7 +116,7 @@ function RunRow({ node, onCancel }: { node: RunNode; onCancel?: (id: string) => 
   const { assignment, children } = node;
   const meta = [
     assignment.provider ? PROVIDER_LABEL[assignment.provider] : null,
-    assignment.chars && assignment.chars > 0 ? formatNumber(assignment.chars) + ' Z.' : null,
+    assignment.chars && assignment.chars > 0 ? formatNumber(assignment.chars) + ' chars' : null,
     assignment.durationMs && assignment.durationMs > 0
       ? formatDuration(assignment.durationMs)
       : null,
@@ -162,13 +162,13 @@ function RunRow({ node, onCancel }: { node: RunNode; onCancel?: (id: string) => 
                 type="button"
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Auftrag abbrechen"
+                aria-label="Cancel assignment"
                 onClick={() => onCancel(assignment.id)}
               >
                 <XIcon />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Abbrechen</TooltipContent>
+            <TooltipContent>Cancel</TooltipContent>
           </Tooltip>
         </ItemActions>
       )}

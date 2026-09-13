@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildSystemPrompt,
   buildAgentPrompt,
@@ -8,7 +11,7 @@ import {
   toSpeakableText,
   deriveTitle,
   toolsFor,
-  DEFAULT_CONFIG,
+  DEFAULT_CONFIG as BUILTIN_CONFIG,
   COMPUTER_TOOLS,
   computerEngine,
   computerPromptBlock,
@@ -26,6 +29,8 @@ import {
   parseKeyCombo,
   parseKeySequence,
 } from '../dist/index.js';
+
+const DEFAULT_CONFIG = { ...BUILTIN_CONFIG, workspace: mkdtempSync(join(tmpdir(), 'rookery-prompt-')) };
 
 const now = Date.now();
 const org = { id: 'org1', name: 'Rookery & Co.', mission: 'Testing.', createdAt: now, updatedAt: now };
@@ -60,6 +65,8 @@ test('the system prompt carries identity, memories, history and the company bloc
   assert.match(prompt, /Earlier question/);
   assert.match(prompt, /mara — Mara, Backend Engineer/, 'the org chart is in the prompt');
   assert.match(prompt, /never hand the/, 'the single-identity rule is stated');
+  assert.match(prompt, /Use British English by default/);
+  assert.match(prompt, /Match the language the user writes or speaks in when they use another language/);
   assert.doesNotMatch(prompt, /computer tools/, 'no screen talk unless the tools are attached');
 });
 
@@ -80,16 +87,16 @@ test('the hub tells the assistant what it could attach and what only the user ca
   try {
     const hint = dormantToolsHint(base, 'assistant');
     assert.match(hint, /ready to attach with set_tool_server:/);
-    assert.ok(hint.includes('computer (Computer-Steuerung)'), 'a server that is merely off is reachable');
+    assert.ok(hint.includes('computer (Computer control)'), 'a server that is merely off is reachable');
     assert.ok(hint.includes('github (GitHub): needs GITHUB_PERSONAL_ACCESS_TOKEN'), 'a missing key is a real wall');
-    assert.match(hint, /Werkzeuge page/, 'and the wall names who can remove it');
+    assert.match(hint, /Tools page/, 'and the wall names who can remove it');
     assert.equal(dormantToolsHint(base, 'agent'), '', 'agents cannot flip switches, so they hear nothing');
 
     const on = { ...base, tools: withToolServer(base, 'computer', { enabled: true }) };
-    assert.ok(!dormantToolsHint(on, 'assistant').includes('computer (Computer-Steuerung)'), 'an attached server is not offered again');
+    assert.ok(!dormantToolsHint(on, 'assistant').includes('computer (Computer control)'), 'an attached server is not offered again');
 
     const forAgents = { ...base, tools: withToolServer(base, 'computer', { enabled: true, audience: 'agents' }) };
-    assert.ok(dormantToolsHint(forAgents, 'assistant').includes('computer (Computer-Steuerung)'), 'on for the staff is still off for you');
+    assert.ok(dormantToolsHint(forAgents, 'assistant').includes('computer (Computer control)'), 'on for the staff is still off for you');
   } finally {
     if (token) process.env.GITHUB_PERSONAL_ACCESS_TOKEN = token;
   }

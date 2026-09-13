@@ -49,7 +49,6 @@ import { reportFailure } from '@/lib/errors';
 import { ResultMarkdown } from '@/components/result-markdown';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ButtonGroup, ButtonGroupText } from '@/components/ui/button-group';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   DropdownMenu,
@@ -69,7 +68,7 @@ import { Switch } from '@/components/ui/switch';
  * This is the only place that knows the German plain text of the cron
  * expression - `GET /api/cron/:id` computes it as `description`, the
  * overview's payload does not carry it - so the sentence sits under "Nächste
- * Läufe" where the dates it describes are.
+ * Runs" where the dates it describes are.
  *
  * The detail is fetched once and refetched whenever the socket reports a
  * change to this job, so a run's report appears as soon as it is in.
@@ -94,13 +93,29 @@ export function CronDetailPage() {
   }, [live, running, reload]);
 
   const job = detail?.job;
+  const scriptNeedsReview = job?.kind === 'script' && job.permission !== 'full';
+  const exhausted = job?.remainingRuns === 0;
+
+  const reviewScript = useCallback(async (): Promise<void> => {
+    if (!id || !job?.script) return;
+    const approved = await confirm({
+      title: 'Grant this script Full access?',
+      description: 'The script runs directly on this computer with your user permissions. Review the source below, its dependencies and any external actions before granting access. This does not start or enable the schedule.',
+      confirmLabel: 'Grant Full access',
+    });
+    if (!approved) return;
+    setBusy(true);
+    try { await api.updateCronJob(id, { permission: 'full' }); await reload(); }
+    catch (caught) { reportFailure('Review script', caught); }
+    finally { setBusy(false); }
+  }, [confirm, id, job, reload]);
 
   const runNow = useCallback(async (): Promise<void> => {
     if (!id) return;
     setBusy(true);
     try {
       await api.runCronJob(id);
-      toast('Zeitplan gestartet');
+      toast('Schedule started');
     } catch (caught) {
       reportFailure('Start', caught);
     } finally {
@@ -114,9 +129,9 @@ export function CronDetailPage() {
       setBusy(true);
       try {
         await api.updateCronJob(id, { enabled });
-        toast(enabled ? 'Zeitplan aktiviert' : 'Zeitplan pausiert');
+        toast(enabled ? 'Schedule enabled' : 'Schedule paused');
       } catch (caught) {
-        reportFailure('Änderung', caught);
+        reportFailure('Update', caught);
       } finally {
         setBusy(false);
       }
@@ -127,19 +142,19 @@ export function CronDetailPage() {
   const remove = useCallback(async (): Promise<void> => {
     if (!id || !job) return;
     const ok = await confirm({
-      title: 'Zeitplan löschen?',
+      title: 'Delete schedule?',
       description:
-        'Der Zeitplan „' + job.name + '“ feuert danach nicht mehr. Bereits gelaufene Aufträge und Gespräche bleiben erhalten.',
-      confirmLabel: 'Löschen',
+        'The schedule “' + job.name + '” will no longer run. Existing assignments and conversations will remain.',
+      confirmLabel: 'Delete',
       destructive: true,
     });
     if (!ok) return;
     try {
       await api.deleteCronJob(id);
-      toast('Zeitplan gelöscht', { description: job.name });
+      toast('Schedule deleted', { description: job.name });
       void navigate('/cron');
     } catch (caught) {
-      reportFailure('Löschen', caught);
+      reportFailure('Delete', caught);
     }
   }, [confirm, id, job, navigate]);
 
@@ -152,43 +167,39 @@ export function CronDetailPage() {
       ...(job ? { title: job.name } : {}),
       actions: job ? (
         <div className="flex items-center gap-2">
-          <ButtonGroup>
-            <ButtonGroupText asChild>
-              <Label htmlFor="zeitplan-aktiv" className="gap-2 font-normal">
-                <Switch
-                  id="zeitplan-aktiv"
-                  checked={job.enabled}
-                  disabled={busy}
-                  onCheckedChange={(checked) => void toggle(checked)}
-                />
-                Aktiv
-              </Label>
-            </ButtonGroupText>
-            <Button size="sm" disabled={running || busy} onClick={() => void runNow()}>
-              {running ? (
-                <Spinner aria-label="Läuft" data-icon="inline-start" />
-              ) : (
-                <PlayIcon data-icon="inline-start" />
-              )}
-              Jetzt ausführen
-            </Button>
-            <Button size="sm" variant="outline" disabled={managed} asChild={!managed}>
-              {managed ? (
-                <>
+          <Label htmlFor="zeitplan-aktiv" className="flex h-8 items-center gap-2 rounded-md border px-2 font-normal">
+            <Switch
+              id="zeitplan-aktiv"
+              checked={job.enabled}
+              disabled={busy || scriptNeedsReview || exhausted}
+              onCheckedChange={(checked) => void toggle(checked)}
+            />
+            Active
+          </Label>
+          <Button size="sm" disabled={running || busy || scriptNeedsReview || exhausted} onClick={() => void runNow()}>
+            {running ? (
+              <Spinner aria-label="Running" data-icon="inline-start" />
+            ) : (
+              <PlayIcon data-icon="inline-start" />
+            )}
+            Run now
+          </Button>
+          <Button size="sm" variant="outline" disabled={managed} asChild={!managed}>
+            {managed ? (
+              <>
                   <PencilIcon data-icon="inline-start" />
-                  Bearbeiten
-                </>
-              ) : (
-                <NavLink to={'/cron/' + job.id + '/edit'}>
+                  Edit
+              </>
+            ) : (
+              <NavLink to={'/cron/' + job.id + '/edit'}>
                   <PencilIcon data-icon="inline-start" />
-                  Bearbeiten
-                </NavLink>
-              )}
-            </Button>
-          </ButtonGroup>
+                  Edit
+              </NavLink>
+            )}
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="Weitere Aktionen" />
+              <RowMenuButton tone="header" label="More actions" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52">
               <DropdownMenuItem
@@ -197,14 +208,14 @@ export function CronDetailPage() {
                 onSelect={() => void remove()}
               >
                 <Trash2Icon data-icon="inline-start" />
-                Löschen
+                Delete
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       ) : undefined,
     },
-    [busy, job, managed, running, remove, runNow, toggle],
+    [busy, job, managed, running, remove, runNow, toggle, scriptNeedsReview, exhausted],
   );
 
   /* -------------------------------- Spalten ------------------------------- */
@@ -228,7 +239,7 @@ export function CronDetailPage() {
         }),
         column.accessor((run) => CRON_TRIGGER_LABEL[run.trigger], {
           id: 'trigger',
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Auslöser" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Trigger" />,
           cell: ({ getValue }) => (
             <span className="text-muted-foreground">{getValue() as string}</span>
           ),
@@ -236,7 +247,7 @@ export function CronDetailPage() {
         column.accessor((run) => run.durationMs ?? null, {
           id: 'duration',
           header: ({ column: col }) => (
-            <DataTableColumnHeader column={col} title="Dauer" align="end" />
+            <DataTableColumnHeader column={col} title="Duration" align="end" />
           ),
           cell: ({ row }) => (
             <div className="text-right tabular-nums">
@@ -246,14 +257,14 @@ export function CronDetailPage() {
         }),
         column.display({
           id: 'assignment',
-          header: () => <span className="text-sm font-medium">Auftrag</span>,
+          header: () => <span className="text-sm font-medium">Assignment</span>,
           cell: ({ row }) =>
             row.original.assignmentId ? (
               <NavLink
                 to={'/assignments/' + row.original.assignmentId}
                 className="hover:underline"
               >
-                Auftrag
+                Assignment
               </NavLink>
             ) : (
               emptyCell()
@@ -261,11 +272,11 @@ export function CronDetailPage() {
         }),
         column.display({
           id: 'session',
-          header: () => <span className="text-sm font-medium">Gespräch</span>,
+          header: () => <span className="text-sm font-medium">Conversation</span>,
           cell: ({ row }) =>
             row.original.sessionId ? (
               <NavLink to={'/c/' + row.original.sessionId} className="hover:underline">
-                Gespräch
+                Conversation
               </NavLink>
             ) : (
               emptyCell()
@@ -274,11 +285,11 @@ export function CronDetailPage() {
         actionsColumn<CronRun>(
           (run) =>
             cronRunReport(run) ? (
-              <DetailDrawerTrigger onClick={() => setReport(run)}>Bericht</DetailDrawerTrigger>
+              <DetailDrawerTrigger onClick={() => setReport(run)}>Report</DetailDrawerTrigger>
             ) : (
               emptyCell()
             ),
-          { header: 'Bericht' },
+          { header: 'Report' },
         ),
       ]),
     [column],
@@ -291,9 +302,9 @@ export function CronDetailPage() {
       <PageBody width="3xl">
         <EmptyState
           icon={CalendarClockIcon}
-          title="Zeitplan nicht gefunden"
-          description="Dieser Zeitplan wurde gelöscht oder hat nie existiert."
-          actionLabel="Zu den Zeitplänen"
+          title="Schedule not found"
+          description="This schedule was deleted or never existed."
+          actionLabel="View schedules"
           actionTo="/cron"
         />
       </PageBody>
@@ -336,38 +347,58 @@ export function CronDetailPage() {
     <PageBody>
       {dialog}
 
+      {job.script && (
+        <div className="px-4 lg:px-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Imported script</CardTitle>
+              <CardDescription>
+                {job.script.noAgent ? 'Runs without a model. Empty output stays quiet.' : 'Runs before the assistant and passes its output as context.'}
+                {' '}Review dependencies and paths from the previous installation. Provider credentials and source environment files are not imported. Runs stop after two minutes.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="break-all font-mono text-xs">{job.script.path}</p>
+              {detail.scriptError && <p className="text-sm text-destructive">{detail.scriptError}</p>}
+              {detail.scriptSource !== undefined && <details><summary className="cursor-pointer text-sm">Review script source</summary><pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded border p-3 text-xs">{detail.scriptSource}</pre></details>}
+              {scriptNeedsReview && <Button disabled={busy || Boolean(detail.scriptError)} onClick={() => void reviewScript()}>Review and grant Full access</Button>}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       <StatCards
         items={[
           {
-            label: 'Läufe',
+            label: 'Runs',
             value: formatNumber(job.runCount),
-            badge: job.once ? <Badge variant="outline">einmalig</Badge> : undefined,
-            headline: job.lastRunAt ? 'Zuletzt ' + timeAgo(job.lastRunAt) : 'Noch nicht gelaufen',
-            footnote: 'Angelegt am ' + formatDateTime(job.createdAt),
+            badge: job.once ? <Badge variant="outline">once</Badge> : undefined,
+            headline: job.lastRunAt ? 'Last run ' + timeAgo(job.lastRunAt) : 'Not run yet',
+            footnote: job.remainingRuns !== undefined ? job.remainingRuns + ' runs remaining' : 'Created on ' + formatDateTime(job.createdAt),
           },
           {
-            label: 'Letzter Status',
+            label: 'Latest status',
             value: running
               ? CRON_RUN_STATUS_LABEL.running
               : job.lastStatus
                 ? CRON_RUN_STATUS_LABEL[job.lastStatus]
                 : '–',
-            headline: job.lastRunAt ? timeAgo(job.lastRunAt) : 'Ohne Lauf',
+            headline: job.lastRunAt ? timeAgo(job.lastRunAt) : 'No runs',
             footnote: job.lastError ? job.lastError : undefined,
           },
           {
-            label: 'Nächster Lauf',
-            value: job.enabled ? formatDateTime(job.nextRunAt) : 'Abgeschaltet',
-            headline: job.enabled ? description : 'Pausiert',
+            label: 'Next run',
+            value: job.enabled ? formatDateTime(job.nextRunAt) : 'Disabled',
+            headline: job.enabled ? description : 'Paused',
             footnote: job.schedule,
           },
           {
-            label: 'Mittlere Dauer',
+            label: 'Average duration',
             value: meanDuration || '–',
-            headline: meanDuration ? 'Wie lange ein Lauf braucht' : 'Noch nichts gemessen',
+            headline: meanDuration ? 'How long a run takes' : 'Nothing measured yet',
             footnote: durations.length
-              ? 'Über ' + formatNumber(durations.length) + (durations.length === 1 ? ' Lauf' : ' Läufe')
-              : 'Sobald ein Lauf fertig ist, steht hier ein Mittel',
+              ? 'Across ' + formatNumber(durations.length) + (durations.length === 1 ? ' run' : ' Runs')
+              : 'An average will appear here once a run completes',
           },
         ]}
       />
@@ -375,11 +406,11 @@ export function CronDetailPage() {
       <div className="grid gap-4 px-4 md:gap-6 lg:px-6 @4xl/main:grid-cols-[2fr_1fr]">
         <Card>
           <CardHeader>
-            <CardTitle>Anweisung</CardTitle>
+            <CardTitle>Instructions</CardTitle>
             <CardDescription>
               {managed
-                ? 'Diesen Zeitplan legt das System selbst an; seine Anweisung steht in der Gedächtnis-Einstellung.'
-                : 'Was zur festgelegten Zeit ausgeführt wird.'}
+                ? 'This system schedule uses the memory.sleep settings in your Rookery config.json.'
+                : 'What runs at the scheduled time.'}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -388,13 +419,13 @@ export function CronDetailPage() {
             ) : (
               <EmptyState
                 icon={PencilIcon}
-                title="Keine eigene Anweisung hinterlegt"
-                description="Ohne Text führt dieser Zeitplan nichts Eigenes aus."
+                title="No custom instructions provided"
+                description={job.script ? 'The imported script defines the work.' : 'Without instructions, this schedule does not perform any custom work.'}
                 variant="plain"
                 size="sm"
                 {...(managed
                   ? {}
-                  : { actionLabel: 'Bearbeiten', actionTo: '/cron/' + job.id + '/edit' })}
+                  : { actionLabel: 'Edit', actionTo: '/cron/' + job.id + '/edit' })}
               />
             )}
           </CardContent>
@@ -402,7 +433,7 @@ export function CronDetailPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Nächste Läufe</CardTitle>
+            <CardTitle>Upcoming runs</CardTitle>
             {/* The only German plain text of the expression there is - it
                 comes from the server, it is not derived here. */}
             <CardDescription>{description}</CardDescription>
@@ -411,8 +442,8 @@ export function CronDetailPage() {
             {upcoming.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {job.enabled
-                  ? 'Für diesen Ausdruck steht kein weiterer Termin an.'
-                  : 'Pausiert — es ist kein Termin geplant.'}
+                  ? 'This expression has no upcoming run.'
+                  : 'Paused — no run is scheduled.'}
               </p>
             ) : (
               <ItemGroup className="gap-2">
@@ -439,25 +470,25 @@ export function CronDetailPage() {
           columns={3}
           items={[
             {
-              label: 'Wer führt aus',
+              label: 'Run as',
               value: agent ? agent.name + ' · ' + agent.title : CRON_JOB_KIND_LABEL[job.kind],
               icon: UserRoundIcon,
               ...(agent ? { to: '/org/agents/' + agent.id } : {}),
             },
-            { label: 'Projekt', value: project?.name ?? '', icon: Building2Icon },
+            { label: 'Project', value: project?.name ?? '', icon: Building2Icon },
             {
-              label: 'Gespräch',
+              label: 'Conversation',
               value: session?.title ?? '',
               icon: MessagesSquareIcon,
               ...(session ? { to: '/c/' + session.id } : {}),
             },
             {
-              label: 'Zugriff',
+              label: 'Permission',
               value: job.permission ? PERMISSION_LABEL[job.permission] : '',
               icon: ShieldIcon,
             },
             {
-              label: 'Angelegt von',
+              label: 'Created by',
               value: REQUESTER_LABEL[job.createdBy],
               icon: KeyRoundIcon,
             },
@@ -472,17 +503,16 @@ export function CronDetailPage() {
         idPrefix="laeufe"
         initialSorting={[{ id: 'startedAt', desc: true }]}
         pageSize={10}
-        rowLabel={{ singular: 'Lauf', plural: 'Läufen' }}
+        rowLabel={{ singular: 'Run', plural: 'runs' }}
         columnLabels={RUN_COLUMN_LABELS}
         // Fifty is the server's ceiling for one job's run list.
         capped={runs.length >= 50}
         empty={
           <EmptyState
             icon={HistoryIcon}
-            title="Noch nicht gelaufen"
-            description="Sobald dieser Zeitplan feuert — nach Plan oder von Hand — steht sein Lauf mit Bericht hier."
-            actionLabel="Jetzt ausführen"
-            onAction={() => void runNow()}
+            title="Not run yet"
+            description="When this schedule runs, automatically or manually, its run and report appear here."
+            {...(!scriptNeedsReview && !exhausted ? { actionLabel: 'Run now', onAction: () => void runNow() } : {})}
             variant="plain"
             size="sm"
           />
@@ -505,7 +535,7 @@ export function CronDetailPage() {
         footer={
           report?.assignmentId ? (
             <Button variant="outline" asChild>
-              <NavLink to={'/assignments/' + report.assignmentId}>Auftrag öffnen</NavLink>
+              <NavLink to={'/assignments/' + report.assignmentId}>Open assignment</NavLink>
             </Button>
           ) : undefined
         }
@@ -536,8 +566,8 @@ export function CronDetailPage() {
 const RUN_COLUMN_LABELS: Record<string, string> = {
   status: 'Status',
   startedAt: 'Start',
-  trigger: 'Auslöser',
-  duration: 'Dauer',
-  assignment: 'Auftrag',
-  session: 'Gespräch',
+  trigger: 'Trigger',
+  duration: 'Duration',
+  assignment: 'Assignment',
+  session: 'Conversation',
 };

@@ -46,6 +46,8 @@ export function resolveBinary(name: string): ResolvedBinary | null {
 }
 
 export interface SpawnOptions {
+  /** Keep the pipe open for CLI control-protocol requests. */
+  interactive?: boolean;
   args: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -106,7 +108,7 @@ export function spawnCli(binary: ResolvedBinary, options: SpawnOptions): SpawnHa
       // The child may exit before we finish writing; not fatal.
     });
     child.stdin.end(stdin, 'utf8');
-  } else {
+  } else if (!options.interactive) {
     child.stdin.end();
   }
 

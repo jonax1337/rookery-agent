@@ -75,7 +75,7 @@ export function AssistantMessage({
           <Text color={ui.faint}>{'  ' + formatDuration(durationMs)}</Text>
         ) : null}
         {usage ? <Text color={ui.faint}>{'  ' + turnCost(usage)}</Text> : null}
-        {aborted ? <Text color={ui.warn}>{'  abgebrochen'}</Text> : null}
+        {aborted ? <Text color={ui.warn}>{'  cancelled'}</Text> : null}
       </Box>
       <Box paddingLeft={GUTTER} flexDirection="column">
         <Markdown trailing={trailing}>{text}</Markdown>

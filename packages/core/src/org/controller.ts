@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
+import { readProfileExcerpt, searchProfile } from '../profile.js';
 import type {
   Agent,
   AgentEvent,
@@ -20,7 +21,7 @@ import type {
   TaskStatus,
 } from '../types.js';
 import { ASSISTANT_MEMORY_OWNER, EFFORT_LEVELS } from '../types.js';
-import { applyConfig } from '../config.js';
+import { agentWorkspace, applyConfig } from '../config.js';
 import type { Logger } from '../logger.js';
 import { silentLogger } from '../logger.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -160,7 +161,7 @@ export class OrgController extends EventEmitter {
     if (existing) return existing;
     return this.#store.org.createOrganization({
       name: (this.#config.assistantName || 'Rookery') + ' & Co.',
-      mission: 'Die Firma des persoenlichen Assistenten.',
+      mission: 'The personal assistant company.',
     });
   }
 
@@ -284,6 +285,14 @@ export class OrgController extends EventEmitter {
         };
       }
 
+      case 'read_profile': {
+        if (context.audience !== 'assistant') return fail('Only the assistant has this profile.');
+        return { text: readProfileExcerpt(this.#config, text('name'), args.offset === undefined ? 0 : Number(args.offset), args.limit === undefined ? 12000 : Number(args.limit)) };
+      }
+      case 'search_profile': {
+        if (context.audience !== 'assistant') return fail('Only the assistant has this profile.');
+        return { text: searchProfile(this.#config, text('query')) };
+      }
       case 'remember': {
         if (context.audience !== 'assistant') return fail('Only the assistant has this memory.');
         if (!text('content')) return fail('A memory needs content.');
@@ -437,7 +446,7 @@ export class OrgController extends EventEmitter {
         if (typeof args.enabled !== 'boolean') return fail('enabled must be true or false.');
         if (args.enabled && !state.installed) return fail(state.name + ' is not installed on this machine.');
         if (args.enabled && state.missingEnv.length) {
-          return fail(state.name + ' needs ' + state.missingEnv.join(', ') + ' first; the user sets that on the Werkzeuge page.');
+          return fail(state.name + ' needs ' + state.missingEnv.join(', ') + ' first; the user sets that on the Tools page.');
         }
         const audience = text('audience');
         const tools = withToolServer(this.#config, state.id, {
@@ -843,7 +852,7 @@ export class OrgController extends EventEmitter {
       const providerId = await this.#registry.resolveUsable(agent.provider ?? this.#config.defaultProvider);
       if (!providerId) return fail('No provider is logged in.', started);
 
-      const cwd = project?.path ?? this.#config.workspace;
+      const cwd = project?.path || agentWorkspace(this.#config, agent.id);
       if (!existsSync(cwd)) return fail('The project directory ' + cwd + ' does not exist.', started);
 
       finish({ status: 'running', provider: providerId, model: agent.model, startedAt: started });
@@ -1528,4 +1537,3 @@ export function describePlan(plan: TaskPlan, children: Task[]): string {
 function asPermission(value: string): PermissionLevel | undefined {
   return value === 'chat' || value === 'read' || value === 'write' || value === 'full' ? value : undefined;
 }
-

@@ -75,9 +75,9 @@ function makeDraft(config: TelegramGatewayConfig): TelegramGatewayConfig {
 
 /** Where the running channel got its token, in words. */
 const TOKEN_SOURCE_LABEL: Record<GatewayStatus['tokenSource'], string> = {
-  config: 'Hier eingetragen',
-  env: 'Umgebungsvariable TELEGRAM_BOT_TOKEN',
-  none: 'Noch keiner',
+  config: 'Saved here',
+  env: 'Environment variable TELEGRAM_BOT_TOKEN',
+  none: 'None yet',
 };
 
 export function GatewayDetailPage() {
@@ -132,12 +132,11 @@ export function GatewayDetailPage() {
     try {
       // The whole gateways object goes out, but PATCH merges deeply - the
       // config's other channels (once there are any) survive untouched.
-      await save({ gateways: { telegram: pending } });
-      touched.current = false;
+      if (!(await save({ gateways: { telegram: pending } }))) return;
+      if (draftRef.current === pending) touched.current = false;
       await refresh();
-      toast('Gespeichert');
     } catch (caught) {
-      reportFailure('Speichern', caught);
+      reportFailure('Save', caught);
     } finally {
       setSaving(false);
     }
@@ -149,9 +148,9 @@ export function GatewayDetailPage() {
       // A channel that cannot send (not running, no recipient) answers 400,
       // which surfaces here as a thrown `ApiError` - there is no `ok: false`.
       const result = await test('telegram');
-      toast('Testnachricht gesendet', { description: 'An ' + result.recipient + ' geschickt.' });
+      toast('Test message sent', { description: 'Sent to ' + result.recipient + '.' });
     } catch (caught) {
-      reportFailure('Testnachricht', caught);
+      reportFailure('Test message', caught);
     } finally {
       setTesting(false);
     }
@@ -162,11 +161,11 @@ export function GatewayDetailPage() {
     if (!trimmed) return;
     const parsed = Number(trimmed);
     if (!Number.isInteger(parsed) || parsed <= 0) {
-      setNewIdError('Nur eine positive, ganze Telegram-ID.');
+      setNewIdError('Enter a positive whole-number Telegram ID.');
       return;
     }
     if (draft?.allowedUserIds.includes(parsed)) {
-      setNewIdError('Diese ID steht schon in der Liste.');
+      setNewIdError('This ID is already in the list.');
       return;
     }
     // The first allowed id is what pairing mode was opened for, so it closes
@@ -201,24 +200,24 @@ export function GatewayDetailPage() {
 
   usePageMeta(
     {
-      breadcrumb: [{ label: 'Gateway', to: '/gateways' }, { label: gateway?.label ?? 'Gateway' }],
+      breadcrumb: [{ label: 'Gateways', to: '/gateways' }, { label: gateway?.label ?? 'Gateway' }],
       actions: gateway ? (
         <div className="flex items-center gap-2">
           {dirty ? (
             <Badge variant="outline" className="hidden font-normal text-muted-foreground sm:inline-flex">
-              Ungespeicherte Änderungen
+              Unsaved changes
             </Badge>
           ) : null}
           <Button type="button" variant="outline" size="sm" disabled={testing} onClick={() => void runTest()}>
-            {testing ? <Spinner aria-label="Wird gesendet" /> : <SendIcon data-icon="inline-start" />}
-            Testnachricht senden
+            {testing ? <Spinner aria-label="Sending" /> : <SendIcon data-icon="inline-start" />}
+            Send test message
           </Button>
           <Button type="button" variant="ghost" size="sm" disabled={!dirty || saving} onClick={discard}>
-            Verwerfen
+            Discard
           </Button>
           <Button type="submit" form={FORM_ID} size="sm" disabled={!dirty || saving}>
-            {saving ? <Spinner aria-label="Wird gespeichert" /> : null}
-            Speichern
+            {saving ? <Spinner aria-label="Saving" /> : null}
+            Save
           </Button>
         </div>
       ) : undefined,
@@ -233,9 +232,9 @@ export function GatewayDetailPage() {
       <PageBody width="3xl">
         <EmptyState
           icon={RadioTowerIcon}
-          title="Dieses Gateway gibt es nicht"
-          description="Der Eintrag wurde entfernt, oder die Adresse stimmt nicht."
-          actionLabel="Zu den Gateways"
+          title="Gateway not found"
+          description="The entry was removed or the address is incorrect."
+          actionLabel="Back to gateways"
           actionTo="/gateways"
         />
       </PageBody>
@@ -265,9 +264,9 @@ export function GatewayDetailPage() {
         ) : (
           <EmptyState
             icon={RadioTowerIcon}
-            title="Diesen Kanal gibt es nicht"
-            description="Der Eintrag wurde entfernt, oder die Adresse stimmt nicht."
-            actionLabel="Zu den Gateways"
+            title="Gateway not found"
+            description="The entry was removed or the address is incorrect."
+            actionLabel="Back to gateways"
             actionTo="/gateways"
           />
         )}
@@ -292,9 +291,7 @@ export function GatewayDetailPage() {
         <CardHeader>
           <CardTitle>Status</CardTitle>
           <CardDescription>
-            Der Bot-Token wird unten eingetragen und gilt sofort - ein Neustart ist nicht nötig.
-            Gespeichert wird er in <code>~/.rookery/config.json</code>, ausgeliefert wird er nie:
-            diese Seite erfährt nur, <em>ob</em> einer gesetzt ist. Ein neuer Bot entsteht bei{' '}
+            Save the bot token below to apply it without restarting. It is stored in <code>~/.rookery/config.json</code>, but is never returned to this page. It only reports <em>whether</em> a token is set. Create a bot with{' '}
             <a
               href="https://t.me/BotFather"
               target="_blank"
@@ -310,13 +307,13 @@ export function GatewayDetailPage() {
           <MetaList
             columns={2}
             items={[
-              { label: 'Token vorhanden', value: gateway.configured ? 'Ja' : 'Nein' },
-              { label: 'Quelle', value: TOKEN_SOURCE_LABEL[gateway.tokenSource] },
-              { label: 'Läuft', value: gateway.running ? 'Ja' : 'Nein' },
-              { label: 'Bot-Name', value: gateway.botUsername ? '@' + gateway.botUsername : '' },
-              { label: 'Letzter Fehler', value: gateway.lastError },
+              { label: 'Token configured', value: gateway.configured ? 'Yes' : 'No' },
+              { label: 'Source', value: TOKEN_SOURCE_LABEL[gateway.tokenSource] },
+              { label: 'Running', value: gateway.running ? 'Yes' : 'No' },
+              { label: 'Bot name', value: gateway.botUsername ? '@' + gateway.botUsername : '' },
+              { label: 'Last error', value: gateway.lastError },
               {
-                label: 'Letztes Ereignis',
+                label: 'Last event',
                 value: gateway.lastEventAt ? formatDateTime(gateway.lastEventAt) : '',
               },
             ]}
@@ -327,7 +324,7 @@ export function GatewayDetailPage() {
       {draft === null ? (
         <Card>
           <CardHeader>
-            <CardTitle>Einstellungen</CardTitle>
+            <CardTitle>Settings</CardTitle>
           </CardHeader>
           <CardContent>
             <FormFieldsSkeleton fields={5} />
@@ -338,15 +335,15 @@ export function GatewayDetailPage() {
           formId={FORM_ID}
           showActions={false}
           onSubmit={submit}
-          title="Einstellungen"
-          description="Wird mit „Speichern“ geschrieben und gilt sofort."
+          title="Settings"
+          description="Save to apply changes immediately."
         >
           <FieldSet>
             <Field orientation="horizontal">
               <FieldContent>
-                <FieldLabel htmlFor="gw-enabled">Kanal an</FieldLabel>
+                <FieldLabel htmlFor="gw-enabled">Gateway enabled</FieldLabel>
                 <FieldDescription>
-                  Aus schaltet den Bot ab, unabhängig davon, wie viele IDs erlaubt sind.
+                  When off, the bot stops regardless of how many IDs are allowed.
                 </FieldDescription>
               </FieldContent>
               <Switch
@@ -358,7 +355,7 @@ export function GatewayDetailPage() {
           </FieldSet>
 
           <Field>
-            <FieldLabel htmlFor="gw-token">Bot-Token</FieldLabel>
+            <FieldLabel htmlFor="gw-token">Bot token</FieldLabel>
             <Input
               id="gw-token"
               type="password"
@@ -366,20 +363,17 @@ export function GatewayDetailPage() {
               spellCheck={false}
               disabled={gateway.tokenSource === 'env'}
               value={draft.token ?? ''}
-              placeholder={gateway.configured ? 'Gesetzt - leer lassen, um ihn zu behalten' : 'Von @BotFather'}
+              placeholder={gateway.configured ? 'Configured — leave empty to keep it' : 'From @BotFather'}
               onChange={(event) => set({ token: event.target.value })}
             />
             <FieldDescription>
               {gateway.tokenSource === 'env' ? (
                 <>
-                  Kommt aus der Umgebungsvariable <code>TELEGRAM_BOT_TOKEN</code> und hat hier
-                  Vorrang. Zum Bearbeiten an dieser Stelle die Variable entfernen und den Server
-                  neu starten.
+                  Provided by environment variable <code>TELEGRAM_BOT_TOKEN</code> which takes precedence here. Remove the variable and restart the server to edit the token here.
                 </>
               ) : (
                 <>
-                  Das Feld bleibt beim Laden leer - der gespeicherte Token wird nie zurückgegeben.
-                  Leer lassen behält ihn, ein neuer Wert ersetzt ihn.
+                  The saved token is never returned. Leave this field empty to keep it, or enter a new value to replace it.
                   {gateway.configured ? (
                     <>
                       {' '}
@@ -388,9 +382,9 @@ export function GatewayDetailPage() {
                         className="underline underline-offset-2 hover:text-destructive"
                         onClick={() => set({ token: null })}
                       >
-                        Token entfernen
+                        Remove token
                       </button>
-                      {draft.token === null ? ' - wird beim Speichern gelöscht.' : null}
+                      {draft.token === null ? ' — removed when you save.' : null}
                     </>
                   ) : null}
                 </>
@@ -399,8 +393,8 @@ export function GatewayDetailPage() {
           </Field>
 
           <FieldSet>
-            <FieldLegend variant="label">Zugriff</FieldLegend>
-            <FieldDescription>Was Turns aus diesem Kanal dürfen.</FieldDescription>
+            <FieldLegend variant="label">Permissions</FieldLegend>
+            <FieldDescription>Permissions for turns from this gateway.</FieldDescription>
             <RadioGroup
               value={draft.permission}
               onValueChange={(value) => set({ permission: value as PermissionLevel })}
@@ -412,7 +406,7 @@ export function GatewayDetailPage() {
                       <FieldTitle>{PERMISSION_LABEL[level]}</FieldTitle>
                       <FieldDescription>{PERMISSION_HINT[level]}</FieldDescription>
                     </FieldContent>
-                    <RadioGroupItem value={level} id={'gw-permission-' + level} />
+                    <RadioGroupItem value={level} id={'gw-permission-' + level} aria-label={PERMISSION_LABEL[level]} />
                   </Field>
                 </FieldLabel>
               ))}
@@ -420,22 +414,20 @@ export function GatewayDetailPage() {
           </FieldSet>
 
           <Field>
-            <FieldLabel htmlFor="gw-model">Modell</FieldLabel>
+            <FieldLabel htmlFor="gw-model">Model</FieldLabel>
             <Input
               id="gw-model"
               value={draft.model ?? ''}
-              placeholder="Standard des Assistenten"
+              placeholder="Assistant default"
               onChange={(event) => set({ model: event.target.value })}
             />
-            <FieldDescription>Leer bedeutet: das Modell, das sonst gilt.</FieldDescription>
+            <FieldDescription>Leave empty to use the default model.</FieldDescription>
           </Field>
 
           <FieldSet>
-            <FieldLegend variant="label">Erlaubte IDs</FieldLegend>
+            <FieldLegend variant="label">Allowed controller IDs</FieldLegend>
             <FieldDescription>
-              Eine leere Liste schaltet den Kanal aus - es gibt kein „alle erlauben“. Die eigene
-              ID bekommt man, indem man dem Bot <code>/id</code> schreibt; dafür ist beim ersten
-              Mal die Kopplung unten nötig.
+              An empty list allows no control access. To find your own ID, enable the gateway and pairing, save, then send <code>/id</code> to the bot in a private chat.
             </FieldDescription>
             {draft.allowedUserIds.length > 0 ? (
               <div className="flex flex-wrap gap-2">
@@ -444,7 +436,7 @@ export function GatewayDetailPage() {
                     {value}
                     <button
                       type="button"
-                      aria-label={value + ' entfernen'}
+                      aria-label={'Remove ' + value}
                       className="rounded-full hover:text-destructive"
                       onClick={() => removeAllowedId(value)}
                     >
@@ -458,8 +450,9 @@ export function GatewayDetailPage() {
               <InputGroup>
                 <InputGroupInput
                   id="gw-new-id"
+                  aria-label="Controller user ID"
                   inputMode="numeric"
-                  placeholder="Telegram-ID, z. B. 123456789"
+                  placeholder="Telegram ID, e.g. 123456789"
                   value={newId}
                   onChange={(event) => {
                     setNewId(event.target.value);
@@ -475,7 +468,7 @@ export function GatewayDetailPage() {
                 <InputGroupAddon align="inline-end">
                   <InputGroupButton onClick={addAllowedId}>
                     <PlusIcon data-icon="inline-start" />
-                    Hinzufügen
+                    Add
                   </InputGroupButton>
                 </InputGroupAddon>
               </InputGroup>
@@ -484,13 +477,9 @@ export function GatewayDetailPage() {
 
             <Field orientation="horizontal">
               <FieldContent>
-                <FieldLabel htmlFor="gw-pairing">Kopplung</FieldLabel>
+                <FieldLabel htmlFor="gw-pairing">Pairing</FieldLabel>
                 <FieldDescription>
-                  Lässt den Bot mit leerer Liste laufen, damit <code>/id</code> antworten kann -
-                  sonst wartet er auf eine ID, die man nur von ihm bekommt. Es antwortet
-                  ausschließlich <code>/id</code>, und zwar nur mit der Nummer des Absenders;
-                  jede andere Nachricht fällt durch. Beim Hinzufügen der ersten ID schaltet sich
-                  die Kopplung selbst ab.
+                  Allows an enabled gateway to run with an empty allowlist so <code>/id</code> can reply. Only <code>/id</code> replies with the sender ID; all other messages are rejected. Adding the first allowed ID turns pairing off.
                 </FieldDescription>
               </FieldContent>
               <Switch
@@ -504,13 +493,13 @@ export function GatewayDetailPage() {
           <FieldSet>
             <FieldLegend variant="label">Push</FieldLegend>
             <FieldDescription>
-              Was der Assistent von sich aus schickt, ohne dass gerade ein Gespräch läuft.
+              Notifications the assistant sends outside an active conversation.
             </FieldDescription>
 
             <Field orientation="horizontal">
               <FieldContent>
-                <FieldLabel htmlFor="gw-push-enabled">Push an</FieldLabel>
-                <FieldDescription>Schaltet alle Arten unten mit ab, wenn aus.</FieldDescription>
+                <FieldLabel htmlFor="gw-push-enabled">Push enabled</FieldLabel>
+                <FieldDescription>When off, all notification types below are disabled.</FieldDescription>
               </FieldContent>
               <Switch
                 id="gw-push-enabled"
@@ -521,7 +510,7 @@ export function GatewayDetailPage() {
 
             <Field orientation="horizontal">
               <FieldContent>
-                <FieldLabel htmlFor="gw-push-assignments">Aufträge</FieldLabel>
+                <FieldLabel htmlFor="gw-push-assignments">Assignments</FieldLabel>
               </FieldContent>
               <Switch
                 id="gw-push-assignments"
@@ -531,7 +520,7 @@ export function GatewayDetailPage() {
             </Field>
             <Field orientation="horizontal">
               <FieldContent>
-                <FieldLabel htmlFor="gw-push-cron">Zeitpläne</FieldLabel>
+                <FieldLabel htmlFor="gw-push-cron">Schedules</FieldLabel>
               </FieldContent>
               <Switch
                 id="gw-push-cron"
@@ -541,7 +530,7 @@ export function GatewayDetailPage() {
             </Field>
             <Field orientation="horizontal">
               <FieldContent>
-                <FieldLabel htmlFor="gw-push-sleep">Schlaf</FieldLabel>
+                <FieldLabel htmlFor="gw-push-sleep">Sleep</FieldLabel>
               </FieldContent>
               <Switch
                 id="gw-push-sleep"
@@ -551,7 +540,7 @@ export function GatewayDetailPage() {
             </Field>
             <Field orientation="horizontal">
               <FieldContent>
-                <FieldLabel htmlFor="gw-push-tasks">Aufgaben</FieldLabel>
+                <FieldLabel htmlFor="gw-push-tasks">Tasks</FieldLabel>
               </FieldContent>
               <Switch
                 id="gw-push-tasks"
@@ -562,7 +551,7 @@ export function GatewayDetailPage() {
 
             <div className="grid gap-4 @md/main:grid-cols-2">
               <Field>
-                <FieldLabel htmlFor="gw-quiet-from">Ruhezeit von</FieldLabel>
+                <FieldLabel htmlFor="gw-quiet-from">Quiet hours from</FieldLabel>
                 <Input
                   id="gw-quiet-from"
                   type="time"
@@ -571,7 +560,7 @@ export function GatewayDetailPage() {
                 />
               </Field>
               <Field>
-                <FieldLabel htmlFor="gw-quiet-until">Ruhezeit bis</FieldLabel>
+                <FieldLabel htmlFor="gw-quiet-until">Quiet hours until</FieldLabel>
                 <Input
                   id="gw-quiet-until"
                   type="time"
@@ -580,22 +569,22 @@ export function GatewayDetailPage() {
                 />
               </Field>
             </div>
-            <FieldDescription>Leer bei beidem heißt: keine Ruhezeit.</FieldDescription>
+            <FieldDescription>Leave both empty to disable quiet hours.</FieldDescription>
 
             <NumberField
               id="gw-max-per-hour"
-              label="Obergrenze je Stunde"
+              label="Hourly limit"
               value={draft.push.maxPerHour}
               min={1}
               max={1000}
-              suffix="Nachrichten"
+              suffix="messages"
               onChange={(value) => setPush({ maxPerHour: value })}
             />
 
             <Field>
-              <FieldLabel>Empfänger</FieldLabel>
+              <FieldLabel>Recipients</FieldLabel>
               <FieldDescription>
-                Teilmenge der erlaubten IDs. Leer heißt: die erste erlaubte ID.
+                Choose from the allowed IDs. Leave empty to use the first allowed ID.
               </FieldDescription>
               {draft.allowedUserIds.length > 0 ? (
                 <div className="flex flex-col gap-2">
@@ -616,7 +605,7 @@ export function GatewayDetailPage() {
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  Erst oben eine ID erlauben, dann lässt sich hier ein Empfänger wählen.
+                  Add an allowed ID above before selecting a recipient.
                 </p>
               )}
             </Field>
@@ -625,9 +614,9 @@ export function GatewayDetailPage() {
       )}
 
       <p className="text-xs text-muted-foreground">
-        Alle Gateways liegen unter{' '}
+        View all gateways under{' '}
         <NavLink to="/gateways" className="underline underline-offset-2">
-          Gateway
+          Gateways
         </NavLink>
         .
       </p>
@@ -701,7 +690,7 @@ function NumberField({
       </InputGroup>
       {description ? <FieldDescription>{description}</FieldDescription> : null}
       <FieldError>
-        {invalid ? 'Bitte eine ganze Zahl zwischen ' + min + ' und ' + max + '.' : null}
+        {invalid ? 'Enter a whole number between ' + min + ' and ' + max + '.' : null}
       </FieldError>
     </Field>
   );

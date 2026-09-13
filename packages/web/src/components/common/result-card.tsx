@@ -22,7 +22,7 @@ import {
 export function ResultCard({
   text,
   description,
-  title = 'Ergebnis',
+  title = 'Result',
 }: {
   text: string;
   /** One line: where this text came from. */
@@ -39,7 +39,7 @@ export function ResultCard({
         <CardAction>
           <Button variant="outline" size="sm" onClick={() => copyToClipboard(text)}>
             {isCopied ? <CheckIcon /> : <CopyIcon />}
-            {isCopied ? 'Kopiert' : 'Kopieren'}
+            {isCopied ? 'Copied' : 'Copy'}
           </Button>
         </CardAction>
       </CardHeader>

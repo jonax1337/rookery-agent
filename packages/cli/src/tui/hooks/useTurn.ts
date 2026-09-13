@@ -49,7 +49,7 @@ export interface LiveTurn {
   /** Tool calls and side-channel notes, in the order they happened. */
   activities: Activity[];
   assignments: AssignmentsState | null;
-  /** Status-bar verb: 'denkt' or 'delegiert'. */
+  /** Status-bar verb: 'thinking' or 'delegating'. */
   label: string;
   startedAt: number | null;
 }
@@ -87,7 +87,7 @@ const IDLE: LiveTurn = {
   text: '',
   activities: [],
   assignments: null,
-  label: 'denkt',
+  label: 'thinking',
   startedAt: null,
 };
 
@@ -165,7 +165,7 @@ export function useTurn({
         text: '',
         activities: [],
         assignments: null,
-        label: request.kind === 'assign' ? 'delegiert' : 'denkt',
+        label: request.kind === 'assign' ? 'delegating' : 'thinking',
         startedAt: Date.now(),
       };
       flushNow();
@@ -291,8 +291,8 @@ export function applyEvent(
     }
 
     case 'memory': {
-      const word = event.count === 1 ? 'Erinnerung' : 'Erinnerungen';
-      const verb = event.action === 'recalled' ? 'abgerufen' : 'gespeichert';
+      const word = event.count === 1 ? 'memory' : 'memories';
+      const verb = event.action === 'recalled' ? 'recalled' : 'stored';
       pushActivity(glyph.memory, event.count + ' ' + word + ' ' + verb);
       return;
     }
@@ -322,8 +322,8 @@ export function applyEvent(
       // The status bar says what the turn is actually doing: as long as an
       // agent is working somewhere, the assistant is delegating, not thinking.
       live.label = Object.values(state.byId).some((entry) => entry.status === 'running')
-        ? 'delegiert'
-        : 'denkt';
+        ? 'delegating'
+        : 'thinking';
       return;
     }
 
@@ -504,7 +504,7 @@ function toEntries(
       // voice; a direct chat is the agent speaking for itself.
       speaker:
         request.kind === 'assign' ? request.agent : session.counterpart || session.assistantName,
-      text: text || '(keine Ausgabe)',
+      text: text || '(no output)',
       provider: session.provider,
       durationMs,
       ...(usage ? { usage } : {}),

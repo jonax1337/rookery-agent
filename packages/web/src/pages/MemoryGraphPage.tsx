@@ -15,7 +15,6 @@ import { EmptyState } from '@/components/common/empty-state';
 import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ButtonGroup, ButtonGroupSeparator } from '@/components/ui/button-group';
 import { Field, FieldLabel } from '@/components/ui/field';
 import { Item, ItemContent, ItemGroup, ItemMedia, ItemTitle } from '@/components/ui/item';
 import { Spinner } from '@/components/ui/spinner';
@@ -69,46 +68,44 @@ export function MemoryGraphPage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 px-4 lg:px-6">
       <div className="flex flex-wrap items-center gap-2">
-        <ButtonGroup>
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           <EntityCombobox
             id="netz-thema"
             options={entityOptions}
             value={graph.entity || null}
             onChange={(value) => graph.setEntity(value ?? '')}
-            placeholder="Alle Themen"
-            emptyLabel="Kein Thema gefunden"
-            className="w-56"
+            placeholder="All topics"
+            emptyLabel="No topic found"
+            className="w-full sm:w-56"
           />
-          <ButtonGroupSeparator />
-          <Field orientation="horizontal" className="px-3">
+          <Field orientation="horizontal" className="w-auto">
             <Switch
               id="netz-schlafende"
               checked={graph.includeDormant}
               onCheckedChange={graph.setIncludeDormant}
             />
             <FieldLabel htmlFor="netz-schlafende" className="font-normal whitespace-nowrap">
-              Schlafende zeigen
+              Show sleeping
             </FieldLabel>
           </Field>
-          <ButtonGroupSeparator />
           <Button
             variant="outline"
             onClick={() => sceneRef.current?.fit()}
             disabled={unavailable || empty}
           >
             <MaximizeIcon data-icon="inline-start" />
-            Einpassen
+            Fit to view
           </Button>
-        </ButtonGroup>
+        </div>
 
         {data ? (
           <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground tabular-nums">
-            <span>{formatNumber(data.memories.length)} Erinnerungen</span>
+            <span>{formatNumber(data.memories.length)} Memories</span>
             <span aria-hidden="true">·</span>
-            <span>{formatNumber(data.entities.length)} Themen</span>
+            <span>{formatNumber(data.entities.length)} topics</span>
             <span aria-hidden="true">·</span>
-            <span>{formatNumber(data.edges.length)} Verbindungen</span>
-            {data.truncated ? <Badge variant="outline">gekürzt</Badge> : null}
+            <span>{formatNumber(data.edges.length)} Connections</span>
+            {data.truncated ? <Badge variant="outline">truncated</Badge> : null}
           </div>
         ) : null}
       </div>
@@ -120,16 +117,16 @@ export function MemoryGraphPage() {
       */}
       <div
         ref={stageRef}
-        className="graph-stage relative aspect-video min-h-[480px] w-full overflow-hidden rounded-lg border bg-card"
+        className="graph-stage relative aspect-video min-h-80 w-full overflow-hidden rounded-lg border bg-card sm:min-h-[480px]"
       >
         {unavailable ? (
           <div className="absolute inset-0 flex items-center justify-center p-6">
             <EmptyState
               icon={MonitorXIcon}
-              title="Das Netz lässt sich hier nicht zeichnen"
-              description="Dieses Fenster braucht WebGL. Dieselben Erinnerungen stehen vollständig in der Liste."
-              actionLabel="Zu den Erinnerungen"
-              actionTo="/memory"
+              title="The network cannot be rendered here"
+              description="This view requires WebGL. The same memories are available in full in the list."
+              actionLabel="View memories"
+              actionTo="/memory/memories"
               variant="plain"
             />
           </div>
@@ -147,7 +144,7 @@ export function MemoryGraphPage() {
             {graph.loading ? (
               <div className="pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2 rounded-md bg-background/80 px-2 py-1 text-xs text-muted-foreground backdrop-blur">
                 <Spinner aria-hidden="true" />
-                lädt
+                loading
               </div>
             ) : null}
 
@@ -155,9 +152,9 @@ export function MemoryGraphPage() {
               <div className="absolute inset-0 flex items-center justify-center p-6">
                 <EmptyState
                   icon={MonitorXIcon}
-                  title="Noch nichts im Netz"
-                  description="Sobald Gespräche etwas Dauerhaftes hinterlassen, spannt sich hier ein Netz auf. Der Traumschlaf zieht die Verbindungen."
-                  actionLabel="Zu den Nächten"
+                  title="Nothing in the network yet"
+                  description="Once conversations leave something lasting behind, a network will take shape here. Dream sleep draws the connections."
+                  actionLabel="View nights"
                   actionTo="/memory/sleep"
                   variant="plain"
                 />
@@ -176,11 +173,11 @@ export function MemoryGraphPage() {
                 <Button size="sm" asChild>
                   <Link to={'/memory?erinnerung=' + picked.id}>
                     <SquareArrowOutUpRightIcon data-icon="inline-start" />
-                    Öffnen
+                    Open
                   </Link>
                 </Button>
                 <Button variant="ghost" size="sm" onClick={() => setPicked(null)}>
-                  Schließen
+                  Close
                 </Button>
               </div>
             ) : null}
@@ -235,7 +232,7 @@ function Legend({ palette }: { palette: ReturnType<typeof useGraphPalette> }) {
       <Item size="xs" className="ml-auto w-auto px-0">
         <ItemContent>
           <ItemTitle className="text-xs font-normal text-muted-foreground">
-            Ziehen dreht, Rad zoomt, Klick wählt aus
+            Drag to rotate, scroll to zoom, click to select
           </ItemTitle>
         </ItemContent>
       </Item>

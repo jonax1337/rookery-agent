@@ -66,7 +66,7 @@ import { Skeleton } from '@/components/ui/skeleton';
  *
  * What is missing is missing on the server: `GET /api/org` calls
  * `listAgents(orgId)`, which filters `archived = 0`, and no endpoint hands
- * archived agents over. So there is no "Archivierte zeigen" switch and no
+ * archived agents over. So there is no "Archived zeigen" switch and no
  * archived count - archiving simply removes the row, and the confirmation
  * says so.
  */
@@ -83,13 +83,13 @@ const column = createRookeryColumnHelper<Agent>();
 
 const COLUMN_LABELS: Record<string, string> = {
   name: 'Name',
-  title: 'Titel',
-  slug: 'Kürzel',
+  title: 'Title',
+  slug: 'Slug',
   team: 'Team',
-  manager: 'Vorgesetzter',
-  provider: 'Anbieter',
-  permission: 'Zugriff',
-  actions: 'Aktionen',
+  manager: 'Manager',
+  provider: 'Provider',
+  permission: 'Permission',
+  actions: 'Actions',
 };
 
 const PERMISSIONS: readonly PermissionLevel[] = ['chat', 'read', 'write', 'full'];
@@ -136,21 +136,21 @@ export function OrgAgentsPage() {
 
       const parts = [
         agent.name +
-          ' nimmt keine Aufträge mehr an und verschwindet aus dieser Liste — der Server ' +
-          'gibt archivierte Agenten nicht mehr heraus.',
-        teamName ? 'Das Team ' + teamName + ' verliert damit ein Mitglied.' : null,
+          ' will no longer accept assignments and will disappear from this list — the server ' +
+          'no longer returns archived agents.',
+        teamName ? 'The team ' + teamName + ' will lose a member.' : null,
         reports > 0
           ? formatNumber(reports) +
-            (reports === 1 ? ' unterstellter Agent berichtet' : ' unterstellte Agenten berichten') +
-            ' danach an niemanden mehr.'
+            (reports === 1 ? ' direct report will report' : ' direct reports will report') +
+            ' to no one afterward.'
           : null,
-        'Aufträge und Erinnerungen bleiben erhalten.',
+        'Assignments and memories will remain.',
       ].filter(Boolean);
 
       const ok = await confirm({
-        title: agent.name + ' archivieren?',
+        title: agent.name + ' archive?',
         description: parts.join(' '),
-        confirmLabel: 'Archivieren',
+        confirmLabel: 'Archive',
         destructive: true,
         icon: ArchiveIcon,
       });
@@ -159,9 +159,9 @@ export function OrgAgentsPage() {
       try {
         await api.updateAgent(agent.id, { archived: true });
         await org.refresh();
-        toast(agent.name + ' archiviert');
+        toast(agent.name + ' archived');
       } catch (caught) {
-        reportFailure('Archivieren', caught);
+        reportFailure('Archive', caught);
       }
     },
     [confirm, org],
@@ -172,7 +172,7 @@ export function OrgAgentsPage() {
   const columns = useMemo(
     () =>
       column.columns([
-        selectionColumn<Agent>({ rowLabel: (agent) => agent.name + ' wählen' }),
+        selectionColumn<Agent>({ rowLabel: (agent) => agent.name + ' selected' }),
 
         column.accessor('name', {
           header: ({ column: head }) => <DataTableColumnHeader column={head} title="Name" />,
@@ -188,14 +188,14 @@ export function OrgAgentsPage() {
         }),
 
         column.accessor('title', {
-          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Titel" />,
+          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Title" />,
           cell: ({ row }) => (
             <span className="line-clamp-1 text-muted-foreground">{row.original.title}</span>
           ),
         }),
 
         column.accessor('slug', {
-          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Kürzel" />,
+          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Slug" />,
           cell: ({ row }) => (
             <Badge variant="outline" className="font-mono font-normal">
               {row.original.slug}
@@ -212,7 +212,7 @@ export function OrgAgentsPage() {
             header: ({ column: head }) => <DataTableColumnHeader column={head} title="Team" />,
             cell: ({ row }) => {
               const entry = org.teams.find((candidate) => candidate.id === row.original.teamId);
-              if (!entry) return <span className="text-muted-foreground">Ohne Team</span>;
+              if (!entry) return <span className="text-muted-foreground">No team</span>;
               return (
                 <NavLink to={'/org/agents?team=' + entry.id} className="hover:underline">
                   {entry.name}
@@ -227,11 +227,11 @@ export function OrgAgentsPage() {
           {
             id: 'manager',
             header: ({ column: head }) => (
-              <DataTableColumnHeader column={head} title="Vorgesetzter" />
+              <DataTableColumnHeader column={head} title="Manager" />
             ),
             cell: ({ row }) => {
               const manager = org.agentById(row.original.managerId);
-              if (!manager) return <span className="text-muted-foreground">Der Assistent</span>;
+              if (!manager) return <span className="text-muted-foreground">The assistant</span>;
               return (
                 <NavLink to={'/org/agents/' + manager.id} className="hover:underline">
                   {manager.name}
@@ -243,10 +243,10 @@ export function OrgAgentsPage() {
 
         column.accessor((agent) => agent.provider ?? '', {
           id: 'provider',
-          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Anbieter" />,
+          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Provider" />,
           cell: ({ row }) => (
             <ProviderCell
-              fallback="Standard"
+              fallback="Default"
               {...(row.original.provider ? { provider: row.original.provider } : {})}
               {...(row.original.model ? { model: row.original.model } : {})}
             />
@@ -255,41 +255,41 @@ export function OrgAgentsPage() {
 
         column.accessor((agent) => agent.permission ?? '', {
           id: 'permission',
-          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Zugriff" />,
+          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Permission" />,
           cell: ({ row }) =>
             row.original.permission ? (
               <Badge variant="outline" className="font-normal">
                 {PERMISSION_LABEL[row.original.permission]}
               </Badge>
             ) : (
-              <span className="text-muted-foreground">Vorgabe</span>
+              <span className="text-muted-foreground">Default</span>
             ),
         }),
 
         actionsColumn<Agent>((agent) => (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton label={'Aktionen für ' + agent.name} />
+              <RowMenuButton label={'Actions for ' + agent.name} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52">
               <DropdownMenuItem onSelect={() => void navigate('/org/agents/' + agent.id)}>
                 <SquareArrowOutUpRightIcon />
-                Öffnen
+                Open
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
                 <NavLink to={'/org/agents/' + agent.id + '/edit'}>
                   <PencilIcon />
-                  Bearbeiten
+                  Edit
                 </NavLink>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => chooseCounterpart(agent.id)}>
                 <MessagesSquareIcon />
-                Chat mit {shorten(agent.name, 18)}
+                Chat with {shorten(agent.name, 18)}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => void archive(agent)}>
                 <ArchiveIcon />
-                Archivieren
+                Archive
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -333,11 +333,11 @@ export function OrgAgentsPage() {
         searchable
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Agenten durchsuchen"
+        searchPlaceholder="Search agents"
         searchText={(agent) => agent.name + ' ' + agent.title + ' ' + agent.slug}
         columnLabels={COLUMN_LABELS}
         initialSorting={[{ id: 'name', desc: false }]}
-        rowLabel={{ singular: 'Agent', plural: 'Agenten' }}
+        rowLabel={{ singular: 'Agent', plural: 'Agents' }}
         loading={org.loading && org.agents.length === 0}
         error={org.error ? <ServerOffline onRetry={() => void org.refresh()} /> : undefined}
         filters={
@@ -348,17 +348,17 @@ export function OrgAgentsPage() {
               value={team}
               onChange={setTeam}
               options={[
-                { value: NO_TEAM, label: 'Ohne Team' },
+                { value: NO_TEAM, label: 'No team' },
                 ...org.teams.map((entry) => ({ value: entry.id, label: entry.name })),
               ]}
             />
             <FilterCombobox
-              label="Zugriff"
-              placeholder="Zugriff"
+              label="Permission"
+              placeholder="Permission"
               value={permission}
               onChange={setPermission}
               options={[
-                { value: INHERITED, label: 'Vorgabe' },
+                { value: INHERITED, label: 'Default' },
                 ...PERMISSIONS.map((level) => ({
                   value: level,
                   label: PERMISSION_LABEL[level],
@@ -374,15 +374,15 @@ export function OrgAgentsPage() {
             onClick={() =>
               void bulk.run({
                 rows: selected,
-                noun: { singular: 'Agent', plural: 'Agenten' },
+                noun: { singular: 'Agent', plural: 'Agents' },
                 nameOf: (agent) => agent.name,
-                verb: 'archivieren',
-                done: 'archiviert',
-                confirmLabel: 'Archivieren',
+                verb: 'archive',
+                done: 'archived',
+                confirmLabel: 'Archive',
                 icon: ArchiveIcon,
                 description:
-                  'Sie nehmen keine Aufträge mehr an und verschwinden aus dieser Liste. ' +
-                  'Aufträge und Erinnerungen bleiben erhalten.',
+                  'They will no longer accept assignments and will disappear from this list. ' +
+                  'Assignments and memories will remain.',
                 run: (agent) => api.updateAgent(agent.id, { archived: true }),
                 after: org.refresh,
                 clear,
@@ -390,7 +390,7 @@ export function OrgAgentsPage() {
             }
           >
             <ArchiveIcon data-icon="inline-start" />
-            Archivieren
+            Archive
           </Button>
         )}
         empty={
@@ -409,9 +409,9 @@ export function OrgAgentsPage() {
           ) : (
             <EmptyState
               icon={UserRoundIcon}
-              title="Noch niemand eingestellt"
-              description="Ohne Agenten arbeitet der Assistent allein. Ein Agent ist ein eigener Prozess mit eigenen Anweisungen, eigenem Gedächtnis und eigener Zugriffsstufe."
-              actionLabel="Agent einstellen"
+              title="No agents hired yet"
+              description="Without agents, the assistant works alone. An agent is a separate process with its own instructions, Memory, and permission level."
+              actionLabel="Hire agent"
               actionTo="/org/agents/new"
               variant="plain"
             />
@@ -432,7 +432,7 @@ export function OrgAgentsPage() {
       {filtered && rows.length > 0 ? (
         <div className="px-4 lg:px-6">
           <p className="text-xs text-muted-foreground">
-            Gefiltert aus {formatNumber(org.agents.length)} aktiven Agenten.{' '}
+            Filtered from {formatNumber(org.agents.length)} active agents.{' '}
             <button
               type="button"
               className="underline underline-offset-2"
@@ -441,7 +441,7 @@ export function OrgAgentsPage() {
                 setPermission(null);
               }}
             >
-              Filter aufheben
+              Clear filter
             </button>
           </p>
         </div>
@@ -515,7 +515,7 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
       footer={
         agent ? (
           <Button asChild>
-            <NavLink to={'/org/agents/' + agent.id}>Agent öffnen</NavLink>
+            <NavLink to={'/org/agents/' + agent.id}>Open agent</NavLink>
           </Button>
         ) : null
       }
@@ -523,13 +523,13 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
       {agent ? (
         <>
           <div>
-            <h3 className="mb-2 text-sm font-medium">Anweisungen</h3>
+            <h3 className="mb-2 text-sm font-medium">Instructions</h3>
             {instructions === '' ? (
               <EmptyState
                 icon={PencilIcon}
-                title="Keine eigenen Anweisungen"
-                description={agent.name + ' arbeitet nur mit dem Auftragstext.'}
-                actionLabel="Bearbeiten"
+                title="No custom instructions"
+                description={agent.name + ' works only from the assignment text.'}
+                actionLabel="Edit"
                 actionTo={'/org/agents/' + agent.id + '/edit'}
                 variant="plain"
                 size="sm"
@@ -543,7 +543,7 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
                 {/* A fold, not a truncation: the whole text stays one click away. */}
                 <Accordion type="single" collapsible>
                   <AccordionItem value="full" className="border-b-0">
-                    <AccordionTrigger>Ganzen Text zeigen</AccordionTrigger>
+                    <AccordionTrigger>Show full text</AccordionTrigger>
                     <AccordionContent>
                       <ResultMarkdown text={instructions} />
                     </AccordionContent>
@@ -556,25 +556,25 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
           <MetaList
             columns={1}
             items={[
-              { label: 'Kürzel', value: agent.slug, mono: true },
+              { label: 'Slug', value: agent.slug, mono: true },
               {
                 label: 'Team',
-                value: teamName ?? 'Ohne Team',
+                value: teamName ?? 'No team',
                 icon: Building2Icon,
                 ...(agent.teamId ? { to: '/org/agents?team=' + agent.teamId } : {}),
               },
               {
-                label: 'Vorgesetzter',
-                value: managerName ?? 'Der Assistent',
+                label: 'Manager',
+                value: managerName ?? 'The assistant',
                 icon: UsersIcon,
                 ...(agent.managerId ? { to: '/org/agents/' + agent.managerId } : {}),
               },
               {
-                label: 'Anbieter',
+                label: 'Provider',
                 value: (
                   <ProviderCell
                     layout="inline"
-                    fallback="Standard"
+                    fallback="Default"
                     {...(agent.provider ? { provider: agent.provider } : {})}
                     {...(agent.model ? { model: agent.model } : {})}
                   />
@@ -582,16 +582,16 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
                 icon: CpuIcon,
               },
               {
-                label: 'Zugriff',
-                value: agent.permission ? PERMISSION_LABEL[agent.permission] : 'Vorgabe',
+                label: 'Permission',
+                value: agent.permission ? PERMISSION_LABEL[agent.permission] : 'Default',
                 icon: ShieldIcon,
               },
-              { label: 'Eingestellt', value: formatDateTime(agent.createdAt) },
+              { label: 'Hired', value: formatDateTime(agent.createdAt) },
             ]}
           />
 
           <div>
-            <h3 className="mb-2 text-sm font-medium">Letzte Aufträge</h3>
+            <h3 className="mb-2 text-sm font-medium">Recent assignments</h3>
             {failed ? (
               <ServerOffline size="sm" />
             ) : recent === null ? (
@@ -603,9 +603,9 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
             ) : recent.length === 0 ? (
               <EmptyState
                 icon={InboxIcon}
-                title={'Noch kein Auftrag für ' + agent.name}
-                description="Aufträge laufen als eigener Prozess, unabhängig vom Gespräch."
-                actionLabel="Agent öffnen"
+                title={'No assignments for ' + agent.name}
+                description="Assignments run in a separate process, independently of the conversation."
+                actionLabel="Open agent"
                 actionTo={'/org/agents/' + agent.id}
                 variant="plain"
                 size="sm"
@@ -629,4 +629,3 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
     </DetailDrawer>
   );
 }
-

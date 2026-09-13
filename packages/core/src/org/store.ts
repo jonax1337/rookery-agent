@@ -36,7 +36,7 @@ export class OrgStore {
     const now = Date.now();
     const org: Organization = {
       id: randomUUID(),
-      name: input.name.trim() || 'Unbenannte Firma',
+      name: input.name.trim() || 'Untitled company',
       mission: blank(input.mission),
       createdAt: now,
       updatedAt: now,
@@ -72,7 +72,7 @@ export class OrgStore {
     const project: Project = {
       id: randomUUID(),
       orgId: input.orgId,
-      name: input.name.trim() || 'Unbenanntes Projekt',
+      name: input.name.trim() || 'Untitled project',
       description: blank(input.description),
       path: blank(input.path),
       createdAt: now,
@@ -141,7 +141,7 @@ export class OrgStore {
     const team: Team = {
       id: randomUUID(),
       orgId: input.orgId,
-      name: input.name.trim() || 'Unbenanntes Team',
+      name: input.name.trim() || 'Untitled team',
       purpose: blank(input.purpose),
       leadId: blank(input.leadId),
       createdAt: now,
@@ -201,8 +201,8 @@ export class OrgStore {
       id: randomUUID(),
       orgId: input.orgId,
       slug: this.#uniqueSlug(input.orgId, input.slug?.trim() || input.name),
-      name: input.name.trim() || 'Unbenannt',
-      title: input.title.trim() || 'Mitarbeiter',
+      name: input.name.trim() || 'Unnamed',
+      title: input.title.trim() || 'Staff member',
       instructions: input.instructions.trim(),
       teamId: blank(input.teamId),
       managerId: blank(input.managerId),
@@ -540,7 +540,7 @@ export class OrgStore {
       orgId: input.orgId,
       projectId: blank(input.projectId),
       parentId: blank(input.parentId),
-      title: input.title.trim() || 'Unbenannte Aufgabe',
+      title: input.title.trim() || 'Untitled task',
       description: (input.description ?? '').trim(),
       status: input.status ?? 'open',
       priority: input.priority ?? 'normal',

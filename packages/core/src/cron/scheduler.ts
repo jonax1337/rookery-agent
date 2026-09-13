@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events';
-import type { AgentEvent, CronJob, CronJobKind, CronRun, CronTrigger, PermissionLevel, RequesterKind } from '../types.js';
+import type { AgentEvent, CronJob, CronJobKind, CronScript, CronRun, CronTrigger, PermissionLevel, RequesterKind } from '../types.js';
 import type { Logger } from '../logger.js';
 import { silentLogger } from '../logger.js';
 import type { Store } from '../memory/store.js';
 import { clip } from '../util/queue.js';
 import { CronSyntaxError, describeCron, nextCronRun, parseCron } from './parse.js';
+import { validateCronScript } from './script.js';
 
 /**
  * The clock of the company.
@@ -22,6 +23,8 @@ import { CronSyntaxError, describeCron, nextCronRun, parseCron } from './parse.j
 
 export interface CronRunOutcome {
   status: 'done' | 'failed';
+  /** A script pre-check can suppress an uneventful inbox notification. */
+  silent?: boolean;
   result?: string;
   error?: string;
   /** The conversation the assistant ran in, so the job keeps it for next time. */
@@ -46,6 +49,8 @@ export interface CronJobInput {
   name: string;
   schedule: string;
   kind?: CronJobKind;
+  script?: CronScript;
+  remainingRuns?: number;
   prompt: string;
   agentId?: string;
   projectId?: string;
@@ -59,6 +64,8 @@ export interface CronJobPatch {
   name?: string;
   schedule?: string;
   kind?: CronJobKind;
+  script?: CronScript | null;
+  remainingRuns?: number | null;
   prompt?: string;
   agentId?: string | null;
   projectId?: string | null;
@@ -109,7 +116,7 @@ export class CronScheduler extends EventEmitter {
   start(): void {
     if (this.#started) return;
     this.#started = true;
-    const stale = this.#store.cron.failStaleRuns('Der Server wurde während des Laufs beendet.');
+    const stale = this.#store.cron.failStaleRuns('The server stopped during the run.');
     if (stale) this.#log.warn('Failed stale schedule runs from a previous process', { count: stale });
 
     const now = Date.now();
@@ -171,6 +178,7 @@ export class CronScheduler extends EventEmitter {
     // here rather than letting an empty one quietly mean "nothing sleeps".
     if (kind === 'sleep' && !input.prompt.trim()) input = { ...input, prompt: 'assistant' };
     const enabled = input.enabled ?? true;
+    validateExecution({ kind, script: input.script, permission: input.permission, enabled, remainingRuns: input.remainingRuns });
     const nextRunAt = enabled ? this.#next(schedule, Date.now()) : null;
     if (enabled && nextRunAt === null) {
       throw new CronSyntaxError('The schedule "' + schedule + '" never matches a real date.');
@@ -197,6 +205,10 @@ export class CronScheduler extends EventEmitter {
     const agentId = patch.agentId === undefined ? current.agentId : (patch.agentId ?? undefined);
     if (kind === 'agent' && !agentId) throw new Error('An agent schedule needs an agent.');
     const enabled = patch.enabled ?? current.enabled;
+    const script = patch.script === undefined ? current.script : patch.script ?? undefined;
+    const permission = patch.permission === undefined ? current.permission : patch.permission ?? undefined;
+    const remainingRuns = patch.remainingRuns === undefined ? current.remainingRuns : patch.remainingRuns ?? undefined;
+    validateExecution({ kind, script, permission, enabled, remainingRuns });
 
     const reschedule = schedule !== current.schedule || enabled !== current.enabled || current.nextRunAt === undefined;
     const nextRunAt = !enabled ? null : reschedule ? this.#next(schedule, Date.now()) : undefined;
@@ -209,6 +221,8 @@ export class CronScheduler extends EventEmitter {
       schedule,
       kind,
       prompt: patch.prompt,
+      script: kind === 'script' ? script : null,
+      remainingRuns: patch.remainingRuns,
       agentId: kind === 'agent' ? agentId : null,
       projectId: patch.projectId,
       permission: patch.permission,
@@ -267,11 +281,13 @@ export class CronScheduler extends EventEmitter {
       const latest = this.#store.cron.listRuns(job.id, 1)[0];
       if (latest && latest.status === 'running') return latest;
     }
+    validateExecution({ ...job, enabled: true });
 
     // Book the next slot (or retire a one-shot) before the run, so a crash
     // mid-run cannot fire the same slot twice after a restart.
     const started = Date.now();
-    if (job.once) {
+    if (job.remainingRuns !== undefined) this.#store.cron.updateJob(job.id, { remainingRuns: job.remainingRuns - 1 }, false);
+    if (job.once || job.remainingRuns === 1) {
       this.#store.cron.updateJob(job.id, { enabled: false, nextRunAt: null }, false);
     } else {
       this.#store.cron.updateJob(job.id, { nextRunAt: this.#next(job.schedule, started) }, false);
@@ -295,7 +311,7 @@ export class CronScheduler extends EventEmitter {
       this.#running.delete(job.id);
     }
     if (controller.signal.aborted && outcome.status === 'done' && !outcome.result) {
-      outcome = { ...outcome, status: 'failed', error: outcome.error ?? 'Der Lauf wurde abgebrochen.' };
+      outcome = { ...outcome, status: 'failed', error: outcome.error ?? 'The run was cancelled.' };
     }
 
     const finished = Date.now();
@@ -322,7 +338,7 @@ export class CronScheduler extends EventEmitter {
         },
         false,
       );
-      this.#postToInbox(current, outcome);
+      if (!outcome.silent) this.#postToInbox(current, outcome);
     }
 
     const finishedRun = this.#store.cron.getRun(run.id) ?? run;
@@ -333,12 +349,12 @@ export class CronScheduler extends EventEmitter {
 
   /** What the assistant reads in its next conversation. */
   #postToInbox(job: CronJob, outcome: CronRunOutcome): void {
-    const when = new Date().toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
-    const head = 'Zeitplan „' + job.name + '“ (' + describeCron(job.schedule) + ') ist am ' + when;
+    const when = new Date().toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' });
+    const head = 'Schedule “' + job.name + '” (' + describeCron(job.schedule) + ') at ' + when;
     const body =
       outcome.status === 'done'
-        ? ' gelaufen. Ergebnis: ' + (clip(outcome.result ?? '', INBOX_BUDGET) || '(kein Text)')
-        : ' fehlgeschlagen: ' + (outcome.error ?? 'unbekannter Fehler');
+        ? ' completed. Result: ' + (clip(outcome.result ?? '', INBOX_BUDGET) || '(no text)')
+        : ' failed: ' + (outcome.error ?? 'unknown error');
     try {
       const message = this.#store.org.postMessage({ orgId: job.orgId, content: head + body });
       this.emit('message', { type: 'message', message } satisfies AgentEvent);
@@ -380,17 +396,27 @@ export class CronScheduler extends EventEmitter {
 /** One line per job, for the assistant's prompt and tool replies. */
 export function describeCronJob(job: CronJob, agentSlug?: string): string {
   const who =
-    job.kind === 'agent'
+    job.kind === 'script' ? 'imported ' + (job.script?.runtime ?? '') + ' script' : job.kind === 'agent'
       ? 'agent ' + (agentSlug ?? job.agentId ?? '?')
       : job.kind === 'sleep'
         ? 'the memory itself'
         : 'you';
-  const next = job.enabled && job.nextRunAt ? 'next ' + new Date(job.nextRunAt).toLocaleString('de-DE') : 'off';
+  const next = job.enabled && job.nextRunAt ? 'next ' + new Date(job.nextRunAt).toLocaleString('en-GB') : 'off';
   const last = job.lastRunAt
-    ? ', last ' + new Date(job.lastRunAt).toLocaleString('de-DE') + ' ' + (job.lastStatus ?? '')
+    ? ', last ' + new Date(job.lastRunAt).toLocaleString('en-GB') + ' ' + (job.lastStatus ?? '')
     : '';
   return (
     '- ' + job.id.slice(0, 8) + ' "' + job.name + '": ' + job.schedule + ' (' + describeCron(job.schedule) + ')' +
     (job.once ? ', once' : '') + ', by ' + who + ', ' + next + last + ' - ' + clip(job.prompt, 160)
   );
+}
+
+function validateExecution(job: Pick<CronJob, 'kind' | 'script' | 'permission' | 'enabled' | 'remainingRuns'>): void {
+  if (job.remainingRuns !== undefined && (!Number.isSafeInteger(job.remainingRuns) || job.remainingRuns < 0)) {
+    throw new Error('Remaining runs must be a non-negative whole number.');
+  }
+  if (job.enabled && job.remainingRuns === 0) throw new Error('This schedule has no remaining runs.');
+  if (job.kind !== 'script') return;
+  validateCronScript(job.script);
+  if (job.enabled && job.permission !== 'full') throw new Error('Review the imported script and grant Full access before running it.');
 }

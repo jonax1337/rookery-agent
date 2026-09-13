@@ -53,7 +53,7 @@ export function EntityCombobox({
   value,
   onChange,
   placeholder,
-  emptyLabel = 'Nichts gefunden',
+  emptyLabel = 'Nothing found',
   disabled = false,
   invalid = false,
   clearable = true,

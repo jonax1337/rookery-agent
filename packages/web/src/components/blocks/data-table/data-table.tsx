@@ -199,11 +199,11 @@ export function DataTable<TData extends RowData>({
   tab,
   onTabChange,
   defaultTab,
-  tabLabel = 'Auswahl',
+  tabLabel = 'Selection',
   searchable = false,
   search,
   onSearchChange,
-  searchPlaceholder = 'Durchsuchen',
+  searchPlaceholder = 'Search',
   searchText,
   searchServerSide = false,
   filters,
@@ -375,18 +375,18 @@ export function DataTable<TData extends RowData>({
    */
   const noun = rowLabel?.plural ?? DEFAULT_ROW_LABEL.plural;
   const statusMessage = error
-    ? 'Die Liste konnte nicht geladen werden.'
+    ? 'The list could not be loaded.'
     : loading
-      ? 'Die Liste wird geladen …'
+      ? 'Loading list…'
       : hasRows
         ? formatNumber(filteredCount) +
-          ' von ' +
+          ' of ' +
           formatNumber(data.length) +
-          ' geladenen ' +
+          ' loaded ' +
           noun
         : data.length === 0
-          ? 'Nichts vorhanden'
-          : 'Keine Treffer';
+          ? 'Nothing here'
+          : 'No results';
 
   // One sentence for every clickable row, referenced rather than repeated: a
   // focusable `<tr>` announces its cells and otherwise keeps quiet about the
@@ -397,9 +397,9 @@ export function DataTable<TData extends RowData>({
     showColumnMenu && visibleColumns.length > 0 ? (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" aria-label="Choose columns">
             <Columns3Icon data-icon="inline-start" />
-            <span className="hidden lg:inline">Spalten</span>
+            <span className="hidden lg:inline">Columns</span>
             <ChevronDownIcon data-icon="inline-end" />
           </Button>
         </DropdownMenuTrigger>
@@ -591,7 +591,7 @@ export function DataTable<TData extends RowData>({
       </div>
       {onRowClick ? (
         <span id={rowHintId} className="sr-only">
-          Eingabetaste öffnet die Einzelheiten.
+          Press Enter to open details.
         </span>
       ) : null}
 
@@ -606,16 +606,21 @@ export function DataTable<TData extends RowData>({
                 {headerGroup.headers.map((header) => (
                   // `scope` is free here and stops being free the moment a
                   // group row spans the whole width below.
-                  <TableHead key={header.id} colSpan={header.colSpan} scope="col">
+                  <TableHead
+                    key={header.id}
+                    colSpan={header.colSpan}
+                    scope="col"
+                    className={cn(
+                      (header.column.id === 'select' || header.column.id === 'actions') && 'w-8',
+                    )}
+                  >
                     {header.isPlaceholder ? null : <FlexRender header={header} />}
                   </TableHead>
                 ))}
               </TableRow>
             ))}
           </TableHeader>
-          <TableBody className="**:data-[slot=table-cell]:first:w-8">
-            {renderBody()}
-          </TableBody>
+          <TableBody>{renderBody()}</TableBody>
         </Table>
       </div>
 
@@ -686,8 +691,8 @@ function DefaultEmpty({ filtered, query }: { filtered: boolean; query: string })
   return (
     <EmptyState
       icon={InboxIcon}
-      title="Noch nichts vorhanden"
-      description="Sobald hier etwas angelegt wird, steht es in dieser Tabelle."
+      title="Nothing here yet"
+      description="Items will appear in this table once they are created."
       variant="plain"
       size="sm"
     />

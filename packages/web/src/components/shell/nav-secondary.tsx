@@ -8,6 +8,7 @@ import {
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from '@/components/ui/sidebar';
 
 export interface NavSecondaryItem {
@@ -17,21 +18,21 @@ export interface NavSecondaryItem {
   url?: string;
   onClick?: () => void;
   isActive?: boolean;
-  /** The shortcut hint beside "Suchen"; anything else fits here too. */
+  /** The shortcut hint beside "Search"; anything else fits here too. */
   badge?: ReactNode;
 }
 
 /**
- * The small block at the bottom of the rail (sidebar-16's `nav-secondary`),
- * pushed down by `mt-auto`.
+ * The small block in the rail's footer (sidebar-16's `nav-secondary`).
  *
- * "Suchen" has no URL: it opens the command palette the shell owns, which is
+ * "Search" has no URL: it opens the command palette the shell owns, which is
  * why an entry here may be a button instead of a link.
  */
 export function NavSecondary({
   items,
   ...props
 }: { items: NavSecondaryItem[] } & ComponentPropsWithoutRef<typeof SidebarGroup>) {
+  const { setOpenMobile } = useSidebar();
   return (
     <SidebarGroup {...props}>
       <SidebarGroupContent>
@@ -39,14 +40,14 @@ export function NavSecondary({
           {items.map((item) => (
             <SidebarMenuItem key={item.title}>
               {item.url ? (
-                <SidebarMenuButton asChild size="sm" tooltip={item.title} isActive={item.isActive}>
-                  <NavLink to={item.url}>
+                <SidebarMenuButton asChild tooltip={item.title} isActive={item.isActive}>
+                  <NavLink to={item.url} onClick={() => setOpenMobile(false)}>
                     <item.icon />
                     <span>{item.title}</span>
                   </NavLink>
                 </SidebarMenuButton>
               ) : (
-                <SidebarMenuButton size="sm" tooltip={item.title} onClick={item.onClick}>
+                <SidebarMenuButton tooltip={item.title} onClick={item.onClick}>
                   <item.icon />
                   <span>{item.title}</span>
                 </SidebarMenuButton>

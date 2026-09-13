@@ -38,7 +38,7 @@ export function useCron(socket: RookerySocket): CronState {
       setRunning(new Set(overview.running));
       setError(null);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.offline) setError('Keine Verbindung zum Rookery-Server.');
+      if (caught instanceof ApiError && caught.offline) setError('No connection to the Rookery server.');
       else setError((caught as Error).message);
     } finally {
       setLoading(false);

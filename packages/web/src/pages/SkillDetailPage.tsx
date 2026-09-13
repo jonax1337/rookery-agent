@@ -81,17 +81,17 @@ export function SkillDetailPage() {
           <Button size="sm" asChild>
             <NavLink to={'/skills/' + skill.name + '/edit'}>
               <PencilIcon data-icon="inline-start" />
-              Bearbeiten
+              Edit
             </NavLink>
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="Weitere Aktionen" />
+              <RowMenuButton tone="header" label="More actions" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem variant="destructive" onSelect={() => void removeSkill()}>
                 <Trash2Icon data-icon="inline-start" />
-                Löschen
+                Delete
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -113,9 +113,9 @@ export function SkillDetailPage() {
         ) : (
           <EmptyState
             icon={BookOpenIcon}
-            title="Diesen Skill gibt es nicht"
-            description="Der Ordner wurde gelöscht oder umbenannt, oder die Adresse stimmt nicht."
-            actionLabel="Zu den Skills"
+            title="This skill does not exist"
+            description="The folder was deleted or renamed, or the address is incorrect."
+            actionLabel="View skills"
             actionTo="/skills"
           />
         )}
@@ -137,7 +137,7 @@ export function SkillDetailPage() {
         columns={2}
         items={[
           {
-            label: 'Für wen',
+            label: 'Audience',
             value: (
               <Badge variant="outline" className="font-normal text-muted-foreground">
                 {AUDIENCE_LABEL[skill.audience]}
@@ -146,7 +146,7 @@ export function SkillDetailPage() {
             icon: UsersIcon,
           },
           {
-            label: 'Pfad',
+            label: 'Path',
             value: (
               <span className="flex min-w-0 items-center gap-1">
                 <span className="truncate font-mono text-xs" title={skill.path}>
@@ -156,7 +156,7 @@ export function SkillDetailPage() {
                     too long to retype - so it travels by clipboard. */}
                 <InputGroupButton
                   size="icon-xs"
-                  aria-label="Pfad kopieren"
+                  aria-label="Path kopieren"
                   onClick={() => copyToClipboard(skill.path)}
                 >
                   {isCopied ? <CheckIcon /> : <CopyIcon />}
@@ -166,15 +166,15 @@ export function SkillDetailPage() {
             icon: FolderIcon,
           },
           {
-            label: 'Dateien',
+            label: 'Files',
             value:
               skill.files.length > 0
                 ? formatNumber(skill.files.length) + ' neben SKILL.md'
-                : 'Nur SKILL.md',
+                : 'SKILL.md only',
             icon: FilesIcon,
           },
           {
-            label: 'Geändert',
+            label: 'Updated',
             value: timeAgo(skill.updatedAt),
             icon: ClockIcon,
           },
@@ -183,9 +183,9 @@ export function SkillDetailPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Anleitung</CardTitle>
+          <CardTitle>Instructions</CardTitle>
           <CardDescription>
-            Der Text aus SKILL.md, den der Assistent oder ein Agent liest, bevor er loslegt.
+            The text from SKILL.md that the assistant or an agent reads before starting.
           </CardDescription>
           <CardAction>
             {/* Rendered by default; the source is one click away, because a
@@ -199,8 +199,8 @@ export function SkillDetailPage() {
                 if (value === 'preview' || value === 'source') setView(value);
               }}
             >
-              <ToggleGroupItem value="preview">Vorschau</ToggleGroupItem>
-              <ToggleGroupItem value="source">Quelltext</ToggleGroupItem>
+              <ToggleGroupItem value="preview">Preview</ToggleGroupItem>
+              <ToggleGroupItem value="source">Source</ToggleGroupItem>
             </ToggleGroup>
           </CardAction>
         </CardHeader>
@@ -208,9 +208,9 @@ export function SkillDetailPage() {
           {body === '' ? (
             <EmptyState
               icon={PencilIcon}
-              title="Keine Anleitung hinterlegt"
-              description="Ohne Text unter der Frontmatter hat der Skill nichts zu sagen."
-              actionLabel="Bearbeiten"
+              title="No instructions provided"
+              description="Without text below the front matter, the skill has no instructions to provide."
+              actionLabel="Edit"
               actionTo={'/skills/' + skill.name + '/edit'}
               variant="plain"
               size="sm"
@@ -228,7 +228,7 @@ export function SkillDetailPage() {
       <Accordion type="single" collapsible defaultValue={skill.files.length > 0 ? 'files' : ''}>
         <AccordionItem value="files" className="border-b-0">
           <AccordionTrigger>
-            Dateien
+            Files
             <Badge variant="outline" className="ms-2 font-normal">
               {formatNumber(skill.files.length)}
             </Badge>
@@ -237,8 +237,8 @@ export function SkillDetailPage() {
             {skill.files.length === 0 ? (
               <EmptyState
                 icon={FileIcon}
-                title="Keine zusätzlichen Dateien"
-                description="Neben SKILL.md liegt in diesem Ordner nichts. Skripte und Vorlagen kämen hier an."
+                title="No additional files"
+                description="This folder contains nothing besides SKILL.md. Scripts and templates would appear here."
                 variant="plain"
                 size="sm"
               />
@@ -261,7 +261,7 @@ export function SkillDetailPage() {
       </Accordion>
 
       <p className="text-xs text-muted-foreground">
-        Zuletzt geändert am {formatDateTime(skill.updatedAt)}.
+        Last updated on {formatDateTime(skill.updatedAt)}.
       </p>
     </PageBody>
   );

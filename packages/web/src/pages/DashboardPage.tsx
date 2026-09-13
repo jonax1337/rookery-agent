@@ -96,7 +96,7 @@ import { Skeleton } from '@/components/ui/skeleton';
  * convincing lie on the page.
  */
 
-/** How many rows the "Zuletzt" table shows per facet. A preview, not a list. */
+/** How many rows the "Recent" table shows per facet. A preview, not a list. */
 const RECENT_ROWS = 10;
 
 /** The window the chart fetches. The range switch narrows it client-side. */
@@ -107,7 +107,7 @@ const REFETCH_DEBOUNCE_MS = 400;
 
 type RecentTab = 'tasks' | 'assignments' | 'sessions';
 
-/** Where "Alle anzeigen" goes, per facet. */
+/** Where "Show all" goes, per facet. */
 const TAB_TARGET: Record<RecentTab, string> = {
   tasks: '/tasks',
   assignments: '/assignments',
@@ -128,9 +128,9 @@ const TAB_TARGET: Record<RecentTab, string> = {
  * be a chart quietly comparing different worlds.
  */
 const ACTIVITY_SERIES: TrendSeries[] = [
-  { key: 'messages', label: 'Nachrichten', color: 'var(--chart-1)' },
-  { key: 'sessions', label: 'Gespräche', color: 'var(--chart-2)' },
-  { key: 'assignments', label: 'Aufträge', color: 'var(--chart-3)' },
+  { key: 'messages', label: 'Messages', color: 'var(--chart-1)' },
+  { key: 'sessions', label: 'Conversations', color: 'var(--chart-2)' },
+  { key: 'assignments', label: 'Assignments', color: 'var(--chart-3)' },
 ];
 
 const assignmentColumn = createRookeryColumnHelper<Assignment>();
@@ -174,14 +174,14 @@ export function DashboardPage() {
   // sidebar entry, the browser tab and the crumb have to agree on that name.
   usePageMeta(
     {
-      // One primary action per page header. "Aufgabe anlegen" used to sit
+      // One primary action per page header. "Create task" used to sit
       // glued to this one in a ButtonGroup, which reads as a segmented control
       // for two unrelated things; the tabs below already lead to the tasks,
       // and /tasks carries that action as its own primary.
       actions: (
         <Button size="sm" onClick={newConversation}>
           <PlusIcon data-icon="inline-start" />
-          Neues Gespräch
+          New conversation
         </Button>
       ),
     },
@@ -286,7 +286,7 @@ export function DashboardPage() {
 
   const cards: StatCardProps[] = [
     {
-      label: 'Erinnerungen',
+      label: 'Memories',
       value: totals ? formatNumber(totals.memories) : waiting,
       // "gelernt", not "dazugekommen": the day series counts every memory
       // the assistant wrote, the number above counts the ones still awake.
@@ -294,67 +294,70 @@ export function DashboardPage() {
       // lowers the number without touching the badge, and the footnote below
       // says so rather than letting the two look like the same quantity.
       ...(newMemories > 0
-        ? { badge: <Badge variant="outline">+{formatNumber(newMemories)} gelernt in 7 Tagen</Badge> }
+        ? { badge: <Badge variant="outline">+{formatNumber(newMemories)} learned · 7 days</Badge> }
         : {}),
       ...(memoryStats
         ? {
             headline:
               formatNumber(memoryStats.pinned) +
-              ' angeheftet · ' +
+              ' pinned · ' +
               formatNumber(memoryStats.dormant) +
-              ' schlafen',
+              ' sleeping',
           }
         : {}),
       footnote:
-        'Was ' +
-        assistantName +
-        ' wach im Kopf hat, ohne die vergessenen und die schlafenden. Das Badge zählt jede neu angelegte Erinnerung, auch die inzwischen verdichteten.',
+        'Active, excluding sleeping and forgotten. Newly learned also includes memories consolidated since.',
       to: '/memory',
     },
     {
-      label: 'Agenten',
+      label: 'Agents',
       value: totals ? formatNumber(totals.agents) : waiting,
       ...(totals && totals.runningAssignments > 0
         ? { badge: <RunningBadge count={totals.runningAssignments} /> }
         : {}),
-      headline: teams === 1 ? 'In einem Team' : 'In ' + formatNumber(teams) + ' Teams',
-      footnote: 'Ohne die entlassenen',
+      headline: teams === 1 ? 'In a team' : 'In ' + formatNumber(teams) + ' teams',
+      footnote: 'Excluding archived agents',
       to: '/org/agents',
     },
     {
-      label: 'Offene Aufgaben',
+      label: 'Open tasks',
       value: totals ? formatNumber(totals.openTasks) : waiting,
       ...(runningTasks > 0 ? { badge: <RunningBadge count={runningTasks} /> } : {}),
-      headline: totals ? 'Von ' + formatNumber(totals.tasks) + ' Aufgaben insgesamt' : ' ',
+      headline: totals ? 'Of ' + formatNumber(totals.tasks) + ' tasks total' : ' ',
       footnote:
-        'Offen, geplant und laufend zusammen, Teilaufgaben mitgezählt. Das Badge zählt nur Hauptaufgaben.',
+        'Open, planned, or running, including subtasks. The running badge counts top-level tasks only.',
       to: '/tasks',
     },
     {
-      label: 'Gespräche',
+      label: 'Conversations',
       value: totals ? formatNumber(totals.sessions) : waiting,
       ...(totals && totals.archivedSessions > 0
         ? {
             badge: (
               <Badge variant="outline">
-                {formatNumber(totals.archivedSessions)} abgelegt
+                {formatNumber(totals.archivedSessions)} archived
               </Badge>
             ),
           }
         : {}),
-      headline: totals ? formatNumber(totals.messages) + ' Nachrichten insgesamt' : ' ',
+      headline: totals ? formatNumber(totals.messages) + ' messages total' : ' ',
       footnote:
-        'Alle Gespräche der Datenbank, ohne die abgelegten. Die Nachrichten darüber zählen auch die der abgelegten mit.',
+        'Conversations excluding archive. Messages including archive.',
       to: '/chats',
     },
   ];
 
   /* ------------------------------- the table ------------------------------- */
 
-  const [tab, setTab] = useState<RecentTab>('tasks');
+  const [selectedTab, setTab] = useState<RecentTab | null>(null);
+  const tab: RecentTab = selectedTab ?? (
+    totals && totals.tasks === 0
+      ? (totals.assignments > 0 ? 'assignments' : 'sessions')
+      : 'tasks'
+  );
 
   const agentName = useCallback(
-    (id: string | undefined) => org.agentById(id)?.name ?? 'Unbekannt',
+    (id: string | undefined) => org.agentById(id)?.name ?? 'Unknown',
     [org],
   );
 
@@ -375,7 +378,7 @@ export function DashboardPage() {
     () =>
       assignmentColumn.columns([
         assignmentColumn.accessor('task', {
-          header: 'Auftrag',
+          header: 'Assignment',
           cell: ({ row }) => (
             <div className="max-w-[42ch] truncate font-medium">
               {shorten(row.original.task, 90)}
@@ -391,7 +394,7 @@ export function DashboardPage() {
           cell: ({ row }) => <StatusBadge kind="assignment" status={row.original.status} />,
         }),
         assignmentColumn.accessor('provider', {
-          header: 'Modell',
+          header: 'Model',
           cell: ({ row }) => (
             <ProviderCell
               {...(row.original.provider ? { provider: row.original.provider } : {})}
@@ -400,7 +403,7 @@ export function DashboardPage() {
           ),
         }),
         assignmentColumn.accessor('createdAt', {
-          header: () => <div className="w-full text-right">Gestartet</div>,
+          header: () => <div className="w-full text-right">Started</div>,
           cell: ({ row }) => relativeTimeCell(row.original.createdAt, { align: 'end' }),
         }),
       ]),
@@ -408,8 +411,8 @@ export function DashboardPage() {
   );
 
   // The same table `/chats` draws. Both used to write it out, and disagreed
-  // about the words: „Gesprochen“/„Getippt“ here, „Sprache“/„Chat“ there, and a
-  // deleted agent was „Unbekannt“ on one page and „Unbekannter Agent“ on the
+  // about the words: „Gesprochen“/„Getippt“ here, „Voice“/„Chat“ there, and a
+  // deleted agent was „Unknown“ on one page and „Unbekannter Agent“ on the
   // other.
   const sessionColumns = useMemo<RookeryColumnDef<Session>[]>(
     () =>
@@ -421,26 +424,26 @@ export function DashboardPage() {
   );
 
   // The counts on the tabs are the database's, not the preview's: the table
-  // shows ten rows, but "Aufgaben 128" is the honest answer to how many there
-  // are - and the reason "Alle anzeigen" is worth clicking.
+  // shows ten rows, but "Tasks 128" is the honest answer to how many there
+  // are - and the reason "Show all" is worth clicking.
   const tabs: DataTableTab[] = [
-    { value: 'tasks', label: 'Aufgaben', ...(totals ? { count: totals.tasks } : {}) },
-    { value: 'assignments', label: 'Aufträge', ...(totals ? { count: totals.assignments } : {}) },
-    { value: 'sessions', label: 'Gespräche', ...(totals ? { count: totals.sessions } : {}) },
+    { value: 'tasks', label: 'Tasks', ...(totals ? { count: totals.tasks } : {}) },
+    { value: 'assignments', label: 'Assignments', ...(totals ? { count: totals.assignments } : {}) },
+    { value: 'sessions', label: 'Conversations', ...(totals ? { count: totals.sessions } : {}) },
   ];
 
   const shared = {
     tabs,
     tab,
     onTabChange: (value: string) => setTab(value as RecentTab),
-    tabLabel: 'Bereich',
+    tabLabel: 'Section',
     paginate: false,
     showColumnMenu: false,
     idPrefix: 'zuletzt',
     skeletonRows: 5,
     actions: (
       <Button variant="outline" size="sm" asChild>
-        <NavLink to={TAB_TARGET[tab]}>Alle anzeigen</NavLink>
+        <NavLink to={TAB_TARGET[tab]}>Show all</NavLink>
       </Button>
     ),
   };
@@ -496,20 +499,20 @@ export function DashboardPage() {
         <div className="px-4 lg:px-6">
           <EmptyState
             icon={ActivityIcon}
-            title="Leg los"
+            title="Get started"
             description={
               assistantName +
-              ' hat noch nichts zu zeigen. Ein Gespräch, eine Aufgabe oder ein Agent — eins davon reicht, damit diese Seite etwas erzählt.'
+              ' has nothing to show yet. One conversation, task, or agent is enough to bring this page to life.'
             }
-            actionLabel="Neues Gespräch"
+            actionLabel="New conversation"
             onAction={newConversation}
             action={
               <>
                 <Button variant="outline" asChild>
-                  <NavLink to="/tasks/new">Aufgabe anlegen</NavLink>
+                  <NavLink to="/tasks/new">Create task</NavLink>
                 </Button>
                 <Button variant="outline" asChild>
-                  <NavLink to="/org/agents/new">Agent einstellen</NavLink>
+                  <NavLink to="/org/agents/new">Hire agent</NavLink>
                 </Button>
               </>
             }
@@ -534,9 +537,9 @@ export function DashboardPage() {
 
       <div className="px-4 lg:px-6">
         <TrendChartCard
-          title="Aktivität"
-          description="Pro Tag angelegt. Gespräche und Nachrichten zählt die ganze Datenbank, abgelegte eingeschlossen; Aufträge nur die der aktiven Firma."
-          descriptionShort="Pro Tag angelegt"
+          title="Activity"
+          description="Per day: conversations and messages including archive; assignments from the active organization."
+          descriptionShort="Created per day"
           data={chartData}
           series={ACTIVITY_SERIES}
           range={range}
@@ -553,8 +556,8 @@ export function DashboardPage() {
           empty={
             <EmptyState
               icon={ActivityIcon}
-              title="In diesem Zeitraum ist nichts passiert"
-              description="Ein größerer Zeitraum zeigt womöglich mehr."
+              title="Nothing happened during this period"
+              description="A longer period may show more."
               variant="plain"
               size="sm"
             />
@@ -563,8 +566,8 @@ export function DashboardPage() {
       </div>
 
       <SectionHeading
-        title="Zuletzt"
-        hint={'Die ' + RECENT_ROWS + ' jüngsten Einträge je Bereich.'}
+        title="Recent"
+        hint={'The ' + RECENT_ROWS + ' most recent entries in each section.'}
       >
 
         {/*
@@ -585,9 +588,9 @@ export function DashboardPage() {
             empty={
               <EmptyState
                 icon={ListTodoIcon}
-                title="Noch keine Aufgaben"
-                description="Eine Aufgabe wird geplant, aufgeteilt und an Agenten übergeben."
-                actionLabel="Aufgabe anlegen"
+                title="No tasks yet"
+                description="A task is planned, broken down, and assigned to agents."
+                actionLabel="Create task"
                 actionTo="/tasks/new"
                 variant="plain"
                 size="sm"
@@ -609,9 +612,9 @@ export function DashboardPage() {
             empty={
               <EmptyState
                 icon={SendIcon}
-                title="Noch keine Aufträge"
-                description="Aufträge entstehen, sobald Arbeit an einen Agenten abgegeben wird."
-                actionLabel="Zu den Agenten"
+                title="No assignments yet"
+                description="Assignments appear when work is delegated to an agent."
+                actionLabel="View agents"
                 actionTo="/org/agents"
                 variant="plain"
                 size="sm"
@@ -633,9 +636,9 @@ export function DashboardPage() {
             empty={
               <EmptyState
                 icon={MessagesSquareIcon}
-                title="Noch keine Gespräche"
-                description={'Das erste Gespräch mit ' + assistantName + ' beginnt hier.'}
-                actionLabel="Neues Gespräch"
+                title="No conversations yet"
+                description={'The first conversation with ' + assistantName + ' starts here.'}
+                actionLabel="New conversation"
                 onAction={newConversation}
                 variant="plain"
                 size="sm"
@@ -660,9 +663,9 @@ export function DashboardPage() {
 /* ------------------------------- providers -------------------------------- */
 
 function providerBadge(status: ProviderStatus) {
-  if (!status.available) return <Badge variant="destructive">Nicht gefunden</Badge>;
-  if (!status.authenticated) return <Badge variant="secondary">Nicht angemeldet</Badge>;
-  return <Badge>Bereit</Badge>;
+  if (!status.available) return <Badge variant="destructive">Not found</Badge>;
+  if (!status.authenticated) return <Badge variant="secondary">Not signed in</Badge>;
+  return <Badge>Ready</Badge>;
 }
 
 /**
@@ -675,7 +678,7 @@ function providerBadge(status: ProviderStatus) {
  *
  * Which of them a new turn takes unless the composer says otherwise is the
  * first thing anyone wants to know here, so the preset one is marked. The
- * setting itself stays where it is changed, under Einstellungen.
+ * setting itself stays where it is changed, under Settings.
  */
 function ProviderPanel({
   providers,
@@ -691,9 +694,9 @@ function ProviderPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Anbieter</CardTitle>
+        <CardTitle>Provider</CardTitle>
         <CardDescription>
-          Rookery meldet sich über die CLI-Sitzungen an, die auf diesem Rechner schon bestehen.
+          Rookery signs in through existing CLI sessions on this computer.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -703,8 +706,8 @@ function ProviderPanel({
           ) : (
             <EmptyState
               icon={BotIcon}
-              title="Noch keine Statusdaten"
-              description="Der Server hat noch nicht gemeldet, welche CLIs er gefunden hat."
+              title="No status data yet"
+              description="The server has not reported which CLIs it found yet."
               variant="plain"
               size="sm"
             />
@@ -725,7 +728,7 @@ function ProviderPanel({
                   </ItemContent>
                   <ItemActions>
                     {status.id === defaultProvider ? (
-                      <Badge variant="outline">Standard</Badge>
+                      <Badge variant="outline">Default</Badge>
                     ) : null}
                     {providerBadge(status)}
                   </ItemActions>
@@ -739,13 +742,13 @@ function ProviderPanel({
                           <div className="flex items-baseline justify-between gap-2 text-xs">
                             <span className="text-muted-foreground">{window.label}</span>
                             <span className="tabular-nums">
-                              {formatNumber(Math.round(window.percent))} % genutzt
+                              {formatNumber(Math.round(window.percent))} % used
                             </span>
                           </div>
                           <Progress value={Math.min(100, Math.max(0, window.percent))} />
                           {window.resetsAt ? (
                             <div className="text-xs text-muted-foreground">
-                              Zurückgesetzt am {formatDateTime(window.resetsAt)}
+                              Reset on {formatDateTime(window.resetsAt)}
                             </div>
                           ) : null}
                         </div>

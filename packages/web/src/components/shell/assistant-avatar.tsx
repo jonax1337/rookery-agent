@@ -33,7 +33,7 @@ export function AssistantAvatar({ busy = false, label, className }: AssistantAva
   return (
     <span
       role="img"
-      aria-label={busy ? label + ', denkt gerade nach' : label}
+      aria-label={busy ? label + ', thinking' : label}
       className={cn(
         'relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-lg',
         // A hairline of the surrounding surface so the dark orb does not sit

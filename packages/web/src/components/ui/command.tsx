@@ -48,17 +48,17 @@ function CommandDialog({
 }) {
   return (
     <Dialog {...props}>
-      <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
-      </DialogHeader>
       <DialogContent
         className={cn(
-          "top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0",
+          "top-[10dvh] max-h-[80dvh] translate-y-0 overflow-hidden rounded-xl! p-0 [&>[data-slot=dialog-close]]:top-2 [&>[data-slot=dialog-close]]:right-2",
           className
         )}
         showCloseButton={showCloseButton}
       >
+        <DialogHeader className="sr-only">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
         {children}
       </DialogContent>
     </Dialog>

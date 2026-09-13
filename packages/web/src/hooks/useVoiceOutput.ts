@@ -119,7 +119,7 @@ export function useVoiceOutput(config: VoiceConfig | undefined): VoiceOutput {
         const current = configRef.current;
         const voice = pickBrowserVoice(window.speechSynthesis.getVoices(), current);
         if (voice) utterance.voice = voice;
-        utterance.lang = voice?.lang ?? current?.lang ?? 'de-DE';
+        utterance.lang = voice?.lang ?? current?.lang ?? 'en-GB';
         utterance.rate = current?.rate ?? 1;
         utterance.pitch = current?.pitch ?? 1;
         const done = (): void => {
@@ -163,7 +163,7 @@ export function useVoiceOutput(config: VoiceConfig | undefined): VoiceOutput {
       // This answer finishes in the browser voice; the next one tries the
       // server again, so one hiccup never silences the real voice for good.
       fallbackRef.current = true;
-      errorRef.current = lastError?.message || 'Sprachausgabe auf dem Server fehlgeschlagen';
+      errorRef.current = lastError?.message || 'Server speech output failed';
       setFallback(true);
       setError(errorRef.current);
       return null;
@@ -395,7 +395,7 @@ function pickBrowserVoice(
     const byName = list.find((voice) => voice.name === wantedName);
     if (byName) return byName;
   }
-  const lang = config?.lang ?? 'de-DE';
+  const lang = config?.lang ?? 'en-GB';
   return (
     list.find((voice) => voice.lang === lang) ??
     list.find((voice) => voice.lang.startsWith(lang.split('-')[0] ?? '')) ??

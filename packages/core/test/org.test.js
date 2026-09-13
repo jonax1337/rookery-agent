@@ -179,7 +179,7 @@ test('the assistant runs in the workspace with Rookery tools attached', async ()
   assert.equal(run.cwd, join(home, 'workspace'), 'never the directory Rookery started in');
   assert.equal(run.mcp.name, 'rookery');
   assert.ok(run.mcp.env.ROOKERY_BRIDGE_TOKEN, 'the turn is registered with the bridge');
-  assert.match(run.systemPrompt, /You run a company/);
+  assert.match(run.systemPrompt, /you run a small company of AI agents/);
   assert.equal(events.at(-1).type, 'done');
   assistant.close();
 });
@@ -525,8 +525,9 @@ test('a direct chat with an agent speaks as the agent, with its memory and tools
   assert.match(run.systemPrompt, /You are Mara, Designer/);
   assert.match(run.systemPrompt, /Love whitespace/);
   assert.match(run.systemPrompt, /serif fonts/, 'the agent brings its own memory');
-  assert.doesNotMatch(run.systemPrompt, /You run a company/);
+  assert.doesNotMatch(run.systemPrompt, /you run a small company of AI agents/);
   assert.equal(run.systemPromptMode, 'append');
+  assert.equal(run.cwd, join(assistant.config.home, 'agent-workspaces', mara.id));
   const session = store.getSession(events.find((e) => e.type === 'session').sessionId);
   assert.equal(session.agentId, mara.id);
   assert.equal(assistant.listSessions(10, mara.id).length, 1);
@@ -668,5 +669,27 @@ test("a project's MCP servers only start once trust_project_mcp approves them, a
   const revoked = await assistant.org.handle(ctx, 'trust_project_mcp', { project: 'Rook', decision: 'revoke' });
   assert.match(revoked.text, /Revoked trust/);
   assert.equal(store.org.getProject(project.id).mcpTrust, undefined);
+  assistant.close();
+});
+
+test('chat retains completed and interrupted tool events on the persisted answer', async () => {
+  const fake = createFakeProvider();
+  const calls = [
+    { type: 'tool', name: 'lookup', id: 'one', status: 'start', detail: 'a question' },
+    { type: 'tool', name: 'tool', id: 'one', status: 'end', result: 'found', isError: false },
+    { type: 'tool', name: 'read', id: 'two', status: 'start', detail: 'notes' },
+  ];
+  fake.provider.run = async function* () {
+    yield* calls;
+    yield { type: 'error', message: 'interrupted', fatal: true };
+  };
+  const { assistant, store } = createAssistant(fake);
+  const events = [];
+  for await (const event of assistant.chat({ text: 'inspect notes' })) events.push(event);
+  const sessionId = events.find((event) => event.type === 'session').sessionId;
+  const messages = store.getMessages(sessionId);
+  assert.equal(messages.length, 2);
+  assert.deepEqual(messages[1].toolCalls, calls);
+  assert.equal(messages[1].content, '');
   assistant.close();
 });

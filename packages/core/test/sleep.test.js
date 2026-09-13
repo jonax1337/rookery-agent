@@ -47,10 +47,10 @@ function scriptedProvider(replies = {}) {
         const prompt = options.prompt ?? '';
         prompts.push(prompt);
         let text = '{}';
-        if (prompt.includes('raeumst nachts einen Widerspruch')) text = replies.resolve ?? '{"decision":"both"}';
-        else if (prompt.includes('raeumst nachts')) text = replies.condense ?? '{"merge":false}';
-        else if (prompt.includes('verbindest nachts')) text = replies.link ?? '{"edges":[],"entities":[]}';
-        else if (prompt.includes('ziehst nachts Bilanz')) text = replies.insight ?? '{"insights":[]}';
+        if (prompt.includes('You are resolving a contradiction')) text = replies.resolve ?? '{"decision":"both"}';
+        else if (prompt.includes('You are tidying')) text = replies.condense ?? '{"merge":false}';
+        else if (prompt.includes('You are connecting')) text = replies.link ?? '{"edges":[],"entities":[]}';
+        else if (prompt.includes('You are reflecting')) text = replies.insight ?? '{"insights":[]}';
         yield { type: 'done', text };
       },
     },
@@ -391,7 +391,7 @@ test('the night stays inside its model budget', async () => {
 test('the report says what happened in words a person reads', () => {
   assert.equal(
     describeSleep({ readCount: 42, mergedCount: 0, dormantCount: 0, edgeCount: 0, insightCount: 0, conflictCount: 0 }),
-    '42 Erinnerungen gelesen, nichts zu tun.',
+    '42 memories read, nothing to do.',
   );
   // A decided contradiction reads as decided; only what is left over is "offen".
   assert.match(
@@ -404,7 +404,7 @@ test('the report says what happened in words a person reads', () => {
       conflictCount: 3,
       resolvedCount: 2,
     }),
-    /2 verdichtet, 9 aufgeraeumt, 14 Verbindungen gezogen, 2 Widersprüche entschieden, 1 Widerspruch offen, 1 Einsicht notiert\./,
+    /2 condensed, 9 tidied, 14 connections added, 2 contradictions resolved, 1 contradiction open, 1 insight recorded\./,
   );
 });
 
@@ -490,7 +490,7 @@ test('what the user wrote wins a contradiction without asking a model', async ()
   assert.equal(store.getMemory(mine.id).dormantAt, undefined, 'the user always wins');
   assert.ok(store.getMemory(guessed.id).dormantAt, 'the inferred one is filed away');
   assert.ok(
-    !scripted.prompts.some((prompt) => prompt.includes('raeumst nachts einen Widerspruch')),
+    !scripted.prompts.some((prompt) => prompt.includes('You are resolving a contradiction')),
     'and it cost no model call',
   );
   store.close();

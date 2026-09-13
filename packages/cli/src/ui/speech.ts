@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { toSpeakableText } from '@rookery/core';
 
 export interface SpeakOptions {
-  /** BCP-47 tag, e.g. `de-DE`. */
+  /** BCP-47 tag, e.g. `en-GB`. */
   lang?: string;
   /** 0.5 (slow) .. 2 (fast), 1 is normal. */
   rate?: number;

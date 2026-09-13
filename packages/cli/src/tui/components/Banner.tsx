@@ -37,11 +37,11 @@ export function Banner({ state }: BannerProps): React.JSX.Element {
             <Text color={ui.ivory} bold>
               {state.agent ?? state.assistantName}
             </Text>
-            {state.agent ? <Text color={ui.agent}>{'  Direktchat'}</Text> : null}
+            {state.agent ? <Text color={ui.agent}>{'  Direct chat'}</Text> : null}
           </Box>
           <Text color={ui.muted}>{facts.join('  ' + glyph.dot + '  ')}</Text>
           <Text color={ui.faint}>
-            {state.project ? 'Projekt ' + state.project : 'kein Projekt gewählt'}
+            {state.project ? 'Project ' + state.project : 'no project selected'}
           </Text>
         </Box>
       </Box>
@@ -58,17 +58,17 @@ export function Banner({ state }: BannerProps): React.JSX.Element {
 
       <Box flexDirection="row" marginTop={1}>
         {state.ready.length ? (
-          <Text color={ui.ok}>{glyph.ok + ' ' + state.ready.join(' + ') + ' bereit'}</Text>
+          <Text color={ui.ok}>{glyph.ok + ' ' + state.ready.join(' + ') + ' ready'}</Text>
         ) : (
           <Text color={ui.danger}>
-            {glyph.fail + ' kein Provider angemeldet — `rookery doctor` sagt, was fehlt'}
+            {glyph.fail + ' no provider signed in — run `rookery doctor` for details'}
           </Text>
         )}
         {state.offline.length ? (
           <Text color={ui.faint}>{'  ' + state.offline.join(', ') + ' offline'}</Text>
         ) : null}
         <Box flexGrow={1} />
-        <Text color={ui.faint}>{'/help ' + glyph.dot + ' Ctrl+D beendet'}</Text>
+        <Text color={ui.faint}>{'/help ' + glyph.dot + ' Ctrl+D exits'}</Text>
       </Box>
 
       {state.warnings?.length

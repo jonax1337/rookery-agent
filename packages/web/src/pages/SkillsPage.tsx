@@ -43,7 +43,7 @@ import { AUDIENCE_LABEL } from '@/lib/tools';
 import type { Skill } from '@/lib/types';
 
 /**
- * The skills folder as one table - the twin of the Werkzeuge page.
+ * The skills folder as one table - the twin of the Tools page.
  *
  * It used to be a `ul.divide-y` inside a card: no search, no filter, and the
  * name linked straight into the edit form, so there was no way to *read* a
@@ -59,11 +59,11 @@ const column = createRookeryColumnHelper<Skill>();
 
 const COLUMN_LABELS: Record<string, string> = {
   name: 'Name',
-  description: 'Beschreibung',
-  audience: 'Für wen',
-  files: 'Dateien',
-  updatedAt: 'Geändert',
-  actions: 'Aktionen',
+  description: 'Description',
+  audience: 'Audience',
+  files: 'Files',
+  updatedAt: 'Updated',
+  actions: 'Actions',
 };
 
 type Tab = 'alle' | 'assistant' | 'agents' | 'both';
@@ -87,18 +87,18 @@ export function SkillsPage() {
         <Button asChild size="sm">
           <NavLink to="/skills/new">
             <PlusIcon data-icon="inline-start" />
-            Skill anlegen
+            Create skill
           </NavLink>
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <RowMenuButton tone="header" label="Weitere Möglichkeiten, Skills hinzuzufügen" />
+            <RowMenuButton tone="header" label="More ways to add skills" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem asChild>
               <NavLink to="/skills/import">
                 <DownloadIcon />
-                Importieren
+                Import
               </NavLink>
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -110,7 +110,7 @@ export function SkillsPage() {
   const columns = useMemo(
     () =>
       column.columns([
-        selectionColumn<Skill>({ rowLabel: (skill) => skill.name + ' wählen' }),
+        selectionColumn<Skill>({ rowLabel: (skill) => skill.name + ' selected' }),
 
         column.accessor('name', {
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Name" />,
@@ -128,7 +128,7 @@ export function SkillsPage() {
         }),
 
         column.accessor('description', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Beschreibung" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Description" />,
           cell: ({ row }) => (
             <p className="line-clamp-1 max-w-[32rem] text-muted-foreground">
               {row.original.description}
@@ -137,7 +137,7 @@ export function SkillsPage() {
         }),
 
         column.accessor('audience', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Für wen" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Audience" />,
           cell: ({ row }) => (
             <Badge variant="outline" className="font-normal text-muted-foreground">
               {AUDIENCE_LABEL[row.original.audience]}
@@ -148,7 +148,7 @@ export function SkillsPage() {
         column.accessor((skill) => skill.files.length, {
           id: 'files',
           header: ({ column: col }) => (
-            <DataTableColumnHeader column={col} title="Dateien" align="end" />
+            <DataTableColumnHeader column={col} title="Files" align="end" />
           ),
           cell: ({ row }) =>
             row.original.files.length > 0 ? (
@@ -161,30 +161,30 @@ export function SkillsPage() {
         }),
 
         column.accessor('updatedAt', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Geändert" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Updated" />,
           cell: ({ row }) => relativeTimeCell(row.original.updatedAt),
         }),
 
         actionsColumn<Skill>((skill) => (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton label={'Aktionen für ' + skill.name} />
+              <RowMenuButton label={'Actions for ' + skill.name} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem onSelect={() => void navigate('/skills/' + skill.name)}>
                 <SquareArrowOutUpRightIcon />
-                Öffnen
+                Open
               </DropdownMenuItem>
               <DropdownMenuItem
                 onSelect={() => void navigate('/skills/' + skill.name + '/edit')}
               >
                 <PencilIcon />
-                Bearbeiten
+                Edit
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => void deleteSkill(skill)}>
                 <Trash2Icon />
-                Löschen
+                Delete
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -222,31 +222,31 @@ export function SkillsPage() {
     {
       label: 'Skills',
       value: formatNumber(counts.alle),
-      headline: counts.alle === 0 ? 'Noch nichts hinterlegt' : 'Anleitungen im Skills-Ordner',
-      footnote: 'Je ein Ordner mit SKILL.md unter dem Rookery-Verzeichnis',
+      headline: counts.alle === 0 ? 'Nothing added yet' : 'Guides in the skills folder',
+      footnote: 'One folder with a SKILL.md file in the Rookery directory',
     },
     {
-      label: 'Für den Assistenten',
+      label: 'For the assistant',
       value: formatNumber(counts.assistant),
-      headline: 'Nur im Chat und im Sprachmodus',
+      headline: 'Only in chat and voice mode',
       footnote:
         counts.both > 0
-          ? 'Dazu ' + formatNumber(counts.both) + ' für Assistent und Agenten'
-          : 'Ausschliesslich dem Assistenten zugeteilt',
+          ? 'Add ' + formatNumber(counts.both) + ' for assistant and agents'
+          : 'Assigned exclusively to the assistant',
     },
     {
-      label: 'Für Agenten',
+      label: 'For agents',
       value: formatNumber(counts.agents),
-      headline: 'Nur in den Aufträgen der Agenten',
+      headline: 'Only in agent assignments',
       footnote:
         counts.both > 0
-          ? 'Dazu ' + formatNumber(counts.both) + ' für Assistent und Agenten'
-          : 'Ausschliesslich den Agenten zugeteilt',
+          ? 'Add ' + formatNumber(counts.both) + ' for assistant and agents'
+          : 'Assigned exclusively to agents',
     },
     {
-      label: 'Zuletzt geändert',
+      label: 'Last updated',
       value: newest ? relativeTime(newest.updatedAt) : '–',
-      headline: newest ? newest.name : 'Noch keine Änderung',
+      headline: newest ? newest.name : 'No updates yet',
       ...(newest ? { footnote: formatDateTime(newest.updatedAt), to: '/skills/' + newest.name } : {}),
     },
   ];
@@ -266,14 +266,14 @@ export function SkillsPage() {
         onRowClick={(skill) => void navigate('/skills/' + skill.name)}
         rowClickIgnoreColumns={['select', 'name', 'actions']}
         tabs={[
-          { value: 'alle', label: 'Alle', count: counts.alle },
-          { value: 'assistant', label: 'Assistent', count: counts.assistant },
-          { value: 'agents', label: 'Agenten', count: counts.agents },
-          { value: 'both', label: 'Beide', count: counts.both },
+          { value: 'alle', label: 'All', count: counts.alle },
+          { value: 'assistant', label: 'Assistant', count: counts.assistant },
+          { value: 'agents', label: 'Agents', count: counts.agents },
+          { value: 'both', label: 'Both', count: counts.both },
         ]}
         tab={tab}
         onTabChange={(value) => setTab(value as Tab)}
-        tabLabel="Auswahl der Skills"
+        tabLabel="Skill selection"
         searchable
         search={search}
         onSearchChange={setSearch}
@@ -293,35 +293,35 @@ export function SkillsPage() {
                 rows: selected,
                 noun: { singular: 'Skill', plural: 'Skills' },
                 nameOf: (skill) => skill.name,
-                verb: 'löschen',
-                done: 'gelöscht',
-                confirmLabel: 'Löschen',
+                verb: 'delete',
+                done: 'deleted',
+                confirmLabel: 'Delete',
                 description:
-                  'Gelöscht werden die Ordner von ' +
+                  'The folders for ' +
                   selected.map((skill) => '„' + skill.name + '“').join(', ') +
-                  '. Das lässt sich nicht rückgängig machen.',
+                  ' will be deleted. This cannot be undone.',
                 run: (skill) => remove(skill.name),
                 clear,
               })
             }
           >
             <Trash2Icon data-icon="inline-start" />
-            Löschen
+            Delete
           </Button>
         )}
         empty={
           tab === 'alle' ? (
             <EmptyState
               icon={BookOpenIcon}
-              title="Noch keine Skills"
-              description="Ein Skill ist eine geschriebene Anleitung für eine Art von Aufgabe — etwa „Wochenbericht schreiben“ mit den Schritten, die immer gleich sind. Der Assistent und die Agenten sehen die Liste in jedem Turn."
-              actionLabel="Skill anlegen"
+              title="No skills yet"
+              description="A skill is a written guide for a type of task, such as “Write a weekly report,” with steps that stay the same. The assistant and agents see the list in every turn."
+              actionLabel="Create skill"
               actionTo="/skills/new"
               action={
                 <Button variant="outline" asChild>
                   <NavLink to="/skills/import">
                     <DownloadIcon data-icon="inline-start" />
-                    Aus GitHub importieren
+                    Import from GitHub
                   </NavLink>
                 </Button>
               }
@@ -331,9 +331,9 @@ export function SkillsPage() {
           ) : (
             <EmptyState
               icon={BookOpenIcon}
-              title="Keine Skills in dieser Auswahl"
-              description="In dieser Registerkarte steht gerade nichts. Alle Skills liegen unter „Alle“."
-              actionLabel="Alle anzeigen"
+              title="No skills in this selection"
+              description="There is nothing in this tab right now. You can find every skill under “All”."
+              actionLabel="Show all"
               onAction={() => {
                 setTab('alle');
                 setSearch('');

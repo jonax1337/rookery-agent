@@ -35,11 +35,11 @@ import type { Skill, ToolServer } from '@/lib/types';
 /* ------------------------------ assignments ------------------------------ */
 
 const CANCEL_ONE = {
-  title: 'Auftrag abbrechen?',
+  title: 'Cancel assignment?',
   description:
-    'Der Agent hört auf zu arbeiten. Was bis dahin entstanden ist, bleibt am Auftrag stehen.',
-  confirmLabel: 'Abbrechen',
-  cancelLabel: 'Weiterlaufen lassen',
+    'The agent will stop working. Anything produced so far will remain attached to the assignment.',
+  confirmLabel: 'Cancel assignment',
+  cancelLabel: 'Keep running',
   destructive: true,
   icon: BanIcon,
 } as const;
@@ -64,10 +64,10 @@ export function useCancelAssignment(): CancelAssignmentHandle {
       if (!ok) return false;
       try {
         await api.cancelAssignment(id);
-        toast('Auftrag wird abgebrochen');
+        toast('Assignment is being cancelled');
         return true;
       } catch (caught) {
-        reportFailure('Abbrechen', caught);
+        reportFailure('Cancellation', caught);
         return false;
       }
     },
@@ -84,7 +84,7 @@ export function useCancelAssignment(): CancelAssignmentHandle {
       }
       const ok = await confirm({
         ...CANCEL_ONE,
-        title: formatNumber(ids.length) + ' Aufträge abbrechen?',
+        title: 'Cancel ' + formatNumber(ids.length) + ' assignments?',
       });
       if (!ok) return null;
 
@@ -93,9 +93,9 @@ export function useCancelAssignment(): CancelAssignmentHandle {
       const results = await Promise.allSettled(ids.map((id) => api.cancelAssignment(id)));
       const failed = results.filter((entry) => entry.status === 'rejected').length;
       const done = ids.length - failed;
-      if (failed === 0) toast(formatNumber(done) + ' Aufträge werden abgebrochen');
+      if (failed === 0) toast(formatNumber(done) + ' assignments are being cancelled');
       else {
-        toast.error(formatNumber(failed) + ' von ' + formatNumber(ids.length) + ' nicht abgebrochen');
+        toast.error(formatNumber(failed) + ' of ' + formatNumber(ids.length) + ' could not be cancelled');
       }
       return done;
     },
@@ -122,21 +122,21 @@ export function useDeleteSkill(remove: (name: string) => Promise<unknown>): Dele
   const deleteSkill = useCallback(
     async (skill: Skill): Promise<boolean> => {
       const ok = await confirm({
-        title: 'Skill löschen?',
+        title: 'Delete skill?',
         description:
-          'Der Ordner von „' +
+          'The folder for “' +
           skill.name +
-          '“ wird samt SKILL.md und allen mitgelieferten Dateien gelöscht. Das lässt sich nicht rückgängig machen.',
-        confirmLabel: 'Löschen',
+          '” will be deleted along with its SKILL.md and all bundled files. This cannot be undone.',
+        confirmLabel: 'Delete',
         destructive: true,
       });
       if (!ok) return false;
       try {
         await remove(skill.name);
-        toast('Skill gelöscht', { description: skill.name });
+        toast('Skill deleted', { description: skill.name });
         return true;
       } catch (caught) {
-        reportFailure('Löschen', caught);
+        reportFailure('Deletion', caught);
         return false;
       }
     },
@@ -172,15 +172,15 @@ export function useRemoveTool(
     async (tool: ToolServer): Promise<boolean> => {
       const own = tool.install === 'custom';
       const ok = await confirm({
-        title: own ? 'Server entfernen?' : 'Auf Standard zurücksetzen?',
+        title: own ? 'Remove server?' : 'Reset to default?',
         description: own
-          ? 'Der eigene Server „' +
+          ? 'The custom server “' +
             tool.name +
-            '“ verschwindet aus der Rookery-Config. Der Befehl selbst bleibt auf der Platte.'
-          : 'Alle eigenen Einstellungen für „' +
+            '” will be removed from the Rookery config. The command itself will remain on disk.'
+          : 'All custom settings for “' +
             tool.name +
-            '“ — Zugriff, Optionen und hinterlegte Schlüssel — werden verworfen. Der Eintrag bleibt im Katalog und gilt wieder mit seinen Vorgaben.',
-        confirmLabel: own ? 'Entfernen' : 'Zurücksetzen',
+            '” — access, options, and stored keys — will be discarded. The catalogue entry will remain and use its defaults again.',
+        confirmLabel: own ? 'Remove' : 'Reset',
         destructive: true,
         ...(own ? {} : { icon: RotateCcwIcon }),
       });
@@ -188,14 +188,14 @@ export function useRemoveTool(
       try {
         await remove(tool.id);
         if (own) {
-          toast('Server entfernt', { description: tool.name });
+          toast('Server removed', { description: tool.name });
           return true;
         }
         await refresh();
-        toast('Auf Standard zurückgesetzt', { description: tool.name });
+        toast('Reset to default', { description: tool.name });
         return true;
       } catch (caught) {
-        reportFailure(own ? 'Entfernen' : 'Zurücksetzen', caught);
+        reportFailure(own ? 'Removal' : 'Reset', caught);
         return false;
       }
     },

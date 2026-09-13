@@ -75,7 +75,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
   switch (command) {
     case 'help':
     case '?': {
-      const lines: NoticeLine[] = [{ text: 'Befehle', color: ui.amber, bold: true }];
+      const lines: NoticeLine[] = [{ text: 'Commands', color: ui.amber, bold: true }];
       for (const entry of SLASH_COMMANDS) {
         const label = entry.name + (entry.args ? ' ' + entry.args : '');
         lines.push({ text: '  ' + label.padEnd(24) + entry.description, dim: true });
@@ -83,8 +83,8 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       lines.push({ text: '' });
       lines.push({
         text:
-          'Enter sendet ' + glyph.dot + ' Shift+Enter (oder ein \\ am Zeilenende) bricht um ' +
-          glyph.dot + ' Ctrl+C unterbricht ' + glyph.dot + ' Ctrl+D beendet',
+          'Enter sends ' + glyph.dot + ' Shift+Enter (or a \\ at the end of the line) adds a newline ' +
+          glyph.dot + ' Ctrl+C interrupts ' + glyph.dot + ' Ctrl+D exits',
         dim: true,
       });
       return notice(lines);
@@ -93,18 +93,18 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
     case 'new':
       return {
         patch: { sessionId: undefined, title: 'New conversation', contextTokens: undefined },
-        ...ok('neue Unterhaltung'),
+        ...ok('new conversation'),
       };
 
     case 'sessions': {
       const sessions = assistant.store.listSessions({ limit: 10 });
-      if (!sessions.length) return notice([{ text: 'Noch keine Unterhaltungen.', dim: true }]);
+      if (!sessions.length) return notice([{ text: 'No conversations yet.', dim: true }]);
       const lines: NoticeLine[] = sessions.map((item) => ({
         text:
           (item.id === session.sessionId ? glyph.bullet + ' ' : '  ') +
           sessionLine(item, counterpartLabel(assistant, item.agentId)),
       }));
-      lines.push({ text: '/switch <id> setzt eine fort', dim: true });
+      lines.push({ text: '/switch <id> resumes a conversation', dim: true });
       return notice(lines);
     }
 
@@ -133,7 +133,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
 
     case 'talk': {
       if (!argument) {
-        return notice([{ text: 'im Gespräch mit ' + session.counterpart, dim: true }]);
+        return notice([{ text: 'talking to ' + session.counterpart, dim: true }]);
       }
       if (['assistant', 'rookery', 'off', 'none'].includes(argument.toLowerCase())) {
         return {
@@ -145,7 +145,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
             sessionId: undefined,
             title: 'New conversation',
           },
-          ...ok('im Gespräch mit ' + session.assistantName + ' (neue Unterhaltung)'),
+          ...ok('talking to ' + session.assistantName + ' (new conversation)'),
         };
       }
       const agent = resolveAgent(assistant, argument);
@@ -159,7 +159,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
           sessionId: undefined,
           title: 'New conversation',
         },
-        ...ok('im Gespräch mit ' + agent.name + ', ' + agent.title + '  (neue Unterhaltung)'),
+        ...ok('talking to ' + agent.name + ', ' + agent.title + '  (new conversation)'),
       };
     }
 
@@ -172,13 +172,13 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       // The other CLI cannot resume this one's thread, so start fresh.
       return {
         patch: { provider, sessionId: undefined, title: 'New conversation' },
-        ...ok('Provider ' + provider + ' (neue Unterhaltung)'),
+        ...ok('Provider ' + provider + ' (new conversation)'),
       };
     }
 
     case 'model': {
-      if (!argument) return { patch: { model: undefined }, ...ok('Modell: Standard des Providers') };
-      return { patch: { model: argument }, ...ok('Modell ' + argument) };
+      if (!argument) return { patch: { model: undefined }, ...ok('Model: provider default') };
+      return { patch: { model: argument }, ...ok('Model ' + argument) };
     }
 
     case 'effort': {
@@ -193,11 +193,11 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
         ]);
       }
       if (['off', 'default', 'none'].includes(argument.toLowerCase())) {
-        return { patch: { effort: undefined }, ...ok('Aufwand: Standard des Providers') };
+        return { patch: { effort: undefined }, ...ok('Effort: provider default') };
       }
       const level = parseEffort(argument);
       if (!level) return {};
-      return { patch: { effort: level }, ...ok('Aufwand ' + level) };
+      return { patch: { effort: level }, ...ok('Effort ' + level) };
     }
 
     case 'usage': {
@@ -220,7 +220,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       }
       if (quota.error) lines.push({ text: '  ' + quota.error, dim: true });
       if (session.contextTokens !== undefined) {
-        lines.push({ text: '  Kontext ' + contextLabel(session.contextTokens, session.contextWindow), dim: true });
+        lines.push({ text: '  Context ' + contextLabel(session.contextTokens, session.contextWindow), dim: true });
       }
       return notice(lines);
     }
@@ -229,14 +229,14 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       if (!argument) {
         return notice([
           {
-            text: 'Rechte stehen auf ' + session.permission + '  (' + PERMISSION_LEVELS.join(', ') + ')',
+            text: 'Permission is ' + session.permission + '  (' + PERMISSION_LEVELS.join(', ') + ')',
             dim: true,
           },
         ]);
       }
       const level = parsePermission(argument);
       if (!level) return {};
-      return { patch: { permission: level }, ...ok('Rechte ' + level) };
+      return { patch: { permission: level }, ...ok('Permission ' + level) };
     }
 
     case 'org': {
@@ -250,7 +250,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       const agents = assistant.store.org.listAgents(organization.id);
       if (!agents.length) {
         return notice([
-          { text: 'Hier arbeitet noch niemand. `rookery org hire` stellt jemanden ein.', dim: true },
+          { text: 'No staff yet. Use `rookery org hire` to hire an agent.', dim: true },
         ]);
       }
       const byId = new Map(agents.map((agent) => [agent.id, agent]));
@@ -263,7 +263,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
           dim: true,
         };
       });
-      lines.push({ text: '/assign <agent> <aufgabe> gibt einem davon Arbeit', dim: true });
+      lines.push({ text: '/assign <agent> <task> gives an agent an assignment', dim: true });
       return notice(lines);
     }
 
@@ -286,7 +286,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       const board = assistant.store.org.listTasks(organization.id, { status });
       const rendered = renderBoard(board, assistant.org.snapshot(organization.id), assistant.store.org);
       const lines: NoticeLine[] = rendered.split('\n').map((text) => ({ text, dim: true }));
-      lines.push({ text: '/task <titel> legt eine an', dim: true });
+      lines.push({ text: '/task <title> creates a task', dim: true });
       return notice(lines);
     }
 
@@ -316,14 +316,14 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       if (argument.toLowerCase() === 'off' || argument.toLowerCase() === 'none') {
         return {
           patch: { projectId: undefined, projectName: undefined },
-          ...ok('Projekt gelöst'),
+          ...ok('Project detached'),
         };
       }
       const project = resolveProject(assistant, argument);
       if (!project) return {};
       return {
         patch: { projectId: project.id, projectName: project.name },
-        ...ok('Projekt ' + project.name + '  ' + (project.path ?? 'kein Verzeichnis')),
+        ...ok('Project ' + project.name + '  ' + (project.path ?? 'no directory')),
       };
     }
 
@@ -332,7 +332,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       // Read-only on purpose: the turn that actually uses the inbox is the one
       // allowed to mark it read.
       const messages = assistant.store.org.inbox(organization.id, null, { unreadOnly: true });
-      if (!messages.length) return notice([{ text: 'Keine ungelesenen Nachrichten.', dim: true }]);
+      if (!messages.length) return notice([{ text: 'No unread messages.', dim: true }]);
       const agents = new Map(
         assistant.store.org
           .listAgents(organization.id, { includeArchived: true })
@@ -362,7 +362,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
         touch: false,
       });
       if (!hits.length) {
-        return notice([{ text: 'nichts gefunden zu "' + shorten(argument, 50) + '"', dim: true }]);
+        return notice([{ text: 'no matches for "' + shorten(argument, 50) + '"', dim: true }]);
       }
       return notice(hits.map((hit) => ({ text: '  ' + memoryLine(hit) })));
     }
@@ -370,7 +370,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
     case 'remember': {
       if (!argument) throw new CliError('Usage: /remember <text>');
       const record = assistant.rememberFact({ content: argument, kind: 'fact', importance: 0.7 });
-      return ok('gemerkt: ' + shortId(record.id));
+      return ok('remembered: ' + shortId(record.id));
     }
 
     case 'forget': {
@@ -378,27 +378,27 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       const id = resolveMemoryId(assistant, argument);
       const record = assistant.store.getMemory(id);
       assistant.store.forgetMemory(id);
-      return ok('vergessen: ' + shorten(record?.content ?? id, 60));
+      return ok('forgotten: ' + shorten(record?.content ?? id, 60));
     }
 
     case 'voice': {
       const voice = !session.voice;
       if (!voice) {
         stopSpeaking();
-        return { patch: { voice }, ...ok('Sprachausgabe aus') };
+        return { patch: { voice }, ...ok('Voice off') };
       }
       const backend = await describeSpeech();
       const lines: NoticeLine[] = [
         { text: glyph.ok + ' voice on  ' + glyph.dot + ' ' + backend, dim: true },
       ];
       if (backend.startsWith('unavailable')) {
-        lines.push({ text: '  Antworten bleiben sprechfertig, werden aber nicht vorgelesen.', dim: true });
+        lines.push({ text: '  Replies remain speech-friendly but will not be read aloud.', dim: true });
       }
       return { patch: { voice }, entries: [{ kind: 'notice', id: ctx.nextId(), lines }] };
     }
 
     case 'verbose':
-      return { patch: { verbose: !session.verbose }, ...ok('Ausführlich ' + (session.verbose ? 'aus' : 'an')) };
+      return { patch: { verbose: !session.verbose }, ...ok('Verbose ' + (session.verbose ? 'off' : 'on')) };
 
     case 'doctor': {
       const statuses = await assistant.providers.statuses(true);
@@ -412,7 +412,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
           color: healthy ? ui.ok : status.available ? ui.warn : ui.danger,
         };
       });
-      lines.push({ text: '  `rookery doctor` gibt den vollen Bericht', dim: true });
+      lines.push({ text: '  `rookery doctor` shows the full report', dim: true });
       return notice(lines);
     }
 

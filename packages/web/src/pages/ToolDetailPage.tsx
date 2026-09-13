@@ -25,7 +25,6 @@ import { failureMessage, reportFailure } from '@/lib/errors';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ButtonGroup, ButtonGroupText } from '@/components/ui/button-group';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   DropdownMenu,
@@ -76,7 +75,7 @@ import type { ToolServer, ToolServerAudience } from '@/lib/types';
  * The page used to save on every `onBlur` with no feedback at all - a typo in
  * an API key was written to the config the moment the field lost focus, and
  * nothing on screen said whether it had arrived. Now the audience, the options
- * and the keys form one draft that is written by "Speichern", and the button
+ * and the keys form one draft that is written by "Save", and the button
  * stays disabled until something has actually changed.
  *
  * The switch is the one exception: an on/off state is a single deliberate
@@ -131,7 +130,7 @@ export function ToolDetailPage() {
   });
 
   // Bumped after a save so the draft refills from the record that came back -
-  // which is what empties the key fields again and puts their "gesetzt" badge
+  // which is what empties the key fields again and puts their "set" badge
   // back where it belongs.
   const [generation, setGeneration] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -149,7 +148,7 @@ export function ToolDetailPage() {
     hydrate(tool.id + '#' + generation, () => makeDraft(tool));
   }, [tool, generation, hydrate]);
 
-  /* -------------------------------- Aktionen ------------------------------ */
+  /* -------------------------------- Actions ------------------------------ */
 
   const save = useCallback(async (): Promise<void> => {
     if (!tool || saving) return;
@@ -163,7 +162,7 @@ export function ToolDetailPage() {
       await update(tool.id, { audience: draft.audience, options: draft.options, env });
       markSaved();
       setGeneration((current) => current + 1);
-      toast('Gespeichert', { description: 'Gilt ab dem nächsten Turn.' });
+      toast('Saved', { description: 'Takes effect on the next turn.' });
     } catch (caught) {
       setSaveError(failureMessage(caught));
     } finally {
@@ -176,9 +175,9 @@ export function ToolDetailPage() {
       if (!tool) return;
       try {
         await setEnabled(tool.id, on);
-        toast(on ? tool.name + ' eingeschaltet' : tool.name + ' ausgeschaltet');
+        toast(on ? tool.name + ' enabled' : tool.name + ' disabled');
       } catch (caught) {
-        reportFailure('Änderung', caught);
+        reportFailure('Update', caught);
       }
     },
     [setEnabled, tool],
@@ -227,55 +226,46 @@ export function ToolDetailPage() {
   usePageMeta(
     {
       ...(tool ? { title: tool.name } : {}),
-      breadcrumb: [{ label: 'Werkzeuge', to: '/tools' }, { label: tool?.name ?? 'Werkzeug' }],
+      breadcrumb: [{ label: 'Tools', to: '/tools' }, { label: tool?.name ?? 'Tool' }],
       actions: tool ? (
         <div className="flex items-center gap-2">
-          <ButtonGroup>
-            <ButtonGroupText asChild>
-              <Label htmlFor="werkzeug-aktiv" className="gap-2 font-normal">
-                <Switch
-                  id="werkzeug-aktiv"
-                  checked={tool.enabled}
-                  disabled={!tool.installed}
-                  onCheckedChange={(on) => void toggle(on)}
-                />
-                Aktiv
-              </Label>
-            </ButtonGroupText>
-            {tool.prepare ? (
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={preparing}
-                onClick={() => void runPrepare()}
-              >
-                {preparing ? (
-                  <Spinner aria-label="Läuft" data-icon="inline-start" />
-                ) : (
-                  <PackageIcon data-icon="inline-start" />
-                )}
-                {tool.prepare.label}
-              </Button>
-            ) : null}
-            <Button size="sm" type="submit" form={FORM_ID} disabled={!dirty || saving}>
-              {saving ? <Spinner aria-label="Wird gespeichert" data-icon="inline-start" /> : null}
-              Speichern
-            </Button>
-          </ButtonGroup>
+          <Label htmlFor="werkzeug-aktiv" className="flex h-8 items-center gap-2 rounded-md border px-2 font-normal">
+            <Switch
+              id="werkzeug-aktiv"
+              checked={tool.enabled}
+              disabled={!tool.installed}
+              onCheckedChange={(on) => void toggle(on)}
+            />
+            Active
+          </Label>
+          <Button size="sm" type="submit" form={FORM_ID} disabled={!dirty || saving}>
+            {saving ? <Spinner aria-label="Saving" data-icon="inline-start" /> : null}
+            Save
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="Weitere Aktionen" />
+              <RowMenuButton tone="header" label="More actions" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
+              {tool.prepare ? (
+                <DropdownMenuItem
+                  disabled={preparing}
+                  onSelect={() => void runPrepare()}
+                  className="items-start whitespace-normal"
+                >
+                  {preparing ? <Spinner aria-label="Running" /> : <PackageIcon />}
+                  {tool.prepare.label}
+                </DropdownMenuItem>
+              ) : null}
               {tool.install === 'custom' ? (
                 <DropdownMenuItem variant="destructive" onSelect={() => void removeTool()}>
                   <Trash2Icon data-icon="inline-start" />
-                  Entfernen
+                  Remove
                 </DropdownMenuItem>
               ) : (
                 <DropdownMenuItem onSelect={() => void removeTool()}>
                   <RotateCcwIcon data-icon="inline-start" />
-                  Auf Standard zurücksetzen
+                  Restore default
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>
@@ -293,7 +283,7 @@ export function ToolDetailPage() {
       <PageBody width="3xl">
         <Card>
           <CardHeader>
-            <CardTitle>Einstellungen</CardTitle>
+            <CardTitle>Settings</CardTitle>
           </CardHeader>
           <CardContent>
             <FormFieldsSkeleton fields={5} />
@@ -311,9 +301,9 @@ export function ToolDetailPage() {
         ) : (
           <EmptyState
             icon={WrenchIcon}
-            title="Diesen Server gibt es nicht"
-            description="Der Eintrag wurde entfernt, oder die Adresse stimmt nicht."
-            actionLabel="Zu den Werkzeugen"
+            title="This server does not exist"
+            description="The entry was removed, or the address is incorrect."
+            actionLabel="View tools"
             actionTo="/tools"
           />
         )}
@@ -343,24 +333,24 @@ export function ToolDetailPage() {
       <MetaList
         columns={2}
         items={[
-          { label: 'Für wen', value: AUDIENCE_LABEL[tool.audience], icon: UsersIcon },
-          { label: 'Herkunft', value: INSTALL_LABEL[tool.install], icon: PackageIcon },
+          { label: 'Audience', value: AUDIENCE_LABEL[tool.audience], icon: UsersIcon },
+          { label: 'Source', value: INSTALL_LABEL[tool.install], icon: PackageIcon },
           {
-            label: 'Installiert',
-            value: tool.installed ? 'Ja' : 'Noch nicht geholt',
+            label: 'Installed',
+            value: tool.installed ? 'Yes' : 'Not downloaded yet',
             icon: PlugIcon,
           },
           {
-            label: 'Aktiv',
+            label: 'Active',
             value: tool.active
-              ? 'Läuft mit'
+              ? 'Running with'
               : tool.enabled
-                ? 'Eingeschaltet, aber nicht einsatzbereit'
-                : 'Aus',
+                ? 'Enabled but not ready'
+                : 'Off',
             icon: PlugIcon,
           },
           {
-            label: 'Projektseite',
+            label: 'Project page',
             // An external address, so a plain anchor - `MetaList.to` routes
             // inside the app and would swallow it.
             value: tool.homepage ? (
@@ -383,15 +373,15 @@ export function ToolDetailPage() {
 
       {tool.missingEnv.length > 0 ? (
         <p className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
-          Bleibt aus, bis {tool.missingEnv.join(', ')} eingetragen ist.
+          Remains disabled until {tool.missingEnv.join(', ')} is provided.
         </p>
       ) : null}
 
       <FormPage
         formId={FORM_ID}
         showActions={false}
-        title="Einstellungen"
-        description="Wird mit „Speichern“ geschrieben und gilt ab dem nächsten Turn."
+        title="Settings"
+        description="Saved with “Save” and takes effect on the next turn."
         error={saveError}
         onSubmit={save}
         aside={
@@ -399,23 +389,22 @@ export function ToolDetailPage() {
             {tool.envDefs.length > 0 ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Schlüssel</CardTitle>
+                  <CardTitle>Keys</CardTitle>
                   <CardDescription>
-                    Werden in der Rookery-Config gespeichert und nur dem Server-Prozess übergeben.
-                    Ein gesetzter Schlüssel kommt nie in den Browser zurück — zum Ändern neu
-                    eintragen.
+                    Stored in Rookery configuration and passed only to the server process. Saved
+                    keys are never returned to the browser; enter a new value to update one.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <FieldSet>
-                    <FieldLegend variant="label">Zugangsdaten</FieldLegend>
+                    <FieldLegend variant="label">Credentials</FieldLegend>
                     {tool.envDefs.map((item) => {
                       const isSet = tool.envSet[item.name] === true;
                       const typed = (draft.env[item.name] ?? '').trim();
                       const missing =
                         item.required && tool.missingEnv.includes(item.name) && typed === '';
                       return (
-                        // FormField haengt Hinweis und Meldung per
+                        // FormField haengt Guidance und Meldung per
                         // `aria-describedby` an die Eingabe; `data-invalid`
                         // allein faerbte nur die Gruppe.
                         <FormField
@@ -430,11 +419,11 @@ export function ToolDetailPage() {
                                 }
                                 className="font-normal"
                               >
-                                {isSet ? 'gesetzt' : 'fehlt'}
+                                {isSet ? 'set' : 'missing'}
                               </Badge>
                             </>
                           }
-                          error={missing ? 'Pflichtfeld' : null}
+                          error={missing ? 'Required' : null}
                           {...(item.hint ? { description: item.hint } : {})}
                         >
                           {(control) => (
@@ -443,7 +432,7 @@ export function ToolDetailPage() {
                                 {...control}
                                 type={item.secret ? 'password' : 'text'}
                                 autoComplete="off"
-                                placeholder={isSet ? '••••••••' : 'nicht gesetzt'}
+                                placeholder={isSet ? '••••••••' : 'not set'}
                                 value={draft.env[item.name] ?? ''}
                                 onChange={(event) =>
                                   set({ env: { ...draft.env, [item.name]: event.target.value } })
@@ -472,10 +461,10 @@ export function ToolDetailPage() {
             {tool.custom ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Befehl</CardTitle>
+                  <CardTitle>Command</CardTitle>
                   <CardDescription>
-                    So wird der Server gestartet. Der Befehl selbst lässt sich hier nicht ändern
-                    — dafür den Eintrag entfernen und neu anlegen.
+                    This is how the server starts. To change the command, remove this entry and
+                    create another.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-3">
@@ -492,9 +481,9 @@ export function ToolDetailPage() {
         }
       >
         <FieldSet>
-          <FieldLegend variant="label">Für wen</FieldLegend>
+          <FieldLegend variant="label">Audience</FieldLegend>
           <FieldDescription>
-            Entscheidet, wer diesen Server in seinen Werkzeugen sieht.
+            Determines who can see this server in their tools.
           </FieldDescription>
           <RadioGroup
             value={draft.audience}
@@ -507,7 +496,7 @@ export function ToolDetailPage() {
                     <FieldTitle>{AUDIENCE_SHORT_LABEL[value]}</FieldTitle>
                     <FieldDescription>{AUDIENCE_HINT[value]}</FieldDescription>
                   </FieldContent>
-                  <RadioGroupItem value={value} id={'audience-' + value} />
+                  <RadioGroupItem value={value} id={'audience-' + value} aria-label={AUDIENCE_SHORT_LABEL[value]} />
                 </Field>
               </FieldLabel>
             ))}
@@ -552,17 +541,17 @@ export function ToolDetailPage() {
 
       {!tool.installed ? (
         <p className="text-sm text-muted-foreground">
-          Noch nicht installiert.{' '}
+          Not installed yet.{' '}
           {tool.prepare
-            ? '„' + tool.prepare.label + '“ oben holt, was fehlt.'
-            : 'Der Server wird beim ersten Start per npx geholt.'}
+            ? '„' + tool.prepare.label + '” from the “More actions” menu downloads what is missing.'
+            : 'The server is downloaded with npx on first launch.'}
         </p>
       ) : null}
 
       <p className="text-xs text-muted-foreground">
-        Alle Werkzeuge liegen unter{' '}
+        All tools are available under{' '}
         <NavLink to="/tools" className="underline underline-offset-2">
-          Werkzeuge
+          Tools
         </NavLink>
         .
       </p>
@@ -573,11 +562,11 @@ export function ToolDetailPage() {
         onOpenChange={(open) => {
           if (!open) setResult(null);
         }}
-        title={tool.name + ' vorbereiten'}
-        description={result ? (result.ok ? 'Abgeschlossen.' : 'Fehlgeschlagen.') : undefined}
+        title={tool.name + ' set up'}
+        description={result ? (result.ok ? 'Completed.' : 'Failed.') : undefined}
       >
         <pre className="rounded-lg bg-muted/60 p-3 font-mono text-xs whitespace-pre-wrap">
-          {result?.output.trim() || 'Keine Ausgabe.'}
+          {result?.output.trim() || 'No output.'}
         </pre>
       </DetailDrawer>
     </PageBody>

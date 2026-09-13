@@ -33,15 +33,15 @@ import type { MemoryRecord } from '@/lib/types';
  */
 
 export const MEMORY_COLUMN_LABELS: Record<string, string> = {
-  content: 'Inhalt',
-  kind: 'Art',
-  importance: 'Wichtigkeit',
-  origin: 'Herkunft',
-  accessCount: 'Zugriffe',
-  lastAccessedAt: 'Zuletzt genutzt',
-  createdAt: 'Gelernt',
+  content: 'Content',
+  kind: 'Type',
+  importance: 'Importance',
+  origin: 'Source',
+  accessCount: 'Accesses',
+  lastAccessedAt: 'Last used',
+  createdAt: 'Learned',
   state: 'Status',
-  score: 'Treffer',
+  score: 'Matches',
 };
 
 /** Newest weight first - the list opens on what matters most. */
@@ -80,12 +80,12 @@ export function buildMemoryColumns(
   const columns: RookeryColumnDef<MemoryRecord>[] = [];
 
   if (selectable) {
-    columns.push(selectionColumn<MemoryRecord>({ rowLabel: () => 'Erinnerung wählen' }));
+    columns.push(selectionColumn<MemoryRecord>({ rowLabel: () => 'Select memory' }));
   }
 
   const kindColumn = column.accessor('kind', {
     id: 'kind',
-    header: ({ column: col }) => <DataTableColumnHeader column={col} title="Art" />,
+    header: ({ column: col }) => <DataTableColumnHeader column={col} title="Type" />,
     cell: ({ row }) => (
       <Badge variant="outline" className="font-normal">
         {MEMORY_KIND_LABEL[row.original.kind]}
@@ -95,13 +95,13 @@ export function buildMemoryColumns(
 
   const contentColumn = column.accessor('content', {
     id: 'content',
-    header: ({ column: col }) => <DataTableColumnHeader column={col} title="Inhalt" />,
+    header: ({ column: col }) => <DataTableColumnHeader column={col} title="Content" />,
     enableHiding: false,
     cell: ({ row }) => {
       const memory = row.original;
       const emphasis = highlighted?.has(memory.id) ? 'font-medium text-primary' : '';
       if (!onOpen) {
-        return <span className={'line-clamp-2 leading-snug ' + emphasis}>{memory.content}</span>;
+        return <span className={'block min-w-48 max-w-[52ch] whitespace-normal break-words leading-snug ' + emphasis}>{memory.content}</span>;
       }
       return (
         <DetailDrawerTrigger
@@ -121,7 +121,7 @@ export function buildMemoryColumns(
     column.accessor('importance', {
       id: 'importance',
       header: ({ column: col }) => (
-        <DataTableColumnHeader column={col} title="Wichtigkeit" align="end" />
+        <DataTableColumnHeader column={col} title="Importance" align="end" />
       ),
       cell: ({ row }) => {
         const percent = Math.round(row.original.importance * 100);
@@ -136,7 +136,7 @@ export function buildMemoryColumns(
 
     column.accessor('origin', {
       id: 'origin',
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Herkunft" />,
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Source" />,
       cell: ({ row }) => (
         <Badge variant="outline" className="font-normal text-muted-foreground">
           {ORIGIN_LABEL[row.original.origin]}
@@ -149,7 +149,7 @@ export function buildMemoryColumns(
     columns.push(
       column.accessor('createdAt', {
         id: 'createdAt',
-        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Gelernt" />,
+        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Learned" />,
         cell: ({ row }) => relativeTimeCell(row.original.createdAt),
       }),
     );
@@ -158,7 +158,7 @@ export function buildMemoryColumns(
       column.accessor('accessCount', {
         id: 'accessCount',
         header: ({ column: col }) => (
-          <DataTableColumnHeader column={col} title="Zugriffe" align="end" />
+          <DataTableColumnHeader column={col} title="Accesses" align="end" />
         ),
         cell: ({ row }) => (
           <div className="text-right tabular-nums">{formatNumber(row.original.accessCount)}</div>
@@ -168,7 +168,7 @@ export function buildMemoryColumns(
       column.accessor((memory) => memory.lastAccessedAt ?? 0, {
         id: 'lastAccessedAt',
         header: ({ column: col }) => (
-          <DataTableColumnHeader column={col} title="Zuletzt genutzt" />
+          <DataTableColumnHeader column={col} title="Last used" />
         ),
         cell: ({ row }) => relativeTimeCell(row.original.lastAccessedAt),
       }),
@@ -190,7 +190,7 @@ export function buildMemoryColumns(
       column.accessor((memory) => score(memory)?.value ?? 0, {
         id: 'score',
         header: ({ column: col }) => (
-          <DataTableColumnHeader column={col} title="Treffer" align="end" />
+          <DataTableColumnHeader column={col} title="Matches" align="end" />
         ),
         cell: ({ row }) => {
           const hit = score(row.original);

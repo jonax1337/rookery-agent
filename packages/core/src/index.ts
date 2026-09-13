@@ -6,6 +6,8 @@
  */
 
 export * from './types.js';
+export { PROFILE_FILES, ensureProfile, readProfile, writeProfileFile, readProfileExcerpt, searchProfile, renderProfile } from './profile.js';
+export * from './migration.js';
 export { DEFAULT_CONFIG, applyConfig, databasePath, ensureHome, loadConfig, saveConfig } from './config.js';
 export { createLogger, silentLogger, type LogLevel, type Logger } from './logger.js';
 
@@ -98,6 +100,7 @@ export { MCP_SERVER_NAME, ORG_TOOLS, toolsFor, type ToolAudience, type ToolDefin
 
 // Schedules: standing orders that fire on a cron expression while the server runs.
 export { CronStore } from './cron/store.js';
+export { readCronScript } from './cron/script.js';
 export {
   CronScheduler,
   describeCronJob,

@@ -4,6 +4,7 @@ import {
   AudioLinesIcon,
   BrainIcon,
   Building2Icon,
+  ImportIcon,
   PaletteIcon,
   SlidersHorizontalIcon,
   SquareIcon,
@@ -18,6 +19,9 @@ import { PageBody } from '@/components/blocks/page-body';
 import { EmptyState } from '@/components/common/empty-state';
 import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
 import { SliderField } from '@/components/forms/form-kit';
+import { VoiceKeys } from '@/components/forms/voice-keys';
+import { AssistantProfile } from '@/components/forms/assistant-profile';
+import { AssistantMigration } from '@/components/forms/assistant-migration';
 import { ProviderIcon } from '@/components/provider-icon';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
@@ -59,7 +63,6 @@ import {
   ItemMedia,
   ItemTitle,
 } from '@/components/ui/item';
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
   Select,
@@ -71,7 +74,6 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
-import { SHOW_TOOL_CALLS_KEY, showToolCalls } from '@/hooks/useChat';
 import { useVoiceOutput } from '@/hooks/useVoiceOutput';
 import { api } from '@/lib/api';
 import {
@@ -111,7 +113,7 @@ import { cn } from '@/lib/utils';
  *   always visible, and "Speichern" is gated on a deep comparison of draft
  *   against config rather than on "something was typed";
  * - two new sections appeared. `memory` was fully editable on the server and
- *   had no UI at all, and the local-only preferences (tool calls, appearance)
+ *   had no UI at all, and the local-only preferences (appearance)
  *   are now named as local instead of sitting next to server settings.
  *
  * What is deliberately *not* here: `memory.gate`, `memory.graph` and
@@ -133,38 +135,44 @@ interface SectionMeta {
 const SECTIONS = [
   {
     slug: 'identity',
-    label: 'Identität',
-    description: 'Wie der Assistent heißt und wie er den Nutzer anspricht.',
+    label: 'Identity',
+    description: 'The assistant name and how it addresses the user.',
     icon: UserRoundIcon,
   },
   {
+    slug: 'migration',
+    label: 'Migration',
+    description: 'Bring your assistant from OpenClaw or Hermes.',
+    icon: ImportIcon,
+  },
+  {
     slug: 'defaults',
-    label: 'Standardwerte',
-    description: 'Womit ein Gespräch startet, solange nichts anderes gewählt ist.',
+    label: 'Defaults',
+    description: 'How conversations start when no other options are selected.',
     icon: SlidersHorizontalIcon,
   },
   {
     slug: 'voice',
-    label: 'Sprache',
-    description: 'Womit gesprochene Antworten entstehen und wie sie klingen.',
+    label: 'Voice',
+    description: 'How spoken replies are generated and how they sound.',
     icon: AudioLinesIcon,
   },
   {
     slug: 'memory',
-    label: 'Gedächtnis',
-    description: 'Was behalten wird und wie weit der Assistent zurückgreift.',
+    label: 'Memory',
+    description: 'What is remembered and how much context the assistant recalls.',
     icon: BrainIcon,
   },
   {
     slug: 'org',
-    label: 'Firma',
-    description: 'Die Grenzen, in denen Agenten arbeiten und weiterdelegieren.',
+    label: 'Organization',
+    description: 'Limits for agent work and delegation.',
     icon: Building2Icon,
   },
   {
     slug: 'appearance',
-    label: 'Ansicht',
-    description: 'Nur dieser Browser: Darstellung und Detailgrad.',
+    label: 'Appearance',
+    description: 'Display and detail preferences for this browser only.',
     icon: PaletteIcon,
   },
 ] as const satisfies readonly SectionMeta[];
@@ -201,9 +209,9 @@ const DEFAULT = '__default__';
 */
 
 const ELEVEN_MODEL_LABEL: Record<VoiceConfig['elevenLabsModel'], string> = {
-  eleven_multilingual_v2: 'Multilingual v2 · Qualität',
-  eleven_flash_v2_5: 'Flash v2.5 · Tempo',
-  eleven_v3: 'v3 · Ausdruck',
+  eleven_multilingual_v2: 'Multilingual v2 · Quality',
+  eleven_flash_v2_5: 'Flash v2.5 · Speed',
+  eleven_v3: 'v3 · Expression',
 };
 
 /* -------------------------------- the page ------------------------------- */
@@ -277,8 +285,9 @@ export function SettingsPage() {
     try {
       // The whole draft goes out: `PATCH /api/config` merges deeply, so the
       // sub-objects this page never shows survive untouched.
-      await save(pending);
-      touched.current = false;
+      if (await save(pending)) {
+        if (draftRef.current === pending) touched.current = false;
+      }
     } finally {
       setSaving(false);
     }
@@ -287,14 +296,14 @@ export function SettingsPage() {
   usePageMeta(
     {
       breadcrumb: [
-        { label: 'Einstellungen', to: '/settings/' + FIRST_SECTION.slug },
+        { label: 'Settings', to: '/settings/' + FIRST_SECTION.slug },
         { label: current.label },
       ],
       actions: (
         <div className="flex items-center gap-2">
           {dirty ? (
             <Badge variant="outline" className="hidden font-normal text-muted-foreground sm:inline-flex">
-              Ungespeicherte Änderungen
+              Unsaved changes
             </Badge>
           ) : null}
           {/*
@@ -310,7 +319,7 @@ export function SettingsPage() {
             disabled={!dirty || saving}
             onClick={discard}
           >
-            Verwerfen
+            Discard
           </Button>
           {/*
             Ein echter Submit-Knopf, per `form` an das Formular im Inhalt
@@ -318,8 +327,8 @@ export function SettingsPage() {
             Kopf bleibt der einzige Ort der Aktion.
           */}
           <Button type="submit" form={FORM_ID} size="sm" disabled={!dirty || saving}>
-            {saving ? <Spinner aria-label="Wird gespeichert" /> : null}
-            Speichern
+            {saving ? <Spinner aria-label="Saving" /> : null}
+            Save
           </Button>
         </div>
       ),
@@ -395,7 +404,8 @@ export function SettingsPage() {
             <SectionSkeleton />
           ) : (
             <>
-              {current.slug === 'identity' ? <IdentitySection draft={draft} set={set} /> : null}
+              {current.slug === 'identity' ? <><IdentitySection draft={draft} set={set} /><AssistantProfile /></> : null}
+              {current.slug === 'migration' ? <AssistantMigration /> : null}
               {current.slug === 'defaults' ? (
                 <DefaultsSection draft={draft} providers={providers} set={set} />
               ) : null}
@@ -426,7 +436,7 @@ export function SettingsPage() {
 /* ------------------------------ section nav ------------------------------ */
 
 /**
- * The left column. A list of `Item`s on a wide screen, a `NativeSelect` on a
+ * The left column. A list of `Item`s on a wide screen, a `Select` on a
  * phone - a six-entry rail would eat the whole first screen there.
  */
 function SectionNav({
@@ -438,20 +448,12 @@ function SectionNav({
 }) {
   return (
     <>
-      <NativeSelect
-        className="w-full md:hidden"
-        aria-label="Abschnitt der Einstellungen"
-        value={current.slug}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        {SECTIONS.map((entry) => (
-          <NativeSelectOption key={entry.slug} value={entry.slug}>
-            {entry.label}
-          </NativeSelectOption>
-        ))}
-      </NativeSelect>
+      <Select value={current.slug} onValueChange={onChange}>
+        <SelectTrigger className="w-full md:hidden" aria-label="Settings section"><SelectValue /></SelectTrigger>
+        <SelectContent>{SECTIONS.map((entry) => <SelectItem key={entry.slug} value={entry.slug}>{entry.label}</SelectItem>)}</SelectContent>
+      </Select>
 
-      <ItemGroup className="hidden gap-1 self-start md:sticky md:top-4 md:flex">
+      <ItemGroup className="hidden gap-1 self-start md:sticky md:top-6 md:flex">
         {SECTIONS.map((entry) => {
           const selected = entry.slug === current.slug;
           return (
@@ -504,19 +506,19 @@ function IdentitySection({
   return (
     <FieldSet>
       <Field>
-        <FieldLabel htmlFor="set-name">Name des Assistenten</FieldLabel>
+        <FieldLabel htmlFor="set-name">Assistant name</FieldLabel>
         <Input
           id="set-name"
           value={draft.assistantName}
           onChange={(event) => set({ assistantName: event.target.value })}
         />
         <FieldDescription>
-          Steht im Systemprompt, in der Seitenleiste und über jeder gesprochenen Antwort.
+          Display name in the sidebar and spoken replies. Also used by default profile templates; imported Markdown keeps its own identity.
         </FieldDescription>
       </Field>
 
       <Field>
-        <FieldLabel htmlFor="set-user">Name des Nutzers</FieldLabel>
+        <FieldLabel htmlFor="set-user">User name</FieldLabel>
         <Input
           id="set-user"
           value={draft.userName ?? ''}
@@ -527,9 +529,9 @@ function IdentitySection({
 
       <Field orientation="horizontal">
         <FieldContent>
-          <FieldLabel htmlFor="set-formal">Siezen</FieldLabel>
+          <FieldLabel htmlFor="set-formal">Formal address</FieldLabel>
           <FieldDescription>
-            Der Assistent spricht durchgehend mit „Sie“ an, im Chat wie im Sprachmodus.
+            Use a formal register in both chat and voice conversations.
           </FieldDescription>
         </FieldContent>
         <Switch
@@ -540,7 +542,7 @@ function IdentitySection({
       </Field>
 
       <Field>
-        <FieldLabel htmlFor="set-honorific">Anrede</FieldLabel>
+        <FieldLabel htmlFor="set-honorific">Honorific</FieldLabel>
         <Input
           id="set-honorific"
           value={draft.honorific}
@@ -548,7 +550,7 @@ function IdentitySection({
           onChange={(event) => set({ honorific: event.target.value })}
         />
         <FieldDescription>
-          Wie der Assistent hin und wieder anredet, etwa „Master“ oder „Sir“. Leer: der Name von oben.
+          An occasional form of address, such as “Sir”. Leave empty to use the user name above.
         </FieldDescription>
       </Field>
     </FieldSet>
@@ -581,9 +583,9 @@ function DefaultsSection({
   return (
     <>
       <FieldSet>
-        <FieldLegend variant="label">Anbieter</FieldLegend>
+        <FieldLegend variant="label">Provider</FieldLegend>
         <FieldDescription>
-          Wer antwortet, wenn im Eingabefeld nichts anderes gewählt ist.
+          Who responds when no other provider is selected in the composer.
         </FieldDescription>
         <RadioGroup
           value={draft.defaultProvider}
@@ -599,7 +601,7 @@ function DefaultsSection({
                 <FieldContent>
                   <FieldTitle>{PROVIDER_LABEL[id]}</FieldTitle>
                 </FieldContent>
-                <RadioGroupItem value={id} id={'set-provider-' + id} />
+                <RadioGroupItem value={id} id={'set-provider-' + id} aria-label={PROVIDER_LABEL[id]} />
               </Field>
             </FieldLabel>
           ))}
@@ -608,24 +610,24 @@ function DefaultsSection({
 
       <FieldSet>
         <Field>
-          <FieldLabel htmlFor="set-model">Modell</FieldLabel>
+          <FieldLabel htmlFor="set-model">Model</FieldLabel>
           <EntityCombobox
             id="set-model"
             options={options}
             value={draft.defaultModel || null}
             onChange={(value) => set({ defaultModel: value ?? '' })}
-            placeholder="Standard des Anbieters"
-            emptyLabel="Kein Modell gefunden"
+            placeholder="Provider default"
+            emptyLabel="No model found"
           />
           <FieldDescription>
-            Leer bedeutet: das Modell, das der Anbieter selbst wählt.
+            Leave empty to use the provider default model.
           </FieldDescription>
         </Field>
       </FieldSet>
 
       <FieldSet>
         <FieldLegend variant="label">Effort</FieldLegend>
-        <FieldDescription>Wie lange das Modell nachdenken darf, bevor es antwortet.</FieldDescription>
+        <FieldDescription>How much reasoning effort the model uses before responding.</FieldDescription>
         <RadioGroup
           value={draft.defaultEffort || DEFAULT}
           onValueChange={(value) =>
@@ -637,10 +639,10 @@ function DefaultsSection({
           <FieldLabel htmlFor="set-effort-default">
             <Field orientation="horizontal">
               <FieldContent>
-                <FieldTitle>Standard des Anbieters</FieldTitle>
-                <FieldDescription>Was der Anbieter vorsieht.</FieldDescription>
+                <FieldTitle>Provider default</FieldTitle>
+                <FieldDescription>Use the provider default.</FieldDescription>
               </FieldContent>
-              <RadioGroupItem value={DEFAULT} id="set-effort-default" />
+              <RadioGroupItem value={DEFAULT} id="set-effort-default" aria-label="Provider default" />
             </Field>
           </FieldLabel>
           {EFFORT_LEVELS.map((level) => (
@@ -650,7 +652,7 @@ function DefaultsSection({
                   <FieldTitle>{EFFORT_LABEL[level]}</FieldTitle>
                   <FieldDescription>{EFFORT_HINT[level]}</FieldDescription>
                 </FieldContent>
-                <RadioGroupItem value={level} id={'set-effort-' + level} />
+                <RadioGroupItem value={level} id={'set-effort-' + level} aria-label={EFFORT_LABEL[level]} />
               </Field>
             </FieldLabel>
           ))}
@@ -658,9 +660,9 @@ function DefaultsSection({
       </FieldSet>
 
       <FieldSet>
-        <FieldLegend variant="label">Zugriff</FieldLegend>
+        <FieldLegend variant="label">Permissions</FieldLegend>
         <FieldDescription>
-          Was der Assistent ohne Rückfrage darf. Gilt als Vorauswahl je Gespräch.
+          The default permission level for each conversation.
         </FieldDescription>
         <RadioGroup
           value={draft.defaultPermission}
@@ -673,7 +675,7 @@ function DefaultsSection({
                   <FieldTitle>{PERMISSION_LABEL[level]}</FieldTitle>
                   <FieldDescription>{PERMISSION_HINT[level]}</FieldDescription>
                 </FieldContent>
-                <RadioGroupItem value={level} id={'set-permission-' + level} />
+                <RadioGroupItem value={level} id={'set-permission-' + level} aria-label={PERMISSION_LABEL[level]} />
               </Field>
             </FieldLabel>
           ))}
@@ -704,7 +706,7 @@ function VoiceSection({
 }) {
   const voice = draft.voice;
 
-  const langPrefix = (voice.lang.split('-')[0] ?? 'de').toLowerCase();
+  const langPrefix = (voice.lang.split('-')[0] ?? 'en').toLowerCase();
   const edgeOptions = useMemo<EntityOption[]>(() => {
     const picks = (catalogue?.edge ?? []).filter(
       (entry) => entry.lang.toLowerCase().startsWith(langPrefix) || entry.id.includes('Multilingual'),
@@ -725,18 +727,17 @@ function VoiceSection({
   return (
     <>
       <FieldSet>
-        <FieldLegend>Ausgabe</FieldLegend>
+        <FieldLegend>Output</FieldLegend>
         <FieldDescription>
-          Womit der Server Sprache erzeugt. Fehlt einem Dienst der Schlüssel, springt die
-          Browser-Stimme ein.
+          Choose a speech engine. If a service key is missing, the browser voice takes over.
         </FieldDescription>
 
         {failed ? (
           <EmptyState
             icon={Volume2Icon}
-            title="Stimmenkatalog nicht geladen"
-            description="Ohne den Katalog lässt sich keine Stimme auswählen; die gespeicherte bleibt in Kraft."
-            actionLabel="Erneut versuchen"
+            title="Voice catalogue unavailable"
+            description="New voices cannot be selected without the catalogue. Your saved voice remains selected."
+            actionLabel="Try again"
             onAction={onRetry}
             variant="plain"
             size="sm"
@@ -772,7 +773,7 @@ function VoiceSection({
                     </ItemContent>
                     {missing && engine.env ? (
                       <ItemActions>
-                        <Badge variant="destructive">Schlüssel fehlt</Badge>
+                        <Badge variant="destructive">Key missing</Badge>
                       </ItemActions>
                     ) : null}
                   </button>
@@ -782,35 +783,31 @@ function VoiceSection({
           </ItemGroup>
         )}
 
-        {/* The missing key is a server-side fact, so it says which variable and
-            where - a badge alone leaves a person guessing. */}
         {missingVoiceEnv(voice.engine, catalogue) ? (
           <FieldDescription>
-            Dem Server fehlt{' '}
-            <code className="font-mono">{missingVoiceEnv(voice.engine, catalogue)}</code>{' '}
-            in <code className="font-mono">~/.rookery/.env</code>. Bis der Schlüssel gesetzt und der
-            Server neu gestartet ist, spricht die Browser-Stimme.
+            Add a key under Speech service keys below to enable this engine. Until then, the browser voice is used.
           </FieldDescription>
         ) : null}
       </FieldSet>
+
+      <VoiceKeys onSaved={onRetry} />
 
       {!failed && voice.engine === 'edge' ? (
         <FieldSet>
           <FieldLegend variant="label">Edge Neural</FieldLegend>
           <Field>
-            <FieldLabel htmlFor="set-edge-voice">Stimme</FieldLabel>
+            <FieldLabel htmlFor="set-edge-voice">Voice</FieldLabel>
             <EntityCombobox
               id="set-edge-voice"
               options={edgeOptions}
               value={voice.edgeVoice || null}
               onChange={(value) => setVoice({ edgeVoice: value ?? '' })}
-              placeholder="Stimme suchen"
-              emptyLabel="Keine Stimme gefunden"
+              placeholder="Search voices"
+              emptyLabel="No voice found"
               clearable={false}
             />
             <FieldDescription>
-              Multilingual-Stimmen sprechen jede Sprache. Florian ist die ruhige deutsche
-              Männerstimme, Andrew und Brian die tiefen englischen.
+              Ryan is the default British English voice. Multilingual voices support multiple languages.
             </FieldDescription>
           </Field>
         </FieldSet>
@@ -820,7 +817,7 @@ function VoiceSection({
         <FieldSet>
           <FieldLegend variant="label">ElevenLabs</FieldLegend>
           <Field>
-            <FieldLabel htmlFor="set-eleven-voice">Stimme</FieldLabel>
+            <FieldLabel htmlFor="set-eleven-voice">Voice</FieldLabel>
             {/* One field, one config value. There used to be a select and a text
                 input writing to `elevenLabsVoiceId` side by side, and whichever
                 was touched last silently won. */}
@@ -828,16 +825,16 @@ function VoiceSection({
               <InputGroupInput
                 id="set-eleven-voice"
                 value={voice.elevenLabsVoiceId}
-                placeholder="Standard (George)"
+                placeholder="Default (George)"
                 onChange={(event) => setVoice({ elevenLabsVoiceId: event.target.value })}
               />
               <InputGroupAddon align="inline-end">
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <InputGroupButton>Bibliothek</InputGroupButton>
+                    <InputGroupButton>Library</InputGroupButton>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="max-h-72 w-64 overflow-y-auto">
-                    <DropdownMenuLabel>Stimme aus der Bibliothek</DropdownMenuLabel>
+                    <DropdownMenuLabel>Voice library</DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     <DropdownMenuRadioGroup
                       value={voice.elevenLabsVoiceId || DEFAULT}
@@ -845,7 +842,7 @@ function VoiceSection({
                         setVoice({ elevenLabsVoiceId: value === DEFAULT ? '' : value })
                       }
                     >
-                      <DropdownMenuRadioItem value={DEFAULT}>Standard (George)</DropdownMenuRadioItem>
+                      <DropdownMenuRadioItem value={DEFAULT}>Default (George)</DropdownMenuRadioItem>
                       {(catalogue?.elevenlabs ?? []).map((entry) => (
                         <DropdownMenuRadioItem key={entry.id} value={entry.id}>
                           {entry.name}
@@ -857,13 +854,12 @@ function VoiceSection({
               </InputGroupAddon>
             </InputGroup>
             <FieldDescription>
-              Eine Voice-ID aus der Voice Library lässt sich auch direkt eintragen. George, Daniel und
-              Brian sind die Jarvis-Kandidaten.
+              You can also enter a voice ID directly from the Voice Library. George is the default.
             </FieldDescription>
           </Field>
 
           <Field>
-            <FieldLabel htmlFor="set-eleven-model">Modell</FieldLabel>
+            <FieldLabel htmlFor="set-eleven-model">Model</FieldLabel>
             <Select
               value={voice.elevenLabsModel}
               onValueChange={(value) =>
@@ -882,8 +878,7 @@ function VoiceSection({
               </SelectContent>
             </Select>
             <FieldDescription>
-              Multilingual v2 klingt auf Deutsch am besten, Flash antwortet schneller, v3 ist am
-              ausdrucksstärksten und am langsamsten.
+              Choose a model, then preview the voice to compare its sound and response time.
             </FieldDescription>
           </Field>
         </FieldSet>
@@ -893,19 +888,18 @@ function VoiceSection({
         <FieldSet>
           <FieldLegend variant="label">OpenAI</FieldLegend>
           <Field>
-            <FieldLabel htmlFor="set-openai-voice">Stimme</FieldLabel>
+            <FieldLabel htmlFor="set-openai-voice">Voice</FieldLabel>
             <EntityCombobox
               id="set-openai-voice"
               options={openaiOptions}
               value={voice.openaiVoice || null}
               onChange={(value) => setVoice({ openaiVoice: value ?? '' })}
-              placeholder="Stimme suchen"
-              emptyLabel="Keine Stimme gefunden"
+              placeholder="Search voices"
+              emptyLabel="No voice found"
               clearable={false}
             />
             <FieldDescription>
-              Onyx und Echo sind die tiefen; der Butler-Ton kommt aus der Stilanweisung, nicht aus der
-              Stimme.
+              Onyx is the default. Style instructions add the butler register to the selected voice.
             </FieldDescription>
           </Field>
         </FieldSet>
@@ -915,50 +909,48 @@ function VoiceSection({
         <FieldSet>
           <FieldLegend variant="label">Browser</FieldLegend>
           <Field>
-            <FieldLabel htmlFor="set-browser-voice">Stimme</FieldLabel>
+            <FieldLabel htmlFor="set-browser-voice">Voice</FieldLabel>
             <EntityCombobox
               id="set-browser-voice"
               options={browserOptions}
               value={voice.voiceName || null}
               onChange={(value) => setVoice({ voiceName: value ?? '' })}
-              placeholder="Automatisch"
-              emptyLabel="Keine Stimme gefunden"
+              placeholder="Automatic"
+              emptyLabel="No voice found"
             />
             <FieldDescription>
-              Was dieses Betriebssystem mitbringt. Automatisch nimmt die erste Stimme der eingestellten
-              Sprache.
+              Voices available on this operating system. Automatic selects a voice for the configured language.
             </FieldDescription>
           </Field>
         </FieldSet>
       ) : null}
 
       <FieldSet>
-        <FieldLegend>Klang</FieldLegend>
+        <FieldLegend>Sound</FieldLegend>
 
         <SliderField
           id="set-rate"
-          label="Tempo"
+          label="Speed"
           {...VOICE_RATE}
           value={voice.rate}
-          description="Wie schnell gesprochen wird. 1,00 ist das Tempo der Stimme selbst."
+          description="Speaking speed. 1.00 uses the voice default pace."
           onChange={(value) => setVoice({ rate: value })}
         />
 
         <SliderField
           id="set-pitch"
-          label="Tonhöhe"
+          label="Pitch"
           {...VOICE_PITCH}
           value={voice.pitch}
-          description="Wirkt bei Edge und im Browser. ElevenLabs und OpenAI ignorieren sie."
+          description="Applies to Edge and browser voices. ElevenLabs and OpenAI ignore this setting."
           onChange={(value) => setVoice({ pitch: value })}
         />
 
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="set-jarvis">Jarvis-Effekt</FieldLabel>
+            <FieldLabel htmlFor="set-jarvis">Jarvis effect</FieldLabel>
             <FieldDescription>
-              Präsenz-EQ, leichte Kompression und ein kurzer Raum-Doppel bei der Wiedergabe. Klingt
-              nach Helmfunk.
+              Adds presence EQ, light compression and a short room effect during playback.
             </FieldDescription>
           </FieldContent>
           <Switch
@@ -970,9 +962,9 @@ function VoiceSection({
 
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="set-clean">Bereinigten Text sprechen</FieldLabel>
+            <FieldLabel htmlFor="set-clean">Speak clean text</FieldLabel>
             <FieldDescription>
-              Codeblöcke, Listenzeichen und Links werden vor dem Vorlesen entfernt.
+              Removes code blocks, list markers and links before reading aloud.
             </FieldDescription>
           </FieldContent>
           <Switch
@@ -983,7 +975,7 @@ function VoiceSection({
         </Field>
 
         <Field>
-          <FieldLabel htmlFor="set-style">Sprechstil</FieldLabel>
+          <FieldLabel htmlFor="set-style">Speaking style</FieldLabel>
           <Select
             value={voice.style}
             onValueChange={(value) => setVoice({ style: value as VoiceConfig['style'] })}
@@ -997,8 +989,7 @@ function VoiceSection({
             </SelectContent>
           </Select>
           <FieldDescription>
-            Jarvis: gelassener britischer Butler, trocken, knapp, ein Hauch Ironie. Wirkt auf die
-            Formulierung gesprochener Antworten, nicht auf den Chat.
+            Jarvis: a composed British butler, dry and concise with a touch of irony. Changes the wording of voice replies only.
           </FieldDescription>
         </Field>
 
@@ -1009,11 +1000,11 @@ function VoiceSection({
             disabled={preview.speaking}
             onClick={() => {
               preview.unlock();
-              preview.speak('Guten Abend. Alle Systeme laufen, ich bin bereit.');
+              preview.speak('Good evening. All systems are running. Ready when you are.');
             }}
           >
-            {preview.speaking ? <Spinner aria-label="Spricht" /> : null}
-            Probehören
+            {preview.speaking ? <Spinner aria-label="Speaking" /> : null}
+            Preview voice
           </Button>
           <Button
             type="button"
@@ -1022,34 +1013,34 @@ function VoiceSection({
             onClick={() => preview.stop()}
           >
             <SquareIcon data-icon="inline-start" />
-            Stoppen
+            Stop
           </Button>
         </ButtonGroup>
         <FieldDescription>
-          Spricht mit den Einstellungen auf diesem Bildschirm, auch ungespeicherten.
-          {preview.error ? ' Server-Stimme fehlgeschlagen: ' + preview.error : ''}
+          Uses the settings on this screen, including unsaved changes.
+          {preview.error ? ' Server voice failed: ' + preview.error : ''}
         </FieldDescription>
       </FieldSet>
 
       <FieldSet>
-        <FieldLegend>Erkennung</FieldLegend>
-        <FieldDescription>Gilt für den Sprachmodus und das Diktat im Eingabefeld.</FieldDescription>
+        <FieldLegend>Recognition</FieldLegend>
+        <FieldDescription>Applies to voice conversations and composer dictation.</FieldDescription>
 
         <Field>
-          <FieldLabel htmlFor="set-lang">Sprache</FieldLabel>
+          <FieldLabel htmlFor="set-lang">Language</FieldLabel>
           <Input
             id="set-lang"
             value={voice.lang}
-            placeholder="de-DE"
+            placeholder="en-GB"
             onChange={(event) => setVoice({ lang: event.target.value })}
           />
           <FieldDescription>
-            Als BCP-47-Kennung. Steuert die Spracherkennung und die Vorauswahl der Stimmen.
+            A BCP 47 language code. Controls speech recognition and voice filtering.
           </FieldDescription>
         </Field>
 
         <Field>
-          <FieldLabel htmlFor="set-wake">Aktivierungswort</FieldLabel>
+          <FieldLabel htmlFor="set-wake">Wake word</FieldLabel>
           <Input
             id="set-wake"
             value={voice.wakeWord}
@@ -1057,7 +1048,7 @@ function VoiceSection({
             onChange={(event) => setVoice({ wakeWord: event.target.value })}
           />
           <FieldDescription>
-            Im Sprachmodus zuschaltbar. Ohne Wort zählt dort jede Äußerung.
+            Can be enabled in voice mode. Without a wake word, every utterance is accepted.
           </FieldDescription>
         </Field>
       </FieldSet>
@@ -1075,7 +1066,7 @@ function withCurrent(list: readonly TtsVoice[], current: string): TtsVoice[] {
 }
 
 function toOption(entry: TtsVoice): EntityOption {
-  const hint = [entry.lang, entry.gender === 'male' ? 'm' : entry.gender === 'female' ? 'w' : '']
+  const hint = [entry.lang, entry.gender === 'male' ? 'm' : entry.gender === 'female' ? 'f' : '']
     .filter(Boolean)
     .join(' · ');
   return { value: entry.id, label: entry.name, ...(hint ? { hint } : {}) };
@@ -1097,10 +1088,9 @@ function MemorySection({
       <FieldSet>
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="set-memory-enabled">Gedächtnis benutzen</FieldLabel>
+            <FieldLabel htmlFor="set-memory-enabled">Use memory</FieldLabel>
             <FieldDescription>
-              Aus: der Assistent beginnt jedes Gespräch ohne Vorwissen. Bereits Gelerntes bleibt
-              gespeichert.
+              When off, saved memories are not recalled. Existing memories remain stored.
             </FieldDescription>
           </FieldContent>
           <Switch
@@ -1112,9 +1102,9 @@ function MemorySection({
 
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="set-memory-extract">Von selbst lernen</FieldLabel>
+            <FieldLabel htmlFor="set-memory-extract">Learn automatically</FieldLabel>
             <FieldDescription>
-              Nach jedem Gespräch prüft der Assistent, was sich zu merken lohnt.
+              After each exchange, the assistant checks what is worth remembering.
             </FieldDescription>
           </FieldContent>
           <Switch
@@ -1126,55 +1116,55 @@ function MemorySection({
       </FieldSet>
 
       <FieldSet>
-        <FieldLegend variant="label">Abruf</FieldLegend>
+        <FieldLegend variant="label">Recall</FieldLegend>
 
         <NumberField
           id="set-memory-recall"
-          label="Erinnerungen je Antwort"
+          label="Memories per reply"
           value={memory.recallLimit}
           min={0}
           max={50}
-          suffix="Stück"
-          description="Wie viele passende Erinnerungen höchstens in den Prompt wandern."
+          suffix="items"
+          description="Maximum number of matching memories recalled for a reply."
           onChange={(value) => setMemory({ recallLimit: value })}
         />
 
         <SliderField
           id="set-memory-threshold"
-          label="Mindestähnlichkeit"
+          label="Minimum match score"
           value={memory.recallThreshold}
           min={0}
           max={1}
           step={0.01}
           fallback={0.12}
           format={(value) => formatPercent(Math.round(value * 100))}
-          description="Wie nah eine Erinnerung am Thema liegen muss, um überhaupt aufzutauchen. Höher heißt strenger."
+          description="How closely a memory must match the topic to appear. Higher values are stricter."
           onChange={(value) => setMemory({ recallThreshold: value })}
         />
       </FieldSet>
 
       <FieldSet>
-        <FieldLegend variant="label">Umfang</FieldLegend>
+        <FieldLegend variant="label">Context size</FieldLegend>
 
         <NumberField
           id="set-memory-window"
-          label="Arbeitsfenster"
+          label="Working window"
           value={memory.workingWindow}
           min={0}
           max={200}
-          suffix="Nachrichten"
-          description="Wie viele der letzten Nachrichten wörtlich im Kontext stehen."
+          suffix="messages"
+          description="How many recent messages are included verbatim when rebuilding context."
           onChange={(value) => setMemory({ workingWindow: value })}
         />
 
         <NumberField
           id="set-memory-budget"
-          label="Kontextbudget"
+          label="Context budget"
           value={memory.contextBudget}
           min={200}
           max={200000}
-          suffix="Tokens"
-          description="Die Obergrenze für alles, was das Gedächtnis beisteuert."
+          suffix="characters"
+          description="The budget for context contributed by memory."
           onChange={(value) => setMemory({ contextBudget: value })}
         />
       </FieldSet>
@@ -1195,33 +1185,31 @@ function OrgSection({
     <FieldSet>
       <NumberField
         id="set-concurrency"
-        label="Gleichzeitige Aufträge"
+        label="Concurrent assignments"
         value={draft.org.maxConcurrentAssignments}
         min={1}
         max={16}
-        suffix="Prozesse"
-        description="Wie viele Agentenprozesse zur selben Zeit laufen dürfen."
+        suffix="processes"
+        description="Maximum number of agent processes running at once."
         onChange={(value) => setOrg({ maxConcurrentAssignments: value })}
       />
 
       <NumberField
         id="set-depth"
-        label="Delegationstiefe"
+        label="Delegation depth"
         value={draft.org.maxDelegationDepth}
         min={1}
         max={6}
-        suffix="Ebenen"
-        description="Wie tief Agenten unter dem Assistenten weiterdelegieren dürfen."
+        suffix="levels"
+        description="How many levels agents can delegate below the assistant."
         onChange={(value) => setOrg({ maxDelegationDepth: value })}
       />
 
       <Field orientation="horizontal">
         <FieldContent>
-          <FieldLabel htmlFor="set-lazy">Sparsam programmieren</FieldLabel>
+          <FieldLabel htmlFor="set-lazy">Keep code minimal</FieldLabel>
           <FieldDescription>
-            Agenten bekommen die Ponytail-Regeln in den Prompt: erst verstehen, dann prüfen, ob es
-            etwas schon gibt, und die kleinste Lösung nehmen, die trägt. Validierung,
-            Fehlerbehandlung, Sicherheit und Barrierefreiheit bleiben ausdrücklich ausgenommen.
+            Agents receive Ponytail instructions: understand the task, check what already exists, and use the smallest working solution. Validation, error handling, security and accessibility remain required.
           </FieldDescription>
         </FieldContent>
         <Switch
@@ -1236,16 +1224,16 @@ function OrgSection({
 
 /* ---------------------------------- view --------------------------------- */
 
-const LOCAL_HINT = 'Wirkt sofort und wird nur in diesem Browser gemerkt.';
+const LOCAL_HINT = 'Applies immediately and is saved in this browser only.';
 
 const THEMES: { value: string; label: string; description: string }[] = [
-  { value: 'light', label: 'Hell', description: 'Immer die helle Palette.' },
-  { value: 'dark', label: 'Dunkel', description: 'Immer die dunkle Palette.' },
-  { value: 'system', label: 'System', description: 'Folgt der Einstellung des Betriebssystems.' },
+  { value: 'light', label: 'Light', description: 'Always use the light palette.' },
+  { value: 'dark', label: 'Dark', description: 'Always use the dark palette.' },
+  { value: 'system', label: 'System', description: 'Follow the operating system setting.' },
 ];
 
 /**
- * The two preferences that never reach the server.
+ * Appearance preferences never reach the server.
  *
  * They sit in their own section instead of hanging below the tabs, because
  * the two storage models are genuinely different: everything else on this
@@ -1255,36 +1243,11 @@ const THEMES: { value: string; label: string; description: string }[] = [
  */
 function ViewSection() {
   const { theme, setTheme } = useTheme();
-  const [showTools, setShowTools] = useState<boolean>(() => showToolCalls());
 
   return (
     <>
       <FieldSet>
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="set-show-tools">Werkzeugaufrufe im Chat anzeigen</FieldLabel>
-            <FieldDescription>
-              Aus: der Assistent arbeitet still, nur Aufträge an Agenten bleiben sichtbar. An: jeder
-              Aufruf erscheint als Zeile. {LOCAL_HINT}
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="set-show-tools"
-            checked={showTools}
-            onCheckedChange={(on) => {
-              setShowTools(on);
-              try {
-                localStorage.setItem(SHOW_TOOL_CALLS_KEY, on ? '1' : '0');
-              } catch {
-                // Private mode: the switch still applies to this page load.
-              }
-            }}
-          />
-        </Field>
-      </FieldSet>
-
-      <FieldSet>
-        <FieldLegend variant="label">Erscheinungsbild</FieldLegend>
+        <FieldLegend variant="label">Theme</FieldLegend>
         <FieldDescription>{LOCAL_HINT}</FieldDescription>
         <RadioGroup value={theme ?? 'system'} onValueChange={setTheme}>
           {THEMES.map((entry) => (
@@ -1294,7 +1257,7 @@ function ViewSection() {
                   <FieldTitle>{entry.label}</FieldTitle>
                   <FieldDescription>{entry.description}</FieldDescription>
                 </FieldContent>
-                <RadioGroupItem value={entry.value} id={'set-theme-' + entry.value} />
+                <RadioGroupItem value={entry.value} id={'set-theme-' + entry.value} aria-label={entry.label} />
               </Field>
             </FieldLabel>
           ))}
@@ -1366,7 +1329,7 @@ function NumberField({
       </InputGroup>
       {description ? <FieldDescription>{description}</FieldDescription> : null}
       <FieldError>
-        {invalid ? 'Bitte eine ganze Zahl zwischen ' + min + ' und ' + max + '.' : null}
+        {invalid ? 'Enter a whole number between ' + min + ' and ' + max + '.' : null}
       </FieldError>
     </Field>
   );

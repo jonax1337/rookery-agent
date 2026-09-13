@@ -1,8 +1,9 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runCronScript } from '../dist/cron/script.js';
 import {
   Assistant,
   CronSyntaxError,
@@ -12,7 +13,19 @@ import {
   nextCronRun,
   parseCron,
   upcomingCronRuns,
+  resolveBinary,
 } from '../dist/index.js';
+
+test('cron: an installed Python runtime handles Unicode output without invoking Windows Store aliases', async t => {
+  const candidates = ['python', 'python3'].map(resolveBinary).filter(binary => binary && !binary.isShim && !/[\\/]Microsoft[\\/]WindowsApps[\\/]/i.test(binary.path));
+  if (!candidates.length) return t.skip('Python is an optional script runtime.');
+  const home = mkdtempSync(join(tmpdir(), 'rookery-python-cron-'));
+  mkdirSync(join(home, 'imported-scripts'));
+  const path = join(home, 'imported-scripts', 'unicode & fixture.py');
+  writeFileSync(path, 'print("Grüße 🦉")\n', 'utf8');
+  const result = await runCronScript(home, { permission: 'full', script: { path, runtime: 'python', noAgent: true } }, new AbortController().signal);
+  assert.equal(result.output, 'Grüße 🦉');
+});
 
 /**
  * Schedules: the parser, the clock, and a run end to end against a fake
@@ -73,6 +86,111 @@ function createAssistant(fake) {
   return { assistant, store, home };
 }
 
+test('cron: imported scripts require review, keep silent gates, and forward pre-check data', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store, home } = createAssistant(fake);
+  const directory = join(home, 'imported-scripts', 'hermes', 'watcher');
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, 'watcher.cjs');
+  writeFileSync(path, 'console.log("watcher result")');
+  const orgId = assistant.org.activeOrganization().id;
+  const job = assistant.cron.create({ orgId, name: 'Imported watcher', schedule: '* * * * *', kind: 'script',
+    script: { path, runtime: 'node', noAgent: true }, prompt: 'Summarize the result.', permission: 'chat', enabled: false, createdBy: 'user' });
+  assert.deepEqual(assistant.cron.get(job.id).script, job.script);
+  assert.throws(() => assistant.cron.update(job.id, { enabled: true }), /grant Full access/);
+  await assert.rejects(assistant.cron.runNow(job.id), /grant Full access/);
+  assert.equal(assistant.cron.runs(job.id).length, 0);
+  assistant.cron.update(job.id, { permission: 'full' });
+  const direct = await assistant.cron.runNow(job.id);
+  assert.equal(direct.status, 'done');
+  assert.equal(direct.result, 'watcher result');
+  assert.equal(fake.runs.length, 0, 'script-only jobs never invoke a provider');
+  const inboxCount = store.org.inbox(orgId, null).length;
+  writeFileSync(path, 'console.log(JSON.stringify({wakeAgent:false}))');
+  await assistant.cron.runNow(job.id);
+  assert.equal(store.org.inbox(orgId, null).length, inboxCount, 'gate suppresses inbox noise');
+  writeFileSync(path, '');
+  await assistant.cron.runNow(job.id);
+  assert.equal(store.org.inbox(orgId, null).length, inboxCount, 'empty script-only output stays quiet');
+  assistant.cron.update(job.id, { script: { ...job.script, noAgent: false } });
+  writeFileSync(path, 'console.log("sensor data from script")');
+  assert.equal((await assistant.cron.runNow(job.id)).status, 'done');
+  assert.match(fake.runs.at(-1).prompt, /sensor data from script/);
+  const beforeSilentAgent = store.org.inbox(orgId, null).length;
+  fake.provider.run = async function* () { yield { type: 'done', text: '[SILENT]' }; };
+  await assistant.cron.runNow(job.id);
+  assert.equal(store.org.inbox(orgId, null).length, beforeSilentAgent, 'Hermes silent agent responses stay quiet');
+  writeFileSync(path, 'console.error("dependency missing");process.exit(3)');
+  const failed = await assistant.cron.runNow(job.id);
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error, /code 3: dependency missing/);
+  assistant.close();
+});
+
+test('cron: script execution bounds output, rejects outside paths and supports abort and timeout', async () => {
+  const { assistant, home } = createAssistant(createFakeProvider());
+  const root = join(home, 'imported-scripts');
+  mkdirSync(root);
+  const path = join(root, 'safe script & name.cjs');
+  const job = { permission: 'full', script: { path, runtime: 'node', noAgent: true } };
+  process.env.ROOKERY_CRON_TEST_SECRET = 'fixture-only';
+  try {
+    writeFileSync(path, 'console.log(process.env.ROOKERY_CRON_TEST_SECRET ?? "not inherited")');
+    assert.equal((await runCronScript(home, job, new AbortController().signal)).output, 'not inherited');
+  } finally { delete process.env.ROOKERY_CRON_TEST_SECRET; }
+  writeFileSync(path, 'process.stdout.write("x".repeat(100000))');
+  const clipped = (await runCronScript(home, job, new AbortController().signal)).output;
+  assert.match(clipped, /^\[Script output truncated:/);
+  assert.equal(clipped.split('\n').at(-1).length, 64000);
+  writeFileSync(path, 'console.log("x".repeat(100000));console.log(JSON.stringify({wakeAgent:false}))');
+  assert.equal((await runCronScript(home, job, new AbortController().signal)).silent, true, 'truncation preserves the final wake gate');
+  const outside = join(home, 'outside.cjs');
+  writeFileSync(outside, 'throw new Error("must never execute")');
+  await assert.rejects(runCronScript(home, { ...job, script: { ...job.script, path: outside } }, new AbortController().signal), /inside Rookery/);
+  writeFileSync(path, 'setInterval(()=>{},1000)');
+  await assert.rejects(runCronScript(home, job, new AbortController().signal, 100), /timed out/);
+  const abort = new AbortController();
+  setTimeout(() => abort.abort(), 100);
+  await assert.rejects(runCronScript(home, job, abort.signal), /cancelled/);
+  assistant.close();
+});
+
+test('cron: finite run limits are reserved before execution and cannot restart after exhaustion', async () => {
+  const { assistant } = createAssistant(createFakeProvider());
+  const job = assistant.cron.create({ orgId: assistant.org.activeOrganization().id, name: 'Limited', schedule: '* * * * *', prompt: 'FAIL', remainingRuns: 2, createdBy: 'user' });
+  assert.equal(assistant.cron.get(job.id).remainingRuns, 2);
+  await assistant.cron.runNow(job.id);
+  assert.equal(assistant.cron.get(job.id).remainingRuns, 1);
+  await assistant.cron.runNow(job.id);
+  const exhausted = assistant.cron.get(job.id);
+  assert.equal(exhausted.remainingRuns, 0);
+  assert.equal(exhausted.enabled, false);
+  assert.equal(exhausted.nextRunAt, undefined);
+  assert.throws(() => assistant.cron.update(job.id, { enabled: true }), /no remaining runs/);
+  await assert.rejects(assistant.cron.runNow(job.id), /no remaining runs/);
+  assistant.close();
+});
+
+test('cron: schema upgrade preserves existing jobs and new script fields survive reopening', () => {
+  const home = mkdtempSync(join(tmpdir(), 'rookery-cron-upgrade-'));
+  const path = join(home, 'test.db');
+  let store = new Store(path);
+  const org = store.org.createOrganization({ name: 'Migration' });
+  const old = store.cron.createJob({ orgId: org.id, name: 'Existing', schedule: '* * * * *', kind: 'assistant', prompt: 'unchanged', enabled: false, createdBy: 'user' });
+  store.db.exec('ALTER TABLE cron_jobs DROP COLUMN script_json; ALTER TABLE cron_jobs DROP COLUMN remaining_runs');
+  store.close();
+  store = new Store(path);
+  assert.equal(store.cron.getJob(old.id).prompt, 'unchanged');
+  assert.equal(store.cron.getJob(old.id).script, undefined);
+  const script = { path: join(home, 'imported-scripts', 'test.py'), runtime: 'python', noAgent: true };
+  store.cron.updateJob(old.id, { kind: 'script', script, remainingRuns: 3 });
+  store.close();
+  store = new Store(path);
+  assert.deepEqual(store.cron.getJob(old.id).script, script);
+  assert.equal(store.cron.getJob(old.id).remainingRuns, 3);
+  store.close();
+});
+
 /* --------------------------------- parser -------------------------------- */
 
 test('cron: next run walks the calendar in local time', () => {
@@ -114,12 +232,16 @@ test('cron: syntax errors name the field, and descriptions read like a person', 
   assert.equal(parseCron('@hourly').expression, '0 * * * *');
   assert.equal(parseCron(' 0   8 * * MON-FRI ').expression, '0 8 * * mon-fri');
 
-  assert.equal(describeCron('0 8 * * 1-5'), 'montags bis freitags um 08:00');
-  assert.equal(describeCron('*/15 * * * *'), 'alle 15 Minuten');
-  assert.equal(describeCron('0 8 * * *'), 'täglich um 08:00');
-  assert.equal(describeCron('30 18 1 * *'), 'monatlich am 1. um 18:30');
-  assert.equal(describeCron('0 9 * * sat,sun'), 'am Wochenende um 09:00');
-  assert.equal(describeCron('0 12 * * 3'), 'Mittwochs um 12:00');
+  assert.equal(describeCron('0 8 * * 1-5'), 'Monday to Friday at 08:00');
+  assert.equal(describeCron('*/15 * * * *'), 'every 15 minutes');
+  assert.equal(describeCron('0 8 * * *'), 'daily at 08:00');
+  assert.equal(describeCron('30 18 1 * *'), 'monthly on day 1 at 18:30');
+  assert.equal(describeCron('0 9 * * sat,sun'), 'weekends at 09:00');
+  assert.equal(describeCron('0 12 * * 3'), 'Wednesdays at 12:00');
+  assert.equal(describeCron('* * * * *'), 'every minute');
+  assert.equal(describeCron('5 * * * *'), 'hourly at minute 5');
+  assert.equal(describeCron('0 */3 * * *'), 'every 3 hours');
+  assert.equal(describeCron('30 9 1 1 *'), 'on 1 January at 09:30');
 });
 
 /* ---------------------------------- CRUD --------------------------------- */
@@ -192,15 +314,15 @@ test('cron: a due job runs as the assistant in its own conversation and reports 
   assert.ok(after.nextRunAt > Date.now() - 60_000, 'rescheduled');
 
   const session = store.getSession(after.sessionId);
-  assert.equal(session.title, 'Zeitplan: Minutentakt');
+  assert.equal(session.title, 'Schedule: Minutentakt');
   assert.equal(store.getMessages(session.id).length, 2, 'prompt and answer are on record');
-  assert.match(fake.runs[0].prompt, /Automatischer Lauf des Zeitplans „Minutentakt“/);
+  assert.match(fake.runs[0].prompt, /Automatic run of schedule “Minutentakt”/);
   assert.match(fake.runs[0].prompt, /Sag hallo\./);
   assert.match(fake.runs[0].systemPrompt, /Your schedules \(cron jobs/);
 
   const inbox = store.org.inbox(org.id, null, { unreadOnly: true });
   assert.equal(inbox.length, 1);
-  assert.match(inbox[0].content, /Zeitplan „Minutentakt“ .* gelaufen/);
+  assert.match(inbox[0].content, /Schedule “Minutentakt” .* completed/);
 
   assert.ok(events.some((event) => event.run?.status === 'running'), 'announced the start');
   assert.ok(events.some((event) => event.run?.status === 'done'), 'announced the end');
@@ -245,7 +367,7 @@ test('cron: a one-shot job switches itself off, and a failure is recorded as suc
   assert.match(failed.error, /boom/);
   assert.equal(assistant.cron.get(failing.id).lastStatus, 'failed');
   const note = store.org.inbox(org.id, null).find((message) => message.content.includes('Kaputt'));
-  assert.match(note.content, /fehlgeschlagen/);
+  assert.match(note.content, /failed/);
   assistant.close();
 });
 

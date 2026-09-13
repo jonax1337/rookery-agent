@@ -15,23 +15,23 @@ export async function registerGatewayRoutes(app: FastifyInstance, context: Serve
     return { gateways: context.gateways.map((gateway) => gateway.status()) };
   });
 
-  /** Send a German test line to the first configured recipient. */
+  /** Send an English test line to the first configured recipient. */
   app.post('/api/gateways/:id/test', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
     const gateway = context.gateways.find((entry) => entry.id === request.params.id);
     if (!gateway) {
       reply.code(400);
-      return { error: 'Bad Request', message: 'Diesen Kanal gibt es nicht: ' + request.params.id };
+      return { error: 'Bad Request', message: 'Unknown gateway: ' + request.params.id };
     }
     if (!gateway.status().running) {
       reply.code(400);
-      return { error: 'Bad Request', message: 'Der Kanal läuft gerade nicht.' };
+      return { error: 'Bad Request', message: 'The gateway is not running.' };
     }
     const [recipient] = pushRecipients(context.config.gateways.telegram);
     if (recipient === undefined) {
       reply.code(400);
-      return { error: 'Bad Request', message: 'Niemand ist als Empfänger eingetragen.' };
+      return { error: 'Bad Request', message: 'No recipient is configured.' };
     }
-    await gateway.send(recipient, 'Testnachricht von Rookery - wenn du das liest, funktioniert der Kanal.');
+    await gateway.send(recipient, 'Test message from Rookery - if you can read this, the gateway is working.');
     return { ok: true, recipient };
   });
 }

@@ -41,7 +41,7 @@ export interface SpecContext {
 
 export interface ToolCatalogEntry {
   id: string;
-  /** UI name, German like every user-facing string. */
+  /** UI name, English like every user-facing string. */
   name: string;
   description: string;
   homepage: string;
@@ -102,25 +102,25 @@ const withKeys = (env: Record<string, string>, names: string[]): Record<string, 
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     id: 'computer',
-    name: 'Computer-Steuerung',
+    name: 'Computer control',
     description:
-      'Bildschirm sehen, Maus und Tastatur bedienen, Bedienelemente über den Accessibility-Baum lesen. ' +
-      'Für alles, was ausserhalb des Browsers passiert.',
+      'View the screen, operate the mouse and keyboard, and read controls through the accessibility tree. ' +
+      'For everything outside the browser.',
     homepage: 'https://github.com/zavora-ai/computer-use-mcp',
     install: 'bundled',
     defaultAudience: 'assistant',
     options: [
       {
         key: 'profile',
-        label: 'Befugnis',
-        hint: 'Sehen und bedienen reicht für fast alles; Skripte und Administration greifen tiefer ins System.',
+        label: 'Permissions',
+        hint: 'Viewing and interacting cover most tasks; scripts and administration reach deeper into the system.',
         type: 'select',
         choices: [
-          { value: 'core', label: 'Sehen und bedienen' },
-          { value: 'ax', label: 'Sehen, bedienen, Bedienelemente lesen (empfohlen)' },
-          { value: 'scripting', label: 'dazu PowerShell-Skripte und Dateien' },
-          { value: 'windows-admin', label: 'dazu Prozesse, Registry, Benachrichtigungen' },
-          { value: 'full', label: 'alles' },
+          { value: 'core', label: 'View and interact' },
+          { value: 'ax', label: 'View, interact and read controls (recommended)' },
+          { value: 'scripting', label: 'Add PowerShell scripts and files' },
+          { value: 'windows-admin', label: 'Add processes, registry and notifications' },
+          { value: 'full', label: 'Everything' },
         ],
         default: 'ax',
       },
@@ -134,8 +134,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     id: 'playwright',
     name: 'Browser (Playwright)',
     description:
-      'Ein echter Browser, gesteuert über den Accessibility-Baum der Seite: navigieren, lesen, Formulare ' +
-      'ausfüllen, klicken. Für Webseiten genauer und billiger als die Computer-Steuerung.',
+      'A real browser controlled through the page accessibility tree: navigate, read, fill in forms ' +
+      'and click. More precise and less costly for websites than computer control.',
     homepage: 'https://github.com/microsoft/playwright-mcp',
     install: 'bundled',
     defaultAudience: 'assistant',
@@ -143,7 +143,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
       {
         key: 'browser',
         label: 'Browser',
-        hint: 'Edge und Chrome nutzen die installierte Version. Chromium wird von Playwright heruntergeladen.',
+        hint: 'Edge and Chrome use the installed version. Playwright downloads Chromium.',
         type: 'select',
         choices: [
           { value: 'msedge', label: 'Microsoft Edge' },
@@ -154,29 +154,29 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
       },
       {
         key: 'persistent',
-        label: 'Fenster',
-        hint: 'Offen: Rookery startet Edge oder Chrome einmal mit eigenem Profil und jeder Turn hängt sich daran; Tabs und Logins bleiben. Frisch: pro Turn ein neuer Browser, der danach schliesst.',
+        label: 'Window',
+        hint: 'Persistent: Rookery starts Edge or Chrome once with its own profile; each turn reconnects, keeping tabs and logins. Fresh: a new browser opens for each turn and closes afterwards.',
         type: 'select',
         choices: [
-          { value: 'yes', label: 'Bleibt zwischen den Turns offen' },
-          { value: 'no', label: 'Frisch pro Turn' },
+          { value: 'yes', label: 'Keep open between turns' },
+          { value: 'no', label: 'Fresh each turn' },
         ],
         default: 'yes',
       },
       {
         key: 'headless',
-        label: 'Sichtbarkeit (nur „frisch pro Turn“)',
+        label: 'Visibility (fresh each turn only)',
         type: 'select',
         choices: [
-          { value: 'no', label: 'Fenster sichtbar' },
-          { value: 'yes', label: 'Unsichtbar (headless)' },
+          { value: 'no', label: 'Visible window' },
+          { value: 'yes', label: 'Hidden (headless)' },
         ],
         default: 'no',
       },
     ],
     env: [],
     prepare: {
-      label: 'Chromium herunterladen (nur für Browser = Chromium nötig)',
+      label: 'Download Chromium (only needed when using Chromium)',
       command: 'npx',
       args: ['-y', 'playwright', 'install', 'chromium'],
     },
@@ -212,16 +212,16 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   },
   {
     id: 'filesystem',
-    name: 'Dateisystem',
-    description: 'Dateien in freigegebenen Verzeichnissen lesen, schreiben, suchen und verschieben.',
+    name: 'Filesystem',
+    description: 'Read, write, search and move files in allowed directories.',
     homepage: 'https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem',
     install: 'on-demand',
     defaultAudience: 'assistant',
     options: [
       {
         key: 'roots',
-        label: 'Verzeichnisse',
-        hint: 'Absolute Pfade, durch Semikolon getrennt. Leer heisst: der Rookery-Arbeitsraum.',
+        label: 'Directories',
+        hint: 'Absolute paths separated by semicolons. Leave empty to use the Rookery workspace.',
         type: 'text',
         default: '',
       },
@@ -242,8 +242,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   },
   {
     id: 'context7',
-    name: 'Context7 (Bibliotheks-Doku)',
-    description: 'Aktuelle Dokumentation und Codebeispiele zu Bibliotheken und Frameworks nachschlagen.',
+    name: 'Context7 (library documentation)',
+    description: 'Look up current documentation and code examples for libraries and frameworks.',
     homepage: 'https://github.com/upstash/context7',
     install: 'on-demand',
     defaultAudience: 'both',
@@ -251,8 +251,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     env: [
       {
         name: 'CONTEXT7_API_KEY',
-        label: 'API-Key',
-        hint: 'Optional; ohne Key gilt ein niedrigeres Limit.',
+        label: 'API key',
+        hint: 'Optional; usage limits are lower without a key.',
         required: false,
         secret: true,
       },
@@ -266,7 +266,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   {
     id: 'github',
     name: 'GitHub',
-    description: 'Repositories, Issues und Pull Requests auf GitHub lesen und bearbeiten.',
+    description: 'Read and edit repositories, issues and pull requests on GitHub.',
     homepage: 'https://github.com/modelcontextprotocol/servers-archived/tree/main/src/github',
     install: 'on-demand',
     defaultAudience: 'both',
@@ -275,7 +275,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
       {
         name: 'GITHUB_PERSONAL_ACCESS_TOKEN',
         label: 'Personal Access Token',
-        hint: 'Ein Token mit repo-Rechten. Ohne Token bleibt der Server aus.',
+        hint: 'A token with repo permissions. The server stays off without a token.',
         required: true,
         secret: true,
       },

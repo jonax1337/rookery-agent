@@ -76,10 +76,10 @@ import {
  * task's detail page and with the dashboard.
  */
 
-/** The sentinel for "nobody assigned yet" in the Zuständig filter. */
+/** The sentinel for "nobody assigned yet" in the Assignee filter. */
 const UNASSIGNED = '__unassigned__';
 
-/** Local midnight of this week's Monday - the base of "N diese Woche". */
+/** Local midnight of this week's Monday - the base of "N this week". */
 function startOfWeek(now = Date.now()): number {
   const date = new Date(now);
   date.setHours(0, 0, 0, 0);
@@ -107,12 +107,12 @@ export function TasksPage() {
   const [pending, setPending] = useState<Record<string, TaskStatus>>({});
 
   usePageMeta({
-    breadcrumb: [{ label: 'Aufgaben' }],
+    breadcrumb: [{ label: 'Tasks' }],
     actions: (
       <Button asChild size="sm">
         <NavLink to="/tasks/new">
           <PlusIcon data-icon="inline-start" />
-          Aufgabe anlegen
+          Create task
         </NavLink>
       </Button>
     ),
@@ -120,7 +120,7 @@ export function TasksPage() {
 
   /*
    * The only real total in this API. `countByStatus` rests on a capped list,
-   * so without this the page could not tell "12 offen" from "12 offen of the
+   * so without this the page could not tell "12 open" from "12 open of the
    * 300 we happen to have loaded"; `totals.tasks` is a `COUNT(*)` and settles
    * it. The shared hook keeps the number in step with every other list.
    */
@@ -171,12 +171,12 @@ export function TasksPage() {
 
   const tabs = useMemo<DataTableTab[]>(
     () => [
-      { value: 'alle', label: 'Alle', count: filtered.length },
-      { value: 'open', label: 'Offen', count: counts.open },
-      { value: 'planned', label: 'Geplant', count: counts.planned },
-      { value: 'running', label: 'Läuft', count: counts.running },
-      { value: 'done', label: 'Erledigt', count: counts.done },
-      { value: 'undone', label: 'Nicht erledigt', count: counts.failed + counts.cancelled },
+      { value: 'alle', label: 'All', count: filtered.length },
+      { value: 'open', label: 'Open', count: counts.open },
+      { value: 'planned', label: 'Planned', count: counts.planned },
+      { value: 'running', label: 'Running', count: counts.running },
+      { value: 'done', label: 'Done', count: counts.done },
+      { value: 'undone', label: 'Not done', count: counts.failed + counts.cancelled },
     ],
     [counts, filtered.length],
   );
@@ -199,20 +199,20 @@ export function TasksPage() {
         await tasks.refresh();
         toast(
           status === 'done'
-            ? 'Aufgabe abgeschlossen'
+            ? 'Task completed'
             : status === 'cancelled'
-              ? 'Aufgabe abgebrochen'
-              : 'Aufgabe wieder geöffnet',
+              ? 'Task cancelled'
+              : 'Task reopened',
         );
       } catch (caught) {
         // 409 is the one failure with a real explanation: the runner has the
         // task and only "abbrechen" gets through while it does.
         if (caught instanceof ApiError && caught.status === 409) {
-          toast.error('Die Aufgabe läuft gerade', {
-            description: 'Während ein Lauf arbeitet, lässt sich nur noch abbrechen.',
+          toast.error('The task is currently running', {
+            description: 'While a run is active, the task can only be cancelled.',
           });
         } else {
-          reportFailure('Status ändern', caught);
+          reportFailure('Change status', caught);
         }
       } finally {
         setPending((current) => {
@@ -228,10 +228,10 @@ export function TasksPage() {
   const cancelTask = useCallback(
     async (task: Task): Promise<void> => {
       const ok = await confirm({
-        title: 'Aufgabe abbrechen?',
-        description: 'Ein laufender Auftrag wird gestoppt. Das lässt sich nicht zurücknehmen.',
-        confirmLabel: 'Abbrechen',
-        cancelLabel: 'Weiterlaufen lassen',
+        title: 'Cancel task?',
+        description: 'Any running assignment will be stopped. This cannot be undone.',
+        confirmLabel: 'Cancel',
+        cancelLabel: 'Keep running',
         destructive: true,
         icon: BanIcon,
       });
@@ -242,13 +242,13 @@ export function TasksPage() {
 
   const planTask = useCallback(
     async (task: Task): Promise<void> => {
-      toast('Wird geplant …', { description: task.title });
+      toast('Planning…', { description: task.title });
       try {
         await api.planTask(task.id);
         await tasks.refresh();
-        toast('Plan steht', { description: task.title });
+        toast('Plan ready', { description: task.title });
       } catch (caught) {
-        reportFailure('Planen', caught);
+        reportFailure('Plan', caught);
       }
     },
     [tasks],
@@ -266,12 +266,12 @@ export function TasksPage() {
           onDone: () => {
             void tasks.refresh();
             void org.refresh();
-            toast('Aufgabe ausgeführt', { description: task.title });
+            toast('Task completed', { description: task.title });
           },
-          onError: (message) => toast.error('Ausführen fehlgeschlagen', { description: message }),
+          onError: (message) => toast.error('Run failed', { description: message }),
         },
       );
-      toast('Aufgabe gestartet', { description: task.title });
+      toast('Task started', { description: task.title });
     },
     [org, socket, tasks],
   );
@@ -313,12 +313,12 @@ export function TasksPage() {
   const doneThisWeek = countSince(tasks.topLevel, (task) => task.finishedAt, startOfWeek());
   const notDone = board.failed + board.cancelled;
   const base = capped
-    ? 'zählt nur Hauptaufgaben · ' +
+    ? 'counts top-level tasks only · ' +
       formatNumber(loaded) +
-      ' von ' +
+      ' of ' +
       formatNumber(totals?.tasks ?? loaded) +
-      ' geladen'
-    : 'zählt nur Hauptaufgaben';
+      ' loaded'
+    : 'counts top-level tasks only';
 
   /* -------------------------------- chart ------------------------------- */
 
@@ -346,35 +346,35 @@ export function TasksPage() {
       <StatCards
         items={[
           {
-            label: 'Offen',
+            label: 'Open',
             value: formatNumber(board.open + board.planned),
-            badge: <Badge variant="outline">{formatNumber(board.planned)} geplant</Badge>,
-            headline: 'Wartet auf einen Lauf',
+            badge: <Badge variant="outline">{formatNumber(board.planned)} planned</Badge>,
+            headline: 'Waiting to run',
             footnote: base,
           },
           {
-            label: 'Läuft',
+            label: 'Running',
             value: formatNumber(board.running),
             // `RunningBadge` gibt bei 0 nichts zurueck; die Kachel darf dann
             // aber auch keinen leeren Aktionsplatz aufmachen.
             badge: board.running > 0 ? <RunningBadge count={board.running} /> : undefined,
-            headline: board.running > 0 ? 'Agenten arbeiten gerade' : 'Gerade niemand am Werk',
+            headline: board.running > 0 ? 'Agents are working' : 'No one is working right now',
             footnote: base,
           },
           {
-            label: 'Erledigt',
+            label: 'Done',
             value: formatNumber(board.done),
-            headline: formatNumber(doneThisWeek) + ' diese Woche',
+            headline: formatNumber(doneThisWeek) + ' this week',
             footnote: base,
           },
           {
-            label: 'Nicht erledigt',
+            label: 'Not done',
             value: formatNumber(notDone),
             badge:
               board.failed > 0 ? (
-                <Badge variant="destructive">{formatNumber(board.failed)} fehlgeschlagen</Badge>
+                <Badge variant="destructive">{formatNumber(board.failed)} failed</Badge>
               ) : undefined,
-            headline: 'Fehlgeschlagen oder abgebrochen',
+            headline: 'Failed or cancelled',
             footnote: base,
           },
         ]}
@@ -382,24 +382,24 @@ export function TasksPage() {
 
       <div className="px-4 lg:px-6">
         <TrendChartCard
-          title="Abgeschlossene Aufgaben pro Tag"
+          title="Completed tasks per day"
           description={
-            'Nach dem Tag des Abschlusses; abgebrochene sind nicht dabei. Basis: die ' +
+            'By completion date; cancelled tasks are excluded. Based on the ' +
             formatNumber(loaded) +
-            ' geladenen Aufgaben, Teilaufgaben eingeschlossen'
+            ' loaded tasks, including subtasks'
           }
-          descriptionShort={formatNumber(loaded) + ' geladene Aufgaben'}
+          descriptionShort={formatNumber(loaded) + ' loaded tasks'}
           data={trend}
           series={[
-            { key: 'erledigt', label: 'Erledigt', color: 'var(--chart-2)' },
-            { key: 'fehlgeschlagen', label: 'Fehlgeschlagen', color: 'var(--destructive)' },
+            { key: 'done', label: 'Done', color: 'var(--chart-2)' },
+            { key: 'failed', label: 'Failed', color: 'var(--destructive)' },
           ]}
           {...cappedBadge(capped)}
           empty={
             <EmptyState
               icon={ClipboardListIcon}
-              title="Noch nichts abgeschlossen"
-              description="Sobald eine Aufgabe fertig wird oder scheitert, zeichnet diese Kurve sie."
+              title="Nothing completed yet"
+              description="This chart records each task when it completes or fails."
               variant="plain"
               size="sm"
             />
@@ -416,10 +416,10 @@ export function TasksPage() {
         onTabChange={setTab}
         tabLabel="Status"
         searchable
-        searchPlaceholder="Aufgaben durchsuchen"
+        searchPlaceholder="Search tasks"
         searchText={(task) => task.title + ' ' + task.description}
         columnLabels={TASK_COLUMN_LABELS}
-        rowLabel={{ singular: 'Aufgabe', plural: 'Aufgaben' }}
+        rowLabel={{ singular: 'task', plural: 'tasks' }}
         capped={capped}
         loading={tasks.loading && tasks.topLevel.length === 0}
         error={tasks.error ? <ServerOffline onRetry={() => void tasks.refresh()} /> : undefined}
@@ -429,8 +429,8 @@ export function TasksPage() {
         filters={
           <>
             <FilterCombobox
-              label="Zuständig"
-              placeholder="Zuständig"
+              label="Assignee"
+              placeholder="Assignee"
               value={assignee}
               onChange={setAssignee}
               options={[
@@ -439,12 +439,12 @@ export function TasksPage() {
               ]}
             />
             <FilterCombobox
-              label="Projekt"
-              placeholder="Projekt"
+              label="Project"
+              placeholder="Project"
               value={project}
               onChange={setProject}
               options={[
-                { value: NO_PROJECT, label: 'Kein Projekt' },
+                { value: NO_PROJECT, label: 'No project' },
                 ...org.projects.map((entry) => ({ value: entry.id, label: entry.name })),
               ]}
             />
@@ -452,9 +452,9 @@ export function TasksPage() {
         }
         /*
           Die Primaeraktion steht im Seitenkopf, nicht noch einmal hier - und
-          die Auswahl-Spalten sind nicht mehr folgenlos: Abbrechen ist die
+          die Auswahl-Spalten sind nicht mehr folgenlos: Cancel ist die
           einzige Sammelaktion, die dieses API kennt (es gibt kein DELETE fuer
-          Aufgaben), und es ist dieselbe Tat wie unten im Zeilenmenue.
+          Tasks), und es ist dieselbe Tat wie unten im Zeilenmenue.
         */
         bulkActions={(selected, clear) => {
           const open = selected.filter(
@@ -468,15 +468,15 @@ export function TasksPage() {
               onClick={() =>
                 void bulk.run({
                   rows: open,
-                  noun: { singular: 'Aufgabe', plural: 'Aufgaben' },
+                  noun: { singular: 'task', plural: 'tasks' },
                   nameOf: (task) => task.title,
-                  verb: 'abbrechen',
-                  done: 'abgebrochen',
-                  confirmLabel: 'Abbrechen',
-                  cancelLabel: 'Weiterlaufen lassen',
+                  verb: 'cancel',
+                  done: 'cancelled',
+                  confirmLabel: 'Cancel',
+                  cancelLabel: 'Keep running',
                   icon: BanIcon,
                   description:
-                    'Laufende Aufträge dazu werden gestoppt. Das lässt sich nicht zurücknehmen.',
+                    'Their running assignments will be stopped. This cannot be undone.',
                   run: (task) => api.updateTask(task.id, { status: 'cancelled' }),
                   after: tasks.refresh,
                   clear,
@@ -484,16 +484,16 @@ export function TasksPage() {
               }
             >
               <BanIcon data-icon="inline-start" />
-              {formatNumber(open.length)} abbrechen
+              Cancel {formatNumber(open.length)}
             </Button>
           );
         }}
         empty={
           <EmptyState
             icon={ClipboardListIcon}
-            title="Noch keine Aufgaben"
-            description="Größere Vorhaben stehen hier, bevor sie geplant und als Aufträge ausgeführt werden. Der Assistent trägt selbst ein."
-            actionLabel="Aufgabe anlegen"
+            title="No tasks yet"
+            description="Larger goals start here before they are planned and run as assignments. The assistant can add tasks too."
+            actionLabel="Create task"
             actionTo="/tasks/new"
             variant="plain"
           />
@@ -505,12 +505,12 @@ export function TasksPage() {
         onOpenChange={(open) => {
           if (!open) setDrawerId(null);
         }}
-        title={drawerTask?.title ?? 'Aufgabe'}
+        title={drawerTask?.title ?? 'Task'}
         description={drawerTask ? TASK_STATUS_LABEL[drawerTask.status] : undefined}
         footer={
           drawerTask ? (
             <Button asChild>
-              <NavLink to={'/tasks/' + drawerTask.id}>Aufgabe öffnen</NavLink>
+              <NavLink to={'/tasks/' + drawerTask.id}>Open task</NavLink>
             </Button>
           ) : undefined
         }
@@ -533,7 +533,7 @@ interface TaskRowMenuProps {
   onCancel(): void;
 }
 
-/** Öffnen → Bearbeiten → Seiteneigenes → Separator → Abbrechen. */
+/** Open → Edit → Seiteneigenes → Separator → Cancel. */
 function TaskRowMenu({
   task,
   onOpen,
@@ -548,28 +548,28 @@ function TaskRowMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <RowMenuButton label={'Aktionen für ' + task.title} />
+        <RowMenuButton label={'Actions for ' + task.title} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
         <DropdownMenuItem onSelect={onOpen}>
           <SquareArrowOutUpRightIcon />
-          Öffnen
+          Open
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={onEdit}>
           <PencilIcon />
-          Bearbeiten
+          Edit
         </DropdownMenuItem>
         <DropdownMenuItem disabled={settled || task.status === 'running'} onSelect={onPlan}>
           <WandSparklesIcon />
-          Planen
+          Plan
         </DropdownMenuItem>
         <DropdownMenuItem disabled={settled || task.status === 'running'} onSelect={onRun}>
           <PlayIcon />
-          Ausführen
+          Run
         </DropdownMenuItem>
 
         <DropdownMenuSub>
-          <DropdownMenuSubTrigger>Status ändern</DropdownMenuSubTrigger>
+          <DropdownMenuSubTrigger>Change status</DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
             <DropdownMenuRadioGroup
               value={task.status}
@@ -594,7 +594,7 @@ function TaskRowMenu({
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" disabled={settled} onSelect={onCancel}>
           <BanIcon />
-          Abbrechen
+          Cancel
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -615,21 +615,21 @@ function TaskDrawerBody({ task }: { task: Task }) {
         columns={1}
         items={[
           { label: 'Status', value: <StatusBadge kind="task" status={task.status} /> },
-          { label: 'Priorität', value: <StatusBadge kind="priority" status={task.priority} /> },
+          { label: 'Priority', value: <StatusBadge kind="priority" status={task.priority} /> },
           {
-            label: 'Zuständig',
+            label: 'Assignee',
             value: assignee?.name ?? TASK_UNASSIGNED,
             ...(assignee ? { to: '/org/agents/' + assignee.id } : {}),
           },
-          { label: 'Projekt', value: project?.name },
+          { label: 'Project', value: project?.name },
           {
-            label: 'Teilaufgaben',
+            label: 'Subtasks',
             value: children.length
               ? children.filter((child) => child.status === 'done').length + '/' + children.length
               : undefined,
           },
-          { label: 'Angelegt', value: relativeTime(task.createdAt) },
-          { label: 'Zuletzt geändert', value: relativeTime(task.updatedAt) },
+          { label: 'Created', value: relativeTime(task.createdAt) },
+          { label: 'Last updated', value: relativeTime(task.updatedAt) },
         ]}
       />
 
@@ -638,7 +638,7 @@ function TaskDrawerBody({ task }: { task: Task }) {
       {task.error ? (
         <Alert variant="destructive">
           <BanIcon />
-          <AlertTitle>Die Aufgabe ist gescheitert</AlertTitle>
+          <AlertTitle>The task failed</AlertTitle>
           <AlertDescription className="whitespace-pre-wrap">{task.error}</AlertDescription>
         </Alert>
       ) : null}
@@ -651,8 +651,8 @@ function TaskDrawerBody({ task }: { task: Task }) {
 interface FinishedDay {
   day: string;
   at: number;
-  erledigt: number;
-  fehlgeschlagen: number;
+  done: number;
+  failed: number;
 }
 
 /**
@@ -663,7 +663,7 @@ interface FinishedDay {
  * the walk out keeps the row type exact and the window explicit.
  */
 function bucketFinished(tasks: readonly Task[], since: number, until: number): FinishedDay[] {
-  const tally = new Map<string, { erledigt: number; fehlgeschlagen: number }>();
+  const tally = new Map<string, { done: number; failed: number }>();
 
   for (const task of tasks) {
     const at = task.finishedAt;
@@ -672,13 +672,13 @@ function bucketFinished(tasks: readonly Task[], since: number, until: number): F
     // not attempted and failed, and folding it in would overstate failures.
     const series =
       task.status === 'done'
-        ? 'erledigt'
+        ? 'done'
         : task.status === 'failed'
-          ? 'fehlgeschlagen'
+          ? 'failed'
           : null;
     if (!series) continue;
     const key = dayKeyOf(at);
-    const row = tally.get(key) ?? { erledigt: 0, fehlgeschlagen: 0 };
+    const row = tally.get(key) ?? { done: 0, failed: 0 };
     row[series] += 1;
     tally.set(key, row);
   }
@@ -692,7 +692,7 @@ function bucketFinished(tasks: readonly Task[], since: number, until: number): F
   // day is 23 or 25 hours and a fixed offset misfiles an hour of rows.
   while (cursor.getTime() <= last.getTime()) {
     const key = dayKeyOf(cursor.getTime());
-    const row = tally.get(key) ?? { erledigt: 0, fehlgeschlagen: 0 };
+    const row = tally.get(key) ?? { done: 0, failed: 0 };
     out.push({ day: key, at: cursor.getTime(), ...row });
     cursor.setDate(cursor.getDate() + 1);
   }

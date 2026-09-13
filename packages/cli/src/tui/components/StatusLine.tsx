@@ -47,7 +47,7 @@ export interface StatusLineProps {
   elapsedMs: number;
   /** Animation tick; the component picks its own frame from it. */
   frame: number;
-  /** What the turn is currently doing, e.g. 'denkt', 'delegiert'. */
+  /** What the turn is currently doing, e.g. 'thinking', 'delegating'. */
   label?: string;
   voice?: boolean;
   verbose?: boolean;
@@ -89,15 +89,15 @@ export function StatusLine(props: StatusLineProps): React.JSX.Element {
   const wide = columns >= NARROW;
   const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length] ?? '-';
   const seconds = Math.floor(elapsedMs / 1000);
-  const flags = [voice ? 'Sprache' : '', verbose ? 'ausführlich' : ''].filter(Boolean);
+  const flags = [voice ? 'Voice' : '', verbose ? 'verbose' : ''].filter(Boolean);
 
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" paddingX={1}>
         {busy ? (
-          <Text color={ui.amber}>{spinner + ' ' + (label ?? 'denkt') + ' ' + seconds + 's'}</Text>
+          <Text color={ui.amber}>{spinner + ' ' + (label ?? 'thinking') + ' ' + seconds + 's'}</Text>
         ) : (
-          <Text color={ui.ok}>{glyph.bullet + ' bereit'}</Text>
+          <Text color={ui.ok}>{glyph.bullet + ' ready'}</Text>
         )}
 
         <Text color={ui.ivory} bold>
@@ -187,7 +187,7 @@ function MeterRow({
             {fraction !== undefined ? Math.round(fraction * 100) + '% ' : ''}
             {tokens(contextTokens)}
             {contextWindow ? '/' + tokens(contextWindow) : ''}
-            {' Kontext'}
+            {' Context'}
           </Text>
         </>
       ) : null}

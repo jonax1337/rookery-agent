@@ -162,7 +162,7 @@ export function RunningBadge({
   if (count <= 0) return null;
   return (
     <Badge variant="secondary" className={cn('animate-pulse tabular-nums', className)}>
-      {formatNumber(count)} {count === 1 ? 'läuft' : 'laufen'}
+      {formatNumber(count)} running
     </Badge>
   );
 }

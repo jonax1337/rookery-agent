@@ -68,10 +68,10 @@ const column = createRookeryColumnHelper<Project>();
 
 const COLUMN_LABELS: Record<string, string> = {
   name: 'Name',
-  description: 'Beschreibung',
-  path: 'Verzeichnis',
-  sessions: 'Gespräche',
-  actions: 'Aktionen',
+  description: 'Description',
+  path: 'Directory',
+  sessions: 'Conversations',
+  actions: 'Actions',
 };
 
 /** How many conversations the drawer lists. A glance, not the archive. */
@@ -108,17 +108,17 @@ export function OrgProjectsPage() {
     async (project: Project): Promise<void> => {
       const conversations = byProject.get(project.id)?.length ?? 0;
       const ok = await confirm({
-        title: project.name + ' archivieren?',
+        title: project.name + ' archive?',
         description:
-          'Das Projekt verschwindet aus dieser Liste und aus allen Auswahlfeldern — der Server ' +
-          'gibt archivierte Projekte nicht mehr heraus, eine Reaktivierung ist hier also nicht ' +
-          'möglich. ' +
+          'The project will disappear from this list and all selection fields — the server ' +
+          'no longer returns archived projects, so it cannot be reactivated here. ' +
+          '' +
           (conversations > 0
             ? formatNumber(conversations) +
-              (conversations === 1 ? ' Gespräch bleibt' : ' Gespräche bleiben') +
-              ' darauf verweisen.'
-            : 'Es hängen keine geladenen Gespräche daran.'),
-        confirmLabel: 'Archivieren',
+              (conversations === 1 ? ' conversation remains' : ' conversations remain') +
+              ' linked to it.'
+            : 'No loaded conversations are associated with it.'),
+        confirmLabel: 'Archive',
         destructive: true,
         icon: ArchiveIcon,
       });
@@ -127,9 +127,9 @@ export function OrgProjectsPage() {
       try {
         await api.updateProject(project.id, { archived: true });
         await org.refresh();
-        toast(project.name + ' archiviert');
+        toast(project.name + ' archived');
       } catch (caught) {
-        reportFailure('Archivieren', caught);
+        reportFailure('Archive', caught);
       }
     },
     [byProject, confirm, org],
@@ -139,15 +139,15 @@ export function OrgProjectsPage() {
     async (project: Project): Promise<void> => {
       const conversations = byProject.get(project.id)?.length ?? 0;
       const ok = await confirm({
-        title: project.name + ' löschen?',
+        title: project.name + ' delete?',
         description:
-          'Der Eintrag wird gelöscht. Das Verzeichnis auf der Platte bleibt unangetastet. ' +
+          'The entry will be deleted. The directory on disk remains untouched. ' +
           (conversations > 0
             ? formatNumber(conversations) +
-              (conversations === 1 ? ' Gespräch verliert' : ' Gespräche verlieren') +
-              ' seine Zuordnung.'
-            : 'Es hängen keine geladenen Gespräche daran.'),
-        confirmLabel: 'Löschen',
+              (conversations === 1 ? ' conversation will lose' : ' conversations will lose') +
+              ' its project association.'
+            : 'No loaded conversations are associated with it.'),
+        confirmLabel: 'Delete',
         destructive: true,
       });
       if (!ok) return;
@@ -155,9 +155,9 @@ export function OrgProjectsPage() {
       try {
         await api.deleteProject(project.id);
         await org.refresh();
-        toast(project.name + ' gelöscht');
+        toast(project.name + ' deleted');
       } catch (caught) {
-        reportFailure('Löschen', caught);
+        reportFailure('Delete', caught);
       }
     },
     [byProject, confirm, org],
@@ -168,7 +168,7 @@ export function OrgProjectsPage() {
   const columns = useMemo(
     () =>
       column.columns([
-        selectionColumn<Project>({ rowLabel: (project) => project.name + ' wählen' }),
+        selectionColumn<Project>({ rowLabel: (project) => project.name + ' selected' }),
 
         column.accessor('name', {
           header: ({ column: head }) => <DataTableColumnHeader column={head} title="Name" />,
@@ -186,7 +186,7 @@ export function OrgProjectsPage() {
         column.accessor((project) => project.description ?? '', {
           id: 'description',
           header: ({ column: head }) => (
-            <DataTableColumnHeader column={head} title="Beschreibung" />
+            <DataTableColumnHeader column={head} title="Description" />
           ),
           cell: ({ row }) =>
             row.original.description ? (
@@ -200,14 +200,14 @@ export function OrgProjectsPage() {
 
         column.accessor((project) => project.path ?? '', {
           id: 'path',
-          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Verzeichnis" />,
+          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Directory" />,
           cell: ({ row }) => <PathCell path={row.original.path ?? null} />,
         }),
 
         column.accessor((project) => byProject.get(project.id)?.length ?? 0, {
           id: 'sessions',
           header: ({ column: head }) => (
-            <DataTableColumnHeader column={head} title="Gespräche" align="end" />
+            <DataTableColumnHeader column={head} title="Conversations" align="end" />
           ),
           cell: ({ row }) => {
             const count = byProject.get(row.original.id)?.length ?? 0;
@@ -222,27 +222,27 @@ export function OrgProjectsPage() {
         actionsColumn<Project>((project) => (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <RowMenuButton label={'Aktionen für ' + project.name} />
+              <RowMenuButton label={'Actions for ' + project.name} />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
               <DropdownMenuItem onSelect={() => setDrawerId(project.id)}>
                 <SquareArrowOutUpRightIcon />
-                Öffnen
+                Open
               </DropdownMenuItem>
               <DropdownMenuItem asChild>
                 <NavLink to={'/org/projects/' + project.id + '/edit'}>
                   <PencilIcon />
-                  Bearbeiten
+                  Edit
                 </NavLink>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => void archive(project)}>
                 <ArchiveIcon />
-                Archivieren
+                Archive
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => void remove(project)}>
                 <Trash2Icon />
-                Löschen
+                Delete
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -268,13 +268,13 @@ export function OrgProjectsPage() {
         searchable
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Projekte durchsuchen"
+        searchPlaceholder="Search projects"
         searchText={(project) =>
           project.name + ' ' + (project.description ?? '') + ' ' + (project.path ?? '')
         }
         columnLabels={COLUMN_LABELS}
         initialSorting={[{ id: 'name', desc: false }]}
-        rowLabel={{ singular: 'Projekt', plural: 'Projekten' }}
+        rowLabel={{ singular: 'Project', plural: 'projects' }}
         loading={org.loading && org.projects.length === 0}
         error={org.error ? <ServerOffline onRetry={() => void org.refresh()} /> : undefined}
         filters={
@@ -282,7 +282,7 @@ export function OrgProjectsPage() {
           // the number is a lower bound and the table has to admit it.
           sessions.capped ? (
             <Badge variant="outline">
-              Gespräche: von {formatNumber(sessions.limit)} geladenen
+              Conversations: based on {formatNumber(sessions.limit)} loaded conversations
             </Badge>
           ) : undefined
         }
@@ -293,14 +293,14 @@ export function OrgProjectsPage() {
             onClick={() =>
               void bulk.run({
                 rows: selected,
-                noun: { singular: 'Projekt', plural: 'Projekte' },
+                noun: { singular: 'Project', plural: 'Projects' },
                 nameOf: (project) => project.name,
-                verb: 'löschen',
-                done: 'gelöscht',
-                confirmLabel: 'Löschen',
+                verb: 'delete',
+                done: 'deleted',
+                confirmLabel: 'Delete',
                 description:
-                  'Die Einträge werden gelöscht, die Verzeichnisse auf der Platte bleiben ' +
-                  'unangetastet.',
+                  'The entries will be deleted; the directories on disk remain ' +
+                  'untouched.',
                 run: (project) => api.deleteProject(project.id),
                 after: org.refresh,
                 clear,
@@ -308,15 +308,15 @@ export function OrgProjectsPage() {
             }
           >
             <Trash2Icon data-icon="inline-start" />
-            Löschen
+            Delete
           </Button>
         )}
         empty={
           <EmptyState
             icon={FolderIcon}
-            title="Noch keine Projekte"
-            description="Ein Projekt gibt Aufträgen ein Arbeitsverzeichnis und ordnet Gespräche ein. Ohne Projekt läuft alles im gemeinsamen Arbeitsraum."
-            actionLabel="Projekt anlegen"
+            title="No projects yet"
+            description="A project gives assignments a working directory and organizes conversations. Without a project, everything runs in the shared workspace."
+            actionLabel="Create project"
             actionTo="/org/projects/new"
             variant="plain"
           />
@@ -353,7 +353,7 @@ export function OrgProjectsPage() {
 function PathCell({ path }: { path: string | null }) {
   const { isCopied, copyToClipboard } = useCopyToClipboard();
 
-  if (!path) return <span className="text-muted-foreground">Arbeitsraum</span>;
+  if (!path) return <span className="text-muted-foreground">Workspace</span>;
 
   return (
     <div className="flex min-w-0 max-w-[22rem] items-center gap-1">
@@ -364,7 +364,7 @@ function PathCell({ path }: { path: string | null }) {
         variant="ghost"
         size="icon-sm"
         className="shrink-0 text-muted-foreground"
-        aria-label="Verzeichnis kopieren"
+        aria-label="Copy directory"
         onClick={() => copyToClipboard(path)}
       >
         {isCopied ? <CheckIcon /> : <CopyIcon />}
@@ -394,12 +394,12 @@ function ProjectDrawer({ project, sessions, capped, limit, onOpenChange }: Proje
     <DetailDrawer
       open={project !== null}
       onOpenChange={onOpenChange}
-      title={project?.name ?? 'Projekt'}
-      description={project?.description || 'Keine Beschreibung hinterlegt.'}
+      title={project?.name ?? 'Project'}
+      description={project?.description || 'No description provided.'}
       footer={
         project ? (
           <Button asChild>
-            <NavLink to={'/org/projects/' + project.id + '/edit'}>Bearbeiten</NavLink>
+            <NavLink to={'/org/projects/' + project.id + '/edit'}>Edit</NavLink>
           </Button>
         ) : null
       }
@@ -410,37 +410,37 @@ function ProjectDrawer({ project, sessions, capped, limit, onOpenChange }: Proje
             columns={1}
             items={[
               {
-                label: 'Verzeichnis',
-                value: project.path ?? 'Arbeitsraum',
+                label: 'Directory',
+                value: project.path ?? 'Workspace',
                 icon: FolderOpenIcon,
                 mono: Boolean(project.path),
               },
               {
-                label: 'Gespräche',
+                label: 'Conversations',
                 value: formatNumber(sessions.length),
                 icon: MessagesSquareIcon,
               },
               {
-                label: 'Grundlage',
+                label: 'Basis',
                 value: capped
-                  ? 'gezählt über ' +
+                  ? 'counted across ' +
                     formatNumber(limit) +
-                    ' geladene Gespräche — mehr liefert der Server nicht'
+                    ' loaded conversations — the server does not return more'
                   : null,
               },
-              { label: 'Angelegt', value: formatDateTime(project.createdAt) },
-              { label: 'Zuletzt geändert', value: formatDateTime(project.updatedAt) },
+              { label: 'Created', value: formatDateTime(project.createdAt) },
+              { label: 'Last updated', value: formatDateTime(project.updatedAt) },
             ]}
           />
 
           <div>
-            <h3 className="mb-2 text-sm font-medium">Zuletzt besprochen</h3>
+            <h3 className="mb-2 text-sm font-medium">Last discussed</h3>
             {recent.length === 0 ? (
               <EmptyState
                 icon={MessagesSquareIcon}
-                title="Noch kein Gespräch zu diesem Projekt"
-                description="Ein Gespräch kommt ins Projekt über die Projektauswahl im Eingabefeld."
-                actionLabel="Zu den Gesprächen"
+                title="No conversations for this project yet"
+                description="Assign a conversation to this project using the project selector in the composer."
+                actionLabel="View conversations"
                 actionTo="/chats"
                 variant="plain"
                 size="sm"
@@ -457,7 +457,7 @@ function ProjectDrawer({ project, sessions, capped, limit, onOpenChange }: Proje
                       ' · ' +
                       formatNumber(session.messageCount) +
                       ' ' +
-                      (session.messageCount === 1 ? 'Nachricht' : 'Nachrichten')
+                      (session.messageCount === 1 ? 'Message' : 'Messages')
                     }
                   />
                 ))}

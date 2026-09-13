@@ -18,12 +18,6 @@ export const PROVIDER_BRAND: Record<ProviderId, string> = {
   codex: 'OpenAI',
 };
 
-/** Subscription each provider is billed against, the way the pickers group. */
-export const PROVIDER_PLAN_LABEL: Record<ProviderId, string> = {
-  claude: 'Claude-Abo',
-  codex: 'ChatGPT-Abo',
-};
-
 export function ProviderIcon({ provider, className }: { provider: ProviderId; className?: string }) {
   return (
     <svg

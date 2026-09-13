@@ -26,11 +26,11 @@ const SLUG_COLUMN = 16;
 
 /** How core names a status, and how it is shown. */
 const STATUS_LABEL: Record<AssignmentStatus, string> = {
-  pending: 'wartet',
-  running: 'läuft',
-  done: 'fertig',
-  failed: 'gescheitert',
-  cancelled: 'abgebrochen',
+  pending: 'pending',
+  running: 'running',
+  done: 'done',
+  failed: 'failed',
+  cancelled: 'cancelled',
 };
 
 export interface AssignmentsViewProps {
@@ -146,15 +146,15 @@ function Headline({
   const running = rows.filter((view) => view.status === 'running').length;
 
   const bits = [count(rows.length)];
-  if (running) bits.push(running + ' laufen');
-  if (done) bits.push(done + ' fertig');
-  if (failed) bits.push(failed + ' gescheitert');
+  if (running) bits.push(running + ' running');
+  if (done) bits.push(done + ' done');
+  if (failed) bits.push(failed + ' failed');
   bits.push(formatDuration(Math.max(0, now - since)));
 
   return (
     <Box flexDirection="row">
       <Text color={ui.amber} bold>
-        {glyph.agent + ' delegiert '}
+        {glyph.agent + ' delegating '}
       </Text>
       <Text color={ui.muted}>{bits.join('  ' + glyph.dot + '  ')}</Text>
     </Box>
@@ -171,8 +171,8 @@ export interface AssignmentsSummaryViewProps {
 export function AssignmentsSummaryView({
   summary,
 }: AssignmentsSummaryViewProps): React.JSX.Element {
-  const bits = [count(summary.total), summary.done + ' fertig'];
-  if (summary.failed) bits.push(summary.failed + ' gescheitert');
+  const bits = [count(summary.total), summary.done + ' done'];
+  if (summary.failed) bits.push(summary.failed + ' failed');
   bits.push(formatDuration(summary.durationMs));
 
   return (
@@ -182,7 +182,7 @@ export function AssignmentsSummaryView({
           {(summary.failed ? glyph.warn : glyph.ok) + ' '}
         </Text>
         <Text color={ui.amber} bold>
-          {'delegiert '}
+          {'delegating '}
         </Text>
         <Text color={ui.muted}>{bits.join('  ' + glyph.dot + '  ')}</Text>
       </Box>
@@ -206,7 +206,7 @@ export function AssignmentsSummaryView({
 /* -------------------------------- helpers ------------------------------ */
 
 function count(total: number): string {
-  return total + (total === 1 ? ' Auftrag' : ' Aufträge');
+  return total + (total === 1 ? ' assignment' : ' assignments');
 }
 
 /**

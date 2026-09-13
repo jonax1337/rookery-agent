@@ -44,10 +44,10 @@ import { Spinner } from '@/components/ui/spinner';
 
 /** The four things a night produces, stacked in the order it produces them. */
 const NIGHT_SERIES: TrendSeries[] = [
-  { key: 'verdichtet', label: 'verdichtet', color: 'var(--chart-1)' },
-  { key: 'verknuepft', label: 'verknüpft', color: 'var(--chart-2)' },
-  { key: 'eingeschlaefert', label: 'eingeschläfert', color: 'var(--chart-3)' },
-  { key: 'einsichten', label: 'Einsichten', color: 'var(--chart-4)' },
+  { key: 'verdichtet', label: 'condensed', color: 'var(--chart-1)' },
+  { key: 'verknuepft', label: 'linked', color: 'var(--chart-2)' },
+  { key: 'eingeschlaefert', label: 'put to sleep', color: 'var(--chart-3)' },
+  { key: 'einsichten', label: 'Insights', color: 'var(--chart-4)' },
 ];
 
 /** The widest window the range switch offers. */
@@ -61,15 +61,15 @@ interface NightPoint extends TrendPoint {
 }
 
 const COLUMN_LABELS: Record<string, string> = {
-  startedAt: 'Nacht',
-  trigger: 'Auslöser',
-  duration: 'Dauer',
-  readCount: 'gelesen',
-  mergedCount: 'verdichtet',
-  edgeCount: 'verknüpft',
-  dormantCount: 'eingeschläfert',
-  insightCount: 'Einsichten',
-  modelCalls: 'Modellaufrufe',
+  startedAt: 'Night',
+  trigger: 'Trigger',
+  duration: 'Duration',
+  readCount: 'read',
+  mergedCount: 'condensed',
+  edgeCount: 'linked',
+  dormantCount: 'put to sleep',
+  insightCount: 'Insights',
+  modelCalls: 'Model calls',
   status: 'Status',
 };
 
@@ -132,38 +132,38 @@ export function MemorySleepPage() {
     }));
   }, [runs]);
 
-  /* -------------------------------- Aktionen ------------------------------ */
+  /* -------------------------------- Actions ------------------------------ */
 
   const start = useCallback(async (): Promise<void> => {
     const ok = await sleep.start();
-    if (ok) toast('Die Nacht läuft');
-    else toast.error('Die Nacht konnte nicht gestartet werden');
+    if (ok) toast('Memory sleep is running');
+    else toast.error('Memory sleep could not be started');
   }, [sleep]);
 
   const undo = useCallback(
     async (run: SleepRun): Promise<void> => {
       const ok = await confirm({
-        title: 'Nacht zurücknehmen?',
+        title: 'Undo night?',
         description:
-          'Verdichtete Erinnerungen werden geweckt, im Schlaf gezogene Verbindungen und Einsichten verschwinden wieder. Der Stand von vor dieser Nacht ist danach zurück.',
-        confirmLabel: 'Zurücknehmen',
+          'Wakes memories made dormant by this run and removes its recorded generated memories and connections. Other changes, such as topic updates, may remain.',
+        confirmLabel: 'Undo',
         destructive: true,
       });
       if (!ok) return;
       setUndoing(run.id);
       try {
         const result = await sleep.undo(run.id);
-        toast('Nacht zurückgenommen', {
+        toast('Night undone', {
           description:
             formatNumber(result.woken) +
-            ' geweckt · ' +
+            ' restored · ' +
             formatNumber(result.removed) +
-            ' entfernt · ' +
+            ' removed · ' +
             formatNumber(result.edges) +
-            ' Verbindungen gelöst',
+            ' connections unlinked',
         });
       } catch (caught) {
-        reportFailure('Zurücknehmen', caught);
+        reportFailure('Undo', caught);
       } finally {
         setUndoing(null);
       }
@@ -178,7 +178,7 @@ export function MemorySleepPage() {
       column.columns([
         column.accessor('startedAt', {
           id: 'startedAt',
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Nacht" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Night" />,
           enableHiding: false,
           cell: ({ row }) => (
             <div className="flex flex-col">
@@ -187,7 +187,7 @@ export function MemorySleepPage() {
               </span>
               {row.original.undoneAt ? (
                 <span className="text-xs text-muted-foreground">
-                  zurückgenommen {formatDateTime(row.original.undoneAt)}
+                  undone {formatDateTime(row.original.undoneAt)}
                 </span>
               ) : null}
             </div>
@@ -195,7 +195,7 @@ export function MemorySleepPage() {
         }),
         column.accessor((run) => CRON_TRIGGER_LABEL[run.trigger], {
           id: 'trigger',
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Auslöser" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Trigger" />,
           cell: ({ getValue }) => (
             <span className="text-muted-foreground">{getValue() as string}</span>
           ),
@@ -203,7 +203,7 @@ export function MemorySleepPage() {
         column.accessor((run) => run.durationMs ?? 0, {
           id: 'duration',
           header: ({ column: col }) => (
-            <DataTableColumnHeader column={col} title="Dauer" align="end" />
+            <DataTableColumnHeader column={col} title="Duration" align="end" />
           ),
           cell: ({ row }) => (
             <div className="text-right tabular-nums">
@@ -211,12 +211,12 @@ export function MemorySleepPage() {
             </div>
           ),
         }),
-        countColumn('readCount', 'gelesen'),
-        countColumn('mergedCount', 'verdichtet'),
-        countColumn('edgeCount', 'verknüpft'),
-        countColumn('dormantCount', 'eingeschläfert'),
-        countColumn('insightCount', 'Einsichten'),
-        countColumn('modelCalls', 'Modellaufrufe'),
+        countColumn('readCount', 'read'),
+        countColumn('mergedCount', 'condensed'),
+        countColumn('edgeCount', 'linked'),
+        countColumn('dormantCount', 'put to sleep'),
+        countColumn('insightCount', 'Insights'),
+        countColumn('modelCalls', 'Model calls'),
         column.accessor('status', {
           id: 'status',
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Status" />,
@@ -226,11 +226,11 @@ export function MemorySleepPage() {
             return (
               <div className="flex flex-wrap items-center gap-1">
                 <StatusBadge kind="sleepRun" status={run.status} />
-                {run.undoneAt ? <Badge variant="outline">zurückgenommen</Badge> : null}
+                {run.undoneAt ? <Badge variant="outline">undone</Badge> : null}
                 {open > 0 ? (
                   <Badge variant="destructive" className="gap-1">
                     <TriangleAlertIcon aria-hidden="true" />
-                    {open === 1 ? '1 Widerspruch offen' : formatNumber(open) + ' Widersprüche offen'}
+                    {open === 1 ? '1 unresolved conflict' : formatNumber(open) + ' unresolved conflicts'}
                   </Badge>
                 ) : null}
               </div>
@@ -240,7 +240,7 @@ export function MemorySleepPage() {
         actionsColumn<SleepRun>((run) => (
           <div className="flex items-center justify-end gap-1">
             {reportText(run) ? (
-              <DetailDrawerTrigger onClick={() => setReport(run)}>Bericht</DetailDrawerTrigger>
+              <DetailDrawerTrigger onClick={() => setReport(run)}>Report</DetailDrawerTrigger>
             ) : null}
             {undoable(run) ? (
               <Button
@@ -255,7 +255,7 @@ export function MemorySleepPage() {
                 ) : (
                   <RotateCcwIcon data-icon="inline-start" />
                 )}
-                Rückgängig
+                Undo
               </Button>
             ) : null}
           </div>
@@ -264,7 +264,7 @@ export function MemorySleepPage() {
     [undo, undoing],
   );
 
-  /* -------------------------------- Zeitplan ------------------------------ */
+  /* -------------------------------- Schedule ------------------------------ */
 
   const schedule = status?.schedule ?? null;
   const config = status?.config ?? null;
@@ -277,24 +277,24 @@ export function MemorySleepPage() {
 
       <div className="px-4 lg:px-6">
         <TrendChartCard
-          title="Was die Nächte gebracht haben"
+          title="What the nights produced"
           description={
-            'Verdichtet, verknüpft, eingeschläfert und geschlossen — pro Nacht, wie der Server sie protokolliert hat.' +
+            'Consolidated, linked, put to sleep, and resolved per night, as recorded by the server.' +
             (runs.length > 0
-              ? ' Basis: die letzten ' +
+              ? ' Based on the latest ' +
                 formatNumber(runs.length) +
-                (runs.length === 1 ? ' protokollierte Nacht.' : ' protokollierten Nächte.')
+                (runs.length === 1 ? ' recorded night.' : ' recorded nights.')
               : '')
           }
-          descriptionShort="Pro Nacht"
+          descriptionShort="Per night"
           data={nights}
           series={NIGHT_SERIES}
           {...cappedBadge(runsCapped)}
           empty={
             <EmptyState
               icon={MoonIcon}
-              title="In diesem Zeitraum lief keine Nacht"
-              description="Ein größerer Zeitraum zeigt womöglich mehr."
+              title="No night ran during this period"
+              description="A longer period may show more."
               variant="plain"
               size="sm"
             />
@@ -310,23 +310,23 @@ export function MemorySleepPage() {
                 className={running ? 'animate-pulse text-primary' : 'text-muted-foreground'}
                 aria-hidden="true"
               />
-              Schlaf
+              Sleep
               {running ? (
                 <>
-                  <Badge variant="secondary">{SLEEP_PHASE_LABEL[sleep.phase] ?? 'arbeitet'}</Badge>
+                  <Badge variant="secondary">{SLEEP_PHASE_LABEL[sleep.phase] ?? 'is running'}</Badge>
                   {sleep.cycle > 0 ? (
                     <span className="text-sm font-normal text-muted-foreground tabular-nums">
-                      Zyklus {formatNumber(sleep.cycle)}
+                      Cycle {formatNumber(sleep.cycle)}
                     </span>
                   ) : null}
-                  <Spinner aria-label="Läuft" />
+                  <Spinner aria-label="Running" />
                 </>
               ) : null}
             </CardTitle>
             <CardDescription>
               {running
-                ? (SLEEP_PHASE_DETAIL[sleep.phase] ?? 'Das Gedächtnis wird gerade umgeräumt.')
-                : 'Leichtschlaf räumt auf, Tiefschlaf verdichtet und entscheidet Widersprüche, Traumschlaf verknüpft und zieht Schlüsse. Gelöscht wird dabei nichts.'}
+                ? (SLEEP_PHASE_DETAIL[sleep.phase] ?? 'Memory is being reorganized.')
+                : 'Light sleep cleans up, deep sleep consolidates and resolves conflicts, and dream sleep creates connections and insights. Nothing is deleted.'}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
@@ -334,7 +334,7 @@ export function MemorySleepPage() {
               {running ? (
                 <Button variant="outline" onClick={() => void sleep.cancel()}>
                   <SunIcon data-icon="inline-start" />
-                  Aufwecken
+                  Wake
                 </Button>
               ) : (
                 <Button disabled={sleep.busy} onClick={() => void start()}>
@@ -343,15 +343,15 @@ export function MemorySleepPage() {
                   ) : (
                     <MoonIcon data-icon="inline-start" />
                   )}
-                  Jetzt schlafen
+                  Run memory sleep now
                 </Button>
               )}
               <span className="text-sm text-muted-foreground">
                 {nextRun
-                  ? 'Nächster Lauf ' + nextRun
+                  ? 'Next run ' + nextRun
                   : config?.enabled === false
-                    ? 'Der nächtliche Lauf ist abgeschaltet.'
-                    : 'Kein Zeitplan hinterlegt.'}
+                    ? 'The nightly run is disabled.'
+                    : 'No schedule configured.'}
               </span>
             </div>
 
@@ -359,20 +359,20 @@ export function MemorySleepPage() {
               <MetaList
                 columns={3}
                 items={[
-                  { label: 'Zeitplan', value: config.schedule, mono: true },
+                  { label: 'Schedule', value: config.schedule, mono: true },
                   {
-                    label: 'Umfang',
-                    value: config.scope === 'all' ? 'Assistent und Agenten' : 'nur der Assistent',
+                    label: 'Scope',
+                    value: config.scope === 'all' ? 'Assistant and agents' : 'assistant only',
                   },
-                  { label: 'Zyklen pro Nacht', value: formatNumber(config.cycles) },
-                  { label: 'Verdichten mit', value: config.model || 'Standardmodell' },
+                  { label: 'Cycles per night', value: formatNumber(config.cycles) },
+                  { label: 'Consolidate with', value: config.model || 'Default model' },
                   {
-                    label: 'Einsichten mit',
-                    value: config.insightModel || config.model || 'Standardmodell',
+                    label: 'Generate insights with',
+                    value: config.insightModel || config.model || 'Default model',
                   },
                   {
-                    label: 'Einschläfern nach',
-                    value: formatNumber(config.dormantAfterDays) + ' Tagen ohne Abruf',
+                    label: 'Put to sleep after',
+                    value: formatNumber(config.dormantAfterDays) + ' days without recall',
                   },
                 ]}
               />
@@ -381,7 +381,7 @@ export function MemorySleepPage() {
         </Card>
       </div>
 
-      <SectionHeading title="Nächte" hint="Die letzten Läufe des nächtlichen Aufräumens.">
+      <SectionHeading title="Nights" hint="Recent nightly cleanup runs.">
         <DataTable
           data={runs}
           columns={columns}
@@ -391,7 +391,7 @@ export function MemorySleepPage() {
           pageSize={10}
           columnLabels={COLUMN_LABELS}
           initialColumnVisibility={{ readCount: false, modelCalls: false }}
-          rowLabel={{ singular: 'Nacht', plural: 'Nächten' }}
+          rowLabel={{ singular: 'Night', plural: 'nights' }}
           capped={runsCapped}
           loading={sleep.loading}
           onRowClick={setReport}
@@ -401,9 +401,9 @@ export function MemorySleepPage() {
           empty={
             <EmptyState
               icon={MoonIcon}
-              title="Noch keine Nacht gelaufen"
-              description="Eine Nacht räumt das Gedächtnis auf, verdichtet Doppeltes und zieht Verbindungen. Alles davon ist mit einem Klick zurückholbar."
-              actionLabel="Jetzt schlafen"
+              title="No nights have run yet"
+              description="A night tidies memory, consolidates duplicates and creates connections. You can review the report and undo recorded changes."
+              actionLabel="Run memory sleep now"
               onAction={() => void start()}
               variant="plain"
               size="sm"
@@ -421,7 +421,7 @@ export function MemorySleepPage() {
         onOpenChange={(open) => {
           if (!open) setReport(null);
         }}
-        title="Bericht der Nacht"
+        title="Night report"
         description={
           report
             ? formatDateTime(report.startedAt) + ' · ' + CRON_TRIGGER_LABEL[report.trigger]
@@ -432,7 +432,7 @@ export function MemorySleepPage() {
           <>
             <div className="flex flex-wrap items-center gap-2">
               <StatusBadge kind="sleepRun" status={report.status} />
-              {report.undoneAt ? <Badge variant="outline">zurückgenommen</Badge> : null}
+              {report.undoneAt ? <Badge variant="outline">undone</Badge> : null}
               {report.durationMs !== undefined ? (
                 <span className="text-muted-foreground">{formatDuration(report.durationMs)}</span>
               ) : null}
@@ -441,21 +441,21 @@ export function MemorySleepPage() {
             <MetaList
               columns={2}
               items={[
-                { label: 'gelesen', value: formatNumber(report.readCount) },
-                { label: 'verdichtet', value: formatNumber(report.mergedCount) },
-                { label: 'verknüpft', value: formatNumber(report.edgeCount) },
-                { label: 'eingeschläfert', value: formatNumber(report.dormantCount) },
-                { label: 'Einsichten', value: formatNumber(report.insightCount) },
-                { label: 'Modellaufrufe', value: formatNumber(report.modelCalls) },
+                { label: 'read', value: formatNumber(report.readCount) },
+                { label: 'condensed', value: formatNumber(report.mergedCount) },
+                { label: 'linked', value: formatNumber(report.edgeCount) },
+                { label: 'put to sleep', value: formatNumber(report.dormantCount) },
+                { label: 'Insights', value: formatNumber(report.insightCount) },
+                { label: 'Model calls', value: formatNumber(report.modelCalls) },
                 {
-                  label: 'Widersprüche',
+                  label: 'Conflicts',
                   value:
                     report.conflictCount === 0
                       ? null
                       : formatNumber(report.resolvedCount) +
-                        ' von ' +
+                        ' of ' +
                         formatNumber(report.conflictCount) +
-                        ' entschieden',
+                        ' resolved',
                 },
               ]}
             />

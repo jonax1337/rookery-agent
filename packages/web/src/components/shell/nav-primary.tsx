@@ -18,6 +18,7 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  useSidebar,
 } from '@/components/ui/sidebar';
 
 /**
@@ -39,6 +40,7 @@ import {
 const ASSISTANT = '__assistant__';
 
 export function NavPrimary() {
+  const { setOpenMobile } = useSidebar();
   const { counterpart, newConversation, chooseCounterpart } = useChatSession();
   const { assistantName } = useConfig();
   const org = useOrgState();
@@ -47,7 +49,7 @@ export function NavPrimary() {
   // belongs to it, because a radio group with no matching value would look
   // like nobody is selected at all.
   const agents = org.agents.filter((agent) => !agent.archived || agent.id === counterpart?.id);
-  const label = counterpart ? 'Neu mit ' + counterpart.name : 'Neues Gespräch';
+  const label = counterpart ? 'New with ' + counterpart.name : 'New conversation';
 
   return (
     <SidebarGroup>
@@ -56,7 +58,10 @@ export function NavPrimary() {
           <SidebarMenuItem className="flex items-center gap-2">
             <SidebarMenuButton
               tooltip={label}
-              onClick={newConversation}
+              onClick={() => {
+                newConversation();
+                setOpenMobile(false);
+              }}
               className="bg-primary text-primary-foreground hover:bg-primary/90 active:bg-primary/90 min-w-8 duration-200 ease-linear"
             >
               <PlusIcon />
@@ -73,20 +78,21 @@ export function NavPrimary() {
                       className="size-8 group-data-[collapsible=icon]:opacity-0"
                     >
                       <ChevronsUpDownIcon />
-                      <span className="sr-only">Gegenüber wählen</span>
+                      <span className="sr-only">Choose who to talk to</span>
                     </Button>
                   </DropdownMenuTrigger>
                 </TooltipTrigger>
-                <TooltipContent side="right">Gegenüber wählen</TooltipContent>
+                <TooltipContent side="right">Choose who to talk to</TooltipContent>
               </Tooltip>
               <DropdownMenuContent side="right" align="start" className="w-56">
-                <DropdownMenuLabel>Gespräch mit</DropdownMenuLabel>
+                <DropdownMenuLabel>Conversation with</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuRadioGroup
                   value={counterpart?.id ?? ASSISTANT}
-                  onValueChange={(value) =>
-                    chooseCounterpart(value === ASSISTANT ? null : value)
-                  }
+                  onValueChange={(value) => {
+                    chooseCounterpart(value === ASSISTANT ? null : value);
+                    setOpenMobile(false);
+                  }}
                 >
                   <DropdownMenuRadioItem value={ASSISTANT}>
                     <FeatherIcon />
@@ -110,13 +116,13 @@ export function NavPrimary() {
                   variant="outline"
                   className="size-8 group-data-[collapsible=icon]:opacity-0"
                 >
-                  <NavLink to="/voice">
+                  <NavLink to="/voice" onClick={() => setOpenMobile(false)}>
                     <AudioLinesIcon />
-                    <span className="sr-only">Sprechen</span>
+                    <span className="sr-only">Voice</span>
                   </NavLink>
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="right">Sprechen</TooltipContent>
+              <TooltipContent side="right">Voice</TooltipContent>
             </Tooltip>
           </SidebarMenuItem>
         </SidebarMenu>

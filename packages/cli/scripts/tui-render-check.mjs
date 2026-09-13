@@ -83,7 +83,7 @@ const statusIdle = renderToString(
     },
     quota: {
       provider: 'claude',
-      windows: [{ kind: 'five_hour', label: '5 Std', percent: 42 }],
+      windows: [{ kind: 'five_hour', label: '5 hr', percent: 42 }],
       fetchedAt: Date.now(),
     },
   }),
@@ -99,7 +99,7 @@ const statusBusy = renderToString(
     busy: true,
     elapsedMs: 7400,
     frame: 3,
-    label: 'delegiert',
+    label: 'delegating',
     columns: COLUMNS,
     voice: true,
     verbose: true,
@@ -115,22 +115,22 @@ expect(statusIdle, 'write', 'permission level');
 expect(statusIdle, 'Rookery', 'active project');
 expect(statusIdle, 'Rewire the CLI terminal', 'session title');
 expect(statusIdle, '2f9c41ab', 'session id');
-expect(statusIdle, 'bereit', 'idle marker');
-expect(statusIdle, '96.4k/200k Kontext', 'context readout');
+expect(statusIdle, 'ready', 'idle marker');
+expect(statusIdle, '96.4k/200k Context', 'context readout');
 expect(statusIdle, '48%', 'context share of the window');
 expect(statusIdle, '█', 'context gauge');
 expect(statusIdle, '↑ 128k', 'input tokens spent');
 expect(statusIdle, '↓ 9.1k', 'output tokens spent');
 expect(statusIdle, '$0.42', 'what the conversation cost');
-expect(statusIdle, '5 Std 42%', 'the account limit window');
+expect(statusIdle, '5 hr 42%', 'the account limit window');
 
 show('StatusLine - running', statusBusy);
-expect(statusBusy, 'delegiert 7s', 'spinner label + elapsed seconds');
+expect(statusBusy, 'delegating 7s', 'spinner label + elapsed seconds');
 expect(statusBusy, '⠸', 'spinner frame 3');
 expect(statusBusy, 'full', 'permission level');
-expect(statusBusy, 'Sprache', 'voice flag');
-expect(statusBusy, 'ausführlich', 'verbose flag');
-refute(statusBusy, 'Kontext', 'a turn that reported nothing yet shows no meter row');
+expect(statusBusy, 'Voice', 'voice flag');
+expect(statusBusy, 'verbose', 'verbose flag');
+refute(statusBusy, 'Context', 'a turn that reported nothing yet shows no meter row');
 
 /* -------------------------------- input box ----------------------------- */
 
@@ -138,8 +138,8 @@ const inputEmpty = renderToString(
   h(InputBox, {
     value: '',
     cursor: 0,
-    placeholder: 'Frag was, oder / für Befehle',
-    hint: 'Enter senden · Shift+Enter neue Zeile · / Befehle · Ctrl+D beenden',
+    placeholder: 'Ask anything, or / for commands',
+    hint: 'Enter send · Shift+Enter newline · / Commands · Ctrl+D exit',
   }),
   { columns: COLUMNS },
 );
@@ -148,7 +148,7 @@ const inputMulti = renderToString(
   h(InputBox, {
     value: 'explain the plan\nthen write it up',
     cursor: 21,
-    hint: 'Ctrl+C unterbricht',
+    hint: 'Ctrl+C interrupts',
   }),
   { columns: COLUMNS },
 );
@@ -157,14 +157,14 @@ show('InputBox - empty with placeholder', inputEmpty);
 expect(inputEmpty, '╭', 'top border');
 expect(inputEmpty, '╰', 'bottom border');
 expect(inputEmpty, '❯', 'prompt marker');
-expect(inputEmpty, 'Frag was, oder / für Befehle', 'placeholder');
-expect(inputEmpty, 'Shift+Enter neue Zeile', 'hint line');
+expect(inputEmpty, 'Ask anything, or / for commands', 'placeholder');
+expect(inputEmpty, 'Shift+Enter newline', 'hint line');
 
 show('InputBox - two lines, caret on line 2', inputMulti);
 expect(inputMulti, 'explain the plan', 'first line');
 expect(inputMulti, 'then write it up', 'second line');
 expect(inputMulti, '▌ then', 'continuation marker on line 2');
-expect(inputMulti, 'Ctrl+C unterbricht', 'busy hint');
+expect(inputMulti, 'Ctrl+C interrupts', 'busy hint');
 
 /* ------------------------------ slash palette --------------------------- */
 
@@ -189,8 +189,8 @@ const paletteAll = renderToString(
 
 show('SlashPalette - filtered by "/me"', palette);
 expect(palette, '/memory <query>', 'filtered command with args');
-expect(palette, 'Langzeitgedächtnis durchsuchen', 'command description');
-expect(palette, 'Tab übernehmen', 'palette hint');
+expect(palette, 'search long-term memory', 'command description');
+expect(palette, 'Tab complete', 'palette hint');
 checks += 1;
 if (matches.length !== 1) {
   failures += 1;
@@ -201,7 +201,7 @@ if (matches.length !== 1) {
 
 show('SlashPalette - windowed list, third row selected', paletteAll);
 expect(paletteAll, '/sessions', 'third command is highlighted row');
-expect(paletteAll, 'weitere', 'overflow counter');
+expect(paletteAll, 'more', 'overflow counter');
 
 checks += 1;
 if (SLASH_COMMANDS.some((command) => command.name === '/assign')) {
@@ -258,11 +258,11 @@ const pending = renderToString(
   { columns: COLUMNS },
 );
 show('AssignmentsView - both just handed out', pending);
-expect(pending, '2 Aufträge', 'headline count');
+expect(pending, '2 assignments', 'headline count');
 expect(pending, 'backend-dev', 'first agent slug');
 expect(pending, 'ink-researcher', 'second agent slug');
 expect(pending, 'Survey the existing REPL', 'first task');
-expect(pending, 'wartet', 'pending status');
+expect(pending, 'pending', 'pending status');
 
 /* Now stream a realistic burst of progress. */
 applyEvent(draft, view({ id: 'as1', status: 'running', provider: 'claude' }), false, noop);
@@ -323,13 +323,13 @@ expect(live, '1.8k', 'growing character count');
 expect(live, '4.1s', 'assignment duration');
 expect(live, 'readline owns the prompt', 'dim preview line under the running assignment');
 expect(live, 'provider exited with code 1', 'failure reason');
-expect(live, '2 laufen', 'headline running count');
-expect(live, '1 gescheitert', 'headline failure count');
-expect(live, '3 Aufträge', 'headline total');
+expect(live, '2 running', 'headline running count');
+expect(live, '1 failed', 'headline failure count');
+expect(live, '3 assignments', 'headline total');
 
 checks += 1;
-if (draft.current.label === 'delegiert') {
-  console.log('  PASS  the status label switches while agents work   [delegiert]');
+if (draft.current.label === 'delegating') {
+  console.log('  PASS  the status label switches while agents work   [delegating]');
 } else {
   failures += 1;
   console.log('  FAIL  the status label switches while agents work   [' + draft.current.label + ']');
@@ -362,7 +362,7 @@ const answering = renderToString(
 );
 
 show('AssignmentsView - rows above, the answer streaming below', answering);
-expect(answering, 'delegiert', 'the block keeps its headline while the answer streams');
+expect(answering, 'delegating', 'the block keeps its headline while the answer streams');
 expect(answering, 'Findings', 'markdown heading, set rather than echoed');
 refute(answering, '# Findings', 'the heading does not keep its hashes');
 expect(answering, '• one', 'markdown list');
@@ -407,7 +407,7 @@ const scrollback = renderToString(
           { id: 't3', name: 'Edit', detail: 'src/tui/theme.ts', status: 'failed', startedAt: 0, durationMs: 300 },
         ],
       },
-      { kind: 'activity', id: 'a2', icon: '⟲', text: '3 Erinnerungen abgerufen' },
+      { kind: 'activity', id: 'a2', icon: '⟲', text: '3 memories recalled' },
       {
         kind: 'assistant',
         id: 'm1',
@@ -455,18 +455,18 @@ const scrollback = renderToString(
 show('Scrollback - a whole exchange', scrollback);
 expect(scrollback, '❯ rebuild the terminal as a TUI', 'user turn');
 expect(scrollback, '█▀▄ █▀█ █▀█', 'the wordmark is set in the block face');
-expect(scrollback, 'claude + codex bereit', 'the banner names the logged-in providers');
+expect(scrollback, 'claude + codex ready', 'the banner names the logged-in providers');
 expect(scrollback, '⏺ Read src/repl.ts', 'a finished tool call');
 expect(scrollback, '✗ Edit src/tui/theme.ts', 'a failed tool call');
 expect(scrollback, 'npm run build && node scripts/tui-render-check.mjs', 'the full tool argument, not a truncation');
 expect(scrollback, '8.4s', 'how long the tool call took');
-expect(scrollback, '⟲ 3 Erinnerungen abgerufen', 'memory activity line');
+expect(scrollback, '⟲ 3 memories recalled', 'memory activity line');
 expect(scrollback, 'jarvis  claude', 'assistant header');
 expect(scrollback, '↑12.8k ↓840', 'what the turn spent');
 expect(scrollback, '12.3s', 'turn duration');
 expect(scrollback, 'PLAN', 'assistant markdown heading');
 expect(scrollback, '1. add', 'ordered list');
-expect(scrollback, '3 Aufträge  ·  2 fertig  ·  1 gescheitert  ·  31.8s', 'collapsed assignment summary');
+expect(scrollback, '3 assignments  ·  2 done  ·  1 failed  ·  31.8s', 'collapsed assignment summary');
 expect(scrollback, 'doc-writer', 'the summary names each agent');
 
 /* ---------------------------------- result ------------------------------ */
