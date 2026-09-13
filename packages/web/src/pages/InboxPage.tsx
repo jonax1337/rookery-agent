@@ -4,7 +4,8 @@ import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
-import type { Mail, RequesterKind } from '@/lib/types';
+import { formatDateTime } from '@/lib/format';
+import type { Mail, MailRecipient, RequesterKind } from '@/lib/types';
 import { useConfig, useConnection, useMailState, useOrgState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { ServerOffline } from '@/components/common/empty-state';
@@ -17,7 +18,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Badge } from '@/components/ui/badge';
 import { Field, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
@@ -38,13 +38,23 @@ import { MultiEntityCombobox } from '@/components/mail/multi-entity-combobox';
  * with per-recipient read state. Mailing an agent's To line kicks off a real
  * run of theirs behind the scenes; its result comes back as a reply here.
  *
+ * The three panes follow shadcn's mail example: a collapsible rail with the
+ * open mailbox, its folders and the switcher; a list of cards with search and
+ * an All/Unread filter; and a reading pane whose action bar carries Reply,
+ * Reply all and Forward. Reply answers inline, the other two open Compose
+ * pre-filled, because they are the two that change who a mail goes to.
+ *
  * `?mailbox=<id>` pre-selects a mailbox and `?compose=<agentId>` opens Compose
  * with that agent already in To - the two entry points `AgentDetailPage` and
  * `OrgAgentsPage` use instead of the "Chat" button they used to have.
  */
 
-function snippetOf(body: string): string {
-  return body.replace(/\s+/g, ' ').trim();
+/** What Compose opens with, when something else fills it in first. */
+interface ComposePrefill {
+  to: EntityOption[];
+  cc: EntityOption[];
+  subject: string;
+  body: string;
 }
 
 export function InboxPage() {
@@ -59,11 +69,15 @@ export function InboxPage() {
   const interactive = mailboxId === 'user';
 
   const [box, setBox] = useState<'inbox' | 'outbox'>('inbox');
+  const [filter, setFilter] = useState<'all' | 'unread'>('all');
+  const [navCollapsed, setNavCollapsed] = useState(false);
   const [mails, setMails] = useState<Mail[] | null>(null);
   const [offline, setOffline] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  /** Unread in this mailbox's inbox, remembered while the outbox is open. */
+  const [inboxUnread, setInboxUnread] = useState<number | null>(null);
 
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeTo, setComposeTo] = useState<EntityOption[]>([]);
@@ -91,6 +105,29 @@ export function InboxPage() {
 
   const senderLabel = useCallback((mail: Mail): string => nameOf(mail.fromKind, mail.fromAgentId), [nameOf]);
 
+  /**
+   * An agent's job title - "Lead Engineer", "Research Lead".
+   *
+   * Six agent names in a rail are six names; the title is what says who does
+   * what, so it rides along wherever a single sender is named. Only agents
+   * have one: the user is the user, and the assistant's role is its name.
+   */
+  const roleOf = useCallback(
+    (kind: RequesterKind, id?: string): string | null =>
+      kind === 'agent' && id ? (org.agentById(id)?.title?.trim() || null) : null,
+    [org],
+  );
+
+  const mailboxRole = useCallback(
+    (id: string): string | null => (id === 'user' || id === 'assistant' ? null : roleOf('agent', id)),
+    [roleOf],
+  );
+
+  const senderRole = useCallback(
+    (mail: Mail): string | null => roleOf(mail.fromKind, mail.fromAgentId),
+    [roleOf],
+  );
+
   const namesFor = useCallback(
     (mail: Mail, box: 'to' | 'cc'): string[] =>
       mail.recipients
@@ -99,41 +136,93 @@ export function InboxPage() {
     [nameOf],
   );
 
-  const recipientSummary = useCallback(
-    (mail: Mail): string => {
-      const to = namesFor(mail, 'to');
+  const toLine = useCallback((mail: Mail): string => 'To: ' + (namesFor(mail, 'to').join(', ') || '—'), [namesFor]);
+  const ccLine = useCallback(
+    (mail: Mail): string | null => {
       const cc = namesFor(mail, 'cc');
-      return 'To: ' + (to.join(', ') || '—') + (cc.length > 0 ? ' · Cc: ' + cc.join(', ') : '');
+      return cc.length > 0 ? 'Cc: ' + cc.join(', ') : null;
     },
     [namesFor],
   );
 
-  const toLine = useCallback((mail: Mail): string => 'To: ' + (namesFor(mail, 'to').join(', ') || '—'), [namesFor]);
-  const ccLine = useCallback((mail: Mail): string | null => {
-    const cc = namesFor(mail, 'cc');
-    return cc.length > 0 ? 'Cc: ' + cc.join(', ') : null;
-  }, [namesFor]);
+  /* ------------------------------ ownership -------------------------------- */
 
-  /** The mailbox owner's own recipient row on a mail, when there is one. */
-  const ownRecipient = useCallback(
-    (mail: Mail) =>
-      mail.recipients.find((recipient) =>
-        mailboxId === 'user'
-          ? recipient.recipientKind === 'user'
-          : mailboxId === 'assistant'
-            ? recipient.recipientKind === 'assistant'
-            : recipient.recipientKind === 'agent' && recipient.recipientId === mailboxId,
-      ),
+  /** Whether a recipient row belongs to whoever's mailbox is open. */
+  const isOwnRow = useCallback(
+    (recipient: MailRecipient): boolean =>
+      mailboxId === 'user'
+        ? recipient.recipientKind === 'user'
+        : mailboxId === 'assistant'
+          ? recipient.recipientKind === 'assistant'
+          : recipient.recipientKind === 'agent' && recipient.recipientId === mailboxId,
     [mailboxId],
   );
+
+  /** The mailbox owner's own recipient row on a mail, when there is one. */
+  const ownRecipient = useCallback((mail: Mail) => mail.recipients.find(isOwnRow), [isOwnRow]);
 
   const isUnread = useCallback(
     (mail: Mail): boolean => (ownRecipient(mail)?.readAt ?? null) == null,
     [ownRecipient],
   );
 
+  /* --------------------------------- rows ---------------------------------- */
+
+  /** The name a list row leads with: the sender, or in the outbox the To line. */
+  const primaryLabel = useCallback(
+    (mail: Mail): string => (box === 'outbox' ? namesFor(mail, 'to').join(', ') || '—' : senderLabel(mail)),
+    [box, namesFor, senderLabel],
+  );
+
+  /**
+   * The job title beside that name - but only when the name is one person.
+   *
+   * An outbox row addressed to three agents leads with three names, and a
+   * single title hung on the end of them would read as though it belonged to
+   * the last one.
+   */
+  const primaryRole = useCallback(
+    (mail: Mail): string | null => {
+      if (box !== 'outbox') return senderRole(mail);
+      const to = mail.recipients.filter((recipient) => recipient.box === 'to');
+      const only = to.length === 1 ? to[0] : undefined;
+      return only ? roleOf(only.recipientKind, only.recipientId) : null;
+    },
+    [box, senderRole, roleOf],
+  );
+
+  /**
+   * The badges under a row: everyone the mail also went to.
+   *
+   * The mailbox owner is left out of the inbox's chips - "You" on every row of
+   * your own inbox says nothing - and so is the whole To line in the outbox,
+   * where it is already the row's heading.
+   */
+  const recipientChips = useCallback(
+    (mail: Mail): string[] => {
+      const cc = namesFor(mail, 'cc').map((name) => name + ' (Cc)');
+      if (box === 'outbox') return cc;
+      const to = mail.recipients
+        .filter((recipient) => recipient.box === 'to' && !isOwnRow(recipient))
+        .map((recipient) => nameOf(recipient.recipientKind, recipient.recipientId));
+      return [...to, ...cc];
+    },
+    [box, namesFor, isOwnRow, nameOf],
+  );
+
+  /* ------------------------------ addressing ------------------------------- */
+
   /** Token `api.sendMail` understands for who sent this mail. */
-  const senderToken = (mail: Mail): string => (mail.fromKind === 'agent' ? (mail.fromAgentId ?? 'assistant') : mail.fromKind);
+  const senderToken = (mail: Mail): string =>
+    mail.fromKind === 'agent' ? (mail.fromAgentId ?? 'assistant') : mail.fromKind;
+
+  /** The same tokens for one of a mail's recipient boxes, the user left out. */
+  const recipientTokens = (mail: Mail, box: 'to' | 'cc'): string[] =>
+    mail.recipients
+      .filter((recipient) => recipient.box === box && recipient.recipientKind !== 'user')
+      .map((recipient) =>
+        recipient.recipientKind === 'agent' ? (recipient.recipientId ?? 'assistant') : recipient.recipientKind,
+      );
 
   /**
    * Who a reply goes to. Replying to your own sent mail answers the people it
@@ -142,27 +231,43 @@ export function InboxPage() {
    */
   const replyTargets = (mail: Mail): string[] => {
     if (mail.fromKind !== 'user') return [senderToken(mail)];
-    return mail.recipients
-      .filter((recipient) => recipient.box === 'to' && recipient.recipientKind !== 'user')
-      .map((recipient) =>
-        recipient.recipientKind === 'agent' ? (recipient.recipientId ?? 'assistant') : recipient.recipientKind,
-      );
+    return recipientTokens(mail, 'to');
   };
 
-  const replyTargetLabel = (mail: Mail): string | null => {
-    const names = replyTargets(mail).map((token) =>
+  const tokenLabel = useCallback(
+    (token: string): string =>
       token === 'assistant' ? assistantName : (org.agentById(token)?.name ?? 'Former agent'),
-    );
+    [assistantName, org],
+  );
+
+  const replyTargetLabel = (mail: Mail): string | null => {
+    const names = replyTargets(mail).map(tokenLabel);
     return names.length > 0 ? names.join(', ') : null;
+  };
+
+  /** Everyone a "Reply all" would reach: To gains the sender, Cc stays Cc. */
+  const replyAllTargets = (mail: Mail): { to: string[]; cc: string[] } => {
+    const sender = mail.fromKind === 'user' ? [] : [senderToken(mail)];
+    const to = [...new Set([...sender, ...recipientTokens(mail, 'to')])];
+    const cc = [...new Set(recipientTokens(mail, 'cc'))].filter((token) => !to.includes(token));
+    return { to, cc };
   };
 
   /* -------------------------------- options -------------------------------- */
 
-  // "You" is left out: mailing yourself is not what compose is for.
+  // "You" is left out: mailing yourself is not what compose is for. The title
+  // rides along as the hint, so picking a recipient is a choice between roles
+  // rather than between six first names.
   const recipientOptions: EntityOption[] = useMemo(
     () => [
       { value: 'assistant', label: assistantName },
-      ...org.agents.filter((agent) => !agent.archived).map((agent) => ({ value: agent.id, label: agent.name })),
+      ...org.agents
+        .filter((agent) => !agent.archived)
+        .map((agent) => ({
+          value: agent.id,
+          label: agent.name,
+          ...(agent.title.trim() ? { hint: agent.title } : {}),
+        })),
     ],
     [org.agents, assistantName],
   );
@@ -187,9 +292,18 @@ export function InboxPage() {
 
   useEffect(() => socket.onMail(() => void load()), [socket, load]);
 
+  // The rail's unread count comes from the inbox itself, so it also counts for
+  // mailboxes that are not the user's - and it survives a look in the outbox.
+  useEffect(() => setInboxUnread(null), [mailboxId]);
+  useEffect(() => {
+    if (box !== 'inbox' || mails === null) return;
+    setInboxUnread(mails.filter(isUnread).length);
+  }, [box, mails, isUnread]);
+
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
-    const list = mails ?? [];
+    let list = mails ?? [];
+    if (interactive && box === 'inbox' && filter === 'unread') list = list.filter(isUnread);
     if (!query) return list;
     return list.filter(
       (mail) =>
@@ -197,7 +311,7 @@ export function InboxPage() {
         mail.body.toLowerCase().includes(query) ||
         senderLabel(mail).toLowerCase().includes(query),
     );
-  }, [mails, search, senderLabel]);
+  }, [mails, search, senderLabel, interactive, box, filter, isUnread]);
 
   useEffect(() => {
     if (selectedId && !filtered.some((mail) => mail.id === selectedId)) setSelectedId(null);
@@ -205,7 +319,7 @@ export function InboxPage() {
 
   const selected = useMemo(() => filtered.find((mail) => mail.id === selectedId) ?? null, [filtered, selectedId]);
 
-  /* -------------------------------- actions --------------------------------- */
+  /* -------------------------------- actions -------------------------------- */
 
   const selectMailbox = useCallback(
     (id: string): void => {
@@ -220,9 +334,27 @@ export function InboxPage() {
         { replace: true },
       );
       setBox('inbox');
+      setFilter('all');
     },
     [setSearchParams],
   );
+
+  /** Writes one recipient row's read mark into the loaded list. */
+  const patchReadAt = useCallback((mailId: string, rowId: string, readAt: number | undefined): void => {
+    setMails(
+      (current) =>
+        current?.map((entry) =>
+          entry.id === mailId
+            ? {
+                ...entry,
+                recipients: entry.recipients.map((recipient) =>
+                  recipient.id === rowId ? { ...recipient, readAt } : recipient,
+                ),
+              }
+            : entry,
+        ) ?? null,
+    );
+  }, []);
 
   const select = useCallback(
     (id: string): void => {
@@ -231,31 +363,87 @@ export function InboxPage() {
       const mail = mails?.find((entry) => entry.id === id);
       const own = mail ? ownRecipient(mail) : undefined;
       if (!mail || !own || own.readAt != null) return;
-      setMails((current) =>
-        current?.map((entry) =>
-          entry.id === id
-            ? {
-                ...entry,
-                recipients: entry.recipients.map((recipient) =>
-                  recipient.id === own.id ? { ...recipient, readAt: Date.now() } : recipient,
-                ),
-              }
-            : entry,
-        ) ?? null,
-      );
+      patchReadAt(mail.id, own.id, Date.now());
       void api
         .markMailRead([own.id])
         .then(() => void mailBadge.refresh())
         .catch(() => undefined);
     },
-    [interactive, box, mails, ownRecipient, mailBadge],
+    [interactive, box, mails, ownRecipient, mailBadge, patchReadAt],
   );
+
+  /** The open mail's own row, when it is read and so can be put back. */
+  const unreadableRow = useMemo(() => {
+    if (!interactive || !selected) return null;
+    const own = ownRecipient(selected);
+    return own && own.readAt != null ? own : null;
+  }, [interactive, selected, ownRecipient]);
+
+  const markUnread = useCallback((): void => {
+    if (!selected || !unreadableRow) return;
+    patchReadAt(selected.id, unreadableRow.id, undefined);
+    void api
+      .markMailRead([unreadableRow.id], false)
+      .then(() => void mailBadge.refresh())
+      .catch((caught: unknown) => reportFailure('Mark as unread', caught));
+  }, [selected, unreadableRow, mailBadge, patchReadAt]);
 
   const resetCompose = (): void => {
     setComposeTo([]);
     setComposeCc([]);
     setSubject('');
     setBody('');
+  };
+
+  const openCompose = (prefill: ComposePrefill): void => {
+    setComposeTo(prefill.to);
+    setComposeCc(prefill.cc);
+    setSubject(prefill.subject);
+    setBody(prefill.body);
+    setComposeOpen(true);
+  };
+
+  /** The mail as a quote block, the way a mail client stacks a conversation. */
+  const quoted = (mail: Mail): string =>
+    '\n\nOn ' +
+    formatDateTime(mail.createdAt) +
+    ', ' +
+    senderLabel(mail) +
+    ' wrote:\n' +
+    mail.body
+      .split('\n')
+      .map((line) => '> ' + line)
+      .join('\n');
+
+  const replyAll = (): void => {
+    if (!selected) return;
+    const { to, cc } = replyAllTargets(selected);
+    openCompose({
+      to: to.map((token) => ({ value: token, label: tokenLabel(token) })),
+      cc: cc.map((token) => ({ value: token, label: tokenLabel(token) })),
+      subject: selected.subject.startsWith('Re: ') ? selected.subject : 'Re: ' + selected.subject,
+      body: quoted(selected),
+    });
+  };
+
+  const forward = (): void => {
+    if (!selected) return;
+    openCompose({
+      to: [],
+      cc: [],
+      subject: selected.subject.startsWith('Fwd: ') ? selected.subject : 'Fwd: ' + selected.subject,
+      body:
+        '\n\n--- Forwarded message ---\nFrom: ' +
+        senderLabel(selected) +
+        '\nDate: ' +
+        formatDateTime(selected.createdAt) +
+        '\nSubject: ' +
+        (selected.subject || '(No subject)') +
+        '\n' +
+        toLine(selected) +
+        '\n\n' +
+        selected.body,
+    });
   };
 
   const submitCompose = async (): Promise<void> => {
@@ -319,7 +507,7 @@ export function InboxPage() {
     );
   }, [composeAgentId, org, setSearchParams]);
 
-  /* --------------------------------- render --------------------------------- */
+  /* --------------------------------- render -------------------------------- */
 
   if (mails === null) {
     return (
@@ -339,42 +527,45 @@ export function InboxPage() {
     );
   }
 
+  const replyAllReach = selected ? replyAllTargets(selected) : null;
+
   return (
     <div className="flex min-h-0 flex-1">
       <MailNav
         agents={org.agents.filter((agent) => !agent.archived)}
         assistantName={assistantName}
         mailboxId={mailboxId}
+        mailboxLabel={mailboxLabel(mailboxId)}
+        mailboxRole={mailboxRole(mailboxId)}
         onSelect={selectMailbox}
+        box={box}
+        onBoxChange={setBox}
+        unread={inboxUnread}
+        collapsed={navCollapsed}
+        onCollapsedChange={setNavCollapsed}
       />
 
       {/* `min-w-0`: without it this flex child keeps its `min-width: auto` and
           a long unwrapped mail line stretches the panel group past the window,
           pushing the reading pane off screen and defeating every `truncate`. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="flex items-center gap-2 border-b px-3 py-2">
-          <span className="text-sm font-medium">{mailboxLabel(mailboxId)}</span>
-          {!interactive && (
-            <Badge variant="outline" className="text-muted-foreground">
-              Read-only
-            </Badge>
-          )}
-        </div>
-
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
           <ResizablePanel defaultSize="38" minSize="24">
             <MailList
               mails={filtered}
               selectedId={selectedId}
               onSelect={select}
+              title={mailboxLabel(mailboxId)}
               box={box}
-              onBoxChange={setBox}
+              filter={filter}
+              onFilterChange={setFilter}
               interactive={interactive}
               onCompose={() => setComposeOpen(true)}
               search={search}
               onSearch={setSearch}
-              senderLabel={senderLabel}
-              recipientSummary={recipientSummary}
+              primaryLabel={primaryLabel}
+              primaryRole={primaryRole}
+              recipientChips={recipientChips}
               isUnread={isUnread}
             />
           </ResizablePanel>
@@ -383,11 +574,16 @@ export function InboxPage() {
             <MailDisplay
               mail={selected}
               senderLabel={senderLabel}
+              senderRole={senderRole}
               toLine={toLine}
               ccLine={ccLine}
               interactive={interactive}
               replyTargetName={selected ? replyTargetLabel(selected) : null}
               onReply={reply}
+              onReplyAll={replyAll}
+              onForward={forward}
+              canReplyAll={replyAllReach !== null && replyAllReach.to.length + replyAllReach.cc.length > 1}
+              onMarkUnread={unreadableRow ? markUnread : undefined}
               sending={sending}
             />
           </ResizablePanel>
@@ -430,11 +626,14 @@ export function InboxPage() {
             </Field>
             <Field>
               <FieldLabel>Body</FieldLabel>
+              {/* `max-h-64`: Reply all and Forward arrive with a whole mail
+                  quoted underneath, and an auto-growing field would push the
+                  Send button past the bottom of the dialog. */}
               <Textarea
                 value={body}
                 onChange={(event) => setBody(event.target.value)}
                 placeholder="Write your message…"
-                className="min-h-32"
+                className="max-h-64 min-h-32 overflow-y-auto"
               />
             </Field>
           </div>

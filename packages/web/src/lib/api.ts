@@ -576,9 +576,12 @@ export const api = {
     request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&box=' + box + '&limit=' + limit),
   sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string }) =>
     request<Mail>('/api/org/mail', { method: 'POST', ...json(input) }),
-  /** Marks a batch of mailbox rows read; the mailbox page calls this once per load. */
-  markMailRead: (ids: string[]) =>
-    request<{ ok: true }>('/api/org/mail/read', { method: 'POST', ...json({ ids }) }),
+  /**
+   * Marks a batch of mailbox rows read; the mailbox page calls this once per
+   * load. `read: false` is the reading pane's "Mark as unread".
+   */
+  markMailRead: (ids: string[], read = true) =>
+    request<{ ok: true }>('/api/org/mail/read', { method: 'POST', ...json({ ids, read }) }),
 };
 
 /**

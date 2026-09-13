@@ -33,7 +33,7 @@ export const assignInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
 });
 
-export const sessionKindSchema = z.enum(['chat', 'voice']);
+export const sessionKindSchema = z.enum(['chat', 'voice', 'mail']);
 
 export const createSessionSchema = z.object({
   title: z.string().optional(),
@@ -171,6 +171,8 @@ export const sendMailSchema = z.object({
 /** POST /api/org/mail/read */
 export const markMailReadSchema = z.object({
   ids: z.array(z.string()).min(1, 'ids must not be empty'),
+  /** `false` puts the rows back to unread - the reading pane's "Mark as unread". */
+  read: z.boolean().optional(),
 });
 
 /* -------------------------------- schedules -------------------------------- */

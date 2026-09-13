@@ -701,6 +701,18 @@ export class OrgStore {
     for (const id of recipientRowIds) statement.run(now, id);
   }
 
+  /**
+   * The other direction, for the reading pane's "Mark as unread".
+   *
+   * Opening a mail marks it read on its own, so putting one back is the only
+   * way to keep it on the unread list after having looked at it.
+   */
+  markMailUnread(recipientRowIds: string[]): void {
+    if (!recipientRowIds.length) return;
+    const statement = this.#db.prepare('UPDATE mail_recipients SET read_at = NULL WHERE id = ?');
+    for (const id of recipientRowIds) statement.run(id);
+  }
+
   /** Convenience over markMailRead: marks every recipient row in `mail` that belongs to `who`. */
   markMailReadFor(mail: Mail[], who: MailWho): void {
     const ids = mail.flatMap((entry) =>

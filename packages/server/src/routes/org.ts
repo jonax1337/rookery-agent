@@ -379,10 +379,14 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     }
   });
 
-  /** Marks a batch of mailbox rows read - the mailbox page calls this on load. */
+  /**
+   * Marks a batch of mailbox rows read - the mailbox page calls this on load.
+   * `read: false` is the reading pane's "Mark as unread", the one way back.
+   */
   app.post('/api/org/mail/read', async (request: FastifyRequest) => {
     const input = parseOrThrow(markMailReadSchema, request.body ?? {});
-    store.markMailRead(input.ids);
+    if (input.read === false) store.markMailUnread(input.ids);
+    else store.markMailRead(input.ids);
     return { ok: true };
   });
 }

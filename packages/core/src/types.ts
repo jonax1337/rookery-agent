@@ -75,8 +75,16 @@ export interface ProviderQuota {
  * What a conversation is for. A `voice` session belongs to the hands-free
  * screen: the assistant answers in its spoken register there, whichever
  * surface a turn comes from, and the web UI files it apart from the chats.
+ *
+ * `mail` is not a conversation anyone holds. Answering a mail addressed to
+ * the assistant needs a session to run the turn in, and that session used to
+ * be indistinguishable from a chat - so every answered mail left a "Mail:
+ * <subject>" thread in the conversations list that nobody had opened and
+ * nobody could continue. Marking it as its own kind keeps the transcript
+ * without pretending it is something to come back to: `listSessions` leaves
+ * these out unless a caller asks for them by name.
  */
-export type SessionKind = 'chat' | 'voice';
+export type SessionKind = 'chat' | 'voice' | 'mail';
 
 export interface Session {
   id: string;

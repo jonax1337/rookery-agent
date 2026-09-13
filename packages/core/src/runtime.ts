@@ -821,7 +821,9 @@ export class Assistant extends EventEmitter {
    * live, the answer read later - except the answer goes back as a reply.
    */
   async #answerMail(mail: Mail, senderLabel: string, thread: Mail[]): Promise<string> {
-    const session = this.createSession({ title: 'Mail: ' + mail.subject });
+    // `kind: 'mail'` keeps this out of the conversations list: it is the
+    // transcript of one answered mail, not a thread anyone continues.
+    const session = this.createSession({ title: 'Mail: ' + mail.subject, kind: 'mail' });
     // Subjects only: the thread can be long, and most mail is answerable
     // without it. `read_mail_thread` fetches the text if this one is not.
     const history = thread.length

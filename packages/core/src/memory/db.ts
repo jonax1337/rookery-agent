@@ -480,11 +480,38 @@ function migrate(db: Db): void {
   `);
 
   migrateAgentMessagesToMail(db);
+  backfillMailSessionKind(db);
 
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',
     String(SCHEMA_VERSION),
   );
+}
+
+/**
+ * Files the mail transcripts that predate `kind = 'mail'` under it.
+ *
+ * Answering a mail addressed to the assistant has always needed a session to
+ * run the turn in, and before the kind existed that session was written as a
+ * plain chat - so every answered mail left a "Mail: <subject>" thread sitting
+ * in the conversations list that nobody had opened and nobody could continue.
+ *
+ * The title prefix is the only marker those rows carry, so this matches on it,
+ * narrowed to the shape `#answerMail` actually produces: no agent, still a
+ * chat. Nothing is deleted - a row caught by mistake is one `?kind=mail` away,
+ * and still opens by its own id.
+ */
+function backfillMailSessionKind(db: Db): void {
+  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_session_kind_v1'").get() as
+    | { value: string }
+    | undefined;
+  if (done) return;
+
+  db.prepare(
+    "UPDATE sessions SET kind = 'mail' WHERE kind = 'chat' AND agent_id IS NULL AND title LIKE 'Mail: %'",
+  ).run();
+
+  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_session_kind_v1', '1')").run();
 }
 
 /**

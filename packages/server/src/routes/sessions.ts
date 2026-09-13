@@ -23,7 +23,9 @@ export async function registerSessionRoutes(
       }>,
     ) => {
       const limit = clampLimit(request.query.limit, 50, 500);
-      const kind = request.query.kind === 'voice' || request.query.kind === 'chat' ? request.query.kind : undefined;
+      // No `kind` means "the open list", which leaves mail transcripts out.
+      // `kind=mail` is the way to see them anyway.
+      const kind = (['chat', 'voice', 'mail'] as const).find((value) => value === request.query.kind);
       return context.assistant.listSessions(limit, undefined, kind, isTruthy(request.query.includeArchived));
     },
   );
