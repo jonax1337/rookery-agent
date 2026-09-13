@@ -124,6 +124,35 @@ function toHtml(piece: string): string {
   return out.join('\n');
 }
 
+/** What Telegram accepts in one message, counted after escaping. */
+const TELEGRAM_LIMIT = 4096;
+
+/**
+ * One message's worth of HTML at a time, each piece guaranteed to fit.
+ *
+ * `splitMessage` counts the text as written, but what goes on the wire is
+ * escaped: a line of `&` grows fivefold, and a piece cut at exactly 4096
+ * characters then arrives at the API as 20 000 and is refused - which reads,
+ * from the phone, as a message that simply never came. So the pieces are
+ * measured after conversion and cut again against a smaller budget until
+ * they fit. The floor of 400 cannot overflow: the longest escape here is
+ * `&quot;` at six characters, so 400 can become at most 2400.
+ *
+ * Exported for the test that feeds it a body of nothing but `&`.
+ */
+export function htmlPieces(text: string): string[] {
+  let budget = TELEGRAM_LIMIT;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const pieces = splitMessage(text, budget);
+    const html = pieces.map(toHtml);
+    if (html.every((piece) => piece.length <= TELEGRAM_LIMIT)) return html;
+    // Re-cut against the worst growth actually seen, not a guess about it.
+    const growth = Math.max(...html.map((piece, index) => piece.length / Math.max(1, pieces[index]?.length ?? 1)));
+    budget = Math.max(400, Math.floor(TELEGRAM_LIMIT / growth));
+  }
+  return splitMessage(text, 400).map(toHtml);
+}
+
 /** A sleep that neither keeps the process alive nor outlives a stop(). */
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -214,8 +243,8 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   async function deliver(chatId: number, text: string): Promise<void> {
     const client = api;
     if (!client) throw new Error('The Telegram gateway is not running.');
-    for (const piece of splitMessage(text)) {
-      await client.sendMessage(chatId, toHtml(piece), {
+    for (const piece of htmlPieces(text)) {
+      await client.sendMessage(chatId, piece, {
         parseMode: 'HTML',
         disablePreview: true,
       });

@@ -741,6 +741,10 @@ export interface TelegramPushConfig {
   cron: boolean;
   sleep: boolean;
   tasks: boolean;
+  /** Mail the user is To or Cc on, pushed to the phone. See `mailFrom`. */
+  mail: boolean;
+  /** Whose mail is worth a push: the assistant, plus team leads, or everyone. */
+  mailFrom: 'assistant' | 'leads' | 'all';
   /** "22:00"; empty means no quiet hours. */
   quietFrom: string;
   /** "08:00" */

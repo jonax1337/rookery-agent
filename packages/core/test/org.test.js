@@ -74,6 +74,20 @@ function createFakeProvider(options = {}) {
           yield { type: 'done', text };
           return;
         }
+        // A scripted answer that goes out as mail: the turn writes to
+        // somebody with send_mail and then ends on a line about having done
+        // so - the shape that used to deliver the answer twice.
+        const mailed = prompt.match(/MAILBACK:([\w-]+)\|([^\n]+)/);
+        if (mailed && opts.mcp) {
+          await bridgeCall(opts.mcp.env.ROOKERY_BRIDGE_PATH, opts.mcp.env.ROOKERY_BRIDGE_TOKEN, 'call', {
+            name: 'send_mail',
+            args: { to: mailed[1], subject: 'Answer', body: mailed[2] },
+          });
+          const text = 'Done - the reply went out.';
+          yield { type: 'text', delta: text };
+          yield { type: 'done', text };
+          return;
+        }
         // A scripted tool switch: the assistant turns a server on mid-turn.
         const wanted = prompt.match(/TOOLS:([a-z0-9-]+)/);
         if (wanted && opts.mcp) {
@@ -306,6 +320,56 @@ test('mailing an agent\'s To triggers a real run whose result returns as a reply
 
   const original = store.org.mailbox(org.id, { kind: 'agent', id: mara.id }, 'inbox')[0];
   assert.equal(reply.threadId, original.threadId, 'the reply stays in the original thread');
+  assistant.close();
+});
+
+test('a reply keeps whoever was Cc on the mail it answers', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+
+  // The assistant asks Mara something and copies the user in.
+  const sent = await assistant.org.handle(ctx, 'send_mail', {
+    to: mara.slug,
+    cc: 'user',
+    subject: 'Ping',
+    body: 'Please pong.',
+  });
+  assert.equal(sent.isError, undefined);
+  await sleep(120);
+
+  const reply = store.org.mailbox(org.id, { kind: 'user' }, 'inbox').find((entry) => entry.subject.startsWith('Re:'));
+  assert.ok(reply, 'the answer reached the user, who was only on Cc');
+  assert.equal(reply.fromAgentId, mara.id);
+  const to = reply.recipients.filter((entry) => entry.box === 'to').map((entry) => entry.recipientKind);
+  const cc = reply.recipients.filter((entry) => entry.box === 'cc').map((entry) => entry.recipientKind);
+  assert.deepEqual(to, ['assistant'], 'the answer is addressed to whoever asked');
+  assert.deepEqual(cc, ['user'], 'and everyone else on the mail stays on it');
+  assistant.close();
+});
+
+test('a turn that answers mail with send_mail does not also deliver its closing text', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+
+  await assistant.org.sendUserMail({
+    orgId: org.id,
+    to: ['assistant'],
+    subject: 'A question',
+    body: 'MAILBACK:user|Here is the answer you asked for.',
+  });
+  await sleep(200);
+
+  const inbox = store.org.mailbox(org.id, { kind: 'user' }, 'inbox');
+  assert.equal(inbox.length, 1, 'one answer, not an answer plus a note about it');
+  assert.match(inbox[0].body, /Here is the answer/);
+  assert.ok(
+    !inbox.some((entry) => /the reply went out/.test(entry.body)),
+    'the turn\'s bookkeeping line never becomes a mail of its own',
+  );
   assistant.close();
 });
 

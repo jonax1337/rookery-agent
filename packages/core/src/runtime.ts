@@ -834,7 +834,9 @@ export class Assistant extends EventEmitter {
     const prompt =
       'Mail ' + mail.id + ' arrived for you from ' + senderLabel + '. Nobody is following this ' +
       'conversation live: answer it now, and write the answer as the body of your reply mail - no ' +
-      'chat pleasantries, no report framing. It is sent back to them as a reply automatically.\n\n' +
+      'chat pleasantries, no report framing. It is sent back to them as a reply automatically. Do ' +
+      'not send_mail the answer to them as well: this text is the reply, and doing both delivers ' +
+      'it twice. send_mail here is only for bringing somebody else in.\n\n' +
       history + 'Subject: ' + mail.subject + '\n\n' + mail.body;
 
     let text = '';

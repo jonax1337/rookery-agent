@@ -308,20 +308,35 @@ Dieselben Ereignisse, die `buildServer` heute an die Websockets verteilt:
 | `cron` | Ein Lauf endet, und der Job ist als meldepflichtig markiert | Jobname, Ergebnis oder Fehler |
 | `sleep` | Ein Schlaflauf endet | Verdichtet, gelinkt, eingeschlafen, Einsichten – der Bericht, den die Merkseite zeigt |
 | `task` | Eine Aufgabe geht auf `failed` | Welche Aufgabe gescheitert ist. Der Entwurf sagte `blocked` – den Zustand fuehrt das Board nicht, und ein Zweig, der nie feuert, ist schlimmer als keiner |
+| `mail` | Eine Mail hat den Nutzer auf To oder Cc, und der Absender passt zu `mailFrom` | Absender, Betreff, der Text – ganz, bis 12 000 Zeichen, danach mit ausgeschriebenem Hinweis gekuerzt. Telegrams 4096 pro Nachricht teilt `splitMessage` auf |
 | `notify` | Jarvis ruft das Werkzeug (7.3) | Sein Text, unveraendert |
 
 `message`, `memory` und `changed` werden **nicht** gepusht. Sie sind Oberflaechen-Ereignisse; auf dem
 Handy waeren sie Dauerfeuer.
+
+Mail ist der einzige Eintrag, bei dem jemand schreibt statt etwas fertig wird, und seit den Defaults
+von 2026-09-13 der tragende: die Firma redet in Mail mit dem Nutzer, das Handy traegt diese Mail,
+und `assignments`, `cron`, `sleep` und `tasks` stehen neu auf `false`. Was gelaufen ist und wie
+lange, steht in der Web-App; ein Summen pro erledigtem Auftrag ist der schnellste Weg, einen Kanal
+stummzuschalten.
 
 ### 7.2 Drosselung, Ruhezeiten, Empfaenger
 
 ```ts
 export interface TelegramPushConfig {
   enabled: boolean;
-  assignments: boolean;   // default true
-  cron: boolean;          // default true
-  sleep: boolean;         // default true
+  assignments: boolean;   // default false
+  cron: boolean;          // default false
+  sleep: boolean;         // default false
   tasks: boolean;         // default false
+  mail: boolean;          // default true
+  /**
+   * Wessen Mail ein Summen wert ist. `leads` meint beide Arten, auf die die
+   * Organisation Fuehrung kennt: wer ein Team laut `Team.leadId` fuehrt, und
+   * wer Agenten unter sich hat. Ein "Head of" ohne eigenes Team faellt sonst
+   * durch – genau das ist am 13.09.2026 passiert.
+   */
+  mailFrom: 'assistant' | 'leads' | 'all';  // default 'leads'
   /** Nachtruhe, lokale Zeit. Leer = keine. */
   quietFrom?: string;     // "22:00"
   quietUntil?: string;    // "08:00"

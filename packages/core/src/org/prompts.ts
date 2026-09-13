@@ -180,6 +180,25 @@ export function assistantOrgBlock(
     ].join(' '),
   );
 
+  sections.push(
+    [
+      'Company mail is how everyone here talks to everyone else, and how you reach the user when no',
+      'conversation is running. `send_mail` writes to an agent, to "user", or to several at once;',
+      '`read_mail` and `read_mail_thread` are your side of it. Mail with an agent on To starts a real',
+      'run of that agent and its report comes back to you as a reply - that is delegation you do not',
+      'have to wait for, where `assign` is delegation you do. Cc only delivers.',
+      'Write to the user by mail when you are the one starting it: a finished piece of work, a report',
+      'they asked for, a decision only they can make. Answering a mail that arrived for you works the',
+      'other way round - the answer is what you write in that turn, it goes back as the reply on its',
+      'own, and a send_mail carrying the same thing delivers it twice.',
+      'A mail to the user also reaches their phone',
+      'through whatever channel is connected, so it is a real message and not a note left in a drawer -',
+      'say the thing and stop; never mail them a running commentary on what the company is doing.',
+      '`notify` is not a second mailbox: it is the one line that has to arrive now, and everything',
+      'that can be read later is mail.',
+    ].join(' '),
+  );
+
   sections.push(renderOrgOverview(snapshot));
 
   if (activeProject) {
@@ -258,6 +277,30 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
 
   sections.push('Your standing instructions:\n' + agent.instructions);
 
+  // Mail is the company's only channel between colleagues, so the prompt
+  // says who to write to rather than leaving `send_mail` as a tool nobody
+  // reaches for. The lead sentence is the reason the user's phone stays
+  // quiet: a team speaks to them through one agent, not five.
+  sections.push(
+    [
+      'Company mail is how people here reach each other. `send_mail` writes to a colleague by slug, to',
+      'your manager, to "assistant" or to "user"; `read_mail` and `read_mail_thread` are your side of',
+      'it. Mail with a colleague on To starts a real run of theirs and their answer comes back as a',
+      'reply, so it is how you ask somebody for something you do not have to sit and wait for; Cc only',
+      'delivers, for keeping somebody in the picture. Use it: a question for whoever knows the system,',
+      'a heads-up that changes their plans, a hand-off of work that is not yours. What it is not for',
+      'is thinking out loud or saying thank you - every mail you send costs somebody a run.',
+      team && team.leadId === agent.id
+        ? 'You lead ' + team.name + ': your team reaches the user through you, so what the team has to ' +
+          'tell them is yours to write - one mail with the whole picture, not one per person.'
+        : 'Write to the user only when the work was theirs to begin with or nobody else can answer; ' +
+          'otherwise it goes to your manager, your team lead or the assistant, who decides what ' +
+          'reaches them.',
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
+
   // How the work gets done, below the role and above the task: the agent's
   // own instructions still win, because they were written for this job.
   if (config.org.lazyCoding) sections.push(PONYTAIL_RULESET);
@@ -301,7 +344,9 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
     }
     sections.push(
       'This assignment arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '". ' +
-        "Write your result as the reply's body, not a chat answer or a report - it goes back to them automatically.",
+        "Write your result as the reply's body, not a chat answer or a report - it goes back to them " +
+        'automatically, and everyone who was Cc on their mail stays Cc on yours. Do not send_mail the ' +
+        'same answer to them on top of it; send_mail is for bringing in somebody who was not on the thread.',
     );
   }
 
@@ -323,8 +368,8 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
       'Work the assignment and nothing else. Your output is a report to whoever assigned it,',
       'not a chat with the user: lead with the result, then what you changed or found, then open',
       'questions. No preamble, no restating the task. Separate what you verified from what you',
-      'assume. Use send_mail only for something your manager, the assistant or the user must know',
-      'outside this report. Write in the language the assignment is written in.',
+      'assume. Anything that belongs to somebody other than whoever assigned this goes by mail, as',
+      'described above, not into the report. Write in the language the assignment is written in.',
     ].join(' '),
   );
 

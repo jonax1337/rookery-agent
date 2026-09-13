@@ -267,6 +267,8 @@ const telegramPushConfigSchema = z
     cron: z.boolean(),
     sleep: z.boolean(),
     tasks: z.boolean(),
+    mail: z.boolean(),
+    mailFrom: z.enum(['assistant', 'leads', 'all']),
     quietFrom: timeOfDaySchema,
     quietUntil: timeOfDaySchema,
     maxPerHour: z.number().int().min(1).max(60),

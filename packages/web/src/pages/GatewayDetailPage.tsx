@@ -69,6 +69,21 @@ const FORM_ID = 'gateway-telegram';
 
 const PERMISSION_LEVELS: PermissionLevel[] = ['chat', 'read', 'write', 'full'];
 
+/** Whose mail reaches the phone, narrowest first. */
+const MAIL_FROM_LEVELS: TelegramPushConfig['mailFrom'][] = ['assistant', 'leads', 'all'];
+
+const MAIL_FROM_LABEL: Record<TelegramPushConfig['mailFrom'], string> = {
+  assistant: 'Assistant only',
+  leads: 'Assistant and leads',
+  all: 'Everyone',
+};
+
+const MAIL_FROM_HINT: Record<TelegramPushConfig['mailFrom'], string> = {
+  assistant: 'Agents reach you through the assistant, who decides what is worth saying.',
+  leads: 'Anyone leading a team or with agents reporting to them — a Head of without a team counts.',
+  all: 'Every mail that lands in your mailbox, including agent to agent copies.',
+};
+
 function makeDraft(config: TelegramGatewayConfig): TelegramGatewayConfig {
   return { ...config, push: { ...config.push } };
 }
@@ -510,7 +525,45 @@ export function GatewayDetailPage() {
 
             <Field orientation="horizontal">
               <FieldContent>
+                <FieldLabel htmlFor="gw-push-mail">Mail</FieldLabel>
+                <FieldDescription>
+                  Mail addressed to you, To or Cc. Who it is worth a push for is set below.
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="gw-push-mail"
+                checked={draft.push.mail}
+                onCheckedChange={(on) => setPush({ mail: on })}
+              />
+            </Field>
+            <RadioGroup
+              value={draft.push.mailFrom}
+              onValueChange={(value) => setPush({ mailFrom: value as TelegramPushConfig['mailFrom'] })}
+            >
+              {MAIL_FROM_LEVELS.map((level) => (
+                <FieldLabel key={level} htmlFor={'gw-push-mail-from-' + level}>
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldTitle>{MAIL_FROM_LABEL[level]}</FieldTitle>
+                      <FieldDescription>{MAIL_FROM_HINT[level]}</FieldDescription>
+                    </FieldContent>
+                    <RadioGroupItem
+                      value={level}
+                      id={'gw-push-mail-from-' + level}
+                      aria-label={MAIL_FROM_LABEL[level]}
+                      disabled={!draft.push.mail}
+                    />
+                  </Field>
+                </FieldLabel>
+              ))}
+            </RadioGroup>
+
+            <Field orientation="horizontal">
+              <FieldContent>
                 <FieldLabel htmlFor="gw-push-assignments">Assignments</FieldLabel>
+                <FieldDescription>
+                  One message per finished run. Off by default: the company reports in mail.
+                </FieldDescription>
               </FieldContent>
               <Switch
                 id="gw-push-assignments"

@@ -1056,6 +1056,16 @@ export interface TelegramPushConfig {
   cron: boolean;
   sleep: boolean;
   tasks: boolean;
+  /** Mail the user is To or Cc on, pushed to the phone. See `mailFrom`. */
+  mail: boolean;
+  /**
+   * Which senders a mail push is worth it for. 'assistant' is the quiet
+   * default: the assistant is the only one who writes to the user on their
+   * own initiative anyway. 'leads' adds the agents named as a team's lead,
+   * so a team reaches the user through one voice; 'all' pushes every mail
+   * that lands in the user's mailbox, which is what the web inbox is for.
+   */
+  mailFrom: 'assistant' | 'leads' | 'all';
   /** "22:00"; empty means no quiet hours. */
   quietFrom: string;
   /** "08:00" */

@@ -832,6 +832,59 @@ export class OrgController extends EventEmitter {
   }
 
   /**
+   * Whether `writer` already wrote to this recipient during the run that
+   * started at `since` - that is, answered the mail with `send_mail` rather
+   * than by ending its turn.
+   *
+   * Both are legitimate on their own: the turn's closing text is delivered
+   * as the reply, and `send_mail` is how anyone here writes to anyone at
+   * all. What is not legitimate is both, which is how a real answer was
+   * followed by a second mail reading "Done - the reply went out". The
+   * turn's own text loses, because by then the recipient has the answer in
+   * writing and the leftover text is bookkeeping about it.
+   */
+  #answeredDuringTurn(orgId: string, writer: MailWho, recipient: MailWho, since: number): boolean {
+    const key = (who: MailWho): string => who.kind + ':' + (who.id ?? '');
+    const wanted = key(recipient);
+    return this.#store.org
+      .mailbox(orgId, writer, 'outbox', { limit: 20 })
+      .some(
+        (sent) =>
+          sent.createdAt >= since &&
+          sent.recipients.some((entry) => key({ kind: entry.recipientKind, id: entry.recipientId }) === wanted),
+      );
+  }
+
+  /**
+   * The Cc line of a reply: everyone who was on the mail being answered,
+   * minus the two who are already on it - the sender, who is the reply's To,
+   * and the replier itself.
+   *
+   * Every automatic reply used to go out with an empty Cc, which quietly
+   * ended the thread for anyone looped in: somebody Cc'd on the opening mail
+   * saw that one line and never an answer to it, and the assistant copying
+   * the user in on a question it asked got the answer alone. Mail only works
+   * if being on a conversation means staying on it.
+   */
+  #replyCc(source: Mail | null, replier: MailWho, sender: MailWho): MailWho[] {
+    if (!source) return [];
+    const key = (who: MailWho): string => who.kind + ':' + (who.id ?? '');
+    const seen = new Set([key(replier), key(sender)]);
+    const cc: MailWho[] = [];
+    for (const recipient of source.recipients) {
+      const who: MailWho = { kind: recipient.recipientKind, id: recipient.recipientId };
+      if (seen.has(key(who))) continue;
+      seen.add(key(who));
+      cc.push(who);
+    }
+    // Whoever started the mail, when the reply is not addressed to them: an
+    // answer still concerns the person who asked, even two hops down.
+    const author: MailWho = { kind: source.fromKind, id: source.fromAgentId };
+    if (!seen.has(key(author))) cc.push(author);
+    return cc;
+  }
+
+  /**
    * Deliver mail and, per the user's rule, start a real run for every To
    * target that is an agent - never for Cc. Shared by the tool path
    * (`#sendMail`, permission-checked) and `sendUserMail` (the user may mail
@@ -878,6 +931,11 @@ export class OrgController extends EventEmitter {
       const senderLabel = this.#mailWhoLabel(params.from);
       for (const target of params.to) {
         if (target.kind === 'assistant' && this.#runAssistantMail) {
+          // Where the turn's own answer stops being the reply: if the
+          // assistant wrote to the sender itself while thinking, that mail
+          // is the answer, and delivering the turn's closing text on top of
+          // it is how "Done - the reply went out" arrives as a second mail.
+          const turnStartedAt = Date.now();
           this.#runAssistantMail({
             mail,
             senderLabel,
@@ -887,11 +945,15 @@ export class OrgController extends EventEmitter {
           })
             .then((reply) => {
               if (!reply.trim()) return;
+              if (this.#answeredDuringTurn(params.orgId, { kind: 'assistant' }, params.from, turnStartedAt)) {
+                this.#log.debug('Mail already answered by the turn itself', { mail: mail.id });
+                return;
+              }
               return this.#deliverMail({
                 orgId: params.orgId,
                 from: { kind: 'assistant' },
                 to: [params.from],
-                cc: [],
+                cc: this.#replyCc(mail, { kind: 'assistant' }, params.from),
                 subject: mail.subject.startsWith('Re: ') ? mail.subject : 'Re: ' + mail.subject,
                 body: reply,
                 inReplyTo: mail.id,
@@ -1240,11 +1302,18 @@ export class OrgController extends EventEmitter {
       }
       if (input.sourceMail) {
         const sourceMail = input.sourceMail;
+        const replier: MailWho = { kind: 'agent', id: agent.id };
+        const sender: MailWho = { kind: sourceMail.fromKind, id: sourceMail.fromAgentId };
+        // An agent that mailed the requester itself has already answered;
+        // the report would arrive behind it as a duplicate.
+        if (this.#answeredDuringTurn(input.orgId, replier, sender, started)) return done;
         this.#deliverMail({
           orgId: input.orgId,
-          from: { kind: 'agent', id: agent.id },
-          to: [{ kind: sourceMail.fromKind, id: sourceMail.fromAgentId }],
-          cc: [],
+          from: replier,
+          to: [sender],
+          // Everyone the mail was addressed to stays addressed: a reply that
+          // drops the Cc is where a thread silently loses its audience.
+          cc: this.#replyCc(this.#store.org.getMail(sourceMail.id), replier, sender),
           subject: 'Re: ' + sourceMail.subject,
           body: text,
           inReplyTo: sourceMail.id,
