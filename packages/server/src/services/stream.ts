@@ -63,17 +63,21 @@ export function openSse(request: FastifyRequest, reply: FastifyReply): SseStream
   };
 }
 
-/** Pump a turn into an SSE response, stopping early if the client vanished. */
+/**
+ * Pump a turn into an SSE response.
+ *
+ * The generator is always drained to completion, even after the client has
+ * gone away (Workstream E.1: a closed tab must not cut a run short). `send`
+ * already no-ops once `sse.closed`, so there is nothing left to deliver, but
+ * the underlying `assistant.chat`/`assign`/`runTask` call still needs to run
+ * to the end so its result is written to the DB and broadcast normally.
+ */
 export async function pipeToSse(
   events: AsyncGenerator<AgentEvent, void, unknown>,
   sse: SseStream,
 ): Promise<void> {
   try {
     for await (const event of events) {
-      if (sse.closed) {
-        await events.return(undefined);
-        break;
-      }
       sse.send(event);
     }
   } catch (error) {
@@ -109,7 +113,15 @@ export function sendFrame(socket: WebSocket, frame: ServerFrame): void {
   socket.send(JSON.stringify(frame));
 }
 
-/** Pump a turn down one websocket, tagging every frame with the request id. */
+/**
+ * Pump a turn down one websocket, tagging every frame with the request id.
+ *
+ * The generator is always drained to completion, even after the socket has
+ * closed (Workstream E.1: a closed tab must not cut a run short).
+ * `sendFrame` already no-ops once the socket is no longer OPEN, but the
+ * underlying `assistant.chat`/`assign`/`runTask` call still needs to run to
+ * the end so its result is written to the DB and broadcast normally.
+ */
 export async function pipeToSocket(
   events: AsyncGenerator<AgentEvent, void, unknown>,
   socket: WebSocket,
@@ -117,10 +129,6 @@ export async function pipeToSocket(
 ): Promise<void> {
   try {
     for await (const event of events) {
-      if (socket.readyState !== OPEN) {
-        await events.return(undefined);
-        break;
-      }
       sendFrame(socket, { type: 'event', id, event });
     }
   } catch (error) {

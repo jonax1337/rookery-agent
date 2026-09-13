@@ -474,6 +474,8 @@ export interface AssignmentView {
   chars?: number;
   /** Tail of the output, for a live preview line. */
   preview?: string;
+  /** The most recent tool call this run made, for a live activity view. */
+  lastActivity?: { kind: 'tool' | 'status'; label: string; at: number };
   durationMs?: number;
   error?: string;
 }
@@ -529,6 +531,8 @@ export interface Task {
   updatedAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /** Manual board position within its status column; drag&drop only. */
+  sortOrder: number;
 }
 
 /* ------------------------------------------------------------------ *

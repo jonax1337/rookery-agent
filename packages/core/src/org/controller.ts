@@ -603,6 +603,11 @@ export class OrgController extends EventEmitter {
       if (text('agent') && !agent) return fail('No agent "' + text('agent') + '".');
       const project = text('project') ? this.#store.org.findProject(context.orgId, text('project')) : null;
       if (text('project') && !project) return fail('No project "' + text('project') + '".');
+      // A one-off follow-up ("I'll get back to you here") should land back
+      // in the conversation it was promised in, not in a brand-new one.
+      // Only for the assistant's own runs - a recurring job, or one handed
+      // to an agent, keeps creating its own dedicated conversation.
+      const replyHere = !agent && flag('once') === true ? context.sessionId : undefined;
       try {
         const job = cron.create({
           orgId: context.orgId,
@@ -612,6 +617,7 @@ export class OrgController extends EventEmitter {
           kind: agent ? 'agent' : 'assistant',
           agentId: agent?.id,
           projectId: project?.id ?? context.projectId,
+          sessionId: replyHere,
           once: flag('once'),
           enabled: flag('enabled'),
           createdBy: 'assistant',
@@ -946,6 +952,14 @@ export class OrgController extends EventEmitter {
             }
           } else if (event.type === 'tool') {
             input.emit({ ...event, detail: '[' + agent.slug + '] ' + (event.detail ?? '') });
+            // A tool starting is the one moment worth telling everyone about,
+            // not just the turn that started this run - the same `announce`
+            // that already carries `chars`/`preview` org-wide, extended with
+            // what the run is doing right now. Not persisted, same as
+            // `preview`: a live-only field, gone once the run finishes.
+            if (event.status === 'start') {
+              announce({ lastActivity: { kind: 'tool', label: event.name, at: Date.now() } });
+            }
           } else if (event.type === 'done') {
             text = event.text || text;
           } else if (event.type === 'error' && event.fatal) {
@@ -1348,7 +1362,7 @@ export class OrgController extends EventEmitter {
       emit: context.emit,
       signal: context.signal,
     });
-    this.#store.org.updateTask(task.id, { assignmentId: assignment.id });
+    this.#store.org.linkTaskAssignment(task.id, assignment.id);
     return { status: assignment.status, result: assignment.result, error: assignment.error, assignmentId: assignment.id };
   }
 

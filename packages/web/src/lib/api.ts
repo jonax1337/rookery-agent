@@ -215,6 +215,10 @@ export interface TaskPatch {
   /** Only the states a human sets by hand; the runner owns the rest. */
   status?: 'open' | 'done' | 'cancelled';
   result?: Nullable<string>;
+  /** Board drag&drop position within a status column. */
+  sortOrder?: number;
+  /** Confirms `status: 'done'` even though the linked assignment failed. */
+  force?: boolean;
 }
 
 export interface CronJobInput {
@@ -562,6 +566,9 @@ export const api = {
   messages: (limit = 100) => request<AgentMessage[]>('/api/org/messages?limit=' + limit),
   postMessage: (input: { toAgentId?: string; content: string }) =>
     request<AgentMessage>('/api/org/messages', { method: 'POST', ...json(input) }),
+  /** Marks a batch of inbox rows read; the inbox page calls this once per load. */
+  markMessagesRead: (ids: string[]) =>
+    request<{ ok: true }>('/api/org/messages/read', { method: 'POST', ...json({ ids }) }),
 };
 
 /**

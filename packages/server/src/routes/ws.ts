@@ -100,7 +100,14 @@ export async function registerWebsocketRoutes(
       });
 
       socket.on('close', () => {
-        for (const controller of turns.values()) controller.abort();
+        // Tab-close/connection-drop must not cancel in-flight work (Workstream
+        // E.1): forget the local bookkeeping so it can be garbage collected,
+        // but leave every turn's own AbortController alone. Its generator
+        // keeps running to completion server-side, its result lands in the
+        // DB as usual, and completion still reaches every other open
+        // connection through the org-wide broadcast. A deliberate `abort`
+        // frame sent *while still connected* is the only thing that stops a
+        // turn early - see the `case 'abort'` handler above.
         turns.clear();
         context.sockets.delete(socket);
         context.log.debug('Websocket closed', { open: context.sockets.size });

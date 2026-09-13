@@ -152,6 +152,10 @@ export const patchTaskSchema = z.object({
   assigneeId: nullableText,
   status: z.enum(['open', 'done', 'cancelled']).optional(),
   result: nullableText,
+  /** Board drag&drop position within a status column. */
+  sortOrder: z.number().optional(),
+  /** Confirms `status: 'done'` even though the linked assignment failed. */
+  force: z.boolean().optional(),
 });
 
 export const planTaskSchema = z.object({
@@ -162,6 +166,11 @@ export const messageSchema = z.object({
   /** Agent id; omitted means the assistant. */
   toAgentId: z.string().optional(),
   content: z.string().min(1, 'content must not be empty'),
+});
+
+/** POST /api/org/messages/read */
+export const markMessagesReadSchema = z.object({
+  ids: z.array(z.string()).min(1, 'ids must not be empty'),
 });
 
 /* -------------------------------- schedules -------------------------------- */

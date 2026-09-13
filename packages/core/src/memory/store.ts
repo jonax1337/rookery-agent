@@ -1062,6 +1062,22 @@ export class Store {
     return rows.map(mapSleepRun);
   }
 
+  /**
+   * Sleep runs still marked running from a previous process are failed on
+   * startup, mirroring `CronStore.failStaleRuns` (cron/store.ts) and
+   * `OrgStore.failStaleAssignments`/`failStaleTasks` (org/store.ts). Returns
+   * the rows it changed so the caller can announce them.
+   */
+  failStaleSleepRuns(reason: string): SleepRun[] {
+    const now = Date.now();
+    const rows = this.db.prepare("SELECT * FROM sleep_runs WHERE status = 'running'").all() as Row[];
+    if (!rows.length) return [];
+    this.db
+      .prepare("UPDATE sleep_runs SET status = 'failed', error = ?, finished_at = ? WHERE status = 'running'")
+      .run(reason, now);
+    return rows.map((row) => mapSleepRun({ ...row, status: 'failed', error: reason, finished_at: now }));
+  }
+
   /** When this owner last finished a night. Drives "what is new since then". */
   lastSleepAt(owner: string): number {
     const row = this.db

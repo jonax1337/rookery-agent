@@ -16,9 +16,10 @@ import {
   PERMISSION_HINT,
   PERMISSION_LABEL,
 } from '@/lib/format';
-import type { RookerySocket } from '@/lib/socket';
+import type { CronEvent, RookerySocket, SleepEvent } from '@/lib/socket';
 import type {
   Agent,
+  AgentMessage,
   ChatPayload,
   EffortLevel,
   MemoryRecord,
@@ -133,6 +134,7 @@ interface RookeryValue {
   memoryGraph: ReturnType<typeof useMemoryGraph>;
   sleep: ReturnType<typeof useSleep>;
   speech: SpeechState;
+  mail: MailState;
 
   turn: TurnSettings;
   runtime: ReturnType<typeof useRookeryRuntime>;
@@ -316,6 +318,74 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
   );
   useLearnedMemories(socket, onLearned);
 
+  /* -------------------------------- mail ------------------------------- */
+
+  // App-wide delivery for the async inbox: a posted message, a finished
+  // schedule or a finished night used to be silent outside the one page that
+  // happened to be open (`useCron`/`useMemories` only listen while mounted).
+  // Subscribing here means a toast fires no matter which page is open, and
+  // the rail's badge stays correct without anyone visiting `/inbox` first.
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const refreshUnread = useCallback(async (): Promise<void> => {
+    try {
+      const list = await api.messages(200);
+      setUnreadCount(
+        list.filter((message) => !message.toAgentId && message.readAt == null).length,
+      );
+    } catch {
+      // The badge is a convenience; a failed refetch just keeps the last known count.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshUnread();
+  }, [refreshUnread]);
+
+  useEffect(
+    () =>
+      socket.onMessage((message: AgentMessage) => {
+        // `toAgentId` unset means addressed to the assistant/user; the inbox
+        // page's own compose form always sets it (see `InboxPage`), so a
+        // row shaped like this is never an echo of something the user just
+        // typed there - it is an agent's, a schedule's or a night's own
+        // report landing here for the first time.
+        if (message.toAgentId) return;
+        toast('New message', { description: message.content });
+        void refreshUnread();
+      }),
+    [socket, refreshUnread],
+  );
+
+  useEffect(
+    () =>
+      socket.onCron((event: CronEvent) => {
+        if (event.deleted || !event.run || event.run.status === 'running') return;
+        const ok = event.run.status === 'done';
+        toast(ok ? 'Schedule finished: ' + event.job.name : 'Schedule failed: ' + event.job.name, {
+          ...(ok ? {} : { description: event.run.error }),
+        });
+      }),
+    [socket],
+  );
+
+  useEffect(
+    () =>
+      socket.onSleep((event: SleepEvent) => {
+        if (event.phase !== 'finished') return;
+        const ok = event.run.status === 'done';
+        toast(ok ? 'Night finished' : 'Night failed', {
+          description: ok ? event.run.report : event.run.error,
+        });
+      }),
+    [socket],
+  );
+
+  const mail = useMemo<MailState>(
+    () => ({ unreadCount, refresh: refreshUnread }),
+    [unreadCount, refreshUnread],
+  );
+
   const highlighted = useMemo(
     () => new Set(chat.recalled.map((memory) => memory.id)),
     [chat.recalled],
@@ -484,6 +554,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       memoryGraph,
       sleep,
       speech,
+      mail,
       turn,
       runtime,
     }),
@@ -497,6 +568,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       counterpart,
       cron,
       highlighted,
+      mail,
       memories,
       memoryGraph,
       newConversation,
@@ -654,6 +726,26 @@ export function useMemoryState(): MemoryState {
 
 export function useSpeechState(): SpeechState {
   return useRookery().speech;
+}
+
+/**
+ * The inbox, as a badge count.
+ *
+ * The count is not the running total this session has seen - it is fetched
+ * from the server (unread rows addressed to the assistant/user), because the
+ * in-memory counter starts at zero on every fresh load and a page that only
+ * trusted it would under-count whatever piled up before this tab opened.
+ * `refresh()` re-reads that true count; `InboxPage` calls it after marking
+ * rows read, and the `message`/`cron`/`sleep` broadcasts above call it on
+ * every new arrival.
+ */
+export interface MailState {
+  unreadCount: number;
+  refresh(): Promise<void>;
+}
+
+export function useMailState(): MailState {
+  return useRookery().mail;
 }
 
 /* ------------------------------ sub-trees ------------------------------ */

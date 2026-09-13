@@ -37,6 +37,8 @@ export class CronStore {
     prompt: string;
     agentId?: string;
     projectId?: string;
+    /** Pin the job to an existing conversation from the start, instead of the first run creating one. */
+    sessionId?: string;
     permission?: PermissionLevel;
     enabled?: boolean;
     once?: boolean;
@@ -55,6 +57,7 @@ export class CronStore {
       prompt: input.prompt.trim(),
       agentId: blank(input.agentId),
       projectId: blank(input.projectId),
+      sessionId: blank(input.sessionId),
       permission: input.permission,
       enabled: input.enabled ?? true,
       once: input.once ?? false,
@@ -67,9 +70,9 @@ export class CronStore {
     this.#db
       .prepare(
         `INSERT INTO cron_jobs
-           (id, org_id, name, schedule, kind, prompt, agent_id, project_id, permission, enabled, once,
+           (id, org_id, name, schedule, kind, prompt, agent_id, project_id, session_id, permission, enabled, once,
             created_by, created_at, updated_at, next_run_at, run_count, script_json, remaining_runs)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       )
       .run(
         job.id,
@@ -80,6 +83,7 @@ export class CronStore {
         job.prompt,
         job.agentId ?? null,
         job.projectId ?? null,
+        job.sessionId ?? null,
         job.permission ?? null,
         job.enabled ? 1 : 0,
         job.once ? 1 : 0,

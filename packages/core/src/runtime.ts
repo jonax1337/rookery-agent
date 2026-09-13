@@ -793,8 +793,14 @@ export class Assistant extends EventEmitter {
       return error ? { status: 'failed', error, assignmentId } : { status: 'done', result: text, assignmentId };
     }
 
-    let sessionId = job.sessionId && this.store.getSession(job.sessionId) ? job.sessionId : undefined;
-    if (!sessionId) {
+    const existing = job.sessionId ? this.store.getSession(job.sessionId) : null;
+    let sessionId: string;
+    if (existing) {
+      sessionId = existing.id;
+      // The user may have archived the chat while this was pending; reusing
+      // it silently would bury the reply where nobody looks for it.
+      if (existing.archived) this.store.updateSession(existing.id, { archived: false });
+    } else {
       sessionId = this.createSession({ title: 'Schedule: ' + job.name, projectId: job.projectId }).id;
       this.store.cron.updateJob(job.id, { sessionId }, false);
     }

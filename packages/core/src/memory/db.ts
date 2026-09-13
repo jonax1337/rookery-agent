@@ -8,7 +8,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 export type Db = DatabaseSync;
 
@@ -357,6 +357,28 @@ function migrate(db: Db): void {
 
     CREATE INDEX IF NOT EXISTS idx_tasks_board
       ON tasks(org_id, parent_id, status, updated_at DESC);
+  `);
+
+  // Schema 9 -> 10: the board gains a manual order, and a task's runs get a
+  // real history instead of a single overwritable pointer. `tasks.assignment_id`
+  // stays as "the current run" for cheap reads; `task_assignments` is the
+  // durable record that survives a rerun clobbering that pointer.
+  if (!hasColumn(db, 'tasks', 'sort_order')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_assignments (
+      task_id       TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+      created_at    INTEGER NOT NULL,
+      PRIMARY KEY (task_id, assignment_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_assignments_assignment
+      ON task_assignments(assignment_id);
+    CREATE INDEX IF NOT EXISTS idx_task_assignments_task
+      ON task_assignments(task_id, created_at DESC);
   `);
 
   // Schedules: standing orders that fire on a cron expression, and their runs.

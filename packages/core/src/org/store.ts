@@ -443,6 +443,25 @@ export class OrgStore {
     );
   }
 
+  /**
+   * Assignments still marked pending/running from a previous process are
+   * failed on startup, mirroring `CronStore.failStaleRuns` (cron/store.ts).
+   * Returns the rows it changed so the caller can announce them.
+   */
+  failStaleAssignments(reason: string): Assignment[] {
+    const now = Date.now();
+    const rows = this.#db
+      .prepare("SELECT * FROM assignments WHERE status IN ('pending', 'running')")
+      .all() as Row[];
+    if (!rows.length) return [];
+    this.#db
+      .prepare(
+        "UPDATE assignments SET status = 'failed', error = ?, finished_at = ? WHERE status IN ('pending', 'running')",
+      )
+      .run(reason, now);
+    return rows.map((row) => mapAssignment({ ...row, status: 'failed', error: reason, finished_at: now }));
+  }
+
   /* --------------------------------- messages -------------------------------- */
 
   postMessage(input: {
@@ -551,13 +570,16 @@ export class OrgStore {
       planNote: blank(input.planNote),
       createdAt: now,
       updatedAt: now,
+      // New cards start at the back of their column; drag&drop assigns a real
+      // position once someone reorders it.
+      sortOrder: now,
     };
     this.#db
       .prepare(
         `INSERT INTO tasks
            (id, org_id, project_id, parent_id, title, description, status, priority, assignee_id,
-            created_by, created_by_agent_id, depends_on, plan_note, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            created_by, created_by_agent_id, depends_on, plan_note, created_at, updated_at, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         task.id,
@@ -575,6 +597,7 @@ export class OrgStore {
         task.planNote ?? null,
         now,
         now,
+        task.sortOrder,
       );
     return task;
   }
@@ -638,6 +661,7 @@ export class OrgStore {
       error?: string | null;
       startedAt?: number | null;
       finishedAt?: number | null;
+      sortOrder?: number;
     },
   ): void {
     this.#update('tasks', id, {
@@ -654,7 +678,54 @@ export class OrgStore {
       error: patch.error,
       started_at: patch.startedAt,
       finished_at: patch.finishedAt,
+      sort_order: patch.sortOrder,
     });
+  }
+
+  /**
+   * Tasks still marked planned/running from a previous process are failed on
+   * startup, mirroring `failStaleAssignments` above. Returns the rows it
+   * changed so the caller can announce them.
+   */
+  failStaleTasks(reason: string): Task[] {
+    const now = Date.now();
+    const rows = this.#db
+      .prepare("SELECT * FROM tasks WHERE status IN ('planned', 'running')")
+      .all() as Row[];
+    if (!rows.length) return [];
+    this.#db
+      .prepare(
+        "UPDATE tasks SET status = 'failed', error = ?, finished_at = ? WHERE status IN ('planned', 'running')",
+      )
+      .run(reason, now);
+    return rows.map((row) =>
+      mapTask({ ...row, status: 'failed', error: reason, finished_at: now, updated_at: now }),
+    );
+  }
+
+  /**
+   * Record that this assignment ran this task, keeping every run instead of
+   * just the latest: a rerun used to overwrite `tasks.assignment_id` with no
+   * trace of the previous (often failed) run, which broke the reverse lookup
+   * from an old assignment back to its task. `tasks.assignment_id` still
+   * tracks "the current run" for cheap reads; this table is the durable side.
+   */
+  linkTaskAssignment(taskId: string, assignmentId: string): void {
+    this.#db
+      .prepare(
+        `INSERT OR IGNORE INTO task_assignments (task_id, assignment_id, created_at)
+         VALUES (?, ?, ?)`,
+      )
+      .run(taskId, assignmentId, Date.now());
+    this.updateTask(taskId, { assignmentId });
+  }
+
+  /** The task an assignment belongs to, even one a later rerun's assignment_id overwrote. */
+  getTaskIdForAssignment(assignmentId: string): string | null {
+    const row = this.#db
+      .prepare('SELECT task_id FROM task_assignments WHERE assignment_id = ?')
+      .get(assignmentId) as { task_id: string } | undefined;
+    return row?.task_id ?? null;
   }
 
   /* --------------------------------- internals -------------------------------- */
@@ -822,6 +893,7 @@ function mapTask(row: Row): Task {
     updatedAt: Number(row.updated_at),
     startedAt: row.started_at ? Number(row.started_at) : undefined,
     finishedAt: row.finished_at ? Number(row.finished_at) : undefined,
+    sortOrder: Number(row.sort_order ?? 0),
   };
 }
 

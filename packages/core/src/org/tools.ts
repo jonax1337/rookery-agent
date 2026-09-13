@@ -452,7 +452,10 @@ export const ORG_TOOLS: ToolDefinition[] = [
       '...", "every Friday at 17:00, have Mara ...", or a single later run (once=true) for ' +
       '"tomorrow at 15:00 remind me ...". By default you run the prompt yourself, as a turn of ' +
       'your own in a conversation dedicated to the job, with all your tools; name an agent to ' +
-      'have it run as an assignment instead. The outcome of every run lands in your inbox. The ' +
+      'have it run as an assignment instead. The outcome of every run lands in your inbox; a ' +
+      'one-time run you do yourself (once=true, no agent) also replies directly in the ' +
+      'conversation you are having right now, so "I\'ll get back to you here" actually happens - ' +
+      'a recurring job, or one handed to an agent, keeps its own dedicated conversation. The ' +
       "schedule is a five-field cron expression in the machine's local time - minute hour " +
       'day-of-month month day-of-week - e.g. "0 8 * * 1-5" (weekdays 08:00), "*/30 * * * *" ' +
       '(every 30 minutes), "0 18 1 * *" (the 1st at 18:00), "30 15 11 9 *" with once=true ' +

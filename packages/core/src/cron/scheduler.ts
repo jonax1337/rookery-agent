@@ -54,6 +54,12 @@ export interface CronJobInput {
   prompt: string;
   agentId?: string;
   projectId?: string;
+  /**
+   * Pin the job to an existing conversation instead of letting the first run
+   * create a dedicated one - the "reply in this same chat" case for a
+   * one-off follow-up. Only meaningful for the assistant's own jobs.
+   */
+  sessionId?: string;
   permission?: PermissionLevel;
   enabled?: boolean;
   once?: boolean;

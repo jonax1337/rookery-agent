@@ -305,6 +305,8 @@ export interface AssignmentView {
   provider?: ProviderId;
   chars?: number;
   preview?: string;
+  /** The most recent tool call this run made, for a live activity view. */
+  lastActivity?: { kind: 'tool' | 'status'; label: string; at: number };
   durationMs?: number;
   error?: string;
 }
@@ -360,6 +362,8 @@ export interface Task {
   updatedAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /** Manual board position within its status column; drag&drop only. */
+  sortOrder: number;
 }
 
 export interface PlannedSubtask {
@@ -504,6 +508,8 @@ export interface AssignmentDetail {
   assignment: Assignment;
   agent: Agent | null;
   children: Assignment[];
+  /** The board task this run belongs to, from the durable history, not `assignment_id` scans. */
+  taskId: string | null;
 }
 
 /* --------------------------------- events -------------------------------- */

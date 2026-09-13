@@ -6,6 +6,7 @@ import {
   agentSchema,
   assignInputSchema,
   formatIssues,
+  markMessagesReadSchema,
   messageSchema,
   organizationSchema,
   parseOrThrow,
@@ -213,6 +214,9 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
       assignment,
       agent: store.getAgent(assignment.agentId),
       children: store.listAssignments(assignment.orgId, { limit: 100 }).filter((a) => a.parentId === assignment.id),
+      // Durable, survives a rerun overwriting the task's own `assignmentId`
+      // pointer with a newer run - see `task_assignments` in memory/db.ts.
+      taskId: store.getTaskIdForAssignment(assignment.id),
     };
   });
 
@@ -228,8 +232,12 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
   });
 
   /**
-   * Hand an agent a task directly, as SSE. Same shape as POST /api/chat: the
-   * assignment is aborted when the client goes away.
+   * Hand an agent a task directly, as SSE. Same shape as POST /api/chat: a
+   * closed connection no longer aborts the assignment (Workstream E.1) - it
+   * keeps running to completion and broadcasts as usual. Deliberate
+   * cancellation still works exactly as before, via
+   * POST /api/org/assignments/:id/cancel, which stops the run by assignment
+   * id independently of this route's own signal.
    */
   app.post('/api/org/assignments', async (request: FastifyRequest, reply: FastifyReply) => {
     const parsed = assignInputSchema.safeParse(request.body ?? {});
@@ -238,16 +246,8 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
       return { error: 'Bad Request', message: formatIssues(parsed.error) };
     }
 
-    const controller = new AbortController();
     const sse = openSse(request, reply);
-    const abort = (): void => controller.abort();
-    reply.raw.on('close', abort);
-
-    try {
-      await pipeToSse(context.assistant.assign({ ...parsed.data, signal: controller.signal }), sse);
-    } finally {
-      reply.raw.off('close', abort);
-    }
+    await pipeToSse(context.assistant.assign(parsed.data), sse);
     return reply;
   });
 
@@ -298,8 +298,22 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
       reply.code(409);
       return { error: 'Conflict', message: 'The task is running.' };
     }
+    // A manual "done" used to silently disagree with the run it claims to
+    // conclude: the linked assignment could say `failed` forever while the
+    // board showed a green check. `force` is the explicit override.
+    if (patch.status === 'done' && !patch.force) {
+      const assignment = task.assignmentId ? store.getAssignment(task.assignmentId) : null;
+      if (assignment?.status === 'failed') {
+        reply.code(409);
+        return {
+          error: 'Conflict',
+          message: 'The linked assignment failed. Pass force to mark the task done anyway.',
+        };
+      }
+    }
+    const { force: _force, ...rest } = patch;
     store.updateTask(task.id, {
-      ...patch,
+      ...rest,
       finishedAt: patch.status && patch.status !== 'open' ? Date.now() : undefined,
     });
     const updated = store.getTask(task.id);
@@ -316,19 +330,18 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     return { plan, task: store.getTask(task.id), children: store.listTasks(task.orgId, { parentId: task.id }) };
   });
 
-  /** Run a task from the board, as SSE. Same abort contract as POST /api/chat. */
+  /**
+   * Run a task from the board, as SSE. Same abort contract as POST
+   * /api/chat: a closed connection no longer aborts the run (Workstream
+   * E.1). Deliberate cancellation still works via
+   * PATCH /api/org/tasks/:id { status: 'cancelled' }, which stops the run by
+   * task id independently of this route's own signal.
+   */
   app.post('/api/org/tasks/:id/run', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
     const task = store.getTask(request.params.id);
     if (!task) return notFound(reply, 'No task ' + request.params.id);
-    const controller = new AbortController();
     const sse = openSse(request, reply);
-    const abort = (): void => controller.abort();
-    reply.raw.on('close', abort);
-    try {
-      await pipeToSse(context.assistant.runTask({ taskId: task.id, signal: controller.signal }), sse);
-    } finally {
-      reply.raw.off('close', abort);
-    }
+    await pipeToSse(context.assistant.runTask({ taskId: task.id }), sse);
     return reply;
   });
 
@@ -349,6 +362,13 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     context.assistant.emit('message', { type: 'message', message });
     reply.code(201);
     return message;
+  });
+
+  /** Marks a batch of inbox rows read - the CEO's inbox page calls this on load. */
+  app.post('/api/org/messages/read', async (request: FastifyRequest) => {
+    const input = parseOrThrow(markMessagesReadSchema, request.body ?? {});
+    store.markRead(input.ids);
+    return { ok: true };
   });
 }
 
