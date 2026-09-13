@@ -13,23 +13,40 @@ export interface MemoryCandidate {
   content: string;
   tags: string[];
   importance: number;
+  /**
+   * The words the candidate stands on, copied out of what the user - or, for
+   * an agent, the assignment and the report - actually wrote. The gate checks
+   * it against the source text and throws the candidate away when it is not
+   * there, so a model that paraphrases its way to a "fact" gets nowhere.
+   */
+  evidence: string;
 }
 
 const EXTRACTION_PROMPT = `You maintain the long-term memory of a personal assistant.
 
-Read the exchange below and extract ONLY durable facts worth remembering weeks from now.
+Read the exchange below and extract ONLY durable facts the USER STATED THEMSELVES and that are
+worth remembering weeks from now.
+
+THE ONE HARD RULE - read this before anything else:
+Every memory needs "evidence": a span copied VERBATIM, character for character, out of the USER
+message. Not out of the assistant answer. Not reworded, not translated, not tidied up. If you
+cannot copy such a span, the memory does not exist and you do not write it. A memory whose
+evidence is not found word for word in the user message is thrown away before it is stored, so
+inventing one wastes everybody's time.
 
 Extract:
-- fact: stable truths about the user, their setup, their people, their machine
-- preference: how the user wants things done (tone, language, tools, formatting)
-- project: ongoing work, goals, deadlines, constraints
-- event: something that happened where the date matters
+- fact: stable truths the user stated about themselves, their setup, their people, their machine
+- preference: how the user said they want things done (tone, language, tools, formatting)
+- project: ongoing work, goals, deadlines, constraints the user described
+- event: something the user reported happening, where the date matters
 
 Do NOT extract:
 - anything already listed under ALREADY KNOWN
-- the content of the assistant answer, or general world knowledge
+- anything the assistant said, worked out, looked up or observed - only the user's own words count
+- a conclusion you drew from what the user said; only what they actually said
 - one-off task details, pleasantries, or transient state
-- anything you are inferring rather than being told
+- what the user is asking FOR. A question is not a fact about the user. "How do I deploy this?"
+  says nothing durable; "I deploy with Vercel" does.
 
 Rules:
 - Each memory is ONE self-contained sentence, understandable with no other context.
@@ -41,10 +58,11 @@ Rules:
 - Resolve relative dates to absolute ones using the CURRENT DATE given below.
 - importance: 0.9 identity and hard constraints, 0.7 preferences and active
   projects, 0.5 useful context, 0.3 minor detail.
-- Extracting nothing is the correct answer most of the time.
+- Extracting nothing is the correct answer most of the time. An empty array is
+  a better answer than a memory you had to reach for.
 
 Reply with a JSON array ONLY, no prose, no code fence:
-[{"kind":"preference","content":"The user primarily works with TypeScript.","tags":["typescript"],"importance":0.8}]
+[{"kind":"preference","content":"The user primarily works with TypeScript.","tags":["typescript"],"importance":0.8,"evidence":"I mostly work with TypeScript"}]
 An empty array is []`;
 
 /**
@@ -57,6 +75,12 @@ const AGENT_EXTRACTION_PROMPT = `You maintain the working memory of one AI agent
 Read the assignment and the agent's report below and extract ONLY durable knowledge that will
 help this agent on a future assignment.
 
+THE ONE HARD RULE - read this before anything else:
+Every memory needs "evidence": a span copied VERBATIM, character for character, out of the
+ASSIGNMENT or the REPORT. Not reworded, not translated, not tidied up. If you cannot copy such a
+span, the memory does not exist and you do not write it. A memory whose evidence is not found
+word for word in those two texts is thrown away before it is stored.
+
 Extract:
 - project: how the codebase or project is structured, where things live, conventions, gotchas
 - fact: stable truths about the tools, environment or people the agent works with
@@ -66,7 +90,7 @@ Extract:
 Do NOT extract:
 - anything already listed under ALREADY KNOWN
 - the task's one-off details or the report's content itself
-- anything inferred rather than observed
+- a conclusion you drew rather than something the report states
 
 Rules:
 - Each memory is ONE self-contained sentence, understandable with no other context.
@@ -77,7 +101,7 @@ Rules:
 - Extracting nothing is the correct answer most of the time.
 
 Reply with a JSON array ONLY, no prose, no code fence:
-[{"kind":"project","content":"The API lives in packages/server and uses Fastify.","tags":["server"],"importance":0.7}]
+[{"kind":"project","content":"The API lives in packages/server and uses Fastify.","tags":["server"],"importance":0.7,"evidence":"packages/server runs on Fastify"}]
 An empty array is []`;
 
 export interface ExtractionInput {
@@ -164,6 +188,12 @@ export function parseCandidates(raw: string): MemoryCandidate[] {
     const content = typeof record.content === 'string' ? record.content.trim() : '';
     if (content.length < 8 || content.length > 500) continue;
 
+    // No quote, no candidate. The gate still checks that the quote is real;
+    // this only stops a reply that never even claimed one from travelling
+    // any further.
+    const evidence = typeof record.evidence === 'string' ? record.evidence.trim() : '';
+    if (!evidence) continue;
+
     const key = content.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -177,7 +207,7 @@ export function parseCandidates(raw: string): MemoryCandidate[] {
       ? record.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, 6)
       : [];
 
-    out.push({ kind, content, tags, importance });
+    out.push({ kind, content, tags, importance, evidence });
     if (out.length >= 8) break;
   }
 

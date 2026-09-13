@@ -12,6 +12,7 @@ import {
   type RookeryConfig,
   type SleepRun,
   type SleepStage,
+  type ToolServerAudience,
 } from '../types.js';
 import { silentLogger, type Logger } from '../logger.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -19,6 +20,7 @@ import { entitySlug, type Store } from './store.js';
 import { smallModelFor } from './extractor.js';
 import { linkEntities, normalizeTokens, similarity } from './gate.js';
 import { MEMORY_KINDS } from './recall.js';
+import { SkillStore, skillSlug } from '../skills/store.js';
 
 /**
  * Sleep: what the memory does when nobody is talking to it.
@@ -138,15 +140,43 @@ export class SleepRunner extends EventEmitter {
     return owners;
   }
 
-  /** Roll back one night. Delegated to the store, which does it atomically. */
-  undo(runId: string): { woken: number; removed: number; edges: number } | null {
+  /**
+   * Roll back one night.
+   *
+   * The bank is the store's job and it does that part atomically. The skills
+   * cannot join that transaction - they are files - so they are put back
+   * afterwards, from the snapshots the run took before it wrote over them. A
+   * snapshot with no content means the skill did not exist that evening, so
+   * undoing its creation deletes the folder again.
+   *
+   * Order matters: the memories go back first. If restoring a file then
+   * fails, the bank is already consistent and the skill is the only thing
+   * left standing - the opposite order would leave a skill pointing at
+   * memories that no longer say what it was rewritten for.
+   */
+  undo(runId: string): { woken: number; removed: number; edges: number; skills: number } | null {
     const result = this.#store.undoSleepRun(runId);
-    if (result) {
-      const run = this.#store.getSleepRun(runId);
-      if (run) this.#announce(run, 'undone');
-      this.#log.info('Sleep run undone', { run: runId, ...result });
+    if (!result) return null;
+
+    let skills = 0;
+    const store = new SkillStore(this.#config.skillsDir);
+    const seen = new Set<string>();
+    // Oldest snapshot per name: the state as it stood before the night began,
+    // even if one run both wrote and later revised the same skill.
+    for (const version of this.#store.skillVersionsForRun(runId)) {
+      if (seen.has(version.skill)) continue;
+      seen.add(version.skill);
+      try {
+        if (store.restore(version.skill, version.content)) skills += 1;
+      } catch (cause) {
+        this.#log.warn('Could not put a skill back', { skill: version.skill, error: (cause as Error).message });
+      }
     }
-    return result;
+
+    const run = this.#store.getSleepRun(runId);
+    if (run) this.#announce(run, 'undone');
+    this.#log.info('Sleep run undone', { run: runId, ...result, skills });
+    return { ...result, skills };
   }
 
   /**
@@ -177,6 +207,8 @@ export class SleepRunner extends EventEmitter {
       dormantCount: 0,
       edgeCount: 0,
       insightCount: 0,
+      skillCount: 0,
+      skillRevisedCount: 0,
       conflictCount: 0,
       resolvedCount: 0,
       modelCalls: 0,
@@ -267,6 +299,18 @@ export class SleepRunner extends EventEmitter {
           counters.insightCount += insight.written;
           counters.edgeCount += insight.edges;
           counters.modelCalls += insight.calls;
+
+          // And after the insights, the two steps that leave something behind
+          // outside the bank. Repair comes first on purpose: a procedure that
+          // has gone stale is actively misleading whoever opens it next,
+          // which is worth more than a ninth procedure nobody asked for.
+          const revised = await this.#revise(provider, insightModel, owner, run.id, controller.signal);
+          counters.skillRevisedCount += revised.written;
+          counters.modelCalls += revised.calls;
+
+          const practised = await this.#practise(provider, insightModel, owner, run.id, controller.signal);
+          counters.skillCount += practised.written;
+          counters.modelCalls += practised.calls;
         }
         this.#phase(run.id, 'rem', counters, cycle);
         this.#throwIfAborted(controller.signal);
@@ -832,6 +876,268 @@ export class SleepRunner extends EventEmitter {
     return { written, edges, calls: 1 };
   }
 
+  /* ------------------------------ phase 6 ------------------------------ */
+
+  /**
+   * Repair before invention.
+   *
+   * A skill is written once and then followed for months, which makes a
+   * stale one worse than none at all: it does not merely fail to help, it
+   * confidently sends whoever opens it down a path that no longer exists. So
+   * before the night considers writing anything new, it asks which of the
+   * procedures it already owns have had the ground move under them.
+   *
+   * Two signals, both already in the database and neither of them guesswork:
+   *
+   *   sources  - the memories a skill was distilled from. One of them being
+   *              put to sleep, decided against in a contradiction, or edited
+   *              means the skill was written from something that no longer
+   *              reads that way.
+   *   failures - runs that had the skill open and then failed. The error text
+   *              comes along, because "the run failed" locates nothing while
+   *              "no such script: build:core" points at the exact line that
+   *              is lying.
+   *
+   * A trigger is consumed by being looked at, whatever the outcome: every
+   * review leaves a snapshot, and the next night's window starts there.
+   * Otherwise one dormant memory would drag the same skill in front of the
+   * model every night for ever, at the cost of a call each time.
+   */
+  async #revise(
+    provider: Provider,
+    model: string | undefined,
+    owner: string,
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<{ written: number; calls: number }> {
+    const budget = this.#config.memory.sleep.skillRevisions;
+    if (budget <= 0 || signal.aborted) return { written: 0, calls: 0 };
+
+    const store = new SkillStore(this.#config.skillsDir);
+    const mine = store
+      .for(owner === ASSISTANT_MEMORY_OWNER ? 'assistant' : 'agent')
+      // The user's own skills are not the night's to rewrite, so there is no
+      // point spending a model call deciding that they should be.
+      .filter((skill) => skill.origin !== 'user');
+    if (!mine.length) return { written: 0, calls: 0 };
+
+    const suspects = mine
+      .map((skill) => {
+        // Looking counts as clearing, so the window opens at whichever came
+        // last: the file being written, or the night last reading it.
+        const since = Math.max(skill.updatedAt, this.#store.lastSkillReviewAt(skill.name));
+        const changed = this.#store.changedSkillSources(skill.name, since);
+        const failures = this.#store.failedRunsForSkill(skill.name, since, 3);
+        return { skill, changed, failures };
+      })
+      // A failure is the louder signal: it is evidence the procedure was
+      // actually followed and actually did not work.
+      .filter((entry) => entry.changed.length > 0 || entry.failures.length > 0)
+      .sort((a, b) => b.failures.length * 2 + b.changed.length - (a.failures.length * 2 + a.changed.length))
+      .slice(0, budget);
+
+    let written = 0;
+    let calls = 0;
+
+    for (const suspect of suspects) {
+      if (signal.aborted) break;
+      const { skill, changed, failures } = suspect;
+
+      const why: string[] = [];
+      for (const entry of changed) {
+        const line = entry.replacement
+          ? 'This memory was replaced:\n  BEFORE: ' + entry.memory.content + '\n  NOW:    ' + entry.replacement.content
+          : entry.memory.dormantAt
+            ? 'This memory was put to sleep as no longer worth keeping: ' + entry.memory.content
+            : 'This memory was edited since the skill was written: ' + entry.memory.content;
+        why.push('- ' + line);
+      }
+      for (const failure of failures) {
+        why.push(
+          '- A run that had this skill open failed.\n  TASK:  ' + clipText(failure.task, 200) +
+            '\n  ERROR: ' + clipText(failure.error, 400),
+        );
+      }
+
+      const raw = await ask(
+        provider,
+        REVISE_PROMPT +
+          '\n\nTHE SKILL AS IT READS NOW:\nname: ' + skill.name +
+          '\ndescription: ' + skill.description +
+          '\n\n' + skill.body +
+          '\n\nWHAT HAS CHANGED SINCE IT WAS WRITTEN:\n' + why.join('\n'),
+        model,
+        signal,
+      );
+      calls += 1;
+
+      const parsed = parseObject(raw);
+      const wantsRevision = parsed?.revise === true;
+      const description =
+        typeof parsed?.description === 'string' && parsed.description.trim()
+          ? parsed.description.trim()
+          : skill.description;
+      const body = typeof parsed?.body === 'string' ? parsed.body.trim() : '';
+
+      if (!wantsRevision || body.length < 120) {
+        // Reviewed and left alone. The snapshot carries no run id: there is
+        // nothing for undo to take back, but the timestamp still closes the
+        // window so tomorrow does not ask the same question again.
+        this.#store.snapshotSkill({ skill: skill.name, content: store.raw(skill.name) });
+        this.#settleSources(skill.name, owner, changed);
+        this.#log.info('Sleep reviewed a skill and left it', { owner, skill: skill.name });
+        continue;
+      }
+
+      try {
+        this.#store.snapshotSkill({ skill: skill.name, content: store.raw(skill.name), sleepRunId: runId });
+        store.save({ name: skill.name, description, body, audience: skill.audience, origin: 'sleep' });
+        this.#settleSources(skill.name, owner, changed);
+        this.#log.info('Sleep revised a skill', {
+          owner,
+          skill: skill.name,
+          changed: changed.length,
+          failures: failures.length,
+        });
+        written += 1;
+      } catch (cause) {
+        this.#log.info('Sleep left a skill alone', { owner, skill: skill.name, reason: (cause as Error).message });
+      }
+    }
+
+    return { written, calls };
+  }
+
+  /**
+   * Re-point a skill at the memories that hold now.
+   *
+   * A superseded source is followed to whatever replaced it, so the chain
+   * survives a condensation instead of breaking at it; a sleeping source is
+   * dropped, because a memory nobody kept is not something to keep standing
+   * on. Without this the same trigger would fire for ever: the memory stays
+   * dormant, and dormancy has no timestamp a window could exclude.
+   */
+  #settleSources(
+    skill: string,
+    owner: string,
+    changed: { memory: MemoryRecord; replacement: MemoryRecord | null }[],
+  ): void {
+    if (!changed.length) return;
+    const current = new Set(this.#store.skillSourceIds(skill));
+    for (const entry of changed) {
+      current.delete(entry.memory.id);
+      if (entry.replacement && !entry.replacement.dormantAt) current.add(entry.replacement.id);
+      else if (!entry.memory.dormantAt && !entry.memory.supersededBy) current.add(entry.memory.id);
+    }
+    this.#store.setSkillSources(skill, owner, [...current]);
+  }
+
+  /**
+   * The night's last act, and the only one that changes what the assistant
+   * can do rather than only what it knows.
+   *
+   * A memory says that something is true. A skill says how something is
+   * done - and that second kind of knowledge is exactly what gets worked out
+   * from scratch every time while it lives as a scatter of separate
+   * sentences. So once the bank is tidy, the same evidence rule that governs
+   * insights is pointed at procedure: where several memories describe the
+   * same recurring piece of work, that work is written down as a skill, and
+   * from the next turn on it sits in the index the assistant and its agents
+   * both read.
+   *
+   * Three things keep this from filling the shelf with rubbish. It is capped
+   * (one a night by default). Nothing is written on fewer than three
+   * memories. And a skill the user wrote is never overwritten - the store
+   * refuses, and the refusal is logged rather than worked around.
+   */
+  async #practise(
+    provider: Provider,
+    model: string | undefined,
+    owner: string,
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<{ written: number; calls: number }> {
+    const wanted = this.#config.memory.sleep.skills;
+    if (wanted <= 0 || signal.aborted) return { written: 0, calls: 0 };
+
+    // What this bank holds, strongest first. Insights are deliberately in:
+    // they are precisely the "this keeps happening" observations a procedure
+    // grows out of.
+    const live = this.#store
+      .listMemories({ owner, limit: 60, includeDormant: false })
+      .filter((memory) => memory.kind !== 'summary');
+    if (live.length < 6) return { written: 0, calls: 0 };
+
+    const numbered = live
+      .map((memory, index) => index + 1 + '. [' + memory.kind + '] ' + memory.content)
+      .join('\n');
+
+    // Whose shelf this is. The assistant's bank writes skills the assistant
+    // may open; an agent's bank writes skills for agents.
+    const audience: ToolServerAudience = owner === ASSISTANT_MEMORY_OWNER ? 'assistant' : 'agents';
+    const store = new SkillStore(this.#config.skillsDir);
+    const existing = store.for(owner === ASSISTANT_MEMORY_OWNER ? 'assistant' : 'agent');
+    const shelf = existing.length
+      ? existing.map((skill) => '- ' + skill.name + ' (' + skill.origin + '): ' + skill.description).join('\n')
+      : '(nothing yet)';
+
+    const raw = await ask(
+      provider,
+      SKILL_PROMPT.replace('{{MAX}}', String(wanted)) +
+        '\n\nSKILLS THAT ALREADY EXIST:\n' + shelf +
+        '\n\nWHAT THIS MEMORY HOLDS:\n' + numbered,
+      model,
+      signal,
+    );
+    const parsed = parseObject(raw);
+    const proposed = parsed && Array.isArray(parsed.skills) ? parsed.skills : [];
+
+    let written = 0;
+    for (const entry of proposed.slice(0, wanted)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const row = entry as Record<string, unknown>;
+      const name = typeof row.name === 'string' ? skillSlug(row.name) : '';
+      const description = typeof row.description === 'string' ? row.description.trim() : '';
+      const body = typeof row.body === 'string' ? row.body.trim() : '';
+      if (!name || !description) continue;
+      // Shorter than this is a note, not a procedure worth opening.
+      if (body.length < 120) continue;
+
+      const evidence = Array.isArray(row.evidence)
+        ? [...new Set(row.evidence.map((value) => Number(value)))].filter(
+            (value) => Number.isInteger(value) && value >= 1 && value <= live.length,
+          )
+        : [];
+      // A procedure standing on fewer than three memories is one anecdote
+      // with ambitions.
+      if (evidence.length < 3) continue;
+
+      try {
+        // The snapshot goes in first and carries the run id: writing a skill
+        // is part of the night, so undoing the night has to take it back.
+        // Null content says the skill did not exist, which is how undo knows
+        // to delete rather than restore.
+        this.#store.snapshotSkill({ skill: name, content: store.raw(name), sleepRunId: runId });
+        const skill = store.save({ name, description, body, audience, origin: 'sleep' });
+        // What it stands on, kept: this is what lets a later night notice
+        // that the ground under this procedure has moved.
+        this.#store.setSkillSources(
+          skill.name,
+          owner,
+          evidence.map((index) => live[index - 1]!.id),
+        );
+        this.#log.info('Sleep wrote a skill', { owner, skill: skill.name, evidence: evidence.length });
+        written += 1;
+      } catch (cause) {
+        // Almost always "that name belongs to the user". Not worth failing a
+        // night over; the night simply does not get that name.
+        this.#log.info('Sleep left a skill alone', { owner, skill: name, reason: (cause as Error).message });
+      }
+    }
+
+    return { written, calls: 1 };
+  }
+
   /* ------------------------------ internals ------------------------------ */
 
   async #resolveProvider(wanted?: ProviderId): Promise<ProviderId | null> {
@@ -939,6 +1245,67 @@ Reply ONLY with JSON, no prose or code fence:
 {"insights":[{"content":"...","importance":0.8,"evidence":[1,4,7],"tags":["..."]}]}
 An empty result is {"insights":[]}`;
 
+const REVISE_PROMPT = `You maintain one written procedure that an assistant follows unattended.
+
+Below is a skill as it currently reads, and everything that has changed since it was written:
+memories it was built on that have been replaced, retired or edited, and runs that had it open
+and then failed, with the real error text.
+
+Decide ONE thing: does the skill still hold, or does it now mislead whoever opens it next?
+
+Revise it when:
+- a step names something that has been replaced (a command, a path, a tool, a threshold)
+- an error shows a step simply does not work the way the skill claims
+- the skill is silent about a trap that has now caught a run
+
+Do NOT revise when:
+- the change is unrelated to what the skill actually says
+- the run failed for a reason the skill never claimed to cover
+- you would only be rewording it. Churn is worse than an old sentence that is still true.
+
+When you revise:
+- return the COMPLETE new body, not a diff and not only the changed part
+- change what is wrong and leave the rest alone, word for word
+- keep the same structure and the same language
+- fix the cause, not the symptom: if a command was renamed, rename it, do not add a note
+  saying it might have been renamed
+- never invent a step you have no evidence for. If the error shows a step is wrong but not
+  what the right one is, say so plainly in the skill rather than guessing a replacement.
+
+Reply ONLY with JSON, no prose or code fence:
+{"revise":true,"description":"when to open this skill","body":"## Steps\\n1. ..."}
+Leaving it alone is {"revise":false}`;
+
+const SKILL_PROMPT = `You turn what an assistant has learned into something it can actually follow.
+
+Below are the memories this assistant holds and the skills it already has. A memory says THAT
+something is true. A skill says HOW a kind of work is done, so it does not have to be figured out
+again. Your job is to notice where the memories have quietly documented a procedure, and to write
+that procedure down.
+
+Write a skill ONLY when all of these hold:
+- the memories point at a RECURRING kind of task, not one thing that happened once
+- there is an actual procedure in them: an order to do things in, a tool to reach for, a mistake
+  worth avoiding, a rule that keeps coming back
+- no existing skill already covers it
+- at least THREE of the numbered memories support it
+
+Write at most {{MAX}}. Writing none is the ordinary answer - reply with an empty list and stop.
+
+Revising a skill you wrote before (one marked "sleep" or "agent") counts towards the limit and is
+usually better than adding another one: reuse its exact name and write the improved version in
+full. NEVER reuse the name of a skill marked "user" - those belong to the person and are refused.
+
+For the body: Markdown, written for somebody who has never seen these memories. Concrete names,
+paths, commands, thresholds. Steps in the order they are done. State the traps explicitly. No
+preamble, no restating of the memories, no "as an AI".
+
+Write in the same language the memories are written in.
+
+Reply ONLY with JSON, no prose or code fence:
+{"skills":[{"name":"release-checklist","description":"When cutting a release of the web package","body":"## Steps\\n1. ...","evidence":[2,5,9]}]}
+An empty result is {"skills":[]}`;
+
 /* ------------------------------- helpers ------------------------------- */
 
 /** What the night may never touch. */
@@ -1001,6 +1368,8 @@ export function describeSleep(counters: {
   insightCount: number;
   conflictCount: number;
   resolvedCount?: number;
+  skillCount?: number;
+  skillRevisedCount?: number;
 }): string {
   const parts: string[] = [counters.readCount + ' memories read'];
   if (counters.mergedCount) parts.push(counters.mergedCount + ' condensed');
@@ -1015,6 +1384,12 @@ export function describeSleep(counters: {
   }
   if (counters.insightCount) {
     parts.push(plural(counters.insightCount, 'insight', 'insights') + ' recorded');
+  }
+  if (counters.skillRevisedCount) {
+    parts.push(plural(counters.skillRevisedCount, 'skill', 'skills') + ' revised');
+  }
+  if (counters.skillCount) {
+    parts.push(plural(counters.skillCount, 'skill', 'skills') + ' written');
   }
   return parts.length === 1 ? parts[0] + ', nothing to do.' : parts.join(', ') + '.';
 }
@@ -1053,4 +1428,10 @@ function chunk<T>(items: T[], size: number): T[][] {
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
+}
+
+/** A task or an error trimmed to the part that still says something. */
+function clipText(text: string, max: number): string {
+  const trimmed = text.trim().replace(/\s+/g, ' ');
+  return trimmed.length <= max ? trimmed : trimmed.slice(0, max) + ' [...]';
 }

@@ -27,6 +27,7 @@ export {
 // what happens to it once nobody is asking anything.
 export {
   admitCandidates,
+  confirmedBy,
   linkEntities,
   normalizeTokens,
   similarity,
@@ -165,7 +166,15 @@ export {
   withoutToolServer,
   type ToolServerState,
 } from './tools/hub.js';
-export { SkillStore, renderSkill, renderSkillsIndex, skillSlug, type Skill, type SkillInput } from './skills/store.js';
+export {
+  SkillStore,
+  renderSkill,
+  renderSkillsIndex,
+  skillSlug,
+  type Skill,
+  type SkillInput,
+  type SkillOrigin,
+} from './skills/store.js';
 export {
   SKILL_SOURCES,
   importSkillFromGitHub,

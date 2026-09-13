@@ -96,23 +96,41 @@ test('renderMemoryBlock respects its character budget', () => {
 });
 
 test('parseCandidates survives prose, fences and malformed entries', () => {
-  const fenced = '```json\n[{"kind":"preference","content":"The user prefers German.","tags":["lang"],"importance":0.8}]\n```';
+  const fenced =
+    '```json\n[{"kind":"preference","content":"The user prefers German.","tags":["lang"],' +
+    '"importance":0.8,"evidence":"answer me in German"}]\n```';
   assert.equal(parseCandidates(fenced).length, 1);
 
-  const withProse = 'Here is what I found:\n[{"kind":"fact","content":"The user has two cats."}]\nHope that helps.';
+  const withProse =
+    'Here is what I found:\n[{"kind":"fact","content":"The user has two cats.",' +
+    '"evidence":"I have two cats"}]\nHope that helps.';
   const parsed = parseCandidates(withProse);
   assert.equal(parsed.length, 1);
   assert.equal(parsed[0].importance, 0.5, 'a missing importance falls back to the middle');
+  assert.equal(parsed[0].evidence, 'I have two cats');
 
   assert.deepEqual(parseCandidates('no json at all'), []);
-  assert.deepEqual(parseCandidates('[{"content":"tiny"}]'), [], 'too-short content is rejected');
+  assert.deepEqual(parseCandidates('[{"content":"tiny","evidence":"tiny"}]'), [], 'too-short content is rejected');
   assert.deepEqual(parseCandidates(''), []);
 });
 
+test('parseCandidates refuses a memory that quotes nothing', () => {
+  // The point of the evidence rule: a sentence the model simply asserted,
+  // with no claim about where it came from, does not travel any further.
+  assert.deepEqual(parseCandidates('[{"kind":"fact","content":"The user dislikes meetings."}]'), []);
+  assert.deepEqual(
+    parseCandidates('[{"kind":"fact","content":"The user dislikes meetings.","evidence":"  "}]'),
+    [],
+  );
+});
+
 test('parseCandidates drops duplicates and caps the batch', () => {
-  const entries = Array.from({ length: 15 }, (unused, index) =>
-    ({ kind: 'fact', content: 'The user owns gadget number ' + index + '.' }));
-  entries.push({ kind: 'fact', content: 'The user owns gadget number 0.' });
+  const entries = Array.from({ length: 15 }, (unused, index) => ({
+    kind: 'fact',
+    content: 'The user owns gadget number ' + index + '.',
+    evidence: 'I own gadget number ' + index,
+  }));
+  entries.push({ kind: 'fact', content: 'The user owns gadget number 0.', evidence: 'I own gadget number 0' });
   const parsed = parseCandidates(JSON.stringify(entries));
   assert.ok(parsed.length <= 8, 'at most eight memories per turn');
   const contents = new Set(parsed.map((item) => item.content));

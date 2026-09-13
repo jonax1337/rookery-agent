@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 13;
 
 export type Db = DatabaseSync;
 
@@ -124,6 +124,14 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE memories ADD COLUMN usefulness REAL NOT NULL DEFAULT 0');
   }
 
+  // Schema 11 -> 12: a memory records the words it stands on. Extraction may
+  // no longer write anything it cannot quote, and the quote is kept so the
+  // claim stays auditable long after the conversation is gone. NULL on every
+  // row that predates this, and on everything the user wrote by hand.
+  if (!hasColumn(db, 'memories', 'evidence')) {
+    db.exec('ALTER TABLE memories ADD COLUMN evidence TEXT');
+  }
+
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_memories_live
       ON memories(owner, forgotten, importance DESC, updated_at DESC);
@@ -211,6 +219,71 @@ function migrate(db: Db): void {
   if (!hasColumn(db, 'sleep_runs', 'resolved_count')) {
     db.exec('ALTER TABLE sleep_runs ADD COLUMN resolved_count INTEGER NOT NULL DEFAULT 0');
   }
+
+  // Schema 11 -> 12: the night also writes skills now, so a run says how many.
+  if (!hasColumn(db, 'sleep_runs', 'skill_count')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN skill_count INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Schema 12 -> 13: repairing a skill is counted apart from writing one.
+  if (!hasColumn(db, 'sleep_runs', 'skill_revised_count')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN skill_revised_count INTEGER NOT NULL DEFAULT 0');
+  }
+
+  /* ---------------------------- skill bookkeeping ----------------------------
+     A skill itself is a file on disk, editable by hand and deliberately not a
+     database row. What a database can say about it is everything a file
+     cannot: when it was opened, how the work that opened it turned out, which
+     memories it was distilled from, and what it looked like before the last
+     rewrite. Those three tables are what makes automatic improvement possible
+     at all - without them nothing can tell a skill that still holds from one
+     whose ground has moved.
+
+     Rows are keyed by skill NAME, not by a foreign key: the file may be
+     deleted from outside Rookery entirely, and an orphaned row is cheaper
+     than a constraint that cannot be honoured. */
+  db.exec(`
+    -- Every use_skill call. The join to assignments is what turns "the skill
+    -- was open" into "the run that had it open failed".
+    CREATE TABLE IF NOT EXISTS skill_uses (
+      id            TEXT PRIMARY KEY,
+      skill         TEXT NOT NULL,
+      owner         TEXT NOT NULL,
+      assignment_id TEXT,
+      session_id    TEXT,
+      created_at    INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_skill_uses_skill
+      ON skill_uses(skill, created_at DESC);
+
+    -- Which memories a distilled skill stands on. When one of them is
+    -- superseded, put to sleep or edited, the skill above it is suspect.
+    CREATE TABLE IF NOT EXISTS skill_sources (
+      skill      TEXT NOT NULL,
+      memory_id  TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      owner      TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (skill, memory_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_skill_sources_memory
+      ON skill_sources(memory_id);
+
+    -- The file as it read BEFORE an unattended write replaced it. NULL
+    -- content means the skill did not exist yet, so undoing that write means
+    -- deleting the folder rather than restoring text.
+    CREATE TABLE IF NOT EXISTS skill_versions (
+      id           TEXT PRIMARY KEY,
+      skill        TEXT NOT NULL,
+      content      TEXT,
+      sleep_run_id TEXT,
+      created_at   INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_skill_versions_run
+      ON skill_versions(sleep_run_id, created_at);
+  `);
 
   // FTS index over memory content plus tags, kept in sync by triggers.
   db.exec(`

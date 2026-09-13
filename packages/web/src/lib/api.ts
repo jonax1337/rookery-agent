@@ -475,7 +475,7 @@ export const api = {
       { method: 'POST' },
     ),
   undoSleep: (id: string) =>
-    request<{ woken: number; removed: number; edges: number }>('/api/sleep/runs/' + id + '/undo', {
+    request<{ woken: number; removed: number; edges: number; skills: number }>('/api/sleep/runs/' + id + '/undo', {
       method: 'POST',
     }),
 

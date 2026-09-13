@@ -155,19 +155,38 @@ export class RookerySocket {
     }
     this.#ws = socket;
 
+    // Every handler below asks first whether this socket is still the current
+    // one. Without that check a replaced socket keeps delivering: `close()`
+    // cannot stop a handshake already in flight, its late `onclose` used to
+    // null out the *successor's* reference and schedule yet another
+    // reconnect, and the second live socket was still wired to
+    // `#handleFrame`. Every broadcast then arrived twice - two "memories
+    // learned" toasts for one turn, two mail toasts for one mail - which is
+    // exactly the duplication this guard ends.
+    const current = (): boolean => this.#ws === socket;
+
     socket.onopen = () => {
+      if (!current()) {
+        socket.close();
+        return;
+      }
       this.#attempt = 0;
       this.#setStatus('open');
+      this.#clearPing();
       this.#pingTimer = setInterval(() => this.#send({ type: 'ping' }), PING_INTERVAL_MS);
     };
 
-    socket.onmessage = (message) => this.#handleFrame(message.data);
+    socket.onmessage = (message) => {
+      if (!current()) return;
+      this.#handleFrame(message.data);
+    };
 
     socket.onerror = () => {
       // onclose always follows; reconnection is handled there.
     };
 
     socket.onclose = () => {
+      if (!current()) return;
       this.#clearPing();
       this.#ws = null;
       this.#setStatus('closed');
@@ -184,8 +203,18 @@ export class RookerySocket {
     this.#closedByUs = true;
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
     this.#clearPing();
-    this.#ws?.close();
+    // Detached before closing. A CONNECTING socket cannot be stopped
+    // synchronously, so without this its events would still land after the
+    // next `connect()` has taken over.
+    const socket = this.#ws;
     this.#ws = null;
+    if (socket) {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+      socket.close();
+    }
     this.#setStatus('closed');
   }
 

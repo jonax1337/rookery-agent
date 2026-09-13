@@ -77,6 +77,12 @@ export interface MemoryRecord {
   importance: number;
   /** Whose memory this is: `assistant`, or an agent id. */
   owner: string;
+  /**
+   * The words this memory stands on, quoted from what the user actually
+   * wrote. Extraction cannot store anything without one; rows written by hand
+   * and rows the night condensed have none.
+   */
+  evidence?: string;
   sourceSessionId?: string;
   createdAt: number;
   updatedAt: number;
@@ -163,6 +169,10 @@ export interface SleepRun {
   dormantCount: number;
   edgeCount: number;
   insightCount: number;
+  /** Skills the night wrote out of what the bank kept repeating. */
+  skillCount: number;
+  /** Skills the night rewrote because their ground moved, or a run using them failed. */
+  skillRevisedCount: number;
   conflictCount: number;
   resolvedCount: number;
   modelCalls: number;
@@ -868,11 +878,16 @@ export interface CustomToolInput {
 
 /* ------------------------------- skills ------------------------------- */
 
+/** Who wrote a skill: a person, an agent at work, or the nightly run. */
+export type SkillOrigin = 'user' | 'agent' | 'sleep';
+
 export interface Skill {
   name: string;
   description: string;
   audience: ToolServerAudience;
   body: string;
+  /** Anything not marked otherwise counts as the user's, and is never overwritten. */
+  origin: SkillOrigin;
   files: string[];
   path: string;
   updatedAt: number;

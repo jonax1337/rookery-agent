@@ -69,6 +69,8 @@ const COLUMN_LABELS: Record<string, string> = {
   edgeCount: 'linked',
   dormantCount: 'put to sleep',
   insightCount: 'Insights',
+  skillRevisedCount: 'Skills revised',
+  skillCount: 'Skills written',
   modelCalls: 'Model calls',
   status: 'Status',
 };
@@ -79,7 +81,17 @@ const column = createRookeryColumnHelper<SleepRun>();
 function undoable(run: SleepRun): boolean {
   if (run.undoneAt) return false;
   if (run.status !== 'done') return false;
-  return run.mergedCount > 0 || run.dormantCount > 0 || run.edgeCount > 0 || run.insightCount > 0;
+  // The skill counts belong here too: undoing a night now puts the skill
+  // files back as well, so a night that only rewrote a procedure is every bit
+  // as undoable as one that touched the bank.
+  return (
+    run.mergedCount > 0 ||
+    run.dormantCount > 0 ||
+    run.edgeCount > 0 ||
+    run.insightCount > 0 ||
+    run.skillCount > 0 ||
+    run.skillRevisedCount > 0
+  );
 }
 
 /** What a night has to say for itself: its error, else its report. */
@@ -145,7 +157,7 @@ export function MemorySleepPage() {
       const ok = await confirm({
         title: 'Undo night?',
         description:
-          'Wakes memories made dormant by this run and removes its recorded generated memories and connections. Other changes, such as topic updates, may remain.',
+          'Wakes memories made dormant by this run, removes its recorded generated memories and connections, and puts back any skill it wrote or rewrote. Other changes, such as topic updates, may remain.',
         confirmLabel: 'Undo',
         destructive: true,
       });
@@ -160,7 +172,8 @@ export function MemorySleepPage() {
             formatNumber(result.removed) +
             ' removed · ' +
             formatNumber(result.edges) +
-            ' connections unlinked',
+            ' connections unlinked' +
+            (result.skills ? ' · ' + formatNumber(result.skills) + ' skills restored' : ''),
         });
       } catch (caught) {
         reportFailure('Undo', caught);
@@ -216,6 +229,8 @@ export function MemorySleepPage() {
         countColumn('edgeCount', 'linked'),
         countColumn('dormantCount', 'put to sleep'),
         countColumn('insightCount', 'Insights'),
+        countColumn('skillRevisedCount', 'Skills revised'),
+        countColumn('skillCount', 'Skills written'),
         countColumn('modelCalls', 'Model calls'),
         column.accessor('status', {
           id: 'status',
@@ -446,6 +461,8 @@ export function MemorySleepPage() {
                 { label: 'linked', value: formatNumber(report.edgeCount) },
                 { label: 'put to sleep', value: formatNumber(report.dormantCount) },
                 { label: 'Insights', value: formatNumber(report.insightCount) },
+                { label: 'Skills revised', value: formatNumber(report.skillRevisedCount) },
+                { label: 'Skills written', value: formatNumber(report.skillCount) },
                 { label: 'Model calls', value: formatNumber(report.modelCalls) },
                 {
                   label: 'Conflicts',

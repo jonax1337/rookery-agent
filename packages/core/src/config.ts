@@ -56,6 +56,14 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       dormantAfterDays: 45,
       minStrength: 0.25,
       insights: 2,
+      // One a night. A skill that gets rewritten every night is not a skill,
+      // it is noise with a folder of its own; `write_skill` covers the case
+      // where something needs writing down in the moment.
+      skills: 1,
+      // Two repairs against one invention. A skill whose ground has shifted
+      // is actively misleading whoever opens it next, which is worse than a
+      // skill that was never written at all.
+      skillRevisions: 2,
       agentThreshold: 20,
       // Two cycles: the second one sees the bank the first one tidied, so
       // dream sleep connects what deep sleep just made connectable.

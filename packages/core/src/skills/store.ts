@@ -23,11 +23,26 @@ import type { ToolServerAudience } from '../types.js';
  * the rendered prompt text, never the directories themselves.
  */
 
+/**
+ * Who wrote a skill.
+ *
+ * `user` covers everything a person put there - the skill editor, an import
+ * from GitHub, a folder dropped in by hand. `agent` is a skill the assistant
+ * or one of its agents wrote with `write_skill` while working, `sleep` one the
+ * night distilled out of what the memory kept repeating.
+ *
+ * The distinction earns its keep in one place above all: nothing written
+ * unattended may overwrite what a person wrote. See `save`.
+ */
+export type SkillOrigin = 'user' | 'agent' | 'sleep';
+
 export interface Skill {
   name: string;
   description: string;
   audience: ToolServerAudience;
   body: string;
+  /** Who wrote it. Anything that does not say counts as the user's. */
+  origin: SkillOrigin;
   /** Other files in the folder, relative names. */
   files: string[];
   path: string;
@@ -39,6 +54,7 @@ export interface SkillInput {
   description: string;
   audience?: ToolServerAudience;
   body: string;
+  origin?: SkillOrigin;
 }
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -67,6 +83,10 @@ function parse(text: string): { meta: Record<string, string>; body: string } {
 
 function asAudience(value: string | undefined): ToolServerAudience {
   return value === 'agents' || value === 'assistant' ? value : 'both';
+}
+
+function asOrigin(value: string | undefined): SkillOrigin {
+  return value === 'agent' || value === 'sleep' ? value : 'user';
 }
 
 export class SkillStore {
@@ -109,6 +129,7 @@ export class SkillStore {
       name,
       description: meta.description ?? '',
       audience: asAudience(meta.audience),
+      origin: asOrigin(meta.origin),
       body,
       files,
       path: folder,
@@ -121,6 +142,23 @@ export class SkillStore {
     const name = skillSlug(input.name);
     if (!NAME.test(name)) throw new Error('A skill needs a name of letters, digits and dashes.');
     if (!input.description.trim()) throw new Error('A skill needs a one-line description.');
+    if (!input.body.trim()) throw new Error('A skill needs instructions to follow.');
+
+    const origin = asOrigin(input.origin);
+    // A skill the user wrote is theirs. An agent working at three in the
+    // afternoon, or the night distilling one at half past three in the
+    // morning, may add to the shelf and may revise its own work - it may not
+    // quietly rewrite a procedure a person put there.
+    if (origin !== 'user') {
+      // The home directory only - the one being written to. A project skill
+      // of the same name shadows this one when read, but it is not what is
+      // about to be overwritten.
+      const existing = this.#read(this.dirs[0] as string, name);
+      if (existing && existing.origin === 'user') {
+        throw new Error('The skill "' + name + '" was written by the user and is not yours to change.');
+      }
+    }
+
     const folder = join(this.dirs[0] as string, name);
     mkdirSync(folder, { recursive: true });
     const text =
@@ -128,10 +166,44 @@ export class SkillStore {
       'name: ' + name + '\n' +
       'description: ' + input.description.trim().replace(/\s+/g, ' ') + '\n' +
       'audience: ' + asAudience(input.audience) + '\n' +
+      'origin: ' + origin + '\n' +
       '---\n\n' +
       input.body.trim() + '\n';
     writeFileSync(join(folder, 'SKILL.md'), text, 'utf8');
     return this.get(name) as Skill;
+  }
+
+  /**
+   * The file exactly as it reads, unparsed.
+   *
+   * `get` returns a skill with the frontmatter already interpreted, which is
+   * lossy: an unknown key, a comment, the exact spacing - all gone. A
+   * snapshot taken so a rewrite can be undone has to be able to put back what
+   * was there, not a re-rendering of the parts this file happens to know
+   * about. Null when there is no such skill in the home directory.
+   */
+  raw(name: string): string | null {
+    if (!NAME.test(name)) return null;
+    const file = join(this.dirs[0] as string, name, 'SKILL.md');
+    return existsSync(file) ? readFileSync(file, 'utf8') : null;
+  }
+
+  /**
+   * Put a snapshot back, byte for byte. `null` content means the skill did
+   * not exist when the snapshot was taken, so restoring it removes the
+   * folder again.
+   *
+   * This is the only write that ignores the "never overwrite the user's
+   * work" rule, and it has to: it is the undo of a write that rule already
+   * allowed, so what it puts back is by definition what was there before.
+   */
+  restore(name: string, content: string | null): boolean {
+    if (!NAME.test(name)) return false;
+    if (content === null) return this.remove(name);
+    const folder = join(this.dirs[0] as string, name);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, 'SKILL.md'), content, 'utf8');
+    return true;
   }
 
   remove(name: string): boolean {

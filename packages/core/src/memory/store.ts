@@ -258,6 +258,8 @@ export class Store {
     importance?: number;
     owner?: string;
     sourceSessionId?: string;
+    /** The quote this memory stands on, when it was extracted from one. */
+    evidence?: string;
     /** Who is writing. `user` marks the record as protected from the night. */
     origin?: MemoryOrigin;
     pinned?: boolean;
@@ -281,14 +283,18 @@ export class Store {
       const base = Math.max(Number(existing.importance), input.importance ?? 0.5);
       const importance = base >= 0.8 ? Math.min(1, base) : Math.min(1, base + 0.02);
       const tags = mergeTags(parseTags(existing.tags), input.tags ?? []);
+      // The quote is only ever filled in, never replaced: the first words
+      // that confirmed a fact are the ones worth keeping, and a row written
+      // before evidence existed gets one the next time it is heard again.
+      const evidence = (existing.evidence as string | null) ?? input.evidence?.trim() ?? null;
       this.db
         .prepare(
           `UPDATE memories
-              SET importance = ?, tags = ?, updated_at = ?, forgotten = 0,
+              SET importance = ?, tags = ?, evidence = ?, updated_at = ?, forgotten = 0,
                   dormant_at = NULL, superseded_by = NULL
             WHERE id = ?`,
         )
-        .run(importance, JSON.stringify(tags), now, existing.id as string);
+        .run(importance, JSON.stringify(tags), evidence, now, existing.id as string);
       return this.getMemory(existing.id as string) as MemoryRecord;
     }
 
@@ -299,6 +305,7 @@ export class Store {
       tags: input.tags ?? [],
       importance: clamp01(input.importance ?? 0.5),
       owner,
+      evidence: input.evidence?.trim() || undefined,
       sourceSessionId: input.sourceSessionId,
       createdAt: now,
       updatedAt: now,
@@ -313,9 +320,9 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO memories
-           (id, kind, content, tags, importance, owner, source_session_id, created_at, updated_at,
-            access_count, forgotten, origin, pinned, sleep_run_id, usefulness)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 0)`,
+           (id, kind, content, tags, importance, owner, evidence, source_session_id, created_at,
+            updated_at, access_count, forgotten, origin, pinned, sleep_run_id, usefulness)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, 0)`,
       )
       .run(
         record.id,
@@ -324,6 +331,7 @@ export class Store {
         JSON.stringify(record.tags),
         record.importance,
         record.owner,
+        record.evidence ?? null,
         record.sourceSessionId ?? null,
         now,
         now,
@@ -996,6 +1004,161 @@ export class Store {
     return { entities, memories, edges, links, truncated };
   }
 
+  /* ------------------------ skill bookkeeping ------------------------ */
+
+  /**
+   * Note that a skill was opened.
+   *
+   * On its own this is a usage counter. Joined against the assignment it was
+   * opened in, it becomes the only thing that can say a written procedure is
+   * actually wrong: the run that followed it failed, and the error text is
+   * right there to hand to the rewrite.
+   */
+  recordSkillUse(input: {
+    skill: string;
+    owner: string;
+    assignmentId?: string;
+    sessionId?: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO skill_uses (id, skill, owner, assignment_id, session_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        input.skill,
+        input.owner,
+        input.assignmentId ?? null,
+        input.sessionId ?? null,
+        Date.now(),
+      );
+  }
+
+  /** The memories a distilled skill stands on. Replaces whatever was there. */
+  setSkillSources(skill: string, owner: string, memoryIds: string[]): void {
+    const now = Date.now();
+    this.db.prepare('DELETE FROM skill_sources WHERE skill = ?').run(skill);
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO skill_sources (skill, memory_id, owner, created_at)
+       VALUES (?, ?, ?, ?)`,
+    );
+    for (const id of memoryIds) insert.run(skill, id, owner, now);
+  }
+
+  /** The memory ids a skill currently stands on. */
+  skillSourceIds(skill: string): string[] {
+    const rows = this.db
+      .prepare('SELECT memory_id FROM skill_sources WHERE skill = ?')
+      .all(skill) as Row[];
+    return rows.map((row) => row.memory_id as string);
+  }
+
+  /**
+   * The ground under a skill, where it has moved since `since`.
+   *
+   * Three ways a source memory stops supporting what stands on it: the night
+   * put it to sleep, the night decided a contradiction against it and filed
+   * it away behind a winner, or somebody edited it. All three mean the same
+   * thing to the skill above - what it was written from no longer reads the
+   * way it did.
+   */
+  changedSkillSources(
+    skill: string,
+    since: number,
+  ): { memory: MemoryRecord; replacement: MemoryRecord | null }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT m.* FROM skill_sources s
+           JOIN memories m ON m.id = s.memory_id
+          WHERE s.skill = ?
+            AND (m.dormant_at IS NOT NULL OR m.superseded_by IS NOT NULL OR m.updated_at > ?)
+          ORDER BY m.updated_at DESC
+          LIMIT 12`,
+      )
+      .all(skill, since) as Row[];
+    return rows.map((row) => {
+      const memory = mapMemory(row);
+      return {
+        memory,
+        replacement: memory.supersededBy ? this.getMemory(memory.supersededBy) : null,
+      };
+    });
+  }
+
+  /**
+   * Runs that failed with this skill open, newest first.
+   *
+   * The error text matters more than the count. "That the run failed" says
+   * only that something is wrong somewhere; "npm run build:core: no such
+   * script" says which line of the skill is lying.
+   */
+  failedRunsForSkill(
+    skill: string,
+    since: number,
+    limit = 5,
+  ): { task: string; error: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT a.id, a.task, a.error, a.finished_at FROM skill_uses u
+           JOIN assignments a ON a.id = u.assignment_id
+          WHERE u.skill = ?
+            AND a.status = 'failed'
+            AND a.error IS NOT NULL
+            AND a.finished_at > ?
+          ORDER BY a.finished_at DESC
+          LIMIT ?`,
+      )
+      .all(skill, since, limit) as Row[];
+    return rows.map((row) => ({ task: row.task as string, error: row.error as string }));
+  }
+
+  /**
+   * Keep the file as it reads right now, before something unattended
+   * overwrites it. `content` is null when the skill does not exist yet, which
+   * is how undo knows to delete the folder rather than restore text.
+   */
+  snapshotSkill(input: { skill: string; content: string | null; sleepRunId?: string }): void {
+    this.db
+      .prepare(
+        'INSERT INTO skill_versions (id, skill, content, sleep_run_id, created_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .run(randomUUID(), input.skill, input.content, input.sleepRunId ?? null, Date.now());
+  }
+
+  /**
+   * When the night last looked at this skill, revision or not.
+   *
+   * Without it a trigger never clears. A source memory that went dormant
+   * stays dormant, so a skill standing on it would be dragged in front of the
+   * model every single night, and a night that decided "this still reads
+   * fine" would decide it again tomorrow at the same cost. Looking counts,
+   * which is why a review that changed nothing still leaves a snapshot.
+   */
+  lastSkillReviewAt(skill: string): number {
+    const row = this.db
+      .prepare('SELECT MAX(created_at) AS at FROM skill_versions WHERE skill = ?')
+      .get(skill) as { at: number | null } | undefined;
+    return Number(row?.at ?? 0);
+  }
+
+  /**
+   * What the skills of one night looked like before it touched them, oldest
+   * snapshot first - so a caller that keeps the first entry per name gets the
+   * state as it stood before the night began, even if a run wrote twice.
+   */
+  skillVersionsForRun(runId: string): { skill: string; content: string | null }[] {
+    const rows = this.db
+      .prepare(
+        'SELECT skill, content FROM skill_versions WHERE sleep_run_id = ? ORDER BY created_at ASC',
+      )
+      .all(runId) as Row[];
+    return rows.map((row) => ({
+      skill: row.skill as string,
+      content: (row.content as string) ?? null,
+    }));
+  }
+
   /* --------------------------- sleep runs --------------------------- */
 
   createSleepRun(input: { owner: string; trigger: CronTrigger }): SleepRun {
@@ -1010,6 +1173,8 @@ export class Store {
       dormantCount: 0,
       edgeCount: 0,
       insightCount: 0,
+      skillCount: 0,
+      skillRevisedCount: 0,
       conflictCount: 0,
       resolvedCount: 0,
       modelCalls: 0,
@@ -1033,6 +1198,8 @@ export class Store {
       dormantCount: 'dormant_count',
       edgeCount: 'edge_count',
       insightCount: 'insight_count',
+      skillCount: 'skill_count',
+      skillRevisedCount: 'skill_revised_count',
       conflictCount: 'conflict_count',
       resolvedCount: 'resolved_count',
       modelCalls: 'model_calls',
@@ -1217,6 +1384,7 @@ export function mapMemory(row: Row): MemoryRecord {
     tags: parseTags(row.tags),
     importance: Number(row.importance),
     owner: (row.owner as string) ?? ASSISTANT_MEMORY_OWNER,
+    evidence: (row.evidence as string) ?? undefined,
     sourceSessionId: (row.source_session_id as string) ?? undefined,
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
@@ -1273,6 +1441,8 @@ export function mapSleepRun(row: Row): SleepRun {
     dormantCount: Number(row.dormant_count ?? 0),
     edgeCount: Number(row.edge_count ?? 0),
     insightCount: Number(row.insight_count ?? 0),
+    skillCount: Number(row.skill_count ?? 0),
+    skillRevisedCount: Number(row.skill_revised_count ?? 0),
     conflictCount: Number(row.conflict_count ?? 0),
     resolvedCount: Number(row.resolved_count ?? 0),
     modelCalls: Number(row.model_calls ?? 0),

@@ -891,6 +891,11 @@ export class Assistant extends EventEmitter {
         candidates,
         owner,
         config: this.config.memory,
+        // The user's own message, and nothing else. The assistant's answer
+        // goes to the extractor so it can tell what the exchange was about,
+        // but a fact the assistant produced is not a fact the user confirmed,
+        // and only the user's words may stand behind a memory about the user.
+        sources: [userText],
         sourceSessionId: sessionId,
       });
       if (admitted.rejected.length) {

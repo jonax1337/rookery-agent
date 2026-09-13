@@ -652,6 +652,22 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
             Save changes
           </Button>
 
+          {/*
+            The words this memory was let in on. Nothing extracted is stored
+            without one any more, so showing the quote turns "the assistant
+            claims I said this" into something checkable in a second. Rows
+            written by hand and rows the night condensed carry none, and simply
+            leave the section out.
+          */}
+          {current.evidence ? (
+            <section className="flex flex-col gap-2">
+              <h3 className="text-sm font-medium">Said</h3>
+              <blockquote className="border-l-2 pl-3 text-sm italic text-muted-foreground">
+                {current.evidence}
+              </blockquote>
+            </section>
+          ) : null}
+
           <MetaList
             columns={1}
             items={[

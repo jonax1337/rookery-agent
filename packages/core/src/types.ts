@@ -193,6 +193,15 @@ export interface MemoryRecord {
   importance: number;
   /** Whose memory this is: `assistant`, or an agent id. */
   owner: string;
+  /**
+   * The words this memory stands on, quoted from whoever said them: the
+   * user's own message for the assistant's bank, the assignment or the report
+   * for an agent's. An extracted memory that cannot produce one is not
+   * written at all - see `memory/gate.ts`. Absent on the rows the user wrote
+   * by hand and on what the night condensed out of memories that each carry
+   * their own.
+   */
+  evidence?: string;
   /** Session this was learned in, when known. */
   sourceSessionId?: string;
   createdAt: number;
@@ -351,6 +360,14 @@ export interface SleepRun {
   dormantCount: number;
   edgeCount: number;
   insightCount: number;
+  /** Skills the night wrote out of what the bank kept repeating. */
+  skillCount: number;
+  /**
+   * Skills the night rewrote because something they stood on changed, or
+   * because a run that had them open failed. Counted apart from `skillCount`:
+   * repairing a procedure and inventing one are different kinds of work.
+   */
+  skillRevisedCount: number;
   /** Contradictions found. */
   conflictCount: number;
   /** Contradictions actually decided, the loser filed away. */
@@ -922,6 +939,20 @@ export interface SleepConfig {
   minStrength: number;
   /** How many insights one night may write. */
   insights: number;
+  /**
+   * How many skills one night may write. A memory says what is true; a skill
+   * says how something is done, and the night is where the second is
+   * distilled out of the first. Zero switches the distillation off and leaves
+   * skill writing to the `write_skill` tool alone.
+   */
+  skills: number;
+  /**
+   * How many skills one night may rewrite. Deliberately larger than
+   * `skills`: a procedure that has gone wrong costs more than a procedure
+   * that was never written, so repair outranks invention and runs first.
+   * Zero switches the revision pass off.
+   */
+  skillRevisions: number;
   /**
    * How often the three stages repeat in one night. More than one because
    * deep sleep changes what dream sleep has to work with.

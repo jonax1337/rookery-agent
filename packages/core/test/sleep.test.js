@@ -1,11 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   DEFAULT_CONFIG,
   ProviderRegistry,
+  SkillStore,
   SleepRunner,
   Store,
   admitCandidates,
+  confirmedBy,
   describeSleep,
   linkEntities,
   normalizeTokens,
@@ -51,16 +56,36 @@ function scriptedProvider(replies = {}) {
         else if (prompt.includes('You are tidying')) text = replies.condense ?? '{"merge":false}';
         else if (prompt.includes('You are connecting')) text = replies.link ?? '{"edges":[],"entities":[]}';
         else if (prompt.includes('You are reflecting')) text = replies.insight ?? '{"insights":[]}';
+        else if (prompt.includes('You turn what an assistant has learned')) {
+          text = replies.skill ?? '{"skills":[]}';
+        } else if (prompt.includes('You maintain one written procedure')) {
+          text = replies.revise ?? '{"revise":false}';
+        }
         yield { type: 'done', text };
       },
     },
   };
 }
 
+/**
+ * Throwaway skills directories, swept up when the process ends.
+ *
+ * The night writes skills now, and `DEFAULT_CONFIG.skillsDir` points at the
+ * real home directory - a test must never be able to drop a folder in there.
+ * Every runner therefore gets its own temporary one.
+ */
+const tempSkillDirs = [];
+process.on('exit', () => {
+  for (const dir of tempSkillDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 function makeRunner(store, replies, overrides = {}) {
   const scripted = scriptedProvider(replies);
+  const skillsDir = mkdtempSync(join(tmpdir(), 'rookery-skills-'));
+  tempSkillDirs.push(skillsDir);
   const config = {
     ...DEFAULT_CONFIG,
+    skillsDir,
     memory: {
       ...DEFAULT_CONFIG.memory,
       sleep: { ...DEFAULT_CONFIG.memory.sleep, ...overrides },
@@ -71,7 +96,7 @@ function makeRunner(store, replies, overrides = {}) {
     registry: new ProviderRegistry([scripted.provider]),
     config,
   });
-  return { runner, scripted, config };
+  return { runner, scripted, config, skillsDir };
 }
 
 /* -------------------------------- the gate ------------------------------- */
@@ -97,12 +122,14 @@ test('the gate reinforces a reworded memory instead of storing it twice', () => 
   const result = admitCandidates(store, {
     owner: 'assistant',
     config: DEFAULT_CONFIG.memory,
+    sources: ['Ich arbeite hauptsaechlich mit TypeScript, seit Jahren schon.'],
     candidates: [
       {
         kind: 'fact',
         content: 'Der Nutzer arbeitet hauptsaechlich mit TypeScript.',
         tags: ['typescript'],
         importance: 0.8,
+        evidence: 'Ich arbeite hauptsaechlich mit TypeScript',
       },
     ],
   });
@@ -115,21 +142,89 @@ test('the gate reinforces a reworded memory instead of storing it twice', () => 
 
 test('the gate drops weak candidates and stops at the per-turn cap', () => {
   const store = makeStore();
+  const said =
+    'Ich wohne in Hamburg. Das Wetter war heute freundlich. Ich fahre ein Lastenrad, ' +
+    'mag Filterkaffee und spiele Klavier.';
   const result = admitCandidates(store, {
     owner: 'assistant',
     config: DEFAULT_CONFIG.memory,
+    sources: [said],
     candidates: [
-      { kind: 'fact', content: 'Der Nutzer wohnt in Hamburg.', tags: [], importance: 0.9 },
-      { kind: 'fact', content: 'Das Wetter war heute freundlich.', tags: [], importance: 0.2 },
-      { kind: 'fact', content: 'Der Nutzer faehrt ein Lastenrad.', tags: [], importance: 0.7 },
-      { kind: 'fact', content: 'Der Nutzer mag Filterkaffee.', tags: [], importance: 0.7 },
-      { kind: 'fact', content: 'Der Nutzer spielt Klavier.', tags: [], importance: 0.7 },
+      { kind: 'fact', content: 'Der Nutzer wohnt in Hamburg.', tags: [], importance: 0.9, evidence: 'Ich wohne in Hamburg' },
+      { kind: 'fact', content: 'Das Wetter war heute freundlich.', tags: [], importance: 0.2, evidence: 'Das Wetter war heute freundlich' },
+      { kind: 'fact', content: 'Der Nutzer faehrt ein Lastenrad.', tags: [], importance: 0.7, evidence: 'Ich fahre ein Lastenrad' },
+      { kind: 'fact', content: 'Der Nutzer mag Filterkaffee.', tags: [], importance: 0.7, evidence: 'mag Filterkaffee' },
+      { kind: 'fact', content: 'Der Nutzer spielt Klavier.', tags: [], importance: 0.7, evidence: 'spiele Klavier' },
     ],
   });
 
   assert.equal(result.stored.length, DEFAULT_CONFIG.memory.gate.maxPerTurn);
   assert.ok(result.rejected.some((entry) => entry.reason === 'weak'), 'the 0.2 candidate is noise');
   assert.ok(result.rejected.some((entry) => entry.reason === 'over-budget'));
+  store.close();
+});
+
+/* ---------------------------- the evidence rule --------------------------- */
+
+test('confirmedBy accepts a real quote and refuses an assembled one', () => {
+  const said = 'Ich arbeite unter Windows und deploye alles ueber Vercel, nie ueber Netlify.';
+
+  assert.ok(confirmedBy('deploye alles ueber Vercel', [said]), 'a verbatim span');
+  assert.ok(confirmedBy('Deploye alles ueber Vercel!', [said]), 'punctuation and case do not matter');
+  assert.ok(confirmedBy('Ich arbeite unter Windows ... nie ueber Netlify', [said]), 'an elided quote');
+
+  assert.ok(!confirmedBy('deploye ueber Netlify', [said]), 'words that never stood together');
+  assert.ok(!confirmedBy('Der Nutzer bevorzugt Vercel', [said]), 'a paraphrase is not a quote');
+  assert.ok(!confirmedBy('Vercel', [said]), 'one word confirms nothing');
+  assert.ok(!confirmedBy('   ', [said]));
+  assert.ok(!confirmedBy('deploye alles ueber Vercel', []), 'nothing to check against');
+});
+
+test('the gate refuses a candidate the user never said', () => {
+  const store = makeStore();
+  const result = admitCandidates(store, {
+    owner: 'assistant',
+    config: DEFAULT_CONFIG.memory,
+    // What the user wrote was a question. It says nothing durable about them,
+    // and the answer the assistant gave is not theirs to be quoted for.
+    sources: ['Wie deploye ich das denn am besten?'],
+    candidates: [
+      {
+        kind: 'preference',
+        content: 'Der Nutzer deployt mit Vercel.',
+        tags: ['vercel'],
+        importance: 0.8,
+        evidence: 'Du solltest das mit Vercel deployen',
+      },
+    ],
+  });
+
+  assert.equal(result.stored.length, 0, 'an unbacked claim never reaches the bank');
+  assert.equal(result.rejected[0].reason, 'unconfirmed');
+  assert.equal(store.listMemories({ limit: 50 }).length, 0);
+  store.close();
+});
+
+test('a stored memory keeps the words it stands on', () => {
+  const store = makeStore();
+  const result = admitCandidates(store, {
+    owner: 'assistant',
+    config: DEFAULT_CONFIG.memory,
+    sources: ['Ich schreibe am liebsten Rust, alles andere fuehlt sich zaeh an.'],
+    candidates: [
+      {
+        kind: 'preference',
+        content: 'Der Nutzer schreibt am liebsten Rust.',
+        tags: ['rust'],
+        importance: 0.8,
+        evidence: 'Ich schreibe am liebsten Rust',
+      },
+    ],
+  });
+
+  assert.equal(result.stored.length, 1);
+  assert.equal(result.stored[0].evidence, 'Ich schreibe am liebsten Rust');
+  assert.equal(store.getMemory(result.stored[0].id).evidence, 'Ich schreibe am liebsten Rust');
   store.close();
 });
 
@@ -384,7 +479,235 @@ test('the night stays inside its model budget', async () => {
   const { runner } = makeRunner(store, {}, { maxMergeCalls: 3 });
   const run = await runner.run({ owner: 'assistant' });
 
-  assert.ok(run.modelCalls <= 3 + 3 + 1, 'condense, link and insight are all capped');
+  assert.ok(run.modelCalls <= 3 + 3 + 1 + 1, 'condense, link, insight and the skill call are all capped');
+  store.close();
+});
+
+/* --------------------------- skills from memory --------------------------- */
+
+test('the night writes a skill out of what the memory keeps repeating', async () => {
+  const store = makeStore();
+  for (let index = 0; index < 8; index += 1) {
+    store.upsertMemory({
+      kind: 'project',
+      content: 'Beim Release Nummer ' + index + ' musste zuerst der Core gebaut werden.',
+      importance: 0.7,
+    });
+  }
+
+  const { runner, skillsDir } = makeRunner(store, {
+    skill: JSON.stringify({
+      skills: [
+        {
+          name: 'Release Checklist',
+          description: 'Wenn ein Release des Web-Pakets rausgeht',
+          body:
+            '## Schritte\n1. `npm run build:core` zuerst, sonst zieht der Server alte Typen.\n' +
+            '2. `npm test` gegen packages/core laufen lassen.\n3. Erst danach `npm run package`.\n' +
+            'Falle: der Server listet statische Dateien beim Start, also nach dem Build neu starten.',
+          evidence: [1, 2, 3],
+        },
+      ],
+    }),
+  });
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.skillCount, 1, 'the run says it wrote one');
+  const written = new SkillStore(skillsDir).get('release-checklist');
+  assert.ok(written, 'and the file is really there, under the slugged name');
+  assert.equal(written.origin, 'sleep', 'marked as the night, not as the user');
+  assert.equal(written.audience, 'assistant', "the assistant's bank writes the assistant's skills");
+  assert.match(run.report, /1 skill written/);
+  store.close();
+});
+
+/* ------------------------- skills that improve ---------------------------- */
+
+/** A skill on disk plus the memories the night would have distilled it from. */
+function seedSkill(store, skillsDir, { name = 'release-checklist', sources = 3 } = {}) {
+  const skills = new SkillStore(skillsDir);
+  const skill = skills.save({
+    name,
+    description: 'Wenn ein Release rausgeht',
+    body: '## Schritte\n1. `npm run build:core` zuerst.\n2. `npm test` laufen lassen.\n3. Dann paketieren.',
+    origin: 'sleep',
+  });
+  const memories = [];
+  for (let index = 0; index < sources; index += 1) {
+    memories.push(
+      store.upsertMemory({
+        kind: 'project',
+        content: 'Beim Release Nummer ' + index + ' musste zuerst der Core gebaut werden.',
+        importance: 0.7,
+      }),
+    );
+  }
+  store.setSkillSources(skill.name, 'assistant', memories.map((memory) => memory.id));
+  return { skills, skill, memories };
+}
+
+/** The revision the scripted model hands back. */
+const REVISION = JSON.stringify({
+  revise: true,
+  description: 'Wenn ein Release des Web-Pakets rausgeht',
+  body:
+    '## Schritte\n1. `npm run build:workspace` zuerst - `build:core` gibt es nicht mehr.\n' +
+    '2. `npm test` laufen lassen.\n3. Dann paketieren.\nFalle: den Server nach dem Build neu starten.',
+});
+
+test('the night rewrites a skill whose source memory was replaced', async () => {
+  const store = makeStore();
+  const { runner, skillsDir } = makeRunner(store, { skill: '{"skills":[]}', revise: REVISION });
+  const { skills, skill, memories } = seedSkill(store, skillsDir);
+
+  // What the skill was built on no longer says what it said: the night
+  // decided a contradiction and filed this one away behind a winner.
+  const winner = store.upsertMemory({
+    kind: 'project',
+    content: 'Das Build-Skript heisst seit dem 12.09.2026 build:workspace.',
+    importance: 0.8,
+  });
+  store.updateMemory(memories[0].id, { supersededBy: winner.id });
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.skillRevisedCount, 1, 'the moved ground was noticed');
+  assert.match(skills.get(skill.name).body, /build:workspace/, 'the skill now names the command that exists');
+  assert.match(run.report, /1 skill revised/);
+
+  // The trigger is consumed: the source now points at the memory that holds,
+  // so a second night has nothing to react to and spends no call on it.
+  const settled = store.skillSourceIds(skill.name);
+  assert.ok(settled.includes(winner.id), 'the chain followed the replacement');
+  assert.ok(!settled.includes(memories[0].id), 'and let go of the retired one');
+  store.close();
+});
+
+test('the night rewrites a skill that a failed run had open', async () => {
+  const store = makeStore();
+  const { runner, skillsDir } = makeRunner(store, { skill: '{"skills":[]}', revise: REVISION });
+  const { skills, skill } = seedSkill(store, skillsDir);
+
+  const org = store.org.createOrganization({ name: 'Rookery' });
+  const agent = store.org.createAgent({ orgId: org.id, name: 'Ada', title: 'Engineer', instructions: 'Work.' });
+  const assignment = store.org.createAssignment({
+    orgId: org.id,
+    agentId: agent.id,
+    task: 'Ein Release rausbringen',
+    requesterKind: 'assistant',
+  });
+  store.org.updateAssignment(assignment.id, {
+    status: 'failed',
+    error: 'npm error Missing script: "build:core"',
+    finishedAt: Date.now(),
+  });
+  store.recordSkillUse({ skill: skill.name, owner: 'assistant', assignmentId: assignment.id });
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.skillRevisedCount, 1, 'a run that followed it and failed is evidence enough');
+  assert.match(skills.get(skill.name).body, /build:workspace/);
+  store.close();
+});
+
+test('a reviewed skill is not asked about again the next night', async () => {
+  const store = makeStore();
+  const { runner, scripted, skillsDir } = makeRunner(store, {
+    skill: '{"skills":[]}',
+    // The model looks and decides the skill still holds.
+    revise: '{"revise":false}',
+  });
+  const { skill, memories } = seedSkill(store, skillsDir);
+  store.sleepMemory(memories[0].id);
+
+  await runner.run({ owner: 'assistant' });
+  const askedFirst = scripted.prompts.filter((prompt) => prompt.includes('You maintain one written procedure')).length;
+  assert.equal(askedFirst, 1, 'the sleeping source put it in front of the model once');
+
+  await runner.run({ owner: 'assistant' });
+  const askedTotal = scripted.prompts.filter((prompt) => prompt.includes('You maintain one written procedure')).length;
+  assert.equal(askedTotal, 1, 'and looking at it cleared the trigger, so the second night skips it');
+  assert.ok(!store.skillSourceIds(skill.name).includes(memories[0].id), 'the sleeping source was let go');
+  store.close();
+});
+
+test('undoing a night puts the skills back as they were', async () => {
+  const store = makeStore();
+  const { runner, skillsDir } = makeRunner(store, {
+    revise: REVISION,
+    skill: JSON.stringify({
+      skills: [
+        {
+          name: 'deploy-notes',
+          description: 'Wie deployt wird',
+          body: 'Ein Rumpf, der lang genug ist, um die Mindestlaenge fuer einen Skill zu erreichen, ' +
+            'und der eine Prozedur beschreibt, die so vorher nicht aufgeschrieben war.',
+          evidence: [1, 2, 3],
+        },
+      ],
+    }),
+  });
+  // Seven, because the creation pass needs a bank with something in it
+  // before it will consider writing anything at all.
+  const { skills, skill, memories } = seedSkill(store, skillsDir, { sources: 7 });
+  const before = skills.raw(skill.name);
+
+  const winner = store.upsertMemory({
+    kind: 'project',
+    content: 'Das Build-Skript heisst seit dem 12.09.2026 build:workspace.',
+    importance: 0.8,
+  });
+  store.updateMemory(memories[0].id, { supersededBy: winner.id });
+
+  const run = await runner.run({ owner: 'assistant' });
+  assert.equal(run.skillRevisedCount, 1, 'one rewritten');
+  assert.equal(run.skillCount, 1, 'and one newly written');
+  assert.ok(skills.get('deploy-notes'), 'the new one is there');
+
+  const result = runner.undo(run.id);
+
+  assert.equal(result.skills, 2, 'both the rewrite and the creation were taken back');
+  assert.equal(skills.raw(skill.name), before, 'the rewritten skill reads exactly as it did');
+  assert.equal(skills.get('deploy-notes'), null, 'and the one the night invented is gone again');
+  store.close();
+});
+
+test('the night refuses to overwrite a skill the user wrote', async () => {
+  const store = makeStore();
+  for (let index = 0; index < 8; index += 1) {
+    store.upsertMemory({
+      kind: 'project',
+      content: 'Beim Release Nummer ' + index + ' musste zuerst der Core gebaut werden.',
+      importance: 0.7,
+    });
+  }
+
+  const { runner, skillsDir } = makeRunner(store, {
+    skill: JSON.stringify({
+      skills: [
+        {
+          name: 'release-checklist',
+          description: 'Die Nacht haette gern diesen Namen',
+          body: 'Ein Text, der lang genug ist, um die Mindestlaenge fuer einen Skill zu erreichen, ' +
+            'und der die vom Nutzer geschriebene Anleitung ueberschreiben wuerde.',
+          evidence: [1, 2, 3],
+        },
+      ],
+    }),
+  });
+
+  const skills = new SkillStore(skillsDir);
+  skills.save({
+    name: 'release-checklist',
+    description: 'Vom Nutzer geschrieben',
+    body: 'Das hier hat ein Mensch aufgeschrieben und es bleibt so.',
+  });
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.skillCount, 0, 'nothing was written');
+  assert.equal(skills.get('release-checklist').description, 'Vom Nutzer geschrieben');
+  assert.equal(skills.get('release-checklist').origin, 'user');
   store.close();
 });
 

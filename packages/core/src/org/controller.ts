@@ -21,6 +21,7 @@ import type {
   Task,
   TaskPriority,
   TaskStatus,
+  ToolServerAudience,
 } from '../types.js';
 import { ASSISTANT_MEMORY_OWNER, EFFORT_LEVELS } from '../types.js';
 import { agentWorkspace, applyConfig } from '../config.js';
@@ -39,7 +40,14 @@ import { buildAgentPrompt, renderBoard, renderMail, renderOrgOverview, renderSch
 import { buildTaskWaves, planTask, type TaskPlan } from './planner.js';
 import { toolsFor, type ToolAudience } from './tools.js';
 import { ensureToolServers, renderToolServers, toolServerStates, toolServersFor, withToolServer } from '../tools/hub.js';
-import { SkillStore, projectSkillsDir, renderSkill, renderSkillsIndex, type Skill } from '../skills/store.js';
+import {
+  SkillStore,
+  projectSkillsDir,
+  renderSkill,
+  renderSkillsIndex,
+  skillSlug,
+  type Skill,
+} from '../skills/store.js';
 import { describeCronJob, type CronJobPatch, type CronScheduler } from '../cron/scheduler.js';
 import { describeCron } from '../cron/parse.js';
 import {
@@ -416,7 +424,47 @@ export class OrgController extends EventEmitter {
         const skills = context.audience === 'agent' ? this.#agentSkills(project) : this.#skills.for('assistant');
         const skill = skills.find((entry) => entry.name === text('name').toLowerCase());
         if (!skill) return fail('No skill "' + text('name') + '". The list in your instructions is authoritative.');
+        // Noted, not just answered. Which run had a skill open is the only
+        // way the night can later tell a procedure that still holds from one
+        // that is quietly sending every run that follows it into a wall.
+        this.#store.recordSkillUse({
+          skill: skill.name,
+          owner: context.audience === 'agent' && context.agentId ? context.agentId : ASSISTANT_MEMORY_OWNER,
+          assignmentId: context.audience === 'agent' ? context.parentAssignmentId : undefined,
+          sessionId: context.sessionId,
+        });
         return { text: renderSkill(skill) };
+      }
+
+      case 'write_skill': {
+        // Always the home store, never the project one: a skill written in
+        // the middle of an assignment must not land in somebody's repository.
+        const audience =
+          args.audience === 'assistant' || args.audience === 'agents' || args.audience === 'both'
+            ? (args.audience as ToolServerAudience)
+            : 'both';
+        try {
+          // Keep the previous wording before replacing it. Revising a skill
+          // is the point of this tool, and a revision that turns out worse
+          // than what it replaced has to leave a way back.
+          const name = skillSlug(text('name'));
+          this.#store.snapshotSkill({ skill: name, content: this.#skills.raw(name) });
+          const skill = this.#skills.save({
+            name: text('name'),
+            description: text('description'),
+            body: text('body'),
+            audience,
+            origin: 'agent',
+          });
+          this.emit('changed', { kind: 'skill', id: skill.name });
+          return {
+            text:
+              'Skill "' + skill.name + '" written to ' + skill.path + '. It is in the index from ' +
+              'the next turn on; open it with use_skill.',
+          };
+        } catch (cause) {
+          return fail((cause as Error).message);
+        }
       }
 
       case 'project_mcp_servers': {
@@ -1764,6 +1812,10 @@ export class OrgController extends EventEmitter {
         candidates,
         owner: agent.id,
         config: this.#config.memory,
+        // An agent has no user standing by to confirm anything, so its
+        // evidence comes from the two texts that are on the record: what it
+        // was asked to do, and what it reported back.
+        sources: [task, report],
       });
     } catch (error) {
       this.#log.warn('Agent memory extraction failed', { agent: agent.slug, error: (error as Error).message });

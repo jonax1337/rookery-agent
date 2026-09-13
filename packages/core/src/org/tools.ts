@@ -194,6 +194,33 @@ export const ORG_TOOLS: ToolDefinition[] = [
     },
     audience: BOTH,
   },
+  // The other half of remembering. A memory records that something is true;
+  // this records how something is done - the part that otherwise gets worked
+  // out from scratch every single time.
+  {
+    name: 'write_skill',
+    description:
+      'Write down how a kind of task is done, so that next time it is not worked out from ' +
+      'scratch. Use it when you have just solved something you will clearly meet again, when you ' +
+      'had to discover a procedure the hard way, or when the user has corrected the same thing ' +
+      'twice - that correction belongs in a skill. Write the steps you would want to be handed: ' +
+      'concrete commands, paths, names and the traps you hit, not a summary of what you did. ' +
+      'Writing over a skill you wrote earlier is how you improve one, so revise instead of ' +
+      'inventing a second name for the same subject. Skills the user wrote are theirs and cannot ' +
+      'be overwritten. Not for one-off notes about a single task - that is what memory is for.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: str('Short name, lower case with dashes, e.g. release-checklist.'),
+        description: str('One line saying when this skill should be opened. It is all the index shows.'),
+        body: str('The instructions themselves, in Markdown. Steps someone can follow, not prose.'),
+        audience: str('assistant, agents or both. Default both.'),
+      },
+      required: ['name', 'description', 'body'],
+      additionalProperties: false,
+    },
+    audience: BOTH,
+  },
   {
     name: 'tool_servers',
     description:

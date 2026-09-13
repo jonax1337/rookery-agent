@@ -40,7 +40,19 @@ import { useSkills } from '@/hooks/useSkills';
 import { relativeTime } from '@/lib/format';
 import { formatNumber, formatDateTime } from '@/lib/stats';
 import { AUDIENCE_LABEL } from '@/lib/tools';
-import type { Skill } from '@/lib/types';
+import type { Skill, SkillOrigin } from '@/lib/types';
+
+/**
+ * Who wrote a skill. Worth a column of its own now that the shelf is no
+ * longer only what a person put there: the assistant writes one with
+ * `write_skill` when it works something out, and the nightly run distils one
+ * out of what the memory keeps repeating.
+ */
+const ORIGIN_LABEL: Record<SkillOrigin, string> = {
+  user: 'You',
+  agent: 'Agent',
+  sleep: 'Night',
+};
 
 /**
  * The skills folder as one table - the twin of the Tools page.
@@ -61,6 +73,7 @@ const COLUMN_LABELS: Record<string, string> = {
   name: 'Name',
   description: 'Description',
   audience: 'Audience',
+  origin: 'Written by',
   files: 'Files',
   updatedAt: 'Updated',
   actions: 'Actions',
@@ -141,6 +154,18 @@ export function SkillsPage() {
           cell: ({ row }) => (
             <Badge variant="outline" className="font-normal text-muted-foreground">
               {AUDIENCE_LABEL[row.original.audience]}
+            </Badge>
+          ),
+        }),
+
+        column.accessor('origin', {
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Written by" />,
+          cell: ({ row }) => (
+            <Badge
+              variant={row.original.origin === 'user' ? 'outline' : 'secondary'}
+              className="font-normal"
+            >
+              {ORIGIN_LABEL[row.original.origin]}
             </Badge>
           ),
         }),
