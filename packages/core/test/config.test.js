@@ -46,7 +46,7 @@ test('what the host started with survives a save it did not touch', () => {
   const config = loadConfig({ home: root, port: 4318, logLevel: 'silent' });
   assert.equal(config.port, 4318);
 
-  applyConfig(config, { tools: withToolServer(config, 'playwright', { enabled: true }) });
+  applyConfig(config, withToolServer(config, 'playwright', { enabled: true }));
 
   assert.equal(config.port, 4318, 'the flag still holds after an unrelated change');
   assert.equal(config.logLevel, 'silent');

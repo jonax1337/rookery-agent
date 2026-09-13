@@ -92,10 +92,10 @@ test('the hub tells the assistant what it could attach and what only the user ca
     assert.match(hint, /Tools page/, 'and the wall names who can remove it');
     assert.equal(dormantToolsHint(base, 'agent'), '', 'agents cannot flip switches, so they hear nothing');
 
-    const on = { ...base, tools: withToolServer(base, 'computer', { enabled: true }) };
+    const on = { ...base, ...withToolServer(base, 'computer', { enabled: true }) };
     assert.ok(!dormantToolsHint(on, 'assistant').includes('computer (Computer control)'), 'an attached server is not offered again');
 
-    const forAgents = { ...base, tools: withToolServer(base, 'computer', { enabled: true, audience: 'agents' }) };
+    const forAgents = { ...base, ...withToolServer(base, 'computer', { enabled: true, audience: 'agents' }) };
     assert.ok(dormantToolsHint(forAgents, 'assistant').includes('computer (Computer control)'), 'on for the staff is still off for you');
   } finally {
     if (token) process.env.GITHUB_PERSONAL_ACCESS_TOKEN = token;
@@ -136,14 +136,14 @@ test('the tool hub resolves catalogue and custom servers per audience', () => {
   const off = toolServersFor(base, 'assistant', 'claude');
   assert.deepEqual(off.specs, [], 'nothing runs until the user switches it on');
 
-  let tools = withToolServer(base, 'computer', { enabled: true, options: { profile: 'core' } });
-  tools = withToolServer({ ...base, tools }, 'playwright', { enabled: true, audience: 'both', options: { browser: 'chrome' } });
-  tools = withToolServer({ ...base, tools }, 'github', { enabled: true });
-  tools = withToolServer({ ...base, tools }, customToolId('My Notion'), {
+  let patch = withToolServer(base, 'computer', { enabled: true, options: { profile: 'core' } });
+  patch = withToolServer({ ...base, ...patch }, 'playwright', { enabled: true, audience: 'both', options: { browser: 'chrome' } });
+  patch = withToolServer({ ...base, ...patch }, 'github', { enabled: true });
+  patch = withToolServer({ ...base, ...patch }, customToolId('My Notion'), {
     enabled: true, audience: 'agents', env: { NOTION_TOKEN: 'x' },
     custom: { name: 'My Notion', command: 'npx', args: ['-y', 'notion-mcp'], hint: 'Notion pages live here.' },
   });
-  const config = { ...base, tools };
+  const config = { ...base, ...patch };
 
   const states = toolServerStates(config);
   const byId = Object.fromEntries(states.map((state) => [state.id, state]));
@@ -162,7 +162,7 @@ test('the tool hub resolves catalogue and custom servers per audience', () => {
   assert.ok(assistant.specs[1].args.join(' ').includes('--cdp-endpoint http://127.0.0.1:9333'));
   // ...and launches its own only when asked for a fresh one per turn.
   const fresh = withToolServer(config, 'playwright', { options: { persistent: 'no', headless: 'yes' } });
-  const freshSpec = toolServersFor({ ...base, tools: fresh }, 'assistant', 'claude').specs[1];
+  const freshSpec = toolServersFor({ ...base, ...fresh }, 'assistant', 'claude').specs[1];
   assert.ok(freshSpec.args.join(' ').includes('--browser chrome --headless'));
   assert.ok(!freshSpec.args.join(' ').includes('--cdp-endpoint'));
   assert.equal(assistant.hints.length, 2);
@@ -174,9 +174,9 @@ test('the tool hub resolves catalogue and custom servers per audience', () => {
   assert.deepEqual(agents.hints, [agents.hints[0], 'Notion pages live here.']);
 
   const cleared = withToolServer(config, 'custom-my-notion', { env: { NOTION_TOKEN: '' } });
-  assert.deepEqual(cleared.servers.find((s) => s.id === 'custom-my-notion').env, {}, 'an empty value drops the key');
+  assert.deepEqual(cleared.tools.servers.find((s) => s.id === 'custom-my-notion').env, {}, 'an empty value drops the key');
   const without = withoutToolServer(config, 'custom-my-notion');
-  assert.equal(toolServerStates({ ...base, tools: without }).some((s) => s.id === 'custom-my-notion'), false);
+  assert.equal(toolServerStates({ ...base, ...without }).some((s) => s.id === 'custom-my-notion'), false);
 });
 
 test('a server scoped to specific projects only serves those, and is left out of the dormant hint elsewhere', () => {
@@ -185,9 +185,9 @@ test('a server scoped to specific projects only serves those, and is left out of
   delete process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
   try {
     // Active and scoped: attached only where it actually applies.
-    let tools = withToolServer(base, 'github', { enabled: true, env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'x' } });
-    tools = withToolServer({ ...base, tools }, 'github', { projectIds: ['proj-a'] });
-    const active = { ...base, tools };
+    let patch = withToolServer(base, 'github', { enabled: true, env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'x' } });
+    patch = withToolServer({ ...base, ...patch }, 'github', { projectIds: ['proj-a'] });
+    const active = { ...base, ...patch };
 
     assert.deepEqual(toolServerStates(active).find((s) => s.id === 'github').projectIds, ['proj-a']);
     assert.deepEqual(toolServersFor(active, 'assistant', 'claude').specs, [], 'no project: scoped server withheld');
@@ -205,7 +205,7 @@ test('a server scoped to specific projects only serves those, and is left out of
     // Not enabled (missing its key) and scoped: a real wall, but only in the
     // project it belongs to - elsewhere it is left out entirely rather than
     // listed as blocked, since it is not this conversation's wall to climb.
-    const blocked = { ...base, tools: withToolServer(base, 'github', { enabled: true, projectIds: ['proj-a'] }) };
+    const blocked = { ...base, ...withToolServer(base, 'github', { enabled: true, projectIds: ['proj-a'] }) };
     assert.ok(!dormantToolsHint(blocked, 'assistant').includes('github (GitHub)'), 'no project: left out');
     assert.ok(!dormantToolsHint(blocked, 'assistant', 'proj-b').includes('github (GitHub)'), 'other project: left out');
     assert.ok(

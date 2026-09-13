@@ -168,6 +168,7 @@ export {
 } from './tools/hub.js';
 export {
   SkillStore,
+  readSkillFolder,
   renderSkill,
   renderSkillsIndex,
   skillSlug,
@@ -175,6 +176,26 @@ export {
   type SkillInput,
   type SkillOrigin,
 } from './skills/store.js';
+export {
+  externalSkillsFor,
+  externalSources,
+  findExternalSkills,
+  openExternalSkill,
+  renderExternalSkillsHint,
+  renderSkillHits,
+  type SkillHit,
+} from './skills/shelf.js';
+export {
+  enabledExternalSkills,
+  externalScan,
+  refreshExternal,
+  sourceEnabled,
+  type ExternalMcpServer,
+  type ExternalScan,
+  type ExternalSkillRef,
+  type ExternalSource,
+} from './external/discovery.js';
+export { claudeHome, codexHome, externalHomes, type ExternalKind } from './external/homes.js';
 export {
   SKILL_SOURCES,
   importSkillFromGitHub,

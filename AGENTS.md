@@ -5,8 +5,10 @@ eingeloggten CLI, keine API-Keys). Monorepo mit npm-Workspaces:
 
 ```
 packages/core     Das Gehirn: Provider-Adapter, Gedaechtnis, Persona, Runtime, die
-                  Organisation (org/: Store, Controller, Planner, MCP-Bruecke) und die
-                  Computer-Steuerung (computer/). Kennt weder HTTP noch Terminal.
+                  Organisation (org/: Store, Controller, Planner, MCP-Bruecke), die
+                  Computer-Steuerung (computer/) und external/ — das Lesen der
+                  Claude-Code- und Codex-Installation daneben. Kennt weder HTTP noch
+                  Terminal.
 packages/server   Fastify: REST + WebSocket + SSE, liefert die gebaute Web-UI aus,
                   dazu die Gateways (gateways/, z. B. Telegram) als weiterer Transport.
 packages/cli      Terminal-Interface (Ink-TUI, REPL, OS-Sprachausgabe).
@@ -67,6 +69,15 @@ Datenbank).
   Sprachausgabe ueber OpenAI oder ElevenLabs liest ihren Key nur auf dem Server.
 - Package-Grenzen respektieren: `packages/core` kennt weder HTTP noch Terminal. HTTP-
   und Terminal-spezifischer Code gehoert in `packages/server` bzw. `packages/cli`.
+- `~/.claude` und `~/.codex` gehoeren den beiden CLIs. `packages/core/src/external/`
+  liest sie — Skills, aktive Plugins, MCP-Server — und schreibt **nie** hinein. Was
+  dort gefunden wird, ist nicht automatisch aktiv: ein Skill-Regal wird pro Quelle
+  freigeschaltet (`external.skillSources`), ein MCP-Server einzeln und nur von einem
+  Menschen (`external.servers`, `approvalRequired` im Hub). Fremde Skills stehen nie
+  im Prompt-Index, sondern hinter `find_skill`; dafuer gibt es zu viele.
+- Tests duerfen die Installation des Entwicklers nicht sehen: `packages/core/test/setup.mjs`
+  setzt `CLAUDE_CONFIG_DIR`/`CODEX_HOME` auf ein leeres Verzeichnis, ein Test mit
+  eigenen Fixtures zeigt sie auf seinen Temp-Ordner.
 - Nach Aenderungen an `packages/core` betroffene Tests unter `packages/core/test`
   laufen lassen (`npm test`); bei API-Aenderungen `npm run typecheck` gegen core,
   server und cli.

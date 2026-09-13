@@ -350,18 +350,28 @@ export class CodexProvider implements Provider {
  * Rookery's MCP server as `-c` overrides. Values are parsed as TOML, so
  * strings are quoted and paths use forward slashes to stay out of escaping.
  */
-function mcpArgs(mcp: McpServerSpec): string[] {
+export function mcpArgs(mcp: McpServerSpec): string[] {
   const key = 'mcp_servers.' + mcp.name;
   const toml = (value: string): string => JSON.stringify(value.replace(/\\/g, '/'));
+  // Assignments run for minutes; the default tool timeout is far too short.
+  const timeout = ['-c', key + '.tool_timeout_sec = 21600'];
+
+  // A hosted endpoint. Codex speaks streamable HTTP itself (`codex mcp add
+  // --url`), but it has no place for arbitrary headers - only a bearer token
+  // from an environment variable - so a header a plugin declared is dropped
+  // here rather than faked.
+  if (mcp.transport === 'http' || mcp.transport === 'sse') {
+    return ['-c', key + '.url = ' + JSON.stringify(mcp.url ?? ''), ...timeout];
+  }
+
   const env = Object.entries(mcp.env)
     .map(([name, value]) => name + ' = ' + toml(value))
     .join(', ');
   return [
-    '-c', key + '.command = ' + toml(mcp.command),
+    '-c', key + '.command = ' + toml(mcp.command ?? ''),
     '-c', key + '.args = [' + mcp.args.map(toml).join(', ') + ']',
     '-c', key + '.env = {' + env + '}',
-    // Assignments run for minutes; the default tool timeout is far too short.
-    '-c', key + '.tool_timeout_sec = 21600',
+    ...timeout,
   ];
 }
 

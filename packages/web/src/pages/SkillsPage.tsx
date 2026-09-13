@@ -6,6 +6,7 @@ import {
   DownloadIcon,
   PencilIcon,
   PlusIcon,
+  RefreshCwIcon,
   SquareArrowOutUpRightIcon,
   Trash2Icon,
 } from 'lucide-react';
@@ -20,6 +21,7 @@ import {
 } from '@/components/blocks/data-table/table-columns';
 import { createRookeryColumnHelper } from '@/components/blocks/data-table/table-features';
 import { PageBody } from '@/components/blocks/page-body';
+import { SectionHeading } from '@/components/blocks/section-heading';
 import { StatCards } from '@/components/blocks/stat-cards';
 import type { StatCardProps } from '@/components/blocks/stat-cards';
 import { useBulkAction } from '@/components/common/confirm-dialog';
@@ -36,11 +38,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Switch } from '@/components/ui/switch';
+import { useExternal } from '@/hooks/useExternal';
 import { useSkills } from '@/hooks/useSkills';
 import { relativeTime } from '@/lib/format';
 import { formatNumber, formatDateTime } from '@/lib/stats';
 import { AUDIENCE_LABEL } from '@/lib/tools';
-import type { Skill, SkillOrigin } from '@/lib/types';
+import type { ExternalSource, Skill, SkillOrigin } from '@/lib/types';
 
 /**
  * Who wrote a skill. Worth a column of its own now that the shelf is no
@@ -81,11 +85,22 @@ const COLUMN_LABELS: Record<string, string> = {
 
 type Tab = 'alle' | 'assistant' | 'agents' | 'both';
 
+/** The second table: one row per shelf found in Claude Code or Codex. */
+const sourceColumn = createRookeryColumnHelper<ExternalSource>();
+
+const SOURCE_COLUMN_LABELS: Record<string, string> = {
+  label: 'Source',
+  origin: 'Kind',
+  skillCount: 'Skills',
+  enabled: 'Available',
+};
+
 export function SkillsPage() {
   const navigate = useNavigate();
   const { skills, loading, error, refresh, remove } = useSkills();
   const { dialog, deleteSkill } = useDeleteSkill(remove);
   const bulk = useBulkAction();
+  const external = useExternal();
 
   const [tab, setTab] = useState<Tab>('alle');
   const [search, setSearch] = useState('');
@@ -218,6 +233,40 @@ export function SkillsPage() {
     [deleteSkill, navigate],
   );
 
+  const sourceColumns = useMemo(
+    () =>
+      sourceColumn.columns([
+        sourceColumn.accessor('label', {
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Source" />,
+          cell: ({ row }) => <span className="font-medium">{row.original.label}</span>,
+          enableHiding: false,
+        }),
+        sourceColumn.accessor('origin', {
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Kind" />,
+          cell: ({ row }) => (
+            <Badge variant="outline" className="font-normal text-muted-foreground">
+              {row.original.origin === 'home' ? 'Own folder' : 'Plugin'}
+            </Badge>
+          ),
+        }),
+        sourceColumn.accessor('skillCount', {
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Skills" />,
+          cell: ({ row }) => formatNumber(row.original.skillCount),
+        }),
+        sourceColumn.accessor('enabled', {
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Available" />,
+          cell: ({ row }) => (
+            <Switch
+              checked={row.original.enabled}
+              aria-label={row.original.label + ' available'}
+              onCheckedChange={(on) => void external.setSource(row.original, on)}
+            />
+          ),
+        }),
+      ]),
+    [external],
+  );
+
   const counts = useMemo(
     () => ({
       alle: skills.length,
@@ -232,6 +281,12 @@ export function SkillsPage() {
     () => (tab === 'alle' ? skills : skills.filter((skill) => skill.audience === tab)),
     [skills, tab],
   );
+
+  const externalSources = external.overview?.sources ?? [];
+  const installedSkills = externalSources.reduce((sum, source) => sum + source.skillCount, 0);
+  // The server's own list, not the sum of the switched-on shelves: a name that
+  // sits on two shelves counts once, which is also how the assistant sees it.
+  const availableSkills = external.overview?.skills.length ?? 0;
 
   /** The most recently touched skill, for the fourth card. */
   const newest = useMemo(
@@ -375,6 +430,56 @@ export function SkillsPage() {
           />
         }
       />
+
+      {/*
+        The other shelf. These are read out of the Claude Code and Codex on
+        this machine and never copied here, so the table has no name column
+        that opens anything: what a source holds is found with `find_skill`
+        during a turn, not browsed here. The switch is the whole decision -
+        a single plugin can hold three hundred entries, which is why one is
+        never available until somebody says so.
+      */}
+      <SectionHeading
+        title="From Claude Code and Codex"
+        hint={
+          externalSources.length
+            ? formatNumber(availableSkills) +
+              ' of ' +
+              formatNumber(installedSkills) +
+              ' installed skills are available. The assistant is told they exist and searches them when a task needs one.'
+            : 'Nothing installed in the two CLIs on this machine, or reading them is switched off.'
+        }
+      >
+        <DataTable
+          data={externalSources}
+          columns={sourceColumns}
+          getRowId={(source) => source.id}
+          idPrefix="skill-sources"
+          columnLabels={SOURCE_COLUMN_LABELS}
+          searchable
+          searchPlaceholder="Quellen durchsuchen"
+          searchText={(source) => source.label + ' ' + (source.plugin ?? '')}
+          initialSorting={[{ id: 'skillCount', desc: true }]}
+          rowLabel={{ singular: 'Source', plural: 'Sources' }}
+          loading={external.loading}
+          error={external.error ? <ServerOffline onRetry={() => void external.reload()} /> : undefined}
+          actions={
+            <Button size="sm" variant="outline" onClick={() => void external.rescan()}>
+              <RefreshCwIcon data-icon="inline-start" />
+              Read again
+            </Button>
+          }
+          empty={
+            <EmptyState
+              icon={BookOpenIcon}
+              title="Nothing found"
+              description="Rookery reads ~/.claude and ~/.codex: the skills folders of both CLIs and those of every plugin switched on there. It never writes to them."
+              variant="plain"
+              size="sm"
+            />
+          }
+        />
+      </SectionHeading>
     </PageBody>
   );
 }

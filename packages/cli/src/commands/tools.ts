@@ -46,7 +46,7 @@ export async function toolsCommand(verb: string | undefined, id: string | undefi
     throw new CliError(state.name + ' needs ' + state.missingEnv.join(', ') + ' first (Tools page, or the environment).');
   }
   const who = audience === 'assistant' || audience === 'agents' || audience === 'both' ? (audience as ToolServerAudience) : undefined;
-  saveConfig({ tools: withToolServer(config, state.id, { enabled: verb === 'enable', ...(who ? { audience: who } : {}) }) });
+  saveConfig(withToolServer(config, state.id, { enabled: verb === 'enable', ...(who ? { audience: who } : {}) }));
   process.stdout.write(
     theme.green(glyph.ok + ' ') + state.name + ' ' + (verb === 'enable' ? 'on' : 'off') +
       theme.dim(' for ' + (who ?? state.audience) + ', applies from the next turn') + '\n',

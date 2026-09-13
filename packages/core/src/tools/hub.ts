@@ -1,5 +1,7 @@
 import type { McpServerSpec, ProviderId, RookeryConfig, ToolServerAudience, ToolServerConfig } from '../types.js';
 import { TOOL_CATALOG, catalogEntry, type ToolCatalogEntry } from './catalog.js';
+import { externalScan } from '../external/discovery.js';
+import type { ExternalMcpServer } from '../external/shared.js';
 
 /**
  * The hub: which MCP servers a turn gets, and what the model is told about
@@ -12,7 +14,7 @@ export interface ToolServerState {
   name: string;
   description: string;
   homepage: string;
-  install: 'bundled' | 'on-demand' | 'custom';
+  install: 'bundled' | 'on-demand' | 'custom' | 'external';
   enabled: boolean;
   audience: ToolServerAudience;
   options: Record<string, string>;
@@ -27,6 +29,17 @@ export interface ToolServerState {
   projectIds: string[];
   entry?: ToolCatalogEntry;
   custom?: ToolServerConfig['custom'];
+  /** Read out of the Claude Code or Codex installed here; never started unasked. */
+  external?: ExternalMcpServer;
+  /** Where an external server came from, for the badge on the page. */
+  source?: string;
+  /**
+   * An approved external server whose start definition has moved on since.
+   * It stays out of every turn until a person looks at it again.
+   */
+  changed?: boolean;
+  /** Only a person may switch this on - `set_tool_server` refuses. */
+  approvalRequired?: boolean;
 }
 
 const RESERVED = new Set(['rookery']);
@@ -90,7 +103,48 @@ export function toolServerStates(config: RookeryConfig): ToolServerState[] {
       custom: stored.custom,
     });
   }
+  states.push(...externalServerStates(config));
   return states;
+}
+
+/**
+ * The MCP servers found in the Claude Code and Codex on this machine.
+ *
+ * They are listed whether or not anybody wants them - seeing what is there
+ * is the point - but they only ever run once a person has said so. That is
+ * why `approvalRequired` is set: unlike a catalogue entry, the assistant
+ * cannot flip this switch itself. A server is a process out of somebody
+ * else's plugin, which is a decision, not a convenience.
+ */
+export function externalServerStates(config: RookeryConfig): ToolServerState[] {
+  const scan = externalScan({ enabled: config.external.enabled });
+  return scan.servers.map((server) => {
+    const stored = config.external.servers[server.id];
+    const changed = Boolean(stored?.enabled && stored.fingerprint !== server.fingerprint);
+    const enabled = Boolean(stored?.enabled);
+    return {
+      id: server.id,
+      name: server.name,
+      description:
+        server.transport === 'stdio'
+          ? [server.command, ...server.args].filter(Boolean).join(' ')
+          : server.transport.toUpperCase() + ' ' + (server.url ?? ''),
+      homepage: '',
+      install: 'external',
+      enabled,
+      audience: stored?.audience ?? 'assistant',
+      options: {},
+      envSet: {},
+      missingEnv: [],
+      installed: true,
+      active: enabled && !changed,
+      projectIds: stored?.projectIds ?? [],
+      external: server,
+      source: server.label,
+      changed,
+      approvalRequired: true,
+    };
+  });
 }
 
 const serves = (audience: ToolServerAudience, who: 'assistant' | 'agent'): boolean =>
@@ -114,7 +168,19 @@ export function toolServersFor(
     const stored = toolServerConfig(config, state.id);
     let spec: McpServerSpec | null = null;
     let hint = '';
-    if (state.entry) {
+    if (state.external) {
+      const server = state.external;
+      spec = {
+        name: server.name,
+        transport: server.transport,
+        args: server.args,
+        env: server.env,
+        ...(server.transport === 'stdio' ? { command: server.command } : { url: server.url, headers: server.headers }),
+      };
+      hint =
+        'The MCP server ' + server.name + ' is attached, the one installed in ' + server.label +
+        '; its tools arrive as mcp__' + server.name + '__*.';
+    } else if (state.entry) {
       spec = state.entry.spec({ config, options: state.options, env: stored.env, provider });
       hint = state.entry.hint(state.options);
     } else if (stored.custom) {
@@ -147,15 +213,23 @@ export function dormantToolsHint(config: RookeryConfig, who: 'assistant' | 'agen
   if (who !== 'assistant') return '';
   const ready: string[] = [];
   const blocked: string[] = [];
+  // Servers out of the two CLIs are counted, not listed: there are a dozen of
+  // them, none is one sentence away, and naming them all would be a paragraph
+  // about doors the assistant cannot open.
+  let installedElsewhere = 0;
   for (const state of toolServerStates(config)) {
     if (state.active && serves(state.audience, 'assistant')) continue;
     if (!scoped(state.projectIds, projectId)) continue;
+    if (state.approvalRequired) {
+      installedElsewhere += 1;
+      continue;
+    }
     const what = state.id + ' (' + state.name + ')';
     if (!state.installed) blocked.push(what + ': not installed on this machine');
     else if (state.missingEnv.length) blocked.push(what + ': needs ' + state.missingEnv.join(', '));
     else ready.push(what);
   }
-  if (!ready.length && !blocked.length) return '';
+  if (!ready.length && !blocked.length && !installedElsewhere) return '';
 
   const lines = ['Tools you do not have in this turn but can reach:'];
   if (ready.length) {
@@ -170,6 +244,13 @@ export function dormantToolsHint(config: RookeryConfig, who: 'assistant' | 'agen
     lines.push(
       'out of reach until the user acts on the Tools page: ' + blocked.join('; ') + '.',
       'When one of these is the only route left, name exactly what is missing.',
+    );
+  }
+  if (installedElsewhere) {
+    lines.push(
+      installedElsewhere + ' further MCP servers are installed in the Claude Code and Codex on this machine.',
+      'Those are not yours to switch on - starting somebody else\'s server is the user\'s decision,',
+      'and they make it on the Tools page. Say so if one of them is what a task needs.',
     );
   }
   return lines.join(' ');
@@ -202,12 +283,43 @@ export async function ensureToolServers(
   await Promise.all(jobs);
 }
 
-/** A new `tools` block with one server changed; pure, so callers decide how to persist it. */
+/**
+ * A config patch with one server changed; pure, so callers decide how to
+ * persist it. Which block it lands in depends on the server: a catalogue or
+ * custom entry lives under `tools`, a server discovered in Claude Code or
+ * Codex under `external` - what was decided about somebody else's server is
+ * a decision, not a copy of their configuration.
+ */
 export function withToolServer(
   config: RookeryConfig,
   id: string,
   patch: Partial<Pick<ToolServerConfig, 'enabled' | 'audience' | 'options' | 'env' | 'custom' | 'projectIds'>>,
-): RookeryConfig['tools'] {
+): Partial<RookeryConfig> {
+  const discovered = externalScan({ enabled: config.external.enabled }).servers.find((server) => server.id === id);
+  if (discovered) {
+    const stored = config.external.servers[id];
+    return {
+      external: {
+        ...config.external,
+        servers: {
+          ...config.external.servers,
+          [id]: {
+            enabled: patch.enabled ?? stored?.enabled ?? false,
+            audience: patch.audience ?? stored?.audience ?? 'assistant',
+            ...(patch.projectIds !== undefined
+              ? { projectIds: patch.projectIds }
+              : stored?.projectIds
+                ? { projectIds: stored.projectIds }
+                : {}),
+            // Approving is approving what is there now: a later edit in the
+            // CLI's own configuration takes the server out of service.
+            fingerprint: discovered.fingerprint,
+          },
+        },
+      },
+    };
+  }
+
   const current = toolServerConfig(config, id);
   const next: ToolServerConfig = {
     ...current,
@@ -222,12 +334,21 @@ export function withToolServer(
   for (const [key, value] of Object.entries(next.env)) if (!value) delete next.env[key];
   const servers = config.tools.servers.filter((server) => server.id !== id);
   servers.push(next);
-  return { ...config.tools, servers };
+  return { tools: { ...config.tools, servers } };
 }
 
-/** A `tools` block without one server: custom entries vanish, catalogue entries go back to defaults. */
-export function withoutToolServer(config: RookeryConfig, id: string): RookeryConfig['tools'] {
-  return { ...config.tools, servers: config.tools.servers.filter((server) => server.id !== id) };
+/**
+ * A config patch without one server: custom entries vanish, catalogue entries
+ * go back to defaults, and a discovered one forgets that it was ever
+ * approved - it keeps being found, it just counts as undecided again.
+ */
+export function withoutToolServer(config: RookeryConfig, id: string): Partial<RookeryConfig> {
+  if (id in config.external.servers) {
+    const servers = { ...config.external.servers };
+    delete servers[id];
+    return { external: { ...config.external, servers } };
+  }
+  return { tools: { ...config.tools, servers: config.tools.servers.filter((server) => server.id !== id) } };
 }
 
 /** A slug for a custom server id; never one of the bundled names. */

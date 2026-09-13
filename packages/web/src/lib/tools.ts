@@ -55,6 +55,7 @@ export const INSTALL_LABEL: Record<ToolServer['install'], string> = {
   bundled: 'bundled',
   'on-demand': 'on demand via npx',
   custom: 'custom server',
+  external: 'already installed here',
 };
 
 export type ToolStatusTone = 'on' | 'off' | 'blocked';
@@ -74,6 +75,9 @@ export interface ToolStatus {
 export function toolStatus(tool: ToolServer): ToolStatus {
   if (!tool.installed) return { label: 'Not installed', tone: 'blocked' };
   if (tool.missingEnv.length) return { label: 'Key missing', tone: 'blocked' };
+  // A server taken over from Claude Code or Codex that has since been edited
+  // there. It was approved as it stood, so it waits rather than running on.
+  if (tool.changed) return { label: 'Changed', tone: 'blocked' };
   if (tool.enabled) return { label: 'Ready', tone: 'on' };
   return { label: 'Off', tone: 'off' };
 }

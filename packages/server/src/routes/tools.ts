@@ -1,10 +1,14 @@
 import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   SKILL_SOURCES,
   customToolId,
+  externalSkillsFor,
+  externalSources,
   importSkillFromGitHub,
   applyConfig,
+  refreshExternal,
   skillSlug,
   toolServerStates,
   withToolServer,
@@ -12,16 +16,37 @@ import {
 } from '@rookery/core';
 import type { RookeryConfig, ToolServerState } from '@rookery/core';
 import type { ServerContext } from '../context.js';
-import { customToolServerSchema, importSkillSchema, parseOrThrow, patchToolServerSchema, skillSchema } from '../schemas.js';
+import {
+  customToolServerSchema,
+  importSkillSchema,
+  parseOrThrow,
+  patchExternalSourceSchema,
+  patchToolServerSchema,
+  skillSchema,
+} from '../schemas.js';
 
 type IdParams = { Params: { id: string } };
 type NameParams = { Params: { name: string } };
 
 /** The state as the browser sees it: recipe metadata, never env values. */
 function publicTool(state: ToolServerState): Record<string, unknown> {
-  const { entry, ...rest } = state;
+  const { entry, external, ...rest } = state;
   return {
     ...rest,
+    // A discovered server carries somebody else's environment and headers -
+    // tokens among them. What it is and where it came from is public; what it
+    // was handed is not, so only the key names travel.
+    external: external
+      ? {
+          transport: external.transport,
+          command: external.command,
+          args: external.args,
+          url: external.url,
+          envKeys: Object.keys(external.env),
+          headerKeys: Object.keys(external.headers ?? {}),
+          projectPath: external.projectPath,
+        }
+      : undefined,
     optionDefs: entry?.options ?? [],
     envDefs: entry?.env ?? [],
     prepare: entry?.prepare ? { label: entry.prepare.label } : undefined,
@@ -61,9 +86,25 @@ function runPrepare(command: string, args: string[]): Promise<{ ok: boolean; out
  * and the server share, so a switch flipped here reaches the next turn.
  */
 export async function registerToolRoutes(app: FastifyInstance, context: ServerContext): Promise<void> {
-  const apply = (tools: RookeryConfig['tools']): void => {
-    applyConfig(context.config, { tools });
+  const apply = (patch: Partial<RookeryConfig>): void => {
+    applyConfig(context.config, patch);
     context.assistant.emit('changed', { kind: 'tools', id: 'tools' });
+  };
+
+  /**
+   * A server Claude Code keeps under one project path only belongs to turns in
+   * that directory. Resolve it to the Rookery project sitting on the same path
+   * so the hub's own project scoping does the rest; if no project matches, the
+   * server is simply unscoped and the page says where it came from.
+   */
+  const scopeToProject = (state: ToolServerState): string[] | undefined => {
+    const path = state.external?.projectPath;
+    if (!path) return undefined;
+    const same = (a: string, b: string): boolean =>
+      resolve(a).replace(/[\\/]+$/, '').toLowerCase() === resolve(b).replace(/[\\/]+$/, '').toLowerCase();
+    const projects = context.assistant.store.org.listProjects(context.assistant.org.activeOrganization().id);
+    const match = projects.find((project) => project.path && same(project.path, path));
+    return match ? [match.id] : undefined;
   };
   const notFound = (reply: FastifyReply, message: string): { error: string; message: string } => {
     reply.code(404);
@@ -76,7 +117,8 @@ export async function registerToolRoutes(app: FastifyInstance, context: ServerCo
     const state = toolServerStates(context.config).find((entry) => entry.id === request.params.id);
     if (!state) return notFound(reply, 'No tool server ' + request.params.id);
     const patch = parseOrThrow(patchToolServerSchema, request.body ?? {});
-    apply(withToolServer(context.config, state.id, patch));
+    const scoped = patch.projectIds === undefined && !state.projectIds.length ? scopeToProject(state) : undefined;
+    apply(withToolServer(context.config, state.id, { ...patch, ...(scoped ? { projectIds: scoped } : {}) }));
     const updated = toolServerStates(context.config).find((entry) => entry.id === state.id);
     return updated ? publicTool(updated) : notFound(reply, 'Gone');
   });
@@ -113,6 +155,49 @@ export async function registerToolRoutes(app: FastifyInstance, context: ServerCo
     if (!state?.entry?.prepare) return notFound(reply, 'Nothing to prepare for ' + request.params.id);
     context.log.info('Preparing tool server', { id: state.id });
     return runPrepare(state.entry.prepare.command, state.entry.prepare.args);
+  });
+
+  /* -------------------------------- external -------------------------------- */
+
+  /**
+   * What the Claude Code and Codex on this machine have installed. Read-only
+   * towards them: the only thing Rookery stores is which of it counts here.
+   */
+  app.get('/api/external', async () => ({
+    enabled: context.config.external.enabled,
+    sources: externalSources(context.config).map(({ source, enabled }) => ({ ...source, enabled })),
+    skills: externalSkillsFor(context.config, 'assistant').map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      sourceId: skill.sourceId,
+      path: skill.path,
+    })),
+  }));
+
+  /** Whether one source's skills are available. */
+  app.patch('/api/external/sources/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const known = externalSources(context.config).find((entry) => entry.source.id === request.params.id);
+    if (!known) return notFound(reply, 'No skill source ' + request.params.id);
+    const input = parseOrThrow(patchExternalSourceSchema, request.body ?? {});
+    apply({
+      external: {
+        ...context.config.external,
+        skillSources: { ...context.config.external.skillSources, [known.source.id]: input.enabled },
+      },
+    });
+    const updated = externalSources(context.config).find((entry) => entry.source.id === known.source.id);
+    return updated ? { ...updated.source, enabled: updated.enabled } : notFound(reply, 'Gone');
+  });
+
+  /** Read the two installations again, for the button on the page. */
+  app.post('/api/external/refresh', async () => {
+    refreshExternal();
+    context.log.info('Rescanned the Claude Code and Codex installations');
+    return {
+      sources: externalSources(context.config).map(({ source, enabled }) => ({ ...source, enabled })),
+      servers: toolServerStates(context.config).filter((state) => state.install === 'external').length,
+    };
   });
 
   /* --------------------------------- skills --------------------------------- */

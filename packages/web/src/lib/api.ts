@@ -1,5 +1,7 @@
 import type {
   CustomToolInput,
+  ExternalOverview,
+  ExternalSource,
   Skill,
   SkillImportResult,
   SkillInput,
@@ -328,6 +330,19 @@ export const api = {
     request<Skill>('/api/skills/' + name, { method: 'PUT', ...json(input) }),
   deleteSkill: (name: string) => request<{ ok: true }>('/api/skills/' + name, { method: 'DELETE' }),
   skillCatalog: () => request<SkillSourceEntry[]>('/api/skills/catalog'),
+
+  /* -------------------------------- external -------------------------------- */
+
+  /** What the Claude Code and Codex on this machine have installed. */
+  external: () => request<ExternalOverview>('/api/external'),
+  /** Whether one of those shelves counts here. */
+  setExternalSource: (id: string, enabled: boolean) =>
+    request<ExternalSource>('/api/external/sources/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      ...json({ enabled }),
+    }),
+  refreshExternal: () =>
+    request<{ sources: ExternalSource[]; servers: number }>('/api/external/refresh', { method: 'POST' }),
   /** Fetches a skill folder from GitHub. Takes a few seconds. */
   importSkill: (source: string) =>
     request<SkillImportResult>('/api/skills/import', { method: 'POST', ...json({ source }) }),

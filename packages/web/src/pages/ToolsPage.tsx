@@ -62,7 +62,7 @@ const COLUMN_LABELS: Record<string, string> = {
   actions: 'Actions',
 };
 
-type Tab = 'alle' | 'aktiv' | 'schluessel' | 'eigene';
+type Tab = 'alle' | 'aktiv' | 'schluessel' | 'eigene' | 'gefunden';
 
 /** What a finished preparation had to say, held for the drawer. */
 interface PrepareResult {
@@ -171,9 +171,11 @@ export function ToolsPage() {
 
         column.accessor('install', {
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Source" />,
+          // A discovered server names the installation it came from: "Claude
+          // Code - vercel" says more than "already installed here" does.
           cell: ({ row }) => (
             <Badge variant="outline" className="font-normal text-muted-foreground">
-              {INSTALL_LABEL[row.original.install]}
+              {row.original.source || INSTALL_LABEL[row.original.install]}
             </Badge>
           ),
         }),
@@ -249,6 +251,7 @@ export function ToolsPage() {
       schluessel: tools.filter((tool) => tool.missingEnv.length > 0).length,
       eigene: tools.filter((tool) => tool.install === 'custom').length,
       nichtInstalled: tools.filter((tool) => !tool.installed).length,
+      gefunden: tools.filter((tool) => tool.install === 'external').length,
     }),
     [tools],
   );
@@ -261,6 +264,8 @@ export function ToolsPage() {
         return tools.filter((tool) => tool.missingEnv.length > 0);
       case 'eigene':
         return tools.filter((tool) => tool.install === 'custom');
+      case 'gefunden':
+        return tools.filter((tool) => tool.install === 'external');
       default:
         return tools;
     }
@@ -284,9 +289,10 @@ export function ToolsPage() {
       headline: counts.schluessel > 0 ? 'Waiting for credentials' : 'Nothing pending',
     },
     {
-      label: 'Not installed',
-      value: formatNumber(counts.nichtInstalled),
-      headline: 'Downloaded during setup',
+      label: 'Found here',
+      value: formatNumber(counts.gefunden),
+      headline: 'Installed in Claude Code and Codex',
+      footnote: 'Read from ~/.claude and ~/.codex; each one runs only once you switch it on',
     },
     {
       label: 'Custom servers',
@@ -314,6 +320,7 @@ export function ToolsPage() {
           { value: 'aktiv', label: 'Active', count: counts.aktiv },
           { value: 'schluessel', label: 'Requires keys', count: counts.schluessel },
           { value: 'eigene', label: 'Custom', count: counts.eigene },
+          { value: 'gefunden', label: 'Found here', count: counts.gefunden },
         ]}
         tab={tab}
         onTabChange={(value) => setTab(value as Tab)}

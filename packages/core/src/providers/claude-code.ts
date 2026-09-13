@@ -289,15 +289,26 @@ export class ClaudeCodeProvider implements Provider {
   }
 }
 
-/** The `--mcp-config` document for the turn's servers, paths in forward slashes. */
-function mcpConfig(servers: McpServerSpec[]): Record<string, unknown> {
+/**
+ * The `--mcp-config` document for the turn's servers, paths in forward
+ * slashes. A hosted endpoint - what a plugin like `context7` declares - is
+ * written the way Claude Code's own `.mcp.json` writes it.
+ */
+export function mcpConfig(servers: McpServerSpec[]): Record<string, unknown> {
   const mcpServers: Record<string, unknown> = {};
   for (const mcp of servers) {
-    mcpServers[mcp.name] = {
-      command: mcp.command.replace(/\\/g, '/'),
-      args: mcp.args.map((arg) => arg.replace(/\\/g, '/')),
-      env: mcp.env,
-    };
+    mcpServers[mcp.name] =
+      mcp.transport === 'http' || mcp.transport === 'sse'
+        ? {
+            type: mcp.transport,
+            url: mcp.url,
+            ...(Object.keys(mcp.headers ?? {}).length ? { headers: mcp.headers } : {}),
+          }
+        : {
+            command: (mcp.command ?? '').replace(/\\/g, '/'),
+            args: mcp.args.map((arg) => arg.replace(/\\/g, '/')),
+            env: mcp.env,
+          };
   }
   return { mcpServers };
 }

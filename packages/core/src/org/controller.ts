@@ -48,6 +48,12 @@ import {
   skillSlug,
   type Skill,
 } from '../skills/store.js';
+import {
+  findExternalSkills,
+  openExternalSkill,
+  renderExternalSkillsHint,
+  renderSkillHits,
+} from '../skills/shelf.js';
 import { describeCronJob, type CronJobPatch, type CronScheduler } from '../cron/scheduler.js';
 import { describeCron } from '../cron/parse.js';
 import {
@@ -421,9 +427,19 @@ export class OrgController extends EventEmitter {
         // assignment's project, not only the one long-lived home store.
         const project =
           context.audience === 'agent' && context.projectId ? this.#store.org.getProject(context.projectId) : null;
+        const who = context.audience === 'agent' ? 'agent' : 'assistant';
         const skills = context.audience === 'agent' ? this.#agentSkills(project) : this.#skills.for('assistant');
-        const skill = skills.find((entry) => entry.name === text('name').toLowerCase());
-        if (!skill) return fail('No skill "' + text('name') + '". The list in your instructions is authoritative.');
+        // Rookery's own shelf first, then the one installed in Claude Code
+        // and Codex - a skill a person wrote here outranks a plugin's.
+        const skill =
+          skills.find((entry) => entry.name === text('name').toLowerCase()) ??
+          openExternalSkill(this.#config, who, text('name'));
+        if (!skill) {
+          return fail(
+            'No skill "' + text('name') + '". The list in your instructions is authoritative for ' +
+              "Rookery's own skills; for the ones installed on this machine, search with find_skill first.",
+          );
+        }
         // Noted, not just answered. Which run had a skill open is the only
         // way the night can later tell a procedure that still holds from one
         // that is quietly sending every run that follows it into a wall.
@@ -434,6 +450,12 @@ export class OrgController extends EventEmitter {
           sessionId: context.sessionId,
         });
         return { text: renderSkill(skill) };
+      }
+
+      case 'find_skill': {
+        const who = context.audience === 'agent' ? 'agent' : 'assistant';
+        const hits = findExternalSkills(this.#config, who, text('query'));
+        return { text: renderSkillHits(hits) };
       }
 
       case 'write_skill': {
@@ -517,16 +539,26 @@ export class OrgController extends EventEmitter {
         const state = toolServerStates(this.#config).find((entry) => entry.id === text('id'));
         if (!state) return fail('No tool server "' + text('id') + '".');
         if (typeof args.enabled !== 'boolean') return fail('enabled must be true or false.');
+        // A server read out of Claude Code or Codex belongs to somebody else's
+        // installation. Starting it is the user's call, made on the Tools page.
+        if (state.approvalRequired) {
+          return fail(
+            state.name + ' comes from ' + (state.source || 'another installation') + ' and only the user can ' +
+              'switch it on, on the Tools page. Say that you need it and why.',
+          );
+        }
         if (args.enabled && !state.installed) return fail(state.name + ' is not installed on this machine.');
         if (args.enabled && state.missingEnv.length) {
           return fail(state.name + ' needs ' + state.missingEnv.join(', ') + ' first; the user sets that on the Tools page.');
         }
         const audience = text('audience');
-        const tools = withToolServer(this.#config, state.id, {
-          enabled: args.enabled,
-          ...(audience === 'assistant' || audience === 'agents' || audience === 'both' ? { audience } : {}),
-        });
-        applyConfig(this.#config, { tools });
+        applyConfig(
+          this.#config,
+          withToolServer(this.#config, state.id, {
+            enabled: args.enabled,
+            ...(audience === 'assistant' || audience === 'agents' || audience === 'both' ? { audience } : {}),
+          }),
+        );
         this.emit('changed', { kind: 'tools', id: state.id });
         return {
           text: state.name + ' is now ' + (args.enabled ? 'on' : 'off') + ' for ' + (audience || state.audience) + '. ' +
@@ -1263,7 +1295,12 @@ export class OrgController extends EventEmitter {
               .filter((entry) => entry.id !== input.sourceMail?.id)
           : undefined,
         toolHints,
-        skillsIndex: renderSkillsIndex(this.#agentSkills(project)),
+        skillsIndex: [
+          renderSkillsIndex(this.#agentSkills(project)),
+          renderExternalSkillsHint(this.#config, 'agent'),
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
       });
       if (unreadMail.length) org.markMailReadFor(unreadMail, mailWho);
 

@@ -183,13 +183,31 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'use_skill',
     description:
-      'Open one of the skills listed in your instructions: written procedures for particular kinds ' +
-      'of task. Returns the full instructions and the files that come with them. Open the matching ' +
-      'skill before starting such a task, then follow it.',
+      'Open a skill: a written procedure for a particular kind of task. Takes a name from the list ' +
+      'in your instructions or one that find_skill turned up. Returns the full instructions and the ' +
+      'files that come with them. Open the matching skill before starting such a task, then follow it.',
     inputSchema: {
       type: 'object',
-      properties: { name: str('The skill name from the list.') },
+      properties: { name: str('The skill name from the list, or from a find_skill result.') },
       required: ['name'],
+      additionalProperties: false,
+    },
+    audience: BOTH,
+  },
+  // The shelf the instructions cannot carry. Hundreds of skills are installed
+  // in the Claude Code and Codex on this machine; the prompt says how many and
+  // from where, this finds the one that fits.
+  {
+    name: 'find_skill',
+    description:
+      'Search the skills installed on this machine that are too many to list in your instructions. ' +
+      'Use it when a task sounds like a procedure somebody has already written down - a file format, ' +
+      'a framework, a tool, a kind of document. Returns names with their one-line description; open ' +
+      'one with use_skill. Searching costs nothing, so look before working something out from scratch.',
+    inputSchema: {
+      type: 'object',
+      properties: { query: str('What the task is about, e.g. "pdf", "scroll animation", "vercel deploy".') },
+      required: ['query'],
       additionalProperties: false,
     },
     audience: BOTH,

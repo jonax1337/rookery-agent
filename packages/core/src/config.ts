@@ -137,6 +137,9 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     },
   },
   tools: { servers: [] },
+  // Looking is free and always on; what is found stays out of the way until
+  // a person switches it on. See `ExternalConfig`.
+  external: { enabled: true, skillSources: {}, servers: {} },
   skillsDir: join(DEFAULT_HOME, 'skills'),
 };
 

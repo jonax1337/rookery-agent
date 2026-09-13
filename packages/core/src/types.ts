@@ -783,9 +783,19 @@ export interface StatsSnapshot {
 export interface McpServerSpec {
   /** Server name as the CLI sees it; tools become `mcp__<name>__<tool>`. */
   name: string;
-  command: string;
+  /**
+   * How the CLI reaches it. Absent means `stdio`, the only shape Rookery's
+   * own catalogue produces; the hosted endpoints come in with the servers
+   * read out of a Claude Code plugin (`context7`, `vercel`).
+   */
+  transport?: 'stdio' | 'http' | 'sse';
+  /** stdio only. */
+  command?: string;
   args: string[];
   env: Record<string, string>;
+  /** http and sse only. */
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 export interface ProviderTurnOptions {
@@ -886,6 +896,8 @@ export interface RookeryConfig {
   gateways: GatewaysConfig;
   /** The MCP hub: which servers run for whom. */
   tools: ToolsConfig;
+  /** What is taken over from the Claude Code and Codex installed here. */
+  external: ExternalConfig;
   /** Where skills live, one folder per skill. Defaults to `<home>/skills`. */
   skillsDir: string;
   /** Name the assistant answers to, used in the persona and as wake word base. */
@@ -1029,6 +1041,34 @@ export interface ToolServerConfig {
 
 export interface ToolsConfig {
   servers: ToolServerConfig[];
+}
+
+/**
+ * What Rookery takes over from the Claude Code and Codex installed beside it.
+ *
+ * Both CLIs already carry a curated set of skills, plugins and MCP servers on
+ * this machine, and Rookery runs on their sessions anyway. This block is the
+ * consent layer in front of that: reading is always safe, but a skills shelf
+ * of three hundred entries and a server that starts a process are not things
+ * that arrive unannounced. Rookery never writes back into `~/.claude` or
+ * `~/.codex`.
+ */
+export interface ExternalConfig {
+  /** Look at the two installations at all. */
+  enabled: boolean;
+  /**
+   * Source id (`claude-code:home`, `codex:plugin/ecc@ecc`) to whether its
+   * skills are available. A source nobody decided about follows the default
+   * in `sourceEnabled`: a CLI's own folder yes, a plugin no.
+   */
+  skillSources: Record<string, boolean>;
+  /**
+   * Discovered MCP server id to what was decided about it. The fingerprint is
+   * over the start definition at the time of approval, so an edit in the
+   * CLI's own configuration takes the server out of service until a person
+   * looks at it again.
+   */
+  servers: Record<string, { enabled: boolean; audience: ToolServerAudience; projectIds?: string[]; fingerprint: string }>;
 }
 
 export interface OrgConfig {

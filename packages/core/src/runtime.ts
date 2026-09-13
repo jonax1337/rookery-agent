@@ -32,6 +32,7 @@ import { OrgController } from './org/controller.js';
 import { assistantOrgBlock } from './org/prompts.js';
 import { dormantToolsHint, ensureToolServers, toolServersFor } from './tools/hub.js';
 import { SkillStore, renderSkillsIndex } from './skills/store.js';
+import { renderExternalSkillsHint } from './skills/shelf.js';
 import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
 import { runCronScript } from './cron/script.js';
@@ -461,7 +462,11 @@ export class Assistant extends EventEmitter {
     // The assistant also hears about the servers it could attach but has not:
     // a switch it does not know about is a wall it cannot climb.
     const toolHints = [...extra.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean);
-    const skillsIndex = renderSkillsIndex(this.skills.for(who));
+    // Rookery's own shelf in full, and one paragraph for the far larger one
+    // installed in Claude Code and Codex: what is there, not what it says.
+    const skillsIndex = [renderSkillsIndex(this.skills.for(who)), renderExternalSkillsHint(this.config, who)]
+      .filter(Boolean)
+      .join('\n\n');
     const systemPrompt = buildSystemPrompt({
       config: this.config,
       query: prompt,

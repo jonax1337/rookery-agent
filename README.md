@@ -297,6 +297,10 @@ Two rules bound the unattended paths: **a skill you wrote is never overwritten**
 
 `use_skill` returns instructions and a file list; it does not execute scripts. Running a script requires an available execution tool and its permissions. Project-scoped skill/MCP proposals under `docs/concepts` should not be assumed fully implemented.
 
+**What Claude Code and Codex already have.** Rookery runs on the OAuth session of the locally installed `claude` and `codex`, so whatever is installed for those two sits on the same disk. It reads `~/.claude` and `~/.codex` — each CLI's own `skills/` folder, the `skills/` and `.mcp.json` of every plugin switched on there, and the MCP servers in `~/.claude.json` and `~/.codex/config.toml` — and never writes back into either. One plugin installed in both CLIs shows up once, and so does one MCP server that both declare identically.
+
+Nothing found is active by default. Each CLI's own skills folder counts from the start; a plugin's shelf is switched on per source on the Skills page, because a single plugin can hold several hundred entries. Those skills never go into the prompt: it says how many there are and where they come from, `find_skill` searches them, and `use_skill` opens the match — so the assistant sees what is available and loads it when a task calls for it. A discovered MCP server appears on the Tools page switched off, and only a person can switch it on: starting a process out of somebody else's plugin is a decision, not a convenience. Approval covers the start definition as it stood; if it changes in the CLI's own configuration, the server reads "Changed" and stays out until somebody looks at it again.
+
 ## Voice
 
 The full-screen `/voice` page uses its own voice conversation. Tap the orb to begin, speak, and hear streamed replies. The orb reflects microphone, thinking, and speaking activity. Space or the orb interrupts, `M` toggles the microphone, and Escape exits. Wake-word detection and barge-in are optional. A saved voice conversation can be resumed from its transcript.

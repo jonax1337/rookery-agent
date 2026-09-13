@@ -352,6 +352,9 @@ export const patchToolServerSchema = z
   })
   .partial();
 
+/** PATCH /api/external/sources/:id: whether one installation's skills count here. */
+export const patchExternalSourceSchema = z.object({ enabled: z.boolean() });
+
 /** POST /api/tools/custom: a server of the user's own. */
 export const customToolServerSchema = z.object({
   name: z.string().min(1).max(80),

@@ -47,6 +47,12 @@ export interface Skill {
   files: string[];
   path: string;
   updatedAt: number;
+  /**
+   * Set only for a skill read out of a Claude Code or Codex installation:
+   * the label of the source it came from. Rookery's own skills leave it
+   * unset, and nothing carrying it may be written to.
+   */
+  source?: string;
 }
 
 export interface SkillInput {
@@ -89,6 +95,33 @@ function asOrigin(value: string | undefined): SkillOrigin {
   return value === 'agent' || value === 'sleep' ? value : 'user';
 }
 
+/**
+ * One skill folder, read from disk.
+ *
+ * Standalone rather than a method because the folder format is the open
+ * Agent Skills standard: the same read serves Rookery's own shelf and a
+ * folder sitting in somebody's Claude Code or Codex installation, which is
+ * what `skills/shelf.ts` opens. Null when there is no `SKILL.md` there.
+ */
+export function readSkillFolder(dir: string, name: string): Skill | null {
+  if (!NAME.test(name)) return null;
+  const folder = join(dir, name);
+  const file = join(folder, 'SKILL.md');
+  if (!existsSync(file)) return null;
+  const { meta, body } = parse(readFileSync(file, 'utf8'));
+  const files = readdirSync(folder).filter((entry) => entry !== 'SKILL.md');
+  return {
+    name,
+    description: meta.description ?? '',
+    audience: asAudience(meta.audience),
+    origin: asOrigin(meta.origin),
+    body,
+    files,
+    path: folder,
+    updatedAt: statSync(file).mtimeMs,
+  };
+}
+
 export class SkillStore {
   readonly dirs: readonly string[];
 
@@ -119,22 +152,7 @@ export class SkillStore {
   }
 
   #read(dir: string, name: string): Skill | null {
-    if (!NAME.test(name)) return null;
-    const folder = join(dir, name);
-    const file = join(folder, 'SKILL.md');
-    if (!existsSync(file)) return null;
-    const { meta, body } = parse(readFileSync(file, 'utf8'));
-    const files = readdirSync(folder).filter((entry) => entry !== 'SKILL.md');
-    return {
-      name,
-      description: meta.description ?? '',
-      audience: asAudience(meta.audience),
-      origin: asOrigin(meta.origin),
-      body,
-      files,
-      path: folder,
-      updatedAt: statSync(file).mtimeMs,
-    };
+    return readSkillFolder(dir, name);
   }
 
   /** Always the first directory: an agent's job never writes a skill into a project. */

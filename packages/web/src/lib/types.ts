@@ -874,7 +874,7 @@ export interface ToolServer {
   name: string;
   description: string;
   homepage: string;
-  install: 'bundled' | 'on-demand' | 'custom';
+  install: 'bundled' | 'on-demand' | 'custom' | 'external';
   enabled: boolean;
   audience: ToolServerAudience;
   options: Record<string, string>;
@@ -889,6 +889,54 @@ export interface ToolServer {
   projectIds: string[];
   prepare?: { label: string };
   custom?: { name: string; command: string; args: string[]; hint: string };
+  /** Where a server read out of Claude Code or Codex came from. */
+  source?: string;
+  /** Approved once, but its start definition has changed since. */
+  changed?: boolean;
+  /** Only a person may switch this on; the assistant cannot. */
+  approvalRequired?: boolean;
+  /** How it would start. Environment and headers travel as key names only. */
+  external?: {
+    transport: 'stdio' | 'http' | 'sse';
+    command?: string;
+    args: string[];
+    url?: string;
+    envKeys: string[];
+    headerKeys: string[];
+    projectPath?: string;
+  };
+}
+
+/**
+ * One shelf of skills in the Claude Code or Codex installed on this machine:
+ * a CLI's own folder, or one of its plugins. Read-only - Rookery only stores
+ * whether the shelf counts here.
+ */
+export interface ExternalSource {
+  id: string;
+  kind: 'claude-code' | 'codex';
+  label: string;
+  origin: 'home' | 'plugin';
+  plugin?: string;
+  dir: string;
+  skillCount: number;
+  enabled: boolean;
+}
+
+/** A skill on one of those shelves; the body is only read when it is opened. */
+export interface ExternalSkillRef {
+  id: string;
+  name: string;
+  description: string;
+  sourceId: string;
+  path: string;
+}
+
+/** `GET /api/external`. */
+export interface ExternalOverview {
+  enabled: boolean;
+  sources: ExternalSource[];
+  skills: ExternalSkillRef[];
 }
 
 export interface CustomToolInput {
