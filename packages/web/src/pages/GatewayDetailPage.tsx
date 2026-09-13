@@ -45,6 +45,7 @@ import type {
   PermissionLevel,
   TelegramGatewayConfig,
   TelegramPushConfig,
+  TranscribeEngine,
 } from '@/lib/types';
 import { useConfig } from '@/providers/rookery-provider';
 
@@ -82,6 +83,25 @@ const MAIL_FROM_HINT: Record<TelegramPushConfig['mailFrom'], string> = {
   assistant: 'Agents reach you through the assistant, who decides what is worth saying.',
   leads: 'Anyone leading a team or with agents reporting to them — a Head of without a team counts.',
   all: 'Every mail that lands in your mailbox, including agent to agent copies.',
+};
+
+/** Where a voice message becomes text, free first. */
+const TRANSCRIBE_ENGINES: TranscribeEngine[] = ['auto', 'local', 'openai', 'elevenlabs', 'off'];
+
+const TRANSCRIBE_LABEL: Record<TranscribeEngine, string> = {
+  auto: 'Automatic',
+  local: 'On this machine',
+  openai: 'OpenAI',
+  elevenlabs: 'ElevenLabs',
+  off: 'Off',
+};
+
+const TRANSCRIBE_HINT: Record<TranscribeEngine, string> = {
+  auto: 'A speech key from the voice page when there is one, the local model otherwise. Always has somewhere to go.',
+  local: 'Whisper, running here. No key, nothing leaves the machine; the model is downloaded once, about 130 MB.',
+  openai: 'gpt-4o-mini-transcribe. Needs the OpenAI key from the voice page.',
+  elevenlabs: 'Scribe v1. Needs the ElevenLabs key from the voice page.',
+  off: 'Voice messages arrive as a file and are not listened to.',
 };
 
 function makeDraft(config: TelegramGatewayConfig): TelegramGatewayConfig {
@@ -438,6 +458,96 @@ export function GatewayDetailPage() {
             />
             <FieldDescription>Leave empty to use the default model.</FieldDescription>
           </Field>
+
+          <FieldSet>
+            <FieldLegend variant="label">Files and speech</FieldLegend>
+            <FieldDescription>
+              What arrives from the phone besides text. Files are saved in the workspace under{' '}
+              <code>inbox/telegram/</code>, where a turn can open them, and swept after 30 days.
+            </FieldDescription>
+
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldLabel htmlFor="gw-media">Accept attachments</FieldLabel>
+                <FieldDescription>
+                  Photos, voice messages, documents. When off, they are dropped and only logged.
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="gw-media"
+                checked={draft.media}
+                onCheckedChange={(on) => set({ media: on })}
+              />
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="gw-max-attachment">Largest attachment</FieldLabel>
+              <InputGroup>
+                <InputGroupInput
+                  id="gw-max-attachment"
+                  inputMode="numeric"
+                  disabled={!draft.media}
+                  value={String(draft.maxAttachmentMb)}
+                  onChange={(event) => {
+                    const parsed = Number(event.target.value);
+                    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 20) set({ maxAttachmentMb: parsed });
+                    else if (event.target.value === '') set({ maxAttachmentMb: 1 });
+                  }}
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupText>MB</InputGroupText>
+                </InputGroupAddon>
+              </InputGroup>
+              <FieldDescription>
+                Telegram hands a bot at most 20 MB, so that is the ceiling here too.
+              </FieldDescription>
+            </Field>
+
+            <FieldSet>
+              <FieldLegend variant="label">Voice messages</FieldLegend>
+              <FieldDescription>Which engine turns a recording into words.</FieldDescription>
+              <RadioGroup
+                value={draft.transcribe}
+                onValueChange={(value) => set({ transcribe: value as TranscribeEngine })}
+              >
+                {TRANSCRIBE_ENGINES.map((engine) => (
+                  <FieldLabel key={engine} htmlFor={'gw-transcribe-' + engine}>
+                    <Field orientation="horizontal">
+                      <FieldContent>
+                        <FieldTitle>{TRANSCRIBE_LABEL[engine]}</FieldTitle>
+                        <FieldDescription>{TRANSCRIBE_HINT[engine]}</FieldDescription>
+                      </FieldContent>
+                      <RadioGroupItem
+                        value={engine}
+                        id={'gw-transcribe-' + engine}
+                        disabled={!draft.media}
+                        aria-label={TRANSCRIBE_LABEL[engine]}
+                      />
+                    </Field>
+                  </FieldLabel>
+                ))}
+              </RadioGroup>
+            </FieldSet>
+
+            {draft.transcribe === 'auto' || draft.transcribe === 'local' ? (
+              <Field>
+                <FieldLabel htmlFor="gw-transcribe-model">Local model</FieldLabel>
+                <Input
+                  id="gw-transcribe-model"
+                  spellCheck={false}
+                  value={draft.transcribeModel}
+                  placeholder="onnx-community/whisper-base"
+                  onChange={(event) => set({ transcribeModel: event.target.value })}
+                />
+                <FieldDescription>
+                  <code>whisper-base</code> is the balance that holds on a laptop.{' '}
+                  <code>onnx-community/whisper-small</code> hears more and takes about four times as long. The
+                  model is downloaded once into <code>models/</code> in the Rookery home, and ffmpeg has to be
+                  installed for the audio to be decoded.
+                </FieldDescription>
+              </Field>
+            ) : null}
+          </FieldSet>
 
           <FieldSet>
             <FieldLegend variant="label">Allowed controller IDs</FieldLegend>

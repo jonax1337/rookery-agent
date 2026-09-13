@@ -109,6 +109,14 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       pairing: false,
       allowedUserIds: [],
       permission: 'full',
+      // On, because a phone without a camera button is half a phone, and
+      // what arrives is a file the allowlist itself sent. Transcription
+      // starts at `auto`, which ends at the local model: a voice note has
+      // to work on a machine that holds no key for anything.
+      media: true,
+      transcribe: 'auto',
+      transcribeModel: 'onnx-community/whisper-base',
+      maxAttachmentMb: 20,
       // Mail first, machinery quiet: the phone hears from the assistant and
       // the team leads, the way a person would be told. What ran, when and
       // for how long is what the web app is open for - a buzz per finished

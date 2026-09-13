@@ -1,4 +1,4 @@
-import type { TelegramGatewayConfig } from '../types.js';
+import type { GatewayAttachment, GatewayAttachmentKind, TelegramGatewayConfig } from '../types.js';
 
 /**
  * The guard in front of the Telegram gateway.
@@ -32,6 +32,12 @@ const MAX_TEXT_LENGTH = 4000;
 
 const MINUTES_PER_DAY = 24 * 60;
 
+/** What a config without an explicit ceiling means. */
+const DEFAULT_ATTACHMENT_MB = 20;
+
+/** What `getFile` will hand a bot, no matter what the config asks for. */
+const TELEGRAM_DOWNLOAD_MB = 20;
+
 const FENCE = '```';
 
 /** What is appended to a piece whose code block continues in the next one. */
@@ -43,8 +49,31 @@ export type GatewayRejection =
   | 'not_allowed'
   | 'not_private'
   | 'forwarded'
-  | 'no_text'
+  | 'no_content'
+  | 'media_off'
+  | 'unsupported_media'
+  | 'too_large'
   | 'too_long';
+
+/**
+ * What the sender was answering, when they used Telegram's reply gesture.
+ *
+ * `fromBot` is the field that matters. In a private chat the only bot that
+ * can have written the quoted message is this one, so a reply to a bot
+ * message is a reply to something the assistant itself sent - which is what
+ * makes it safe to look the original up and put it back into the turn. A
+ * reply to anything else is treated as a plain message with a quote.
+ */
+export interface GatewayReplyTo {
+  messageId: number;
+  fromBot: boolean;
+  /**
+   * The quoted text, but only from a message whose author is known: this
+   * bot, or the sender themselves. A quoted forward is somebody else's
+   * words and never comes back out of here.
+   */
+  text?: string;
+}
 
 export interface GatewayVerdict {
   ok: boolean;
@@ -52,10 +81,18 @@ export interface GatewayVerdict {
   userId?: number;
   chatId?: number;
   text?: string;
+  /** Telegram's id for this message, needed to answer it as a reply. */
+  messageId?: number;
   /** A leading `/command`, without slash, without `@botname`, lower case. */
   command?: string;
   /** Whatever followed the command, trimmed. */
   args?: string;
+  /** Files hanging off the message, in the order they were found. */
+  attachments?: GatewayAttachment[];
+  /** Set when the message is one item of an album; all items share it. */
+  mediaGroupId?: string;
+  /** The message this one answers, when Telegram says it answers one. */
+  replyTo?: GatewayReplyTo;
 }
 
 /** Narrow foreign JSON to an object without claiming anything about its fields. */
@@ -113,6 +150,126 @@ function carriesForeignText(message: Record<string, unknown>): boolean {
   });
 }
 
+/* ------------------------------------------------------------------ *
+ * Attachments
+ *
+ * A message carries at most one file, except for a photo, which arrives as
+ * a ladder of sizes, and an album, which arrives as one update per item
+ * tied together by `media_group_id`. Everything below narrows foreign JSON
+ * the same way the guard does: checked, never asserted, and a shape nobody
+ * anticipated yields no attachment rather than a half-built one.
+ * ------------------------------------------------------------------ */
+
+/**
+ * The fields a message can carry a file in, in the order they are looked
+ * for. `photo` is handled separately - it is an array.
+ */
+const MEDIA_FIELDS: Array<[string, GatewayAttachmentKind]> = [
+  ['voice', 'voice'],
+  ['audio', 'audio'],
+  ['video_note', 'video_note'],
+  ['video', 'video'],
+  ['animation', 'animation'],
+  ['document', 'document'],
+  ['sticker', 'sticker'],
+];
+
+/** Kinds that carry sound, and are therefore worth handing to a transcriber. */
+const AUDIBLE: GatewayAttachmentKind[] = ['voice', 'audio', 'video_note', 'video'];
+
+/** Whether this attachment is one a transcript can be made from. */
+export function isAudible(attachment: GatewayAttachment): boolean {
+  return AUDIBLE.includes(attachment.kind);
+}
+
+/** One Telegram file object, as much of it as is usable. */
+function asFile(value: unknown, kind: GatewayAttachmentKind): GatewayAttachment | undefined {
+  const file = asObject(value);
+  const id = file?.file_id;
+  if (typeof id !== 'string' || id.length === 0) return undefined;
+  const attachment: GatewayAttachment = { kind, fileId: id };
+  if (typeof file?.file_unique_id === 'string') attachment.uniqueId = file.file_unique_id;
+  if (typeof file?.mime_type === 'string') attachment.mime = file.mime_type;
+  if (typeof file?.file_name === 'string') attachment.fileName = file.file_name;
+  if (typeof file?.file_size === 'number' && Number.isFinite(file.file_size)) {
+    attachment.size = file.file_size;
+  }
+  if (typeof file?.duration === 'number' && Number.isFinite(file.duration)) {
+    attachment.duration = file.duration;
+  }
+  return attachment;
+}
+
+/**
+ * The photo worth having out of the ladder Telegram sends: the biggest one
+ * it offers. The small sizes exist for previews, and a preview is exactly
+ * what a model cannot read the writing on.
+ */
+function largestPhoto(value: unknown): GatewayAttachment | undefined {
+  if (!Array.isArray(value)) return undefined;
+  let best: GatewayAttachment | undefined;
+  let bestArea = -1;
+  for (const entry of value) {
+    const photo = asObject(entry);
+    const file = asFile(photo, 'photo');
+    if (!file) continue;
+    const width = typeof photo?.width === 'number' ? photo.width : 0;
+    const height = typeof photo?.height === 'number' ? photo.height : 0;
+    const area = width * height || file.size || 0;
+    if (area > bestArea) {
+      best = file;
+      bestArea = area;
+    }
+  }
+  return best;
+}
+
+/** Every file on one message, largest photo size only, in a fixed order. */
+function attachmentsOf(message: Record<string, unknown>): GatewayAttachment[] {
+  const found: GatewayAttachment[] = [];
+  const photo = largestPhoto(message.photo);
+  if (photo) found.push(photo);
+  for (const [field, kind] of MEDIA_FIELDS) {
+    const file = asFile(message[field], kind);
+    if (file) found.push(file);
+  }
+  return found;
+}
+
+/**
+ * Stickers that are not a still image. A `.tgs` is a Lottie animation and a
+ * video sticker is a webm loop; neither is something a turn can do anything
+ * with, and saving them would only fill the inbox with confetti.
+ */
+function isMovingSticker(message: Record<string, unknown>): boolean {
+  const sticker = asObject(message.sticker);
+  return sticker?.is_animated === true || sticker?.is_video === true;
+}
+
+/**
+ * The message being answered, reduced to what may be used.
+ *
+ * The quoted text survives only when its author is beyond doubt - this bot
+ * or the sender themselves. A quoted forward carries a third party's words,
+ * and section 6 of this file exists precisely so those never reach a turn
+ * through a single tap.
+ */
+function replyOf(message: Record<string, unknown>, senderId: number): GatewayReplyTo | undefined {
+  const quoted = asObject(message.reply_to_message);
+  if (!quoted) return undefined;
+  const messageId = asId(quoted.message_id);
+  if (messageId === undefined) return undefined;
+  const from = asObject(quoted.from);
+  const fromBot = from?.is_bot === true;
+  const ownWords = asId(from?.id) === senderId && from?.is_bot === false;
+  const reply: GatewayReplyTo = { messageId, fromBot };
+  const text = typeof quoted.text === 'string' ? quoted.text : typeof quoted.caption === 'string' ? quoted.caption : undefined;
+  if (text && (fromBot || ownWords) && !carriesForeignText(quoted)) {
+    reply.text = text.trim().slice(0, MAX_TEXT_LENGTH);
+  }
+  return reply;
+}
+
 /**
  * A leading command: slash, name, optionally `@botname`, then the rest.
  * The bot name is parsed and thrown away - in a private chat there is only
@@ -145,8 +302,14 @@ export function classifyUpdate(update: unknown, config: TelegramGatewayConfig): 
   const known: GatewayVerdict = { ok: false };
   if (userId !== undefined) known.userId = userId;
   if (chatId !== undefined) known.chatId = chatId;
+  const messageId = asId(message.message_id);
+  if (messageId !== undefined) known.messageId = messageId;
+  if (typeof message.media_group_id === 'string') known.mediaGroupId = message.media_group_id;
 
-  const text = typeof message.text === 'string' ? message.text.trim() : undefined;
+  // A caption is the text of a message that carries a file, and the only
+  // place the sender can say what they want done with it.
+  const written = typeof message.text === 'string' ? message.text : typeof message.caption === 'string' ? message.caption : undefined;
+  const text = written?.trim() || undefined;
   if (text) {
     known.text = text;
     const match = COMMAND_PATTERN.exec(text);
@@ -188,10 +351,32 @@ export function classifyUpdate(update: unknown, config: TelegramGatewayConfig): 
   // instructions into a turn.
   if (carriesForeignText(message)) return reject('forwarded');
 
-  // 7. Text only, and bounded. Photos, documents, voice notes and stickers
-  // have no text and land here.
-  if (!text) return reject('no_text');
-  if (text.length > MAX_TEXT_LENGTH) return reject('too_long');
+  // A reply is the gesture this channel answers notifications with, so what
+  // is being replied to is part of the verdict - for accepted messages and
+  // for rejected ones alike, since the reason may still be worth logging.
+  const replyTo = replyOf(message, userId);
+  if (replyTo) known.replyTo = replyTo;
+
+  // 7. Files. A photo, a voice note or a document is content in its own
+  // right now, so the length check applies to whatever was written next to
+  // it and the emptiness check applies to both together.
+  const attachments = attachmentsOf(message);
+  if (attachments.length > 0) {
+    if (!config?.media) return reject('media_off');
+    if (isMovingSticker(message)) return reject('unsupported_media');
+    // Telegram itself refuses to hand a bot anything past 20 MB, so a
+    // larger ceiling in the config is a promise the API would break; the
+    // smaller of the two wins.
+    const configured = typeof config?.maxAttachmentMb === 'number' ? config.maxAttachmentMb : DEFAULT_ATTACHMENT_MB;
+    const limit = Math.min(Math.max(1, configured), TELEGRAM_DOWNLOAD_MB) * 1024 * 1024;
+    if (attachments.some((file) => (file.size ?? 0) > limit)) return reject('too_large');
+    known.attachments = attachments;
+  }
+
+  // 8. Something has to have been said or sent. A message with neither text
+  // nor a usable file - a poll, a contact, a location - lands here.
+  if (!text && attachments.length === 0) return reject('no_content');
+  if (text && text.length > MAX_TEXT_LENGTH) return reject('too_long');
 
   return { ...known, ok: true };
 }

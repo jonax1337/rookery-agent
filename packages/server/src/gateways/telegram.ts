@@ -2,16 +2,32 @@ import {
   ASSISTANT_MEMORY_OWNER,
   classifyUpdate,
   escapeHtml,
+  isAudible,
   missingGatewaySettings,
   nextGatewayAction,
   providerQuota,
   splitMessage,
+  type GatewayAttachment,
   type GatewayLifecycleState,
+  type GatewayRejection,
+  type GatewayReplyTo,
   type GatewayVerdict,
   type Session,
   type TelegramGatewayConfig,
 } from '@rookery/core';
 import type { ServerContext } from '../context.js';
+import { localModelReady, transcribe, SttError } from '../services/stt.js';
+import { voiceKeys } from '../services/voice-keys.js';
+import { humanDuration, humanSize, pruneInbox, saveAttachment } from './attachments.js';
+import {
+  findOrigin,
+  noteMessages,
+  openThread,
+  originContext,
+  rememberOrigin,
+  takeMessages,
+  type MessageOrigin,
+} from './threads.js';
 import {
   createTelegramApi,
   TelegramApiError,
@@ -38,17 +54,87 @@ const POLL_SECONDS = 50;
 /** Only messages. Edits, callback queries and channel posts never arrive. */
 const ALLOWED_UPDATES = ['message'];
 
+/**
+ * How long an album is waited for.
+ *
+ * Several photos sent at once arrive as several updates that share a
+ * `media_group_id`, one per picture, a few hundred milliseconds apart. One
+ * turn per picture would answer the first one before the third has landed,
+ * so the group is collected and handed over as a single message. The window
+ * restarts with every further item, and one and a half seconds is well past
+ * what Telegram needs to deliver them.
+ */
+const ALBUM_WINDOW_MS = 1500;
+
+/** Most files one message (or one album) may carry into a single turn. */
+const MAX_ATTACHMENTS = 10;
+
+/** How much of a transcript is echoed back so the sender can check it. */
+const TRANSCRIPT_ECHO = 600;
+
+/** Smallest gap between two rewrites of the live progress line. */
+const PROGRESS_EDIT_MS = 12_000;
+
+/** How many rows a list command shows before it says "and more". */
+const LIST_LIMIT = 8;
+
+/**
+ * How far back `/clear` counts from the newest message.
+ *
+ * Message ids are a per-chat counter, so this is "the last thousand
+ * messages", not a thousand deletions: Telegram is handed the ids a hundred
+ * at a time and skips whatever is not there or too old to delete. A
+ * thousand covers a very talkative 48 hours - which is all Telegram will
+ * delete anyway - at ten API calls per `/clear`.
+ */
+const CLEAR_SWEEP = 1000;
+
+/**
+ * The commands, in the order Telegram's menu shows them.
+ *
+ * One table, three uses: `/help` prints it, `setMyCommands` hands it to
+ * Telegram so the app draws its own menu, and the switch in `handleCommand`
+ * answers it. A command that is added in one place and forgotten in another
+ * is the usual way a bot ends up lying about itself, so there is only the
+ * one place. The German aliases (`/neu`, `/aus`) are still accepted and
+ * deliberately not listed - they are history, not a second interface.
+ *
+ * Exported for the test that holds it against Telegram's own rules: the
+ * whole list is refused if a single entry breaks them, and a refused list
+ * is a menu that silently never appears.
+ */
+export const COMMANDS: Array<{ command: string; description: string }> = [
+  { command: 'help', description: 'Every command, with what it does' },
+  { command: 'new', description: 'Start a new conversation, keep the old one' },
+  { command: 'clear', description: 'Empty this chat and start fresh' },
+  { command: 'stop', description: 'Cancel the turn that is running' },
+  { command: 'status', description: 'Provider, usage limits, running work, last sleep' },
+  { command: 'tasks', description: 'Open tasks on the board' },
+  { command: 'mail', description: 'Unread mail addressed to you' },
+  { command: 'agents', description: 'Who works in the company' },
+  { command: 'schedules', description: 'What runs on a schedule, and when' },
+  { command: 'id', description: 'Your numeric Telegram ID' },
+  { command: 'off', description: 'Silence the gateway until the server restarts' },
+];
+
+/** Reactions the bot puts on the sender's own message while it works. */
+const REACTION = {
+  /** Taken in, working on it. */
+  working: '👀',
+  /** Answered. */
+  done: '👍',
+  /** Something went wrong; the error itself still arrives as a message. */
+  failed: '😢',
+} as const;
+
 const BACKOFF_START_MS = 1000;
 const BACKOFF_MAX_MS = 60_000;
 
 /** Telegram's typing bubble fades after a few seconds, so it is refreshed. */
 const TYPING_INTERVAL_MS = 4000;
 
-/** Silence a turn may spend before the first "still working" line goes out. */
+/** Silence a turn may spend before the live progress line appears. */
 const FIRST_NOTE_MS = 20_000;
-
-/** Minimum distance between two progress lines after that first one. */
-const NOTE_INTERVAL_MS = 60_000;
 
 /** Messages one sender may have waiting. Beyond it, the rest is refused. */
 const MAX_QUEUE_DEPTH = 3;
@@ -88,7 +174,8 @@ export interface GatewayHandle {
   /** React to a config change: start or stop accordingly. */
   refresh(): Promise<void>;
   status(): GatewayStatus;
-  send(userId: number, text: string): Promise<void>;
+  /** Returns the ids of the messages that went out, newest call last. */
+  send(userId: number, text: string, options?: { origin?: Omit<MessageOrigin, 'at'> }): Promise<number[]>;
 }
 
 interface SenderQueue {
@@ -173,6 +260,12 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** One row of a list: no line breaks, and short enough to read on a phone. */
+function oneLine(text: string, max: number): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
+}
+
 /** The sender's username, straight out of the raw update, for the log only. */
 function usernameOf(update: TelegramUpdate): string | undefined {
   const message = update.message as Record<string, unknown> | undefined;
@@ -210,6 +303,8 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   let silenced = false;
 
   const queues = new Map<number, SenderQueue>();
+  /** Albums still being collected, by Telegram's `media_group_id`. */
+  const albums = new Map<string, { job: Incoming; timer: NodeJS.Timeout }>();
   /** One running turn per sender, so `/stop` knows what to abort. */
   const turns = new Map<number, AbortController>();
   /** Per chat, so two answers never race each other onto the wire. */
@@ -240,22 +335,118 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     return next;
   }
 
-  async function deliver(chatId: number, text: string): Promise<void> {
+  /** What one delivery may be told about itself beyond the text. */
+  interface SayOptions {
+    /** Quote a message, so an answer reads as an answer to that one. */
+    replyTo?: number;
+    /**
+     * What this message is about. Kept per chat, so a reply to it can find
+     * its way back to the right conversation days later.
+     */
+    origin?: Omit<MessageOrigin, 'at'>;
+  }
+
+  async function deliver(chatId: number, text: string, options: SayOptions = {}): Promise<number[]> {
     const client = api;
     if (!client) throw new Error('The Telegram gateway is not running.');
+    const ids: number[] = [];
     for (const piece of htmlPieces(text)) {
-      await client.sendMessage(chatId, piece, {
+      const id = await client.sendMessage(chatId, piece, {
         parseMode: 'HTML',
         disablePreview: true,
+        // Only the first piece quotes the original: Telegram would otherwise
+        // draw the same quoted block above every part of a long answer.
+        ...(ids.length === 0 && options.replyTo !== undefined ? { replyTo: options.replyTo } : {}),
       });
+      if (id !== undefined) ids.push(id);
     }
+    if (options.origin) rememberOrigin(context, chatId, ids, options.origin);
+    // Everything standing in the chat is written down, because `/clear`
+    // deletes by id and Telegram has no "delete everything".
+    noteMessages(context, chatId, ids);
+    return ids;
   }
 
   /** Fire-and-forget delivery: used where a failed line must not break a turn. */
-  function say(chatId: number, text: string): void {
-    void chain(chatId, () => deliver(chatId, text)).catch((error: unknown) => {
+  function say(chatId: number, text: string, options: SayOptions = {}): void {
+    void chain(chatId, async () => {
+      await deliver(chatId, text, options);
+    }).catch((error: unknown) => {
       log.warn('Telegram send failed', { chatId, error: errorText(error) });
     });
+  }
+
+  /**
+   * Put a reaction on the sender's own message.
+   *
+   * Decoration, and treated as such: a Telegram that refuses the emoji, or
+   * an older Bot API that has never heard of reactions, must not cost the
+   * answer. Failures are swallowed at debug level and nothing waits for it.
+   */
+  function react(chatId: number, messageId: number | undefined, emoji?: string): void {
+    if (messageId === undefined) return;
+    void api?.setMessageReaction(chatId, messageId, emoji).catch((error: unknown) => {
+      log.debug('Telegram reaction not accepted', { chatId, error: errorText(error) });
+    });
+  }
+
+  /**
+   * The single line that says what a long turn is doing.
+   *
+   * One message, rewritten in place, rather than a column of "still working"
+   * notes: on a phone the stack of them *is* the noise. It appears only when
+   * the turn has been silent for a while, is rewritten at a distance that
+   * stays well clear of Telegram's edit limit, and is taken away entirely
+   * once the answer is there - it was scaffolding, and scaffolding comes
+   * down.
+   */
+  function startProgress(chatId: number): {
+    show: (line: string) => void;
+    clear: () => void;
+  } {
+    let messageId: number | undefined;
+    let shown = '';
+    let shownAt = 0;
+    let closed = false;
+
+    const show = (line: string): void => {
+      const text = line.trim();
+      if (closed || !text || text === shown) return;
+      const now = Date.now();
+      if (messageId !== undefined && now - shownAt < PROGRESS_EDIT_MS) return;
+      shown = text;
+      shownAt = now;
+      void chain(chatId, async () => {
+        if (closed) return;
+        const client = api;
+        if (!client) return;
+        if (messageId === undefined) {
+          const [id] = await deliver(chatId, text);
+          messageId = id;
+          return;
+        }
+        await client.editMessageText(chatId, messageId, toHtml(text), {
+          parseMode: 'HTML',
+          disablePreview: true,
+        });
+      }).catch((error: unknown) => {
+        log.debug('Telegram progress line failed', { chatId, error: errorText(error) });
+      });
+    };
+
+    const clear = (): void => {
+      closed = true;
+      const id = messageId;
+      messageId = undefined;
+      if (id === undefined) return;
+      void chain(chatId, async () => {
+        await api?.deleteMessages(chatId, [id]);
+      }).catch((error: unknown) => {
+        log.debug('Telegram progress line could not be removed', { chatId, error: errorText(error) });
+      });
+    };
+
+    return { show, clear };
   }
 
   /* --------------------------- sessions --------------------------- */
@@ -316,6 +507,178 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     return lines.join('\n');
   }
 
+  /** The command list as `/help` prints it, out of the one table above. */
+  function helpText(): string {
+    const rows = COMMANDS.map((entry) => `/${entry.command} – ${entry.description}`);
+    return ['What I answer to:', '', ...rows].join('\n');
+  }
+
+  /** One organisation, or nothing to report from. */
+  function orgId(): string | undefined {
+    try {
+      return context.assistant.org.activeOrganization().id;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** "in 3 h 20 min", "12 min ago" - a clock reading nobody has to subtract. */
+  function relativeTime(at?: number): string {
+    if (!at) return '';
+    const delta = at - Date.now();
+    const minutes = Math.round(Math.abs(delta) / 60_000);
+    const text =
+      minutes < 60
+        ? `${minutes} min`
+        : minutes < 60 * 48
+          ? `${Math.round(minutes / 60)} h`
+          : `${Math.round(minutes / (60 * 24))} d`;
+    return delta >= 0 ? `in ${text}` : `${text} ago`;
+  }
+
+  /** A list command's body, with the same shape for all four of them. */
+  function listText(title: string, rows: string[], empty: string, total = rows.length): string {
+    if (rows.length === 0) return empty;
+    const shown = rows.slice(0, LIST_LIMIT);
+    const rest = total - shown.length;
+    return [title, '', ...shown, ...(rest > 0 ? ['', `… and ${rest} more. The web app has the rest.`] : [])].join('\n');
+  }
+
+  function tasksText(): string {
+    const id = orgId();
+    if (!id) return 'No company is configured yet.';
+    const open = context.assistant.store.org.listTasks(id, {
+      status: ['running', 'planned', 'open', 'failed'],
+      limit: 40,
+    });
+    // Running first, then what is planned, then the rest: the order someone
+    // looking at a phone actually wants.
+    const rank: Record<string, number> = { running: 0, failed: 1, planned: 2, open: 3 };
+    const sorted = [...open].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
+    const rows = sorted.map((task) => {
+      const who = task.assigneeId ? context.assistant.store.org.getAgent(task.assigneeId)?.name : undefined;
+      const mark = task.priority === 'high' ? '❗ ' : '';
+      return `• ${mark}${oneLine(task.title, 70)} – ${task.status}${who ? `, ${who}` : ''}`;
+    });
+    // "Unfinished" rather than "open": a failed task is on this list too,
+    // and it is the one most worth seeing from a phone.
+    return listText(`Board: ${open.length} unfinished`, rows, 'Nothing open on the board.', open.length);
+  }
+
+  function mailText(): string {
+    const id = orgId();
+    if (!id) return 'No company is configured yet.';
+    // Read without marking read: this is a glance at the inbox, not the act
+    // of reading a mail, and the web inbox must not go quiet because of it.
+    const unread = context.assistant.store.org.unreadMailFor(id, { kind: 'user' });
+    const rows = unread.map((mail) => {
+      const sender =
+        mail.fromKind === 'assistant'
+          ? context.config.assistantName
+          : (mail.fromAgentId ? context.assistant.store.org.getAgent(mail.fromAgentId)?.name : undefined) ??
+            mail.fromKind;
+      return `• ${sender}: ${oneLine(mail.subject, 70)} (${relativeTime(mail.createdAt)})`;
+    });
+    return listText(`Inbox: ${unread.length} unread`, rows, 'No unread mail.', unread.length);
+  }
+
+  function agentsText(): string {
+    const id = orgId();
+    if (!id) return 'No company is configured yet.';
+    const agents = context.assistant.store.org.listAgents(id);
+    const running = context.assistant.store.org.listAssignments(id, { status: ['running'], limit: 50 });
+    const busy = new Map<string, number>();
+    for (const assignment of running) busy.set(assignment.agentId, (busy.get(assignment.agentId) ?? 0) + 1);
+    const rows = agents.map((agent) => {
+      const load = busy.get(agent.id);
+      return `• ${agent.name} – ${oneLine(agent.title, 50)}${load ? ` (busy: ${load})` : ''}`;
+    });
+    return listText(`Company: ${agents.length} agents`, rows, 'Nobody works here yet.', agents.length);
+  }
+
+  function schedulesText(): string {
+    const id = orgId();
+    if (!id) return 'No company is configured yet.';
+    const jobs = context.assistant.cron.list(id);
+    const upcoming = [...jobs].sort((a, b) => (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity));
+    const rows = upcoming.map((job) => {
+      const when = job.enabled ? (job.nextRunAt ? relativeTime(job.nextRunAt) : 'not scheduled') : 'off';
+      const last = job.lastStatus ? `, last ${job.lastStatus}` : '';
+      return `• ${oneLine(job.name, 50)} – ${job.schedule}, ${when}${last}`;
+    });
+    return listText(`Schedules: ${jobs.length}`, rows, 'No schedules are set up.', jobs.length);
+  }
+
+  /**
+   * Empty the chat and start over.
+   *
+   * "As if writing the bot for the first time" is the whole point, so this
+   * deletes the messages themselves rather than only opening a new
+   * conversation.
+   *
+   * It does not delete only what the gateway happens to remember. That was
+   * the first attempt, and it cleared two messages out of a full chat: the
+   * ledger starts at the last restart, while the chat goes back as far as it
+   * goes. Message ids are a per-chat counter, so the way to reach a message
+   * nobody wrote down is to count backwards from the newest one and hand
+   * Telegram the whole range - it skips every id that is not there, already
+   * gone, or past its 48-hour deletion window. The ledger is still read, for
+   * the one thing a range cannot supply: where to start counting when the
+   * newest id is unknown.
+   *
+   * What stays is what Telegram will not part with: anything older than 48
+   * hours. The answer says so rather than claiming an empty chat.
+   *
+   * The conversation itself is kept. It stays in the web app's sidebar with
+   * everything that was said in it - the chat is cleared, the memory of it
+   * is not.
+   */
+  async function clearChat(chatId: number, commandMessageId?: number): Promise<void> {
+    const client = api;
+    const known = takeMessages(context, chatId);
+    const newest = Math.max(commandMessageId ?? 0, ...known, 0);
+
+    let swept = 0;
+    if (client && newest > 0) {
+      // Downwards from the newest, so a flood limit that cuts this short
+      // takes what is on screen first.
+      for (let top = newest; top > 0 && newest - top < CLEAR_SWEEP; top -= 100) {
+        const batch: number[] = [];
+        for (let id = top; id > 0 && id > top - 100 && newest - id < CLEAR_SWEEP; id -= 1) batch.push(id);
+        if (batch.length === 0) break;
+        try {
+          await client.deleteMessages(chatId, batch);
+          swept += batch.length;
+        } catch (error) {
+          // A batch Telegram refuses outright - every id in it too old - is
+          // not a reason to stop: further down is only older, but further up
+          // may still hold something deletable in a chat with gaps.
+          log.debug('Telegram delete batch refused', { chatId, error: errorText(error) });
+        }
+      }
+    }
+
+    const session = resolveSession(chatId, true);
+    log.info('Telegram chat cleared', { chatId, swept, newest, sessionId: session.id });
+
+    // One line on an empty screen, which is the whole point of the command.
+    // The footnote about Telegram's 48 hours is true every time and worth
+    // reading once, so it comes with the first clear in a chat and never
+    // again - an explanation repeated on every use stops being read and
+    // starts being clutter.
+    const noticeKey = `telegram:clear-notice:${chatId}`;
+    const explained = context.assistant.store.getMeta(noticeKey) !== null;
+    if (!explained) context.assistant.store.setMeta(noticeKey, String(Date.now()));
+
+    say(
+      chatId,
+      explained
+        ? '✨ Fresh start.'
+        : '✨ Fresh start — the old conversation is kept in the web app.\n' +
+            'Telegram lets me delete only the last 48 hours; for anything older: hold the chat → Clear History.',
+    );
+  }
+
   /** Returns true when the message was a command and is fully dealt with. */
   async function handleCommand(verdict: GatewayVerdict): Promise<boolean> {
     const chatId = verdict.chatId;
@@ -328,9 +691,16 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
           chatId,
           `Hello, this is ${context.config.assistantName}. Send a message and I will reply in ` +
             'the same conversation you can access in the browser.\n\n' +
-            '/new new conversation, /stop cancel the current turn, /status current state, ' +
-            '/id your user ID, /off silence the gateway until restart.',
+            'Voice messages are transcribed, and photos and documents are read. ' +
+            'Reply to one of my notifications and I will answer about that notification, ' +
+            'in a conversation of its own, rather than about whatever we last discussed.\n\n' +
+            helpText(),
         );
+        return true;
+
+      case 'help':
+      case 'hilfe':
+        say(chatId, helpText());
         return true;
 
       case 'new':
@@ -340,6 +710,27 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         say(chatId, 'New conversation created. The previous one is preserved.');
         return true;
       }
+
+      case 'clear':
+        await clearChat(chatId, verdict.messageId);
+        return true;
+
+      case 'tasks':
+        say(chatId, tasksText());
+        return true;
+
+      case 'mail':
+        say(chatId, mailText());
+        return true;
+
+      case 'agents':
+        say(chatId, agentsText());
+        return true;
+
+      case 'schedules':
+      case 'cron':
+        say(chatId, schedulesText());
+        return true;
 
       case 'stop': {
         const turn = turns.get(userId);
@@ -369,26 +760,207 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         return true;
 
       default:
-        say(
-          chatId,
-          'Unknown command. Available commands: /start, /new, /stop, /status, /id and /off.',
-        );
+        say(chatId, 'I do not know that one.\n\n' + helpText());
         return true;
     }
   }
 
+  /* --------------------------- attachments --------------------------- */
+
+  /** One message on its way to becoming a turn, files and all. */
+  interface Incoming {
+    userId: number;
+    chatId: number;
+    messageId?: number;
+    text?: string;
+    attachments: GatewayAttachment[];
+    replyTo?: GatewayReplyTo;
+  }
+
+  /** What came out of taking the files in. */
+  interface Intake {
+    /** One line per file, written for the turn that is about to read them. */
+    lines: string[];
+    /** Spoken words, in the order they were sent. */
+    transcripts: string[];
+    saved: number;
+  }
+
+  /** How a file is named in the line the assistant is handed. */
+  const KIND_LABEL: Record<GatewayAttachment['kind'], string> = {
+    photo: 'A photo',
+    voice: 'A voice message',
+    audio: 'An audio file',
+    video: 'A video',
+    video_note: 'A video note',
+    animation: 'An animation',
+    document: 'A document',
+    sticker: 'A sticker',
+  };
+
+  /**
+   * Whether a turn would end up listening locally, and so might have to wait
+   * for a model to be fetched. Read fresh: a key added on the voice page
+   * takes effect on the next voice note, not on the next restart.
+   */
+  function listensLocally(config: TelegramGatewayConfig): boolean {
+    if (config.transcribe === 'local') return true;
+    if (config.transcribe !== 'auto') return false;
+    const keys = voiceKeys(context.config.home);
+    return !keys.openai && !keys.elevenlabs;
+  }
+
+  /**
+   * Fetch, store and, where there is something to hear, transcribe.
+   *
+   * Every failure here is reported rather than thrown: one unreadable file
+   * out of three must not cost the other two, and a photo that could not be
+   * downloaded is something the assistant should be able to say out loud
+   * instead of answering a question it never saw.
+   */
+  async function takeIn(job: Incoming, signal: AbortSignal): Promise<Intake> {
+    const config = settings();
+    const intake: Intake = { lines: [], transcripts: [], saved: 0 };
+    const client = api;
+    if (!client || job.attachments.length === 0) return intake;
+
+    const maxBytes = Math.min(Math.max(1, config.maxAttachmentMb), 20) * 1024 * 1024;
+    let announcedColdStart = false;
+
+    for (const attachment of job.attachments.slice(0, MAX_ATTACHMENTS)) {
+      const label = KIND_LABEL[attachment.kind] ?? 'A file';
+      try {
+        const file = await client.getFile(attachment.fileId, signal);
+        if (!file.path) {
+          intake.lines.push(`${label} was sent, but Telegram would not hand the file over.`);
+          continue;
+        }
+        const bytes = await client.downloadFile(file.path, { maxBytes, signal });
+        const stored = saveAttachment(context.config.workspace, attachment, bytes);
+        intake.saved += 1;
+        const size = humanSize(stored.bytes);
+        const named = attachment.fileName ? ` named “${attachment.fileName}”` : '';
+
+        if (isAudible(attachment) && config.transcribe !== 'off') {
+          const length = humanDuration(attachment.duration);
+          // The local model is fetched once, and that once takes about a
+          // minute on a normal line. Saying so beats a silence that looks
+          // like a bot which stopped working.
+          if (!announcedColdStart && listensLocally(config) && !localModelReady(config.transcribeModel)) {
+            announcedColdStart = true;
+            say(job.chatId, 'Listening. The speech model is being downloaded once, which takes a minute.');
+          }
+          try {
+            const result = await transcribe({
+              audio: bytes,
+              mime: attachment.mime,
+              fileName: attachment.fileName,
+              engine: config.transcribe,
+              model: config.transcribeModel,
+              lang: context.config.voice.lang,
+              home: context.config.home,
+              signal,
+            });
+            intake.transcripts.push(result.text);
+            intake.lines.push(
+              `${label}${length ? ` (${length})` : ''}, transcribed by ${result.engine}; the wording may be` +
+                ` imperfect. The audio itself is at ${stored.path}.`,
+            );
+            // Echoed back, because a transcript nobody can check is a
+            // misheard sentence the assistant answers with a straight face.
+            const echo = result.text.length > TRANSCRIPT_ECHO ? result.text.slice(0, TRANSCRIPT_ECHO) + ' …' : result.text;
+            say(job.chatId, '🎤 ' + echo);
+            log.info('Telegram voice note transcribed', {
+              from: job.userId,
+              engine: result.engine,
+              ms: result.ms,
+              chars: result.text.length,
+            });
+          } catch (error) {
+            const reason = error instanceof SttError ? error.message : errorText(error);
+            intake.lines.push(`${label}${length ? ` (${length})` : ''} could not be transcribed: ${reason} The audio is at ${stored.path}.`);
+            log.warn('Telegram transcription failed', { from: job.userId, error: reason });
+          }
+          continue;
+        }
+
+        switch (attachment.kind) {
+          case 'photo':
+          case 'sticker':
+            intake.lines.push(
+              `${label} (${size}) is at ${stored.path}. Open it with your file-reading tool before you answer; you can see images.`,
+            );
+            break;
+          case 'video':
+          case 'video_note':
+          case 'animation':
+            intake.lines.push(`${label} (${size}) is at ${stored.path}.`);
+            break;
+          default:
+            intake.lines.push(
+              `${label}${named} (${size}) is at ${stored.path}. Open it before you answer.`,
+            );
+        }
+      } catch (error) {
+        const reason = error instanceof TelegramApiError ? error.message : errorText(error);
+        intake.lines.push(`${label} could not be taken in: ${reason}`);
+        log.warn('Telegram attachment failed', { from: job.userId, kind: attachment.kind, error: reason });
+      }
+    }
+
+    if (job.attachments.length > MAX_ATTACHMENTS) {
+      intake.lines.push(
+        `${job.attachments.length - MAX_ATTACHMENTS} further file(s) in this batch were not taken in.`,
+      );
+    }
+    return intake;
+  }
+
+  /**
+   * The prompt for a turn that arrived with files, a quoted notification, or
+   * both.
+   *
+   * Everything the assistant did not write itself is introduced as what it
+   * is: the user's own words stand as they are, a transcript says that it is
+   * a transcript, and a quoted notification is fenced off with a line saying
+   * where it ends. None of it is trusted less for that - it is all the
+   * owner's own material - but a turn that cannot tell a mail apart from an
+   * instruction is a turn that will eventually follow the mail.
+   */
+  function buildPrompt(job: Incoming, intake: Intake, quoted?: string): string {
+    const parts: string[] = [];
+
+    if (quoted) {
+      parts.push(
+        'The user is replying on Telegram to this notification from Rookery:\n\n' +
+          quoted +
+          '\n\n--- end of the notification; their reply follows ---',
+      );
+    }
+
+    if (intake.lines.length > 0) {
+      parts.push('Sent from Telegram:\n' + intake.lines.map((line) => '- ' + line).join('\n'));
+    }
+
+    for (const transcript of intake.transcripts) {
+      parts.push('What they said:\n"' + transcript + '"');
+    }
+
+    const written = job.text?.trim();
+    if (written) parts.push(intake.transcripts.length > 0 || intake.lines.length > 0 ? 'What they wrote with it:\n' + written : written);
+
+    // A file with nothing said about it is still a request: look at this.
+    if (parts.length === 0 || (!written && intake.transcripts.length === 0)) {
+      parts.push('They sent this without saying anything. Look at it and say what you make of it.');
+    }
+    return parts.join('\n\n');
+  }
+
   /* ----------------------------- turns ----------------------------- */
 
-  async function runTurn(userId: number, chatId: number, text: string): Promise<void> {
+  async function runTurn(job: Incoming): Promise<void> {
     const config = settings();
-    const session = resolveSession(chatId);
-
-    log.info('Telegram message accepted', {
-      from: userId,
-      sessionId: session.id,
-      permission: config.permission,
-      text: text.slice(0, AUDIT_TEXT),
-    });
+    const { userId, chatId } = job;
 
     const turn = new AbortController();
     turns.set(userId, turn);
@@ -399,23 +971,66 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     typing.unref?.();
     void api?.sendChatAction(chatId, 'typing').catch(() => {});
 
-    let noteAt = 0;
-    const note = (line: string): void => {
-      noteAt = Date.now();
-      say(chatId, line);
-    };
+    // Seen, and being worked on. A reaction says that without adding a
+    // message to a chat the answer is about to land in anyway.
+    react(chatId, job.messageId, REACTION.working);
+
     // Nothing to show yet is the normal state of a long turn; without a sign
-    // of life the phone looks broken. Only when the turn has said nothing at
-    // all so far - an error line is a sign of life too.
-    const firstNote = setTimeout(() => {
-      if (noteAt === 0) note('Still working on it ...');
-    }, FIRST_NOTE_MS);
+    // of life the phone looks broken. One line, rewritten as the turn moves
+    // on, and gone once the answer is there.
+    const openedAt = Date.now();
+    const progress = startProgress(chatId);
+    const firstNote = setTimeout(() => progress.show('Working on it …'), FIRST_NOTE_MS);
     firstNote.unref?.();
 
     let answer = '';
+    let failed = false;
+    // Set inside the try, so a failure on the way in still runs through the
+    // one `finally` that stops the typing bubble and the progress timer.
+    let session: Session | undefined;
+    let origin: MessageOrigin | undefined;
     try {
+      // Files first: downloading and listening is part of the turn, and the
+      // typing bubble and the progress note above already cover the wait.
+      const intake = await takeIn(job, turn.signal);
+
+      // Where this belongs. A reply to something the bot sent goes back to
+      // whatever that message was about; everything else is the running
+      // Telegram conversation, exactly as before.
+      origin = job.replyTo?.fromBot === true ? findOrigin(context, chatId, job.replyTo.messageId) : undefined;
+      const thread = origin
+        ? openThread(context, origin, () => resolveSession(chatId))
+        : { session: resolveSession(chatId), fresh: false };
+      session = thread.session;
+      // The notification itself goes in front of the turn only when this
+      // conversation has not seen it yet. A thread being continued already
+      // holds it in its history, and repeating it every time would push the
+      // actual exchange out of the window. A notice that never had a record
+      // is the exception: there is nothing to read back, so its own text is
+      // all the context there will ever be.
+      const quoted = origin
+        ? thread.fresh
+          ? originContext(context, origin)
+          : origin.ref
+            ? undefined
+            : origin.snippet
+        : undefined;
+
+      const prompt = buildPrompt(job, intake, quoted);
+
+      log.info('Telegram message accepted', {
+        from: userId,
+        sessionId: session.id,
+        permission: config.permission,
+        attachments: intake.saved,
+        spoken: intake.transcripts.length,
+        replyingTo: origin?.kind,
+        thread: thread.fresh ? 'new' : 'continued',
+        text: prompt.slice(0, AUDIT_TEXT),
+      });
+
       for await (const event of context.assistant.chat({
-        text,
+        text: prompt,
         sessionId: session.id,
         permission: config.permission,
         model: config.model,
@@ -426,28 +1041,53 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         } else if (event.type === 'error') {
           // Never swallowed: an error the user does not see is an answer that
           // simply never arrives.
+          failed = true;
           say(chatId, `Error: ${event.message}`);
-          noteAt = Date.now();
-        } else if (event.type === 'status' && noteAt > 0) {
-          if (Date.now() - noteAt >= NOTE_INTERVAL_MS) {
-            note(event.detail ? `${event.label} – ${event.detail}` : event.label);
-          }
+        } else if (event.type === 'status' && Date.now() - openedAt >= FIRST_NOTE_MS) {
+          // Only once the turn has been quiet long enough to worry about;
+          // the line itself then rewrites at its own pace.
+          progress.show(event.detail ? `${event.label} – ${event.detail}` : event.label);
         }
       }
     } catch (error) {
       if (!turn.signal.aborted) {
+        failed = true;
         log.error('Telegram turn failed', { from: userId, error: errorText(error) });
         say(chatId, `Error: ${errorText(error)}`);
       }
     } finally {
       clearTimeout(firstNote);
       clearInterval(typing);
+      progress.clear();
       if (turns.get(userId) === turn) turns.delete(userId);
     }
 
-    if (turn.signal.aborted) say(chatId, 'Cancelled.');
-    else if (answer.trim().length > 0) say(chatId, answer);
-    else say(chatId, 'No answer was returned.');
+    if (turn.signal.aborted) {
+      react(chatId, job.messageId, REACTION.failed);
+      say(chatId, 'Cancelled.');
+      return;
+    }
+
+    react(chatId, job.messageId, failed ? REACTION.failed : REACTION.done);
+
+    // The answer carries its own origin: replying to it comes back to this
+    // conversation, whichever one it turned out to be. That is what lets a
+    // thread continue days later, and what keeps a reply to an old answer
+    // out of today's chat.
+    const answered: SayOptions = {
+      origin: {
+        kind: 'answer',
+        ...(session ? { sessionId: session.id } : {}),
+        ...(origin?.title ? { title: origin.title } : {}),
+      },
+      // Quote the message being answered when this turn belongs to a thread
+      // of its own, so the phone shows which of the day's notifications it
+      // is about. In the plain chat the quoted line would only be noise.
+      ...(origin && job.messageId !== undefined ? { replyTo: job.messageId } : {}),
+    };
+
+    if (answer.trim().length > 0) say(chatId, answer, answered);
+    else say(chatId, 'No answer was returned.', answered);
   }
 
   /* ---------------------------- dispatch ---------------------------- */
@@ -469,9 +1109,35 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     return true;
   }
 
+  /**
+   * What an allowed sender is told when their own message was refused.
+   *
+   * Every reason in here is one the guard can only reach *after* the
+   * allowlist has said yes, in the sender's own private chat - so the
+   * silence that protects the bot from strangers buys nothing here, and
+   * costs the owner a message that seems to vanish. Everything else stays
+   * silent, `not_private` included: a word in a group chat is exactly what
+   * the guard refused to allow.
+   */
+  const REJECTION_NOTE: Partial<Record<GatewayRejection, string>> = {
+    forwarded:
+      'Forwarded messages are not accepted - they carry someone else\'s words. Send the text or the file yourself.',
+    media_off: 'Attachments are switched off for this gateway. You can turn them on in the gateway settings.',
+    unsupported_media: 'Animated and video stickers cannot be read.',
+    too_large: 'That file is larger than this gateway accepts.',
+    too_long: 'That message is too long. Shorten it, or send it as a file.',
+    no_content: 'There was nothing in that message I can work with.',
+  };
+
   function handleUpdate(update: TelegramUpdate): void {
     const verdict = classifyUpdate(update, settings());
     lastEventAt = Date.now();
+
+    // Noted before anything is decided about it: `/clear` empties the chat,
+    // and a message that was refused is standing in it just the same.
+    if (verdict.chatId !== undefined && verdict.chatId === verdict.userId) {
+      noteMessages(context, verdict.chatId, [verdict.messageId]);
+    }
 
     if (!verdict.ok) {
       log.warn('Telegram update rejected', {
@@ -480,6 +1146,14 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         reason: verdict.reason,
         text: verdict.text?.slice(0, REJECT_TEXT),
       });
+
+      // An allowed sender in their own chat hears why. Which is not a leak:
+      // they already know the bot answers them.
+      const note = verdict.reason ? REJECTION_NOTE[verdict.reason] : undefined;
+      if (note && verdict.chatId !== undefined && verdict.chatId === verdict.userId) {
+        say(verdict.chatId, note);
+        return;
+      }
 
       // The one and only answer a rejected update ever gets: the number the
       // sender already carries. Without it nobody can put themselves on the
@@ -513,17 +1187,63 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       return;
     }
 
-    // An accepted verdict always carries all three, but they are checked
+    // An accepted verdict always carries the ids, but they are checked
     // rather than asserted - nothing here narrows foreign input by claim.
-    const { userId, chatId, text } = verdict;
-    if (userId === undefined || chatId === undefined || text === undefined) return;
+    const { userId, chatId } = verdict;
+    if (userId === undefined || chatId === undefined) return;
 
-    if (!enqueue(userId, () => runTurn(userId, chatId, text))) {
+    const job: Incoming = {
+      userId,
+      chatId,
+      attachments: verdict.attachments ?? [],
+      ...(verdict.text !== undefined ? { text: verdict.text } : {}),
+      ...(verdict.messageId !== undefined ? { messageId: verdict.messageId } : {}),
+      ...(verdict.replyTo ? { replyTo: verdict.replyTo } : {}),
+    };
+
+    // Several pictures sent at once are one message to the person who sent
+    // them, and have to be one turn here too.
+    if (verdict.mediaGroupId) {
+      collectAlbum(verdict.mediaGroupId, job);
+      return;
+    }
+
+    dispatch(job);
+  }
+
+  /** Hand one message to the queue, or say why it is not being taken. */
+  function dispatch(job: Incoming): void {
+    if (!enqueue(job.userId, () => runTurn(job))) {
       say(
-        chatId,
+        job.chatId,
         'The queue is full. Please wait until I have answered the previous messages.',
       );
     }
+  }
+
+  /**
+   * Gather the items of an album, then send them on as one message.
+   *
+   * The caption sits on whichever item the sender wrote it under - usually
+   * the first, but not always - so the first caption seen wins and the rest
+   * only add their files. The timer restarts with every item, because
+   * Telegram delivers an album across several polls.
+   */
+  function collectAlbum(groupId: string, job: Incoming): void {
+    const pending = albums.get(groupId);
+    if (pending) {
+      clearTimeout(pending.timer);
+      pending.job.attachments.push(...job.attachments);
+      if (!pending.job.text && job.text) pending.job.text = job.text;
+      if (!pending.job.replyTo && job.replyTo) pending.job.replyTo = job.replyTo;
+    }
+    const collected = pending?.job ?? job;
+    const timer = setTimeout(() => {
+      albums.delete(groupId);
+      dispatch(collected);
+    }, ALBUM_WINDOW_MS);
+    timer.unref?.();
+    albums.set(groupId, { job: collected, timer });
   }
 
   /* ----------------------------- polling ----------------------------- */
@@ -632,6 +1352,21 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       return;
     }
 
+    // Yesterday's photos are not worth keeping for ever. Best-effort, and
+    // never a reason not to start.
+    try {
+      const removed = pruneInbox(context.config.workspace);
+      if (removed > 0) log.info('Telegram inbox swept', { folders: removed });
+    } catch (error) {
+      log.warn('Telegram inbox could not be swept', { error: errorText(error) });
+    }
+
+    // What draws the blue menu button in the app. Best-effort: a bot whose
+    // menu is a day out of date still answers every one of its commands.
+    void client.setMyCommands(COMMANDS).catch((error: unknown) => {
+      log.warn('Telegram command menu could not be published', { error: errorText(error) });
+    });
+
     api = client;
     activeToken = secret;
     lastError = undefined;
@@ -649,6 +1384,9 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     controller?.abort();
     for (const turn of turns.values()) turn.abort();
     turns.clear();
+    // A half-collected album belongs to a connection that is going away.
+    for (const album of albums.values()) clearTimeout(album.timer);
+    albums.clear();
     const pending = loop;
     controller = undefined;
     loop = undefined;
@@ -717,9 +1455,17 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
      * id, so no lookup is needed. A 403 (the user blocked the bot) arrives at
      * the caller as a `TelegramApiError` with `forbidden`, because whoever
      * sends notifications has to be able to stop sending them.
+     *
+     * The ids of the messages that went out come back, because a
+     * notification is only half sent until replying to it leads somewhere:
+     * push hands them straight to the origin registry.
      */
-    async send(userId: number, text: string): Promise<void> {
-      await chain(userId, () => deliver(userId, text));
+    async send(userId: number, text: string, options: { origin?: Omit<MessageOrigin, 'at'> } = {}): Promise<number[]> {
+      let ids: number[] = [];
+      await chain(userId, async () => {
+        ids = await deliver(userId, text, options);
+      });
+      return ids;
     },
   };
 }

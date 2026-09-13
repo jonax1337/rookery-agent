@@ -1,6 +1,7 @@
 import { inQuietHours, pushRecipients, splitMessage } from '@rookery/core';
 import type { AgentEvent, Mail, NotifyEvent, TelegramPushConfig } from '@rookery/core';
 import type { ServerContext } from '../context.js';
+import type { MessageOrigin } from './threads.js';
 import type { GatewayHandle } from './telegram.js';
 
 /**
@@ -37,6 +38,13 @@ interface PushItem {
   message: string;
   /** Which counting bucket this item falls into inside a batched digest. */
   tallyKey: string;
+  /**
+   * What this notification is about, handed to the gateway so a reply to it
+   * can be answered about *it* rather than about whatever conversation
+   * happened to be open. Without this, the phone has one thread for
+   * everything - which is exactly the confusion this field removes.
+   */
+  origin: Omit<MessageOrigin, 'at'>;
 }
 
 /** How a `tallyKey` reads in a digest, singular and plural. */
@@ -152,7 +160,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     return max > 0 && sentAt.length >= max;
   };
 
-  async function sendNow(text: string): Promise<void> {
+  async function sendNow(text: string, origin: Omit<MessageOrigin, 'at'>): Promise<void> {
     const recipients = pushRecipients(context.config.gateways.telegram).filter((id) => !disabled.has(id));
     if (recipients.length === 0) return;
     sentAt.push(Date.now());
@@ -161,7 +169,8 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       for (const part of parts) {
         try {
           // One call per message, in order - Telegram has no batch send.
-          await gateway.send(userId, part);
+          // The gateway files each message under this origin as it goes.
+          await gateway.send(userId, part, { origin });
         } catch (error) {
           if (isForbidden(error)) {
             disabled.add(userId);
@@ -197,7 +206,15 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     // at once, which is the case the summary format ("3 completed, 1
     // failed") exists for.
     const single = items.length === 1 ? items[0] : undefined;
-    void sendNow(single ? single.message : buildDigest(items));
+    if (single) {
+      void sendNow(single.message, single.origin);
+      return;
+    }
+    // A digest is several subjects in one message, so it has no record of
+    // its own to reply to. Its own text becomes the context instead, which
+    // is enough for "what was the failed one?" to be answerable.
+    const digest = buildDigest(items);
+    void sendNow(digest, { kind: 'digest', snippet: digest, title: 'Summary' });
   }
 
   const ticker = setInterval(attemptFlush, FLUSH_CHECK_MS);
@@ -238,7 +255,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       buffer.push(item);
       return;
     }
-    void sendNow(item.message);
+    void sendNow(item.message, item.origin);
   }
 
   const onAssignment = (event: AgentEvent): void => {
@@ -266,6 +283,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       urgent: false,
       message: header + '\n' + taskLine + bodyLine,
       tallyKey: 'assignment:' + view.status,
+      origin: { kind: 'assignment', ref: view.id, title: oneLine(view.task, 60) },
     });
   };
 
@@ -288,6 +306,19 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       urgent: false,
       message,
       tallyKey: 'cron:' + event.run.status,
+      // The run points at its job, and at the conversation the job runs in:
+      // answering the daily schedule continues that very conversation
+      // instead of starting a stranger next to it.
+      origin: {
+        kind: 'cron',
+        ref: event.run.id,
+        parent: event.job.id,
+        title: event.job.name,
+        ...(event.run.sessionId ?? event.job.sessionId
+          ? { sessionId: (event.run.sessionId ?? event.job.sessionId) as string }
+          : {}),
+        ...(event.run.result?.trim() ? { snippet: event.run.result } : {}),
+      },
     });
   };
 
@@ -307,6 +338,12 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       urgent: false,
       message,
       tallyKey: 'sleep:' + event.run.status,
+      origin: {
+        kind: 'sleep',
+        ref: event.run.id,
+        title: new Date(event.run.startedAt).toLocaleDateString('en-GB'),
+        snippet: body,
+      },
     });
   };
 
@@ -324,6 +361,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       urgent: false,
       message,
       tallyKey: 'task:failed',
+      origin: { kind: 'task', ref: event.task.id, title: oneLine(event.task.title, 60) },
     });
   };
 
@@ -372,6 +410,9 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       urgent: false,
       message: '📬 ' + sender + ' – ' + oneLine(mail.subject, 120) + '\n\n' + mailBody(mail.body),
       tallyKey: 'mail:new',
+      // The mail's own id, not the thread's: a reply is about the mail that
+      // was pushed, and the store has the whole thing when it is needed.
+      origin: { kind: 'mail', ref: mail.id, title: oneLine(mail.subject, 60) },
     });
   };
 
@@ -384,6 +425,9 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       // state-change line this module composed, so nothing is added to it.
       message: event.text,
       tallyKey: 'notify:normal',
+      // No record behind a notice, so it carries its own text: replying to
+      // it puts the notice itself back in front of the turn.
+      origin: { kind: 'notify', snippet: event.text, title: oneLine(event.text, 60) },
     });
   };
 

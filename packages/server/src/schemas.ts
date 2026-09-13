@@ -290,6 +290,18 @@ const telegramConfigSchema = z
     allowedUserIds: telegramIdListSchema,
     permission: permissionSchema,
     model: z.string(),
+    media: z.boolean(),
+    transcribe: z.enum(['auto', 'local', 'openai', 'elevenlabs', 'off']),
+    // A model id, not a path: it names a repository on the model hub, and
+    // the shape is checked here so a typo cannot become a fetch of
+    // something else entirely.
+    transcribeModel: z
+      .string()
+      .trim()
+      .max(120)
+      .regex(/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/, 'owner/model'),
+    // Telegram hands a bot at most 20 MB, so the ceiling is a real one.
+    maxAttachmentMb: z.number().int().min(1).max(20),
     push: telegramPushConfigSchema,
   })
   .partial();

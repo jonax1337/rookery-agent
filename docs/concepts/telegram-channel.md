@@ -171,6 +171,14 @@ export interface TelegramGatewayConfig {
   permission: PermissionLevel;
   /** Modell fuer Telegram-Turns; leer = Config-Default. */
   model?: string;
+  /** Fotos, Sprachnachrichten, Dokumente annehmen – oder verwerfen wie frueher. */
+  media: boolean;
+  /** Wo aus Sprache Text wird: 'auto' | 'local' | 'openai' | 'elevenlabs' | 'off'. */
+  transcribe: TranscribeEngine;
+  /** Lokales Whisper-Modell, z. B. 'onnx-community/whisper-base'. */
+  transcribeModel: string;
+  /** Obergrenze je Anhang in MB; die Bot-API gibt ohnehin hoechstens 20 heraus. */
+  maxAttachmentMb: number;
   push: TelegramPushConfig;
 }
 ```
@@ -194,8 +202,11 @@ genau einen moeglichen Eintrag.
   `TELEGRAM_BOT_TOKEN` bleibt als vorrangige Quelle fuer kopflose Installationen; die Seite sagt
   dann, dass die Variable gewinnt, statt das Feld heimlich wirkungslos zu machen.
 - **Default** in `DEFAULT_CONFIG`: `gateways.telegram = { enabled: false, allowedUserIds: [],
-  permission: 'full', push: … }`. Der Default ist aus; `permission: 'full'` wirkt erst, wenn der
-  Nutzer den Kanal bewusst einschaltet (E1).
+  permission: 'full', media: true, transcribe: 'auto',
+  transcribeModel: 'onnx-community/whisper-base', maxAttachmentMb: 20, push: … }`. Der Default ist
+  aus; `permission: 'full'` wirkt erst, wenn der Nutzer den Kanal bewusst einschaltet (E1).
+  Anhaenge sind an, weil ein Handy ohne Kamera-Knopf ein halbes Handy ist – und was ankommt, ist
+  eine Datei, die die Allowlist selbst geschickt hat.
 - `publicConfig()` gibt `gateways` weiter; der Token steht dort ohnehin nicht. Die Allowlist selbst
   muss die Oberflaeche sehen, sonst laesst sie sich nicht verwalten.
 - `patchConfigSchema` bekommt `gateways: gatewaysConfigSchema`, die ihrerseits
@@ -264,32 +275,166 @@ aus dem `done`-Ereignis.
 - **Formatierung**: `parse_mode: 'HTML'` mit vollstaendigem Escaping von `&`, `<`, `>`, Codebloecke
   als `<pre>`. MarkdownV2 verlangt das Maskieren von siebzehn Zeichen und zerbricht an jeder zweiten
   Modellantwort; HTML hat drei.
-- **Lange Laeufe**: Meldet der Turn nach 20 Sekunden noch nichts, geht eine Zwischenzeile raus
-  ("Arbeite daran …"), danach hoechstens alle 60 Sekunden eine weitere aus `status`-Ereignissen.
-  Werkzeugaufrufe einzeln zu melden waere auf dem Handy Laerm.
+- **Lange Laeufe**: Meldet der Turn nach 20 Sekunden noch nichts, erscheint *eine* Zeile, die
+  danach per `editMessageText` fortgeschrieben wird (fruehestens alle 12 s, und nur wenn sich der
+  Text aendert) – nicht mehr eine Zwischenmeldung nach der anderen. Auf dem Handy ist der Stapel
+  gleicher Meldungen genau der Laerm, den man vermeiden will. Ist die Antwort da, wird die Zeile
+  wieder geloescht: sie war ein Geruest.
+- **Reaktionen statt Meldungen**: Auf die Nachricht des Nutzers kommt 👀, sobald der Turn laeuft,
+  👍 wenn er fertig ist, 😢 bei Fehler oder Abbruch (`setMessageReaction`). Das ist die
+  telegram-eigene Art, Empfang zu quittieren, und kostet keine einzige Nachricht. Schlaegt es fehl –
+  ein aelterer Bot-API-Server, ein Emoji, das Telegram fuer Reaktionen nicht zulaesst –, wird das auf
+  `debug` geloggt und sonst nichts: Es ist Dekoration, keine Zustellung.
 - **Fehler**: Ein `error`-Ereignis wird als Nachricht zugestellt, nicht verschluckt. Ein
   abgebrochener Turn meldet "Abgebrochen."
 
-### 6.4 Was nicht angenommen wird
+### 6.4 Anhaenge: Bilder, Sprachnachrichten, Dokumente
 
-Fotos, Dokumente, Sprachnachrichten und Sticker werden stillschweigend verworfen und nur geloggt.
-Der erste Entwurf sah hier eine kurze deutsche Absage vor; das widersprach 4.1, und 4.1 gewinnt:
-eine Antwort ist eine Antwort, auch wenn sie ablehnt. Wer ein Foto schickt und "kann ich nicht"
-zurueckbekommt, weiss, dass hinter dem Bot etwas laeuft – und genau diese Auskunft soll kein
-Unbefugter bekommen. Sprachnachrichten sind der naheliegende naechste Schritt (Phase 3) – dafuer
-braucht es eine Spracherkennung, die Rookery heute nicht hat; die vorhandene Sprachbedienung
-laeuft im Browser.
+Ein Foto, eine Sprachnachricht oder ein Dokument ist Inhalt, kein Stoerfall. Die Wache nimmt sie
+an, sobald `gateways.telegram.media` an ist (Standard), und behandelt die Bildunterschrift als
+den Text der Nachricht. Fuer Fotos gewinnt die groesste der Groessen, die Telegram anbietet: auf
+einer Vorschau ist keine Fehlermeldung lesbar.
 
-### 6.5 Befehle
+Der Weg einer Datei:
+
+```
+classifyUpdate -> GatewayAttachment[]   (nur file_id, nichts geladen)
+getFile -> downloadFile                 (Groesse doppelt geprueft, Stream statt arrayBuffer)
+saveAttachment -> <workspace>/inbox/telegram/<datum>/<zeit>-<art>-<id>.<ext>
+```
+
+**Warum in den Workspace und nicht ins Home.** Der Assistent laeuft in `~/.rookery/workspace`, und
+die Provider-CLIs lesen Bilder und Dokumente von der Platte – das *ist* der Mechanismus hinter
+"der Assistent sieht das Foto". Was ausserhalb ihres Arbeitsverzeichnisses liegt, sehen sie nicht.
+Also liegt die Datei drin, und der Turn bekommt den absoluten Pfad genannt. Der Dateiname traegt
+Zeit und Art, damit ein Ordnerlisting eine Zeitleiste ist; aus dem Namen des Absenders ueberlebt
+nur, was aus Buchstaben, Ziffern, Strich und Unterstrich besteht – ein Pfad ist kein Ort fuer
+fremden Text. Nach 30 Tagen kehrt ein Besen beim Start durch.
+
+**Alben.** Drei Fotos auf einmal sind drei Updates mit derselben `media_group_id`. Sie werden
+1,5 s gesammelt und als *eine* Nachricht uebergeben; sonst antwortet der erste Turn, bevor das
+dritte Bild da ist.
+
+**Sprachnachrichten** werden transkribiert, bevor der Turn laeuft (`services/stt.ts`, siehe 6.7),
+und das Transkript kommt dem Nutzer als `🎤 …` zurueck: eine Erkennung, die niemand pruefen kann,
+ist ein missverstandener Satz, den der Assistent mit ernster Miene beantwortet.
+
+**Was weiterhin nicht durchkommt:** animierte Sticker (nichts kann sie lesen), Dateien ueber dem
+Limit (20 MB, mehr gibt die Bot-API ohnehin nicht heraus) und alles ohne Text und ohne Datei –
+Standort, Kontakt, Umfrage.
+
+**Die Absage an den Besitzer.** Der erste Entwurf verwarf alles stillschweigend, mit Verweis auf
+4.1. Das war fuer *Fremde* richtig und fuer den Besitzer falsch: Alle Gruende oberhalb erreicht nur,
+wer die Allowlist bereits passiert hat, im eigenen privaten Chat. Ihm sagt der Kanal jetzt in
+einem Satz, was los war – er weiss ohnehin, dass der Bot ihm antwortet. Fuer Fremde (`not_allowed`)
+und fuer Gruppen (`not_private`) bleibt es beim Schweigen; das eine wuerde den Bot verraten, das
+andere ihn zum Sprachrohr in einem fremden Chat machen.
+
+### 6.5 Antworten auf Benachrichtigungen
+
+Telegram hat einen Chat pro Bot. Der Schlafbericht von heute Nacht, der Zeitplan von heute frueh,
+die Mail eines Team-Leads und die Antwort von gestern stehen in derselben Spalte. Die Antwort-Geste
+ist der einzige Griff, den Telegram fuer "diese da" anbietet – und er wurde bisher ignoriert: jede
+Nachricht landete in der einen laufenden Unterhaltung. So kam die Antwort auf eine Mail mitten in
+eine Fehlersuche.
+
+Zwei Dinge in `gateways/threads.ts` loesen das:
+
+1. **Ein Herkunfts-Register.** Zu jeder Nachricht, die der Bot sendet, wird vermerkt, worum es
+   ging: Art, Datensatz-ID, ggf. die Sitzung, aus der sie kam. Als Ringpuffer (400 Eintraege) pro
+   Chat in `meta`, also neustartfest und nach oben begrenzt. Eine lange Antwort sind mehrere
+   Telegram-Nachrichten; alle zeigen auf dasselbe Thema.
+2. **Ein Faden pro Thema.** Die Antwort auf eine Mail laeuft in einer eigenen Sitzung
+   ("Mail: <Betreff>"), die zweite Antwort auf dieselbe Mail in derselben. Der Zeitplan ist der
+   interessante Fall: sein Lauf *hat* schon eine Sitzung – die des Jobs – und die wird
+   fortgefuehrt. "Und was hast du gefunden?" landet damit in genau dem Gespraech, das den Fund
+   gemacht hat.
+
+Zitiert wird nie aus dem Register. Es haelt IDs; der Text wird beim Antworten aus dem Store
+nachgelesen – die ganze Mail, die echte Ausgabe des Laufs, der volle Nachtbericht, nicht die fuer
+die Push-Meldung gekuerzte Fassung. Nur eine Meldung ohne Datensatz (`notify`, eine Zusammenfassung)
+traegt ihren eigenen Text als Rueckfallebene.
+
+Der Originaltext wird dem Turn **einmal** vorangestellt, naemlich wenn der Faden neu ist; eine
+fortgefuehrte Unterhaltung hat ihn im Verlauf. Er steht in einem eigenen Block mit Schlusszeile
+("--- end of the notification; their reply follows ---"): nicht, weil er weniger vertrauenswuerdig
+waere – es ist das Material des Besitzers – sondern weil ein Turn, der eine Mail nicht von einer
+Anweisung unterscheiden kann, irgendwann der Mail folgt.
+
+Die Antwort des Assistenten wird ihrerseits als Herkunft vermerkt und in einem Faden als Zitat-
+Antwort gesendet. Damit fuehrt auch die Antwort auf eine Antwort weiter, wo sie hingehoert – selbst
+nach `/neu`, selbst drei Tage spaeter.
+
+### 6.6 Spracherkennung ohne Schluessel
+
+`services/stt.ts` ist die Gegenseite von `tts.ts` und kennt drei Motoren:
+
+| Motor | Woher | Kosten |
+|---|---|---|
+| `local` | Whisper via `@huggingface/transformers`, auf diesem Rechner | keiner; Modell einmalig ~130 MB nach `<home>/models` |
+| `openai` | `gpt-4o-mini-transcribe` | OpenAI-Schluessel der Sprachseite |
+| `elevenlabs` | Scribe v1 | ElevenLabs-Schluessel |
+
+`auto` (Standard) nimmt einen vorhandenen Schluessel und faellt bei dessen Fehlschlag auf das
+lokale Modell zurueck. Damit lautet die Antwort auf "ist Transkription verfuegbar?" immer ja – das
+war die Bedingung, unter der das Ganze ueberhaupt gebaut wurde. Zum Projekt passt es ohnehin:
+Rookery borgt sich Modellzugang von angemeldeten CLIs statt API-Schluessel zu verlangen.
+
+Dekodiert wird mit **ffmpeg** (OGG/Opus vom Handy, m4a, der Tonspur einer Videonotiz) zu Mono,
+16 kHz, Float – ueber eine Pipe, damit die Aufnahme auf dem Weg zum Gehoertwerden nicht noch
+einmal auf der Platte landet. Fehlt ffmpeg, sagt die Fehlermeldung, wie man es installiert.
+`@huggingface/transformers` ist eine `optionalDependency`: fehlt sie, laeuft der Server weiter
+und meldet einen fehlenden Motor, keinen Absturz.
+
+### 6.7 Befehle
 
 | Befehl | Wirkung |
 |---|---|
-| `/start` | Begruessung. Fuer nicht Erlaubte: keine Antwort |
-| `/neu` | Neue Session fuer diesen Chat; die alte bleibt im Verlauf |
+| `/start` | Begruessung samt Befehlsliste. Fuer nicht Erlaubte: keine Antwort |
+| `/help` | Die Befehlsliste allein |
+| `/new` | Neue Session fuer diesen Chat; die alte bleibt im Verlauf |
+| `/clear` | Leert den sichtbaren Chat **und** beginnt eine neue Unterhaltung (siehe unten) |
 | `/stop` | Bricht den laufenden Turn ab (`AbortController`) |
 | `/status` | Provider, Kontingent, laufende Auftraege, letzter Schlaflauf |
+| `/tasks` | Offene Aufgaben vom Board, laufende zuerst |
+| `/mail` | Ungelesene Mail an den Nutzer – ohne sie dabei als gelesen zu markieren |
+| `/agents` | Wer in der Firma arbeitet, und wer gerade laeuft |
+| `/schedules` | Zeitplaene mit naechster Ausfuehrung und letztem Ergebnis |
 | `/id` | Zeigt die eigene numerische ID – der Weg, sie in die Allowlist zu bekommen |
-| `/aus` | Legt den Kanal bis zum Neustart still. Der Notaus fuer den Fall, dass das Telefon weg ist |
+| `/off` | Legt den Kanal bis zum Neustart still. Der Notaus fuer den Fall, dass das Telefon weg ist |
+
+Die Tabelle steht im Code genau einmal (`COMMANDS` in `telegram.ts`) und hat drei Abnehmer:
+`/help` druckt sie, `setMyCommands` meldet sie beim Start an Telegram – was den blauen Menue-Knopf
+in der App fuellt –, und der `switch` beantwortet sie. Ein Befehl, der an einer Stelle hinzukommt
+und an einer anderen vergessen wird, ist die uebliche Art, wie ein Bot anfaengt, ueber sich selbst zu
+luegen. Telegram lehnt ausserdem die *ganze* Liste ab, wenn ein Eintrag seine Regeln verletzt
+(Kleinbuchstaben, 1–32 Zeichen, Beschreibung 3–256) – ein Test in `packages/server/test` haelt sie
+dagegen, weil der Fehlerfall ein Menue ist, das lautlos nie erscheint. `/neu`, `/aus` und `/hilfe`
+werden weiter angenommen, stehen aber nicht im Menue: Sie sind Geschichte, keine zweite Oberflaeche.
+
+**Die vier Lese-Befehle** (`/tasks`, `/mail`, `/agents`, `/schedules`) lesen direkt aus dem Store
+und starten *keinen* Turn: kein Modellaufruf, keine Wartezeit, keine Kontingentkosten – ein Blick
+aufs Handy soll sich wie ein Blick anfuehlen. Sie zeigen acht Zeilen und sagen dann, wie viele
+fehlen; alles Weitere ist die Web-App. `/mail` markiert bewusst nichts als gelesen: Ein Blick in
+den Betreff ist kein Lesen, und der Posteingang im Web darf davon nicht verstummen.
+
+**`/clear`** loescht die Nachrichten im Telegram-Chat und eroeffnet eine neue Unterhaltung – danach
+sieht der Chat aus wie beim ersten Anschreiben. Die alte Unterhaltung bleibt dabei erhalten und
+steht weiter in der Seitenleiste der Web-App: geleert wird der *Chat*, nicht das Gedaechtnis.
+Telegram loescht nach IDs; ein "alles loeschen" gibt es nicht. Der erste Entwurf loeschte deshalb
+nur, was der Kanal in `meta['telegram:messages:<chatId>']` mitgeschrieben hatte – und raeumte im
+Test zwei Nachrichten aus einem vollen Chat: Das Ledger beginnt beim letzten Neustart, der Chat
+reicht weiter zurueck. Nachrichten-IDs sind aber ein Zaehler *pro Chat*, also zaehlt `/clear` von
+der neuesten ID 1000 Schritte rueckwaerts und reicht Telegram den ganzen Bereich in Hundertergruppen:
+Was nicht existiert, laengst geloescht oder zu alt ist, wird uebersprungen. Das Ledger liefert nur
+noch den Startpunkt, falls die ID der neuesten Nachricht sonst unbekannt waere.
+
+Eine Grenze bleibt und wird offen genannt statt verschwiegen: Aelter als 48 Stunden laesst Telegram
+einen Bot nichts loeschen. Die Bestaetigung ist trotzdem eine Zeile – "✨ Fresh start." –, denn ein
+leerer Bildschirm ist der Sinn des Befehls; die Fussnote mit den 48 Stunden und dem Weg ueber
+"Verlauf loeschen" kommt beim *ersten* `/clear` eines Chats und danach nie wieder
+(`meta['telegram:clear-notice:<chatId>']`). Eine Erklaerung, die bei jedem Aufruf wieder dasteht,
+wird nicht mehr gelesen, sondern nur noch weggescrollt.
 
 `/id` antwortet **jedem**, auch nicht Erlaubten, und zwar ausschliesslich mit der eigenen ID. Das ist
 die einzige Ausnahme vom stillen Verwerfen: Ohne sie kommt man beim Einrichten nicht an die eigene
@@ -397,7 +542,10 @@ an dieselbe Stelle, ohne dass `core` davon erfaehrt.
 | `packages/core/src/org/controller.ts` | geaendert | Handler fuer `notify`, emittiert das Ereignis |
 | `packages/server/src/gateways/telegram.ts` | neu | Poller, Aufruf der Wache aus `policy.ts`, Turn-Bruecke, Versand |
 | `packages/server/src/gateways/telegram-api.ts` | neu | Duenne Huelle um `api.telegram.org` mit Timeout, Backoff und Token-Maskierung |
-| `packages/server/src/gateways/push.ts` | neu | Ereignis-Abonnent, Ruhezeiten, Drosselung, Zusammenfassung |
+| `packages/server/src/gateways/push.ts` | neu | Ereignis-Abonnent, Ruhezeiten, Drosselung, Zusammenfassung; vermerkt zu jeder Meldung ihre Herkunft (6.5) |
+| `packages/server/src/gateways/attachments.ts` | neu | Ablage im Workspace-Posteingang, Endungen, Besen nach 30 Tagen (6.4) |
+| `packages/server/src/gateways/threads.ts` | neu | Herkunfts-Register, Faden pro Thema, Nachlesen des Originals aus dem Store (6.5) |
+| `packages/server/src/services/stt.ts` | neu | Spracherkennung: lokales Whisper, OpenAI, ElevenLabs; ffmpeg-Dekodierung (6.6) |
 | `packages/server/src/routes/gateways.ts` | neu | `GET /api/gateways`, `POST /api/gateways/:id/test` |
 | `packages/server/src/server.ts` | geaendert | Kanal starten neben `cron.start()`, Routen registrieren, im `onClose` stoppen |
 | `packages/server/src/schemas.ts` | geaendert | `gatewaysConfigSchema` (mit `telegramConfigSchema`) in `patchConfigSchema` |
@@ -409,9 +557,11 @@ an dieselbe Stelle, ohne dass `core` davon erfaehrt.
 | `packages/web/src/lib/api.ts` | geaendert | `getGateways`, `testGateway` |
 | `packages/web/src/lib/types.ts` | geaendert | `GatewayId`, `GatewaysConfig`, `TelegramGatewayConfig`, `GatewayStatus`, `GatewayTestResult` |
 
-Keine neue Abhaengigkeit: Node 22 bringt `fetch` mit, die Telegram-Bot-API ist JSON ueber HTTPS. Eine
-Bot-Bibliothek waere fuer sechs Endpunkte (`getMe`, `getUpdates`, `deleteWebhook`, `sendMessage`,
-`sendChatAction`, `getFile`) mehr Abhaengigkeit als Nutzen.
+Keine Bot-Bibliothek: Node 22 bringt `fetch` mit, die Telegram-Bot-API ist JSON ueber HTTPS. Fuer
+sieben Endpunkte (`getMe`, `getUpdates`, `deleteWebhook`, `sendMessage`, `sendChatAction`,
+`getFile` und den Datei-Download) waere sie mehr Abhaengigkeit als Nutzen. Einzige neue
+Abhaengigkeit ist `@huggingface/transformers`, und zwar als `optionalDependency` – ohne sie faellt
+die lokale Spracherkennung aus, nichts sonst. ffmpeg wird als Programm erwartet, nicht als Paket.
 
 ## 9. Einrichtung (wie es sich fuer den Nutzer anfuehlt)
 
@@ -438,8 +588,15 @@ Aufteilung, Befehle, Audit-Log, Tests fuer die Wache. Der Kanal ist benutzbar.
 Uebersichtstabelle (`GatewaysPage.tsx`) und Detailseite (`GatewayDetailPage.tsx`) mit an/aus,
 Allowlist, Push-Schaltern, Ruhezeit und Testversand.
 
-**Naechste Stufe – offen.** Sprachnachrichten per Spracherkennung, Fotos an Turns mit sehendem
-Modell, `/agent <slug>` fuer Direktchats mit einem Agenten.
+**Phase 4 – Anhaenge und Faeden (erledigt).** Bilder, Sprachnachrichten und Dokumente werden
+angenommen, im Workspace abgelegt und dem Turn als Pfad genannt (6.4); Sprachnachrichten werden
+transkribiert, lokal und ohne Schluessel (6.6); eine Antwort auf eine Benachrichtigung laeuft in
+einem Faden zu genau dieser Benachrichtigung (6.5). Dazu `gateways/attachments.ts`,
+`gateways/threads.ts` und `services/stt.ts`.
+
+**Naechste Stufe – offen.** `/agent <slug>` fuer Direktchats mit einem Agenten. Ausgehende Dateien
+(ein Diagramm, das der Assistent erzeugt hat, als Bild statt als Pfad). Videonotizen werden heute
+nur gehoert, nicht gesehen.
 
 ## 11. Entscheidungen
 

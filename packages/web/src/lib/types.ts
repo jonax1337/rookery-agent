@@ -752,8 +752,22 @@ export interface TelegramGatewayConfig {
   /** Rights for turns that arrive through this channel. */
   permission: PermissionLevel;
   model?: string;
+  /** Take photos, voice messages and documents in, or drop them in silence. */
+  media: boolean;
+  /** Where a voice message becomes text. `local` needs no key at all. */
+  transcribe: TranscribeEngine;
+  /** Hub id of the local Whisper model, e.g. `onnx-community/whisper-base`. */
+  transcribeModel: string;
+  /** Ceiling for one attachment, in MB. Telegram itself stops at 20. */
+  maxAttachmentMb: number;
   push: TelegramPushConfig;
 }
+
+/**
+ * Speech-to-text engines. `auto` uses a configured key when there is one and
+ * the local model otherwise, so a voice message always has somewhere to go.
+ */
+export type TranscribeEngine = 'auto' | 'local' | 'openai' | 'elevenlabs' | 'off';
 
 export interface TelegramPushConfig {
   enabled: boolean;

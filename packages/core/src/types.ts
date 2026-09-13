@@ -1096,7 +1096,79 @@ export interface TelegramGatewayConfig {
   /** Rights for turns that arrive through this channel. */
   permission: PermissionLevel;
   model?: string;
+  /**
+   * Photos, voice notes, documents: taken in and handed to the turn, or
+   * dropped in silence the way everything non-textual used to be. Off is the
+   * cautious setting, not the safe one - what arrives is still only ever a
+   * file the allowlist itself sent.
+   */
+  media: boolean;
+  /** Which engine turns a voice note into words. See `TranscribeEngine`. */
+  transcribe: TranscribeEngine;
+  /**
+   * The local Whisper model, used by `local` and as `auto`'s last resort.
+   * `base` is the balance that holds on a laptop; `small` hears more and
+   * takes about four times as long.
+   */
+  transcribeModel: string;
+  /**
+   * Largest attachment accepted, in MB. Telegram's own bot download ceiling
+   * is 20 MB, so anything above that is a promise the Bot API cannot keep.
+   */
+  maxAttachmentMb: number;
   push: TelegramPushConfig;
+}
+
+/**
+ * Where speech becomes text.
+ *
+ *   auto        - a configured key first (OpenAI, then ElevenLabs), the local
+ *                 model when there is none or the key fails. The default, and
+ *                 the only value that cannot end in "no engine available".
+ *   local       - Whisper on this machine through `@huggingface/transformers`.
+ *                 No key, no account, no audio leaving the house; the model is
+ *                 fetched once and cached under `<home>/models`.
+ *   openai      - gpt-4o-mini-transcribe. Needs the OpenAI key the voice page
+ *                 already stores.
+ *   elevenlabs  - Scribe v1. Needs the ElevenLabs key.
+ *   off         - a voice note arrives as a file and nothing more.
+ */
+export type TranscribeEngine = 'auto' | 'local' | 'openai' | 'elevenlabs' | 'off';
+
+/**
+ * What kind of file came in. The distinction is not cosmetic: it decides
+ * whether the turn gets a transcript (anything with a sound track), a path
+ * to look at (a photo), or a path to open (a document).
+ */
+export type GatewayAttachmentKind =
+  | 'photo'
+  | 'voice'
+  | 'audio'
+  | 'video'
+  | 'video_note'
+  | 'animation'
+  | 'document'
+  | 'sticker';
+
+/**
+ * One file hanging off an incoming message, as the guard reports it.
+ *
+ * Still only a reference: `fileId` is Telegram's handle, and nothing has
+ * been downloaded at this point. Every field beyond the id and the kind is
+ * optional because it comes from foreign JSON - a missing `mime` is normal,
+ * a missing `size` means Telegram did not say, and neither may be asserted.
+ */
+export interface GatewayAttachment {
+  kind: GatewayAttachmentKind;
+  fileId: string;
+  /** Stable across bots and re-sends; the key for "this is the same file". */
+  uniqueId?: string;
+  mime?: string;
+  fileName?: string;
+  /** Bytes, as Telegram reports them. */
+  size?: number;
+  /** Seconds, for anything with a sound track. */
+  duration?: number;
 }
 
 export interface TelegramPushConfig {
