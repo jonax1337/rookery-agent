@@ -5,6 +5,7 @@ import type {
   AssignPayload,
   ChatPayload,
   ClientFrame,
+  Mail,
   MemoryRecord,
   OrgChange,
   ProviderQuota,
@@ -56,6 +57,7 @@ export class RookerySocket {
   #memoryListeners = new Set<(event: { sessionId: string; stored: MemoryRecord[] }) => void>();
   #assignmentListeners = new Set<(assignment: AssignmentView) => void>();
   #messageListeners = new Set<(message: AgentMessage) => void>();
+  #mailListeners = new Set<(mail: Mail) => void>();
   #taskListeners = new Set<(task: Task) => void>();
   #cronListeners = new Set<(event: CronEvent) => void>();
   #changedListeners = new Set<(change: OrgChange) => void>();
@@ -93,6 +95,12 @@ export class RookerySocket {
   onMessage(listener: (message: AgentMessage) => void): () => void {
     this.#messageListeners.add(listener);
     return () => this.#messageListeners.delete(listener);
+  }
+
+  /** Every mail sent between agents, the assistant or the user. */
+  onMail(listener: (mail: Mail) => void): () => void {
+    this.#mailListeners.add(listener);
+    return () => this.#mailListeners.delete(listener);
   }
 
   /** Every task on the board that was created or changed state, whoever did it. */
@@ -256,6 +264,14 @@ export class RookerySocket {
       if (frame.event.type === 'message') {
         const message = frame.event.message;
         for (const listener of this.#messageListeners) listener(message);
+      }
+      return;
+    }
+
+    if (frame.type === 'mail') {
+      if (frame.event.type === 'mail') {
+        const mail = frame.event.mail;
+        for (const listener of this.#mailListeners) listener(mail);
       }
       return;
     }

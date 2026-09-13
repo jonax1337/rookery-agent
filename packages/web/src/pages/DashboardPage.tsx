@@ -414,14 +414,7 @@ export function DashboardPage() {
   // about the words: „Gesprochen“/„Getippt“ here, „Voice“/„Chat“ there, and a
   // deleted agent was „Unknown“ on one page and „Unbekannter Agent“ on the
   // other.
-  const sessionColumns = useMemo<RookeryColumnDef<Session>[]>(
-    () =>
-      buildSessionColumns({
-        assistantName,
-        agentName: (agentId) => org.agentById(agentId)?.name,
-      }),
-    [assistantName, org],
-  );
+  const sessionColumns = useMemo<RookeryColumnDef<Session>[]>(() => buildSessionColumns({}), []);
 
   // The counts on the tabs are the database's, not the preview's: the table
   // shows ten rows, but "Tasks 128" is the honest answer to how many there

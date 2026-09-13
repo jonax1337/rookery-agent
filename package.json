@@ -4,6 +4,14 @@
   "private": true,
   "description": "Rookery - a personal AI assistant powered by your existing Claude Code and Codex CLI subscriptions. No API keys.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jonax1337/rookery-agent.git"
+  },
+  "homepage": "https://github.com/jonax1337/rookery-agent#readme",
+  "bugs": {
+    "url": "https://github.com/jonax1337/rookery-agent/issues"
+  },
   "type": "module",
   "engines": { "node": ">=22.5.0" },
   "workspaces": ["packages/core", "packages/server", "packages/cli", "packages/web"],

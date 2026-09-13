@@ -5,9 +5,13 @@ import { openSse, pipeToSse } from '../services/stream.js';
 
 /**
  * SSE fallback for clients that cannot hold a websocket (curl, a plain fetch,
- * a proxy that eats upgrades). One POST equals one turn; the turn is aborted
- * as soon as the client disconnects, so a closed tab never leaves a provider
- * CLI running.
+ * a proxy that eats upgrades). One POST equals one turn. The turn is no
+ * longer aborted when the client disconnects (Workstream E.1: a closed tab
+ * must not kill in-flight work) - the underlying provider CLI keeps running
+ * to completion, its result lands in the session/DB as usual, and its
+ * completion still reaches every other open connection through the normal
+ * org-wide broadcast. There is no separate explicit-cancel affordance for
+ * this endpoint today, so nothing here is meant to still be cancellable.
  */
 export async function registerChatRoutes(
   app: FastifyInstance,
@@ -20,27 +24,11 @@ export async function registerChatRoutes(
       return { error: 'Bad Request', message: formatIssues(parsed.error) };
     }
 
-    const controller = new AbortController();
     const sse = openSse(request, reply);
-
-    // Watch the *response*, not the request: an IncomingMessage emits 'close'
-    // as soon as its body has been consumed, which for a POST is immediately -
-    // aborting on that would kill every turn before it started. The response
-    // only closes when the client actually goes away (or when we end it, by
-    // which point aborting is a no-op).
-    const abort = (): void => controller.abort();
-    reply.raw.on('close', abort);
 
     context.log.debug('SSE turn started', { sessionId: parsed.data.sessionId });
 
-    try {
-      await pipeToSse(
-        context.assistant.chat({ ...parsed.data, signal: controller.signal }),
-        sse,
-      );
-    } finally {
-      reply.raw.off('close', abort);
-    }
+    await pipeToSse(context.assistant.chat(parsed.data), sse);
 
     // The response was hijacked; nothing for Fastify left to serialise.
     return reply;

@@ -259,19 +259,23 @@ test('skills live as SKILL.md folders and render into an index per audience', as
   assert.equal(store.get('deploy'), null);
 });
 
-test('the company block lists staff, the chain of command and the inbox', () => {
+test('the company block lists staff, the chain of command and the mail', () => {
   const block = assistantOrgBlock(DEFAULT_CONFIG, snapshot, [
-    { id: 'm1', orgId: 'org1', fromAgentId: 'a1', content: 'Build is green.', createdAt: now },
+    {
+      id: 'm1', orgId: 'org1', fromKind: 'agent', fromAgentId: 'a1', subject: 'Build status', body: 'Build is green.',
+      threadId: 'm1', depth: 0, createdAt: now,
+      recipients: [{ id: 'r1', mailId: 'm1', recipientKind: 'assistant', box: 'to' }],
+    },
   ]);
   assert.match(block, /ben — Ben, Junior Engineer .* reports to: mara/);
   assert.match(block, /reports to: the assistant/);
-  assert.match(block, /from mara: Build is green/);
+  assert.match(block, /from mara to assistant - subject: Build status\n\s*Build is green/);
   assert.match(renderOrgOverview({ ...snapshot, agents: [] }), /none yet/);
 });
 
 test('an agent prompt is a member of staff, never the assistant', () => {
   const prompt = buildAgentPrompt({
-    config: DEFAULT_CONFIG, agent, snapshot, memories: [], inbox: [],
+    config: DEFAULT_CONFIG, agent, snapshot, memories: [], mail: [],
     assignmentId: 'abcdef12-0000', requestedBy: 'the assistant',
   });
   assert.match(prompt, /You are Mara, Backend Engineer at Rookery & Co\./);
@@ -285,18 +289,27 @@ test('an agent prompt is a member of staff, never the assistant', () => {
   assert.match(prompt, /stop at the first rung that holds/);
   const eager = buildAgentPrompt({
     config: { ...DEFAULT_CONFIG, org: { ...DEFAULT_CONFIG.org, lazyCoding: false } },
-    agent, snapshot, memories: [], inbox: [],
+    agent, snapshot, memories: [], mail: [],
     assignmentId: 'abcdef12-0000', requestedBy: 'the assistant',
   });
   assert.doesNotMatch(eager, /stop at the first rung that holds/);
   assert.match(eager, /Keep the API small/);
 });
 
+test('an agent prompt tells the agent to reply by mail when the assignment came from one', () => {
+  const prompt = buildAgentPrompt({
+    config: DEFAULT_CONFIG, agent, snapshot, memories: [], mail: [],
+    assignmentId: 'abcdef12-0000', requestedBy: 'Ben (ben)', sourceMailSubject: 'Status update',
+  });
+  assert.match(prompt, /arrived as an email from Ben \(ben\), subject "Status update"/);
+  assert.match(prompt, /reply's body/);
+});
+
 test('agents see the staff subset of the tools', () => {
   const assistant = toolsFor('assistant').map((tool) => tool.name);
   const staff = toolsFor('agent').map((tool) => tool.name);
   assert.ok(assistant.includes('hire_agent') && assistant.includes('assign'));
-  assert.ok(staff.includes('assign') && staff.includes('send_message'));
+  assert.ok(staff.includes('assign') && staff.includes('send_mail'));
   assert.ok(!staff.includes('hire_agent') && !staff.includes('create_project'));
 });
 

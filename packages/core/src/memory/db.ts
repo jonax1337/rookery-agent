@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { existsSync, mkdirSync } from 'node:fs';
 
@@ -8,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 11;
 
 export type Db = DatabaseSync;
 
@@ -359,6 +360,28 @@ function migrate(db: Db): void {
       ON tasks(org_id, parent_id, status, updated_at DESC);
   `);
 
+  // Schema 9 -> 10: the board gains a manual order, and a task's runs get a
+  // real history instead of a single overwritable pointer. `tasks.assignment_id`
+  // stays as "the current run" for cheap reads; `task_assignments` is the
+  // durable record that survives a rerun clobbering that pointer.
+  if (!hasColumn(db, 'tasks', 'sort_order')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS task_assignments (
+      task_id       TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+      created_at    INTEGER NOT NULL,
+      PRIMARY KEY (task_id, assignment_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_assignments_assignment
+      ON task_assignments(assignment_id);
+    CREATE INDEX IF NOT EXISTS idx_task_assignments_task
+      ON task_assignments(task_id, created_at DESC);
+  `);
+
   // Schedules: standing orders that fire on a cron expression, and their runs.
   db.exec(`
     CREATE TABLE IF NOT EXISTS cron_jobs (
@@ -424,10 +447,111 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE projects ADD COLUMN mcp_trust TEXT');
   }
 
+  // Schema 10 -> 11: mail replaces agent_messages. To + Cc, a subject, a
+  // thread, and per-recipient read state - things one row per message
+  // (agent_messages) cannot express. agent_messages stays untouched rather
+  // than dropped; nothing reads or writes it once the org tools switch over.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mail (
+      id            TEXT PRIMARY KEY,
+      org_id        TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      from_kind     TEXT NOT NULL,
+      from_agent_id TEXT,
+      subject       TEXT NOT NULL,
+      body          TEXT NOT NULL,
+      thread_id     TEXT NOT NULL,
+      in_reply_to   TEXT,
+      depth         INTEGER NOT NULL DEFAULT 0,
+      assignment_id TEXT,
+      created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mail_thread ON mail(org_id, thread_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS mail_recipients (
+      id             TEXT PRIMARY KEY,
+      mail_id        TEXT NOT NULL REFERENCES mail(id) ON DELETE CASCADE,
+      recipient_kind TEXT NOT NULL,
+      recipient_id   TEXT,
+      box            TEXT NOT NULL,
+      read_at        INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_mail_recipients_box
+      ON mail_recipients(recipient_kind, recipient_id, read_at, mail_id);
+  `);
+
+  migrateAgentMessagesToMail(db);
+  backfillMailSessionKind(db);
+
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',
     String(SCHEMA_VERSION),
   );
+}
+
+/**
+ * Files the mail transcripts that predate `kind = 'mail'` under it.
+ *
+ * Answering a mail addressed to the assistant has always needed a session to
+ * run the turn in, and before the kind existed that session was written as a
+ * plain chat - so every answered mail left a "Mail: <subject>" thread sitting
+ * in the conversations list that nobody had opened and nobody could continue.
+ *
+ * The title prefix is the only marker those rows carry, so this matches on it,
+ * narrowed to the shape `#answerMail` actually produces: no agent, still a
+ * chat. Nothing is deleted - a row caught by mistake is one `?kind=mail` away,
+ * and still opens by its own id.
+ */
+function backfillMailSessionKind(db: Db): void {
+  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_session_kind_v1'").get() as
+    | { value: string }
+    | undefined;
+  if (done) return;
+
+  db.prepare(
+    "UPDATE sessions SET kind = 'mail' WHERE kind = 'chat' AND agent_id IS NULL AND title LIKE 'Mail: %'",
+  ).run();
+
+  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_session_kind_v1', '1')").run();
+}
+
+/**
+ * One-time copy of every `agent_messages` row into `mail` + `mail_recipients`,
+ * guarded by a `meta` flag so a restart never duplicates it. Reuses each
+ * message's own id as its mail id (both are already unique, and it makes the
+ * migration trivially idempotent to reason about even without the flag).
+ */
+function migrateAgentMessagesToMail(db: Db): void {
+  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_migrated_v1'").get() as
+    | { value: string }
+    | undefined;
+  if (done) return;
+
+  const rows = db.prepare('SELECT * FROM agent_messages').all() as Record<string, unknown>[];
+  const insertMail = db.prepare(
+    `INSERT INTO mail (id, org_id, from_kind, from_agent_id, subject, body, thread_id, in_reply_to, depth, assignment_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`,
+  );
+  const insertRecipient = db.prepare(
+    `INSERT INTO mail_recipients (id, mail_id, recipient_kind, recipient_id, box, read_at)
+     VALUES (?, ?, ?, ?, 'to', ?)`,
+  );
+  for (const row of rows) {
+    const id = row.id as string;
+    const orgId = row.org_id as string;
+    const fromAgentId = (row.from_agent_id as string | null) ?? null;
+    const toAgentId = (row.to_agent_id as string | null) ?? null;
+    const assignmentId = (row.assignment_id as string | null) ?? null;
+    const createdAt = row.created_at as number;
+    const readAt = (row.read_at as number | null) ?? null;
+    const content = String(row.content ?? '');
+    const subject = content.slice(0, 60).trim() || '(no subject)';
+    const fromKind = fromAgentId ? 'agent' : 'assistant';
+    const recipientKind = toAgentId ? 'agent' : 'user';
+    insertMail.run(id, orgId, fromKind, fromAgentId, subject, content, id, assignmentId, createdAt);
+    insertRecipient.run(randomUUID(), id, recipientKind, toAgentId, readAt);
+  }
+
+  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_migrated_v1', '1')").run();
 }
 
 /** Rebuild the FTS index. Used by the CLI after a bulk import. */

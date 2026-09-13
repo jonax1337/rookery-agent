@@ -6,6 +6,7 @@ import { formatNumber } from '@/lib/stats';
 import { cn } from '@/lib/utils';
 import {
   useAllSessionsState,
+  useMailState,
   useOrgState,
   useTasksState,
 } from '@/providers/rookery-provider';
@@ -57,6 +58,7 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
   // Archived rows are behind a facet on that page, so they are not what the
   // badge is counting.
   const openConversations = sessions.filter((session) => !session.archived).length;
+  const mail = useMailState();
 
   /**
    * Counts the rail may show, keyed by the route they belong to.
@@ -96,6 +98,12 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
         }
       : {}),
     ...(liveAssignments > 0 ? { '/assignments': { node: formatNumber(liveAssignments) } } : {}),
+    // The inbox is its own top-level row now, so the count sits on it
+    // directly rather than on `/org`, which no longer has anything to do
+    // with it.
+    ...(mail.unreadCount > 0
+      ? { '/inbox': { node: formatNumber(mail.unreadCount), label: 'unread messages in the inbox' } }
+      : {}),
   };
 
   const buildItem = (meta: RouteMeta): NavMainItem => {

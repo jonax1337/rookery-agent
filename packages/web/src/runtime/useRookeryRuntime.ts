@@ -22,8 +22,6 @@ import type {
 export interface RookerySessions {
   sessions: Session[];
   activeId: string | null;
-  /** Who the hub is talking to. Null means the assistant. */
-  counterpartId: string | null;
   loading: boolean;
   setActiveId(id: string | null): void;
   load(id: string): Promise<{ session: Session; messages: Message[] } | null>;
@@ -177,8 +175,6 @@ export function useRookeryRuntime({
       const text = part?.type === 'text' ? part.text.trim() : '';
       if (!text) return;
 
-      // The counterpart only matters for a brand-new session; the server
-      // ignores it once the conversation exists.
       chat.send(
         {
           text,
@@ -187,7 +183,6 @@ export function useRookeryRuntime({
           ...(model ? { model } : {}),
           ...(effort ? { effort } : {}),
           ...(projectId ? { projectId } : {}),
-          ...(sessions.counterpartId ? { agentId: sessions.counterpartId } : {}),
         },
         onSpoken ? { onSpoken } : undefined,
       );

@@ -96,12 +96,18 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       pairing: false,
       allowedUserIds: [],
       permission: 'full',
+      // Mail first, machinery quiet: the phone hears from the assistant and
+      // the team leads, the way a person would be told. What ran, when and
+      // for how long is what the web app is open for - a buzz per finished
+      // assignment is the fastest way to get a channel muted.
       push: {
         enabled: true,
-        assignments: true,
-        cron: true,
-        sleep: true,
+        assignments: false,
+        cron: false,
+        sleep: false,
         tasks: false,
+        mail: true,
+        mailFrom: 'leads',
         quietFrom: '22:00',
         quietUntil: '08:00',
         maxPerHour: 12,

@@ -3,9 +3,10 @@ import type {
   AgentMessage,
   Assignment,
   CronJob,
-  Message,
+  Mail,
   Organization,
   Project,
+  RequesterKind,
   RookeryConfig,
   ScoredMemory,
   Task,
@@ -108,6 +109,30 @@ export function renderInbox(messages: AgentMessage[], snapshot: OrgSnapshot, hea
   return heading + '\n' + lines.join('\n');
 }
 
+/** Who sent one mail, as a prompt says it: an agent's slug, or "user"/"assistant". */
+export function mailSender(mail: Mail, snapshot: OrgSnapshot): string {
+  if (mail.fromKind !== 'agent') return mail.fromKind;
+  return (mail.fromAgentId ? agentById(snapshot).get(mail.fromAgentId)?.slug : undefined) ?? 'unknown agent';
+}
+
+/** Mail lines for a prompt or a read_mail reply; empty string when there is none. */
+export function renderMail(mail: Mail[], snapshot: OrgSnapshot, heading: string, bodyChars = 600): string {
+  if (!mail.length) return '';
+  const byId = agentById(snapshot);
+  const who = (kind: RequesterKind, id?: string): string =>
+    kind === 'agent' ? (id ? (byId.get(id)?.slug ?? 'unknown agent') : 'unknown agent') : kind;
+  const lines = mail.map((entry) => {
+    const from = who(entry.fromKind, entry.fromAgentId);
+    const to = entry.recipients.filter((r) => r.box === 'to').map((r) => who(r.recipientKind, r.recipientId)).join(', ');
+    const cc = entry.recipients.filter((r) => r.box === 'cc').map((r) => who(r.recipientKind, r.recipientId)).join(', ');
+    return (
+      '- [' + entry.id.slice(0, 8) + '] from ' + from + ' to ' + (to || '-') + (cc ? ', cc ' + cc : '') +
+      ' - subject: ' + entry.subject + '\n  ' + clip(entry.body, bodyChars)
+    );
+  });
+  return heading + '\n' + lines.join('\n');
+}
+
 /**
  * The block appended to the assistant's identity prompt: what it runs, how
  * to delegate, and what arrived in its inbox since the last turn.
@@ -115,7 +140,7 @@ export function renderInbox(messages: AgentMessage[], snapshot: OrgSnapshot, hea
 export function assistantOrgBlock(
   config: RookeryConfig,
   snapshot: OrgSnapshot,
-  inbox: AgentMessage[],
+  mail: Mail[],
   activeProject?: Project,
   schedules: CronJob[] = [],
 ): string {
@@ -155,6 +180,25 @@ export function assistantOrgBlock(
     ].join(' '),
   );
 
+  sections.push(
+    [
+      'Company mail is how everyone here talks to everyone else, and how you reach the user when no',
+      'conversation is running. `send_mail` writes to an agent, to "user", or to several at once;',
+      '`read_mail` and `read_mail_thread` are your side of it. Mail with an agent on To starts a real',
+      'run of that agent and its report comes back to you as a reply - that is delegation you do not',
+      'have to wait for, where `assign` is delegation you do. Cc only delivers.',
+      'Write to the user by mail when you are the one starting it: a finished piece of work, a report',
+      'they asked for, a decision only they can make. Answering a mail that arrived for you works the',
+      'other way round - the answer is what you write in that turn, it goes back as the reply on its',
+      'own, and a send_mail carrying the same thing delivers it twice.',
+      'A mail to the user also reaches their phone',
+      'through whatever channel is connected, so it is a real message and not a note left in a drawer -',
+      'say the thing and stop; never mail them a running commentary on what the company is doing.',
+      '`notify` is not a second mailbox: it is the one line that has to arrive now, and everything',
+      'that can be read later is mail.',
+    ].join(' '),
+  );
+
   sections.push(renderOrgOverview(snapshot));
 
   if (activeProject) {
@@ -167,8 +211,8 @@ export function assistantOrgBlock(
 
   if (schedules.length) sections.push(renderSchedules(schedules, snapshot));
 
-  const inboxBlock = renderInbox(inbox, snapshot, 'New messages from your staff since last time:');
-  if (inboxBlock) sections.push(inboxBlock);
+  const mailBlock = renderMail(mail, snapshot, 'Mail waiting for you:');
+  if (mailBlock) sections.push(mailBlock);
 
   return sections.join('\n\n');
 }
@@ -187,10 +231,17 @@ export interface AgentPromptInput {
   snapshot: OrgSnapshot;
   project?: Project;
   memories: ScoredMemory[];
-  inbox: AgentMessage[];
+  mail: Mail[];
   assignmentId: string;
   /** Who gave the assignment, for the prompt's sense of the chain of command. */
   requestedBy: string;
+  /** Set when this assignment came from mail: its subject, for the reply paragraph below. */
+  sourceMailSubject?: string;
+  /** That mail's id and thread, so the prompt can point at the history instead of carrying it. */
+  sourceMailId?: string;
+  sourceMailThreadId?: string;
+  /** The rest of that mail's thread, oldest first - listed as an index, not in full. */
+  sourceMailThread?: Mail[];
   /** One paragraph per tool server attached to this run, from the hub. */
   toolHints?: string[];
   /** The skills index, when there are skills for agents. */
@@ -226,6 +277,30 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
 
   sections.push('Your standing instructions:\n' + agent.instructions);
 
+  // Mail is the company's only channel between colleagues, so the prompt
+  // says who to write to rather than leaving `send_mail` as a tool nobody
+  // reaches for. The lead sentence is the reason the user's phone stays
+  // quiet: a team speaks to them through one agent, not five.
+  sections.push(
+    [
+      'Company mail is how people here reach each other. `send_mail` writes to a colleague by slug, to',
+      'your manager, to "assistant" or to "user"; `read_mail` and `read_mail_thread` are your side of',
+      'it. Mail with a colleague on To starts a real run of theirs and their answer comes back as a',
+      'reply, so it is how you ask somebody for something you do not have to sit and wait for; Cc only',
+      'delivers, for keeping somebody in the picture. Use it: a question for whoever knows the system,',
+      'a heads-up that changes their plans, a hand-off of work that is not yours. What it is not for',
+      'is thinking out loud or saying thank you - every mail you send costs somebody a run.',
+      team && team.leadId === agent.id
+        ? 'You lead ' + team.name + ': your team reaches the user through you, so what the team has to ' +
+          'tell them is yours to write - one mail with the whole picture, not one per person.'
+        : 'Write to the user only when the work was theirs to begin with or nobody else can answer; ' +
+          'otherwise it goes to your manager, your team lead or the assistant, who decides what ' +
+          'reaches them.',
+    ]
+      .filter(Boolean)
+      .join(' '),
+  );
+
   // How the work gets done, below the role and above the task: the agent's
   // own instructions still win, because they were written for this job.
   if (config.org.lazyCoding) sections.push(PONYTAIL_RULESET);
@@ -245,10 +320,35 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
   const memoryBlock = renderMemoryBlock(input.memories, Math.floor(config.memory.contextBudget * 0.4), 'your work');
   if (memoryBlock) sections.push(memoryBlock);
 
-  const inboxBlock = renderInbox(input.inbox, snapshot, 'Messages waiting for you:');
-  if (inboxBlock) sections.push(inboxBlock);
+  const mailBlock = renderMail(input.mail, snapshot, 'Mail waiting for you:');
+  if (mailBlock) sections.push(mailBlock);
   for (const hint of input.toolHints ?? []) sections.push(hint);
   if (input.skillsIndex) sections.push(input.skillsIndex);
+
+  if (input.sourceMailSubject) {
+    // The thread stays out of the prompt: a long conversation would cost more
+    // context than most mails need. What goes in is the index and where to get
+    // the rest, so the agent pays for the history only when it reads it.
+    const earlier = input.sourceMailThread ?? [];
+    if (earlier.length && input.sourceMailThreadId) {
+      // With the id: eight replies in one thread share almost the same
+      // subject, and without it there is no way to name one of them.
+      const index = earlier
+        .map((entry) => '- [' + entry.id.slice(0, 8) + '] ' + mailSender(entry, snapshot) + ': ' + entry.subject)
+        .join('\n');
+      sections.push(
+        'Earlier in this mail thread (' + earlier.length + ' mail(s) you sent or were To/Cc on), subjects only:\n' +
+          index + '\nRead the full text with read_mail_thread("' + input.sourceMailThreadId + '") when the answer ' +
+          'depends on it.',
+      );
+    }
+    sections.push(
+      'This assignment arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '". ' +
+        "Write your result as the reply's body, not a chat answer or a report - it goes back to them " +
+        'automatically, and everyone who was Cc on their mail stays Cc on yours. Do not send_mail the ' +
+        'same answer to them on top of it; send_mail is for bringing in somebody who was not on the thread.',
+    );
+  }
 
   // The assistant is told not to accept dead ends; an agent that reports
   // "not possible" after one attempt would hand it one anyway.
@@ -268,8 +368,8 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
       'Work the assignment and nothing else. Your output is a report to whoever assigned it,',
       'not a chat with the user: lead with the result, then what you changed or found, then open',
       'questions. No preamble, no restating the task. Separate what you verified from what you',
-      'assume. Use send_message only for something your manager or the assistant must know',
-      'outside this report. Write in the language the assignment is written in.',
+      'assume. Anything that belongs to somebody other than whoever assigned this goes by mail, as',
+      'described above, not into the report. Write in the language the assignment is written in.',
     ].join(' '),
   );
 
@@ -295,85 +395,4 @@ export function renderBoard(tasks: Task[], snapshot: OrgSnapshot, store: OrgStor
     }
   }
   return lines.join('\n');
-}
-
-export interface AgentChatPromptInput {
-  config: RookeryConfig;
-  agent: Agent;
-  snapshot: OrgSnapshot;
-  memories: ScoredMemory[];
-  inbox: AgentMessage[];
-  history?: Message[];
-  resumed: boolean;
-  project?: Project;
-  toolHints?: string[];
-  skillsIndex?: string;
-}
-
-/**
- * The system prompt for a direct conversation between the user and one
- * agent - a direct message in the company chat. The agent speaks as itself,
- * knows its place in the company, and may hand work to its reports, but it
- * is not the assistant and does not pretend to be.
- */
-export function buildAgentChatPrompt(input: AgentChatPromptInput): string {
-  const { agent, snapshot, config } = input;
-  const byId = agentById(snapshot);
-  const team = agent.teamId ? snapshot.teams.find((entry) => entry.id === agent.teamId) : undefined;
-  const manager = agent.managerId ? byId.get(agent.managerId) : undefined;
-  const reports = snapshot.agents.filter((entry) => entry.managerId === agent.id);
-  const user = config.userName ? config.userName : 'the owner of the company';
-  const sections: string[] = [];
-
-  sections.push(
-    [
-      'You are ' + agent.name + ', ' + agent.title + ' at ' + snapshot.organization.name + ',',
-      'a company of AI agents run by the assistant ' + (config.assistantName || 'Rookery') + ' for ' + user + '.',
-      'You are talking directly with ' + user + ' in a private chat, the way a colleague would.',
-      'Speak as yourself, in your own voice, in the first person. You are not the assistant.',
-      team ? 'You are in the team "' + team.name + '"' + (team.purpose ? ' (' + team.purpose + ')' : '') + '.' : '',
-      manager ? 'Your manager is ' + manager.name + ' (' + manager.slug + ').' : 'You report directly to the assistant.',
-      reports.length
-        ? 'Your direct reports: ' + reports.map((entry) => entry.slug + ' (' + entry.title + ')').join(', ') +
-          '. You may hand them work with the assign tool when the user asks for something done.'
-        : '',
-      'Be helpful and concrete, keep answers short unless asked for detail, and say plainly when',
-      'something is outside your role. Match the language the user writes in.',
-    ]
-      .filter(Boolean)
-      .join(' '),
-  );
-
-  sections.push('Your standing instructions:\n' + agent.instructions);
-
-  // How the work gets done, below the role and above the task: the agent's
-  // own instructions still win, because they were written for this job.
-  if (config.org.lazyCoding) sections.push(PONYTAIL_RULESET);
-
-  if (input.project) {
-    sections.push(
-      'Project in focus: ' + input.project.name +
-        (input.project.description ? ' — ' + input.project.description : '') +
-        (input.project.path ? ' at ' + input.project.path : ''),
-    );
-  }
-
-  const memoryBlock = renderMemoryBlock(input.memories, Math.floor(config.memory.contextBudget * 0.4), 'your work and this person');
-  if (memoryBlock) sections.push(memoryBlock);
-
-  if (!input.resumed && input.history?.length) {
-    const lines = input.history.slice(-12).map((message) => {
-      const speaker = message.role === 'user' ? 'User' : 'You';
-      return speaker + ': ' + shorten(message.content, 400);
-    });
-    sections.push('Earlier in this conversation:\n' + lines.join('\n'));
-  }
-
-  const inboxBlock = renderInbox(input.inbox, snapshot, 'Messages waiting for you:');
-  if (inboxBlock) sections.push(inboxBlock);
-  for (const hint of input.toolHints ?? []) sections.push(hint);
-  if (input.skillsIndex) sections.push(input.skillsIndex);
-
-  sections.push('Today is ' + new Date().toISOString().slice(0, 10) + '.');
-  return sections.join('\n\n');
 }

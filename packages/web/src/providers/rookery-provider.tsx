@@ -16,11 +16,11 @@ import {
   PERMISSION_HINT,
   PERMISSION_LABEL,
 } from '@/lib/format';
-import type { RookerySocket } from '@/lib/socket';
+import type { CronEvent, RookerySocket, SleepEvent } from '@/lib/socket';
 import type {
-  Agent,
   ChatPayload,
   EffortLevel,
+  Mail,
   MemoryRecord,
   PermissionLevel,
   ProviderId,
@@ -107,15 +107,12 @@ interface RookeryValue {
   saveConfig(patch: Partial<PublicConfig>): Promise<boolean>;
 
   chat: ChatState;
-  /** Who the chat hub is writing to. Null means the assistant. */
-  counterpart: Agent | null;
   /** What the model had in front of it on the newest answer of this thread. */
   context: ContextUsage | null;
   /** Ids of the memories this turn recalled, for highlighting in the list. */
   highlighted: Set<string>;
   openConversation(id: string): void;
   newConversation(): void;
-  chooseCounterpart(agentId: string | null): void;
 
   sessions: SessionsState;
   /**
@@ -133,6 +130,7 @@ interface RookeryValue {
   memoryGraph: ReturnType<typeof useMemoryGraph>;
   sleep: ReturnType<typeof useSleep>;
   speech: SpeechState;
+  mail: MailState;
 
   turn: TurnSettings;
   runtime: ReturnType<typeof useRookeryRuntime>;
@@ -143,7 +141,7 @@ const RookeryContext = createContext<RookeryValue | null>(null);
 export function RookeryProvider({ children }: { children: ReactNode }) {
   const { socket, connected } = useSocket();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
 
   const [config, setConfig] = useState<PublicConfig | null>(null);
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
@@ -163,6 +161,10 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
   // Read through a ref so the callback below stays stable across navigation.
   const pathnameRef = useRef(pathname);
   pathnameRef.current = pathname;
+  // Read alongside it, for the mail toast below: it needs to know which
+  // mailbox `/inbox` is showing right now, not just that it is open.
+  const searchRef = useRef(search);
+  searchRef.current = search;
 
   // A brand-new chat gets its session id from the server's first event: it
   // becomes the active thread, goes into the URL so a reload keeps it, and
@@ -201,8 +203,6 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
   const tasks = useTasks(socket);
   const cron = useCron(socket);
   const speech = useSpeech(config?.voice);
-
-  const counterpart = org.agentById(sessions.counterpartId ?? undefined) ?? null;
 
   /* --------------------------- initial load --------------------------- */
 
@@ -316,6 +316,77 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
   );
   useLearnedMemories(socket, onLearned);
 
+  /* -------------------------------- mail ------------------------------- */
+
+  // App-wide delivery for the async inbox: a mail landing while nobody has
+  // `/inbox` open would otherwise sit unnoticed until the next visit there.
+  // Subscribing here means a toast fires no matter which page is open, and
+  // the rail's badge stays correct without anyone visiting `/inbox` first.
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const refreshUnread = useCallback(async (): Promise<void> => {
+    try {
+      const list = await api.mail('user', 'inbox', 200);
+      setUnreadCount(
+        list.filter((mail) =>
+          mail.recipients.some((recipient) => recipient.recipientKind === 'user' && recipient.readAt == null),
+        ).length,
+      );
+    } catch {
+      // The badge is a convenience; a failed refetch just keeps the last known count.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshUnread();
+  }, [refreshUnread]);
+
+  useEffect(
+    () =>
+      socket.onMail((mail: Mail) => {
+        const own = mail.recipients.find((recipient) => recipient.recipientKind === 'user');
+        if (!own) return;
+        void refreshUnread();
+        // No toast while the user is already looking at their own inbox -
+        // the list there refetches on the same event and shows it right away.
+        const onOwnInbox =
+          pathnameRef.current === '/inbox' &&
+          (new URLSearchParams(searchRef.current).get('mailbox') ?? 'user') === 'user';
+        if (onOwnInbox) return;
+        toast('New mail', { description: mail.subject });
+      }),
+    [socket, refreshUnread],
+  );
+
+  useEffect(
+    () =>
+      socket.onCron((event: CronEvent) => {
+        if (event.deleted || !event.run || event.run.status === 'running') return;
+        const ok = event.run.status === 'done';
+        toast(ok ? 'Schedule finished: ' + event.job.name : 'Schedule failed: ' + event.job.name, {
+          ...(ok ? {} : { description: event.run.error }),
+        });
+      }),
+    [socket],
+  );
+
+  useEffect(
+    () =>
+      socket.onSleep((event: SleepEvent) => {
+        if (event.phase !== 'finished') return;
+        const ok = event.run.status === 'done';
+        toast(ok ? 'Night finished' : 'Night failed', {
+          description: ok ? event.run.report : event.run.error,
+        });
+      }),
+    [socket],
+  );
+
+  const mail = useMemo<MailState>(
+    () => ({ unreadCount, refresh: refreshUnread }),
+    [unreadCount, refreshUnread],
+  );
+
   const highlighted = useMemo(
     () => new Set(chat.recalled.map((memory) => memory.id)),
     [chat.recalled],
@@ -353,25 +424,6 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
   /* ------------------------------ runtime ----------------------------- */
 
   const goToChat = useCallback((id: string | null) => navigate(chatPath(id)), [navigate]);
-
-  /**
-   * Pick a contact. A counterpart change is a different conversation entirely,
-   * so the open transcript goes with it and the thread list refetches. Picking
-   * the contact already selected only returns to the open conversation: it
-   * must never throw the transcript away.
-   */
-  const chooseCounterpart = useCallback(
-    (agentId: string | null) => {
-      if (agentId === sessions.counterpartId) {
-        void navigate(chatPath(sessions.activeId));
-        return;
-      }
-      sessions.selectCounterpart(agentId);
-      chat.reset();
-      void navigate('/');
-    },
-    [chat.reset, navigate, sessions],
-  );
 
   const runtime = useRookeryRuntime({
     chat,
@@ -469,12 +521,10 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       assistantName: config?.assistantName ?? 'Rookery',
       saveConfig,
       chat,
-      counterpart,
       context,
       highlighted,
       openConversation,
       newConversation,
-      chooseCounterpart,
       sessions,
       allSessions,
       org,
@@ -484,19 +534,19 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       memoryGraph,
       sleep,
       speech,
+      mail,
       turn,
       runtime,
     }),
     [
       allSessions,
       chat,
-      chooseCounterpart,
       config,
       connected,
       context,
-      counterpart,
       cron,
       highlighted,
+      mail,
       memories,
       memoryGraph,
       newConversation,
@@ -583,13 +633,11 @@ export function useConfig(): ConfigState {
 
 export interface ChatSessionState {
   chat: ChatState;
-  counterpart: Agent | null;
   context: ContextUsage | null;
   highlighted: Set<string>;
   turn: TurnSettings;
   openConversation(id: string): void;
   newConversation(): void;
-  chooseCounterpart(agentId: string | null): void;
 }
 
 export function useChatSession(): ChatSessionState {
@@ -597,13 +645,11 @@ export function useChatSession(): ChatSessionState {
   return useMemo(
     () => ({
       chat: rookery.chat,
-      counterpart: rookery.counterpart,
       context: rookery.context,
       highlighted: rookery.highlighted,
       turn: rookery.turn,
       openConversation: rookery.openConversation,
       newConversation: rookery.newConversation,
-      chooseCounterpart: rookery.chooseCounterpart,
     }),
     [rookery],
   );
@@ -654,6 +700,26 @@ export function useMemoryState(): MemoryState {
 
 export function useSpeechState(): SpeechState {
   return useRookery().speech;
+}
+
+/**
+ * The inbox, as a badge count.
+ *
+ * The count is not the running total this session has seen - it is fetched
+ * from the server (unread rows addressed to the assistant/user), because the
+ * in-memory counter starts at zero on every fresh load and a page that only
+ * trusted it would under-count whatever piled up before this tab opened.
+ * `refresh()` re-reads that true count; `InboxPage` calls it after marking
+ * rows read, and the `message`/`cron`/`sleep` broadcasts above call it on
+ * every new arrival.
+ */
+export interface MailState {
+  unreadCount: number;
+  refresh(): Promise<void>;
+}
+
+export function useMailState(): MailState {
+  return useRookery().mail;
 }
 
 /* ------------------------------ sub-trees ------------------------------ */

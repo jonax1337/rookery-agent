@@ -121,7 +121,10 @@ function ComboboxContent({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
-        className="isolate z-50"
+        // `pointer-events-auto`: the popup portals to the body, and a modal
+        // dialog sets `pointer-events: none` there - without it the list still
+        // renders but every option is dead to the mouse inside a dialog.
+        className="isolate z-50 pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
           data-slot="combobox-content"

@@ -20,6 +20,7 @@ import type {
   GatewayId,
   GatewayStatus,
   GatewayTestResult,
+  Mail,
   MemoryEntity,
   MemoryGraph,
   MemoryKind,
@@ -215,6 +216,10 @@ export interface TaskPatch {
   /** Only the states a human sets by hand; the runner owns the rest. */
   status?: 'open' | 'done' | 'cancelled';
   result?: Nullable<string>;
+  /** Board drag&drop position within a status column. */
+  sortOrder?: number;
+  /** Confirms `status: 'done'` even though the linked assignment failed. */
+  force?: boolean;
 }
 
 export interface CronJobInput {
@@ -562,6 +567,21 @@ export const api = {
   messages: (limit = 100) => request<AgentMessage[]>('/api/org/messages?limit=' + limit),
   postMessage: (input: { toAgentId?: string; content: string }) =>
     request<AgentMessage>('/api/org/messages', { method: 'POST', ...json(input) }),
+  /** Marks a batch of inbox rows read; the inbox page calls this once per load. */
+  markMessagesRead: (ids: string[]) =>
+    request<{ ok: true }>('/api/org/messages/read', { method: 'POST', ...json({ ids }) }),
+
+  /** `mailbox` is an agent id, `"user"` or `"assistant"`. */
+  mail: (mailbox: string, box: 'inbox' | 'outbox', limit = 100) =>
+    request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&box=' + box + '&limit=' + limit),
+  sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string }) =>
+    request<Mail>('/api/org/mail', { method: 'POST', ...json(input) }),
+  /**
+   * Marks a batch of mailbox rows read; the mailbox page calls this once per
+   * load. `read: false` is the reading pane's "Mark as unread".
+   */
+  markMailRead: (ids: string[], read = true) =>
+    request<{ ok: true }>('/api/org/mail/read', { method: 'POST', ...json({ ids, read }) }),
 };
 
 /**

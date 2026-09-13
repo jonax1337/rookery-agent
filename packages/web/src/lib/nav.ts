@@ -5,6 +5,7 @@ import {
   BrainIcon,
   Building2Icon,
   CalendarClockIcon,
+  InboxIcon,
   LayoutDashboardIcon,
   ListTodoIcon,
   MessagesSquareIcon,
@@ -90,6 +91,12 @@ export const ROUTE_META: RouteMeta[] = [
   // permanent doors. It keeps its label and icon, so the breadcrumb still names
   // it and the command palette still finds it.
   { path: '/voice', label: 'Voice', icon: AudioLinesIcon },
+  // A personal mailbox, not an org-management screen - the assistant itself
+  // writes into it (a night's summary, a schedule reporting back), not only
+  // agents. It used to sit under Organization; a top-level entry beside
+  // Chat/Tasks says what it actually is. Same route both nav and the route
+  // table in `App.tsx` use, so the two stay congruent.
+  { path: '/inbox', label: 'Inbox', icon: InboxIcon, group: 'work' },
 
   /* -------------------------------- betrieb ------------------------------- */
   { path: '/tasks', label: 'Tasks', icon: ListTodoIcon, group: 'operations' },

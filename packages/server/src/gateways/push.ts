@@ -1,5 +1,5 @@
 import { inQuietHours, pushRecipients, splitMessage } from '@rookery/core';
-import type { AgentEvent, NotifyEvent, TelegramPushConfig } from '@rookery/core';
+import type { AgentEvent, Mail, NotifyEvent, TelegramPushConfig } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import type { GatewayHandle } from './telegram.js';
 
@@ -13,6 +13,13 @@ import type { GatewayHandle } from './telegram.js';
  * finish without anyone watching: an agent's assignment, a schedule, a
  * night's sleep, a blocked task, and whatever `notify` decides to say.
  *
+ * Mail addressed to the user is the one item here that is somebody writing
+ * rather than something finishing, and it is the channel the defaults lean
+ * on: the company talks to the user in mail, and the phone carries that mail
+ * instead of a running commentary on the machinery behind it. Who counts as
+ * worth a buzz is `push.mailFrom` - the assistant alone, the assistant plus
+ * the agents named as a team's lead, or everything that reaches the mailbox.
+ *
  * Everything composed here is plain text. The gateway's `send` is the single
  * place where text becomes Telegram HTML, and it escapes what it is given -
  * a line that arrived already escaped, or already carrying a tag, would reach
@@ -23,7 +30,7 @@ import type { GatewayHandle } from './telegram.js';
 interface PushItem {
   /** Dedupe key: the same id within 10s is the same event told twice. */
   id: string;
-  kind: 'assignment' | 'cron' | 'sleep' | 'task' | 'notify';
+  kind: 'assignment' | 'cron' | 'sleep' | 'task' | 'mail' | 'notify';
   /** `notify` with urgency `high` - the only thing quiet hours do not hold back. */
   urgent: boolean;
   /** Full text, used as-is when this item is sent alone. */
@@ -42,8 +49,22 @@ const TALLY_LABELS: Record<string, { one: string; many: string }> = {
   'sleep:done': { one: 'sleep run completed', many: 'sleep runs completed' },
   'sleep:failed': { one: 'sleep run failed', many: 'sleep runs failed' },
   'task:failed': { one: 'task failed', many: 'tasks failed' },
+  'mail:new': { one: 'new mail', many: 'new mails' },
   'notify:normal': { one: 'notice', many: 'notices' },
 };
+
+/**
+ * How much of a mail body the phone carries.
+ *
+ * Not a transport limit: Telegram takes 4096 characters per message and
+ * `splitMessage` cuts anything longer into several, so a mail arrives whole
+ * unless something here shortens it first. 600 was that something, and it
+ * beheaded every mail worth reading. What is left is a politeness cap - four
+ * messages is a long read on a phone, and past that the web inbox is the
+ * better place, which the marker says out loud rather than trailing off.
+ */
+const MAIL_BODY_LIMIT = 12_000;
+const MAIL_CLIPPED_NOTE = '\n\n[…] The rest of this mail is in your inbox.';
 
 const HOUR_MS = 60 * 60 * 1000;
 /** How often the buffer gets a chance to drain once quiet hours or the rate cap let go. */
@@ -57,6 +78,14 @@ function oneLine(text: string, max = 300): string {
 function clip(text: string, max: number): string {
   const trimmed = text.trim();
   return trimmed.length > max ? trimmed.slice(0, max) + '…' : trimmed;
+}
+
+/** A mail body as the phone gets it: whole, or honestly cut off. */
+function mailBody(body: string): string {
+  const trimmed = body.trim();
+  return trimmed.length > MAIL_BODY_LIMIT
+    ? trimmed.slice(0, MAIL_BODY_LIMIT).replace(/\s+\S*$/, '') + MAIL_CLIPPED_NOTE
+    : trimmed;
 }
 
 function formatDuration(ms?: number): string {
@@ -185,6 +214,8 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
         return config.sleep;
       case 'task':
         return config.tasks;
+      case 'mail':
+        return config.mail;
       case 'notify':
         // No dedicated switch for the assistant's own notices - the master
         // `enabled` below is the only gate, same as the config shape defines it.
@@ -296,6 +327,54 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     });
   };
 
+  /**
+   * Whether this agent is somebody the company answers to.
+   *
+   * Two ways to qualify, because the org chart has two: a team can name a
+   * lead in `leadId`, and an agent can simply have people reporting to it.
+   * A "Head of" with reports but no team of their own leads in every sense
+   * that matters here, and asking only about `leadId` left exactly that
+   * person unable to reach the phone. Read fresh on every mail, so a
+   * promotion takes effect without a restart.
+   */
+  const isLead = (orgId: string, agentId: string): boolean =>
+    assistant.store.org.listTeams(orgId).some((team) => team.leadId === agentId) ||
+    assistant.store.org.listAgents(orgId, { managerId: agentId }).length > 0;
+
+  /**
+   * Who wrote this mail, and whether that is somebody the user asked to hear
+   * from. `undefined` leaves the mail in the web inbox and nowhere else.
+   */
+  const mailSenderLabel = (mail: Mail): string | undefined => {
+    const setting = pushConfig().mailFrom;
+    // The user's own mail, echoed back to the phone it was written from.
+    if (mail.fromKind === 'user') return undefined;
+    if (mail.fromKind === 'assistant') return 'Assistant';
+    if (!mail.fromAgentId) return undefined;
+    const agent = assistant.store.org.getAgent(mail.fromAgentId);
+    if (!agent) return undefined;
+    if (setting === 'assistant') return undefined;
+    if (setting === 'leads' && !isLead(mail.orgId, agent.id)) return undefined;
+    return agent.name;
+  };
+
+  const onMail = (event: AgentEvent): void => {
+    if (event.type !== 'mail') return;
+    const mail = event.mail;
+    // To or Cc, no difference: being looped in is being told.
+    if (!mail.recipients.some((recipient) => recipient.recipientKind === 'user')) return;
+    const sender = mailSenderLabel(mail);
+    if (!sender) return;
+
+    dispatch({
+      id: 'mail:' + mail.id,
+      kind: 'mail',
+      urgent: false,
+      message: '📬 ' + sender + ' – ' + oneLine(mail.subject, 120) + '\n\n' + mailBody(mail.body),
+      tallyKey: 'mail:new',
+    });
+  };
+
   const onNotify = (event: NotifyEvent): void => {
     dispatch({
       id: 'notify:' + event.at,
@@ -312,6 +391,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
   assistant.on('cron', onCron);
   assistant.on('sleep', onSleep);
   assistant.on('task', onTask);
+  assistant.on('mail', onMail);
   assistant.on('notify', onNotify);
 
   return {
@@ -320,6 +400,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       assistant.off('cron', onCron);
       assistant.off('sleep', onSleep);
       assistant.off('task', onTask);
+      assistant.off('mail', onMail);
       assistant.off('notify', onNotify);
       clearInterval(ticker);
     },

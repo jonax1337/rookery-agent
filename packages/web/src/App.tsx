@@ -12,6 +12,7 @@ import { CronPage } from './pages/CronPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { GatewayDetailPage } from './pages/GatewayDetailPage';
 import { GatewaysPage } from './pages/GatewaysPage';
+import { InboxPage } from './pages/InboxPage';
 import { MemoryGraphPage } from './pages/MemoryGraphPage';
 import { MemoryLayout } from './pages/MemoryLayout';
 import { MemoryListPage } from './pages/MemoryListPage';
@@ -62,6 +63,10 @@ export default function App() {
         <Route path="/" element={<ChatPage />} />
         <Route path="/c/:sessionId" element={<ChatPage />} />
         <Route path="/chats" element={<ConversationsPage />} />
+        {/* A personal mailbox, not an org-management screen: the assistant
+            itself writes into it too, so it sits beside Conversations rather
+            than under /org. See `InboxPage`'s own comment. */}
+        <Route path="/inbox" element={<InboxPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
 
         {/* ------------------------------- betrieb ---------------------- */}
@@ -98,7 +103,6 @@ export default function App() {
         <Route path="/org/teams/:id/edit" element={<TeamFormPage />} />
         <Route path="/org/projects/new" element={<ProjectFormPage />} />
         <Route path="/org/projects/:id/edit" element={<ProjectFormPage />} />
-
         {/* ----------------------------- gedächtnis --------------------- */}
         {/* The layout renders the overview and shares the save-memory dialog. */}
         <Route path="/memory" element={<MemoryLayout />}>

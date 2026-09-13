@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useOutletContext } from 'react-router';
-import { ChevronDownIcon, MoonIcon, PlusIcon, SunIcon } from 'lucide-react';
+import { BrainIcon, ChevronDownIcon, MoonIcon, PlusIcon, SunIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -8,14 +8,17 @@ import { api } from '@/lib/api';
 import {
   MEMORY_KIND_LABEL,
   MEMORY_KINDS,
+  ORIGIN_LABEL,
   SLEEP_PHASE_DETAIL,
   SLEEP_PHASE_LABEL,
 } from '@/lib/format';
-import { formatNumber, formatPercent } from '@/lib/stats';
-import type { MemoryKind } from '@/lib/types';
+import { bucketByDay, daysAgo, formatNumber, formatPercent } from '@/lib/stats';
+import type { MemoryKind, MemoryOrigin } from '@/lib/types';
 import { useMemoryState } from '@/providers/rookery-provider';
 import { PageBody } from '@/components/blocks/page-body';
 import { StatCards, type StatCardProps } from '@/components/blocks/stat-cards';
+import { TrendChartCard, type TrendSeries } from '@/components/blocks/trend-chart-card';
+import { EmptyState } from '@/components/common/empty-state';
 import { collectErrors, type FieldErrors } from '@/components/forms/form-kit';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
@@ -83,6 +86,18 @@ import { Textarea } from '@/components/ui/textarea';
 /** How far back the growth badge counts. Whole local days, including today. */
 const GROWTH_DAYS = 7;
 
+/** The window the growth curve on the overview draws. */
+const CHART_DAYS = 90;
+
+const ORIGINS: MemoryOrigin[] = ['extract', 'user', 'sleep'];
+
+/** The bands of the growth curve, one per origin of a memory. */
+const GROWTH_SERIES: TrendSeries[] = [
+  { key: 'extract', label: ORIGIN_LABEL.extract, color: 'var(--chart-1)' },
+  { key: 'user', label: ORIGIN_LABEL.user, color: 'var(--chart-2)' },
+  { key: 'sleep', label: ORIGIN_LABEL.sleep, color: 'var(--chart-3)' },
+];
+
 /** The stages of a night, in order - the row's progress bar walks them. */
 const SLEEP_PHASES = ['started', 'light', 'deep', 'rem', 'finished'] as const;
 
@@ -115,7 +130,7 @@ function phaseProgress(phase: string): number {
 
 export function MemoryLayout() {
   const { pathname } = useLocation();
-  const { memories, sleep } = useMemoryState();
+  const { memories, graph, sleep } = useMemoryState();
   const [rememberOpen, setRememberOpen] = useState(false);
 
   const active = useMemo(() => {
@@ -243,6 +258,26 @@ export function MemoryLayout() {
     },
   ];
 
+  /* -------------------------------- die Kurve ------------------------------ */
+
+  // The curve rests on the net's nodes rather than on the memory list: that
+  // list is re-ranked by every search, which would make the shape jump around
+  // while somebody types. `GET /api/stats` does count memories per day in the
+  // database, but it cannot split them by origin - and the split is the whole
+  // point of this chart, so the base is the loaded nodes and the card says so.
+  const nodes = graph.graph?.memories;
+
+  const growthCurve = useMemo(() => {
+    // An empty bank is not "ninety days of zero": the card should say that
+    // nothing was learned rather than draw a flat line along the floor.
+    if (!nodes?.length) return [];
+    return bucketByDay(nodes, (memory) => memory.createdAt, {
+      since: daysAgo(CHART_DAYS - 1),
+      seriesOf: (memory) => memory.origin,
+      keys: ORIGINS,
+    });
+  }, [nodes]);
+
   // Keep the view switcher on every route; only the overview needs the cards.
   const isIndex = active.to === TABS[0]?.to;
 
@@ -309,7 +344,38 @@ export function MemoryLayout() {
           forceMount
           className="flex min-h-0 flex-1 flex-col gap-4 md:gap-6"
         >
-          {isIndex ? <StatCards items={cards} /> : <Outlet context={{ openRemember } satisfies MemoryOutletContext} />}
+          {isIndex ? (
+            <>
+              <StatCards items={cards} />
+              <div className="px-4 lg:px-6">
+                <TrendChartCard
+                  title="Memory growth"
+                  description="New memories per day, grouped by source."
+                  descriptionShort="Learned per day"
+                  data={growthCurve}
+                  series={GROWTH_SERIES}
+                  {...(graph.graph?.truncated
+                    ? { badge: <Badge variant="outline">truncated</Badge> }
+                    : {})}
+                  empty={
+                    <EmptyState
+                      icon={BrainIcon}
+                      title="Nothing was learned during this period"
+                      description="A longer period may show more."
+                      variant="plain"
+                      size="sm"
+                    />
+                  }
+                />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Based on the loaded network nodes
+                  {nodes ? ' (' + formatNumber(nodes.length) + ')' : ''}, not the entire database.
+                </p>
+              </div>
+            </>
+          ) : (
+            <Outlet context={{ openRemember } satisfies MemoryOutletContext} />
+          )}
         </TabsContent>
       </Tabs>
 

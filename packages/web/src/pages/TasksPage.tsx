@@ -3,6 +3,8 @@ import { NavLink, useNavigate } from 'react-router';
 import {
   BanIcon,
   ClipboardListIcon,
+  LayoutGridIcon,
+  ListIcon,
   PencilIcon,
   PlayIcon,
   PlusIcon,
@@ -41,6 +43,7 @@ import {
   TASK_SORTING,
   TASK_UNASSIGNED,
 } from '@/components/common/task-columns';
+import { TaskBoard } from '@/components/common/task-board';
 import { ResultMarkdown } from '@/components/result-markdown';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -57,6 +60,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 
 /**
  * Everything the company has been asked to get done.
@@ -99,6 +103,8 @@ export function TasksPage() {
   const [assignee, setAssignee] = useState<string | null>(null);
   const [project, setProject] = useState<string | null>(null);
   const [drawerId, setDrawerId] = useState<string | null>(null);
+  /** Table keeps the status tabs and bulk actions; board owns status via columns instead. */
+  const [view, setView] = useState<'table' | 'board'>('table');
   /**
    * Status changes shown before the server has confirmed them. The row reads
    * through this map, and the entry is dropped again either when the refetch
@@ -106,17 +112,39 @@ export function TasksPage() {
    */
   const [pending, setPending] = useState<Record<string, TaskStatus>>({});
 
+  // `view` has to be in the deps: without it the header keeps the action row
+  // it was published with, the toggle stays stuck on `table`, and clicking
+  // "Table" while the board is up only deselects an already-selected item -
+  // Radix reports `''`, the guard drops it, and the board never gives way.
   usePageMeta({
     breadcrumb: [{ label: 'Tasks' }],
     actions: (
-      <Button asChild size="sm">
-        <NavLink to="/tasks/new">
-          <PlusIcon data-icon="inline-start" />
-          Create task
-        </NavLink>
-      </Button>
+      <>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={view}
+          onValueChange={(value) => {
+            if (value === 'table' || value === 'board') setView(value);
+          }}
+        >
+          <ToggleGroupItem value="table" aria-label="Table view">
+            <ListIcon />
+          </ToggleGroupItem>
+          <ToggleGroupItem value="board" aria-label="Board view">
+            <LayoutGridIcon />
+          </ToggleGroupItem>
+        </ToggleGroup>
+        <Button asChild size="sm">
+          <NavLink to="/tasks/new">
+            <PlusIcon data-icon="inline-start" />
+            Create task
+          </NavLink>
+        </Button>
+      </>
     ),
-  });
+  }, [view]);
 
   /*
    * The only real total in this API. `countByStatus` rests on a capped list,
@@ -192,10 +220,10 @@ export function TasksPage() {
   /* ------------------------------- actions ------------------------------ */
 
   const setStatus = useCallback(
-    async (task: Task, status: 'open' | 'done' | 'cancelled'): Promise<void> => {
+    async (task: Task, status: 'open' | 'done' | 'cancelled', force = false): Promise<void> => {
       setPending((current) => ({ ...current, [task.id]: status }));
       try {
-        await api.updateTask(task.id, { status });
+        await api.updateTask(task.id, { status, ...(force ? { force: true } : {}) });
         await tasks.refresh();
         toast(
           status === 'done'
@@ -205,12 +233,23 @@ export function TasksPage() {
               : 'Task reopened',
         );
       } catch (caught) {
-        // 409 is the one failure with a real explanation: the runner has the
-        // task and only "abbrechen" gets through while it does.
+        // 409 comes in two shapes: the runner has the task (only "abbrechen"
+        // gets through), or a manual "done" disagrees with a failed
+        // assignment - the latter is a confirm-and-retry, not a hard stop.
         if (caught instanceof ApiError && caught.status === 409) {
-          toast.error('The task is currently running', {
-            description: 'While a run is active, the task can only be cancelled.',
-          });
+          if (!force && status === 'done' && caught.message.toLowerCase().includes('assignment failed')) {
+            const ok = await confirm({
+              title: 'Assignment failed',
+              description: 'The linked assignment failed. Mark the task done anyway?',
+              confirmLabel: 'Mark done',
+              cancelLabel: 'Keep open',
+            });
+            if (ok) await setStatus(task, status, true);
+          } else {
+            toast.error('The task is currently running', {
+              description: 'While a run is active, the task can only be cancelled.',
+            });
+          }
         } else {
           reportFailure('Change status', caught);
         }
@@ -220,6 +259,18 @@ export function TasksPage() {
           delete next[task.id];
           return next;
         });
+      }
+    },
+    [confirm, tasks],
+  );
+
+  const reorderTask = useCallback(
+    async (task: Task, sortOrder: number): Promise<void> => {
+      try {
+        await api.updateTask(task.id, { sortOrder });
+      } catch (caught) {
+        reportFailure('Reorder task', caught);
+        await tasks.refresh();
       }
     },
     [tasks],
@@ -407,98 +458,114 @@ export function TasksPage() {
         />
       </div>
 
-      <DataTable
-        data={visible}
-        columns={columns}
-        getRowId={(task) => task.id}
-        tabs={tabs}
-        tab={tab}
-        onTabChange={setTab}
-        tabLabel="Status"
-        searchable
-        searchPlaceholder="Search tasks"
-        searchText={(task) => task.title + ' ' + task.description}
-        columnLabels={TASK_COLUMN_LABELS}
-        rowLabel={{ singular: 'task', plural: 'tasks' }}
-        capped={capped}
-        loading={tasks.loading && tasks.topLevel.length === 0}
-        error={tasks.error ? <ServerOffline onRetry={() => void tasks.refresh()} /> : undefined}
-        initialSorting={TASK_SORTING}
-        onRowClick={(task) => setDrawerId(task.id)}
-        rowClickIgnoreColumns={['select', 'title', 'actions']}
-        filters={
-          <>
-            <FilterCombobox
-              label="Assignee"
-              placeholder="Assignee"
-              value={assignee}
-              onChange={setAssignee}
-              options={[
-                { value: UNASSIGNED, label: TASK_UNASSIGNED },
-                ...org.agents.map((agent) => ({ value: agent.id, label: agent.name })),
-              ]}
-            />
-            <FilterCombobox
-              label="Project"
-              placeholder="Project"
-              value={project}
-              onChange={setProject}
-              options={[
-                { value: NO_PROJECT, label: 'No project' },
-                ...org.projects.map((entry) => ({ value: entry.id, label: entry.name })),
-              ]}
-            />
-          </>
-        }
-        /*
-          Die Primaeraktion steht im Seitenkopf, nicht noch einmal hier - und
-          die Auswahl-Spalten sind nicht mehr folgenlos: Cancel ist die
-          einzige Sammelaktion, die dieses API kennt (es gibt kein DELETE fuer
-          Tasks), und es ist dieselbe Tat wie unten im Zeilenmenue.
-        */
-        bulkActions={(selected, clear) => {
-          const open = selected.filter(
-            (task) => task.status !== 'done' && task.status !== 'cancelled',
-          );
-          return (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={open.length === 0}
-              onClick={() =>
-                void bulk.run({
-                  rows: open,
-                  noun: { singular: 'task', plural: 'tasks' },
-                  nameOf: (task) => task.title,
-                  verb: 'cancel',
-                  done: 'cancelled',
-                  confirmLabel: 'Cancel',
-                  cancelLabel: 'Keep running',
-                  icon: BanIcon,
-                  description:
-                    'Their running assignments will be stopped. This cannot be undone.',
-                  run: (task) => api.updateTask(task.id, { status: 'cancelled' }),
-                  after: tasks.refresh,
-                  clear,
-                })
+      {view === 'board' ? (
+        <div className="px-4 lg:px-6">
+          <TaskBoard
+            tasks={filtered}
+            agentById={org.agentById}
+            onOpenDetail={(task) => setDrawerId(task.id)}
+            onStatusChange={(task, status) => {
+              if (status === 'open' || status === 'done' || status === 'cancelled') {
+                void setStatus(task, status);
               }
-            >
-              <BanIcon data-icon="inline-start" />
-              Cancel {formatNumber(open.length)}
-            </Button>
-          );
-        }}
-        empty={
-          <EmptyState
-            icon={ClipboardListIcon}
-            title="No tasks yet"
-            description="Larger goals start here before they are planned and run as assignments. The assistant can add tasks too."
-            actionLabel="Create task"
-            actionTo="/tasks/new"
-            variant="plain"
+            }}
+            onReorder={reorderTask}
           />
-        }
-      />
+        </div>
+      ) : (
+        <DataTable
+          data={visible}
+          columns={columns}
+          getRowId={(task) => task.id}
+          tabs={tabs}
+          tab={tab}
+          onTabChange={setTab}
+          tabLabel="Status"
+          searchable
+          searchPlaceholder="Search tasks"
+          searchText={(task) => task.title + ' ' + task.description}
+          columnLabels={TASK_COLUMN_LABELS}
+          rowLabel={{ singular: 'task', plural: 'tasks' }}
+          capped={capped}
+          loading={tasks.loading && tasks.topLevel.length === 0}
+          error={tasks.error ? <ServerOffline onRetry={() => void tasks.refresh()} /> : undefined}
+          initialSorting={TASK_SORTING}
+          onRowClick={(task) => setDrawerId(task.id)}
+          rowClickIgnoreColumns={['select', 'title', 'actions']}
+          filters={
+            <>
+              <FilterCombobox
+                label="Assignee"
+                placeholder="Assignee"
+                value={assignee}
+                onChange={setAssignee}
+                options={[
+                  { value: UNASSIGNED, label: TASK_UNASSIGNED },
+                  ...org.agents.map((agent) => ({ value: agent.id, label: agent.name })),
+                ]}
+              />
+              <FilterCombobox
+                label="Project"
+                placeholder="Project"
+                value={project}
+                onChange={setProject}
+                options={[
+                  { value: NO_PROJECT, label: 'No project' },
+                  ...org.projects.map((entry) => ({ value: entry.id, label: entry.name })),
+                ]}
+              />
+            </>
+          }
+          /*
+            Die Primaeraktion steht im Seitenkopf, nicht noch einmal hier - und
+            die Auswahl-Spalten sind nicht mehr folgenlos: Cancel ist die
+            einzige Sammelaktion, die dieses API kennt (es gibt kein DELETE fuer
+            Tasks), und es ist dieselbe Tat wie unten im Zeilenmenue.
+          */
+          bulkActions={(selected, clear) => {
+            const open = selected.filter(
+              (task) => task.status !== 'done' && task.status !== 'cancelled',
+            );
+            return (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={open.length === 0}
+                onClick={() =>
+                  void bulk.run({
+                    rows: open,
+                    noun: { singular: 'task', plural: 'tasks' },
+                    nameOf: (task) => task.title,
+                    verb: 'cancel',
+                    done: 'cancelled',
+                    confirmLabel: 'Cancel',
+                    cancelLabel: 'Keep running',
+                    icon: BanIcon,
+                    description:
+                      'Their running assignments will be stopped. This cannot be undone.',
+                    run: (task) => api.updateTask(task.id, { status: 'cancelled' }),
+                    after: tasks.refresh,
+                    clear,
+                  })
+                }
+              >
+                <BanIcon data-icon="inline-start" />
+                Cancel {formatNumber(open.length)}
+              </Button>
+            );
+          }}
+          empty={
+            <EmptyState
+              icon={ClipboardListIcon}
+              title="No tasks yet"
+              description="Larger goals start here before they are planned and run as assignments. The assistant can add tasks too."
+              actionLabel="Create task"
+              actionTo="/tasks/new"
+              variant="plain"
+            />
+          }
+        />
+      )}
 
       <DetailDrawer
         open={drawerTask !== null}

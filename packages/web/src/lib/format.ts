@@ -1,4 +1,4 @@
-import { MessageSquareIcon, MicIcon } from 'lucide-react';
+import { MailIcon, MessageSquareIcon, MicIcon } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 import type {
@@ -309,11 +309,15 @@ export const TASK_PRIORITY_RANK: Record<TaskPriority, number> = { high: 0, norma
 export const SESSION_KIND_LABEL: Record<SessionKind, string> = {
   chat: 'Chat',
   voice: 'Voice',
+  // Never reaches the conversations list, but a label has to exist for the
+  // one place a mail transcript can still be opened: its own id.
+  mail: 'Mail',
 };
 
 export const SESSION_KIND_ICON: Record<SessionKind, LucideIcon> = {
   chat: MessageSquareIcon,
   voice: MicIcon,
+  mail: MailIcon,
 };
 
 /**

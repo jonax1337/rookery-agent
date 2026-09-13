@@ -13,7 +13,7 @@ import {
 } from '@/lib/format';
 import { formatDateTime, formatNumber } from '@/lib/stats';
 import type { AssignmentDetail } from '@/lib/types';
-import { useOrgState, useTasksState } from '@/providers/rookery-provider';
+import { useOrgState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
 
 import { PageBody } from '@/components/blocks/page-body';
@@ -67,7 +67,6 @@ type TabValue = 'ergebnis' | 'fehler' | 'weitergegeben';
 export function AssignmentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const org = useOrgState();
-  const { tasks } = useTasksState();
   const { dialog, cancelAssignment } = useCancelAssignment();
 
   const [tab, setTab] = useState<TabValue>('ergebnis');
@@ -115,11 +114,13 @@ export function AssignmentDetailPage() {
     [cancelAssignment],
   );
 
-  /** The board task this run belongs to, when one points at it. */
-  const task = useMemo(
-    () => (id ? tasks.find((entry) => entry.assignmentId === id) : undefined),
-    [id, tasks],
-  );
+  /**
+   * The board task this run belongs to, when one points at it. Comes from the
+   * server's `task_assignments` history, not from scanning the currently
+   * loaded task list for `assignmentId === id` - that scan broke the moment a
+   * task was rerun, since only the newest assignment kept the backlink.
+   */
+  const taskId = detail?.taskId ?? null;
 
   /* -------------------------------- header ------------------------------- */
 
@@ -142,9 +143,9 @@ export function AssignmentDetailPage() {
               <RowMenuButton tone="header" label="More actions" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-48">
-              {task ? (
+              {taskId ? (
                 <DropdownMenuItem asChild>
-                  <NavLink to={'/tasks/' + task.id}>
+                  <NavLink to={'/tasks/' + taskId}>
                     <ListTodoIcon data-icon="inline-start" />
                     View task
                   </NavLink>
@@ -161,7 +162,7 @@ export function AssignmentDetailPage() {
         </>
       ) : null,
     },
-    [assignment?.id, open, task?.id, cancel, title],
+    [assignment?.id, open, taskId, cancel, title],
   );
 
   /* -------------------------------- columns ------------------------------ */

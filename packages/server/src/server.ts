@@ -1,7 +1,14 @@
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import fastifyCors from '@fastify/cors';
 import fastifyWebsocket, { type WebSocket } from '@fastify/websocket';
-import { createLogger, silentLogger, type AgentEvent, type Assistant, type MemoryLearnedEvent } from '@rookery/core';
+import {
+  createLogger,
+  silentLogger,
+  toView,
+  type AgentEvent,
+  type Assistant,
+  type MemoryLearnedEvent,
+} from '@rookery/core';
 import type { ServerContext } from './context.js';
 import { createAuthHook } from './auth.js';
 import { BadRequestError } from './schemas.js';
@@ -146,6 +153,9 @@ export async function buildServer(
   const onMessage = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'message', event });
   };
+  const onMail = (event: AgentEvent): void => {
+    for (const socket of context.sockets) sendFrame(socket, { type: 'mail', event });
+  };
   const onChanged = (change: { kind: string; id: string }): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'changed', change });
   };
@@ -162,10 +172,43 @@ export async function buildServer(
   };
   assistant.on('assignment', onAssignment);
   assistant.on('message', onMessage);
+  assistant.on('mail', onMail);
   assistant.on('changed', onChanged);
   assistant.on('task', onTask);
   assistant.on('cron', onCron);
   assistant.on('sleep', onSleep);
+
+  // A crash or a plain restart leaves any assignment/task/sleep run still
+  // marked pending/running stuck that way forever - nothing ever revisits
+  // it. Fail them now, the same way `CronScheduler.start()` already does for
+  // `cron_runs` (cron/store.ts `failStaleRuns`), and announce each one on
+  // the usual event so an already-open tab reflects reality once it
+  // reconnects instead of showing a run stuck at "running".
+  const RESTART_REASON = 'The server restarted while this was running.';
+  const staleAssignments = assistant.store.org.failStaleAssignments(RESTART_REASON);
+  for (const assignment of staleAssignments) {
+    const agent = assistant.store.org.getAgent(assignment.agentId);
+    if (!agent) continue;
+    assistant.emit('assignment', {
+      type: 'assignment',
+      assignment: toView(assignment, agent, { error: assignment.error }),
+    } satisfies AgentEvent);
+  }
+  const staleTasks = assistant.store.org.failStaleTasks(RESTART_REASON);
+  for (const task of staleTasks) {
+    assistant.emit('task', { type: 'task', task } satisfies AgentEvent);
+  }
+  const staleSleepRuns = assistant.store.failStaleSleepRuns(RESTART_REASON);
+  for (const run of staleSleepRuns) {
+    assistant.emit('sleep', { type: 'sleep', run } satisfies AgentEvent);
+  }
+  if (staleAssignments.length || staleTasks.length || staleSleepRuns.length) {
+    log.warn('Failed stale rows left running by a previous process', {
+      assignments: staleAssignments.length,
+      tasks: staleTasks.length,
+      sleepRuns: staleSleepRuns.length,
+    });
+  }
 
   // The clock runs for as long as the server does: a schedule is a promise
   // that something happens at a time, and the server is the process that is
@@ -224,6 +267,7 @@ export async function buildServer(
     assistant.off('memory', onMemory);
     assistant.off('assignment', onAssignment);
     assistant.off('message', onMessage);
+    assistant.off('mail', onMail);
     assistant.off('changed', onChanged);
     assistant.off('task', onTask);
     assistant.off('cron', onCron);

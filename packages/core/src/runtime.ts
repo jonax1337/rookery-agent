@@ -6,6 +6,7 @@ import type {
   AgentEvent,
   CronJob,
   CronRun,
+  Mail,
   MemoryRecord,
   NotifyEvent,
   PermissionLevel,
@@ -17,7 +18,7 @@ import type {
   TurnUsage,
 } from './types.js';
 import { ASSISTANT_MEMORY_OWNER } from './types.js';
-import { agentWorkspace, databasePath, loadConfig } from './config.js';
+import { databasePath, loadConfig } from './config.js';
 import { createLogger, silentLogger, type Logger } from './logger.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { Store } from './memory/store.js';
@@ -28,7 +29,7 @@ import { SleepRunner } from './memory/sleep.js';
 import { buildSystemPrompt, deriveTitle } from './agents/persona.js';
 import { BridgeServer } from './org/bridge.js';
 import { OrgController } from './org/controller.js';
-import { assistantOrgBlock, buildAgentChatPrompt } from './org/prompts.js';
+import { assistantOrgBlock } from './org/prompts.js';
 import { dormantToolsHint, ensureToolServers, toolServersFor } from './tools/hub.js';
 import { SkillStore, renderSkillsIndex } from './skills/store.js';
 import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
@@ -214,15 +215,18 @@ export class Assistant extends EventEmitter {
       // a channel that drops the message. Whoever hosts the runtime sets
       // `notifyProbe` to the honest test.
       canNotify: () => (this.notifyProbe ? this.notifyProbe() : this.listenerCount('notify') > 0),
+      runAssistantMail: (input) => this.#answerMail(input.mail, input.senderLabel, input.thread),
     });
     this.cron.on('cron', (event: AgentEvent) => this.emit('cron', event));
     this.cron.on('message', (event: AgentEvent) => this.emit('message', event));
+    this.cron.on('mail', (event: AgentEvent) => this.emit('mail', event));
     // Every client watches the brain fall asleep and wake up again.
     this.sleep.on('sleep', (event: AgentEvent) => this.emit('sleep', event));
     // Anything an agent does is interesting to every client, not only the
     // turn that caused it: the org page shows activity live.
     this.org.on('assignment', (event: AgentEvent) => this.emit('assignment', event));
     this.org.on('message', (event: AgentEvent) => this.emit('message', event));
+    this.org.on('mail', (event: AgentEvent) => this.emit('mail', event));
     this.org.on('task', (event: AgentEvent) => this.emit('task', event));
     this.org.on('changed', (change: { kind: string; id: string }) => this.emit('changed', change));
     // The assistant reaching out on its own initiative - no HTTP, no
@@ -386,13 +390,9 @@ export class Assistant extends EventEmitter {
     }
 
     const session = this.#resolveSession(input);
-    // The counterpart: an agent for a direct chat, otherwise the assistant.
-    const agent: Agent | null = session.agentId ? this.store.org.getAgent(session.agentId) : null;
-    if (session.agentId && !agent) {
-      yield { type: 'error', message: 'The agent this conversation belonged to no longer exists.', fatal: true };
-      return;
-    }
-    const owner = agent ? agent.id : ASSISTANT_MEMORY_OWNER;
+    // Chat is exclusively the assistant's own conversation; a stale
+    // `agentId` on an old session is never read here any more.
+    const owner = ASSISTANT_MEMORY_OWNER;
     if (input.projectId && input.projectId !== session.projectId) {
       this.store.updateSession(session.id, { projectId: input.projectId });
       session.projectId = input.projectId;
@@ -444,16 +444,16 @@ export class Assistant extends EventEmitter {
     const history = resumed ? [] : this.store.getMessages(session.id, this.config.memory.workingWindow);
 
     // The company block: who works here, what is running, what arrived in
-    // the inbox. Read once per turn; the inbox is then marked as read.
+    // the mail. Read once per turn; the mail is then marked as read.
     const organization = this.org.activeOrganization();
     const snapshot = this.org.snapshot(organization.id);
-    const inbox = this.store.org.inbox(organization.id, agent?.id ?? null, { unreadOnly: true });
+    const mail = this.store.org.unreadMailFor(organization.id, { kind: 'assistant' });
     const project = session.projectId ? (this.store.org.getProject(session.projectId) ?? undefined) : undefined;
-    if (inbox.length) this.store.org.markRead(inbox.map((message) => message.id));
+    if (mail.length) this.store.org.markMailReadFor(mail, { kind: 'assistant' });
 
     // The hub decides which extra MCP servers this turn gets, and the prompt
     // carries one paragraph per server plus the index of skills to open.
-    const who = agent ? 'agent' : 'assistant';
+    const who = 'assistant';
     await ensureToolServers(this.config, who, providerId, project?.id, (id, error) =>
       this.log.warn('Tool server could not prepare', { id, error: error.message }),
     );
@@ -462,25 +462,20 @@ export class Assistant extends EventEmitter {
     // a switch it does not know about is a wall it cannot climb.
     const toolHints = [...extra.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean);
     const skillsIndex = renderSkillsIndex(this.skills.for(who));
-    const systemPrompt = agent
-      ? buildAgentChatPrompt({
-          config: this.config, agent, snapshot, memories, inbox, history, resumed, project,
-          toolHints, skillsIndex,
-        })
-      : buildSystemPrompt({
-          config: this.config,
-          query: prompt,
-          memories,
-          history,
-          resumed,
-          // A voice session speaks whichever surface the turn came from.
-          voice: input.voice ?? session.kind === 'voice',
-          orgBlock: assistantOrgBlock(this.config, snapshot, inbox, project, this.cron.list(organization.id)),
-          toolHints,
-          skillsIndex,
-          // Lets the memory block group itself by entity.
-          store: this.store,
-        });
+    const systemPrompt = buildSystemPrompt({
+      config: this.config,
+      query: prompt,
+      memories,
+      history,
+      resumed,
+      // A voice session speaks whichever surface the turn came from.
+      voice: input.voice ?? session.kind === 'voice',
+      orgBlock: assistantOrgBlock(this.config, snapshot, mail, project, this.cron.list(organization.id)),
+      toolHints,
+      skillsIndex,
+      // Lets the memory block group itself by entity.
+      store: this.store,
+    });
 
     this.store.addMessage({ sessionId: session.id, role: 'user', content: prompt });
     if (session.messageCount === 0 && session.title === 'New conversation') {
@@ -497,9 +492,9 @@ export class Assistant extends EventEmitter {
 
     yield { type: 'session', sessionId: session.id, providerSessionId, provider: providerId, model };
 
-    // An agent in a chat may look at its project; the assistant stays in the
-    // workspace and is a person, not Claude Code's coding agent.
-    const cwd = agent ? (project?.path || agentWorkspace(this.config, agent.id)) : this.config.workspace;
+    // The assistant stays in the workspace, not a project directory - it is
+    // a person, not Claude Code's coding agent.
+    const cwd = this.config.workspace;
 
     // What this pass of the provider is run with. A turn usually has exactly
     // one pass; see the continuation below for why it sometimes has two.
@@ -514,11 +509,11 @@ export class Assistant extends EventEmitter {
       const queue = new EventQueue<AgentEvent>();
       const token = this.org.register({
         orgId: organization.id,
-        audience: agent ? 'agent' : 'assistant',
-        agentId: agent?.id,
+        audience: 'assistant',
+        agentId: undefined,
         sessionId: session.id,
         projectId: session.projectId,
-        depth: agent ? 0 : -1,
+        depth: -1,
         emit: (event) => queue.push(event),
         signal: input.signal,
       });
@@ -533,12 +528,12 @@ export class Assistant extends EventEmitter {
           for await (const event of provider.run({
             prompt: currentPrompt,
             systemPrompt: currentSystemPrompt,
-            systemPromptMode: agent ? 'append' : 'replace',
+            systemPromptMode: 'replace',
             providerSessionId: currentResume,
             model,
             effort,
             cwd,
-            permission: input.permission ?? agent?.permission ?? this.config.defaultPermission,
+            permission: input.permission ?? this.config.defaultPermission,
             mcp,
             mcpExtra: currentSpecs.length ? currentSpecs : undefined,
             signal: input.signal,
@@ -593,7 +588,7 @@ export class Assistant extends EventEmitter {
       // the dead end the assistant is told not to accept. Instead the turn
       // runs once more with the new servers attached and the provider's own
       // session resumed, and the two answers are joined.
-      if (failed || agent || pass === MAX_PROVIDER_PASSES) break;
+      if (failed || pass === MAX_PROVIDER_PASSES) break;
       if (input.signal?.aborted) break;
       const next = toolServersFor(this.config, who, providerId, project?.id);
       const fresh = next.specs.map((spec) => spec.name).filter((name) => !attached.has(name));
@@ -793,8 +788,14 @@ export class Assistant extends EventEmitter {
       return error ? { status: 'failed', error, assignmentId } : { status: 'done', result: text, assignmentId };
     }
 
-    let sessionId = job.sessionId && this.store.getSession(job.sessionId) ? job.sessionId : undefined;
-    if (!sessionId) {
+    const existing = job.sessionId ? this.store.getSession(job.sessionId) : null;
+    let sessionId: string;
+    if (existing) {
+      sessionId = existing.id;
+      // The user may have archived the chat while this was pending; reusing
+      // it silently would bury the reply where nobody looks for it.
+      if (existing.archived) this.store.updateSession(existing.id, { archived: false });
+    } else {
       sessionId = this.createSession({ title: 'Schedule: ' + job.name, projectId: job.projectId }).id;
       this.store.cron.updateJob(job.id, { sessionId }, false);
     }
@@ -812,6 +813,38 @@ export class Assistant extends EventEmitter {
     if (error && !text) return { status: 'failed', error, sessionId };
     if (job.kind === 'script' && text.trim() === '[SILENT]') return { status: 'done', result: '', silent: true, sessionId };
     return { status: 'done', result: text, sessionId };
+  }
+
+  /**
+   * One assistant turn for a mail addressed to it, answered by mail.
+   * Same shape as a scheduled run: its own conversation, nobody watching
+   * live, the answer read later - except the answer goes back as a reply.
+   */
+  async #answerMail(mail: Mail, senderLabel: string, thread: Mail[]): Promise<string> {
+    // `kind: 'mail'` keeps this out of the conversations list: it is the
+    // transcript of one answered mail, not a thread anyone continues.
+    const session = this.createSession({ title: 'Mail: ' + mail.subject, kind: 'mail' });
+    // Subjects only: the thread can be long, and most mail is answerable
+    // without it. `read_mail_thread` fetches the text if this one is not.
+    const history = thread.length
+      ? 'Earlier in this thread (' + thread.length + ' mail(s)), subjects only:\n' +
+        thread.map((entry) => '- ' + entry.subject).join('\n') +
+        '\nRead the full text with read_mail_thread("' + mail.threadId + '") if the answer depends on it.\n\n'
+      : '';
+    const prompt =
+      'Mail ' + mail.id + ' arrived for you from ' + senderLabel + '. Nobody is following this ' +
+      'conversation live: answer it now, and write the answer as the body of your reply mail - no ' +
+      'chat pleasantries, no report framing. It is sent back to them as a reply automatically. Do ' +
+      'not send_mail the answer to them as well: this text is the reply, and doing both delivers ' +
+      'it twice. send_mail here is only for bringing somebody else in.\n\n' +
+      history + 'Subject: ' + mail.subject + '\n\n' + mail.body;
+
+    let text = '';
+    for await (const event of this.chat({ text: prompt, sessionId: session.id })) {
+      if (event.type === 'done') text = event.text;
+      else if (event.type === 'error' && event.fatal) throw new Error(event.message);
+    }
+    return text;
   }
 
   /* ---------------------------- internals --------------------------- */

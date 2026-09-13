@@ -75,8 +75,16 @@ export interface ProviderQuota {
  * What a conversation is for. A `voice` session belongs to the hands-free
  * screen: the assistant answers in its spoken register there, whichever
  * surface a turn comes from, and the web UI files it apart from the chats.
+ *
+ * `mail` is not a conversation anyone holds. Answering a mail addressed to
+ * the assistant needs a session to run the turn in, and that session used to
+ * be indistinguishable from a chat - so every answered mail left a "Mail:
+ * <subject>" thread in the conversations list that nobody had opened and
+ * nobody could continue. Marking it as its own kind keeps the transcript
+ * without pretending it is something to come back to: `listSessions` leaves
+ * these out unless a caller asks for them by name.
  */
-export type SessionKind = 'chat' | 'voice';
+export type SessionKind = 'chat' | 'voice' | 'mail';
 
 export interface Session {
   id: string;
@@ -139,6 +147,8 @@ export type AgentEvent =
   | { type: 'assignment'; assignment: AssignmentView }
   /** A message between agents, their manager or the assistant was posted. */
   | { type: 'message'; message: AgentMessage }
+  /** Mail was sent: the user, the assistant, or an agent, to To + Cc. */
+  | { type: 'mail'; mail: Mail }
   /** A task on the board was created or changed state. */
   | { type: 'task'; task: Task }
   /** A schedule was created, edited, deleted, or one of its runs changed state. */
@@ -474,6 +484,8 @@ export interface AssignmentView {
   chars?: number;
   /** Tail of the output, for a live preview line. */
   preview?: string;
+  /** The most recent tool call this run made, for a live activity view. */
+  lastActivity?: { kind: 'tool' | 'status'; label: string; at: number };
   durationMs?: number;
   error?: string;
 }
@@ -488,6 +500,49 @@ export interface AgentMessage {
   assignmentId?: string;
   content: string;
   createdAt: number;
+  readAt?: number;
+}
+
+/**
+ * Company mail: To + Cc, a subject, threading, and per-recipient read state -
+ * the real replacement for `AgentMessage`. Mailing an agent's To line
+ * triggers a real run of that agent (see org/controller.ts `#deliverMail`);
+ * Cc only ever delivers, it never starts anything.
+ */
+
+/** Whose mailbox: the user, the assistant, or one agent (`id` set). */
+export interface MailWho {
+  kind: RequesterKind;
+  /** Agent id. Set only when `kind` is 'agent'. */
+  id?: string;
+}
+
+export interface Mail {
+  id: string;
+  orgId: string;
+  fromKind: RequesterKind;
+  /** Set only when `fromKind` is 'agent'. */
+  fromAgentId?: string;
+  subject: string;
+  body: string;
+  /** Shared by every mail in a reply chain; equals `id` for the root mail. */
+  threadId: string;
+  inReplyTo?: string;
+  /** Auto-trigger hop count, the loop guard for mail-triggered runs. */
+  depth: number;
+  /** The run this mail's body came from, when it is an automatic reply. */
+  assignmentId?: string;
+  createdAt: number;
+  recipients: MailRecipient[];
+}
+
+export interface MailRecipient {
+  id: string;
+  mailId: string;
+  recipientKind: RequesterKind;
+  /** Set only when `recipientKind` is 'agent'. */
+  recipientId?: string;
+  box: 'to' | 'cc';
   readAt?: number;
 }
 
@@ -529,6 +584,8 @@ export interface Task {
   updatedAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /** Manual board position within its status column; drag&drop only. */
+  sortOrder: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -999,6 +1056,16 @@ export interface TelegramPushConfig {
   cron: boolean;
   sleep: boolean;
   tasks: boolean;
+  /** Mail the user is To or Cc on, pushed to the phone. See `mailFrom`. */
+  mail: boolean;
+  /**
+   * Which senders a mail push is worth it for. 'assistant' is the quiet
+   * default: the assistant is the only one who writes to the user on their
+   * own initiative anyway. 'leads' adds the agents named as a team's lead,
+   * so a team reaches the user through one voice; 'all' pushes every mail
+   * that lands in the user's mailbox, which is what the web inbox is for.
+   */
+  mailFrom: 'assistant' | 'leads' | 'all';
   /** "22:00"; empty means no quiet hours. */
   quietFrom: string;
   /** "08:00" */

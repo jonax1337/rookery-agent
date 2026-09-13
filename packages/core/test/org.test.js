@@ -74,6 +74,20 @@ function createFakeProvider(options = {}) {
           yield { type: 'done', text };
           return;
         }
+        // A scripted answer that goes out as mail: the turn writes to
+        // somebody with send_mail and then ends on a line about having done
+        // so - the shape that used to deliver the answer twice.
+        const mailed = prompt.match(/MAILBACK:([\w-]+)\|([^\n]+)/);
+        if (mailed && opts.mcp) {
+          await bridgeCall(opts.mcp.env.ROOKERY_BRIDGE_PATH, opts.mcp.env.ROOKERY_BRIDGE_TOKEN, 'call', {
+            name: 'send_mail',
+            args: { to: mailed[1], subject: 'Answer', body: mailed[2] },
+          });
+          const text = 'Done - the reply went out.';
+          yield { type: 'text', delta: text };
+          yield { type: 'done', text };
+          return;
+        }
         // A scripted tool switch: the assistant turns a server on mid-turn.
         const wanted = prompt.match(/TOOLS:([a-z0-9-]+)/);
         if (wanted && opts.mcp) {
@@ -240,7 +254,7 @@ test('an agent may only delegate to its direct reports, and never too deep', asy
   assert.match(refused.text, /direct reports: junior/);
 
   const self = await assistant.org.handle(asLead, 'assign', { agent: lead.slug, task: 'x' });
-  assert.match(self.text, /yourself/);
+  assert.match(self.text, /background/);
 
   const ok = await assistant.org.handle(asLead, 'assign', { agent: junior.slug, task: 'do it' });
   assert.equal(ok.isError, undefined);
@@ -255,7 +269,7 @@ test('an agent may only delegate to its direct reports, and never too deep', asy
   assistant.close();
 });
 
-test('messages follow the chain of command and land in inboxes', async () => {
+test('mail follows the chain of command and lands in mailboxes', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const org = assistant.org.activeOrganization();
@@ -264,21 +278,98 @@ test('messages follow the chain of command and land in inboxes', async () => {
   const stranger = hire(assistant, { name: 'Stranger' });
   const asJunior = { orgId: org.id, audience: 'agent', agentId: junior.id, depth: 1, emit() {} };
 
-  assert.equal((await assistant.org.handle(asJunior, 'send_message', { to: stranger.slug, content: 'hi' })).isError, true);
-  assert.equal((await assistant.org.handle(asJunior, 'send_message', { to: lead.slug, content: 'done' })).isError, undefined);
-  assert.equal((await assistant.org.handle(asJunior, 'send_message', { to: 'assistant', content: 'fyi' })).isError, undefined);
+  assert.equal((await assistant.org.handle(asJunior, 'send_mail', { to: stranger.slug, subject: 'hi', body: 'hi' })).isError, true);
+  // Cc'ing the lead only delivers - it must not start a real run for them.
+  assert.equal((await assistant.org.handle(asJunior, 'send_mail', { to: 'assistant', cc: lead.slug, subject: 'done', body: 'done' })).isError, undefined);
+  assert.equal((await assistant.org.handle(asJunior, 'send_mail', { to: 'assistant', subject: 'fyi', body: 'fyi' })).isError, undefined);
 
-  assert.equal(store.org.inbox(org.id, lead.id, { unreadOnly: true }).length, 1);
-  assert.equal(store.org.inbox(org.id, null, { unreadOnly: true }).length, 1);
+  assert.equal(store.org.mailbox(org.id, { kind: 'agent', id: lead.id }, 'inbox', { unreadOnly: true }).length, 1);
+  // Not `unreadOnly`: mail to the assistant wakes it, and the turn it runs
+  // reads its own mailbox on the way through.
+  assert.equal(store.org.mailbox(org.id, { kind: 'assistant' }, 'inbox').length, 2);
 
   const asLead = { orgId: org.id, audience: 'agent', agentId: lead.id, depth: 0, emit() {} };
-  const inbox = await assistant.org.handle(asLead, 'read_inbox', {});
-  assert.match(inbox.text, /from junior: done/);
-  assert.equal(store.org.inbox(org.id, lead.id, { unreadOnly: true }).length, 0, 'reading marks as read');
+  const mail = await assistant.org.handle(asLead, 'read_mail', {});
+  assert.match(mail.text, /done/);
+  assert.equal(store.org.mailbox(org.id, { kind: 'agent', id: lead.id }, 'inbox', { unreadOnly: true }).length, 0, 'reading marks as read');
+  assert.equal(store.org.listAssignments(org.id, { agentId: lead.id }).length, 0, 'a cc never starts a run');
+  assistant.close();
+});
 
-  // The assistant's next turn sees its inbox in the prompt.
-  for await (const _ of assistant.chat({ text: 'hello' })) void _;
-  assert.match(fake.runs.at(-1).systemPrompt, /New messages from your staff.*from junior: fyi/s);
+test('mailing an agent\'s To triggers a real run whose result returns as a reply mail', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+
+  const sent = await assistant.org.handle(ctx, 'send_mail', { to: mara.slug, subject: 'Ping', body: 'Please pong.' });
+  assert.equal(sent.isError, undefined);
+  await sleep(80);
+
+  const assignments = store.org.listAssignments(org.id, { agentId: mara.id });
+  assert.equal(assignments.length, 1, 'the To agent got a real run');
+  assert.equal(assignments[0].status, 'done');
+
+  const inbox = store.org.mailbox(org.id, { kind: 'assistant' }, 'inbox');
+  const reply = inbox.find((entry) => entry.subject.startsWith('Re:'));
+  assert.ok(reply, 'the finished run replied by mail');
+  assert.equal(reply.fromKind, 'agent');
+  assert.equal(reply.fromAgentId, mara.id);
+  assert.match(reply.body, /OUTPUT/);
+
+  const original = store.org.mailbox(org.id, { kind: 'agent', id: mara.id }, 'inbox')[0];
+  assert.equal(reply.threadId, original.threadId, 'the reply stays in the original thread');
+  assistant.close();
+});
+
+test('a reply keeps whoever was Cc on the mail it answers', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+
+  // The assistant asks Mara something and copies the user in.
+  const sent = await assistant.org.handle(ctx, 'send_mail', {
+    to: mara.slug,
+    cc: 'user',
+    subject: 'Ping',
+    body: 'Please pong.',
+  });
+  assert.equal(sent.isError, undefined);
+  await sleep(120);
+
+  const reply = store.org.mailbox(org.id, { kind: 'user' }, 'inbox').find((entry) => entry.subject.startsWith('Re:'));
+  assert.ok(reply, 'the answer reached the user, who was only on Cc');
+  assert.equal(reply.fromAgentId, mara.id);
+  const to = reply.recipients.filter((entry) => entry.box === 'to').map((entry) => entry.recipientKind);
+  const cc = reply.recipients.filter((entry) => entry.box === 'cc').map((entry) => entry.recipientKind);
+  assert.deepEqual(to, ['assistant'], 'the answer is addressed to whoever asked');
+  assert.deepEqual(cc, ['user'], 'and everyone else on the mail stays on it');
+  assistant.close();
+});
+
+test('a turn that answers mail with send_mail does not also deliver its closing text', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+
+  await assistant.org.sendUserMail({
+    orgId: org.id,
+    to: ['assistant'],
+    subject: 'A question',
+    body: 'MAILBACK:user|Here is the answer you asked for.',
+  });
+  await sleep(200);
+
+  const inbox = store.org.mailbox(org.id, { kind: 'user' }, 'inbox');
+  assert.equal(inbox.length, 1, 'one answer, not an answer plus a note about it');
+  assert.match(inbox[0].body, /Here is the answer/);
+  assert.ok(
+    !inbox.some((entry) => /the reply went out/.test(entry.body)),
+    'the turn\'s bookkeeping line never becomes a mail of its own',
+  );
   assistant.close();
 });
 
@@ -514,28 +605,22 @@ test('the assistant can cancel, browse history, edit projects, keep memory and c
   assistant.close();
 });
 
-test('a direct chat with an agent speaks as the agent, with its memory and tools', async () => {
+test('chat() is assistant-only; a stale agentId on a session no longer changes its behaviour', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake, { memory: { enabled: true, autoExtract: false } });
   const mara = hire(assistant, { name: 'Mara', title: 'Designer', instructions: 'Love whitespace.' });
   store.upsertMemory({ kind: 'fact', content: 'The user likes serif fonts for headings.', owner: mara.id, importance: 0.9 });
+  // An old session from the removed agent-chat feature still carries an agentId in the DB.
+  const stale = assistant.createSession({ agentId: mara.id });
   const events = [];
-  for await (const event of assistant.chat({ text: 'hi there', agentId: mara.id })) events.push(event);
+  for await (const event of assistant.chat({ text: 'hi there', sessionId: stale.id })) events.push(event);
   const run = fake.runs.at(-1);
-  assert.match(run.systemPrompt, /You are Mara, Designer/);
-  assert.match(run.systemPrompt, /Love whitespace/);
-  assert.match(run.systemPrompt, /serif fonts/, 'the agent brings its own memory');
-  assert.doesNotMatch(run.systemPrompt, /you run a small company of AI agents/);
-  assert.equal(run.systemPromptMode, 'append');
-  assert.equal(run.cwd, join(assistant.config.home, 'agent-workspaces', mara.id));
-  const session = store.getSession(events.find((e) => e.type === 'session').sessionId);
-  assert.equal(session.agentId, mara.id);
-  assert.equal(assistant.listSessions(10, mara.id).length, 1);
-  assert.equal(assistant.listSessions(10, null).length, 0);
-  // The assistant's own turn replaces the CLI prompt and stays personal.
-  for await (const _ of assistant.chat({ text: 'hi' })) void _;
-  assert.equal(fake.runs.at(-1).systemPromptMode, 'replace');
-  assert.match(fake.runs.at(-1).systemPrompt, /never about repositories/);
+  assert.doesNotMatch(run.systemPrompt, /You are Mara, Designer/);
+  assert.doesNotMatch(run.systemPrompt, /serif fonts/, 'a stale agentId no longer brings that agent into the turn');
+  assert.match(run.systemPrompt, /you run a small company of AI agents/);
+  assert.equal(run.systemPromptMode, 'replace');
+  assert.equal(run.cwd, assistant.config.workspace);
+  assert.ok(events.find((e) => e.type === 'session'), 'the turn still runs to completion, never throws');
   assistant.close();
 });
 

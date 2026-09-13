@@ -39,8 +39,14 @@ export interface Message {
   usage?: TurnUsage;
 }
 
-/** `voice` sessions belong to the hands-free screen and answer in its register. */
-export type SessionKind = 'chat' | 'voice';
+/**
+ * `voice` sessions belong to the hands-free screen and answer in its register.
+ *
+ * `mail` is the transcript of one answered mail, not a thread anyone
+ * continues, so the server leaves it out of every list that does not ask for
+ * it by name - it never reaches the conversations page.
+ */
+export type SessionKind = 'chat' | 'voice' | 'mail';
 
 export interface Session {
   id: string;
@@ -305,6 +311,8 @@ export interface AssignmentView {
   provider?: ProviderId;
   chars?: number;
   preview?: string;
+  /** The most recent tool call this run made, for a live activity view. */
+  lastActivity?: { kind: 'tool' | 'status'; label: string; at: number };
   durationMs?: number;
   error?: string;
 }
@@ -320,6 +328,35 @@ export interface AgentMessage {
   content: string;
   createdAt: number;
   readAt?: number;
+}
+
+export interface MailRecipient {
+  id: string;
+  mailId: string;
+  recipientKind: RequesterKind;
+  /** Set only when `recipientKind` is 'agent'. */
+  recipientId?: string;
+  box: 'to' | 'cc';
+  readAt?: number;
+}
+
+export interface Mail {
+  id: string;
+  orgId: string;
+  fromKind: RequesterKind;
+  /** Set only when `fromKind` is 'agent'. */
+  fromAgentId?: string;
+  subject: string;
+  body: string;
+  /** Shared by every mail in a reply chain; equals `id` for the root mail. */
+  threadId: string;
+  inReplyTo?: string;
+  /** Auto-trigger hop count, the loop guard for mail-triggered runs. */
+  depth: number;
+  /** The run this mail's body came from, when it is an automatic reply. */
+  assignmentId?: string;
+  createdAt: number;
+  recipients: MailRecipient[];
 }
 
 /* ----------------------------------- tasks ---------------------------------- */
@@ -360,6 +397,8 @@ export interface Task {
   updatedAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /** Manual board position within its status column; drag&drop only. */
+  sortOrder: number;
 }
 
 export interface PlannedSubtask {
@@ -504,6 +543,8 @@ export interface AssignmentDetail {
   assignment: Assignment;
   agent: Agent | null;
   children: Assignment[];
+  /** The board task this run belongs to, from the durable history, not `assignment_id` scans. */
+  taskId: string | null;
 }
 
 /* --------------------------------- events -------------------------------- */
@@ -525,6 +566,8 @@ export type AgentEvent =
   | { type: 'assignment'; assignment: AssignmentView }
   /** A message between agents, their manager or the assistant was posted. */
   | { type: 'message'; message: AgentMessage }
+  /** Mail was sent - a new mail in someone's inbox or outbox. */
+  | { type: 'mail'; mail: Mail }
   /** A task on the board was created or changed state. */
   | { type: 'task'; task: Task }
   /** A schedule was created, edited, deleted, or one of its runs changed state. */
@@ -698,6 +741,10 @@ export interface TelegramPushConfig {
   cron: boolean;
   sleep: boolean;
   tasks: boolean;
+  /** Mail the user is To or Cc on, pushed to the phone. See `mailFrom`. */
+  mail: boolean;
+  /** Whose mail is worth a push: the assistant, plus team leads, or everyone. */
+  mailFrom: 'assistant' | 'leads' | 'all';
   /** "22:00"; empty means no quiet hours. */
   quietFrom: string;
   /** "08:00" */
@@ -990,6 +1037,8 @@ export type ServerFrame =
   | { type: 'memory'; event: { sessionId: string; stored: MemoryRecord[] } }
   | { type: 'assignment'; event: AgentEvent }
   | { type: 'message'; event: AgentEvent }
+  /** Broadcast: mail was sent - a new mail in someone's inbox or outbox. */
+  | { type: 'mail'; event: AgentEvent }
   /** Broadcast: a task on the board was created or changed state. */
   | { type: 'task'; event: AgentEvent }
   /** Broadcast: a schedule or one of its runs changed. */

@@ -22,8 +22,6 @@ export const chatInputSchema = z.object({
   effort: effortSchema.optional(),
   permission: permissionSchema.optional(),
   projectId: z.string().min(1).optional(),
-  /** Talk to this agent instead of the assistant (new sessions only). */
-  agentId: z.string().min(1).optional(),
   voice: z.boolean().optional(),
 });
 
@@ -35,7 +33,7 @@ export const assignInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
 });
 
-export const sessionKindSchema = z.enum(['chat', 'voice']);
+export const sessionKindSchema = z.enum(['chat', 'voice', 'mail']);
 
 export const createSessionSchema = z.object({
   title: z.string().optional(),
@@ -43,7 +41,6 @@ export const createSessionSchema = z.object({
   provider: providerIdSchema.optional(),
   model: z.string().min(1).optional(),
   projectId: z.string().min(1).optional(),
-  agentId: z.string().min(1).optional(),
 });
 
 export const patchSessionSchema = z.object({
@@ -152,16 +149,30 @@ export const patchTaskSchema = z.object({
   assigneeId: nullableText,
   status: z.enum(['open', 'done', 'cancelled']).optional(),
   result: nullableText,
+  /** Board drag&drop position within a status column. */
+  sortOrder: z.number().optional(),
+  /** Confirms `status: 'done'` even though the linked assignment failed. */
+  force: z.boolean().optional(),
 });
 
 export const planTaskSchema = z.object({
   hint: z.string().optional(),
 });
 
-export const messageSchema = z.object({
-  /** Agent id; omitted means the assistant. */
-  toAgentId: z.string().optional(),
-  content: z.string().min(1, 'content must not be empty'),
+/** POST /api/org/mail */
+export const sendMailSchema = z.object({
+  to: z.array(z.string().min(1)).min(1, 'to must not be empty'),
+  cc: z.array(z.string().min(1)).optional(),
+  subject: z.string().min(1, 'subject must not be empty'),
+  body: z.string().min(1, 'body must not be empty'),
+  inReplyTo: z.string().min(1).optional(),
+});
+
+/** POST /api/org/mail/read */
+export const markMailReadSchema = z.object({
+  ids: z.array(z.string()).min(1, 'ids must not be empty'),
+  /** `false` puts the rows back to unread - the reading pane's "Mark as unread". */
+  read: z.boolean().optional(),
 });
 
 /* -------------------------------- schedules -------------------------------- */
@@ -256,6 +267,8 @@ const telegramPushConfigSchema = z
     cron: z.boolean(),
     sleep: z.boolean(),
     tasks: z.boolean(),
+    mail: z.boolean(),
+    mailFrom: z.enum(['assistant', 'leads', 'all']),
     quietFrom: timeOfDaySchema,
     quietUntil: timeOfDaySchema,
     maxPerHour: z.number().int().min(1).max(60),

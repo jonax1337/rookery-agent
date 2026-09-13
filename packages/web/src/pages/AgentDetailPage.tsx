@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from 'react';
-import { NavLink, useParams } from 'react-router';
+import { NavLink, useNavigate, useParams } from 'react-router';
 import {
   ArchiveIcon,
   BrainIcon,
   Building2Icon,
   CpuIcon,
   InboxIcon,
-  MessagesSquareIcon,
+  MailPlusIcon,
   PencilIcon,
   SendIcon,
   ShieldIcon,
@@ -24,6 +24,7 @@ import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import { EMPTY_CELL, relativeTimeCell } from '@/components/blocks/data-table/table-columns';
 import { createRookeryColumnHelper } from '@/components/blocks/data-table/table-features';
+import { ActivityTimeline, useAssignmentActivityHistory } from '@/components/common/activity-timeline';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
 import { LiveRunList } from '@/components/common/live-run-list';
@@ -75,7 +76,7 @@ import {
 } from '@/lib/format';
 import { average, formatNumber } from '@/lib/stats';
 import type { AgentDetail, Agent, Assignment, AssignmentView } from '@/lib/types';
-import { useChatSession, useConfig, useConnection, useOrgState } from '@/providers/rookery-provider';
+import { useConfig, useConnection, useOrgState } from '@/providers/rookery-provider';
 
 /**
  * One member of staff: who they are, what they are working on, what they know.
@@ -103,10 +104,10 @@ type TabValue = 'assignments' | 'reports' | 'memories' | 'instructions';
 
 export function AgentDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const org = useOrgState();
   const { socket } = useConnection();
   const { config } = useConfig();
-  const { chooseCounterpart } = useChatSession();
   const { confirm, dialog } = useConfirm();
   // The stop button of `LiveRunList` asks the same question on every page that
   // renders it; this page used to be one of the two that cancelled silently.
@@ -130,6 +131,18 @@ export function AgentDetailPage() {
   const assignments = useMemo(() => detail?.assignments ?? [], [detail]);
   const memories = useMemo(() => detail?.memories ?? [], [detail]);
   const reports = useMemo(() => detail?.reports ?? [], [detail]);
+
+  /* -------------------------------- live now ------------------------------ */
+
+  // What this agent is doing *right now*, wherever the run was started from -
+  // the board, a direct assignment from another page, a delegation. Separate
+  // from the drawer's own `live` state below, which only ever shows a run
+  // this page itself just kicked off.
+  const runningAssignment = useMemo(
+    () => org.running.find((entry) => entry.agentId === agent?.id),
+    [org.running, agent?.id],
+  );
+  const liveActivity = useAssignmentActivityHistory(runningAssignment?.id, org.live);
 
   /* ------------------------------ the drawer ----------------------------- */
 
@@ -244,10 +257,18 @@ export function AgentDetailPage() {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => chooseCounterpart(agent.id)}
+            onClick={() => void navigate('/inbox?mailbox=' + agent.id)}
           >
-            <MessagesSquareIcon data-icon="inline-start" />
-            Chat
+            <InboxIcon data-icon="inline-start" />
+            View mailbox
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void navigate('/inbox?compose=' + agent.id)}
+          >
+            <MailPlusIcon data-icon="inline-start" />
+            Write mail
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -274,7 +295,7 @@ export function AgentDetailPage() {
         </>
       ) : null,
     },
-    [agent?.id, agent?.archived, archive, chooseCounterpart],
+    [agent?.id, agent?.archived, archive, navigate],
   );
 
   /* -------------------------------- columns ------------------------------ */
@@ -514,6 +535,33 @@ export function AgentDetailPage() {
       </div>
 
       <StatCards items={cards} />
+
+      {/* Live only while this agent has a run in flight, wherever it was
+          started from - the org-wide broadcast Workstream B adds is what
+          makes this visible for a run this page never kicked off itself. */}
+      {runningAssignment && (
+        <div className="px-4 lg:px-6">
+          <Card className="py-3">
+            <CardHeader className="flex flex-row flex-wrap items-center gap-2 border-b px-3! [&_[data-slot=card-title]]:flex-1">
+              <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+                Live now
+                <StatusBadge kind="assignment" status={runningAssignment.status} />
+              </CardTitle>
+              <span className="text-xs text-muted-foreground">
+                {shorten(runningAssignment.task, 80)}
+              </span>
+            </CardHeader>
+            <CardContent className="px-3!">
+              <ActivityTimeline
+                items={liveActivity}
+                variant="plain"
+                emptyLabel="Waiting for the first tool call…"
+                limit={8}
+              />
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       <div className="px-4 lg:px-6">
         <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
