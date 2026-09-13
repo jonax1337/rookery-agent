@@ -165,6 +165,10 @@ export interface SleepRun {
   finishedAt?: number;
   durationMs?: number;
   readCount: number;
+  /** Conversations the night read again in full. */
+  replayedCount: number;
+  /** Memories those conversations yielded that the day had missed. */
+  learnedCount: number;
   mergedCount: number;
   dormantCount: number;
   edgeCount: number;
@@ -197,6 +201,12 @@ export interface SleepConfig {
   dormantAfterDays: number;
   minStrength: number;
   insights: number;
+  /** How many of the day's conversations one night may read in full. */
+  replaySessions: number;
+  /** How many skills one night may distil out of the bank. */
+  skills: number;
+  /** How many skills one night may rewrite. Repair outranks invention. */
+  skillRevisions: number;
   cycles: number;
   maxResolveCalls: number;
   /** An agent bank sleeps only after this many new memories. */

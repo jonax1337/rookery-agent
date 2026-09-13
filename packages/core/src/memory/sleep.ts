@@ -17,9 +17,9 @@ import {
 import { silentLogger, type Logger } from '../logger.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import { entitySlug, type Store } from './store.js';
-import { smallModelFor } from './extractor.js';
-import { linkEntities, normalizeTokens, similarity } from './gate.js';
-import { MEMORY_KINDS } from './recall.js';
+import { parseCandidates, smallModelFor } from './extractor.js';
+import { admitCandidates, confirmedBy, linkEntities, normalizeTokens, similarity } from './gate.js';
+import { MEMORY_KINDS, recall } from './recall.js';
 import { SkillStore, skillSlug } from '../skills/store.js';
 
 /**
@@ -32,9 +32,14 @@ import { SkillStore, skillSlug } from '../skills/store.js';
  * judgements, they need a model, and they are far too slow and too risky to
  * make while somebody is waiting for an answer. So they happen at night.
  *
- * A night is not one uniform chore. It runs in cycles of three stages, the
- * way sleep actually does:
+ * A night is not one uniform chore. It opens by going back over the day, then
+ * runs in cycles of three stages, the way sleep actually does:
  *
+ *   replay- the day's conversations, read again and properly this time. The
+ *           per-turn extractor sees one exchange through a small model; this
+ *           sees whole conversations through a good one, and it runs once,
+ *           before the cycles, so what it harvests is condensed tonight
+ *           rather than waiting a day for it.
  *   light - bookkeeping. Weak, unused, unprotected memories fall asleep;
  *           entity counts are brought up to date. No model, no cost.
  *   deep  - filing. What says the same thing becomes one sentence, and what
@@ -203,6 +208,8 @@ export class SleepRunner extends EventEmitter {
 
     const counters = {
       readCount: 0,
+      replayedCount: 0,
+      learnedCount: 0,
       mergedCount: 0,
       dormantCount: 0,
       edgeCount: 0,
@@ -226,6 +233,28 @@ export class SleepRunner extends EventEmitter {
 
       if (!provider) {
         this.#log.warn('Sleep ran without a provider; only light sleep happened', { owner });
+      }
+
+      /* ---- replay: the day, read again and properly. Before the cycles ----
+         ---- so tonight's harvest is condensed tonight, not tomorrow.   ---- */
+      if (provider) {
+        this.#phase(run.id, 'replay', counters, 1);
+        const replayed = await this.#replay(
+          provider,
+          smallModelFor(providerId as ProviderId),
+          model,
+          owner,
+          run.id,
+          controller.signal,
+        );
+        counters.replayedCount += replayed.read;
+        counters.learnedCount += replayed.learned;
+        counters.modelCalls += replayed.calls;
+        // The bank changed, so the figure the run reports as "looked at" has
+        // to be taken after the harvest, not before it.
+        counters.readCount = this.#store.liveMemories(owner).length;
+        this.#phase(run.id, 'replay', counters, 1);
+        this.#throwIfAborted(controller.signal);
       }
 
       for (let cycle = 1; cycle <= cycles; cycle += 1) {
@@ -345,6 +374,147 @@ export class SleepRunner extends EventEmitter {
       calls: counters.modelCalls,
     });
     return updated;
+  }
+
+  /* ------------------------------ phase 0 ------------------------------ */
+
+  /**
+   * Read the day again.
+   *
+   * Every conversation is already extracted from once, right after each turn -
+   * by the smallest model available, at low effort, with both sides clipped to
+   * four thousand characters, capped at three candidates. That pass sees one
+   * exchange at a time and never the shape of a conversation, so whatever only
+   * becomes visible across the whole of one is structurally invisible to it: a
+   * preference mentioned in passing early and only acted on much later, a
+   * decision that emerged rather than being stated, and above all a
+   * correction.
+   *
+   * At night none of those constraints apply. There is no one waiting, so the
+   * transcript can be read whole, by a model worth paying for.
+   *
+   * Cost is kept sane by not spending that model on everything. A cheap pass
+   * sorts first - most conversations hold nothing durable at all, and finding
+   * that out should cost a fraction of a cent, not a full analysis. Only what
+   * survives triage gets read properly.
+   *
+   * The evidence rule is not relaxed here. The night must quote the user just
+   * as the day does; a better model is allowed to find more, not to invent
+   * more.
+   */
+  async #replay(
+    provider: Provider,
+    triageModel: string | undefined,
+    deepModel: string | undefined,
+    owner: string,
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<{ read: number; learned: number; corrections: number; calls: number }> {
+    const budget = this.#config.memory.sleep.replaySessions;
+    const idle = { read: 0, learned: 0, corrections: 0, calls: 0 };
+    // Only the assistant's own bank. An agent learns from its assignments,
+    // which its controller already extracts from, and there is no user in
+    // those transcripts to quote.
+    if (budget <= 0 || signal.aborted || owner !== ASSISTANT_MEMORY_OWNER) return idle;
+
+    const since = this.#store.lastSleepAt(owner);
+    const sessions = this.#store.sessionsActiveSince(since, 50);
+    if (!sessions.length) return idle;
+
+    let read = 0;
+    let learned = 0;
+    let corrections = 0;
+    let calls = 0;
+
+    for (const session of sessions) {
+      if (signal.aborted || read >= budget) break;
+
+      const messages = this.#store.getMessages(session.id).filter((message) => message.content.trim());
+      const spoken = messages.filter((message) => message.role === 'user');
+      // Nothing was said, or barely: no model needed to know there is nothing
+      // durable in "thanks" followed by "you're welcome".
+      if (spoken.length < 2) continue;
+
+      const said = spoken.map((message) => message.content).join('\n');
+
+      // Triage, on the user's turns alone and heavily clipped. The question is
+      // only "is there anything here worth a proper look", and the assistant's
+      // side cannot answer that - nothing it said may back a memory anyway.
+      const verdict = await ask(
+        provider,
+        TRIAGE_PROMPT + '\n\nWHAT THE USER SAID:\n' +
+          spoken.map((message) => '- ' + clipText(message.content, 220)).join('\n'),
+        triageModel,
+        signal,
+      );
+      calls += 1;
+      if (parseObject(verdict)?.worth !== true) continue;
+
+      const transcript = messages
+        .map((message) => (message.role === 'user' ? 'USER: ' : 'ASSISTANT: ') + clipText(message.content, 2500))
+        .join('\n\n');
+
+      const raw = await ask(
+        provider,
+        REPLAY_PROMPT +
+          '\n\nCURRENT DATE: ' + new Date().toISOString().slice(0, 10) +
+          '\n\nALREADY KNOWN:\n' + this.#knownFor(owner, said) +
+          '\n\nTHE CONVERSATION:\n' + clipText(transcript, 24000),
+        deepModel,
+        signal,
+      );
+      calls += 1;
+      read += 1;
+
+      const parsed = parseObject(raw);
+      const candidates = parseCandidates(JSON.stringify(parsed?.memories ?? []));
+      if (candidates.length) {
+        const admitted = admitCandidates(this.#store, {
+          candidates,
+          owner,
+          config: this.#config.memory,
+          // The user's words only, exactly as during the day.
+          sources: [said],
+          sourceSessionId: session.id,
+          sleepRunId: runId,
+        });
+        learned += admitted.stored.length;
+        if (admitted.rejected.length) {
+          this.#log.debug('Replay gate rejected candidates', {
+            session: session.id,
+            reasons: admitted.rejected.map((entry) => entry.reason).join(','),
+          });
+        }
+      }
+
+      for (const entry of Array.isArray(parsed?.corrections) ? parsed.corrections : []) {
+        if (!entry || typeof entry !== 'object') continue;
+        const row = entry as Record<string, unknown>;
+        const text = typeof row.text === 'string' ? row.text.trim() : '';
+        const quote = typeof row.quote === 'string' ? row.quote.trim() : '';
+        // A correction has to be quotable too. "The user seemed unhappy" is
+        // not a correction, it is a mood.
+        if (text.length < 8 || !confirmedBy(quote, [said])) continue;
+        this.#store.addCorrection({ owner, text, quote, sessionId: session.id });
+        corrections += 1;
+      }
+
+      this.#log.info('Replayed a conversation', {
+        session: session.id,
+        title: session.title,
+        learned,
+        corrections,
+      });
+    }
+
+    return { read, learned, corrections, calls };
+  }
+
+  /** What the extractor must not write again: whatever this talk touches. */
+  #knownFor(owner: string, text: string): string {
+    const matched = recall(this.#store, { text, owner, limit: 25, threshold: 0.05, touch: false, expand: false });
+    if (!matched.length) return '(nothing yet)';
+    return matched.map((memory) => '- ' + memory.content).join('\n');
   }
 
   /* ------------------------------ phase 1 ------------------------------ */
@@ -921,6 +1091,14 @@ export class SleepRunner extends EventEmitter {
       .filter((skill) => skill.origin !== 'user');
     if (!mine.length) return { written: 0, calls: 0 };
 
+    // Corrections the night's replay pulled out of the day's conversations.
+    // Unlike the other two signals these do not arrive attached to a skill, so
+    // each is matched against the shelf by wording - the same lexical judgement
+    // the rest of this file uses, and enough to tell "always run the tests
+    // first" from a remark about the mail client.
+    const open = this.#store.openCorrections(owner, 20);
+    const consumed = new Set<string>();
+
     const suspects = mine
       .map((skill) => {
         // Looking counts as clearing, so the window opens at whichever came
@@ -928,12 +1106,21 @@ export class SleepRunner extends EventEmitter {
         const since = Math.max(skill.updatedAt, this.#store.lastSkillReviewAt(skill.name));
         const changed = this.#store.changedSkillSources(skill.name, since);
         const failures = this.#store.failedRunsForSkill(skill.name, since, 3);
-        return { skill, changed, failures };
+        // Name and description only, never the body. What a skill is ABOUT is
+        // its subject line; the body is implementation detail, and every extra
+        // step in it dilutes the overlap until nothing matches. A correction
+        // shares few words with the procedure it bears on by nature - it is
+        // usually introducing something the procedure fails to mention.
+        const about = normalizeTokens(skill.name.replace(/-/g, ' ') + ' ' + skill.description);
+        const corrections = open.filter(
+          (entry) => similarity(about, normalizeTokens(entry.text)) >= CORRECTION_MATCH,
+        );
+        return { skill, changed, failures, corrections };
       })
       // A failure is the louder signal: it is evidence the procedure was
       // actually followed and actually did not work.
-      .filter((entry) => entry.changed.length > 0 || entry.failures.length > 0)
-      .sort((a, b) => b.failures.length * 2 + b.changed.length - (a.failures.length * 2 + a.changed.length))
+      .filter((entry) => entry.changed.length > 0 || entry.failures.length > 0 || entry.corrections.length > 0)
+      .sort((a, b) => weigh(b) - weigh(a))
       .slice(0, budget);
 
     let written = 0;
@@ -941,7 +1128,8 @@ export class SleepRunner extends EventEmitter {
 
     for (const suspect of suspects) {
       if (signal.aborted) break;
-      const { skill, changed, failures } = suspect;
+      const { skill, changed, failures, corrections } = suspect;
+      for (const entry of corrections) consumed.add(entry.id);
 
       const why: string[] = [];
       for (const entry of changed) {
@@ -951,6 +1139,14 @@ export class SleepRunner extends EventEmitter {
             ? 'This memory was put to sleep as no longer worth keeping: ' + entry.memory.content
             : 'This memory was edited since the skill was written: ' + entry.memory.content;
         why.push('- ' + line);
+      }
+      // The user's own words go first: nothing else in the list carries as
+      // much weight as being told outright that this is wrong.
+      for (const entry of corrections) {
+        why.unshift(
+          '- The user corrected this: ' + entry.text +
+            '\n  IN THEIR WORDS: "' + clipText(entry.quote, 220) + '"',
+        );
       }
       for (const failure of failures) {
         why.push(
@@ -1005,6 +1201,9 @@ export class SleepRunner extends EventEmitter {
       }
     }
 
+    // Looked at is looked at, whatever came of it: a correction that has been
+    // weighed must not be weighed again tomorrow.
+    this.#store.consumeCorrections([...consumed]);
     return { written, calls };
   }
 
@@ -1245,6 +1444,54 @@ Reply ONLY with JSON, no prose or code fence:
 {"insights":[{"content":"...","importance":0.8,"evidence":[1,4,7],"tags":["..."]}]}
 An empty result is {"insights":[]}`;
 
+const TRIAGE_PROMPT = `You decide whether one conversation is worth reading closely tonight.
+
+Below are only the things the USER said in it, shortened. Answer one question: could a careful
+reading of this conversation yield something durable - a stable fact about the user, a preference
+about how they want things done, a project constraint, or a correction of something that was
+done wrong?
+
+Say false for small talk, one-off requests, pure question-and-answer where the user reveals
+nothing about themselves, and anything that is only about the here and now. Most conversations
+are false. That is fine and expected - being wrong the cheap way costs one more reading, being
+wrong the expensive way costs nothing at all.
+
+Reply ONLY with JSON, no prose or code fence:
+{"worth":true}  or  {"worth":false}`;
+
+const REPLAY_PROMPT = `You are re-reading one conversation at night, after it has ended.
+
+It was already skimmed once, right after each turn, by a small fast model that saw one exchange
+at a time and never the whole. Your advantage is exactly that: you can see the arc. Look for what
+only shows up across the conversation - a preference mentioned early in passing, a constraint the
+user repeated in different words, a decision that emerged rather than being stated in one line.
+
+TWO THINGS TO RETURN.
+
+1. memories - durable facts the USER STATED THEMSELVES, worth remembering weeks from now.
+   Every one needs "evidence": a span copied VERBATIM, character for character, from a USER turn.
+   Not from the assistant's. Not reworded, not translated, not tidied. A memory whose evidence is
+   not found word for word in what the user wrote is thrown away before it is stored, so there is
+   nothing to gain by inventing one.
+   - one self-contained sentence each, third person about the user, in the user's own language
+   - kinds: fact, preference, project, event
+   - nothing already under ALREADY KNOWN, nothing the assistant worked out, nothing you inferred
+   - a question is not a fact. "How do I deploy this?" says nothing durable.
+   - importance: 0.9 identity and hard constraints, 0.7 preferences and active projects,
+     0.5 useful context, 0.3 minor detail
+
+2. corrections - places where the user put the assistant right: rejected an approach, restated
+   something that had been misunderstood, or said a thing should be done differently in future.
+   This is the signal nothing else in the system captures. Each needs the user's own words as
+   "quote", under the same verbatim rule, and one sentence in "text" saying what should be done
+   differently from now on. Irritation alone is not a correction; there has to be a should.
+
+Returning empty lists is the ordinary answer for most conversations.
+
+Reply ONLY with JSON, no prose or code fence:
+{"memories":[{"kind":"preference","content":"The user wants releases cut from main.","tags":["release"],"importance":0.7,"evidence":"cut releases from main"}],
+ "corrections":[{"text":"Do not open a PR without running the tests first.","quote":"du hast wieder keine Tests laufen lassen"}]}`;
+
 const REVISE_PROMPT = `You maintain one written procedure that an assistant follows unattended.
 
 Below is a skill as it currently reads, and everything that has changed since it was written:
@@ -1367,11 +1614,19 @@ export function describeSleep(counters: {
   edgeCount: number;
   insightCount: number;
   conflictCount: number;
+  replayedCount?: number;
+  learnedCount?: number;
   resolvedCount?: number;
   skillCount?: number;
   skillRevisedCount?: number;
 }): string {
   const parts: string[] = [counters.readCount + ' memories read'];
+  if (counters.replayedCount) {
+    parts.push(plural(counters.replayedCount, 'conversation', 'conversations') + ' re-read');
+  }
+  if (counters.learnedCount) {
+    parts.push(plural(counters.learnedCount, 'memory', 'memories') + ' learned from them');
+  }
   if (counters.mergedCount) parts.push(counters.mergedCount + ' condensed');
   if (counters.dormantCount) parts.push(counters.dormantCount + ' tidied');
   if (counters.edgeCount) parts.push(counters.edgeCount + ' connections added');
@@ -1428,6 +1683,21 @@ function chunk<T>(items: T[], size: number): T[][] {
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
+}
+
+/**
+ * How close a correction's wording has to be to a skill before it counts as
+ * being about that skill. Low on purpose: a correction and the procedure it
+ * bears on rarely share many words, and the cost of a false match is one
+ * reading that concludes "leave it alone", while the cost of a miss is a skill
+ * that goes on being wrong.
+ */
+const CORRECTION_MATCH = 0.12;
+
+/** Which suspect gets the night's attention first. */
+function weigh(entry: { changed: unknown[]; failures: unknown[]; corrections: unknown[] }): number {
+  // Being told outright beats a failed run, which beats shifted ground.
+  return entry.corrections.length * 4 + entry.failures.length * 2 + entry.changed.length;
 }
 
 /** A task or an error trimmed to the part that still says something. */

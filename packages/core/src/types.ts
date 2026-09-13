@@ -338,7 +338,15 @@ export type SleepStatus = 'running' | 'done' | 'failed';
  * A night runs several cycles of the three, because condensing changes what
  * there is to connect: the second pass works on a bank the first one tidied.
  */
-export type SleepStage = 'light' | 'deep' | 'rem';
+/**
+ * `replay` runs once, before the cycles: the day's conversations are read
+ * again, properly this time. The per-turn extractor sees one exchange at a
+ * time through a small model, so anything that only becomes visible across a
+ * whole conversation is invisible to it. Reading the transcripts at night
+ * catches that - and it comes first so the day's harvest is in the bank
+ * before deep sleep starts condensing, rather than waiting a day for it.
+ */
+export type SleepStage = 'replay' | 'light' | 'deep' | 'rem';
 
 /**
  * One night's work on one memory bank. Every write a run makes carries its
@@ -354,6 +362,10 @@ export interface SleepRun {
   durationMs?: number;
   /** How many live memories the run looked at. */
   readCount: number;
+  /** Conversations the night read again in full. */
+  replayedCount: number;
+  /** Memories those conversations yielded that the day had missed. */
+  learnedCount: number;
   /** How many memories were folded into a condensed one. */
   mergedCount: number;
   /** How many were put to sleep. */
@@ -946,6 +958,12 @@ export interface SleepConfig {
    * skill writing to the `write_skill` tool alone.
    */
   skills: number;
+  /**
+   * How many of the day's conversations one night may read in full. A cheap
+   * model sorts them first, so this caps only the expensive half: the deep
+   * read of the ones that looked like they held something.
+   */
+  replaySessions: number;
   /**
    * How many skills one night may rewrite. Deliberately larger than
    * `skills`: a procedure that has gone wrong costs more than a procedure

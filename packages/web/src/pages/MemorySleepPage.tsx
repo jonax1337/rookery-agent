@@ -65,6 +65,8 @@ const COLUMN_LABELS: Record<string, string> = {
   trigger: 'Trigger',
   duration: 'Duration',
   readCount: 'read',
+  replayedCount: 'Conversations',
+  learnedCount: 'learned',
   mergedCount: 'condensed',
   edgeCount: 'linked',
   dormantCount: 'put to sleep',
@@ -90,7 +92,8 @@ function undoable(run: SleepRun): boolean {
     run.edgeCount > 0 ||
     run.insightCount > 0 ||
     run.skillCount > 0 ||
-    run.skillRevisedCount > 0
+    run.skillRevisedCount > 0 ||
+    run.learnedCount > 0
   );
 }
 
@@ -225,6 +228,8 @@ export function MemorySleepPage() {
           ),
         }),
         countColumn('readCount', 'read'),
+        countColumn('replayedCount', 'Conversations'),
+        countColumn('learnedCount', 'learned'),
         countColumn('mergedCount', 'condensed'),
         countColumn('edgeCount', 'linked'),
         countColumn('dormantCount', 'put to sleep'),
@@ -457,6 +462,8 @@ export function MemorySleepPage() {
               columns={2}
               items={[
                 { label: 'read', value: formatNumber(report.readCount) },
+                { label: 'Conversations', value: formatNumber(report.replayedCount) },
+                { label: 'learned', value: formatNumber(report.learnedCount) },
                 { label: 'condensed', value: formatNumber(report.mergedCount) },
                 { label: 'linked', value: formatNumber(report.edgeCount) },
                 { label: 'put to sleep', value: formatNumber(report.dormantCount) },

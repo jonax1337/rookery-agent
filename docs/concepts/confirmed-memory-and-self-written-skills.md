@@ -118,6 +118,48 @@ unparsed, damit auch ein unbekannter Frontmatter-Schluessel oder eine eigene For
 die Ruecknahme ueberlebt. `content = NULL` heisst „gab es vorher nicht", und die Ruecknahme
 loescht den Ordner dann wieder, statt Text zurueckzuschreiben.
 
+## 2b. Die Nacht liest den Tag noch einmal
+
+Bis hierher arbeitete die Nacht ausschliesslich auf der Erinnerungsbank. Die Gespraeche selbst
+wurden genau einmal gelesen — direkt nach jedem Turn, vom schwaechsten Glied der Kette: kleinstes
+Modell, `effort: low`, beide Seiten auf 4000 Zeichen beschnitten, hoechstens drei Kandidaten, seit
+dieser Stufe zusaetzlich die Belegpflicht. Dieser Durchgang sieht **einen Austausch**, nie den
+Bogen eines Gespraechs. Alles, was erst ueber eine ganze Unterhaltung hinweg sichtbar wird, war
+damit strukturell unerreichbar: eine beilaeufig genannte Praeferenz, die erst dreissig Turns
+spaeter zaehlt; eine Entscheidung, die sich herausschaelt statt in einem Satz zu stehen; und vor
+allem eine **Korrektur**.
+
+Die neue Phase `replay` laeuft **einmal, vor den Zyklen**. Die Reihenfolge ist der Punkt: was die
+Nacht aus dem Tag holt, wird noch in derselben Nacht verdichtet, statt einen Tag darauf zu warten.
+
+**Billig vorsortieren, teuer nur wo es lohnt.** Ein kleines Modell bekommt ausschliesslich die
+Nutzer-Turns, stark gekuerzt, und beantwortet eine einzige Frage: koennte hier etwas Dauerhaftes
+drinstecken? Die meisten Gespraeche sind an dieser Stelle vorbei. Nur was durchkommt, wird vom
+starken Modell vollstaendig gelesen. Gespraeche mit weniger als zwei Nutzer-Turns kosten gar
+keinen Aufruf — „danke" und „gern geschehen" braucht kein Urteil.
+
+Die Belegpflicht wird dabei **nicht** gelockert. Auch die Nacht muss woertlich zitieren, und auch
+hier zaehlt nur, was der Nutzer selbst geschrieben hat. Ein besseres Modell darf mehr *finden*,
+nicht mehr *erfinden*.
+
+**Korrekturen sind der dritte Ausloeser.** Sagt der Nutzer „nein, so nicht", ist etwas
+Aufgeschriebenes falsch — das staerkste Signal, das das System ueberhaupt bekommen kann, und bis
+hierher hat es niemand erfasst. Gefundene Korrekturen landen in `corrections` und treten in der
+Ueberarbeitungsphase neben „Quelle hat sich bewegt" und „Lauf ist gescheitert". Sie kommen ohne
+Skill-Bezug an, werden also lexikalisch zugeordnet — **ueber Name und Beschreibung, nie ueber den
+Rumpf**. Das war eine Korrektur am eigenen Entwurf, die erst der Test zutage foerderte: eine
+Korrektur teilt mit der Prozedur, die sie betrifft, naturgemaess kaum Woerter — sie bringt ja
+gerade etwas ein, das dort fehlt — und jede weitere Zeile Rumpf verwaessert die Aehnlichkeit
+weiter, bis nichts mehr passt. Der Gegenstand eines Skills steht in seiner Betreffzeile.
+
+Auch hier gilt: **Hinsehen verbraucht den Ausloeser.** Eine gewogene Korrektur wird als verbraucht
+markiert statt geloescht — sie bleibt als Tatsache stehen, kann die Nacht aber nicht mehr
+beschaeftigen.
+
+Was die Nacht so erntet, haengt am Lauf und faellt bei einer Ruecknahme mit. Das ist bewusst so:
+eine Nacht zurueckzunehmen heisst, alles zurueckzunehmen, was sie getan hat — auch das, was sie
+gelernt hat.
+
 ## 3. Schutzmassnahmen
 
 Ein Prozess, der unbeaufsichtigt Anweisungen schreibt, die spaeter befolgt werden, braucht
@@ -151,7 +193,7 @@ eigenen (`origin: user`) — und schuetzt ihn kuenftig vor genau dieser Nacht.
 
 ## 4. Was sich am Datenbestand aendert
 
-Schema 11 → 13, alles additiv ueber das bestehende `hasColumn`- und
+Schema 11 → 14, alles additiv ueber das bestehende `hasColumn`- und
 `CREATE TABLE IF NOT EXISTS`-Muster:
 
 | Tabelle          | Spalte / Zweck                                                       | Typ                          |
@@ -162,6 +204,8 @@ Schema 11 → 13, alles additiv ueber das bestehende `hasColumn`- und
 | `skill_uses`     | jede `use_skill`-Oeffnung, mit `assignment_id` / `session_id`         | neue Tabelle                 |
 | `skill_sources`  | worauf ein destillierter Skill steht                                  | neue Tabelle                 |
 | `skill_versions` | der `SKILL.md`-Text vor einem unbeaufsichtigten Schreiben             | neue Tabelle                 |
+| `sleep_runs`     | `replayed_count`, `learned_count`                                     | `INTEGER NOT NULL DEFAULT 0` |
+| `corrections`    | was der Nutzer richtiggestellt hat, bis eine Nacht es gewogen hat     | neue Tabelle                 |
 
 Die drei neuen Tabellen sind ueber den **Skill-Namen** verschluesselt, nicht ueber einen
 Fremdschluessel: die Datei kann komplett ausserhalb von Rookery geloescht werden, und eine
@@ -187,9 +231,10 @@ die ersten Worte, die einen Fakt bestaetigt haben, sind die aufhebenswerten.
   Assignment, keinen Status: es gibt kein Feld, das sagt, ob die Unterhaltung gut ausging.
   Fehlerbasierte Ueberarbeitung greift deshalb praktisch nur bei Skills, die Agenten in
   Assignments oeffnen. Der Quellen-Ausloeser gilt fuer beide.
-- **Die Nacht sieht nicht, was der Nutzer korrigiert hat.** Wenn jemand dieselbe Sache
-  zweimal richtigstellt, ist das das staerkste denkbare Signal fuer einen fehlenden oder
-  falschen Skill — und es wird nirgends erfasst.
+- **Korrekturen greifen nur, wenn die Worte passen.** Die Zuordnung einer Korrektur zu einem
+  Skill ist lexikalisch. Wer etwas richtigstellt, ohne den Gegenstand des Skills zu benennen,
+  loest nichts aus. Ein Fehlschlag kostet eine verzoegerte Reparatur, kein Schaden — aber
+  lautlos ist er trotzdem.
 - **Die Herkunft nach einer Reparatur ist grob.** Ueberarbeitet die Nacht einen Skill, den
   ein Agent geschrieben hatte, steht danach `origin: sleep` darin. Das stimmt fuer den
   aktuellen Text, verliert aber die Spur, wer ihn urspruenglich angelegt hat.

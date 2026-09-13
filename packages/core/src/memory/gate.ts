@@ -59,6 +59,12 @@ export interface GateInput {
    */
   sources: string[];
   sourceSessionId?: string;
+  /**
+   * Set when the night's replay phase is the one admitting these, so what it
+   * harvested hangs off that run and a "undo this night" takes it back with
+   * everything else the night did.
+   */
+  sleepRunId?: string;
 }
 
 /**
@@ -243,6 +249,7 @@ export function admitCandidates(store: Store, input: GateInput): GateResult {
       owner,
       evidence,
       sourceSessionId: input.sourceSessionId,
+      sleepRunId: input.sleepRunId,
       origin: 'extract',
     });
     result.stored.push(record);

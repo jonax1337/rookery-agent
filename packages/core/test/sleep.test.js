@@ -60,6 +60,10 @@ function scriptedProvider(replies = {}) {
           text = replies.skill ?? '{"skills":[]}';
         } else if (prompt.includes('You maintain one written procedure')) {
           text = replies.revise ?? '{"revise":false}';
+        } else if (prompt.includes('You decide whether one conversation')) {
+          text = replies.triage ?? '{"worth":false}';
+        } else if (prompt.includes('You are re-reading one conversation')) {
+          text = replies.replay ?? '{"memories":[],"corrections":[]}';
         }
         yield { type: 'done', text };
       },
@@ -518,6 +522,182 @@ test('the night writes a skill out of what the memory keeps repeating', async ()
   assert.equal(written.origin, 'sleep', 'marked as the night, not as the user');
   assert.equal(written.audience, 'assistant', "the assistant's bank writes the assistant's skills");
   assert.match(run.report, /1 skill written/);
+  store.close();
+});
+
+/* ---------------------------- replaying the day --------------------------- */
+
+/** One conversation on the books, as a day of talking would leave it. */
+function seedConversation(store, turns) {
+  const session = store.createSession({ provider: 'claude', cwd: '/tmp' });
+  for (const [role, content] of turns) store.addMessage({ sessionId: session.id, role, content });
+  return session;
+}
+
+test('the night re-reads the day and keeps only what the user actually said', async () => {
+  const store = makeStore();
+  const { runner } = makeRunner(store, {
+    triage: '{"worth":true}',
+    replay: JSON.stringify({
+      memories: [
+        {
+          kind: 'preference',
+          content: 'Der Nutzer schneidet Releases immer von main.',
+          tags: ['release'],
+          importance: 0.8,
+          evidence: 'ich schneide Releases immer von main',
+        },
+        {
+          // Nothing in the transcript says this. The gate must throw it away.
+          kind: 'fact',
+          content: 'Der Nutzer nutzt Kubernetes in Produktion.',
+          tags: ['k8s'],
+          importance: 0.9,
+          evidence: 'wir fahren das auf Kubernetes',
+        },
+      ],
+      corrections: [],
+    }),
+  });
+
+  seedConversation(store, [
+    ['user', 'Kurze Sache noch: ich schneide Releases immer von main, nie von einem Branch.'],
+    ['assistant', 'Verstanden, ich richte mich danach.'],
+    ['user', 'Gut. Und pack bitte immer die Changelog-Zeile dazu.'],
+    ['assistant', 'Mache ich.'],
+  ]);
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.replayedCount, 1, 'one conversation was read in full');
+  assert.equal(run.learnedCount, 1, 'and exactly the backed memory survived');
+  const kept = store.listMemories({ limit: 50 });
+  assert.equal(kept.length, 1);
+  assert.match(kept[0].content, /Releases immer von main/);
+  assert.equal(kept[0].evidence, 'ich schneide Releases immer von main');
+  assert.match(run.report, /1 conversation re-read/);
+  store.close();
+});
+
+test('a conversation the cheap pass rejects never reaches the expensive one', async () => {
+  const store = makeStore();
+  const { runner, scripted } = makeRunner(store, {
+    triage: '{"worth":false}',
+    replay: '{"memories":[{"kind":"fact","content":"Dies darf nie geschrieben werden.","evidence":"nie"}]}',
+  });
+
+  seedConversation(store, [
+    ['user', 'Wie spaet ist es?'],
+    ['assistant', 'Kurz nach drei.'],
+    ['user', 'Danke dir.'],
+    ['assistant', 'Gern.'],
+  ]);
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.replayedCount, 0, 'triage stopped it');
+  assert.equal(run.learnedCount, 0);
+  assert.equal(
+    scripted.prompts.filter((prompt) => prompt.includes('You are re-reading one conversation')).length,
+    0,
+    'the expensive prompt never ran',
+  );
+  store.close();
+});
+
+test('a conversation with barely anything in it costs no call at all', async () => {
+  const store = makeStore();
+  const { runner, scripted } = makeRunner(store, { triage: '{"worth":true}' });
+  seedConversation(store, [
+    ['user', 'Danke!'],
+    ['assistant', 'Gern geschehen.'],
+  ]);
+
+  await runner.run({ owner: 'assistant' });
+
+  assert.equal(
+    scripted.prompts.filter((prompt) => prompt.includes('You decide whether one conversation')).length,
+    0,
+    'a single user turn is not worth even the triage',
+  );
+  store.close();
+});
+
+test('a correction the night finds sends the matching skill back for repair', async () => {
+  const store = makeStore();
+  const { runner, skillsDir } = makeRunner(store, {
+    triage: '{"worth":true}',
+    replay: JSON.stringify({
+      memories: [],
+      corrections: [
+        {
+          text: 'Vor einem Release immer erst die Tests laufen lassen.',
+          quote: 'du hast wieder kein npm test laufen lassen vor dem Release',
+        },
+      ],
+    }),
+    revise: JSON.stringify({
+      revise: true,
+      description: 'Wenn ein Release rausgeht',
+      body:
+        '## Schritte\n1. `npm test` laufen lassen - das wurde vergessen und ist ab jetzt Pflicht.\n' +
+        '2. `npm run build:core`.\n3. Dann paketieren und erst danach veroeffentlichen.',
+    }),
+  });
+
+  const skills = new SkillStore(skillsDir);
+  skills.save({
+    name: 'release-checklist',
+    description: 'Wenn ein Release rausgeht',
+    body: '## Schritte\n1. `npm run build:core`.\n2. Paketieren und veroeffentlichen.',
+    origin: 'sleep',
+  });
+
+  seedConversation(store, [
+    ['user', 'Halt, du hast wieder kein npm test laufen lassen vor dem Release. Das muss immer sein.'],
+    ['assistant', 'Du hast recht, das hole ich nach.'],
+    ['user', 'Bitte ab jetzt immer zuerst die Tests.'],
+    ['assistant', 'Verstanden.'],
+  ]);
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.skillRevisedCount, 1, 'the correction reached the skill');
+  assert.match(skills.get('release-checklist').body, /npm test/);
+  // Looked at is looked at: the same correction must not come back tomorrow.
+  assert.equal(store.openCorrections('assistant').length, 0, 'the correction was consumed');
+  store.close();
+});
+
+test('undoing a night takes back what its replay harvested', async () => {
+  const store = makeStore();
+  const { runner } = makeRunner(store, {
+    triage: '{"worth":true}',
+    replay: JSON.stringify({
+      memories: [
+        {
+          kind: 'preference',
+          content: 'Der Nutzer schneidet Releases immer von main.',
+          tags: ['release'],
+          importance: 0.8,
+          evidence: 'ich schneide Releases immer von main',
+        },
+      ],
+    }),
+  });
+
+  seedConversation(store, [
+    ['user', 'Noch was: ich schneide Releases immer von main, nie von einem Branch.'],
+    ['assistant', 'Notiert.'],
+    ['user', 'Gut so.'],
+    ['assistant', 'Alles klar.'],
+  ]);
+
+  const run = await runner.run({ owner: 'assistant' });
+  assert.equal(store.listMemories({ limit: 50 }).length, 1);
+
+  runner.undo(run.id);
+  assert.equal(store.listMemories({ limit: 50 }).length, 0, 'the harvest belongs to the night that made it');
   store.close();
 });
 

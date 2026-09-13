@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 13;
+export const SCHEMA_VERSION = 14;
 
 export type Db = DatabaseSync;
 
@@ -229,6 +229,39 @@ function migrate(db: Db): void {
   if (!hasColumn(db, 'sleep_runs', 'skill_revised_count')) {
     db.exec('ALTER TABLE sleep_runs ADD COLUMN skill_revised_count INTEGER NOT NULL DEFAULT 0');
   }
+
+  // Schema 13 -> 14: the night reads the day's conversations again, so a run
+  // says how many it got through and what they yielded.
+  if (!hasColumn(db, 'sleep_runs', 'replayed_count')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN replayed_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn(db, 'sleep_runs', 'learned_count')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN learned_count INTEGER NOT NULL DEFAULT 0');
+  }
+
+  /* ------------------------------ corrections ------------------------------
+     A correction is the strongest signal the system gets. When the user says
+     "no, not like that", something written down is wrong - and until now
+     nothing captured it: the per-turn extractor sees one exchange and writes
+     facts, never "that was a correction of what you just did".
+
+     Rows sit here until a revision pass has looked at them, then they are
+     marked consumed rather than removed, so the same correction cannot drag
+     the same skill in front of the model night after night. */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS corrections (
+      id          TEXT PRIMARY KEY,
+      owner       TEXT NOT NULL,
+      text        TEXT NOT NULL,
+      quote       TEXT NOT NULL,
+      session_id  TEXT,
+      created_at  INTEGER NOT NULL,
+      consumed_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_corrections_open
+      ON corrections(owner, consumed_at, created_at DESC);
+  `);
 
   /* ---------------------------- skill bookkeeping ----------------------------
      A skill itself is a file on disk, editable by hand and deliberately not a

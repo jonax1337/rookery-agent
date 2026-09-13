@@ -59,6 +59,11 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       // One a night. A skill that gets rewritten every night is not a skill,
       // it is noise with a folder of its own; `write_skill` covers the case
       // where something needs writing down in the moment.
+      // Twelve deep reads a night. The cheap triage pass runs over every
+      // conversation of the day, so this caps only the expensive half - a
+      // talkative day costs a handful of small calls plus at most twelve
+      // proper ones, and anything beyond that waits for tomorrow.
+      replaySessions: 12,
       skills: 1,
       // Two repairs against one invention. A skill whose ground has shifted
       // is actively misleading whoever opens it next, which is worse than a

@@ -1004,6 +1004,76 @@ export class Store {
     return { entities, memories, edges, links, truncated };
   }
 
+  /* --------------------------- the day's talk --------------------------- */
+
+  /**
+   * Conversations that moved since `since`, newest first.
+   *
+   * Mail sessions are left out on purpose: those are the assistant answering
+   * a mail with nobody on the other end, so there is no user in them to
+   * quote, and the evidence rule would throw away everything they yielded
+   * anyway. Archived ones are out for the same reason they are out of the
+   * list - the user put them away.
+   */
+  sessionsActiveSince(since: number, limit = 50): Session[] {
+    const rows = this.db
+      .prepare(
+        `SELECT s.*, (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
+           FROM sessions s
+          WHERE s.archived = 0
+            AND s.kind != 'mail'
+            AND s.updated_at > ?
+          ORDER BY s.updated_at DESC
+          LIMIT ?`,
+      )
+      .all(since, limit) as Row[];
+    return rows.map(mapSession);
+  }
+
+  /* ---------------------------- corrections ---------------------------- */
+
+  /**
+   * Record that the user put something right.
+   *
+   * Kept apart from memories because it is not a fact about the user, it is
+   * evidence about the system: something written down is wrong. The revision
+   * pass consumes these; nothing else reads them.
+   */
+  addCorrection(input: { owner: string; text: string; quote: string; sessionId?: string }): void {
+    this.db
+      .prepare(
+        'INSERT INTO corrections (id, owner, text, quote, session_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(randomUUID(), input.owner, input.text.trim(), input.quote.trim(), input.sessionId ?? null, Date.now());
+  }
+
+  /** Corrections no revision pass has looked at yet, oldest first. */
+  openCorrections(owner: string, limit = 20): { id: string; text: string; quote: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, text, quote FROM corrections
+          WHERE owner = ? AND consumed_at IS NULL
+          ORDER BY created_at ASC LIMIT ?`,
+      )
+      .all(owner, limit) as Row[];
+    return rows.map((row) => ({
+      id: row.id as string,
+      text: row.text as string,
+      quote: row.quote as string,
+    }));
+  }
+
+  /**
+   * Mark corrections as looked at. Not removed: a correction is a fact about
+   * what happened, and the record of it outlives the repair it caused.
+   */
+  consumeCorrections(ids: string[]): void {
+    if (!ids.length) return;
+    const mark = this.db.prepare('UPDATE corrections SET consumed_at = ? WHERE id = ?');
+    const now = Date.now();
+    for (const id of ids) mark.run(now, id);
+  }
+
   /* ------------------------ skill bookkeeping ------------------------ */
 
   /**
@@ -1169,6 +1239,8 @@ export class Store {
       status: 'running',
       startedAt: Date.now(),
       readCount: 0,
+      replayedCount: 0,
+      learnedCount: 0,
       mergedCount: 0,
       dormantCount: 0,
       edgeCount: 0,
@@ -1194,6 +1266,8 @@ export class Store {
       finishedAt: 'finished_at',
       durationMs: 'duration_ms',
       readCount: 'read_count',
+      replayedCount: 'replayed_count',
+      learnedCount: 'learned_count',
       mergedCount: 'merged_count',
       dormantCount: 'dormant_count',
       edgeCount: 'edge_count',
@@ -1283,7 +1357,15 @@ export class Store {
       // The two sets are kept disjoint: a memory this run wrote and a memory
       // it put to sleep are handled by different branches, never both.
       const written = this.db
-        .prepare("SELECT id FROM memories WHERE sleep_run_id = ? AND origin = 'sleep' AND dormant_at IS NULL")
+        // `extract` belongs here as well as `sleep`: the replay phase harvests
+        // memories out of the day's conversations, and those are as much a
+        // product of the night as an insight is. Still disjoint from the
+        // branch below, which takes the memories the run put to SLEEP - a row
+        // the run wrote is never also a row the run retired.
+        .prepare(
+          `SELECT id FROM memories
+            WHERE sleep_run_id = ? AND origin IN ('sleep', 'extract') AND dormant_at IS NULL`,
+        )
         .all(id) as Row[];
       // Anything that pointed at a memory this run created must let go first.
       for (const row of written) {
@@ -1437,6 +1519,8 @@ export function mapSleepRun(row: Row): SleepRun {
     finishedAt: row.finished_at ? Number(row.finished_at) : undefined,
     durationMs: row.duration_ms ? Number(row.duration_ms) : undefined,
     readCount: Number(row.read_count ?? 0),
+    replayedCount: Number(row.replayed_count ?? 0),
+    learnedCount: Number(row.learned_count ?? 0),
     mergedCount: Number(row.merged_count ?? 0),
     dormantCount: Number(row.dormant_count ?? 0),
     edgeCount: Number(row.edge_count ?? 0),

@@ -119,6 +119,7 @@ export const ORIGIN_LABEL: Record<MemoryOrigin, string> = {
  */
 export const SLEEP_PHASE_LABEL: Record<string, string> = {
   started: 'falling asleep',
+  replay: 'Replay',
   light: 'Light sleep',
   deep: 'Deep sleep',
   rem: 'REM sleep',
@@ -129,6 +130,7 @@ export const SLEEP_PHASE_LABEL: Record<string, string> = {
 /** What each stage is actually doing, one line for the card. */
 export const SLEEP_PHASE_DETAIL: Record<string, string> = {
   started: 'settling in',
+  replay: "going back over the day's conversations",
   light: 'tidying without reflection',
   deep: 'consolidating and resolving contradictions',
   rem: 'connecting memories and drawing conclusions',
