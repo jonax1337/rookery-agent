@@ -213,7 +213,7 @@ export {
   type ExternalSkillRef,
   type ExternalSource,
 } from './external/discovery.js';
-export { claudeHome, codexHome, externalHomes, type ExternalKind } from './external/homes.js';
+export { claudeHome } from './external/homes.js';
 export {
   SKILL_SOURCES,
   importSkillFromGitHub,

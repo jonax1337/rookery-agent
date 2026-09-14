@@ -3,7 +3,7 @@ import { api, ApiError } from '../lib/api';
 import type { ExternalOverview, ExternalSource } from '../lib/types';
 
 /**
- * What the Claude Code and Codex on this machine have installed.
+ * What the Claude Code on this machine has installed.
  *
  * Local state rather than the module-level store `useSkills` and `useTools`
  * keep: one page reads this, and it changes when somebody installs a plugin

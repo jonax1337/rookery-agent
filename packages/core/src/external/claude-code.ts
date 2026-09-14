@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { claudeHome, kindLabel, readJsonFile } from './homes.js';
+import { claudeHome, EXTERNAL_KIND, EXTERNAL_LABEL, readJsonFile } from './homes.js';
 import {
   EMPTY_SCAN,
   scanSkills,
@@ -71,8 +71,8 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
   const dir = claudeHome(home);
   if (!existsSync(dir)) return EMPTY_SCAN;
 
-  const kind = 'claude-code' as const;
-  const label = kindLabel(kind);
+  const kind = EXTERNAL_KIND;
+  const label = EXTERNAL_LABEL;
   const sources: ExternalSource[] = [];
   const skills: ExternalSkillRef[] = [];
   const servers: ExternalMcpServer[] = [];
@@ -85,14 +85,13 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
     skills.push(...found);
   };
 
-  collect({ id: kind + ':home', kind, label, origin: 'home', dir: join(dir, 'skills') });
+  collect({ id: kind + ':home', label, origin: 'home', dir: join(dir, 'skills') });
 
   for (const plugin of enabledPlugins(dir)) {
     const sourceId = kind + ':plugin/' + plugin.key;
     const pluginLabel = label + ' - ' + (plugin.key.split('@')[0] ?? plugin.key);
     collect({
       id: sourceId,
-      kind,
       label: pluginLabel,
       origin: 'plugin',
       plugin: plugin.key,
@@ -101,7 +100,7 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
 
     const mcp = readJsonFile<{ mcpServers?: Record<string, McpServerJson> }>(join(plugin.path, '.mcp.json'));
     for (const [name, json] of Object.entries(mcp?.mcpServers ?? {})) {
-      const server = toExternalServer(name, json, { kind, sourceId, label: pluginLabel, scope: plugin.key });
+      const server = toExternalServer(name, json, { sourceId, label: pluginLabel, scope: plugin.key });
       if (server) servers.push(server);
     }
   }
@@ -112,7 +111,7 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
   const config = readJsonFile<ClaudeConfig>(configFile(dir, home));
   const own = { ...(settings?.mcpServers ?? {}), ...(config?.mcpServers ?? {}) };
   for (const [name, json] of Object.entries(own)) {
-    const server = toExternalServer(name, json, { kind, sourceId: kind + ':home', label });
+    const server = toExternalServer(name, json, { sourceId: kind + ':home', label });
     if (server) servers.push(server);
   }
 
@@ -121,7 +120,6 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
   for (const [path, project] of Object.entries(config?.projects ?? {})) {
     for (const [name, json] of Object.entries(project?.mcpServers ?? {})) {
       const server = toExternalServer(name, json, {
-        kind,
         sourceId: kind + ':home',
         label: label + ' - ' + path,
         scope: path,

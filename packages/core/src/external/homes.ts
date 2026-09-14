@@ -3,40 +3,30 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * Where the two CLIs keep their own installation.
+ * Where the Claude Code on this machine keeps its own installation.
  *
- * Rookery already runs on the OAuth session of the locally logged-in `claude`
- * and `codex`, so whatever a person has installed for those two is sitting on
- * the same disk: skills, plugins, MCP servers. This module only says where to
- * look and reads a file if it is there. Nothing here ever writes - what
- * belongs to Claude Code and Codex stays theirs.
+ * Rookery already runs on the OAuth session of the locally logged-in
+ * `claude`, so whatever a person has installed for it is sitting on the same
+ * disk: skills, plugins, MCP servers. This module only says where to look and
+ * reads a file if it is there. Nothing here ever writes - what belongs to
+ * Claude Code stays Claude Code's.
  */
 
-export type ExternalKind = 'claude-code' | 'codex';
+/** What a person reads on the page for anything found in that installation. */
+export const EXTERNAL_LABEL = 'Claude Code';
 
-export interface ExternalHome {
-  kind: ExternalKind;
-  /** The configuration directory, `~/.claude` or `~/.codex`. */
-  dir: string;
-}
+/**
+ * The prefix every discovered source and server id carries.
+ *
+ * Fixed rather than derived: these ids are written into `config.external`
+ * when somebody switches a shelf or a server on, so they have to survive a
+ * rescan - and a rename here would silently reset those decisions.
+ */
+export const EXTERNAL_KIND = 'claude-code';
 
 /** `~/.claude`, honouring the same override the CLI itself takes. */
 export function claudeHome(home = homedir()): string {
   return process.env.CLAUDE_CONFIG_DIR?.trim() || join(home, '.claude');
-}
-
-/** `~/.codex`, honouring `CODEX_HOME`. */
-export function codexHome(home = homedir()): string {
-  return process.env.CODEX_HOME?.trim() || join(home, '.codex');
-}
-
-/** The homes that actually exist on this machine. */
-export function externalHomes(home = homedir()): ExternalHome[] {
-  const homes: ExternalHome[] = [
-    { kind: 'claude-code', dir: claudeHome(home) },
-    { kind: 'codex', dir: codexHome(home) },
-  ];
-  return homes.filter((entry) => existsSync(entry.dir));
 }
 
 /** Read and parse a JSON file; null when it is missing or does not parse. */
@@ -57,9 +47,4 @@ export function readTextFile(path: string): string | null {
   } catch {
     return null;
   }
-}
-
-/** The label a person recognises for a kind. */
-export function kindLabel(kind: ExternalKind): string {
-  return kind === 'claude-code' ? 'Claude Code' : 'Codex';
 }

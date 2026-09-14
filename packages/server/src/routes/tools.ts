@@ -160,7 +160,7 @@ export async function registerToolRoutes(app: FastifyInstance, context: ServerCo
   /* -------------------------------- external -------------------------------- */
 
   /**
-   * What the Claude Code and Codex on this machine have installed. Read-only
+   * What the Claude Code on this machine has installed. Read-only
    * towards them: the only thing Rookery stores is which of it counts here.
    */
   app.get('/api/external', async () => ({
@@ -193,7 +193,7 @@ export async function registerToolRoutes(app: FastifyInstance, context: ServerCo
   /** Read the two installations again, for the button on the page. */
   app.post('/api/external/refresh', async () => {
     refreshExternal();
-    context.log.info('Rescanned the Claude Code and Codex installations');
+    context.log.info('Rescanned the Claude Code installation');
     return {
       sources: externalSources(context.config).map(({ source, enabled }) => ({ ...source, enabled })),
       servers: toolServerStates(context.config).filter((state) => state.install === 'external').length,

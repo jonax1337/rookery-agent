@@ -335,7 +335,7 @@ export const api = {
 
   /* -------------------------------- external -------------------------------- */
 
-  /** What the Claude Code and Codex on this machine have installed. */
+  /** What the Claude Code on this machine has installed. */
   external: () => request<ExternalOverview>('/api/external'),
   /** Whether one of those shelves counts here. */
   setExternalSource: (id: string, enabled: boolean) =>

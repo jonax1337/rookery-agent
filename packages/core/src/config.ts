@@ -1,7 +1,14 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import type { EffortLevel, GatewaysConfig, PermissionLevel, ProviderId, RookeryConfig } from './types.js';
+import type {
+  EffortLevel,
+  ExternalConfig,
+  GatewaysConfig,
+  PermissionLevel,
+  ProviderId,
+  RookeryConfig,
+} from './types.js';
 import { ensureProfile } from './profile.js';
 
 /**
@@ -9,7 +16,7 @@ import { ensureProfile } from './profile.js';
  *   defaults -> ~/.rookery/config.json -> environment -> explicit overrides
  *
  * The two built-in providers, `claude` and `codex`, take no API key: model
- * access is borrowed from whatever their CLIs are already logged into.
+ * access is borrowed from the login sessions already on this machine.
  * `providerProfiles` is the opt-in exception - each entry is a named API key
  * plus endpoint for the `claude` binary, stored the same way as
  * `gateways.telegram.token` (see `normaliseSecrets` in the server package).
@@ -271,6 +278,29 @@ export function loadConfig(overrides: Partial<RookeryConfig> = {}): RookeryConfi
     });
   }
   delete (config as { computer?: unknown }).computer;
+
+  // Rookery used to read a second installation, `~/.codex`, beside Claude
+  // Code's. A shelf or server that only existed there is gone with the CLI, so
+  // its switch is dropped rather than left as a key nothing will ever match
+  // again. Two shelves found in both were folded under a bare `plugin/<key>`
+  // and one server under `ext-both-`; those still exist, under the Claude Code
+  // id they now carry alone - so the decision travels rather than silently
+  // reverting a three-hundred-skill plugin to off.
+  const sources: Record<string, boolean> = {};
+  for (const [id, on] of Object.entries(config.external.skillSources)) {
+    if (id.startsWith('codex:')) continue;
+    const key = id.startsWith('plugin/') ? 'claude-code:' + id : id;
+    if (!(key in sources)) sources[key] = on;
+  }
+  config.external.skillSources = sources;
+
+  const servers: ExternalConfig['servers'] = {};
+  for (const [id, decided] of Object.entries(config.external.servers)) {
+    if (id.startsWith('ext-codex-')) continue;
+    const key = id.startsWith('ext-both-') ? 'ext-claude-code-' + id.slice('ext-both-'.length) : id;
+    if (!(key in servers)) servers[key] = decided;
+  }
+  config.external.servers = servers;
 
   // Clearing a setting from the UI stores an empty string, because the merge
   // skips undefined; downstream an empty model or effort must mean "unset".

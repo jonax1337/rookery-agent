@@ -85,7 +85,7 @@ const COLUMN_LABELS: Record<string, string> = {
 
 type Tab = 'alle' | 'assistant' | 'agents' | 'both';
 
-/** The second table: one row per shelf found in Claude Code or Codex. */
+/** The second table: one row per shelf found in Claude Code. */
 const sourceColumn = createRookeryColumnHelper<ExternalSource>();
 
 const SOURCE_COLUMN_LABELS: Record<string, string> = {
@@ -432,22 +432,22 @@ export function SkillsPage() {
       />
 
       {/*
-        The other shelf. These are read out of the Claude Code and Codex on
-        this machine and never copied here, so the table has no name column
+        The other shelf. These are read out of the Claude Code on this
+        machine and never copied here, so the table has no name column
         that opens anything: what a source holds is found with `find_skill`
         during a turn, not browsed here. The switch is the whole decision -
         a single plugin can hold three hundred entries, which is why one is
         never available until somebody says so.
       */}
       <SectionHeading
-        title="From Claude Code and Codex"
+        title="From Claude Code"
         hint={
           externalSources.length
             ? formatNumber(availableSkills) +
               ' of ' +
               formatNumber(installedSkills) +
               ' installed skills are available. The assistant is told they exist and searches them when a task needs one.'
-            : 'Nothing installed in the two CLIs on this machine, or reading them is switched off.'
+            : 'Nothing installed in the Claude Code on this machine, or reading it is switched off.'
         }
       >
         <DataTable
@@ -473,7 +473,7 @@ export function SkillsPage() {
             <EmptyState
               icon={BookOpenIcon}
               title="Nothing found"
-              description="Rookery reads ~/.claude and ~/.codex: the skills folders of both CLIs and those of every plugin switched on there. It never writes to them."
+              description="Rookery reads ~/.claude: the skills folder of Claude Code and those of every plugin switched on there. It never writes to them."
               variant="plain"
               size="sm"
             />

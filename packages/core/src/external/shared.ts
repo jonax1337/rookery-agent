@@ -1,31 +1,30 @@
 import { createHash } from 'node:crypto';
-import { existsSync, openSync, readSync, closeSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, openSync, readSync, closeSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ToolServerAudience } from '../types.js';
-import type { ExternalKind } from './homes.js';
+import { EXTERNAL_KIND } from './homes.js';
 
 /**
- * The shapes both readers produce, and the two jobs they both do: pick the
- * skills out of a folder, and turn somebody else's MCP declaration into
- * something Rookery can start.
+ * The shapes the reader produces, and the two jobs it does: pick the skills
+ * out of a folder, and turn Claude Code's MCP declaration into something
+ * Rookery can start.
  */
 
-/** One shelf of skills: a CLI's own skills folder, or one plugin's. */
+/** One shelf of skills: Claude Code's own skills folder, or one plugin's. */
 export interface ExternalSource {
-  /** `claude-code:home`, `codex:plugin/ecc/ecc`, and so on. */
+  /** `claude-code:home`, `claude-code:plugin/ecc@ecc`, and so on. */
   id: string;
-  kind: ExternalKind;
-  /** What a person reads on the page: "Claude Code", "Codex - ecc". */
+  /** What a person reads on the page: "Claude Code", "Claude Code - ecc". */
   label: string;
   origin: 'home' | 'plugin';
-  /** The plugin key as its own CLI names it, when this is a plugin. */
+  /** The plugin key as Claude Code names it, when this is a plugin. */
   plugin?: string;
   /** The folder holding one directory per skill. */
   dir: string;
   skillCount: number;
 }
 
-/** A skill sitting in somebody else's installation. Read, never written. */
+/** A skill sitting in the Claude Code installation. Read, never written. */
 export interface ExternalSkillRef {
   /** `<sourceId>/<name>`: unique even when two plugins pick the same name. */
   id: string;
@@ -37,13 +36,12 @@ export interface ExternalSkillRef {
   audience: ToolServerAudience;
 }
 
-/** An MCP server declared by one of the CLIs or by a plugin of theirs. */
+/** An MCP server declared by Claude Code or by one of its plugins. */
 export interface ExternalMcpServer {
   /** `ext-claude-code-projectatlas`: stable across scans, safe as a tool id. */
   id: string;
-  /** The name the CLI uses; tools arrive as `mcp__<name>__<tool>`. */
+  /** The name Claude Code uses; tools arrive as `mcp__<name>__<tool>`. */
   name: string;
-  kind: ExternalKind;
   sourceId: string;
   /** Where it came from, for the badge on the page. */
   label: string;
@@ -172,11 +170,11 @@ const slug = (text: string): string =>
   text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 
 /** A tool-server id that survives a rescan and cannot collide with the catalogue. */
-export function externalServerId(kind: ExternalKind, name: string, scope?: string): string {
-  return ['ext', kind, scope ? slug(scope) : '', slug(name)].filter(Boolean).join('-');
+export function externalServerId(name: string, scope?: string): string {
+  return ['ext', EXTERNAL_KIND, scope ? slug(scope) : '', slug(name)].filter(Boolean).join('-');
 }
 
-/** The `mcpServers` shape both CLIs write in JSON, and Claude Code's HTTP variant. */
+/** The `mcpServers` shape Claude Code writes in JSON, plus its HTTP variant. */
 export interface McpServerJson {
   type?: string;
   command?: string;
@@ -203,16 +201,15 @@ const stringMap = (value: Record<string, unknown> | undefined): Record<string, s
 export function toExternalServer(
   name: string,
   json: McpServerJson,
-  context: { kind: ExternalKind; sourceId: string; label: string; scope?: string; projectPath?: string },
+  context: { sourceId: string; label: string; scope?: string; projectPath?: string },
 ): ExternalMcpServer | null {
   const declared = typeof json.type === 'string' ? json.type.toLowerCase() : '';
   const http = declared === 'http' || declared === 'streamable-http' || (!json.command && Boolean(json.url));
   const transport: ExternalMcpServer['transport'] = declared === 'sse' ? 'sse' : http ? 'http' : 'stdio';
 
-  const base: Pick<ExternalMcpServer, 'name' | 'kind' | 'transport' | 'args' | 'env'> &
+  const base: Pick<ExternalMcpServer, 'name' | 'transport' | 'args' | 'env'> &
     Partial<Pick<ExternalMcpServer, 'command' | 'url' | 'headers' | 'projectPath'>> = {
     name,
-    kind: context.kind,
     transport,
     args: strings(json.args),
     env: stringMap(json.env),
@@ -227,33 +224,9 @@ export function toExternalServer(
 
   return {
     ...base,
-    id: externalServerId(context.kind, name, context.scope),
+    id: externalServerId(name, context.scope),
     sourceId: context.sourceId,
     label: context.label,
     fingerprint: fingerprintServer(base),
   };
-}
-
-/** The newest entry of a versioned plugin folder: `latest` if it is there, else by mtime. */
-export function newestVersion(dir: string): string | null {
-  if (!existsSync(dir)) return null;
-  let entries: string[];
-  try {
-    entries = readdirSync(dir).filter((name) => !name.startsWith('plugin-backup-'));
-  } catch {
-    return null;
-  }
-  if (entries.includes('latest')) return join(dir, 'latest');
-  let best: { path: string; at: number } | null = null;
-  for (const name of entries) {
-    const path = join(dir, name);
-    try {
-      const stats = statSync(path);
-      if (!stats.isDirectory()) continue;
-      if (!best || stats.mtimeMs > best.at) best = { path, at: stats.mtimeMs };
-    } catch {
-      // A half-written install; the next scan will see it.
-    }
-  }
-  return best?.path ?? null;
 }

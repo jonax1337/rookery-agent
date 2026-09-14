@@ -23,7 +23,7 @@ import { Progress } from '@/components/ui/progress';
  * in the avatar menu, and asking the provider for them on every chat screen
  * was a request per composer mount for a number nobody was reading here.
  *
- * The window is never guessed. Claude Code and Codex report it per turn, and a
+ * The window is never guessed. The harness reports it per turn, and a
  * conversation that has an answer in it carries the real figure - a model with
  * a one-million window says one million. Before the first answer there is no
  * window, so there is no percentage either, and the panel says so instead of

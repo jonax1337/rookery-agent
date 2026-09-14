@@ -10,7 +10,7 @@ Monorepo mit npm-Workspaces:
 packages/core     Das Gehirn: Provider-Adapter, Gedaechtnis, Persona, Runtime, die
                   Organisation (org/: Store, Controller, Planner, MCP-Bruecke), die
                   Computer-Steuerung (computer/) und external/ — das Lesen der
-                  Claude-Code- und Codex-Installation daneben. Kennt weder HTTP noch
+                  Claude-Code-Installation daneben. Kennt weder HTTP noch
                   Terminal.
 packages/server   Fastify: REST + WebSocket + SSE, liefert die gebaute Web-UI aus,
                   dazu die Gateways (gateways/, z. B. Telegram) als weiterer Transport.

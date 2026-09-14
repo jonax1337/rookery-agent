@@ -468,7 +468,7 @@ export class Assistant extends EventEmitter {
     // a switch it does not know about is a wall it cannot climb.
     const toolHints = [...extra.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean);
     // Rookery's own shelf in full, and one paragraph for the far larger one
-    // installed in Claude Code and Codex: what is there, not what it says.
+    // installed in Claude Code: what is there, not what it says.
     const skillsIndex = [renderSkillsIndex(this.skills.for(who)), renderExternalSkillsHint(this.config, who)]
       .filter(Boolean)
       .join('\n\n');

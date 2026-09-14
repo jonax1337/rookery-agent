@@ -128,13 +128,13 @@ after(() => {
   }
 });
 
-function createAssistant(fake, overrides = {}) {
+function createAssistant(fake, overrides = {}, providers = [fake.provider]) {
   const home = mkdtempSync(join(tmpdir(), 'rookery-org-'));
   mkdirSync(join(home, 'run'), { recursive: true });
   const store = new Store(':memory:');
   const assistant = new Assistant({
     store,
-    registry: new ProviderRegistry([fake.provider]),
+    registry: new ProviderRegistry(providers),
     config: { home, logLevel: 'silent', memory: { enabled: false, autoExtract: false }, ...overrides },
   });
   openAssistants.push(assistant);
@@ -375,7 +375,10 @@ test('a turn that answers mail with send_mail does not also deliver its closing 
 
 test('the assistant can hire and structure the company through tools', async () => {
   const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
+  // Two providers, as in a real run: an agent can be pinned to any id the
+  // registry serves, and `hire_agent` checks it against exactly that.
+  const second = { ...fake.provider, id: 'codex', displayName: 'Fake ChatGPT' };
+  const { assistant, store } = createAssistant(fake, {}, [fake.provider, second]);
   const org = assistant.org.activeOrganization();
   const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
   const team = await assistant.org.handle(ctx, 'create_team', { name: 'Platform', purpose: 'Infra' });
@@ -388,6 +391,11 @@ test('the assistant can hire and structure the company through tools', async () 
   assert.equal(mara.teamId, store.org.findTeam(org.id, 'Platform').id);
   assert.equal(mara.provider, 'codex');
   assert.equal(mara.permission, 'write');
+  // An id nothing serves is not a preference, so it is not stored as one.
+  await assistant.org.handle(ctx, 'hire_agent', {
+    name: 'Tal', title: 'Dev', instructions: 'Ship it.', provider: 'no-such-backend',
+  });
+  assert.equal(store.org.findAgent(org.id, 'tal').provider, undefined);
   const missing = await assistant.org.handle(ctx, 'create_project', { name: 'X', path: join(tmpdir(), 'does-not-exist-' + Date.now()) });
   assert.equal(missing.isError, true);
   assert.match(await assistant.org.handle(ctx, 'org_overview', {}).then((r) => r.text), /mara — Mara, SRE · team: Platform/);

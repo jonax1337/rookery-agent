@@ -6,7 +6,7 @@
  * in sync with packages/core/src/types.ts.
  */
 
-/** 'claude' and 'codex' are built in; any other id names a configured ProviderProfile. */
+/** 'claude' (Claude login) and 'codex' (ChatGPT) are built in; any other id names a configured ProviderProfile. */
 export type ProviderId = string;
 export type Role = 'user' | 'assistant' | 'system';
 export type PermissionLevel = 'chat' | 'read' | 'write' | 'full';
@@ -928,7 +928,7 @@ export interface ToolServer {
   projectIds: string[];
   prepare?: { label: string };
   custom?: { name: string; command: string; args: string[]; hint: string };
-  /** Where a server read out of Claude Code or Codex came from. */
+  /** Where a server read out of Claude Code came from. */
   source?: string;
   /** Approved once, but its start definition has changed since. */
   changed?: boolean;
@@ -947,13 +947,12 @@ export interface ToolServer {
 }
 
 /**
- * One shelf of skills in the Claude Code or Codex installed on this machine:
- * a CLI's own folder, or one of its plugins. Read-only - Rookery only stores
- * whether the shelf counts here.
+ * One shelf of skills in the Claude Code installed on this machine: its own
+ * folder, or one of its plugins. Read-only - Rookery only stores whether the
+ * shelf counts here.
  */
 export interface ExternalSource {
   id: string;
-  kind: 'claude-code' | 'codex';
   label: string;
   origin: 'home' | 'plugin';
   plugin?: string;

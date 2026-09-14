@@ -291,8 +291,8 @@ export function ToolsPage() {
     {
       label: 'Found here',
       value: formatNumber(counts.gefunden),
-      headline: 'Installed in Claude Code and Codex',
-      footnote: 'Read from ~/.claude and ~/.codex; each one runs only once you switch it on',
+      headline: 'Installed in Claude Code',
+      footnote: 'Read from ~/.claude; each one runs only once you switch it on',
     },
     {
       label: 'Custom servers',

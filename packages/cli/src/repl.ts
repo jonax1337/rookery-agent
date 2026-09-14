@@ -78,7 +78,7 @@ const SLASH_HELP: [string, string][] = [
   ['/sessions', 'list recent sessions'],
   ['/switch <id>', 'continue an earlier session'],
   ['/talk <slug>', 'talk to an agent, or `assistant` to come back'],
-  ['/provider <id>', 'claude or codex'],
+  ['/provider <id>', 'claude, codex or a configured profile id'],
   ['/model <m>', 'set the model (blank = provider default)'],
   ['/effort <l>', 'low | medium | high | xhigh | max | off'],
   ['/usage', 'subscription usage of the current provider'],

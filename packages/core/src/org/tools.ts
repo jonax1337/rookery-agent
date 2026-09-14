@@ -22,6 +22,18 @@ const ASSISTANT_ONLY: ToolAudience[] = ['assistant'];
 
 const str = (description: string): Record<string, unknown> => ({ type: 'string', description });
 
+/**
+ * How a provider argument is described to the model.
+ *
+ * Deliberately not an enum: every turn runs on the same harness and the id
+ * only says what it is pointed at, so the set is open - the two built-ins
+ * plus one id per provider profile somebody configured. A fixed enum here
+ * would reject a backend the moment it was added on the Providers page.
+ * The controller checks the id against the registry instead.
+ */
+const PROVIDER_HINT =
+  'Provider id: "claude" for the Claude login, "codex" for ChatGPT, or the id of a configured provider profile.';
+
 export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'read_profile',
@@ -195,8 +207,8 @@ export const ORG_TOOLS: ToolDefinition[] = [
     audience: BOTH,
   },
   // The shelf the instructions cannot carry. Hundreds of skills are installed
-  // in the Claude Code and Codex on this machine; the prompt says how many and
-  // from where, this finds the one that fits.
+  // in the Claude Code on this machine; the prompt says how many and from
+  // where, this finds the one that fits.
   {
     name: 'find_skill',
     description:
@@ -282,7 +294,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
         slug: str('Short handle, lowercase with dashes. Derived from the name when omitted.'),
         team: str('Team name or id. Optional.'),
         manager: str('Manager agent slug. Omit for an agent reporting to you directly.'),
-        provider: { type: 'string', enum: ['claude', 'codex'], description: 'Preferred CLI. Optional.' },
+        provider: str(PROVIDER_HINT + ' Optional.'),
         model: str('Model name for that provider. Optional.'),
         permission: {
           type: 'string',
@@ -310,7 +322,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
         instructions: str('New standing instructions. Optional.'),
         team: str('Team name or id, or "none" to remove from its team. Optional.'),
         manager: str('Manager slug, or "assistant" to report to you directly. Optional.'),
-        provider: { type: 'string', enum: ['claude', 'codex'], description: 'Optional.' },
+        provider: str(PROVIDER_HINT + ' Optional.'),
         model: str('Optional.'),
         permission: { type: 'string', enum: ['chat', 'read', 'write', 'full'], description: 'Optional.' },
         archived: { type: 'boolean', description: 'true retires the agent, false brings it back. Optional.' },
@@ -667,7 +679,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        defaultProvider: str('claude or codex. Optional.'),
+        defaultProvider: str(PROVIDER_HINT + ' Optional.'),
         defaultModel: str('Model id, or "default" for the provider default. Optional.'),
         defaultEffort: str('low, medium, high, or "default". Optional.'),
         maxConcurrentAssignments: { type: 'number', description: 'Agent processes at the same time, 1 to 16. Optional.' },

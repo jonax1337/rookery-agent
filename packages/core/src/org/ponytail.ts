@@ -6,7 +6,7 @@
  * line about the ponytail repository itself is dropped, because no agent of
  * ours works on it.
  *
- * Vendored rather than installed: Ponytail ships as a Claude Code / Codex
+ * Vendored rather than installed: Ponytail ships as a Claude Code
  * plugin, and our provider processes run with `--setting-sources ''` (see
  * providers/claude-code.ts), so no plugin, hook or settings file of the host
  * ever reaches them. The ruleset is 2.6 KB of prose; carrying the text is far

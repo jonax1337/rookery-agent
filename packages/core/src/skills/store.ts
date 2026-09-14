@@ -19,8 +19,8 @@ import type { ToolServerAudience } from '../types.js';
  * the same name. This is read-only: `save`/`remove` always write to the
  * first directory, so an agent's job never writes a skill into a project.
  * The same read - never a native provider mechanism - is why this is
- * identical for Claude Code, Codex or any other provider: they only ever see
- * the rendered prompt text, never the directories themselves.
+ * identical whatever backend a turn runs on: the process only ever sees the
+ * rendered prompt text, never the directories themselves.
  */
 
 /**
@@ -48,7 +48,7 @@ export interface Skill {
   path: string;
   updatedAt: number;
   /**
-   * Set only for a skill read out of a Claude Code or Codex installation:
+   * Set only for a skill read out of the Claude Code installation:
    * the label of the source it came from. Rookery's own skills leave it
    * unset, and nothing carrying it may be written to.
    */
@@ -100,7 +100,7 @@ function asOrigin(value: string | undefined): SkillOrigin {
  *
  * Standalone rather than a method because the folder format is the open
  * Agent Skills standard: the same read serves Rookery's own shelf and a
- * folder sitting in somebody's Claude Code or Codex installation, which is
+ * folder sitting in somebody's Claude Code installation, which is
  * what `skills/shelf.ts` opens. Null when there is no `SKILL.md` there.
  */
 export function readSkillFolder(dir: string, name: string): Skill | null {

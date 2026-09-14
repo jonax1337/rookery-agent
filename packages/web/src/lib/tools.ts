@@ -75,7 +75,7 @@ export interface ToolStatus {
 export function toolStatus(tool: ToolServer): ToolStatus {
   if (!tool.installed) return { label: 'Not installed', tone: 'blocked' };
   if (tool.missingEnv.length) return { label: 'Key missing', tone: 'blocked' };
-  // A server taken over from Claude Code or Codex that has since been edited
+  // A server taken over from Claude Code that has since been edited
   // there. It was approved as it stood, so it waits rather than running on.
   if (tool.changed) return { label: 'Changed', tone: 'blocked' };
   if (tool.enabled) return { label: 'Ready', tone: 'on' };

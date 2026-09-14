@@ -7,9 +7,9 @@ import type { McpServerSpec } from '../types.js';
  * A project's own `.mcp.json`: the same file a person's own Claude Code
  * session in that folder would already read. Rookery reads it centrally,
  * once, and turns it into the generic `McpServerSpec[]` every provider
- * adapter already accepts (`ProviderTurnOptions.mcpExtra`) - so Codex, a
- * future provider, and Claude Code all get the same servers through their
- * own existing serializer, with nothing provider-specific added here.
+ * adapter already accepts (`ProviderTurnOptions.mcpExtra`) - so Claude Code
+ * and any future provider get the same servers through their own existing
+ * serializer, with nothing provider-specific added here.
  *
  * `.mcp.json` starts real processes, unlike a skill, which is just prose -
  * so a project only gets its servers once a person has approved it (see

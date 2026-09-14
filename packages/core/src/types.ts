@@ -7,10 +7,11 @@
  */
 
 /**
- * Which provider backs a turn. `'claude'` and `'codex'` are the two built-in
- * CLIs, both authenticated by their own login session, never an API key.
- * Any other id names a configured `ProviderProfile`: still the `claude`
- * binary underneath, pointed at a different backend with its own key.
+ * Which provider backs a turn. Every turn runs on the `claude` binary; the
+ * id only says what it is pointed at. `'claude'` is the local Claude Code
+ * login and `'codex'` the ChatGPT subscription served through Rookery's own
+ * bridge - both authenticated by a login session, never an API key. Any
+ * other id names a configured `ProviderProfile` with its own backend and key.
  */
 export type ProviderId = string;
 
@@ -935,7 +936,7 @@ export interface RookeryConfig {
   gateways: GatewaysConfig;
   /** The MCP hub: which servers run for whom. */
   tools: ToolsConfig;
-  /** What is taken over from the Claude Code and Codex installed here. */
+  /** What is taken over from the Claude Code installed here. */
   external: ExternalConfig;
   /** Where skills live, one folder per skill. Defaults to `<home>/skills`. */
   skillsDir: string;
@@ -1097,28 +1098,28 @@ export interface RouterConfig {
 }
 
 /**
- * What Rookery takes over from the Claude Code and Codex installed beside it.
+ * What Rookery takes over from the Claude Code installed beside it.
  *
- * Both CLIs already carry a curated set of skills, plugins and MCP servers on
- * this machine, and Rookery runs on their sessions anyway. This block is the
- * consent layer in front of that: reading is always safe, but a skills shelf
- * of three hundred entries and a server that starts a process are not things
- * that arrive unannounced. Rookery never writes back into `~/.claude` or
- * `~/.codex`.
+ * Claude Code already carries a curated set of skills, plugins and MCP
+ * servers on this machine, and Rookery runs on its session anyway. This
+ * block is the consent layer in front of that: reading is always safe, but a
+ * skills shelf of three hundred entries and a server that starts a process
+ * are not things that arrive unannounced. Rookery never writes back into
+ * `~/.claude`.
  */
 export interface ExternalConfig {
-  /** Look at the two installations at all. */
+  /** Look at that installation at all. */
   enabled: boolean;
   /**
-   * Source id (`claude-code:home`, `codex:plugin/ecc@ecc`) to whether its
-   * skills are available. A source nobody decided about follows the default
-   * in `sourceEnabled`: a CLI's own folder yes, a plugin no.
+   * Source id (`claude-code:home`, `claude-code:plugin/ecc@ecc`) to whether
+   * its skills are available. A source nobody decided about follows the
+   * default in `sourceEnabled`: Claude Code's own folder yes, a plugin no.
    */
   skillSources: Record<string, boolean>;
   /**
    * Discovered MCP server id to what was decided about it. The fingerprint is
-   * over the start definition at the time of approval, so an edit in the
-   * CLI's own configuration takes the server out of service until a person
+   * over the start definition at the time of approval, so an edit in Claude
+   * Code's own configuration takes the server out of service until a person
    * looks at it again.
    */
   servers: Record<string, { enabled: boolean; audience: ToolServerAudience; projectIds?: string[]; fingerprint: string }>;

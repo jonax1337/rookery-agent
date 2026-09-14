@@ -22,7 +22,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: '/sessions', description: 'recent conversations' },
   { name: '/switch', args: '<id>', description: 'resume a previous conversation' },
   { name: '/talk', args: '<slug>', description: 'talk to an agent; `assistant` switches back' },
-  { name: '/provider', args: '<id>', description: 'claude or codex' },
+  { name: '/provider', args: '<id>', description: 'claude, codex or a configured profile id' },
   { name: '/permission', args: '<level>', description: 'chat | read | write | full' },
   { name: '/model', args: '[name]', description: 'set model (empty = provider default)' },
   { name: '/effort', args: '[level]', description: 'low | medium | high | xhigh | max | off' },

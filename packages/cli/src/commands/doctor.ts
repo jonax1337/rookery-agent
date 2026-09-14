@@ -20,10 +20,14 @@ const LOGIN_HINT: Record<string, string> = {
   codex: 'run `codex login`',
 };
 
-const INSTALL_HINT: Record<string, string> = {
-  claude: 'npm i -g @anthropic-ai/claude-code',
-  codex: 'npm i -g @openai/codex',
-};
+/**
+ * The command that gets a missing binary installed.
+ *
+ * One entry, because every provider runs on the same binary - the id only
+ * says what that process is pointed at. A provider that reports its binary
+ * missing is missing this one.
+ */
+const INSTALL_HINT = 'npm i -g @anthropic-ai/claude-code';
 
 export interface DoctorOptions {
   json?: boolean;
@@ -122,7 +126,7 @@ export async function doctorCommand(options: DoctorOptions = {}): Promise<number
       for (const status of statuses) {
         const fix = status.available
           ? LOGIN_HINT[status.id] ?? 'log in to ' + status.id
-          : 'install it: ' + (INSTALL_HINT[status.id] ?? status.id);
+          : 'install it: ' + INSTALL_HINT;
         out.write('  ' + theme.amber(status.id) + '  ' + fix + '\n');
       }
       out.write('\n');
@@ -158,7 +162,7 @@ function providerBlock(status: ProviderStatus): string {
     lines.push('    ' + keyValue('fix', theme.amber(LOGIN_HINT[status.id] ?? 'log in'), 14));
   }
   if (!status.available) {
-    lines.push('    ' + keyValue('fix', theme.amber(INSTALL_HINT[status.id] ?? 'install it'), 14));
+    lines.push('    ' + keyValue('fix', theme.amber(INSTALL_HINT), 14));
   }
   return lines.join('\n') + '\n';
 }

@@ -2,7 +2,7 @@
   "name": "rookery-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Rookery - a personal AI assistant powered by your existing Claude Code and Codex CLI subscriptions. No API keys.",
+  "description": "Rookery - a personal AI assistant powered by your existing Claude Code and ChatGPT subscriptions. No API keys.",
   "license": "MIT",
   "repository": {
     "type": "git",

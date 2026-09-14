@@ -5,12 +5,12 @@ import type { ExternalSkillRef, ExternalSource } from '../external/shared.js';
 import { readSkillFolder, type Skill } from './store.js';
 
 /**
- * The second shelf: skills that belong to the Claude Code and Codex
- * installed on this machine.
+ * The second shelf: skills that belong to the Claude Code installed on
+ * this machine.
  *
  * Rookery's own skills go into the prompt in full - there are a handful of
  * them and the model should simply know they exist. The other shelf cannot
- * work that way: on this machine the two CLIs and their enabled plugins hold
+ * work that way: on this machine Claude Code and its enabled plugins hold
  * over seven hundred skills, which is more prompt than the conversation. So
  * the prompt says only what is there and how much of it, `find_skill`
  * searches it, and `use_skill` opens the one that matched. The model sees
@@ -133,8 +133,8 @@ export function renderExternalSkillsHint(config: RookeryConfig, who: 'assistant'
     });
 
   return (
-    'Further skills are installed on this machine, ' + skills.length + ' of them, in the Claude Code and ' +
-    'Codex this Rookery runs on. They are not listed above because there are too many to read every turn. ' +
+    'Further skills are installed on this machine, ' + skills.length + ' of them, in the Claude Code ' +
+    'this Rookery runs on. They are not listed above because there are too many to read every turn. ' +
     'Search them with find_skill when a task looks like somebody has written the procedure down already, ' +
     'then open the match with use_skill:\n' +
     lines.join('\n')
