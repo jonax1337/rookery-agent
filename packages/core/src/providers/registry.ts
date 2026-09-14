@@ -1,6 +1,7 @@
 import type { Provider, ProviderId, ProviderModel, ProviderStatus, RookeryConfig } from '../types.js';
 import { ClaudeCodeProvider } from './claude-code.js';
 import { CODEX_PROFILE, codexModels, profileWithCatalog, providerCatalogEntry } from './provider-catalog.js';
+import { rememberProviderProfiles } from './quota.js';
 
 /** Never removed or replaced by `sync()`, whatever the config says. */
 const BUILTIN_IDS = new Set<ProviderId>(['claude', 'codex']);
@@ -101,14 +102,19 @@ export class ProviderRegistry {
    * `claude` and `codex` are never touched here.
    */
   sync(config: RookeryConfig): void {
-    const wanted = new Set(config.providerProfiles.map((profile) => profile.id));
+    const configured = config.providerProfiles.map(profileWithCatalog);
+    // A profile's usage is read with the same key and against the same
+    // backend its turns run on, so the quota reader is handed the same list,
+    // at the same moment, as the adapters below.
+    rememberProviderProfiles(configured);
+    const wanted = new Set(configured.map((profile) => profile.id));
     for (const id of [...this.#providers.keys()]) {
       if (BUILTIN_IDS.has(id) || wanted.has(id)) continue;
       this.#providers.delete(id);
       this.#cache.delete(id);
     }
-    for (const profile of config.providerProfiles) {
-      this.#providers.set(profile.id, new ClaudeCodeProvider(profileWithCatalog(profile)));
+    for (const profile of configured) {
+      this.#providers.set(profile.id, new ClaudeCodeProvider(profile));
       this.#cache.delete(profile.id);
     }
   }

@@ -187,6 +187,8 @@ What changes per provider is only where that process is pointed, through `ANTHRO
 
 Adding a provider is configuration rather than code: a catalogue entry carries the endpoint and the model list, and the only thing stored per provider is the key. Session continuity uses Claude Code's native `--resume`.
 
+Each provider also reports what is left of its plan - in the sidebar, on the overview page, and behind `/usage` in the terminal. Claude's and ChatGPT's rolling windows are read with the login the CLI keeps on disk; a GLM Coding Plan's five-hour and weekly windows are read from z.ai with the same key the profile runs its turns with. None of these endpoints is a documented interface, so a window Rookery cannot read is left out rather than guessed at.
+
 **The `codex` bridge.** ChatGPT-plan logins issue no portable API key — `~/.codex/auth.json` holds OAuth tokens instead. Rookery runs a loopback HTTP server that speaks Anthropic's Messages API on the front and `chatgpt.com/backend-api/codex/responses` on the back, translating both directions including tool calls, and refreshes those tokens itself. The Codex CLI is therefore only needed for the initial `codex login`. This talks to a backend intended for OpenAI's own client: it works today, it is not a supported interface, and it can stop working without warning.
 
 Model access requires no API-key setting for `claude` or `codex`. Optional OpenAI and ElevenLabs **speech** engines are separate: their keys are configured in Settings → Voice and kept on the server.

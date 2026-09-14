@@ -713,10 +713,10 @@ function ProviderPanel({
               return (
                 <Item key={status.id} variant="outline" size="sm" className="flex-wrap">
                   <ItemMedia variant="icon">
-                    <ProviderIcon provider={status.id} />
+                    <ProviderIcon provider={status.id} label={status.displayName} />
                   </ItemMedia>
                   <ItemContent>
-                    <ItemTitle>{PROVIDER_LABEL[status.id]}</ItemTitle>
+                    <ItemTitle>{PROVIDER_LABEL[status.id] ?? status.displayName}</ItemTitle>
                     <ItemDescription>{detail || status.binary}</ItemDescription>
                   </ItemContent>
                   <ItemActions>

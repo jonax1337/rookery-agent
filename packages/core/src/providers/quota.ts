@@ -1,17 +1,20 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ProviderId, ProviderQuota, QuotaWindow } from '../types.js';
+import type { ProviderId, ProviderProfile, ProviderQuota, QuotaWindow } from '../types.js';
 
 /**
  * Subscription usage, read the way the CLIs' own `/usage` panels read it:
  * with the OAuth login each CLI keeps on disk, from the vendor's own usage
- * endpoint. Neither endpoint is a public contract, so parsing is defensive
- * and anything unrecognised is dropped rather than shown raw.
+ * endpoint. A configured provider profile is read the same way, except that
+ * the credential is the API key the profile already runs its turns with -
+ * z.ai reports a GLM Coding Plan's two windows much as Anthropic reports
+ * Claude's. None of these endpoints is a public contract, so parsing is
+ * defensive and anything unrecognised is dropped rather than shown raw.
  *
- * Both endpoints rate-limit eager pollers hard. One answer is cached for a
- * minute, a 429 backs off for five, and a failure for two, so a UI that asks
- * on every hover never turns into a hammer.
+ * They all rate-limit eager pollers hard. One answer is cached for a minute,
+ * a 429 backs off for five, and a failure for two, so a UI that asks on every
+ * hover never turns into a hammer.
  */
 
 const CACHE_MS = 60 * 1000;
@@ -131,19 +134,9 @@ function codexWindow(raw: unknown, fallbackKind: 'session' | 'weekly'): QuotaWin
   const window = asRecord(raw);
   if (!window || typeof window.used_percent !== 'number') return null;
   const seconds = typeof window.limit_window_seconds === 'number' ? window.limit_window_seconds : 0;
-  const hours = seconds > 0 ? seconds / 3600 : 0;
-  let kind: string = fallbackKind;
-  let label = fallbackKind === 'session' ? 'Session' : 'Week';
-  if (hours > 0 && hours <= 6) {
-    kind = 'session';
-    label = hours === Math.round(hours) ? hours + ' hours' : Math.round(hours * 60) + ' minutes';
-  } else if (hours >= 6 * 24 && hours <= 8 * 24) {
-    kind = 'weekly';
-    label = 'Week';
-  } else if (hours > 0) {
-    kind = Math.round(hours) + 'h';
-    label = hours % 24 === 0 ? hours / 24 + ' days' : Math.round(hours) + ' hours';
-  }
+  const span = describeSpan(seconds > 0 ? seconds / 3600 : 0);
+  const kind = span ? span.kind : fallbackKind;
+  const label = span ? span.label : fallbackKind === 'session' ? 'Session' : 'Week';
   const resetsAt = normaliseReset(window.reset_at);
   return { kind, label, percent: clampPercent(window.used_percent), ...(resetsAt ? { resetsAt } : {}) };
 }
@@ -182,12 +175,170 @@ async function fetchCodex(): Promise<ProviderQuota> {
   return { provider: 'codex', ...(plan ? { plan } : {}), windows: parseCodexWindows(payload), fetchedAt: Date.now() };
 }
 
+/* ---------------------------------- z.ai ---------------------------------- */
+
+const GLM_USAGE_URL = 'https://api.z.ai/api/monitor/usage/quota/limit';
+
+/**
+ * z.ai states a window as a count of units: `{unit: 3, number: 5}` is the
+ * Coding Plan's five hours, `{unit: 6, number: 1}` its week. Only the units a
+ * plan actually uses are mapped, and an unrecognised one drops its window
+ * rather than labelling it with a guess.
+ */
+const GLM_UNIT_HOURS: Record<string, number> = { '3': 1, '4': 24, '6': 24 * 7 };
+
+/** `data.level`: which Coding Plan the key is subscribed to. */
+const GLM_LEVELS: Record<string, string> = { lite: 'Lite', pro: 'Pro', max: 'Max' };
+
+function glmPlanLabel(level: unknown): string | undefined {
+  if (typeof level !== 'string' || !level.trim()) return undefined;
+  const tier = GLM_LEVELS[level.toLowerCase()] ?? level.replace(/^\w/, (c) => c.toUpperCase());
+  return 'Coding Plan ' + tier;
+}
+
+/**
+ * How much of a window is gone, 0..100. `percentage` is the endpoint's own
+ * figure; behind it sit `currentValue` spent out of the `usage` allowance -
+ * a pair whose names read backwards, so it is only the fallback for payloads
+ * that omit the percentage.
+ */
+function glmPercent(entry: Record<string, unknown>): number | null {
+  if (typeof entry.percentage === 'number' && Number.isFinite(entry.percentage)) {
+    return clampPercent(entry.percentage);
+  }
+  const spent = entry.currentValue;
+  const allowance = entry.usage;
+  if (typeof spent === 'number' && typeof allowance === 'number' && allowance > 0) {
+    return clampPercent((spent / allowance) * 100);
+  }
+  return null;
+}
+
+/**
+ * `nextResetTime` counts unix milliseconds where the other two endpoints
+ * count seconds - dividing it down would lose the millisecond, so it is read
+ * as what it is.
+ */
+function glmReset(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  }
+  return normaliseReset(value);
+}
+
+/**
+ * The plan's rolling windows out of `data.limits`.
+ *
+ * Entries are taken whatever their `type` says: the same window has been
+ * reported as `TIME_LIMIT`, `TOKENS_LIMIT` and `CREDIT_LIMIT` as z.ai changed
+ * what it meters, and readers that matched on the type went to zero each time
+ * it moved. What identifies a window is its length, so that is what is matched
+ * on, and a length seen twice is the same limit counted a second way.
+ */
+export function parseGlmWindows(payload: unknown): QuotaWindow[] {
+  const limits = asRecord(asRecord(payload)?.data)?.limits;
+  if (!Array.isArray(limits)) return [];
+  const windows: QuotaWindow[] = [];
+  for (const raw of limits) {
+    const entry = asRecord(raw);
+    if (!entry) continue;
+    const percent = glmPercent(entry);
+    if (percent === null) continue;
+    const units = typeof entry.number === 'number' ? entry.number : 1;
+    const span = describeSpan((GLM_UNIT_HOURS[String(entry.unit)] ?? 0) * units);
+    if (!span || windows.some((window) => window.kind === span.kind)) continue;
+    const resetsAt = glmReset(entry.nextResetTime);
+    windows.push({ ...span, percent, ...(resetsAt ? { resetsAt } : {}) });
+  }
+  return windows;
+}
+
+async function fetchGlm(provider: ProviderId, token: string): Promise<ProviderQuota> {
+  const response = await fetch(GLM_USAGE_URL, {
+    headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new HttpError(response.status);
+  const payload = (await response.json()) as Record<string, unknown>;
+  // z.ai answers 200 and carries its verdict in the body, so a key that works
+  // for turns but is on no Coding Plan arrives here rather than as an error.
+  if (payload.success === false) {
+    const message = typeof payload.msg === 'string' && payload.msg ? payload.msg : '';
+    return unavailable(provider, message || 'z.ai reports no Coding Plan for this key.');
+  }
+  const plan = glmPlanLabel(asRecord(payload.data)?.level);
+  return { provider, ...(plan ? { plan } : {}), windows: parseGlmWindows(payload), fetchedAt: Date.now() };
+}
+
+/* -------------------------------- profiles -------------------------------- */
+
+/**
+ * The backends that answer for their own usage, keyed by API host.
+ *
+ * By host rather than by profile id, because what has a usage endpoint is the
+ * backend, not the name a profile was given: a key pointed at z.ai reports its
+ * Coding Plan whether the profile is called `glm` or something else.
+ */
+const PROFILE_USAGE: Record<string, (provider: ProviderId, token: string) => Promise<ProviderQuota>> = {
+  'api.z.ai': fetchGlm,
+};
+
+/** The configured provider profiles, kept in step by the provider registry. */
+const profiles = new Map<ProviderId, ProviderProfile>();
+
+/**
+ * Tell the quota reader which profiles exist. Usage is read with the key the
+ * profile already runs its turns with, so there is no second credential to
+ * store - only the same list the registry builds its adapters from.
+ */
+export function rememberProviderProfiles(list: ProviderProfile[]): void {
+  profiles.clear();
+  for (const profile of list) profiles.set(profile.id, profile);
+}
+
+function usageHost(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return '';
+  }
+}
+
+async function fetchProfile(provider: ProviderId): Promise<ProviderQuota> {
+  const profile = profiles.get(provider);
+  const fetcher = profile && PROFILE_USAGE[usageHost(profile.baseUrl)];
+  if (!profile || !fetcher) return unavailable(provider, 'This provider does not report usage.');
+  if (!profile.authToken) return unavailable(provider, 'No API key set for this provider yet.');
+  return fetcher(provider, profile.authToken);
+}
+
 /* --------------------------------- shared --------------------------------- */
 
 class HttpError extends Error {
   constructor(readonly status: number) {
     super('HTTP ' + status);
   }
+}
+
+/**
+ * A window's length, as the key and the label a UI shows for it: "5 hours",
+ * "30 minutes", "Week", "30 days". Null when the length is unknown, so a
+ * caller can fall back to whatever its own payload implies instead.
+ */
+function describeSpan(hours: number): { kind: string; label: string } | null {
+  if (!(hours > 0)) return null;
+  if (hours <= 6) {
+    return {
+      kind: 'session',
+      label: hours === Math.round(hours) ? hours + ' hours' : Math.round(hours * 60) + ' minutes',
+    };
+  }
+  if (hours >= 6 * 24 && hours <= 8 * 24) return { kind: 'weekly', label: 'Week' };
+  return {
+    kind: Math.round(hours) + 'h',
+    label: hours % 24 === 0 ? hours / 24 + ' days' : Math.round(hours) + ' hours',
+  };
 }
 
 /** ISO string, from an ISO string or unix seconds; anything else is dropped. */
@@ -210,7 +361,12 @@ export async function providerQuota(provider: ProviderId, force = false): Promis
   let quota: ProviderQuota;
   let ttl = CACHE_MS;
   try {
-    quota = provider === 'claude' ? await fetchClaude() : await fetchCodex();
+    quota =
+      provider === 'claude'
+        ? await fetchClaude()
+        : provider === 'codex'
+          ? await fetchCodex()
+          : await fetchProfile(provider);
   } catch (error) {
     const status = error instanceof HttpError ? error.status : 0;
     ttl = status === 429 ? COOLDOWN_429_MS : COOLDOWN_ERROR_MS;

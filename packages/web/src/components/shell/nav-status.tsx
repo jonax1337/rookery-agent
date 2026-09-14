@@ -205,10 +205,10 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
   return (
     <DropdownMenuSub open={open} onOpenChange={setOpen}>
       <DropdownMenuSubTrigger>
-        <ProviderIcon provider={provider.id} className="size-4" />
+        <ProviderIcon provider={provider.id} label={provider.displayName} className="size-4" />
         {/* The name never gives way; a long version string ("2.1.263 (Claude
             Code)") is the part that may be cut. */}
-        <span className="shrink-0">{PROVIDER_LABEL[provider.id]}</span>
+        <span className="shrink-0">{PROVIDER_LABEL[provider.id] ?? provider.displayName}</span>
         {provider.version && (
           <span className="ml-auto min-w-0 truncate text-xs text-muted-foreground tabular-nums">
             {provider.version}

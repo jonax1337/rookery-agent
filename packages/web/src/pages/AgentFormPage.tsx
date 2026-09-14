@@ -217,6 +217,13 @@ export function AgentFormPage() {
   const effectiveProvider: ProviderId =
     draft.provider === STANDARD_CHOICE ? (config?.defaultProvider ?? 'claude') : draft.provider;
   const models = providers.find((entry) => entry.id === effectiveProvider)?.models ?? [];
+  // A configured profile has no hardcoded label here, only the name its
+  // catalogue entry gave it - without which the sentence below reads
+  // "Models from undefined".
+  const effectiveLabel =
+    PROVIDER_LABEL[effectiveProvider] ??
+    providers.find((entry) => entry.id === effectiveProvider)?.displayName ??
+    effectiveProvider;
 
   const modelOptions = useMemo<EntityOption[]>(() => {
     const options: EntityOption[] = models.map((model) => ({ value: model, label: model }));
@@ -463,10 +470,10 @@ export function AgentFormPage() {
             <FieldDescription>
               {modelOptions.length
                 ? 'Models from ' +
-                  PROVIDER_LABEL[effectiveProvider] +
+                  effectiveLabel +
                   (draft.provider === STANDARD_CHOICE ? ' (Default)' : '') +
                   '. Empty means the provider chooses.'
-                : PROVIDER_LABEL[effectiveProvider] +
+                : effectiveLabel +
                   ' currently reports no models. Empty means the provider chooses.'}
             </FieldDescription>
           </Field>
