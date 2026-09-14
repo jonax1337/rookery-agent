@@ -55,7 +55,9 @@ export function InputBox({
             </Text>
             <Box flexGrow={1}>
               {empty && index === 0 ? (
-                <Text color={ui.faint}>{placeholder ?? ''}</Text>
+                <Text color={ui.faint} italic>
+                  {placeholder ?? ''}
+                </Text>
               ) : (
                 <CaretLine
                   line={line}

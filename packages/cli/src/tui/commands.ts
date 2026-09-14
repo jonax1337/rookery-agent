@@ -26,6 +26,8 @@ import {
 } from '../commands/shared.js';
 import { memoryLine, relativeTime, sessionLine, shorten, shortId, untilTime } from '../ui/render.js';
 import { describeSpeech, stopSpeaking } from '../ui/speech.js';
+import { EMPTY_MODEL_CATALOGUE, modelName } from '../ui/modelNames.js';
+import type { ModelCatalogue } from '../ui/modelNames.js';
 import { glyph, ui } from './theme.js';
 import { SLASH_COMMANDS } from './hooks/useSlash.js';
 import type { Entry, NoticeLine, SessionState } from './types.js';
@@ -49,6 +51,8 @@ export interface SlashContext {
   session: SessionState;
   /** Monotonic id source, shared with the rest of the app. */
   nextId: () => string;
+  /** Model display names, when the app managed to load a catalogue. */
+  catalogue?: ModelCatalogue;
 }
 
 /** "14.9k of 200k (7%)", or just the count when the window is unknown. */
@@ -177,8 +181,15 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
     }
 
     case 'model': {
-      if (!argument) return { patch: { model: undefined }, ...ok('Model: provider default') };
-      return { patch: { model: argument }, ...ok('Model ' + argument) };
+      if (!argument) {
+        const fallback = modelName(ctx.catalogue ?? EMPTY_MODEL_CATALOGUE, session.provider, undefined);
+        return {
+          patch: { model: undefined },
+          ...ok('Model: provider default' + (fallback ? ' (' + fallback + ')' : '')),
+        };
+      }
+      const display = modelName(ctx.catalogue ?? EMPTY_MODEL_CATALOGUE, session.provider, argument) ?? argument;
+      return { patch: { model: argument }, ...ok('Model ' + display) };
     }
 
     case 'effort': {

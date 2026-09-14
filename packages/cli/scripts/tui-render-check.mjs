@@ -14,6 +14,7 @@
 
 import { createElement as h } from 'react';
 import { Box, renderToString } from 'ink';
+import { ThemeProvider } from '@inkjs/ui';
 
 import { StatusLine } from '../dist/tui/components/StatusLine.js';
 import { InputBox } from '../dist/tui/components/InputBox.js';
@@ -22,6 +23,13 @@ import { Scrollback } from '../dist/tui/components/Scrollback.js';
 import { AssignmentsView } from '../dist/tui/components/AssignmentsView.js';
 import { SLASH_COMMANDS, commandWord } from '../dist/tui/hooks/useSlash.js';
 import { applyEvent } from '../dist/tui/hooks/useTurn.js';
+import { inkUiTheme } from '../dist/tui/inkTheme.js';
+import { cachedModelCatalogue, modelName, prettifyModelId } from '../dist/ui/modelNames.js';
+
+/** Render a component the way the app does: under the branded ink-ui theme. */
+function themed(node) {
+  return h(ThemeProvider, { theme: inkUiTheme }, node);
+}
 
 const COLUMNS = 96;
 const ESC = String.fromCharCode(27);
@@ -59,57 +67,59 @@ function refute(output, needle, label) {
 /* ------------------------------ status line ----------------------------- */
 
 const statusIdle = renderToString(
-  h(StatusLine, {
-    assistantName: 'jarvis',
-    provider: 'claude',
-    model: 'sonnet',
-    permission: 'write',
-    title: 'Rewire the CLI terminal',
-    project: 'Rookery',
-    sessionId: '2f9c41ab-0000-4000-8000-000000000000',
-    busy: false,
-    elapsedMs: 0,
-    frame: 0,
-    columns: COLUMNS,
-    contextTokens: 96400,
-    contextWindow: 200000,
-    usage: {
-      inputTokens: 128400,
-      outputTokens: 9120,
-      cachedInputTokens: 41000,
-      reasoningTokens: 0,
-      costUsd: 0.42,
-      turns: 6,
-    },
-    quota: {
+  themed(
+    h(StatusLine, {
+      assistantName: 'jarvis',
       provider: 'claude',
-      windows: [{ kind: 'five_hour', label: '5 hr', percent: 42 }],
-      fetchedAt: Date.now(),
-    },
-  }),
+      model: 'sonnet',
+      permission: 'write',
+      title: 'Rewire the CLI terminal',
+      project: 'Rookery',
+      sessionId: '2f9c41ab-0000-4000-8000-000000000000',
+      busy: false,
+      elapsedMs: 0,
+      columns: COLUMNS,
+      contextTokens: 96400,
+      contextWindow: 200000,
+      usage: {
+        inputTokens: 128400,
+        outputTokens: 9120,
+        cachedInputTokens: 41000,
+        reasoningTokens: 0,
+        costUsd: 0.42,
+        turns: 6,
+      },
+      quota: {
+        provider: 'claude',
+        windows: [{ kind: 'five_hour', label: '5 hr', percent: 42 }],
+        fetchedAt: Date.now(),
+      },
+    }),
+  ),
   { columns: COLUMNS },
 );
 
 const statusBusy = renderToString(
-  h(StatusLine, {
-    assistantName: 'jarvis',
-    provider: 'codex',
-    permission: 'full',
-    title: 'Rewire the CLI terminal',
-    busy: true,
-    elapsedMs: 7400,
-    frame: 3,
-    label: 'delegating',
-    columns: COLUMNS,
-    voice: true,
-    verbose: true,
-  }),
+  themed(
+    h(StatusLine, {
+      assistantName: 'jarvis',
+      provider: 'codex',
+      permission: 'full',
+      title: 'Rewire the CLI terminal',
+      busy: true,
+      elapsedMs: 7400,
+      label: 'delegating',
+      columns: COLUMNS,
+      voice: true,
+      verbose: true,
+    }),
+  ),
   { columns: COLUMNS },
 );
 
 show('StatusLine - idle', statusIdle);
 expect(statusIdle, 'jarvis', 'assistant name');
-expect(statusIdle, 'claude', 'provider');
+expect(statusIdle, 'CLAUDE', 'provider badge');
 expect(statusIdle, 'sonnet', 'model');
 expect(statusIdle, 'write', 'permission level');
 expect(statusIdle, 'Rookery', 'active project');
@@ -126,8 +136,8 @@ expect(statusIdle, '5 hr 42%', 'the account limit window');
 
 show('StatusLine - running', statusBusy);
 expect(statusBusy, 'delegating 7s', 'spinner label + elapsed seconds');
-expect(statusBusy, '⠸', 'spinner frame 3');
-expect(statusBusy, 'full', 'permission level');
+expect(statusBusy, '⠋', 'spinner frame');
+expect(statusBusy, 'FULL', 'permission badge');
 expect(statusBusy, 'Voice', 'voice flag');
 expect(statusBusy, 'verbose', 'verbose flag');
 refute(statusBusy, 'Context', 'a turn that reported nothing yet shows no meter row');
@@ -373,8 +383,9 @@ expect(answering, '▌ const ok = true;', 'code block gutter');
 /* -------------------------------- scrollback ---------------------------- */
 
 const scrollback = renderToString(
-  h(Scrollback, {
-    inline: true,
+  themed(
+    h(Scrollback, {
+      inline: true,
     entries: [
       {
         kind: 'banner',
@@ -448,7 +459,8 @@ const scrollback = renderToString(
         },
       },
     ],
-  }),
+    }),
+  ),
   { columns: COLUMNS },
 );
 
@@ -461,13 +473,44 @@ expect(scrollback, '✗ Edit src/tui/theme.ts', 'a failed tool call');
 expect(scrollback, 'npm run build && node scripts/tui-render-check.mjs', 'the full tool argument, not a truncation');
 expect(scrollback, '8.4s', 'how long the tool call took');
 expect(scrollback, '⟲ 3 memories recalled', 'memory activity line');
-expect(scrollback, 'jarvis  claude', 'assistant header');
+expect(scrollback, 'JARVIS', 'assistant header badge');
 expect(scrollback, '↑12.8k ↓840', 'what the turn spent');
 expect(scrollback, '12.3s', 'turn duration');
 expect(scrollback, 'PLAN', 'assistant markdown heading');
 expect(scrollback, '1. add', 'ordered list');
 expect(scrollback, '3 assignments  ·  2 done  ·  1 failed  ·  31.8s', 'collapsed assignment summary');
 expect(scrollback, 'doc-writer', 'the summary names each agent');
+
+/* ------------------------------ model names ----------------------------- */
+
+function check(ok, label, detail) {
+  checks += 1;
+  if (ok) {
+    console.log('  PASS  ' + label + '   [' + detail + ']');
+  } else {
+    failures += 1;
+    console.log('  FAIL  ' + label + '   [' + detail + ']');
+  }
+}
+
+const catalogue = {
+  byProvider: { claude: { sonnet: 'Sonnet 5', opus: 'Opus 5.1' } },
+  defaults: { claude: 'Sonnet 5' },
+};
+
+console.log('\n' + '─'.repeat(COLUMNS));
+console.log('  Model names');
+console.log('─'.repeat(COLUMNS));
+check(modelName(catalogue, 'claude', 'sonnet') === 'Sonnet 5', 'catalogue id -> display name', 'Sonnet 5');
+check(modelName(catalogue, 'claude', undefined) === 'Sonnet 5', 'no id pinned -> the account default', 'Sonnet 5');
+check(modelName(catalogue, 'claude', 'brand-new') === 'Brand-new', 'unknown id -> prettified, not dropped', 'Brand-new');
+check(modelName(catalogue, 'codex', undefined) === undefined, 'unknown provider -> no name invented', 'undefined');
+check(prettifyModelId('gpt-5.2-codex') === 'GPT-5.2-codex', 'gpt prefix uppercased', 'GPT-5.2-codex');
+check(
+  cachedModelCatalogue('Z:\\no\\such\\home').byProvider.claude === undefined,
+  'missing cache file -> empty catalogue, no throw',
+  'empty',
+);
 
 /* ---------------------------------- result ------------------------------ */
 

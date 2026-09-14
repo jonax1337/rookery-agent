@@ -21,6 +21,7 @@
     "tui:drive": "node ./scripts/tui-drive-check.mjs"
   },
   "dependencies": {
+    "@inkjs/ui": "^2.0.0",
     "@rookery/core": "*",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",

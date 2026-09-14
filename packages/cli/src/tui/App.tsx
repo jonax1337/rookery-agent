@@ -18,6 +18,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, render, useApp, useInput } from 'ink';
+import { ThemeProvider } from '@inkjs/ui';
 import { Assistant, loadConfig } from '@rookery/core';
 import type { ProviderQuota, RookeryConfig, TurnUsage } from '@rookery/core';
 import {
@@ -29,6 +30,12 @@ import {
   resolveSession,
 } from '../commands/shared.js';
 import { speak, stopSpeaking } from '../ui/speech.js';
+import {
+  EMPTY_MODEL_CATALOGUE,
+  loadModelCatalogue,
+  modelName,
+} from '../ui/modelNames.js';
+import type { ModelCatalogue } from '../ui/modelNames.js';
 import { runSlashCommand } from './commands.js';
 import { Scrollback } from './components/Scrollback.js';
 import { AssistantMessage } from './components/Message.js';
@@ -38,6 +45,7 @@ import { InputBox } from './components/InputBox.js';
 import { SlashPalette } from './components/SlashPalette.js';
 import { StatusLine } from './components/StatusLine.js';
 import { AssignmentsView } from './components/AssignmentsView.js';
+import { inkUiTheme } from './inkTheme.js';
 import { useColumns } from './hooks/useColumns.js';
 import { useHistory } from './hooks/useHistory.js';
 import { useSlash } from './hooks/useSlash.js';
@@ -71,6 +79,8 @@ export interface AppProps {
   config: RookeryConfig;
   initial: SessionState;
   initialEntries?: Entry[];
+  /** Model display names; without it ids are shown prettified but unresolved. */
+  catalogue?: ModelCatalogue;
 }
 
 export function App({
@@ -78,6 +88,7 @@ export function App({
   config,
   initial,
   initialEntries = [],
+  catalogue = EMPTY_MODEL_CATALOGUE,
 }: AppProps): React.JSX.Element {
   const { exit } = useApp();
 
@@ -192,6 +203,7 @@ export function App({
           assistant,
           session: sessionRef.current,
           nextId,
+          catalogue,
         });
         if (outcome.clear) {
           setEntries([]);
@@ -401,6 +413,13 @@ export function App({
   // a finished turn never visibly re-flows.
   const groups = useMemo(() => groupActivities(turn.activities), [turn.activities]);
 
+  // What the interface calls the model: its catalogue display name, with the
+  // account's own default standing in when none is pinned.
+  const modelDisplay = useMemo(
+    () => modelName(catalogue, session.provider, session.model),
+    [catalogue, session.provider, session.model],
+  );
+
   const elapsedMs = turn.startedAt === null ? 0 : Math.max(0, now - turn.startedAt);
   const caretVisible = Math.floor(frame / (turn.busy ? 6 : 1)) % 2 === 0;
 
@@ -443,7 +462,7 @@ export function App({
           assistantName={session.counterpart || session.assistantName}
           {...(session.agentTitle ? { counterpartTitle: session.agentTitle } : {})}
           provider={session.provider}
-          {...(session.model ? { model: session.model } : {})}
+          {...(modelDisplay ? { model: modelDisplay } : {})}
           {...(session.effort ? { effort: session.effort } : {})}
           {...(session.contextTokens !== undefined ? { contextTokens: session.contextTokens } : {})}
           {...(session.contextWindow !== undefined ? { contextWindow: session.contextWindow } : {})}
@@ -455,7 +474,6 @@ export function App({
           {...(session.sessionId ? { sessionId: session.sessionId } : {})}
           busy={turn.busy}
           elapsedMs={elapsedMs}
-          frame={frame}
           label={turn.label}
           voice={session.voice}
           verbose={session.verbose}
@@ -576,12 +594,25 @@ export async function startTui(options: TuiOptions = {}): Promise<number> {
     }
   }
 
+  // The banner needs model display names, and so does everything live; one
+  // catalogue load serves both. It is cached on disk, so this only spawns the
+  // CLIs once a day.
+  const catalogue = await loadModelCatalogue(assistant.providers, config.home);
+
   const banner: Entry[] = [
-    { kind: 'banner', id: 'b1', banner: await bannerState(assistant, state, warnings) },
+    { kind: 'banner', id: 'b1', banner: await bannerState(assistant, state, warnings, catalogue) },
   ];
 
   const instance = render(
-    <App assistant={assistant} config={config} initial={state} initialEntries={banner} />,
+    <ThemeProvider theme={inkUiTheme}>
+      <App
+        assistant={assistant}
+        config={config}
+        initial={state}
+        initialEntries={banner}
+        catalogue={catalogue}
+      />
+    </ThemeProvider>,
     {
       stdout: process.stdout,
       stdin: process.stdin,
@@ -607,6 +638,7 @@ async function bannerState(
   assistant: Assistant,
   state: SessionState,
   warnings: string[],
+  catalogue: ModelCatalogue,
 ): Promise<BannerState> {
   const statuses = await assistant.providers.statuses();
   const ready = statuses.filter((status) => status.available && status.authenticated);
@@ -618,7 +650,9 @@ async function bannerState(
     ready: ready.map((status) => status.id),
     offline: offline.map((status) => status.id),
     provider: state.provider,
-    ...(state.model ? { model: state.model } : {}),
+    ...(modelName(catalogue, state.provider, state.model)
+      ? { model: modelName(catalogue, state.provider, state.model) }
+      : {}),
     permission: state.permission,
     ...(state.projectName ? { project: state.projectName } : {}),
     ...(state.agentId ? { agent: state.counterpart } : {}),

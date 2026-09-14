@@ -10,6 +10,7 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
+import { Badge } from '@inkjs/ui';
 import type { TurnUsage } from '@rookery/core';
 import { GUTTER, STREAM_CURSOR, glyph, ui } from '../theme.js';
 import { Markdown } from './Markdown.js';
@@ -67,9 +68,7 @@ export function AssistantMessage({
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row">
-        <Text color={ui.amber} bold>
-          {speaker}
-        </Text>
+        <Badge color={ui.amber}>{speaker}</Badge>
         {provider ? <Text color={ui.faint}>{'  ' + provider}</Text> : null}
         {durationMs !== undefined ? (
           <Text color={ui.faint}>{'  ' + formatDuration(durationMs)}</Text>

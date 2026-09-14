@@ -36,6 +36,7 @@ import {
 } from './commands/shared.js';
 import { glyph, isTty, theme } from './ui/theme.js';
 import { heading, memoryLine, relativeTime, sessionLine, shorten, shortId, untilTime } from './ui/render.js';
+import { cachedModelCatalogue, modelName } from './ui/modelNames.js';
 import { describeSpeech, speak, stopSpeaking } from './ui/speech.js';
 
 export interface ReplOptions {
@@ -260,7 +261,9 @@ export async function startRepl(options: ReplOptions = {}): Promise<number> {
         let exit = false;
         activeTurn = new AbortController();
         try {
-          exit = await handleSlash(input, assistant, state, rl, activeTurn.signal, assistantName);
+          exit = await handleSlash(
+            input, assistant, state, rl, activeTurn.signal, assistantName, config.home,
+          );
         } catch (error) {
           note(theme.red(glyph.fail + ' ' + (error as Error).message));
         } finally {
@@ -374,6 +377,7 @@ async function handleSlash(
   rl: Interface,
   signal: AbortSignal,
   assistantName: string,
+  home: string,
 ): Promise<boolean> {
   const [rawCommand, ...rest] = input.slice(1).split(/\s+/);
   const command = (rawCommand ?? '').toLowerCase();
@@ -507,13 +511,23 @@ async function handleSlash(
     }
 
     case 'model': {
+      // A cache probe, not a fetch: a piped REPL must never spawn a CLI just
+      // to phrase an echo. No cache means the raw id, which is still the truth.
+      const catalogue = cachedModelCatalogue(home);
       if (!argument) {
         state.model = undefined;
-        note(theme.dim(glyph.ok + ' model: provider default'));
+        const fallback = modelName(catalogue, state.provider, undefined);
+        note(
+          theme.dim(glyph.ok + ' model: provider default' + (fallback ? ' (' + fallback + ')' : '')),
+        );
         return false;
       }
       state.model = argument;
-      note(theme.dim(glyph.ok + ' model ' + argument));
+      note(
+        theme.dim(
+          glyph.ok + ' model ' + (modelName(catalogue, state.provider, argument) ?? argument),
+        ),
+      );
       return false;
     }
 

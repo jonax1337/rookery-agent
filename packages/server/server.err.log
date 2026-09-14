@@ -1,0 +1,16 @@
+2026-09-14T09:35:02.374Z INFO  [server] Serving web client {"root":"E:\\DEV\\rookery-agent\\packages\\web\\dist"}
+2026-09-14T09:35:02.745Z INFO  [server:telegram] Telegram gateway started {"bot":"rookery_agent_bot","allowed":1,"permission":"full"}
+2026-09-14T09:35:06.008Z INFO  [main] Rookery server 0.1.0 listening {"url":"http://127.0.0.1:4317","providers":"claude, codex","auth":"open (loopback)"}
+2026-09-14T09:41:03.386Z INFO  [runtime] Schedule run started {"job":"Morgen-Bote","trigger":"manual","run":"b810e3e2-284f-48ac-a225-4c9132b37f7a"}
+2026-09-14T09:41:43.059Z INFO  [runtime] Schedule run finished {"job":"Morgen-Bote","status":"done","durationMs":39674}
+2026-09-14T09:45:31.459Z INFO  [server:telegram] Telegram chat cleared {"chatId":6475466378,"swept":195,"newest":195,"sessionId":"d48bbf6e-fb25-42bb-b446-1733531ede45"}
+2026-09-14T09:46:36.605Z INFO  [server:telegram] Telegram message accepted {"from":6475466378,"sessionId":"d48bbf6e-fb25-42bb-b446-1733531ede45","permission":"full","attachments":0,"spoken":0,"thread":"continued","text":"Bitte schau dir mal meine CRONs an die du mir morgens und Abends schickst. Passe dort Formatierung an. Es können gerne S"}
+2026-09-14T09:48:51.006Z INFO  [server:telegram] Telegram message accepted {"from":6475466378,"sessionId":"d48bbf6e-fb25-42bb-b446-1733531ede45","permission":"full","attachments":0,"spoken":0,"thread":"continued","text":"Und gerne bei dem Morgen Boten noch eine Fallback API zur BvG API geben, weil die oft down ist. Und brachte, dass mein S"}
+2026-09-14T10:04:58.060Z INFO  [server:telegram] Telegram message accepted {"from":6475466378,"sessionId":"d48bbf6e-fb25-42bb-b446-1733531ede45","permission":"full","attachments":0,"spoken":0,"thread":"continued","text":"Gibt es nicht noch eine DB API?"}
+2026-09-14T10:06:20.823Z INFO  [server:telegram] Telegram message accepted {"from":6475466378,"sessionId":"d48bbf6e-fb25-42bb-b446-1733531ede45","permission":"full","attachments":0,"spoken":0,"thread":"continued","text":"Aber die fällt soso oft aus. Es muss einen anderen Fallback geben."}
+2026-09-14T10:33:59.564Z INFO  [runtime] Schedule run started {"job":"Gute-Nacht-Bote","trigger":"manual","run":"f58249d7-e57a-4a86-9a01-bb07c65e5fbb"}
+2026-09-14T10:34:30.101Z INFO  [runtime] Schedule run finished {"job":"Gute-Nacht-Bote","status":"done","durationMs":30536}
+2026-09-14T10:35:35.839Z INFO  [server:telegram] Telegram message accepted {"from":6475466378,"sessionId":"d48bbf6e-fb25-42bb-b446-1733531ede45","permission":"full","attachments":0,"spoken":0,"thread":"continued","text":"Perfekt, danke!"}
+2026-09-14T10:36:17.817Z INFO  [runtime] Schedule run started {"job":"Morgen-Bote","trigger":"manual","run":"5c54455d-3a64-4f53-8a22-f19c87259604"}
+2026-09-14T10:36:59.398Z INFO  [runtime] Schedule run finished {"job":"Morgen-Bote","status":"done","durationMs":41580}
+2026-09-14T10:44:12.575Z WARN  [server:telegram] Telegram polling failed, backing off {"waitMs":1000,"error":"The operation was aborted due to timeout"}

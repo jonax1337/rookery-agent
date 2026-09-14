@@ -264,7 +264,7 @@ let frame = stdout.readAll();
 console.log('\n--- idle frame ------------------------------------------------');
 console.log(preview(frame, 8));
 expect(frame, 'jarvis', 'status line shows the assistant');
-expect(frame, 'claude', 'status line shows the provider');
+expect(frame, 'CLAUDE', 'status line shows the provider badge');
 expect(frame, 'read', 'status line shows the permission level');
 expect(frame, 'Ask anything, or / for commands', 'input box placeholder');
 expect(frame, 'Ctrl+D exit', 'hint line');

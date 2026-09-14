@@ -2,8 +2,11 @@
  * The inline command palette that appears while a `/` command is being typed.
  * Arrow keys move the highlight, Tab or Enter completes it.
  *
- * The selected row is the only coloured thing in the list: a palette where
- * every row competes for attention is a menu, not a completion.
+ * Drawn as a framed popover - the same round border the input box and the
+ * banner panel use - so it reads as a menu that opened over the transcript,
+ * not as more transcript. The selected row is the only coloured thing in the
+ * list: a palette where every row competes for attention is a menu, not a
+ * completion.
  */
 
 import React from 'react';
@@ -34,7 +37,14 @@ export function SlashPalette({
   );
 
   return (
-    <Box flexDirection="column" paddingX={1} marginTop={1}>
+    <Box
+      flexDirection="column"
+      marginTop={1}
+      borderStyle="round"
+      borderColor={ui.faint}
+      borderDimColor
+      paddingX={1}
+    >
       {visible.map((command, index) => {
         const absolute = Math.max(0, start) + index;
         const active = absolute === selected;

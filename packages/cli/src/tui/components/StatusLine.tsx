@@ -13,8 +13,9 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
+import { Badge, Spinner } from '@inkjs/ui';
 import type { ProviderQuota } from '@rookery/core';
-import { SPINNER_FRAMES, gauge, gaugeColor, glyph, ui } from '../theme.js';
+import { gauge, gaugeColor, glyph, ui } from '../theme.js';
 import { shorten } from '../../ui/render.js';
 import type { SessionUsage } from '../types.js';
 
@@ -45,8 +46,6 @@ export interface StatusLineProps {
   busy: boolean;
   /** Milliseconds since the current turn started. Ignored when idle. */
   elapsedMs: number;
-  /** Animation tick; the component picks its own frame from it. */
-  frame: number;
   /** What the turn is currently doing, e.g. 'thinking', 'delegating'. */
   label?: string;
   voice?: boolean;
@@ -75,7 +74,6 @@ export function StatusLine(props: StatusLineProps): React.JSX.Element {
     sessionId,
     busy,
     elapsedMs,
-    frame,
     label,
     voice,
     verbose,
@@ -87,7 +85,6 @@ export function StatusLine(props: StatusLineProps): React.JSX.Element {
   } = props;
 
   const wide = columns >= NARROW;
-  const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length] ?? '-';
   const seconds = Math.floor(elapsedMs / 1000);
   const flags = [voice ? 'Voice' : '', verbose ? 'verbose' : ''].filter(Boolean);
 
@@ -95,7 +92,9 @@ export function StatusLine(props: StatusLineProps): React.JSX.Element {
     <Box flexDirection="column">
       <Box flexDirection="row" paddingX={1}>
         {busy ? (
-          <Text color={ui.amber}>{spinner + ' ' + (label ?? 'thinking') + ' ' + seconds + 's'}</Text>
+          // The library spinner animates on its own clock; the seconds come
+          // from the app's ticker.
+          <Spinner label={(label ?? 'thinking') + ' ' + seconds + 's'} />
         ) : (
           <Text color={ui.ok}>{glyph.bullet + ' ready'}</Text>
         )}
@@ -108,12 +107,16 @@ export function StatusLine(props: StatusLineProps): React.JSX.Element {
         ) : null}
 
         <Separator />
-        <Text color={ui.info}>{provider}</Text>
+        <Badge color={ui.info}>{provider}</Badge>
         {model ? <Text color={ui.muted}>{' ' + model}</Text> : null}
         {effort && wide ? <Text color={ui.faint}>{' ' + effort}</Text> : null}
 
         <Separator />
-        <Text color={permission === 'full' ? ui.warn : ui.muted}>{permission}</Text>
+        {permission === 'full' ? (
+          <Badge color={ui.warn}>{permission}</Badge>
+        ) : (
+          <Text color={ui.muted}>{permission}</Text>
+        )}
 
         {project && wide ? (
           <>
