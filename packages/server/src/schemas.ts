@@ -33,7 +33,7 @@ export const assignInputSchema = z.object({
   sessionId: z.string().min(1).optional(),
 });
 
-export const sessionKindSchema = z.enum(['chat', 'voice', 'mail']);
+export const sessionKindSchema = z.enum(['chat', 'voice', 'mail', 'schedule']);
 
 export const createSessionSchema = z.object({
   title: z.string().optional(),

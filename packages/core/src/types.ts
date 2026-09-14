@@ -83,8 +83,13 @@ export interface ProviderQuota {
  * nobody could continue. Marking it as its own kind keeps the transcript
  * without pretending it is something to come back to: `listSessions` leaves
  * these out unless a caller asks for them by name.
+ *
+ * `schedule` is the same idea for a cron run: each firing gets its own fresh
+ * session to think in, nobody is there to hold that conversation, and the
+ * outcome is what gets read later (from the inbox and from the schedule's
+ * own run history), not the transcript sitting in the chat list.
  */
-export type SessionKind = 'chat' | 'voice' | 'mail';
+export type SessionKind = 'chat' | 'voice' | 'mail' | 'schedule';
 
 export interface Session {
   id: string;

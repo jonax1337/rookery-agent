@@ -587,6 +587,7 @@ function migrate(db: Db): void {
 
   migrateAgentMessagesToMail(db);
   backfillMailSessionKind(db);
+  backfillScheduleSessionKind(db);
 
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',
@@ -618,6 +619,30 @@ function backfillMailSessionKind(db: Db): void {
   ).run();
 
   db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_session_kind_v1', '1')").run();
+}
+
+/**
+ * Files the cron-run transcripts that predate `kind = 'schedule'` under it.
+ *
+ * Same story as `backfillMailSessionKind`: a scheduled run has always needed
+ * a session to run its turn in, and before the kind existed every one of
+ * those runs left a "Schedule: <job name>" thread sitting in the
+ * conversations list - and because a job used to keep and reuse one session
+ * across every firing, that single thread just kept growing. Nothing is
+ * deleted or merged; each row just stops pretending to be a chat to come
+ * back to.
+ */
+function backfillScheduleSessionKind(db: Db): void {
+  const done = db.prepare("SELECT value FROM meta WHERE key = 'schedule_session_kind_v1'").get() as
+    | { value: string }
+    | undefined;
+  if (done) return;
+
+  db.prepare(
+    "UPDATE sessions SET kind = 'schedule' WHERE kind = 'chat' AND agent_id IS NULL AND title LIKE 'Schedule: %'",
+  ).run();
+
+  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('schedule_session_kind_v1', '1')").run();
 }
 
 /**

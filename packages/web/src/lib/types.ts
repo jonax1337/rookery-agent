@@ -42,11 +42,12 @@ export interface Message {
 /**
  * `voice` sessions belong to the hands-free screen and answer in its register.
  *
- * `mail` is the transcript of one answered mail, not a thread anyone
- * continues, so the server leaves it out of every list that does not ask for
- * it by name - it never reaches the conversations page.
+ * `mail` is the transcript of one answered mail and `schedule` the transcript
+ * of one cron run, neither a thread anyone continues, so the server leaves
+ * both out of every list that does not ask for them by name - they never
+ * reach the conversations page.
  */
-export type SessionKind = 'chat' | 'voice' | 'mail';
+export type SessionKind = 'chat' | 'voice' | 'mail' | 'schedule';
 
 export interface Session {
   id: string;

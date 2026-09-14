@@ -1,4 +1,4 @@
-import { MailIcon, MessageSquareIcon, MicIcon } from 'lucide-react';
+import { CalendarClockIcon, MailIcon, MessageSquareIcon, MicIcon } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
 import type {
@@ -312,14 +312,16 @@ export const SESSION_KIND_LABEL: Record<SessionKind, string> = {
   chat: 'Chat',
   voice: 'Voice',
   // Never reaches the conversations list, but a label has to exist for the
-  // one place a mail transcript can still be opened: its own id.
+  // one place a mail or schedule transcript can still be opened: its own id.
   mail: 'Mail',
+  schedule: 'Schedule',
 };
 
 export const SESSION_KIND_ICON: Record<SessionKind, LucideIcon> = {
   chat: MessageSquareIcon,
   voice: MicIcon,
   mail: MailIcon,
+  schedule: CalendarClockIcon,
 };
 
 /**

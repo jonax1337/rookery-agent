@@ -118,10 +118,11 @@ export class Store {
     const limit = options.limit ?? 50;
     const scope =
       (options.agentId === undefined ? '' : options.agentId === null ? ' AND s.agent_id IS NULL' : ' AND s.agent_id = ?') +
-      // A mail answer's transcript is not a conversation to browse, so it
-      // stays out of every open list. Asking for `kind: 'mail'` still finds
-      // them - the rule is "not by default", not "never".
-      (options.kind ? ' AND s.kind = ?' : " AND s.kind != 'mail'");
+      // A mail answer's or a cron run's transcript is not a conversation to
+      // browse, so both stay out of every open list. Asking for `kind:
+      // 'mail'` or `kind: 'schedule'` still finds them - the rule is "not by
+      // default", not "never".
+      (options.kind ? ' AND s.kind = ?' : " AND s.kind NOT IN ('mail', 'schedule')");
     const values: unknown[] = [options.includeArchived ? 1 : 0];
     if (options.agentId) values.push(options.agentId);
     if (options.kind) values.push(options.kind);
@@ -593,13 +594,14 @@ export class Store {
     const memory = this.memoryStats(owner);
 
     const totals: StatsTotals = {
-      // Mail transcripts are left out here for the same reason `listSessions`
-      // hides them: they are not conversations. Counting them would put a
-      // number on the conversations card that its own list cannot produce.
-      sessions: count("SELECT COUNT(*) AS n FROM sessions WHERE archived = 0 AND kind != 'mail'"),
-      archivedSessions: count("SELECT COUNT(*) AS n FROM sessions WHERE archived = 1 AND kind != 'mail'"),
+      // Mail and cron transcripts are left out here for the same reason
+      // `listSessions` hides them: they are not conversations. Counting them
+      // would put a number on the conversations card that its own list
+      // cannot produce.
+      sessions: count("SELECT COUNT(*) AS n FROM sessions WHERE archived = 0 AND kind NOT IN ('mail', 'schedule')"),
+      archivedSessions: count("SELECT COUNT(*) AS n FROM sessions WHERE archived = 1 AND kind NOT IN ('mail', 'schedule')"),
       messages: count(
-        "SELECT COUNT(*) AS n FROM messages m WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = m.session_id AND s.kind = 'mail')",
+        "SELECT COUNT(*) AS n FROM messages m WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = m.session_id AND s.kind IN ('mail', 'schedule'))",
       ),
       assignments: count('SELECT COUNT(*) AS n FROM assignments WHERE org_id = ?', options.orgId),
       runningAssignments: count(
@@ -1009,11 +1011,11 @@ export class Store {
   /**
    * Conversations that moved since `since`, newest first.
    *
-   * Mail sessions are left out on purpose: those are the assistant answering
-   * a mail with nobody on the other end, so there is no user in them to
-   * quote, and the evidence rule would throw away everything they yielded
-   * anyway. Archived ones are out for the same reason they are out of the
-   * list - the user put them away.
+   * Mail and cron-run sessions are left out on purpose: those are the
+   * assistant answering a mail or carrying out a schedule with nobody on the
+   * other end, so there is no user in them to quote, and the evidence rule
+   * would throw away everything they yielded anyway. Archived ones are out
+   * for the same reason they are out of the list - the user put them away.
    */
   sessionsActiveSince(since: number, limit = 50): Session[] {
     const rows = this.db
@@ -1021,7 +1023,7 @@ export class Store {
         `SELECT s.*, (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS message_count
            FROM sessions s
           WHERE s.archived = 0
-            AND s.kind != 'mail'
+            AND s.kind NOT IN ('mail', 'schedule')
             AND s.updated_at > ?
           ORDER BY s.updated_at DESC
           LIMIT ?`,
@@ -1429,7 +1431,7 @@ function mapSession(row: Row): Session {
     title: row.title as string,
     // Anything the column does not know is a chat - that is what the default
     // was before `kind` existed, and what a stray value should degrade to.
-    kind: (['voice', 'mail'].includes(row.kind as string) ? row.kind : 'chat') as SessionKind,
+    kind: (['voice', 'mail', 'schedule'].includes(row.kind as string) ? row.kind : 'chat') as SessionKind,
     provider: row.provider as ProviderId,
     model: (row.model as string) ?? undefined,
     cwd: row.cwd as string,

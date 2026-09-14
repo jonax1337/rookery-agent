@@ -756,9 +756,11 @@ export class Assistant extends EventEmitter {
   /* ----------------------------- schedules -------------------------- */
 
   /**
-   * Execute one schedule. The assistant's own jobs run as a turn in a
-   * conversation kept per job, so the user can open it and read along or
-   * carry on; an agent's jobs run as an ordinary assignment.
+   * Execute one schedule. The assistant's own jobs run as a turn in a fresh
+   * conversation every firing - a clean rerun each time, not a diary the
+   * assistant keeps adding to - unless the job was pinned to a specific
+   * conversation when it was created (the "reply in this chat" case for a
+   * one-off follow-up); an agent's jobs run as an ordinary assignment.
    */
   async #runScheduled(job: CronJob, run: CronRun, signal: AbortSignal): Promise<CronRunOutcome> {
     void run;
@@ -799,6 +801,10 @@ export class Assistant extends EventEmitter {
       return error ? { status: 'failed', error, assignmentId } : { status: 'done', result: text, assignmentId };
     }
 
+    // `job.sessionId` here only ever means "pinned at creation" - a one-off
+    // follow-up the user asked to land in a chat they already had open.
+    // Nothing below writes it back after a run, so a recurring job gets a
+    // clean, unlinked conversation every single firing.
     const existing = job.sessionId ? this.store.getSession(job.sessionId) : null;
     let sessionId: string;
     if (existing) {
@@ -807,14 +813,16 @@ export class Assistant extends EventEmitter {
       // it silently would bury the reply where nobody looks for it.
       if (existing.archived) this.store.updateSession(existing.id, { archived: false });
     } else {
-      sessionId = this.createSession({ title: 'Schedule: ' + job.name, projectId: job.projectId }).id;
-      this.store.cron.updateJob(job.id, { sessionId }, false);
+      sessionId = this.createSession({ title: 'Schedule: ' + job.name, kind: 'schedule', projectId: job.projectId }).id;
     }
     const when = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
     const prompt =
       'Automatic run of schedule “' + job.name + '” (' + describeCron(job.schedule) + '), ' + when + '. ' +
       'Nobody is following live: carry out the assignment now and finish with a short report ' +
-      'for the user to read later.\n\n' + job.prompt;
+      'for the user to read later. If carrying it out already delivers the result to the user by ' +
+      'itself (for example you send_mail them the thing this job exists to send), that mail is the ' +
+      'delivery - reply with exactly [SILENT] and nothing else, so a second "schedule completed" ' +
+      'notification is not posted on top of it.\n\n' + job.prompt;
     let text = '';
     let error: string | undefined;
     for await (const event of this.chat({ text: prompt, sessionId, projectId: job.projectId, permission: job.permission, signal })) {
@@ -822,7 +830,14 @@ export class Assistant extends EventEmitter {
       else if (event.type === 'error' && event.fatal) error = event.message;
     }
     if (error && !text) return { status: 'failed', error, sessionId };
-    if (text.trim() === '[SILENT]') return { status: 'done', result: '', silent: true, sessionId };
+    // An exact-match check on the whole reply is too brittle: the model
+    // sometimes reasons out loud first and tacks the sentinel on as its
+    // last line instead of replying with only it, which used to defeat the
+    // match and let the explanation (sentinel and all) straight into the
+    // inbox mail. Matching it as a trailing token - not anywhere in the
+    // text - still catches that case without firing on a report that
+    // merely quotes or explains the convention somewhere in its middle.
+    if (/\[SILENT\]\s*$/.test(text)) return { status: 'done', result: '', silent: true, sessionId };
     return { status: 'done', result: text, sessionId };
   }
 

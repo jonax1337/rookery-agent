@@ -27,7 +27,7 @@ export interface CronRunOutcome {
   silent?: boolean;
   result?: string;
   error?: string;
-  /** The conversation the assistant ran in, so the job keeps it for next time. */
+  /** The conversation this one run happened in - recorded on the run, not kept on the job. */
   sessionId?: string;
   assignmentId?: string;
 }
@@ -340,7 +340,6 @@ export class CronScheduler extends EventEmitter {
           lastStatus: outcome.status,
           lastError: outcome.error ?? null,
           runCount: current.runCount + 1,
-          sessionId: outcome.sessionId && !current.sessionId ? outcome.sessionId : undefined,
         },
         false,
       );

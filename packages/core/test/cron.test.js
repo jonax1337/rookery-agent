@@ -310,11 +310,12 @@ test('cron: a due job runs as the assistant in its own conversation and reports 
   const after = assistant.cron.get(job.id);
   assert.equal(after.runCount, 1);
   assert.equal(after.lastStatus, 'done');
-  assert.equal(after.sessionId, runs[0].sessionId, 'the job keeps its conversation');
+  assert.equal(after.sessionId, undefined, 'a recurring job is never pinned to one run\'s conversation');
   assert.ok(after.nextRunAt > Date.now() - 60_000, 'rescheduled');
 
-  const session = store.getSession(after.sessionId);
+  const session = store.getSession(runs[0].sessionId);
   assert.equal(session.title, 'Schedule: Minutentakt');
+  assert.equal(session.kind, 'schedule', 'hidden from the conversations list like a mail transcript');
   assert.equal(store.getMessages(session.id).length, 2, 'prompt and answer are on record');
   assert.match(fake.runs[0].prompt, /Automatic run of schedule “Minutentakt”/);
   assert.match(fake.runs[0].prompt, /Sag hallo\./);
@@ -327,12 +328,16 @@ test('cron: a due job runs as the assistant in its own conversation and reports 
   assert.ok(events.some((event) => event.run?.status === 'running'), 'announced the start');
   assert.ok(events.some((event) => event.run?.status === 'done'), 'announced the end');
 
-  // The second run reuses the conversation.
+  // The second run gets a fresh conversation, not the first run's.
   store.cron.updateJob(job.id, { nextRunAt: Date.now() - 1000 }, false);
   await assistant.cron.tick();
-  assert.equal(assistant.cron.runs(job.id).length, 2);
-  assert.equal(assistant.cron.get(job.id).sessionId, after.sessionId);
-  assert.equal(store.getMessages(session.id).length, 4);
+  const runsAfterSecond = assistant.cron.runs(job.id);
+  assert.equal(runsAfterSecond.length, 2);
+  assert.equal(assistant.cron.get(job.id).sessionId, undefined);
+  const secondSessionId = runsAfterSecond.find((run) => run.id !== runs[0].id).sessionId;
+  assert.notEqual(secondSessionId, runs[0].sessionId, 'a clean rerun, not a diary entry');
+  assert.equal(store.getMessages(session.id).length, 2, 'the first run\'s conversation is untouched');
+  assert.equal(store.getMessages(secondSessionId).length, 2);
   assistant.close();
 });
 
@@ -439,5 +444,36 @@ test('cron: a self-run schedule answering [SILENT] stays out of the inbox', asyn
   assert.equal(silent.status, 'done');
   assert.ok(!silent.result, 'the sentinel is consumed, never reported as a result');
   assert.equal(store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length, afterLoud, 'a silent self-run posts no completion mail');
+
+  // The model also reasons out loud before the sentinel sometimes - an exact
+  // match on the whole reply would miss this and let the reasoning (sentinel
+  // and all) straight into a "completed" mail, which is exactly what shipped
+  // once before this was caught.
+  fake.provider.run = async function* () {
+    yield { type: 'done', text: 'Identical to the update already delivered earlier - no new send.\n\n[SILENT]' };
+  };
+  const silentWithReasoning = await assistant.cron.runNow(job.id);
+  assert.equal(silentWithReasoning.status, 'done');
+  assert.ok(!silentWithReasoning.result, 'reasoning before the trailing sentinel is still recognised as silent');
+  assert.equal(
+    store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length,
+    afterLoud,
+    'a silent self-run with reasoning still posts no completion mail',
+  );
+
+  // But the token only counts as the sentinel when it is the reply's last
+  // word - a report that merely quotes or discusses the convention midway
+  // through must still be delivered in full.
+  fake.provider.run = async function* () {
+    yield { type: 'done', text: 'Sent already. Per the [SILENT] convention this would stay quiet, but this run was not silent.' };
+  };
+  const mentionsSentinel = await assistant.cron.runNow(job.id);
+  assert.equal(mentionsSentinel.status, 'done');
+  assert.match(mentionsSentinel.result, /was not silent\.$/, 'a mid-text mention of the token is not the sentinel');
+  assert.equal(
+    store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length,
+    afterLoud + 1,
+    'a report that only mentions the token still reaches the inbox',
+  );
   assistant.close();
 });
