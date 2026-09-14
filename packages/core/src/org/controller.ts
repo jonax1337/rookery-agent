@@ -54,6 +54,7 @@ import {
   renderExternalSkillsHint,
   renderSkillHits,
 } from '../skills/shelf.js';
+import { matchSkills, renderSkillMatches } from '../skills/suggest.js';
 import { describeCronJob, type CronJobPatch, type CronScheduler } from '../cron/scheduler.js';
 import { describeCron } from '../cron/parse.js';
 import {
@@ -1265,6 +1266,19 @@ export class OrgController extends EventEmitter {
       const projectMcp = project?.path ? readProjectMcpFile(project.path) : null;
       const projectMcpState = projectMcpStatus(projectMcp, project?.mcpTrust);
       const projectMcpSpecs = projectMcpState === 'trusted' && projectMcp ? projectMcp.servers : [];
+      // Rookery searches its own shelf rather than trusting the agent to
+      // remember: the index says what exists, the hint says how much more is
+      // installed, and the third line is the two or three that look like this
+      // assignment - put there the way a recalled memory is, not left to a
+      // tool call somebody has to think of.
+      const agentSkills = this.#agentSkills(project);
+      const skillsIndex = [
+        renderSkillsIndex(agentSkills),
+        renderExternalSkillsHint(this.#config, 'agent'),
+        renderSkillMatches(matchSkills(this.#config, 'agent', agentSkills, input.task)),
+      ]
+        .filter(Boolean)
+        .join('\n\n');
       const toolHints = [...extra.hints];
       if (projectMcp?.servers.length && projectMcpState !== 'trusted') {
         toolHints.push(
@@ -1295,12 +1309,7 @@ export class OrgController extends EventEmitter {
               .filter((entry) => entry.id !== input.sourceMail?.id)
           : undefined,
         toolHints,
-        skillsIndex: [
-          renderSkillsIndex(this.#agentSkills(project)),
-          renderExternalSkillsHint(this.#config, 'agent'),
-        ]
-          .filter(Boolean)
-          .join('\n\n'),
+        skillsIndex,
       });
       if (unreadMail.length) org.markMailReadFor(unreadMail, mailWho);
 

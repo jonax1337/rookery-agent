@@ -202,6 +202,11 @@ export {
   type SkillOrigin,
 } from './skills/store.js';
 export {
+  matchSkills,
+  renderSkillMatches,
+  type SkillMatch,
+} from './skills/suggest.js';
+export {
   externalSkillsFor,
   externalSources,
   findExternalSkills,

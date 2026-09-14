@@ -34,6 +34,7 @@ import { assistantOrgBlock } from './org/prompts.js';
 import { dormantToolsHint, ensureToolServers, toolServersFor } from './tools/hub.js';
 import { SkillStore, renderSkillsIndex } from './skills/store.js';
 import { renderExternalSkillsHint } from './skills/shelf.js';
+import { matchSkills, renderSkillMatches } from './skills/suggest.js';
 import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
 import { runCronScript } from './cron/script.js';
@@ -468,8 +469,15 @@ export class Assistant extends EventEmitter {
     // a switch it does not know about is a wall it cannot climb.
     const toolHints = [...extra.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean);
     // Rookery's own shelf in full, and one paragraph for the far larger one
-    // installed in Claude Code: what is there, not what it says.
-    const skillsIndex = [renderSkillsIndex(this.skills.for(who)), renderExternalSkillsHint(this.config, who)]
+    // installed in Claude Code: what is there, not what it says. Then the few
+    // that look like this turn - searched here rather than left to a tool call
+    // the model has to think of, the same way its memories arrive.
+    const ownSkills = this.skills.for(who);
+    const skillsIndex = [
+      renderSkillsIndex(ownSkills),
+      renderExternalSkillsHint(this.config, who),
+      renderSkillMatches(matchSkills(this.config, who, ownSkills, prompt)),
+    ]
       .filter(Boolean)
       .join('\n\n');
     const systemPrompt = buildSystemPrompt({

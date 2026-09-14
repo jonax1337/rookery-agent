@@ -10,8 +10,10 @@ import {
   externalSources,
   isBuiltinSkill,
   loadConfig,
+  matchSkills,
   openExternalSkill,
   refreshExternal,
+  renderSkillMatches,
   renderSkillsIndex,
 } from '../dist/index.js';
 
@@ -163,6 +165,67 @@ test('a plugin skill opens by bare name, by qualified id and the way Claude Code
 
     assert.equal(openExternalSkill(config, 'agent', 'nope:react-performance'), null, 'a wrong plugin still misses');
     assert.equal(openExternalSkill(config, 'agent', 'ecc:not-a-skill'), null);
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previous;
+    refreshExternal();
+  }
+});
+
+test('a task gets its matching skills named without anybody searching', () => {
+  const dir = home();
+  const store = new SkillStore(dir);
+  store.save({
+    name: 'wochenbericht',
+    description: 'Den Wochenbericht schreiben: Zahlen sammeln, Text bauen, an den Nutzer schicken.',
+    body: '1. Sammeln\n2. Schreiben',
+  });
+  const config = loadConfig({ home: dir });
+  const own = store.for('agent');
+
+  const hit = matchSkills(config, 'agent', own, 'Schreib bitte den Wochenbericht fuer diese Woche');
+  assert.deepEqual(hit.map((match) => match.name), ['wochenbericht']);
+  assert.match(renderSkillMatches(hit), /use_skill/);
+  assert.match(renderSkillMatches(hit), /- wochenbericht:/);
+
+  // The guard that makes the block worth reading: no match, no paragraph.
+  assert.deepEqual(matchSkills(config, 'agent', own, 'Bitte die Kaffeemaschine entkalken'), []);
+  assert.equal(renderSkillMatches([]), '');
+});
+
+test('the installed shelf is searched too, and a task about nothing matches nothing', () => {
+  const previous = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = installation();
+  try {
+    refreshExternal();
+    const dir = home();
+    const config = loadConfig({ home: dir });
+    const source = externalSources(config).find((entry) => entry.source.origin === 'plugin');
+    config.external.skillSources = { [source.source.id]: true };
+    const own = new SkillStore(dir).for('agent');
+
+    const matches = matchSkills(config, 'agent', own, 'Die React Performance der Seite ist schlecht');
+    assert.ok(
+      matches.some((match) => match.name === 'react-performance'),
+      'the plugin skill is offered without find_skill being called',
+    );
+
+    // And the case that made the bar necessary: a German sentence shares one
+    // word with an English description, thirty skills share it equally, and
+    // naming three of them alphabetically is worse than saying nothing.
+    assert.deepEqual(
+      matchSkills(config, 'agent', own, 'Mach die Seite schneller, sie laedt zu lang'),
+      [],
+      'one coincidental word is not a match',
+    );
+    const block = renderSkillMatches(matches);
+    assert.match(block, /react-performance/);
+    assert.match(block, /Claude Code - ecc/, 'and it says which shelf it came from');
+
+    assert.deepEqual(matchSkills(config, 'agent', own, 'Urlaubsantrag fuer Jonas eintragen'), []);
+    // Only what this audience may open: a skill for agents is not offered to
+    // the assistant and the other way round.
+    assert.deepEqual(matchSkills(config, 'assistant', [], ''), []);
   } finally {
     if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
     else process.env.CLAUDE_CONFIG_DIR = previous;
