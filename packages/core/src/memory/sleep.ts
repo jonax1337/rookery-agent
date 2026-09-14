@@ -1089,9 +1089,10 @@ export class SleepRunner extends EventEmitter {
     const store = new SkillStore(this.#config.skillsDir);
     const mine = store
       .for(owner === ASSISTANT_MEMORY_OWNER ? 'assistant' : 'agent')
-      // The user's own skills are not the night's to rewrite, so there is no
-      // point spending a model call deciding that they should be.
-      .filter((skill) => skill.origin !== 'user');
+      // Neither the user's own skills nor the ones Rookery ships are the
+      // night's to rewrite, so there is no point spending a model call
+      // deciding that they should be - the store would refuse the write.
+      .filter((skill) => skill.origin === 'agent' || skill.origin === 'sleep');
     if (!mine.length) return { written: 0, calls: 0 };
 
     // Corrections the night's replay pulled out of the day's conversations.

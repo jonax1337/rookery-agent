@@ -8,6 +8,7 @@ import {
   FileIcon,
   FilesIcon,
   FolderIcon,
+  PackageIcon,
   PencilIcon,
   Trash2Icon,
   UsersIcon,
@@ -81,24 +82,29 @@ export function SkillDetailPage() {
           <Button size="sm" asChild>
             <NavLink to={'/skills/' + skill.name + '/edit'}>
               <PencilIcon data-icon="inline-start" />
-              Edit
+              {/* A shipped skill is not edited but replaced: saving writes
+                  your own copy into the skills folder, which takes over. */}
+              {skill.origin === 'builtin' ? 'Write your own version' : 'Edit'}
             </NavLink>
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="More actions" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              <DropdownMenuItem variant="destructive" onSelect={() => void removeSkill()}>
-                <Trash2Icon data-icon="inline-start" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Nothing to delete while the shipped text is what is showing. */}
+          {skill.origin === 'builtin' ? null : (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <RowMenuButton tone="header" label="More actions" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem variant="destructive" onSelect={() => void removeSkill()}>
+                  <Trash2Icon data-icon="inline-start" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       ) : undefined,
     },
-    [skill?.name, removeSkill],
+    [skill?.name, skill?.origin, removeSkill],
   );
 
   /* -------------------------------- Zustände ------------------------------- */
@@ -124,6 +130,8 @@ export function SkillDetailPage() {
   }
 
   const body = skill.body.trim();
+  /** Shipped with Rookery: no folder, no mtime, and nothing here to delete. */
+  const builtin = skill.origin === 'builtin';
 
   return (
     <PageBody width="3xl">
@@ -131,6 +139,15 @@ export function SkillDetailPage() {
 
       {skill.description ? (
         <p className="text-sm text-muted-foreground">{skill.description}</p>
+      ) : null}
+
+      {builtin ? (
+        <p className="text-sm text-muted-foreground">
+          This skill ships with Rookery and is available to the assistant and every agent from the
+          first start. It cannot be changed here, and the nightly run does not rewrite it. Writing
+          your own version saves it to the skills folder, where it takes precedence; delete that
+          copy and this text is back.
+        </p>
       ) : null}
 
       <MetaList
@@ -145,7 +162,13 @@ export function SkillDetailPage() {
             ),
             icon: UsersIcon,
           },
-          {
+          builtin
+            ? {
+                label: 'Where it comes from',
+                value: 'Delivered with Rookery, no folder on disk',
+                icon: PackageIcon,
+              }
+            : {
             label: 'Path',
             value: (
               <span className="flex min-w-0 items-center gap-1">
@@ -175,7 +198,9 @@ export function SkillDetailPage() {
           },
           {
             label: 'Updated',
-            value: timeAgo(skill.updatedAt),
+            // A shipped skill has no mtime of its own: it changes when
+            // Rookery does.
+            value: builtin ? 'With Rookery itself' : timeAgo(skill.updatedAt),
             icon: ClockIcon,
           },
         ]}

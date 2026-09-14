@@ -49,13 +49,14 @@ import type { ExternalSource, Skill, SkillOrigin } from '@/lib/types';
 /**
  * Who wrote a skill. Worth a column of its own now that the shelf is no
  * longer only what a person put there: the assistant writes one with
- * `write_skill` when it works something out, and the nightly run distils one
- * out of what the memory keeps repeating.
+ * `write_skill` when it works something out, the nightly run distils one out
+ * of what the memory keeps repeating, and a few ship with Rookery itself.
  */
 const ORIGIN_LABEL: Record<SkillOrigin, string> = {
   user: 'You',
   agent: 'Agent',
   sleep: 'Night',
+  builtin: 'Rookery',
 };
 
 /**
@@ -202,7 +203,13 @@ export function SkillsPage() {
 
         column.accessor('updatedAt', {
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Updated" />,
-          cell: ({ row }) => relativeTimeCell(row.original.updatedAt),
+          // A shipped skill has no mtime: it changes when Rookery does, so
+          // the cell says where it comes from instead of "never".
+          cell: ({ row }) =>
+            relativeTimeCell(
+              row.original.updatedAt,
+              row.original.origin === 'builtin' ? { fallback: 'with Rookery' } : {},
+            ),
         }),
 
         actionsColumn<Skill>((skill) => (
@@ -219,13 +226,19 @@ export function SkillsPage() {
                 onSelect={() => void navigate('/skills/' + skill.name + '/edit')}
               >
                 <PencilIcon />
-                Edit
+                {/* Editing a shipped skill does not change it: it writes your
+                    own copy, which then takes precedence. */}
+                {skill.origin === 'builtin' ? 'Write your own version' : 'Edit'}
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onSelect={() => void deleteSkill(skill)}>
-                <Trash2Icon />
-                Delete
-              </DropdownMenuItem>
+              {skill.origin === 'builtin' ? null : (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onSelect={() => void deleteSkill(skill)}>
+                    <Trash2Icon />
+                    Delete
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         )),
@@ -288,11 +301,17 @@ export function SkillsPage() {
   // sits on two shelves counts once, which is also how the assistant sees it.
   const availableSkills = external.overview?.skills.length ?? 0;
 
-  /** The most recently touched skill, for the fourth card. */
+  /**
+   * The most recently touched skill, for the fourth card. Only ones with a
+   * file behind them qualify: a skill that ships with Rookery has no mtime,
+   * and reading its zero as a date put "01/01/1970" on the card of a fresh
+   * installation.
+   */
   const newest = useMemo(
     () =>
       skills.reduce<Skill | null>(
-        (best, skill) => (best === null || skill.updatedAt > best.updatedAt ? skill : best),
+        (best, skill) =>
+          skill.updatedAt > 0 && (best === null || skill.updatedAt > best.updatedAt) ? skill : best,
         null,
       ),
     [skills],
@@ -364,13 +383,18 @@ export function SkillsPage() {
         rowLabel={{ singular: 'Skill', plural: 'Skills' }}
         loading={loading}
         error={error ? <ServerOffline onRetry={() => void refresh()} /> : undefined}
-        bulkActions={(selected, clear) => (
+        bulkActions={(selected, clear) => {
+          // A skill that ships with Rookery has no folder to delete, so it is
+          // left out of the run rather than counted as a failure afterwards.
+          const removable = selected.filter((skill) => skill.origin !== 'builtin');
+          return (
           <Button
             size="sm"
             variant="outline"
+            disabled={removable.length === 0}
             onClick={() =>
               void bulk.run({
-                rows: selected,
+                rows: removable,
                 noun: { singular: 'Skill', plural: 'Skills' },
                 nameOf: (skill) => skill.name,
                 verb: 'delete',
@@ -378,7 +402,7 @@ export function SkillsPage() {
                 confirmLabel: 'Delete',
                 description:
                   'The folders for ' +
-                  selected.map((skill) => '„' + skill.name + '“').join(', ') +
+                  removable.map((skill) => '„' + skill.name + '“').join(', ') +
                   ' will be deleted. This cannot be undone.',
                 run: (skill) => remove(skill.name),
                 clear,
@@ -388,7 +412,8 @@ export function SkillsPage() {
             <Trash2Icon data-icon="inline-start" />
             Delete
           </Button>
-        )}
+          );
+        }}
         empty={
           tab === 'alle' ? (
             <EmptyState

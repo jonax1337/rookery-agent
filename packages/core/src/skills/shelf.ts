@@ -87,17 +87,47 @@ export function findExternalSkills(
 }
 
 /**
- * Open one by name or by its qualified `<source>/<name>` id. Only now is the
- * body read from disk - the scan never touches it.
+ * `<plugin>:<name>`, the way Claude Code itself names a plugin's skill:
+ * `ecc:react-performance`. Not a spelling Rookery hands out - `find_skill`
+ * prints the bare name - but a model that knows the CLI writes it without
+ * being told to, and a null in return costs it a turn for nothing.
+ */
+function pluginQualified(
+  skills: ExternalSkillRef[],
+  sources: ExternalSource[],
+  wanted: string,
+): ExternalSkillRef | undefined {
+  const colon = wanted.lastIndexOf(':');
+  // A qualified id carries a slash and is already handled; this form has none.
+  if (colon <= 0 || wanted.includes('/')) return undefined;
+  const prefix = wanted.slice(0, colon);
+  const bare = wanted.slice(colon + 1);
+  const plugins = new Map(sources.map((source) => [source.id, (source.plugin ?? '').toLowerCase()]));
+  return skills.find((skill) => {
+    if (skill.name !== bare) return false;
+    const plugin = plugins.get(skill.sourceId) ?? '';
+    // Both halves of the key: Claude Code writes `ecc` where Rookery's source
+    // id carries the marketplace too (`ecc@ecc`).
+    return plugin === prefix || plugin.split('@')[0] === prefix;
+  });
+}
+
+/**
+ * Open one by name, by its qualified `<source>/<name>` id, or by the
+ * `<plugin>:<name>` form above. Only now is the body read from disk - the
+ * scan never touches it.
  */
 export function openExternalSkill(config: RookeryConfig, who: 'assistant' | 'agent', name: string): Skill | null {
   const wanted = name.trim().toLowerCase();
   const skills = externalSkillsFor(config, who);
-  const ref = skills.find((skill) => skill.id.toLowerCase() === wanted) ?? skills.find((skill) => skill.name === wanted);
+  const scan = externalScan({ enabled: config.external.enabled });
+  const ref =
+    skills.find((skill) => skill.id.toLowerCase() === wanted) ??
+    skills.find((skill) => skill.name === wanted) ??
+    pluginQualified(skills, scan.sources, wanted);
   if (!ref) return null;
   const skill = readSkillFolder(dirname(ref.path), ref.name);
   if (!skill) return null;
-  const scan = externalScan({ enabled: config.external.enabled });
   const label = scan.sources.find((source) => source.id === ref.sourceId)?.label;
   return { ...skill, source: label ?? ref.sourceId };
 }

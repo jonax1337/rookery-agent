@@ -988,8 +988,11 @@ export interface CustomToolInput {
 
 /* ------------------------------- skills ------------------------------- */
 
-/** Who wrote a skill: a person, an agent at work, or the nightly run. */
-export type SkillOrigin = 'user' | 'agent' | 'sleep';
+/**
+ * Who wrote a skill: a person, an agent at work, the nightly run - or
+ * Rookery itself, for the handful that ship with it and have no folder.
+ */
+export type SkillOrigin = 'user' | 'agent' | 'sleep' | 'builtin';
 
 export interface Skill {
   name: string;

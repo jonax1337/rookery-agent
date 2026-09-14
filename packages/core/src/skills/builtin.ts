@@ -1,0 +1,207 @@
+import type { ToolServerAudience } from '../types.js';
+import type { Skill } from './store.js';
+
+/**
+ * The shelf Rookery ships with.
+ *
+ * Every other skill arrives from somewhere: a person wrote it, an import
+ * pulled it off GitHub, an agent or the night distilled one. These are the
+ * few that are simply there, because nothing works without them being
+ * known - what a turn is actually running inside.
+ *
+ * They live in this file rather than in a folder of Markdown next to it for
+ * one reason: `packages/*\/dist` is all that packaging copies, so a skill
+ * compiled into `dist` travels with every install while a `skills/`
+ * directory beside it would have to be remembered in four places and would
+ * be missing, silently, the first time somebody forgot one.
+ *
+ * Read-only, like the external shelf: `origin: 'builtin'` marks them, and
+ * `SkillStore` reads them at the lowest precedence, so a home skill of the
+ * same name wins. That is the escape hatch - editing one in the UI writes
+ * a copy into `<home>/skills` that takes over, and deleting that copy
+ * brings this text back.
+ */
+
+export interface BuiltinSkill {
+  name: string;
+  description: string;
+  audience: ToolServerAudience;
+  body: string;
+}
+
+/** The names that ship with Rookery; nothing unattended may write to them. */
+export function isBuiltinSkill(name: string): boolean {
+  return BUILTIN_SKILLS.some((skill) => skill.name === name);
+}
+
+/** One built-in as a `Skill` record: no folder, no files, no mtime. */
+function asSkill(builtin: BuiltinSkill): Skill {
+  return {
+    name: builtin.name,
+    description: builtin.description,
+    audience: builtin.audience,
+    body: builtin.body,
+    origin: 'builtin',
+    files: [],
+    path: '',
+    updatedAt: 0,
+  };
+}
+
+export function builtinSkills(): Skill[] {
+  return BUILTIN_SKILLS.map(asSkill);
+}
+
+export function builtinSkill(name: string): Skill | null {
+  const found = BUILTIN_SKILLS.find((skill) => skill.name === name);
+  return found ? asSkill(found) : null;
+}
+
+const CLAUDE_CODE = `
+Every turn you run is a \`claude -p\` child process: Rookery is the environment
+around the Claude Code harness, not a replacement for it. So your tools come
+from that harness, and a few of the things people talk about doing with Claude
+Code do not exist inside a Rookery run. This is which is which.
+
+## What you actually have
+
+- **Read, Glob, Grep** - reading and searching.
+- **Edit, Write, NotebookEdit** - changing files, from permission \`write\` up.
+- **Bash, PowerShell** - only at permission \`full\`. Every level below it starts
+  the harness \`--restricted\`, which removes them: a shell redirect writes a
+  file just as well as Write does, so the shell goes when writing goes.
+- **Task** - subagents. See below; this is the one worth getting right.
+- **Skill** - the harness's own built-in skills, the ones listed in your prompt.
+  Not the same shelf as Rookery's \`use_skill\`, and not reachable through it.
+- **ToolSearch** - not every tool is in your list from the start. A deferred one
+  is named in a system reminder and becomes callable once ToolSearch has
+  returned its schema; calling it before that fails.
+- **WebSearch**, and the Rookery tools of this turn (\`send_mail\`, \`use_skill\`,
+  \`write_skill\`, whatever else the run was given).
+
+Read your tool list to find out what you have. Do not probe: a denied call
+costs a turn and tells you nothing you could not have seen.
+
+## Delegating with Task
+
+The agent types that exist here are **general-purpose**, **Explore**, **Plan**
+and **claude**. Custom ones do not: Rookery starts the CLI with
+\`--setting-sources ''\`, so nothing from the user's own \`~/.claude\`, no plugins,
+no project \`.claude/agents\` - whatever somebody's interactive session offers,
+you have these four.
+
+- **Set \`model\` explicitly, every time.** Haiku for mechanical fan-out, Sonnet
+  for real work, Opus for judgement. A subagent left on the default is the
+  most common way a delegated task comes back useless.
+- **A subagent inherits your tools, not your conversation.** Everything it
+  needs goes in its prompt: the exact paths, what counts as done, what to
+  report back. It cannot ask you.
+- **Delegate breadth, keep judgement.** Several Task calls in one message run
+  at the same time - that is what makes fanning out worth anything. Independent
+  searches, independent reviews, independent readings of different files.
+- **Ask for the conclusion, not the file dump.** "Return the three call sites
+  and the signature" beats "read these files and tell me about them".
+- **One writer at a time.** Two subagents editing the same tree collide and you
+  will not find out until the build breaks. Parallelise reading and reviewing;
+  write yourself, or hand the writing to exactly one.
+- **Do not delegate what you already know how to find.** One Grep is cheaper
+  than a subagent in every currency.
+- Do not build a plan on a subagent delegating further.
+
+Task is not the company's \`assign\`, and the two are easy to confuse. A
+subagent is part of your own turn: it has no name, no memory, no mail, and it
+is gone when you answer. \`assign\` starts a real run of a colleague who has all
+three. Use Task for work you need done inside this turn to answer well; use
+\`assign\` when the work is somebody else's to own.
+
+## What does not exist here - do not reach for it
+
+- **The Workflow tool - what people call "ultracode" - only at permission
+  \`full\`.** \`--restricted\` takes it away together with the shell, so below
+  \`full\` it is absent from your tool list and absent behind ToolSearch, and
+  writing the word ultracode into a prompt does nothing at all. Where you do
+  have it, it is for work somebody actually asked to be run as a fan-out of
+  many agents, and it bills like it: a large task is not a reason to reach for
+  it. Task is how you delegate normally.
+- **No slash commands.** You have no user turn to type into, so \`/code-review\`,
+  \`/verify\`, \`/simplify\` are not available as commands - the built-in skills
+  behind some of them are, through the Skill tool. \`/code-review ultra\` in
+  particular is a cloud review a person triggers and pays for: out of reach.
+- **No hooks, no settings, no plugins, no custom agents, no keybindings.** All
+  of that lives in \`~/.claude\` and in project settings, and the harness is
+  started without them.
+- **MCP: what Rookery hands this turn, and nothing else** (\`--strict-mcp-config\`).
+  That is more than it sounds: every server switched on for your audience on
+  Rookery's Tools page is attached - including ones it found in the user's own
+  Claude Code installation and somebody approved there - plus the project's
+  \`.mcp.json\`, plus Rookery's own bridge. What is not attached is whatever else
+  that CLI happens to have configured. Your tool list is the truth; if a server
+  you need is missing, ask for it rather than shelling out to its API.
+- **Nothing interactive.** No plan mode to exit, no permission prompt for
+  anybody to answer. A call you are not allowed to make is simply denied.
+
+When the work genuinely needs something from that list, say so in what you
+report back and ask for it - the permission level, the tool, the MCP server.
+Do not route around it with a shell redirect, a curl, or a downloaded copy of
+what the blocked tool would have given you.
+
+## Writing better code with what is here
+
+Two built-in skills earn their keep after you have changed code. Both are
+opened with the Skill tool:
+
+- **code-review** - reads the current diff for correctness bugs and for
+  reuse, simplification and efficiency cleanups. An effort level steers it:
+  low and medium keep to few, high-confidence findings, high and above cover
+  more ground and may include uncertain ones. \`--fix\` applies what it found.
+- **simplify** - quality only, no bug hunt: reuse, simplification, efficiency,
+  altitude. It applies the fixes itself.
+
+And **run** launches the project's app when a change has to be seen working
+rather than asserted.
+
+Before you report an assignment done: the project's own build and test command
+- the one its AGENTS.md or CLAUDE.md names - actually run, its output actually
+read, and anything you could not verify named as unverified. A review you ran
+and then ignored is worse than no review, because it reads like diligence.
+
+## The permission ladder
+
+Rookery's four levels, as the harness sees them:
+
+- **chat** - no filesystem and no Task: conversation only.
+- **read** - read, search, delegate; no edits, no shell, and no WebFetch
+  (WebSearch stays).
+- **write** - edits in the working directory go through without asking; still
+  no shell.
+- **full** - the whole harness: the shell, WebFetch, background tasks, git
+  worktrees and the Workflow tool, with prompts skipped.
+
+The three levels below \`full\` all run \`--restricted\`, which is what removes the
+shell - and with it WebFetch and Workflow - and confines the file tools to the
+working directory. So the jump from \`write\` to \`full\` is not one more
+permission; it is a different set of tools.
+
+Your list is wider than your level, and that gap is yours to respect.
+\`--restricted\` removes the shell, not everything that acts: on \`read\` you will
+still find \`CronDelete\`, \`EnterWorktree\`, \`ExitWorktree\`, \`PushNotification\`,
+\`ScheduleWakeup\` and \`SendMessage\` sitting in your tool list. Those belong to
+the harness, not to what Rookery's \`read\` means - deleting somebody's scheduled
+agents, opening a worktree or buzzing their phone is not reading. Leave them
+alone unless the assignment asked for exactly that.
+
+Your level is whatever your tool list says. A tool that is missing is a
+decision somebody made, not a defect to work around.
+`.trim();
+
+export const BUILTIN_SKILLS: readonly BuiltinSkill[] = [
+  {
+    name: 'claude-code',
+    description:
+      'How the Claude Code harness behaves inside a Rookery run: which tools a turn really has, ' +
+      'how to delegate with Task, what does not exist here (no ultracode, no slash commands, no plugins), ' +
+      'and which built-in skills raise the quality of code you write.',
+    audience: 'both',
+    body: CLAUDE_CODE,
+  },
+];

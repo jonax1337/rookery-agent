@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ToolServerAudience } from '../types.js';
+import { builtinSkill, builtinSkills, isBuiltinSkill } from './builtin.js';
 
 /**
  * Skills: written instructions the assistant and its agents can pull in on
@@ -9,8 +10,12 @@ import type { ToolServerAudience } from '../types.js';
  *
  * Rookery renders skills itself rather than leaning on a provider's own
  * skill loading: the assistant runs with its system prompt replaced and
- * without user settings, and Codex has no notion of them. The prompt carries
- * an index (name and description); `use_skill` returns the body.
+ * without user settings, so none of it would reach the process. The prompt
+ * carries an index (name and description); `use_skill` returns the body.
+ *
+ * Below every directory sits the shelf Rookery ships with (`builtin.ts`):
+ * present from the first start, read-only, and shadowed by a folder of the
+ * same name.
  *
  * A `SkillStore` can hold more than one directory - the home skills plus, for
  * an agent working in a project, that project's own `<project>/.claude/skills`
@@ -29,12 +34,15 @@ import type { ToolServerAudience } from '../types.js';
  * `user` covers everything a person put there - the skill editor, an import
  * from GitHub, a folder dropped in by hand. `agent` is a skill the assistant
  * or one of its agents wrote with `write_skill` while working, `sleep` one the
- * night distilled out of what the memory kept repeating.
+ * night distilled out of what the memory kept repeating. `builtin` is the
+ * handful Rookery ships with (see `builtin.ts`): no folder on disk, and
+ * nothing may write to them.
  *
  * The distinction earns its keep in one place above all: nothing written
- * unattended may overwrite what a person wrote. See `save`.
+ * unattended may overwrite what a person wrote, or what Rookery shipped.
+ * See `save`.
  */
-export type SkillOrigin = 'user' | 'agent' | 'sleep';
+export type SkillOrigin = 'user' | 'agent' | 'sleep' | 'builtin';
 
 export interface Skill {
   name: string;
@@ -91,6 +99,11 @@ function asAudience(value: string | undefined): ToolServerAudience {
   return value === 'agents' || value === 'assistant' ? value : 'both';
 }
 
+/**
+ * `builtin` is deliberately not accepted here: it says "this text came out of
+ * Rookery's own dist", which a file on disk cannot be however its frontmatter
+ * is worded. Anything else unrecognised stays the user's.
+ */
 function asOrigin(value: string | undefined): SkillOrigin {
   return value === 'agent' || value === 'sleep' ? value : 'user';
 }
@@ -131,6 +144,9 @@ export class SkillStore {
 
   list(): Skill[] {
     const byName = new Map<string, Skill>();
+    // The lowest shelf, below every directory: what Rookery ships is there
+    // from the first start, and a folder of the same name takes over from it.
+    for (const skill of builtinSkills()) byName.set(skill.name, skill);
     for (const dir of this.dirs) {
       if (!existsSync(dir)) continue;
       for (const name of readdirSync(dir)) {
@@ -143,7 +159,7 @@ export class SkillStore {
 
   get(name: string): Skill | null {
     if (!NAME.test(name)) return null;
-    let found: Skill | null = null;
+    let found: Skill | null = builtinSkill(name);
     for (const dir of this.dirs) {
       const skill = this.#read(dir, name);
       if (skill) found = skill;
@@ -168,6 +184,12 @@ export class SkillStore {
     // morning, may add to the shelf and may revise its own work - it may not
     // quietly rewrite a procedure a person put there.
     if (origin !== 'user') {
+      // Shipped skills are the same case as the user's, one step further: a
+      // person can put their own version over one of them in the editor, but
+      // an unattended write must not quietly shadow what Rookery delivers.
+      if (isBuiltinSkill(name)) {
+        throw new Error('The skill "' + name + '" ships with Rookery and is not yours to change.');
+      }
       // The home directory only - the one being written to. A project skill
       // of the same name shadows this one when read, but it is not what is
       // about to be overwritten.
@@ -224,6 +246,11 @@ export class SkillStore {
     return true;
   }
 
+  /**
+   * The home folder, and only it. A built-in has no folder, so removing one
+   * is a no-op that answers false - what a person deletes is their own copy
+   * of it, and doing so brings the shipped text back into `list`.
+   */
   remove(name: string): boolean {
     if (!NAME.test(name)) return false;
     const folder = join(this.dirs[0] as string, name);

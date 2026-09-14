@@ -237,7 +237,10 @@ test('skills live as SKILL.md folders and render into an index per audience', as
   const { join } = await import('node:path');
   const dir = mkdtempSync(join(tmpdir(), 'rookery-skills-'));
   const store = new SkillStore(dir);
-  assert.deepEqual(store.list(), []);
+  // Everything below is about folders, so the skills Rookery ships with -
+  // which have none - are filtered out; `skills.test.js` covers those.
+  const written = () => store.list().filter((skill) => skill.origin !== 'builtin');
+  assert.deepEqual(written(), []);
 
   const saved = store.save({ name: 'Wochen Bericht!', description: 'Den Wochenbericht schreiben.', audience: 'assistant', body: '1. Sammeln\n2. Schreiben' });
   assert.equal(saved.name, 'wochen-bericht');
@@ -250,9 +253,10 @@ test('skills live as SKILL.md folders and render into an index per audience', as
   assert.equal(deploy.body, 'Schritte hier.');
   assert.deepEqual(deploy.files, ['checklist.txt']);
 
-  assert.deepEqual(store.for('assistant').map((s) => s.name), ['wochen-bericht']);
-  assert.deepEqual(store.for('agent').map((s) => s.name), ['deploy']);
-  assert.match(renderSkillsIndex(store.for('assistant')), /use_skill.*\n- wochen-bericht: Den Wochenbericht schreiben\./);
+  const mine = (who) => store.for(who).filter((skill) => skill.origin !== 'builtin');
+  assert.deepEqual(mine('assistant').map((s) => s.name), ['wochen-bericht']);
+  assert.deepEqual(mine('agent').map((s) => s.name), ['deploy']);
+  assert.match(renderSkillsIndex(mine('assistant')), /use_skill.*\n- wochen-bericht: Den Wochenbericht schreiben\./);
   assert.equal(renderSkillsIndex([]), '');
   assert.throws(() => store.save({ name: '', description: 'x', body: '' }), /name/);
   assert.equal(store.remove('deploy'), true);

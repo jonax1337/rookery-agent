@@ -140,7 +140,9 @@ export function SkillFormPage() {
           submitting={saving}
           submitDisabled={!dirty || saving}
           menu={
-            editing
+            // A shipped skill has no folder: what this form does with one is
+            // write your own copy, so there is nothing to offer deleting.
+            editing && skill?.origin !== 'builtin'
               ? [
                   {
                     label: 'Delete',
@@ -189,7 +191,11 @@ export function SkillFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        description="The description determines when the skill is opened: one sentence that matches the task."
+        description={
+          skill?.origin === 'builtin'
+            ? 'This skill ships with Rookery. Saving does not change it: your version is written to the skills folder and takes precedence from then on.'
+            : 'The description determines when the skill is opened: one sentence that matches the task.'
+        }
       >
         <FieldSet>
           <Field>

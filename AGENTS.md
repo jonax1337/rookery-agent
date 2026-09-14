@@ -76,14 +76,23 @@ Datenbank).
   dem Server.
 - Package-Grenzen respektieren: `packages/core` kennt weder HTTP noch Terminal. HTTP-
   und Terminal-spezifischer Code gehoert in `packages/server` bzw. `packages/cli`.
-- `~/.claude` und `~/.codex` gehoeren den beiden CLIs. `packages/core/src/external/`
-  liest sie — Skills, aktive Plugins, MCP-Server — und schreibt **nie** hinein. Was
-  dort gefunden wird, ist nicht automatisch aktiv: ein Skill-Regal wird pro Quelle
+- Die Skills, die Rookery selbst mitbringt, stehen in `packages/core/src/skills/builtin.ts` als
+  TypeScript, nicht als Markdown-Ordner: `scripts/package.mjs` kopiert nur `packages/*/dist`, ein
+  einkompilierter Skill reist also mit jeder Installation mit. `SkillStore` liest sie unter allen
+  Verzeichnissen (`origin: 'builtin'`, kein Pfad, keine mtime); ein gleichnamiger Ordner im Home
+  verdeckt sie, unbeaufsichtigte Schreibzugriffe lehnt der Store ab.
+- `~/.claude` gehoert der Claude-Code-CLI. `packages/core/src/external/`
+  liest sie — Skills, aktive Plugins, MCP-Server — und schreibt **nie** hinein. Nur
+  diese eine Installation: `codex` ist kein CLI mehr, sondern die Bruecke zum
+  ChatGPT-Backend, und `~/.codex` ist fuer Rookery nur noch Credential- und
+  Modell-Cache (`providers/codex-auth.ts`, `provider-catalog.ts`). Was in `~/.claude`
+  gefunden wird, ist nicht automatisch aktiv: ein Skill-Regal wird pro Quelle
   freigeschaltet (`external.skillSources`), ein MCP-Server einzeln und nur von einem
   Menschen (`external.servers`, `approvalRequired` im Hub). Fremde Skills stehen nie
   im Prompt-Index, sondern hinter `find_skill`; dafuer gibt es zu viele.
 - Tests duerfen die Installation des Entwicklers nicht sehen: `packages/core/test/setup.mjs`
-  setzt `CLAUDE_CONFIG_DIR`/`CODEX_HOME` auf ein leeres Verzeichnis, ein Test mit
+  setzt `CLAUDE_CONFIG_DIR` (Skills, Plugins, MCP-Server) und `CODEX_HOME` (der vom
+  ChatGPT-Backend gecachte Modell-Katalog) auf ein leeres Verzeichnis, ein Test mit
   eigenen Fixtures zeigt sie auf seinen Temp-Ordner.
 - Nach Aenderungen an `packages/core` betroffene Tests unter `packages/core/test`
   laufen lassen (`npm test`); bei API-Aenderungen `npm run typecheck` gegen core,

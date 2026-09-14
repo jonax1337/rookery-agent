@@ -185,6 +185,13 @@ export {
   type ToolServerState,
 } from './tools/hub.js';
 export {
+  BUILTIN_SKILLS,
+  builtinSkill,
+  builtinSkills,
+  isBuiltinSkill,
+  type BuiltinSkill,
+} from './skills/builtin.js';
+export {
   SkillStore,
   readSkillFolder,
   renderSkill,
