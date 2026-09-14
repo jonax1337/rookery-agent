@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  classifyCallback,
   classifyUpdate,
   escapeHtml,
   inQuietHours,
@@ -61,6 +62,68 @@ function makeUpdate(overrides = {}) {
     },
   };
 }
+
+function makeCallback(overrides = {}) {
+  return {
+    update_id: 2,
+    callback_query: {
+      id: 'tap-1',
+      from: { id: OWNER_ID, is_bot: false, first_name: 'Owner' },
+      message: {
+        message_id: 7,
+        date: 1690000000,
+        chat: { id: OWNER_ID, type: 'private' },
+      },
+      data: 'mail:read:abc',
+      ...overrides,
+    },
+  };
+}
+
+test('a tapped button from an allowed id gets through with its data', () => {
+  const verdict = classifyCallback(makeCallback(), makeConfig());
+  assert.equal(verdict.ok, true);
+  assert.equal(verdict.userId, OWNER_ID);
+  assert.equal(verdict.chatId, OWNER_ID);
+  assert.equal(verdict.callbackId, 'tap-1');
+  assert.equal(verdict.messageId, 7);
+  assert.equal(verdict.data, 'mail:read:abc');
+});
+
+test('a tap from an id that is not on the allowlist is rejected', () => {
+  const verdict = classifyCallback(
+    makeCallback({
+      from: { id: 999, is_bot: false },
+      message: { message_id: 7, chat: { id: 999, type: 'private' } },
+    }),
+    makeConfig(),
+  );
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, 'not_allowed');
+  // Kept even when refused: the tap still has to be acknowledged, or the
+  // button spins on the phone for a minute.
+  assert.equal(verdict.callbackId, 'tap-1');
+});
+
+test('a tap in a group chat is rejected even for an allowed sender', () => {
+  const verdict = classifyCallback(
+    makeCallback({ message: { message_id: 7, chat: { id: -100123, type: 'group' } } }),
+    makeConfig(),
+  );
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, 'not_private');
+});
+
+test('a tap carrying no data is rejected', () => {
+  const verdict = classifyCallback(makeCallback({ data: '' }), makeConfig());
+  assert.equal(verdict.ok, false);
+  assert.equal(verdict.reason, 'no_content');
+});
+
+test('a plain message is not a tap, and a tap is not a message', () => {
+  assert.equal(classifyCallback(makeUpdate(), makeConfig()).reason, 'not_a_message');
+  assert.equal(classifyUpdate(makeCallback(), makeConfig()).reason, 'not_a_message');
+});
 
 test('an allowed id in its own private chat gets through', () => {
   const verdict = classifyUpdate(makeUpdate(), makeConfig());

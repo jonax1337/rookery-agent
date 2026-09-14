@@ -382,6 +382,67 @@ export function classifyUpdate(update: unknown, config: TelegramGatewayConfig): 
 }
 
 /**
+ * A button under a bot message, tapped.
+ *
+ * Telegram calls this a `callback_query`, and it is a second door into the
+ * assistant: no text, no turn, but an action all the same. So it walks the
+ * same guard chain as a message - not a bot, on the allowlist, in the
+ * sender's own private chat - and for the same reasons. The steps a tap
+ * cannot fail are simply absent: there is no content to be empty, no length
+ * to exceed, nothing forwarded.
+ *
+ * What comes back is deliberately thin. `data` is a string the bot itself
+ * put on the button, at most 64 bytes by Telegram's rule, and it is handed
+ * back unread: whoever drew the button decides what it means. A tap proves
+ * only that somebody on the allowlist pressed something this bot drew.
+ */
+export interface GatewayCallbackVerdict {
+  ok: boolean;
+  reason?: GatewayRejection;
+  userId?: number;
+  chatId?: number;
+  /** Telegram's id for this tap, which has to be acknowledged within seconds. */
+  callbackId?: string;
+  /** The `callback_data` the bot put on the button. */
+  data?: string;
+  /** The message the button hangs under, so its keyboard can be rewritten. */
+  messageId?: number;
+}
+
+export function classifyCallback(update: unknown, config: TelegramGatewayConfig): GatewayCallbackVerdict {
+  const query = asObject(asObject(update)?.callback_query);
+  const from = query ? asObject(query.from) : undefined;
+  if (!query || !from) return { ok: false, reason: 'not_a_message' };
+
+  const userId = asId(from.id);
+  const message = asObject(query.message);
+  const chat = message ? asObject(message.chat) : undefined;
+  const chatId = chat ? asId(chat.id) : undefined;
+
+  const known: GatewayCallbackVerdict = { ok: false };
+  if (userId !== undefined) known.userId = userId;
+  if (chatId !== undefined) known.chatId = chatId;
+  // The id is a string at Telegram, and it is kept even for a tap that gets
+  // refused: an unanswered button spins on the phone for a minute.
+  if (typeof query.id === 'string' && query.id) known.callbackId = query.id;
+  if (typeof query.data === 'string') known.data = query.data;
+  const messageId = message ? asId(message.message_id) : undefined;
+  if (messageId !== undefined) known.messageId = messageId;
+
+  const reject = (reason: GatewayRejection): GatewayCallbackVerdict => ({ ...known, ok: false, reason });
+
+  if (userId === undefined) return reject('not_a_message');
+  if (from.is_bot !== false) return reject('bot_sender');
+  if (!allowedIds(config).includes(userId)) return reject('not_allowed');
+  if (chat?.type !== 'private' || chatId === undefined || chatId !== userId) return reject('not_private');
+  // A tap with nothing on it is a button we did not draw, or one whose data
+  // Telegram dropped. Either way there is nothing to act on.
+  if (!known.data) return reject('no_content');
+
+  return { ...known, ok: true };
+}
+
+/**
  * Where the next piece ends: at a paragraph break if the window holds one,
  * otherwise at a line break, otherwise hard. Telegram refuses anything over
  * the limit, so the hard cut is the floor rather than a preference.

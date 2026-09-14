@@ -197,6 +197,42 @@ test('a long mail reaches the phone whole instead of being cut at 600 characters
   assert.ok(!delivered.includes('inbox.'), 'nothing should have been clipped at this length');
 });
 
+test('a pushed mail carries the read button, once, under its last piece', async (t) => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.gateways.telegram.allowedUserIds = [7];
+  Object.assign(config.gateways.telegram.push, { enabled: true, quietFrom: '00:00', quietUntil: '00:00', maxPerHour: 0 });
+
+  const assistant = new EventEmitter();
+  assistant.store = { org: { getAgent: () => null, listTeams: () => [], listAgents: () => [] } };
+  const sent = [];
+  const push = attachGatewayPush({ config, assistant, log: { warn() {} } }, {
+    status: () => ({ running: true }),
+    send: async (_id, text, options) => { sent.push({ text, keyboard: options?.keyboard }); },
+  });
+  t.after(() => push.detach());
+
+  const body = ('Sentence number one. ').repeat(400).trim();
+  assistant.emit('mail', {
+    type: 'mail',
+    mail: {
+      id: 'mail-42',
+      orgId: 'org',
+      fromKind: 'assistant',
+      subject: 'Long enough to be split',
+      body,
+      recipients: [{ recipientKind: 'user', box: 'to' }],
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.ok(sent.length > 1, 'this mail should have been split into several messages');
+  const withButton = sent.filter((message) => message.keyboard);
+  assert.equal(withButton.length, 1, 'the button belongs under the mail once, not under every piece');
+  assert.equal(sent.at(-1).keyboard, withButton[0].keyboard, 'and under the last piece, not the first');
+  // The mail's own id travels on the button: a tap has to name what it marks.
+  assert.deepEqual(withButton[0].keyboard, [[{ text: '✓ Read', callbackData: 'mail:read:mail-42' }]]);
+});
+
 /* ------------------------------------------------------------------ *
  * Replying to a notification
  *

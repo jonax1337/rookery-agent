@@ -46,6 +46,24 @@ export interface TelegramUser {
  */
 export type TelegramUpdate = { update_id: number } & Record<string, unknown>;
 
+/**
+ * A row of buttons under a message.
+ *
+ * Only the callback kind, because that is the only kind this channel wants:
+ * a tap comes back as an update, nothing leaves the chat, and no URL is
+ * handed to the phone. `callbackData` is capped at 64 bytes by Telegram and
+ * rejected outright above it, so whoever builds one keeps it short.
+ */
+export type TelegramInlineKeyboard = Array<Array<{ text: string; callbackData: string }>>;
+
+function keyboardPayload(keyboard: TelegramInlineKeyboard): Record<string, unknown> {
+  return {
+    inline_keyboard: keyboard.map((row) =>
+      row.map((button) => ({ text: button.text, callback_data: button.callbackData })),
+    ),
+  };
+}
+
 export interface TelegramSendOptions {
   parseMode?: 'HTML';
   /** Link previews turn a stray URL in an answer into a fetch we did not ask for. */
@@ -61,6 +79,8 @@ export interface TelegramSendOptions {
    * chat, it does not belong on the lock screen.
    */
   silent?: boolean;
+  /** Buttons drawn under this message. */
+  replyMarkup?: TelegramInlineKeyboard;
   signal?: AbortSignal;
 }
 
@@ -140,6 +160,24 @@ export interface TelegramApi {
   deleteMessages(chatId: number, messageIds: number[], signal?: AbortSignal): Promise<void>;
   /** Put a single emoji reaction on a message, or clear it with no emoji. */
   setMessageReaction(chatId: number, messageId: number, emoji?: string, signal?: AbortSignal): Promise<void>;
+  /**
+   * Acknowledge a tapped button, optionally with a short toast on the phone.
+   *
+   * Not optional politeness: until this lands, Telegram shows the button as
+   * still working, for up to a minute. It is sent whether the tap was acted
+   * on or refused.
+   */
+  answerCallbackQuery(callbackId: string, text?: string, signal?: AbortSignal): Promise<void>;
+  /**
+   * Redraw the buttons under a message the bot sent, or take them away when
+   * no keyboard is passed. Used to turn a pressed button into a spent one.
+   */
+  editMessageReplyMarkup(
+    chatId: number,
+    messageId: number,
+    keyboard?: TelegramInlineKeyboard,
+    signal?: AbortSignal,
+  ): Promise<void>;
   /** Publish the command list, which is what draws Telegram's own menu. */
   setMyCommands(commands: Array<{ command: string; description: string }>, signal?: AbortSignal): Promise<void>;
   /** What an empty chat shows above the Start button, and the profile page. */
@@ -282,6 +320,7 @@ export function createTelegramApi(token: string): TelegramApi {
         // quoted line rather than the whole answer.
         payload.reply_parameters = { message_id: options.replyTo, allow_sending_without_reply: true };
       }
+      if (options.replyMarkup?.length) payload.reply_markup = keyboardPayload(options.replyMarkup);
       const result = asRecord(await call<unknown>('sendMessage', payload, { signal: options.signal }));
       return typeof result?.message_id === 'number' ? result.message_id : undefined;
     },
@@ -312,6 +351,22 @@ export function createTelegramApi(token: string): TelegramApi {
       // separate method for that.
       const reaction = emoji ? [{ type: 'emoji', emoji }] : [];
       await call<boolean>('setMessageReaction', { chat_id: chatId, message_id: messageId, reaction }, { signal });
+    },
+
+    async answerCallbackQuery(callbackId, text, signal) {
+      const payload: Record<string, unknown> = { callback_query_id: callbackId };
+      // Telegram cuts the toast at 200 characters and refuses a longer one,
+      // so it is cut here instead of losing the acknowledgement over it.
+      if (text) payload.text = text.slice(0, 200);
+      await call<boolean>('answerCallbackQuery', payload, { signal });
+    },
+
+    async editMessageReplyMarkup(chatId, messageId, keyboard, signal) {
+      // An omitted `reply_markup` is how the buttons come off; Telegram has
+      // no separate method for that.
+      const payload: Record<string, unknown> = { chat_id: chatId, message_id: messageId };
+      if (keyboard?.length) payload.reply_markup = keyboardPayload(keyboard);
+      await call<unknown>('editMessageReplyMarkup', payload, { signal });
     },
 
     async setMyCommands(commands, signal) {

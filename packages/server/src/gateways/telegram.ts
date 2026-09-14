@@ -1,5 +1,6 @@
 import {
   ASSISTANT_MEMORY_OWNER,
+  classifyCallback,
   classifyUpdate,
   isAudible,
   missingGatewaySettings,
@@ -32,6 +33,7 @@ import {
   createTelegramApi,
   TelegramApiError,
   type TelegramApi,
+  type TelegramInlineKeyboard,
   type TelegramUpdate,
 } from './telegram-api.js';
 
@@ -51,8 +53,45 @@ import {
 /** Seconds we ask Telegram to hold a poll open. */
 const POLL_SECONDS = 50;
 
-/** Only messages. Edits, callback queries and channel posts never arrive. */
-const ALLOWED_UPDATES = ['message'];
+/**
+ * Messages, and taps on the buttons the bot drew itself. Edits, channel
+ * posts and everything else never arrive.
+ */
+const ALLOWED_UPDATES = ['message', 'callback_query'];
+
+/**
+ * The one button this channel draws, and the prefix that identifies a tap on
+ * it: `mail:read:<mail id>`.
+ *
+ * Telegram gives 64 bytes for `callback_data`, which a prefix plus a UUID
+ * fits inside with room to spare. Mail ids are opaque to the phone either
+ * way - the tap is only believed because the guard chain already proved who
+ * pressed it, never because of what the data says.
+ */
+const MAIL_READ_PREFIX = 'mail:read:';
+
+/**
+ * What the button becomes once it has been pressed.
+ *
+ * Telegram has no disabled state for an inline button, so the spent one is a
+ * button too - it just says what happened and answers a second tap with the
+ * same sentence instead of writing the read state again.
+ */
+const MAIL_READ_SPENT = 'mail:read-done';
+
+/**
+ * The button as it is drawn under a fresh mail push.
+ *
+ * Exported so `push.ts` can ask for it without knowing what goes on a
+ * button: the wording and the callback data stay in the one file that also
+ * reads them back.
+ */
+export function mailReadKeyboard(mailId: string): TelegramInlineKeyboard {
+  return [[{ text: '✓ Read', callbackData: MAIL_READ_PREFIX + mailId }]];
+}
+
+/** The same button, spent. */
+const MAIL_READ_DONE: TelegramInlineKeyboard = [[{ text: '✓ Read', callbackData: MAIL_READ_SPENT }]];
 
 /**
  * How long an album is waited for.
@@ -199,7 +238,7 @@ export interface GatewayHandle {
   send(
     userId: number,
     text: string,
-    options?: { origin?: Omit<MessageOrigin, 'at'>; silent?: boolean },
+    options?: { origin?: Omit<MessageOrigin, 'at'>; silent?: boolean; keyboard?: TelegramInlineKeyboard },
   ): Promise<number[]>;
 }
 
@@ -301,6 +340,12 @@ function oneLine(text: string, max: number): string {
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat;
 }
 
+/** Narrow foreign JSON to an object without claiming anything about its fields. */
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
 /** The sender's username, straight out of the raw update, for the log only. */
 function usernameOf(update: TelegramUpdate): string | undefined {
   const message = update.message as Record<string, unknown> | undefined;
@@ -381,13 +426,18 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     origin?: Omit<MessageOrigin, 'at'>;
     /** Land in the chat without making the phone ring. */
     silent?: boolean;
+    /** Buttons under the message. Drawn beneath the last piece of a long one. */
+    keyboard?: TelegramInlineKeyboard;
   }
 
   async function deliver(chatId: number, text: string, options: SayOptions = {}): Promise<number[]> {
     const client = api;
     if (!client) throw new Error('The Telegram gateway is not running.');
     const ids: number[] = [];
-    for (const piece of htmlPieces(text)) {
+    // Materialised, because the last piece is the one that carries the
+    // buttons and a generator cannot say which one that is.
+    const pieces = [...htmlPieces(text)];
+    for (const [index, piece] of pieces.entries()) {
       const id = await client.sendMessage(chatId, piece, {
         parseMode: 'HTML',
         disablePreview: true,
@@ -395,6 +445,9 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         // Only the first piece quotes the original: Telegram would otherwise
         // draw the same quoted block above every part of a long answer.
         ...(ids.length === 0 && options.replyTo !== undefined ? { replyTo: options.replyTo } : {}),
+        // And only the last one carries the buttons, so they sit at the
+        // bottom of the whole message rather than in the middle of it.
+        ...(index === pieces.length - 1 && options.keyboard ? { replyMarkup: options.keyboard } : {}),
       });
       if (id !== undefined) ids.push(id);
     }
@@ -1338,7 +1391,100 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     no_content: 'There was nothing in that message I can work with.',
   };
 
+  /**
+   * A tapped button: the one gesture on Telegram that means "I have read
+   * this", and the only one there can be.
+   *
+   * The Bot API has no read receipts - a bot never learns that its message
+   * was looked at. So being read is not observed here, it is *declared*, by
+   * a deliberate tap, and only that tap marks the mail read in the store the
+   * web inbox reads from. Anything softer (the push having been delivered, a
+   * glance at `/mail`) would empty the unread list without anybody having
+   * read a word, which is the failure mode `/mail` already avoids on purpose.
+   *
+   * No turn is started and no model is called: this is a database write and
+   * an acknowledgement, the same weight as the four reading commands.
+   */
+  async function handleCallback(update: TelegramUpdate): Promise<void> {
+    const verdict = classifyCallback(update, settings());
+    lastEventAt = Date.now();
+
+    const client = api;
+    const { callbackId, chatId, messageId, data } = verdict;
+
+    // Acknowledged even when refused: an unanswered tap spins on the phone
+    // for a minute, and a stranger learns nothing from a silent button.
+    const acknowledge = async (text?: string): Promise<void> => {
+      if (!client || !callbackId) return;
+      try {
+        await client.answerCallbackQuery(callbackId, text);
+      } catch (error) {
+        log.debug('Telegram callback could not be acknowledged', { error: errorText(error) });
+      }
+    };
+
+    if (!verdict.ok) {
+      log.warn('Telegram callback rejected', { from: verdict.userId, reason: verdict.reason });
+      await acknowledge();
+      return;
+    }
+
+    if (data === MAIL_READ_SPENT) {
+      await acknowledge('Already marked as read.');
+      return;
+    }
+
+    if (!data?.startsWith(MAIL_READ_PREFIX)) {
+      // A button from an older version of this code, or one we no longer
+      // draw. Saying so beats leaving the phone to guess.
+      await acknowledge('This button no longer does anything.');
+      return;
+    }
+
+    const mailId = data.slice(MAIL_READ_PREFIX.length);
+    const store = context.assistant.store.org;
+    const mail = mailId ? store.getMail(mailId) : null;
+    if (!mail) {
+      await acknowledge('That mail is gone.');
+      return;
+    }
+
+    // The user's own recipient rows on this mail, and nobody else's -
+    // `markMailReadFor` picks them by kind, so a mail an agent was Cc'd on
+    // stays unread for that agent.
+    store.markMailReadFor([mail], { kind: 'user' });
+
+    // The web inbox follows the socket, so it has to hear about this. Not on
+    // the `mail` event, though: push listens to that one and would send the
+    // very mail that was just marked read straight back to the phone.
+    context.assistant.emit('changed', { kind: 'mail', id: mail.id });
+
+    log.info('Mail marked read from Telegram', { from: verdict.userId, mail: mail.id });
+
+    await acknowledge('✓ Marked as read.');
+
+    // The button has done its work; what is left in the chat should say so
+    // rather than invite a second tap. A failure here costs a stale button,
+    // never the read state that was already written.
+    if (client && chatId !== undefined && messageId !== undefined) {
+      try {
+        await client.editMessageReplyMarkup(chatId, messageId, MAIL_READ_DONE);
+      } catch (error) {
+        log.debug('Telegram read button could not be redrawn', { error: errorText(error) });
+      }
+    }
+  }
+
   function handleUpdate(update: TelegramUpdate): void {
+    // A tap is not a message and never becomes a turn, so it leaves before
+    // `classifyUpdate` - which would only ever call it "not a message".
+    if (asRecord(update.callback_query) !== undefined) {
+      void handleCallback(update).catch((error: unknown) => {
+        log.warn('Telegram callback failed', { error: errorText(error) });
+      });
+      return;
+    }
+
     const verdict = classifyUpdate(update, settings());
     lastEventAt = Date.now();
 
@@ -1728,7 +1874,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     async send(
       userId: number,
       text: string,
-      options: { origin?: Omit<MessageOrigin, 'at'>; silent?: boolean } = {},
+      options: { origin?: Omit<MessageOrigin, 'at'>; silent?: boolean; keyboard?: TelegramInlineKeyboard } = {},
     ): Promise<number[]> {
       let ids: number[] = [];
       await chain(userId, async () => {

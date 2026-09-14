@@ -2,7 +2,8 @@ import { inQuietHours, pushRecipients, splitMessage } from '@rookery/core';
 import type { AgentEvent, Mail, MemoryLearnedEvent, NotifyEvent, TelegramPushConfig } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import type { MessageOrigin } from './threads.js';
-import type { GatewayHandle } from './telegram.js';
+import { mailReadKeyboard, type GatewayHandle } from './telegram.js';
+import type { TelegramInlineKeyboard } from './telegram-api.js';
 
 /**
  * The assistant's own initiative, and the state changes worth interrupting a
@@ -56,6 +57,12 @@ interface PushItem {
    * everything - which is exactly the confusion this field removes.
    */
   origin: Omit<MessageOrigin, 'at'>;
+  /**
+   * Buttons under the message. Only mail carries one, and only because
+   * Telegram gives a bot no way to learn that a message was read: the tap is
+   * the read receipt the API does not have.
+   */
+  keyboard?: TelegramInlineKeyboard;
 }
 
 /** How a `tallyKey` reads in a digest, singular and plural. */
@@ -187,7 +194,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
   async function sendNow(
     text: string,
     origin: Omit<MessageOrigin, 'at'>,
-    options: { counted?: boolean; silent?: boolean } = {},
+    options: { counted?: boolean; silent?: boolean; keyboard?: TelegramInlineKeyboard } = {},
   ): Promise<void> {
     const recipients = pushRecipients(context.config.gateways.telegram).filter((id) => !disabled.has(id));
     if (recipients.length === 0) return;
@@ -196,11 +203,17 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     if (options.counted !== false) sentAt.push(Date.now());
     const parts = splitMessage(text);
     for (const userId of recipients) {
-      for (const part of parts) {
+      for (const [index, part] of parts.entries()) {
         try {
           // One call per message, in order - Telegram has no batch send.
           // The gateway files each message under this origin as it goes.
-          await gateway.send(userId, part, { origin, ...(options.silent ? { silent: true } : {}) });
+          await gateway.send(userId, part, {
+            origin,
+            ...(options.silent ? { silent: true } : {}),
+            // The buttons go under the final part only: a mail long enough
+            // to be split would otherwise offer "read" halfway through it.
+            ...(index === parts.length - 1 && options.keyboard ? { keyboard: options.keyboard } : {}),
+          });
         } catch (error) {
           if (isForbidden(error)) {
             disabled.add(userId);
@@ -237,7 +250,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     // failed") exists for.
     const single = items.length === 1 ? items[0] : undefined;
     if (single) {
-      void sendNow(single.message, single.origin);
+      void sendNow(single.message, single.origin, single.keyboard ? { keyboard: single.keyboard } : {});
       return;
     }
     // A digest is several subjects in one message, so it has no record of
@@ -285,7 +298,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       buffer.push(item);
       return;
     }
-    void sendNow(item.message, item.origin);
+    void sendNow(item.message, item.origin, item.keyboard ? { keyboard: item.keyboard } : {});
   }
 
   /* ------------------------------- the feed ------------------------------- */
@@ -594,6 +607,10 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       // The mail's own id, not the thread's: a reply is about the mail that
       // was pushed, and the store has the whole thing when it is needed.
       origin: { kind: 'mail', ref: mail.id, title: oneLine(mail.subject, 60) },
+      // The read receipt Telegram does not give. Having read it on the phone
+      // is worth nothing to the web inbox unless it is said out loud, and a
+      // tap is the only place the user can say it.
+      keyboard: mailReadKeyboard(mail.id),
     });
   };
 

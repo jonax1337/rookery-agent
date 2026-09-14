@@ -28,6 +28,11 @@ Nicht-Ziel: ein Mehrbenutzer-Bot. Nicht-Ziel: ein zweites Bedienkonzept mit Knoe
 Inline-Tastaturen – der Kanal ist ein Chat, nichts weiter. Nicht-Ziel: Webhooks und damit ein
 oeffentlich erreichbarer Rookery-Port.
 
+Von dem Nicht-Ziel "keine Knoepfe" gibt es genau eine Ausnahme, und sie steht hier, damit sie nicht
+unbemerkt zur Regel wird: die Gelesen-Quittung unter einer Mail (7.5). Sie ist kein Bedienkonzept,
+sondern der Ersatz fuer etwas, das die Bot-API nicht hat – ein Bot erfaehrt nie, dass seine
+Nachricht gelesen wurde. Alles andere bleibt Text.
+
 ## 2. Befund: was heute da ist
 
 Alles hier ist am Code belegt.
@@ -101,7 +106,7 @@ Nein durch:
 
 | # | Pruefung | Warum |
 |---|---|---|
-| 1 | `allowed_updates: ["message"]` beim Abruf | Telegram liefert bearbeitete Nachrichten, Callback-Queries und Kanal-Posts gar nicht erst aus. Filtern, was nie ankommt, kann man nicht vergessen. |
+| 1 | `allowed_updates: ["message", "callback_query"]` beim Abruf | Telegram liefert bearbeitete Nachrichten und Kanal-Posts gar nicht erst aus. Filtern, was nie ankommt, kann man nicht vergessen. Callback-Queries kamen urspruenglich auch nicht vor und stehen seit der Gelesen-Quittung (7.5) auf der Liste – sie durchlaufen dieselbe Kette, siehe unten. |
 | 2 | `update.message` vorhanden, `from` vorhanden | Alles andere ist nicht klassifizierbar und wird verworfen. |
 | 3 | `from.is_bot === false` | Kein Bot-zu-Bot-Verkehr. |
 | 4 | `from.id` steht in `allowedUserIds` | Die eigentliche Wache. Numerische ID, nie `username`: Usernames sind frei wechselbar und werden nach Freigabe neu vergeben. |
@@ -112,6 +117,14 @@ Nein durch:
 Faellt ein Update bei 3–7 durch, **antwortet der Bot nicht**. Es entsteht eine Warnzeile im Log mit
 `from.id`, `username` und den ersten 80 Zeichen. Wer den Bot findet, bekommt nicht einmal bestaetigt,
 dass hinter ihm etwas laeuft.
+
+Ein Tipp auf einen Knopf (`callback_query`, seit 7.5) laeuft durch `classifyCallback` und damit durch
+dieselben Schritte 2–5. Die Schritte 6 und 7 entfallen, weil sie nichts zu pruefen haetten: Ein Tipp
+traegt keinen Text, nichts Weitergeleitetes und keine Laenge. An ihre Stelle tritt eine einzige
+zusaetzliche Bedingung – es muss ueberhaupt `callback_data` dranhaengen. Die eine Abweichung vom
+Schweigen: Ein abgelehnter Tipp wird trotzdem quittiert (`answerCallbackQuery` ohne Text), weil
+Telegram den Knopf sonst eine Minute lang als arbeitend zeichnet. Der Absender erfaehrt daraus
+nichts, was er nicht schon weiss.
 
 ### 4.2 Bedrohungen und Gegengewichte
 
@@ -588,20 +601,59 @@ assistant.emit('notify', { text, urgency, at });
 Damit bleibt `core` frei von HTTP, und ein zweiter Kanal (Signal, Matrix, E-Mail) haengt sich spaeter
 an dieselbe Stelle, ohne dass `core` davon erfaehrt.
 
+### 7.5 Die Gelesen-Quittung
+
+Eine Mail, die aufs Handy geht und dort gelesen wird, steht im Web-Posteingang weiter als ungelesen.
+Das ist keine Nachlaessigkeit, sondern eine Luecke in der Bot-API: **Telegram gibt einem Bot keine
+Lesebestaetigung.** Er erfaehrt nie, dass seine Nachricht angesehen wurde – nur, dass jemand etwas
+*getan* hat. Gelesen-Sein laesst sich hier also nicht beobachten, nur erklaeren.
+
+Die Erklaerung ist ein Knopf. Unter jeder Mail-Push steht `✓ Read`; ein Tipp darauf markiert genau
+die Empfaengerzeile des Nutzers in `mail_recipients` als gelesen – dieselbe Stelle, die der
+Lesebereich im Web schreibt. Das passt zu der Regel aus 6.7: `/mail` markiert nichts, weil ein Blick
+auf den Betreff kein Lesen ist. Eine ausdrueckliche Geste bricht diese Regel nicht, sie ist ihr
+Gegenstueck.
+
+Vier Dinge daran sind Absicht:
+
+- **Kein Turn.** Wie die vier Lese-Befehle: eine Datenbankschreibung und eine Quittung, kein
+  Modellaufruf, keine Kontingentkosten.
+- **Dieselbe Wache.** Ein Tipp ist eine zweite Tuer in den Assistenten, also laeuft er durch
+  `classifyCallback` in `policy.ts` – kein Bot, auf der Allowlist, im eigenen privaten Chat. Die
+  Schritte, an denen ein Tipp nicht scheitern kann (Laenge, Weiterleitung, leerer Inhalt), fehlen;
+  der Rest ist Wort fuer Wort die Kette aus 4.1. Die `callback_data` wird dabei nie geglaubt, weil
+  sie etwas behauptet, sondern weil die Wache vorher bewiesen hat, wer gedrueckt hat.
+- **Nicht auf dem `mail`-Ereignis.** Der Posteingang im Web haengt am Socket und muss die Aenderung
+  sehen, aber `push.ts` hoert auf `mail` – die Mail ginge sofort wieder ans Handy. Die Quittung
+  laeuft deshalb ueber `changed` mit `kind: 'mail'`.
+- **Nur eine Richtung.** Im Web gelesen aendert am Telegram-Chat nichts. Dafuer braeuchte es ein
+  Register Mail-ID → Nachrichten-ID und ein `editMessageReplyMarkup` pro Lesevorgang; offen
+  gelassen, bis jemand es vermisst.
+
+Der gedrueckte Knopf bleibt stehen und traegt `mail:read-done`: Telegram kennt keinen deaktivierten
+Zustand fuer einen Inline-Knopf, also wird aus dem Knopf ein Knopf, der sagt, was passiert ist, und
+einen zweiten Tipp mit demselben Satz beantwortet, statt noch einmal zu schreiben. Eine
+Sammel-Meldung (mehrere Mails in einer Nachricht, 7.3) traegt keinen Knopf – sie benennt keine
+einzelne Mail. Bei einer langen Mail sitzt er unter dem *letzten* Teilstueck, sonst boete eine
+aufgeteilte Mail "gelesen" auf halber Strecke an.
+
+`allowed_updates` wird entsprechend um `callback_query` erweitert. Das ist die einzige Stelle, an der
+der Kanal ausser Nachrichten noch etwas entgegennimmt.
+
 ## 8. Struktur
 
 | Datei | Art | Inhalt |
 |---|---|---|
-| `packages/core/src/gateway/policy.ts` | neu | Wache (4.1), Aufteilung langer Nachrichten, Ruhezeit-Fenster, Push-Empfaenger – reine Entscheidungslogik ohne HTTP (Abschnitt 3) |
+| `packages/core/src/gateway/policy.ts` | neu | Wache (4.1) fuer Nachrichten *und* Knopfdruecke, Aufteilung langer Nachrichten, Ruhezeit-Fenster, Push-Empfaenger – reine Entscheidungslogik ohne HTTP (Abschnitt 3) |
 | `packages/core/test/gateway.test.js` | neu | Tests fuer `policy.ts` |
 | `packages/core/src/types.ts` | geaendert | `GatewayId`, `GatewaysConfig`, `TelegramGatewayConfig`, `TelegramPushConfig`, `NotifyEvent` |
 | `packages/core/src/config.ts` | geaendert | Defaults unter `gateways.telegram`; `TELEGRAM_BOT_TOKEN` als vorrangige Quelle in `envOverrides` |
 | `packages/core/src/memory/store.ts` | geaendert | `getMeta` / `setMeta` |
 | `packages/core/src/org/tools.ts` | geaendert | `notify` |
 | `packages/core/src/org/controller.ts` | geaendert | Handler fuer `notify`, emittiert das Ereignis |
-| `packages/server/src/gateways/telegram.ts` | neu | Poller, Aufruf der Wache aus `policy.ts`, Turn-Bruecke, Versand |
-| `packages/server/src/gateways/telegram-api.ts` | neu | Duenne Huelle um `api.telegram.org` mit Timeout, Backoff und Token-Maskierung |
-| `packages/server/src/gateways/push.ts` | neu | Ereignis-Abonnent, Ruhezeiten, Drosselung, Zusammenfassung; vermerkt zu jeder Meldung ihre Herkunft (6.5) |
+| `packages/server/src/gateways/telegram.ts` | neu | Poller, Aufruf der Wache aus `policy.ts`, Turn-Bruecke, Versand, Gelesen-Quittung (7.5) |
+| `packages/server/src/gateways/telegram-api.ts` | neu | Duenne Huelle um `api.telegram.org` mit Timeout, Backoff und Token-Maskierung; Inline-Tastatur, `answerCallbackQuery`, `editMessageReplyMarkup` (7.5) |
+| `packages/server/src/gateways/push.ts` | neu | Ereignis-Abonnent, Ruhezeiten, Drosselung, Zusammenfassung; vermerkt zu jeder Meldung ihre Herkunft (6.5) und haengt an eine Mail den Gelesen-Knopf (7.5) |
 | `packages/server/src/gateways/markdown.ts` | neu | Markdown zu Telegrams HTML-Dialekt; balanciert auch auf halbem Text (6.3) |
 | `packages/server/src/gateways/attachments.ts` | neu | Ablage im Workspace-Posteingang, Endungen, Besen nach 30 Tagen (6.4) |
 | `packages/server/src/gateways/threads.ts` | neu | Herkunfts-Register, Nachrichten-Ledger, Faden pro Thema, Nachlesen des Originals aus dem Store (6.5) |

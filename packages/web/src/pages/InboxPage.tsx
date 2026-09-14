@@ -300,6 +300,18 @@ export function InboxPage() {
 
   useEffect(() => socket.onMail(() => void load()), [socket, load]);
 
+  // A mail whose read state changed elsewhere - the "✓ Read" button under a
+  // Telegram push is the one that does this today. It cannot arrive on the
+  // `mail` event: push listens to that one and would send the mail that was
+  // just marked read straight back to the phone.
+  useEffect(
+    () =>
+      socket.onChanged((change) => {
+        if (change.kind === 'mail') void load();
+      }),
+    [socket, load],
+  );
+
   // The rail's unread count comes from the inbox itself, so it also counts for
   // mailboxes that are not the user's - and it survives a look in the outbox.
   useEffect(() => setInboxUnread(null), [mailboxId]);
