@@ -8,8 +8,11 @@ import { ensureProfile } from './profile.js';
  * Config resolution order, later wins:
  *   defaults -> ~/.rookery/config.json -> environment -> explicit overrides
  *
- * There is deliberately no API-key setting. Model access is borrowed from
- * whatever the `claude` and `codex` CLIs are already logged into.
+ * The two built-in providers, `claude` and `codex`, take no API key: model
+ * access is borrowed from whatever their CLIs are already logged into.
+ * `providerProfiles` is the opt-in exception - each entry is a named API key
+ * plus endpoint for the `claude` binary, stored the same way as
+ * `gateways.telegram.token` (see `normaliseSecrets` in the server package).
  */
 
 const DEFAULT_HOME = join(homedir(), '.rookery');
@@ -144,6 +147,8 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     },
   },
   tools: { servers: [] },
+  providerProfiles: [],
+  router: { enabled: false },
   // Looking is free and always on; what is found stays out of the way until
   // a person switches it on. See `ExternalConfig`.
   external: { enabled: true, skillSources: {}, servers: {} },

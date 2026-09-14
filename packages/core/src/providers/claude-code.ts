@@ -4,6 +4,7 @@ import type {
   McpServerSpec,
   PermissionLevel,
   Provider,
+  ProviderProfile,
   ProviderQuota,
   ProviderStatus,
   ProviderTurnOptions,
@@ -12,14 +13,31 @@ import type {
 import { readJsonLines, resolveBinary, runCapture, spawnCli, type ResolvedBinary } from './process.js';
 import { discoverModels } from './catalogue.js';
 import { parseClaudeWindows, rememberQuota } from './quota.js';
+import { sharedRouterManager } from './router.js';
+import { sharedCodexBridge } from './codex-bridge.js';
+import { codexContextWindow } from './provider-catalog.js';
+
+/** The built-in `claude` provider: OAuth login, no endpoint override. */
+const BUILTIN_PROFILE: ProviderProfile = {
+  id: 'claude',
+  displayName: 'Claude Code',
+  baseUrl: '',
+  authToken: '',
+  via: 'direct',
+};
 
 /**
  * Claude Code adapter.
  *
- * Runs `claude -p --output-format stream-json`, which authenticates with the
- * user's existing Claude Code login (subscription or console session). We
- * never read or set ANTHROPIC_API_KEY, and we never pass --bare, because that
- * flag deliberately forces API-key auth instead of the OAuth session.
+ * Runs `claude -p --output-format stream-json`. With no profile (the default,
+ * built-in `claude` provider) this authenticates with the user's existing
+ * Claude Code login (subscription or console session): we never read or set
+ * ANTHROPIC_API_KEY, and we never pass --bare, because that flag deliberately
+ * forces API-key auth instead of the OAuth session.
+ *
+ * A `ProviderProfile` swaps that for ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN
+ * pointed at another Anthropic-compatible endpoint (z.ai's GLM, for example).
+ * Same binary, same event parsing - just different env at spawn time.
  */
 
 /**
@@ -56,8 +74,15 @@ function permissionArgs(level: PermissionLevel): string[] {
 }
 
 export class ClaudeCodeProvider implements Provider {
-  readonly id = 'claude' as const;
-  readonly displayName = 'Claude Code';
+  readonly id: string;
+  readonly displayName: string;
+  readonly #profile: ProviderProfile;
+
+  constructor(profile: ProviderProfile = BUILTIN_PROFILE) {
+    this.#profile = profile;
+    this.id = profile.id;
+    this.displayName = profile.displayName;
+  }
 
   #binary: ResolvedBinary | null | undefined;
 
@@ -67,10 +92,54 @@ export class ClaudeCodeProvider implements Provider {
     return this.#binary;
   }
 
+  /**
+   * Env override for a non-default profile; `{}` for the built-in OAuth
+   * login. `via: 'router'` starts (or confirms) the shared `ccr` process
+   * first and points at that instead of the profile's own backend base URL.
+   */
+  async #resolveEnv(model?: string): Promise<NodeJS.ProcessEnv> {
+    if (this.#profile.via === 'codex-bridge') {
+      const { baseUrl, token } = await sharedCodexBridge.start();
+      // The harness does not recognise ChatGPT model slugs and would otherwise
+      // assume 200k; the backend's own figure keeps compaction honest.
+      const window = model ? codexContextWindow(model) : undefined;
+      return {
+        ANTHROPIC_BASE_URL: baseUrl,
+        ANTHROPIC_AUTH_TOKEN: token,
+        ...(window ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(window) } : {}),
+      };
+    }
+    if (this.#profile.via === 'router') {
+      await sharedRouterManager.ensureRunning([this.#profile]);
+      return {
+        ANTHROPIC_BASE_URL: sharedRouterManager.baseUrl,
+        ANTHROPIC_AUTH_TOKEN: this.#profile.authToken || 'local',
+      };
+    }
+    if (!this.#profile.baseUrl) return {};
+    return { ANTHROPIC_BASE_URL: this.#profile.baseUrl, ANTHROPIC_AUTH_TOKEN: this.#profile.authToken };
+  }
+
+  /**
+   * Why a turn would not go through. The built-in provider's answer is its
+   * own login; a profile's is whatever it is still missing, because telling
+   * someone to run `/login` when their GLM key is blank sends them nowhere.
+   */
+  #unauthenticatedDetail(): string {
+    if (this.#profile.id === 'claude') {
+      return 'Claude Code is installed but not logged in. Run claude and complete /login.';
+    }
+    if (this.#profile.via === 'codex-bridge') {
+      return 'No ChatGPT session yet, or it expired. Run `codex login` once.';
+    }
+    if (!this.#profile.authToken) return 'No API key set for this provider yet.';
+    return 'The endpoint rejected the key. Check it is valid and has quota.';
+  }
+
   async models() {
     const binary = this.#resolve();
     if (!binary) throw new Error('The claude CLI is not installed.');
-    return discoverModels('claude', binary);
+    return discoverModels('claude', binary, await this.#resolveEnv(this.#profile.defaultModel));
   }
 
   async status(): Promise<ProviderStatus> {
@@ -78,6 +147,7 @@ export class ClaudeCodeProvider implements Provider {
     if (!binary) {
       return {
         id: this.id,
+        displayName: this.displayName,
         available: false,
         binary: 'claude',
         authenticated: false,
@@ -89,10 +159,30 @@ export class ClaudeCodeProvider implements Provider {
     if (version.code !== 0) {
       return {
         id: this.id,
+        displayName: this.displayName,
         available: false,
         binary: binary.path,
         authenticated: false,
         detail: 'claude --version failed: ' + (version.stderr.trim() || 'unknown error'),
+      };
+    }
+
+    // Reporting a provider as unusable is this method's job, so a backend that
+    // cannot be reached at all - an unstarted proxy, a router that will not
+    // come up - is an answer here, never an exception. Throwing would take the
+    // whole provider list down with it, and with it the settings page and the
+    // model picker.
+    let env: NodeJS.ProcessEnv;
+    try {
+      env = await this.#resolveEnv(this.#profile.defaultModel);
+    } catch (error) {
+      return {
+        id: this.id,
+        displayName: this.displayName,
+        available: false,
+        binary: binary.path,
+        authenticated: false,
+        detail: (error as Error).message,
       };
     }
 
@@ -102,18 +192,18 @@ export class ClaudeCodeProvider implements Provider {
       binary,
       ['-p', 'ok', '--output-format', 'json', '--restricted', '--permission-mode', 'dontAsk'],
       60000,
+      env,
     );
     const authenticated = probe.code === 0;
 
     return {
       id: this.id,
+      displayName: this.displayName,
       available: true,
       binary: binary.path,
       version: version.stdout.trim().split('\n')[0],
       authenticated,
-      detail: authenticated
-        ? undefined
-        : 'Claude Code is installed but not logged in. Run claude and complete /login.',
+      detail: authenticated ? undefined : this.#unauthenticatedDetail(),
     };
   }
 
@@ -132,7 +222,8 @@ export class ClaudeCodeProvider implements Provider {
       // Pin the id up front so the caller can resume even if the turn is cut short.
       args.push('--session-id', randomUUID());
     }
-    if (options.model) args.push('--model', options.model);
+    const model = options.model ?? this.#profile.defaultModel;
+    if (model) args.push('--model', model);
     if (options.effort) args.push('--effort', options.effort);
     if (options.systemPrompt) {
       // The assistant replaces Claude Code's own coding-agent prompt so it is
@@ -168,6 +259,7 @@ export class ClaudeCodeProvider implements Provider {
         // would cut the assistant's `assign` call off long before that.
         MCP_TOOL_TIMEOUT: String(6 * 60 * 60 * 1000),
         MCP_TIMEOUT: String(60 * 1000),
+        ...(await this.#resolveEnv(model)),
       },
     });
 

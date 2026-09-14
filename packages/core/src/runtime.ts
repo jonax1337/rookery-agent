@@ -21,6 +21,7 @@ import { ASSISTANT_MEMORY_OWNER } from './types.js';
 import { databasePath, loadConfig } from './config.js';
 import { createLogger, silentLogger, type Logger } from './logger.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { sharedCodexBridge } from './providers/codex-bridge.js';
 import { Store } from './memory/store.js';
 import { coreProfile, dropContradicted, recall } from './memory/recall.js';
 import { extractMemories, smallModelFor } from './memory/extractor.js';
@@ -182,6 +183,9 @@ export class Assistant extends EventEmitter {
     this.config = loadConfig(options.config ?? {});
     this.store = options.store ?? new Store(databasePath(this.config));
     this.providers = options.registry ?? new ProviderRegistry();
+    // Layer in configured provider profiles (e.g. GLM). A no-op when there
+    // are none, and harmless for the fixed provider lists tests inject.
+    this.providers.sync(this.config);
     this.log =
       options.logger ??
       (this.config.logLevel === 'silent'
@@ -239,6 +243,7 @@ export class Assistant extends EventEmitter {
   close(): void {
     this.cron.stop();
     void this.org.bridge.close();
+    void sharedCodexBridge.close();
     this.store.close();
   }
 

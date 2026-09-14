@@ -17,3 +17,6 @@ logs/
 
 # Playwright MCP session logs/snapshots
 .playwright-mcp/
+
+# Server stdout when started detached
+*.out.log

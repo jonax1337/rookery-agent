@@ -33,7 +33,8 @@ export function ModelMenu({ provider, model, providers, effort, onEffortSelect, 
   const label = selected?.name ?? (model && model !== 'default' ? model : 'Choose model');
   const options = catalogue.flatMap((status) => (status.modelOptions ?? []).filter((entry) => entry.id !== 'default').map((entry) => ({
     id: status.id + ':' + entry.id, sourceId: entry.id, provider: status.id, name: entry.name,
-    icon: <ProviderIcon provider={status.id} />, keywords: [PROVIDER_BRAND[status.id]],
+    icon: <ProviderIcon provider={status.id} label={status.displayName} />,
+    keywords: [PROVIDER_BRAND[status.id] ?? status.displayName],
     disabled: !status.available || !status.authenticated,
     efforts: [{ id: 'auto', name: 'Auto' }, ...EFFORT_LEVELS.map((level) => ({ id: level, name: EFFORT_LABEL[level] }))],
   })));
@@ -75,12 +76,10 @@ export function ModelMenu({ provider, model, providers, effort, onEffortSelect, 
         {error && <p role="alert" className="px-3 py-2 text-xs text-destructive">{error}</p>}
         <ModelSelectorList>
           <ModelSelectorEmpty>No matching models.</ModelSelectorEmpty>
-          {(['claude', 'codex'] as const).map((id) => (
-            <ModelSelectorGroup key={id} heading={PROVIDER_BRAND[id]}>
-              {options.filter((entry) => entry.provider === id).map((entry) => <ModelSelectorItem key={entry.id} model={entry} />)}
-              {catalogue.find((entry) => entry.id === id)?.modelsError && <p className="px-3 py-2 text-xs text-muted-foreground">
-                {catalogue.find((entry) => entry.id === id)?.modelsError}
-              </p>}
+          {catalogue.map((status) => (
+            <ModelSelectorGroup key={status.id} heading={PROVIDER_BRAND[status.id] ?? status.displayName}>
+              {options.filter((entry) => entry.provider === status.id).map((entry) => <ModelSelectorItem key={entry.id} model={entry} />)}
+              {status.modelsError && <p className="px-3 py-2 text-xs text-muted-foreground">{status.modelsError}</p>}
             </ModelSelectorGroup>
           ))}
         </ModelSelectorList>

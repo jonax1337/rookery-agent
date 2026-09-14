@@ -6,8 +6,13 @@
  * cross-package change.
  */
 
-/** Which local CLI backs a turn. Auth comes from the CLI's own login, never an API key. */
-export type ProviderId = 'claude' | 'codex';
+/**
+ * Which provider backs a turn. `'claude'` and `'codex'` are the two built-in
+ * CLIs, both authenticated by their own login session, never an API key.
+ * Any other id names a configured `ProviderProfile`: still the `claude`
+ * binary underneath, pointed at a different backend with its own key.
+ */
+export type ProviderId = string;
 
 export type Role = 'user' | 'assistant' | 'system';
 
@@ -851,8 +856,37 @@ export interface ProviderModel {
   isDefault?: boolean;
 }
 
+/**
+ * A configured alternative backend for the `claude` binary: same adapter,
+ * same event parsing, just pointed at another Anthropic-compatible endpoint
+ * via env vars. `authToken` is the only field never sent to the browser; see
+ * `publicConfig` in the server package.
+ */
+export interface ProviderProfile {
+  /** Slug used as this profile's ProviderId, e.g. "glm". */
+  id: string;
+  displayName: string;
+  /** Anthropic-Messages-compatible endpoint. */
+  baseUrl: string;
+  /** Stored the same way as `gateways.telegram.token`: empty string means unset. */
+  authToken: string;
+  defaultModel?: string;
+  /**
+   * `'direct'`: the endpoint speaks Anthropic Messages natively (z.ai, Moonshot,
+   * MiniMax, ...). `'router'`: reach it through the Rookery-managed
+   * `claude-code-router` process instead, for backends with no native
+   * Anthropic-compatible API (OpenRouter, DeepSeek, Ollama, ...).
+   * `'codex-bridge'`: Rookery's own in-process bridge, which serves the
+   * ChatGPT Codex backend as Anthropic Messages on the session `codex login`
+   * created - a subscription rather than an API key.
+   */
+  via: 'direct' | 'router' | 'codex-bridge';
+}
+
 export interface ProviderStatus {
   id: ProviderId;
+  /** For a UI rendering an id it has no hardcoded label for, e.g. a profile. */
+  displayName: string;
   available: boolean;
   binary: string;
   version?: string;
@@ -905,6 +939,10 @@ export interface RookeryConfig {
   external: ExternalConfig;
   /** Where skills live, one folder per skill. Defaults to `<home>/skills`. */
   skillsDir: string;
+  /** Alternative backends for the `claude` binary. Empty by default: opt-in per provider. */
+  providerProfiles: ProviderProfile[];
+  /** The Rookery-managed `claude-code-router` process, used by `via: 'router'` profiles. */
+  router: RouterConfig;
   /** Name the assistant answers to, used in the persona and as wake word base. */
   assistantName: string;
   userName?: string;
@@ -1046,6 +1084,16 @@ export interface ToolServerConfig {
 
 export interface ToolsConfig {
   servers: ToolServerConfig[];
+}
+
+/**
+ * The locally managed `claude-code-router` process. Only started when at
+ * least one enabled `ProviderProfile` has `via: 'router'`.
+ */
+export interface RouterConfig {
+  enabled: boolean;
+  /** Defaults to the router's own default port, 3456. */
+  port?: number;
 }
 
 /**

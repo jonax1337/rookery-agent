@@ -179,10 +179,11 @@ export async function runCapture(
   binary: ResolvedBinary,
   args: string[],
   timeoutMs = 15000,
+  env?: NodeJS.ProcessEnv,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const handle = spawnCli(binary, { args, signal: controller.signal });
+  const handle = spawnCli(binary, { args, signal: controller.signal, env });
 
   let stdout = '';
   handle.child.stdout.setEncoding('utf8');

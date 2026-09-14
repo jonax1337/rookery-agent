@@ -63,6 +63,8 @@ export function publicConfig(config: RookeryConfig): Record<string, unknown> {
     voice: config.voice,
     memory: config.memory,
     org: config.org,
+    // No secret here - profile API keys live behind GET /api/providers/profiles.
+    router: config.router,
     // The one settings block that carries a secret. It is blanked rather than
     // dropped, so the page still sees the shape it edits; whether a token is
     // actually set - and whether it came from the environment - is what

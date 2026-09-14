@@ -36,6 +36,8 @@ import type {
   Project,
   ProjectMcpInfo,
   ProviderId,
+  ProviderCatalogItem,
+  ProviderProfile,
   ProviderQuota,
   ProviderStatus,
   PublicConfig,
@@ -353,6 +355,24 @@ export const api = {
   /** Subscription usage of one provider; the server caches it for a minute. */
   providerUsage: (id: ProviderId, refresh = false) =>
     request<ProviderQuota>('/api/providers/' + id + '/usage' + (refresh ? '?refresh=1' : '')),
+
+  /** The providers that can be set up, each with what is already stored for it. */
+  providerCatalog: () => request<ProviderCatalogItem[]>('/api/providers/catalog'),
+  /** Alternative backends for the `claude` binary (GLM, ...). Never carries the API key back. */
+  providerProfiles: () => request<ProviderProfile[]>('/api/providers/profiles'),
+  /** Upserts by id. `authToken: null` clears a stored key, empty/absent leaves it alone. */
+  saveProviderProfile: (
+    id: string,
+    patch: Partial<
+      Pick<ProviderProfile, 'displayName' | 'baseUrl' | 'defaultModel' | 'via'>
+    > & { authToken?: string | null },
+  ) =>
+    request<ProviderProfile>('/api/providers/profiles/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      ...json(patch),
+    }),
+  deleteProviderProfile: (id: string) =>
+    request<{ ok: true }>('/api/providers/profiles/' + encodeURIComponent(id), { method: 'DELETE' }),
 
   /* -------------------------------- sessions ------------------------------- */
 

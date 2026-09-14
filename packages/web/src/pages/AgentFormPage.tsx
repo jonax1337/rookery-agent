@@ -200,20 +200,15 @@ export function AgentFormPage() {
         value: STANDARD_CHOICE,
         label: 'Default',
         description: config
-          ? 'Currently ' + PROVIDER_LABEL[config.defaultProvider] + '.'
+          ? 'Currently ' + (PROVIDER_LABEL[config.defaultProvider] ?? config.defaultProvider) + '.'
           : 'Uses the default from Settings.',
       },
-      ...(['claude', 'codex'] as ProviderId[]).map((provider) => {
-        const status = providers.find((entry) => entry.id === provider);
-        return {
-          value: provider as ProviderChoice,
-          label: PROVIDER_LABEL[provider],
-          icon: <ProviderIcon provider={provider} className="size-4 text-muted-foreground" />,
-          ...(status && !status.available
-            ? { description: 'Not installed. Assignments for this agent will fail.' }
-            : {}),
-        };
-      }),
+      ...providers.map((status) => ({
+        value: status.id as ProviderChoice,
+        label: PROVIDER_LABEL[status.id] ?? status.displayName,
+        icon: <ProviderIcon provider={status.id} label={status.displayName} className="size-4 text-muted-foreground" />,
+        ...(!status.available ? { description: 'Not installed. Assignments for this agent will fail.' } : {}),
+      })),
     ],
     [config, providers],
   );

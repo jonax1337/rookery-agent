@@ -8,7 +8,10 @@ import { z } from 'zod';
  * route handler can assume its input is already sane.
  */
 
-export const providerIdSchema = z.enum(['claude', 'codex']);
+// Open, not `z.enum(['claude', 'codex'])`: any other id names a configured
+// ProviderProfile (see providerProfilePatchSchema below), so the set of
+// valid ids is a runtime property of the registry, not a compile-time one.
+export const providerIdSchema = z.string().min(1).max(60);
 export const permissionSchema = z.enum(['chat', 'read', 'write', 'full']);
 export const effortSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 export const memoryKindSchema = z.enum(['fact', 'preference', 'project', 'event', 'summary', 'insight']);
@@ -316,6 +319,21 @@ const gatewaysConfigSchema = z
   .partial();
 
 /**
+ * PATCH /api/providers/profiles/:id. `authToken` is write-only, same rule as
+ * the Telegram bot token: empty/absent leaves a stored key alone, `null`
+ * clears it. The id itself is the route param, not part of the body.
+ */
+export const providerProfilePatchSchema = z
+  .object({
+    displayName: z.string().trim().min(1).max(60),
+    baseUrl: z.string().trim().max(300),
+    authToken: z.string().trim().max(400).nullable(),
+    defaultModel: z.string().trim().max(120),
+    via: z.enum(['direct', 'router']),
+  })
+  .partial();
+
+/**
  * PATCH /api/config. Deliberately narrower than RookeryConfig: `home`,
  * `workspace` and `token` are not remotely settable, because any of them
  * would let a client lock itself (or somebody else) out of the running server.
@@ -338,6 +356,7 @@ export const patchConfigSchema = z
     voice: voiceConfigSchema,
     org: orgConfigSchema,
     gateways: gatewaysConfigSchema,
+    router: z.object({ enabled: z.boolean(), port: z.number().int().min(1).max(65535) }).partial(),
   })
   .partial();
 

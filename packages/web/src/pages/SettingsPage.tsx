@@ -91,7 +91,9 @@ import type {
   MemoryConfig,
   OrgConfig,
   PermissionLevel,
+  ProviderCatalogItem,
   ProviderId,
+  ProviderStatus,
   PublicConfig,
   TtsCatalogue,
   TtsVoice,
@@ -407,7 +409,10 @@ export function SettingsPage() {
               {current.slug === 'identity' ? <><IdentitySection draft={draft} set={set} /><AssistantProfile /></> : null}
               {current.slug === 'migration' ? <AssistantMigration /> : null}
               {current.slug === 'defaults' ? (
-                <DefaultsSection draft={draft} providers={providers} set={set} />
+                <>
+                  <DefaultsSection draft={draft} providers={providers} set={set} />
+                  <ProviderProfilesSection providers={providers} />
+                </>
               ) : null}
               {current.slug === 'voice' ? (
                 <VoiceSection
@@ -565,7 +570,7 @@ function DefaultsSection({
   set,
 }: {
   draft: PublicConfig;
-  providers: readonly { id: ProviderId; models?: string[] }[];
+  providers: readonly ProviderStatus[];
   set(patch: Partial<PublicConfig>): void;
 }) {
   const models = providers.find((entry) => entry.id === draft.defaultProvider)?.models ?? [];
@@ -594,17 +599,34 @@ function DefaultsSection({
             set({ defaultProvider: value as ProviderId, defaultModel: '' })
           }
         >
-          {(['claude', 'codex'] as ProviderId[]).map((id) => (
-            <FieldLabel key={id} htmlFor={'set-provider-' + id}>
-              <Field orientation="horizontal">
-                <ProviderIcon provider={id} className="size-5 text-muted-foreground" />
-                <FieldContent>
-                  <FieldTitle>{PROVIDER_LABEL[id]}</FieldTitle>
-                </FieldContent>
-                <RadioGroupItem value={id} id={'set-provider-' + id} aria-label={PROVIDER_LABEL[id]} />
-              </Field>
-            </FieldLabel>
-          ))}
+          {providers.map((status) => {
+            const label = PROVIDER_LABEL[status.id] ?? status.displayName;
+            // A provider that cannot answer must not become the default: the
+            // composer would show it while the runtime quietly fell back to
+            // another one. Setting it up is a click away, in the section below.
+            const ready = status.available && status.authenticated;
+            return (
+              <FieldLabel key={status.id} htmlFor={'set-provider-' + status.id}>
+                <Field orientation="horizontal" data-disabled={!ready || undefined}>
+                  <ProviderIcon
+                    provider={status.id}
+                    label={status.displayName}
+                    className="size-5 text-muted-foreground"
+                  />
+                  <FieldContent>
+                    <FieldTitle>{label}</FieldTitle>
+                    {!ready ? <FieldDescription>{status.detail ?? 'Not ready yet.'}</FieldDescription> : null}
+                  </FieldContent>
+                  <RadioGroupItem
+                    value={status.id}
+                    id={'set-provider-' + status.id}
+                    aria-label={label}
+                    disabled={!ready}
+                  />
+                </Field>
+              </FieldLabel>
+            );
+          })}
         </RadioGroup>
       </FieldSet>
 
@@ -684,6 +706,117 @@ function DefaultsSection({
     </>
   );
 }
+
+/* --------------------------- provider profiles ---------------------------- */
+
+/**
+ * The providers Rookery can set up, one row each.
+ *
+ * Everything technical - endpoint, transport, model names - comes from the
+ * catalogue on the server, so the only thing asked for here is the part that
+ * is actually the user's: a key, or where a checkout lives.
+ */
+function ProviderProfilesSection({ providers }: { providers: readonly ProviderStatus[] }) {
+  const [items, setItems] = useState<ProviderCatalogItem[] | null>(null);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    const list = await api.providerCatalog();
+    setItems(list);
+    setValues(Object.fromEntries(list.map((item) => [item.id, ''])));
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const connect = async (item: ProviderCatalogItem) => {
+    setBusy(item.id);
+    setError(null);
+    try {
+      const value = (values[item.id] ?? '').trim();
+      await api.saveProviderProfile(item.id, { authToken: value || undefined });
+      await load();
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const disconnect = async (id: string) => {
+    setBusy(id);
+    try {
+      await api.deleteProviderProfile(id);
+      await load();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (!items) return null;
+
+  return (
+    <FieldSet>
+      <FieldLegend variant="label">More providers</FieldLegend>
+      <FieldDescription>
+        Other models, answered through Claude Code itself. Claude and ChatGPT are already built in.
+      </FieldDescription>
+      {error ? <FieldError>{error}</FieldError> : null}
+
+      {items.map((item) => {
+        const status = providers.find((entry) => entry.id === item.id);
+        const ready = Boolean(status?.available && status.authenticated);
+        const badge = !item.configured
+          ? { label: 'Not set up', variant: 'outline' as const }
+          : ready
+            ? { label: 'Ready', variant: 'default' as const }
+            : { label: 'Needs attention', variant: 'secondary' as const };
+        return (
+          <Field key={item.id} className="gap-2 rounded-lg border p-3">
+            <div className="flex items-center gap-2">
+              <ProviderIcon provider={item.id} label={item.name} className="size-5 text-muted-foreground" />
+              <FieldTitle className="flex-1">{item.name}</FieldTitle>
+              <Badge variant={badge.variant}>{badge.label}</Badge>
+            </div>
+            <FieldDescription>{item.description}</FieldDescription>
+            {item.configured && !ready && status?.detail ? (
+              <FieldDescription className="text-destructive">{status.detail}</FieldDescription>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="min-w-0 flex-1"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                aria-label={item.name + ' API key'}
+                value={values[item.id] ?? ''}
+                placeholder={item.authTokenSet ? 'Saved — leave empty to keep it' : 'API key'}
+                onChange={(event) => setValues((current) => ({ ...current, [item.id]: event.target.value }))}
+              />
+              <Button type="button" size="sm" disabled={busy === item.id} onClick={() => void connect(item)}>
+                {item.configured ? 'Save' : 'Set up'}
+              </Button>
+              {item.configured ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={busy === item.id}
+                  onClick={() => void disconnect(item.id)}
+                >
+                  Remove
+                </Button>
+              ) : null}
+            </div>
+            <FieldDescription>{item.hint}</FieldDescription>
+          </Field>
+        );
+      })}
+    </FieldSet>
+  );
+}
+
 
 /* --------------------------------- voice --------------------------------- */
 

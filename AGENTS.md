@@ -1,7 +1,10 @@
 # Rookery Agent
 
-Persoenlicher KI-Assistent ueber die lokalen `claude`- und `codex`-CLIs (OAuth-Sitzung der
-eingeloggten CLI, keine API-Keys). Monorepo mit npm-Workspaces:
+Persoenlicher KI-Assistent. Jeder Turn laeuft ueber das lokale `claude`-CLI; welches Modell
+antwortet, entscheidet nur, wohin dieser Prozess zeigt (`ANTHROPIC_BASE_URL`). Anthropic
+direkt ueber die Claude-Code-Anmeldung, ChatGPT ueber Rookerys eigene Bruecke auf der
+`codex login`-Sitzung, weitere Anbieter ueber Provider-Profile mit eigenem Key.
+Monorepo mit npm-Workspaces:
 
 ```
 packages/core     Das Gehirn: Provider-Adapter, Gedaechtnis, Persona, Runtime, die
@@ -46,7 +49,7 @@ ausschliesslich ueber den Rookery-MCP-Server (`packages/core/src/org/`), nie dir
 | `npm run cli` | `packages/cli/dist/index.js` |
 | `npm test` | Node-Test-Runner ueber `packages/core/test/*.test.js` — vor jedem Commit an `packages/core` laufen lassen |
 | `npm run typecheck` | `tsc -b` ueber core, server, cli |
-| `npm run doctor` | Provider-Diagnose (Claude Code / Codex), ohne Server |
+| `npm run doctor` | Provider-Diagnose (Anmeldungen und Bruecke), ohne Server |
 | `npm run clean` | `scripts/clean.mjs` |
 
 Node.js >= 22.5 ist Pflicht (`node:sqlite`, keine native Abhaengigkeit fuer die
@@ -64,9 +67,13 @@ Datenbank).
 - Keine erfundenen Zahlen: jede Kennzahl braucht eine belegte Quelle. Gesamtzahlen
   kommen aus `GET /api/stats`, nicht aus einer Liste, die der Server deckelt; wo nur
   eine gedeckelte Liste da ist, nennt die Karte ihre Basis.
-- Keine API-Keys im Code oder in Beispielen. Modell-Provider-Auth laeuft ausschliesslich ueber
-  die OAuth-Sitzung der lokal eingeloggten `claude`- bzw. `codex`-CLI. Optionale
-  Sprachausgabe ueber OpenAI oder ElevenLabs liest ihren Key nur auf dem Server.
+- Keine API-Keys im Code oder in Beispielen. Die beiden eingebauten Provider authentifizieren
+  ausschliesslich ueber OAuth-Sitzungen: `claude` ueber die Claude-Code-Anmeldung, `codex` ueber
+  die von `codex login` angelegte Sitzung (`providers/codex-auth.ts` erneuert deren Tokens
+  selbst). Fuer ChatGPT nie einen API-Key vorschlagen. Ein Key wird nur dort gespeichert, wo
+  ein Anbieter keinen anderen Weg anbietet — als Provider-Profil, eingegeben in den
+  Einstellungen. Optionale Sprachausgabe ueber OpenAI oder ElevenLabs liest ihren Key nur auf
+  dem Server.
 - Package-Grenzen respektieren: `packages/core` kennt weder HTTP noch Terminal. HTTP-
   und Terminal-spezifischer Code gehoert in `packages/server` bzw. `packages/cli`.
 - `~/.claude` und `~/.codex` gehoeren den beiden CLIs. `packages/core/src/external/`

@@ -51,9 +51,27 @@ export {
 } from './memory/extractor.js';
 
 export { ClaudeCodeProvider } from './providers/claude-code.js';
-export { CodexProvider } from './providers/codex.js';
 export { ProviderRegistry } from './providers/registry.js';
 export { providerQuota, rememberQuota } from './providers/quota.js';
+export { withProviderProfile, withoutProviderProfile, publicProviderProfile } from './providers/profiles.js';
+export { RouterManager, sharedRouterManager } from './providers/router.js';
+export { CodexBridge, sharedCodexBridge } from './providers/codex-bridge.js';
+export { CodexSession, sharedCodexSession } from './providers/codex-auth.js';
+export {
+  TurnTranslator,
+  toResponsesRequest,
+  readServerSentEvents,
+} from './providers/codex-translate.js';
+export {
+  PROVIDER_CATALOG,
+  CODEX_PROFILE,
+  codexModels,
+  codexContextWindow,
+  prettifyModelId,
+  providerCatalogEntry,
+  profileWithCatalog,
+  type ProviderCatalogEntry,
+} from './providers/provider-catalog.js';
 export {
   readJsonLines,
   resolveBinary,

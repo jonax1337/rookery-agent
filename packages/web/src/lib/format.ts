@@ -188,7 +188,8 @@ export const PERMISSION_CHOICES: {
   })),
 ];
 
-export const PROVIDER_LABEL: Record<ProviderId, string> = {
+/** Unknown ids (a provider profile, e.g. GLM) fall back to the raw id at the call site. */
+export const PROVIDER_LABEL: Partial<Record<ProviderId, string>> = {
   claude: 'Claude',
   codex: 'Codex',
 };

@@ -6,7 +6,8 @@
  * in sync with packages/core/src/types.ts.
  */
 
-export type ProviderId = 'claude' | 'codex';
+/** 'claude' and 'codex' are built in; any other id names a configured ProviderProfile. */
+export type ProviderId = string;
 export type Role = 'user' | 'assistant' | 'system';
 export type PermissionLevel = 'chat' | 'read' | 'write' | 'full';
 export type MemoryKind = 'fact' | 'preference' | 'project' | 'event' | 'summary' | 'insight';
@@ -625,8 +626,38 @@ export interface ProviderModel {
   isDefault?: boolean;
 }
 
+/** GET/PATCH /api/providers/profiles/:id - never carries the API key itself. */
+export interface ProviderProfile {
+  id: string;
+  displayName: string;
+  baseUrl: string;
+  defaultModel?: string;
+  via: 'direct' | 'router';
+  authTokenSet: boolean;
+}
+
+export interface RouterConfig {
+  enabled: boolean;
+  port?: number;
+}
+
+/** GET /api/providers/catalog - one row per provider Rookery can set up. */
+export interface ProviderCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  /** What the person supplies. Only API keys, now that ChatGPT is built in. */
+  needs: 'api-key';
+  hint: string;
+  /** Whether a profile for it exists at all. */
+  configured: boolean;
+  authTokenSet: boolean;
+}
+
 export interface ProviderStatus {
   id: ProviderId;
+  /** For rendering an id with no hardcoded label, e.g. a profile. */
+  displayName: string;
   available: boolean;
   binary: string;
   version?: string;
@@ -852,6 +883,7 @@ export interface PublicConfig {
   memory: MemoryConfig;
   org: OrgConfig;
   gateways: GatewaysConfig;
+  router?: RouterConfig;
 }
 
 /* ------------------------------ tool hub ------------------------------ */

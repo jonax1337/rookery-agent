@@ -52,7 +52,7 @@ export function ProviderCell({
     return (
       <span className={cn('inline-flex min-w-0 items-center gap-1.5 text-sm', className)}>
         <ProviderIcon provider={provider} className="size-3.5 text-muted-foreground" />
-        <span className="truncate">{PROVIDER_LABEL[provider]}</span>
+        <span className="truncate">{PROVIDER_LABEL[provider] ?? provider}</span>
         {showModel && (
           <>
             <span className="text-muted-foreground" aria-hidden="true">
@@ -69,7 +69,7 @@ export function ProviderCell({
     <div className={cn('flex min-w-0 items-center gap-2', className)}>
       <ProviderIcon provider={provider} className="size-4 shrink-0 text-muted-foreground" />
       <div className="min-w-0">
-        <div className="truncate text-sm leading-snug">{PROVIDER_LABEL[provider]}</div>
+        <div className="truncate text-sm leading-snug">{PROVIDER_LABEL[provider] ?? provider}</div>
         {showModel && (
           <div className="truncate text-xs leading-snug text-muted-foreground">{modelLabel}</div>
         )}

@@ -5,11 +5,15 @@ import type { ProviderId, ProviderModel } from '../types.js';
 import { spawnCli, readJsonLines, type ResolvedBinary } from './process.js';
 
 /** Query CLI metadata only: no prompt, model turn, or API credentials. */
-export async function discoverModels(provider: ProviderId, binary: ResolvedBinary): Promise<ProviderModel[]> {
+export async function discoverModels(
+  provider: ProviderId,
+  binary: ResolvedBinary,
+  env?: NodeJS.ProcessEnv,
+): Promise<ProviderModel[]> {
   const cwd = join(homedir(), '.rookery', 'workspace');
   mkdirSync(cwd, { recursive: true });
   const handle = spawnCli(binary, {
-    cwd, interactive: true,
+    cwd, interactive: true, env,
     args: provider === 'claude'
       ? ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
         '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}']

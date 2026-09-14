@@ -4,13 +4,13 @@
 </p>
 
 <p align="center">
-  <b>A personal AI assistant powered by your existing Claude Code and Codex CLI logins.</b><br>
-  Local orchestration and storage. No model API keys required.
+  <b>A personal AI assistant that answers from the logins you already have.</b><br>
+  Every model runs through one harness. Local orchestration and storage. No model API keys required.
 </p>
 
 ## What Rookery does
 
-Rookery runs the installed `claude` and `codex` CLIs as child processes using their signed-in sessions. It adds persistent memory, an assistant identity, an organization of agents, a task board, schedules, tools, skills, and voice. The web app, terminal, and Telegram share the same core.
+Rookery runs the installed `claude` CLI as a child process and points it at whichever backend a turn calls for: Anthropic's own models on your Claude Code login, ChatGPT models on the session `codex login` created, or another provider you configure. One harness, one set of tool and permission semantics, several model vendors. It adds persistent memory, an assistant identity, an organization of agents, a task board, schedules, tools, skills, and voice. The web app, terminal, and Telegram share the same core.
 
 The application and database run on your machine. Model requests still go to the selected provider; Telegram, network tools, and server speech engines also use external services. Provider usage follows the account signed in to each CLI.
 
@@ -26,7 +26,7 @@ irm https://raw.githubusercontent.com/jonax1337/rookery-agent/main/scripts/insta
 
 The installer installs Node.js LTS through winget if Node is missing, downloads and builds Rookery, installs its npm package, starts the server, opens the migration/start-fresh choice in Settings, and enables startup after Windows sign-in. Node installation may show the standard Windows approval dialog. No Git or `.env` editing is needed. An existing Node older than 22.5 must be updated first.
 
-If neither provider CLI is installed, the installer offers Codex or Claude Code and opens that CLI's login flow; you can also skip this step. Existing installations and logins are reused. Select your provider in **Settings**. Configure your name, assistant, models, and voice there; configure Telegram in **Gateways**. Default voice needs no key. Add optional OpenAI/ElevenLabs speech keys directly under **Settings → Voice → Speech service keys**.
+If the Claude Code CLI is not installed, the installer offers it and opens its login flow; you can also skip this step. Existing installations and logins are reused. Select your provider in **Settings**. Configure your name, assistant, models, and voice there; configure Telegram in **Gateways**. Default voice needs no key. Add optional OpenAI/ElevenLabs speech keys directly under **Settings → Voice → Speech service keys**.
 
 ```powershell
 rookery setup           # start, open migration/start-fresh choice, enable autostart
@@ -69,7 +69,7 @@ Maintainers create it with `npm run package` (output: `dist/rookery-agent-0.1.0.
 
 ### From source
 
-Requirements: **Node.js 22.5 or newer** (for `node:sqlite`), npm, and at least one installed, signed-in provider CLI. For Claude Code, run `claude` and `/login`; for Codex, run `codex login`.
+Requirements: **Node.js 22.5 or newer** (for `node:sqlite`), npm, and the Claude Code CLI: run `claude` and `/login`. For ChatGPT models, run `codex login` once — Rookery then keeps that session alive itself and no longer needs the Codex CLI.
 
 ```bash
 npm install --ignore-scripts
@@ -169,29 +169,42 @@ The assistant's working directory defaults to **`~/.rookery/workspace`**, indepe
 
 The assistant keeps its configured identity. You can start a separate direct conversation with an agent using `--agent` or `/talk`; an existing conversation keeps its counterpart. Switching provider starts a new provider conversation where necessary.
 
-### Provider authentication
+### Providers and authentication
 
-The adapters launch real CLIs and consume their JSON streams:
+Every turn is the same child process, consuming the same JSON stream:
 
 ```text
 claude -p --output-format stream-json --verbose --include-partial-messages
-codex exec [resume <id>] --json --skip-git-repo-check --color never -s <sandbox>
 ```
 
-They use existing CLI authentication and native session IDs (`--resume` or `codex exec resume`). Model access requires no API-key setting in Rookery. Optional OpenAI and ElevenLabs **speech** engines are separate: their keys are configured in Settings → Voice and kept on the server.
+What changes per provider is only where that process is pointed, through `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` set at spawn time. Three ways exist:
+
+| Provider | How it is reached | Credential |
+|---|---|---|
+| `claude` | Anthropic directly | Your Claude Code login (OAuth, untouched) |
+| `codex` | Rookery's own bridge to the ChatGPT backend | The session `codex login` created |
+| a profile | The vendor's own Anthropic-compatible endpoint, e.g. GLM (z.ai) | An API key you enter in Settings |
+
+Adding a provider is configuration rather than code: a catalogue entry carries the endpoint and the model list, and the only thing stored per provider is the key. Session continuity uses Claude Code's native `--resume`.
+
+**The `codex` bridge.** ChatGPT-plan logins issue no portable API key — `~/.codex/auth.json` holds OAuth tokens instead. Rookery runs a loopback HTTP server that speaks Anthropic's Messages API on the front and `chatgpt.com/backend-api/codex/responses` on the back, translating both directions including tool calls, and refreshes those tokens itself. The Codex CLI is therefore only needed for the initial `codex login`. This talks to a backend intended for OpenAI's own client: it works today, it is not a supported interface, and it can stop working without warning.
+
+Model access requires no API-key setting for `claude` or `codex`. Optional OpenAI and ElevenLabs **speech** engines are separate: their keys are configured in Settings → Voice and kept on the server.
 
 Claude runs with `--setting-sources ""`. When Rookery supplies MCP servers, it also passes `--mcp-config` and `--strict-mcp-config`. Rookery replaces the coding system prompt for the assistant; project agents retain their coding role. A `CLAUDE.md` in the selected working directory can still be read by Claude.
 
 ### Permission levels
 
-| Level | Claude Code | Codex |
-|---|---|---|
-| `chat` | `--restricted` and additional read/search/task tools blocked | `read-only` sandbox |
-| `read` | `--restricted`; edit/write/notebook-edit tools blocked | `read-only` sandbox |
-| `write` | `--restricted --permission-mode acceptEdits` | `workspace-write` sandbox |
-| `full` | `--dangerously-skip-permissions` | `danger-full-access` sandbox |
+Because every provider runs through the same harness, one ladder applies to all of them:
 
-The default agent permission is `read`; agents can override it. Claude's restricted levels disable shell access, while Codex uses its sandbox rather than the same tool restrictions. The assistant's MCP bridge and gateway policy impose their own boundaries. Prompt instructions to ask before irreversible actions do not replace those controls.
+| Level | Flags |
+|---|---|
+| `chat` | `--restricted`, plus read/search/task tools blocked |
+| `read` | `--restricted`; edit/write/notebook-edit tools blocked |
+| `write` | `--restricted --permission-mode acceptEdits` |
+| `full` | `--dangerously-skip-permissions` |
+
+The default agent permission is `read`; agents can override it. The restricted levels disable shell access. The assistant's MCP bridge and gateway policy impose their own boundaries. Prompt instructions to ask before irreversible actions do not replace those controls.
 
 ## Memory
 
@@ -297,7 +310,7 @@ Two rules bound the unattended paths: **a skill you wrote is never overwritten**
 
 `use_skill` returns instructions and a file list; it does not execute scripts. Running a script requires an available execution tool and its permissions. Project-scoped skill/MCP proposals under `docs/concepts` should not be assumed fully implemented.
 
-**What Claude Code and Codex already have.** Rookery runs on the OAuth session of the locally installed `claude` and `codex`, so whatever is installed for those two sits on the same disk. It reads `~/.claude` and `~/.codex` — each CLI's own `skills/` folder, the `skills/` and `.mcp.json` of every plugin switched on there, and the MCP servers in `~/.claude.json` and `~/.codex/config.toml` — and never writes back into either. One plugin installed in both CLIs shows up once, and so does one MCP server that both declare identically.
+**What Claude Code and Codex already have.** Rookery runs on the OAuth sessions those two CLIs created, so whatever is installed for them sits on the same disk. It reads `~/.claude` and `~/.codex` — each CLI's own `skills/` folder, the `skills/` and `.mcp.json` of every plugin switched on there, and the MCP servers in `~/.claude.json` and `~/.codex/config.toml` — and never writes back into either. One plugin installed in both CLIs shows up once, and so does one MCP server that both declare identically.
 
 Nothing found is active by default. Each CLI's own skills folder counts from the start; a plugin's shelf is switched on per source on the Skills page, because a single plugin can hold several hundred entries. Those skills never go into the prompt: it says how many there are and where they come from, `find_skill` searches them, and `use_skill` opens the match — so the assistant sees what is available and loads it when a task calls for it. A discovered MCP server appears on the Tools page switched off, and only a person can switch it on: starting a process out of somebody else's plugin is a decision, not a convenience. Approval covers the start definition as it stood; if it changes in the CLI's own configuration, the server reads "Changed" and stays out until somebody looks at it again.
 

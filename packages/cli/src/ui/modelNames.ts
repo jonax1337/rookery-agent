@@ -19,7 +19,10 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { prettifyModelId } from '@rookery/core';
 import type { ProviderId, ProviderRegistry } from '@rookery/core';
+
+export { prettifyModelId };
 
 /** How long a cached catalogue is trusted before the next refresh. */
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -159,10 +162,4 @@ export function modelName(
 ): string | undefined {
   if (!id) return catalogue.defaults[provider];
   return catalogue.byProvider[provider]?.[id] ?? prettifyModelId(id);
-}
-
-/** `sonnet-long` -> `Sonnet long`, with the one prefix people actually write. */
-export function prettifyModelId(id: string): string {
-  const prefixed = id.startsWith('gpt-') ? 'GPT' + id.slice(3) : id;
-  return prefixed.charAt(0).toUpperCase() + prefixed.slice(1);
 }
