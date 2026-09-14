@@ -1,6 +1,7 @@
 # Projektbezogene Skills und MCP-Server
 
-Stand: 2026-09-13. Alle drei Ausbaustufen aus Abschnitt 5 sind umgesetzt:
+Stand: 2026-09-13, Provider-Aussagen nachgezogen am 2026-09-14. Alle drei Ausbaustufen aus
+Abschnitt 5 sind umgesetzt:
 `packages/core/src/skills/store.ts` (`SkillStore` nimmt eine geordnete Liste von Verzeichnissen),
 `packages/core/src/org/project-mcp.ts` (liest `.mcp.json` und bildet den Vertrauensstatus),
 `packages/core/src/org/controller.ts` (`#agentSkills`, `use_skill`, `project_mcp_servers`,
@@ -10,6 +11,11 @@ Stand: 2026-09-13. Alle drei Ausbaustufen aus Abschnitt 5 sind umgesetzt:
 (`toolServersFor`/`ensureToolServers`/`dormantToolsHint` kennen jetzt `projectId`), dazu die
 Projektseite und die Werkzeug-Detailseite der Web-UI (`ProjectFormPage.tsx`,
 `ToolDetailPage.tsx`) und die drei neuen Routen unter `/api/org/projects/:id/mcp*`.
+
+Nachtrag 2026-09-14: Das Dokument entstand, als Rookery zwei CLIs fuhr. Seitdem laeuft jeder
+Turn ueber dieselbe `claude`-Binary und die Provider-ID sagt nur noch, wohin dieser Prozess
+zeigt; `providers/codex.ts` gibt es nicht mehr. Die Stellen, die sich darauf beriefen, sind
+unten korrigiert - das Argument der Abschnitte 4a und 6 wird dadurch staerker, nicht schwaecher.
 
 ## 1. Zielsetzung
 
@@ -33,8 +39,8 @@ Alles hier ist am Code belegt.
 
 1. **Der Projektordner ist bewusst ausgesperrt.** `providers/claude-code.ts:146-150` setzt
    `--setting-sources ''`, dazu `--mcp-config` mit `--strict-mcp-config`. Der Kommentar begruendet
-   es mit "Rookery is the whole environment". Codex hat kein Gegenstueck dazu; dort werden die
-   MCP-Server ohnehin nur als explizite Argumente uebergeben (`providers/codex.ts:201`).
+   es mit "Rookery is the whole environment". Das gilt fuer jeden Turn, weil jeder Turn denselben
+   Harness startet - welches Backend dahinter antwortet, aendert daran nichts.
 2. **Eine Sorte Projektdatei kommt trotzdem durch.** Claude Code liest `CLAUDE.md` aus dem
    Arbeitsverzeichnis unabhaengig von den Setting-Sources; `config.ts:94-98` haelt das fest, und
    `WORKSPACE_NOTES` existiert nur deshalb. Die heutige Grenze ist also nicht "nichts aus dem
@@ -74,22 +80,21 @@ Projekten ist das ein Klick; bei fremden ist es die Frage, die man spaeter nicht
 
 ## 4a. Egal mit welchem Provider - warum das kein Extra-Aufwand ist
 
-Rookery faehrt heute Claude Code und Codex, und wird nicht der letzte Provider bleiben. Beide
-Haelften dieses Konzepts sind trotzdem provider-agnostisch von Natur aus, weil Rookery die Arbeit
-zentral macht statt sich auf einen provider-eigenen Mechanismus zu verlassen:
+Rookery faehrt heute jedes Modell ueber denselben Claude-Code-Harness; ein weiteres Backend kommt
+als Provider-Profil dazu, nicht als zweite CLI. Beide Haelften dieses Konzepts sind ohnehin
+provider-agnostisch von Natur aus, weil Rookery die Arbeit zentral macht statt sich auf einen
+provider-eigenen Mechanismus zu verlassen:
 
 - **Skills** liest kein Provider je selbst. `SkillStore` rendert `SKILL.md`-Prosa in den
-  `systemPrompt`-String, den jeder `Provider.run()` sowieso schon entgegennimmt - Claude Code
-  haengt ihn per `--append-system-prompt` an, Codex stellt ihn in einen `<rookery-context>`-Block.
-  Eine Aenderung an `SkillStore` gilt deshalb automatisch fuer jeden Provider, ohne eine Zeile
-  provider-spezifischen Code.
+  `systemPrompt`-String, den jeder `Provider.run()` sowieso schon entgegennimmt; der Harness
+  haengt ihn per `--append-system-prompt` an. Eine Aenderung an `SkillStore` gilt deshalb
+  automatisch fuer jeden Provider, ohne eine Zeile provider-spezifischen Code.
 - **MCP-Server** laufen bereits heute providerweit ueber `ProviderTurnOptions.mcp` /
-  `mcpExtra: McpServerSpec[]` (`types.ts:679`). Claude Code serialisiert das nach `--mcp-config`
-  JSON (`claude-code.ts:mcpConfig`), Codex nach `-c mcp_servers.*`-TOML (`codex.ts:mcpArgs`). Ein
-  zukuenftiger Provider braucht dafuer nur seinen eigenen kleinen Serializer, keinen eigenen Weg,
-  `.mcp.json` zu lesen. `project-mcp.ts` liest die Datei genau einmal, zentral, in `McpServerSpec[]`
-  um - `.mcp.json` ist damit Rookerys eine Wahrheit fuer Projekt-MCP, unabhaengig davon, mit
-  welcher CLI ein Mensch dieselbe Datei in seiner eigenen Sitzung lesen wuerde.
+  `mcpExtra: McpServerSpec[]` (`types.ts:679`). Der Harness serialisiert das nach `--mcp-config`-JSON
+  (`claude-code.ts:mcpConfig`). Ein Provider, der eines Tages nicht mehr ueber diesen Harness
+  liefe, braeuchte nur seinen eigenen kleinen Serializer, keinen eigenen Weg, `.mcp.json` zu lesen. `project-mcp.ts` liest die Datei genau einmal, zentral, in `McpServerSpec[]`
+  um - `.mcp.json` ist damit Rookerys eine Wahrheit fuer Projekt-MCP, unabhaengig davon, womit
+  ein Mensch dieselbe Datei in seiner eigenen Sitzung lesen wuerde.
 
 Die Regel fuer neuen Code an dieser Stelle: was ein Projekt bekommt, entscheidet sich in
 `org/controller.ts` bzw. `skills/store.ts`, nie in `providers/<name>.ts`. Ein Provider bekommt nur
@@ -124,8 +129,8 @@ selbst wissen.
 **`--setting-sources project` statt `''`.** Waere fast kein Code, weil die Plattform es selbst kann.
 Dagegen spricht zweierlei: Damit kaeme auch `.claude/settings.json` und darueber Hooks und Rechte aus
 dem Repo - genau das Loch, das der Kommentar in `claude-code.ts` zumachen wollte, und bei einem
-Agenten mit `full` ein echtes. Und Codex hat kein Gegenstueck, die beiden Provider wuerden
-auseinanderlaufen. Rookery rendert Skills laut `skills/store.ts:8-13` ohnehin selbst; der zweite
+Agenten mit `full` ein echtes. Und es gaelte fuer jeden Turn zugleich, weil alle denselben Harness
+starten. Rookery rendert Skills laut `skills/store.ts:8-13` ohnehin selbst; der zweite
 Wurzelordner ist deshalb der kleinere Eingriff.
 
 **Export aus Rookery ins Projekt.** Rookery schreibt seine Skills als `.claude/skills/` ins Repo.

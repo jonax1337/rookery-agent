@@ -55,8 +55,8 @@ dafuer der Graph oder der Schlaf schon stehen muss.
 
 ## 3. Leitgedanke: Struktur statt Vektoren
 
-Rookery spricht ueber die abonnementauthentifizierten CLIs `claude` und `codex`. Beide liefern Text, keine
-Embeddings. Ein lokales Embedding-Modell waere ein natives Build-Artefakt und damit genau das, was
+Rookery spricht ueber das abonnementauthentifizierte `claude`-CLI - gleich, auf welches Backend der
+Prozess zeigt. Es liefert Text, keine Embeddings. Ein lokales Embedding-Modell waere ein natives Build-Artefakt und damit genau das, was
 `memory/db.ts` mit `node:sqlite` bewusst vermeidet.
 
 Die Antwort darauf ist nicht "dann bleibt es dumm", sondern: Die Intelligenz kommt aus **Struktur**, die
