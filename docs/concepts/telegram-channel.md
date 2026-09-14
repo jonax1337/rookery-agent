@@ -608,7 +608,7 @@ Das ist keine Nachlaessigkeit, sondern eine Luecke in der Bot-API: **Telegram gi
 Lesebestaetigung.** Er erfaehrt nie, dass seine Nachricht angesehen wurde – nur, dass jemand etwas
 *getan* hat. Gelesen-Sein laesst sich hier also nicht beobachten, nur erklaeren.
 
-Die Erklaerung ist ein Knopf. Unter jeder Mail-Push steht `✓ Read`; ein Tipp darauf markiert genau
+Die Erklaerung ist ein Knopf. Unter jeder Mail-Push steht `Mark as read`; ein Tipp darauf markiert genau
 die Empfaengerzeile des Nutzers in `mail_recipients` als gelesen – dieselbe Stelle, die der
 Lesebereich im Web schreibt. Das passt zu der Regel aus 6.7: `/mail` markiert nichts, weil ein Blick
 auf den Betreff kein Lesen ist. Eine ausdrueckliche Geste bricht diese Regel nicht, sie ist ihr
@@ -632,7 +632,16 @@ Vier Dinge daran sind Absicht:
 
 Der gedrueckte Knopf bleibt stehen und traegt `mail:read-done`: Telegram kennt keinen deaktivierten
 Zustand fuer einen Inline-Knopf, also wird aus dem Knopf ein Knopf, der sagt, was passiert ist, und
-einen zweiten Tipp mit demselben Satz beantwortet, statt noch einmal zu schreiben. Eine
+einen zweiten Tipp mit demselben Satz beantwortet, statt noch einmal zu schreiben.
+
+**Die Beschriftung ist der Zustand, und zwar sichtbar.** Vorher `Mark as read` – eine Aufforderung,
+die sagt, was ein Tipp tut. Nachher `✓ Read at 22:47` – eine Aussage mit dem Zeitpunkt. Die erste
+Fassung schrieb in beiden Zustaenden `✓ Read`; der Knopf war damit zwar veraendert, aber in sich
+selbst, und vom Handy aus war nicht zu erkennen, dass ueberhaupt etwas passiert ist. Ein Test in
+`packages/server/test/gateways.test.js` haelt die beiden Beschriftungen auseinander, weil der Fehler
+sonst genauso unauffaellig zurueckkommt, wie er gekommen ist. Die Uhrzeit ist die des Servers – dem
+Bot sagt Telegram nichts ueber die Zeitzone des Telefons, und der Server steht in demselben Raum wie
+der Nutzer. Eine
 Sammel-Meldung (mehrere Mails in einer Nachricht, 7.3) traegt keinen Knopf – sie benennt keine
 einzelne Mail. Bei einer langen Mail sitzt er unter dem *letzten* Teilstueck, sonst boete eine
 aufgeteilte Mail "gelesen" auf halber Strecke an.

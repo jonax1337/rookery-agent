@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { DEFAULT_CONFIG } from '@rookery/core';
 import { registerGatewayRoutes } from '../dist/routes/gateways.js';
 import { attachGatewayPush } from '../dist/gateways/push.js';
-import { COMMANDS, htmlPieces, mergeFinalText } from '../dist/gateways/telegram.js';
+import { COMMANDS, htmlPieces, mailReadDone, mailReadKeyboard, mergeFinalText } from '../dist/gateways/telegram.js';
 import { toTelegramHtml } from '../dist/gateways/markdown.js';
 import { findOrigin, noteMessages, openThread, originContext, rememberOrigin, takeMessages } from '../dist/gateways/threads.js';
 
@@ -230,7 +230,19 @@ test('a pushed mail carries the read button, once, under its last piece', async 
   assert.equal(withButton.length, 1, 'the button belongs under the mail once, not under every piece');
   assert.equal(sent.at(-1).keyboard, withButton[0].keyboard, 'and under the last piece, not the first');
   // The mail's own id travels on the button: a tap has to name what it marks.
-  assert.deepEqual(withButton[0].keyboard, [[{ text: '✓ Read', callbackData: 'mail:read:mail-42' }]]);
+  assert.deepEqual(withButton[0].keyboard, [[{ text: 'Mark as read', callbackData: 'mail:read:mail-42' }]]);
+});
+
+test('the read button looks different after it has been pressed', () => {
+  // The first version read "✓ Read" in both states. The button did change -
+  // it just changed into itself, so from the phone nothing had happened.
+  const before = mailReadKeyboard('mail-42')[0][0];
+  const after = mailReadDone(Date.parse('2026-09-15T22:47:00'))[0][0];
+  assert.notEqual(before.text, after.text, 'a pressed button that reads like an unpressed one is not feedback');
+  assert.match(before.text, /^Mark as read$/, 'before the tap the label says what tapping does');
+  assert.match(after.text, /^✓ Read at \d{1,2}[:.]\d{2}/, 'after it, what was done and when');
+  // And a second tap is answered rather than written again.
+  assert.notEqual(before.callbackData, after.callbackData);
 });
 
 /* ------------------------------------------------------------------ *

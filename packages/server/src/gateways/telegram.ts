@@ -82,16 +82,29 @@ const MAIL_READ_SPENT = 'mail:read-done';
 /**
  * The button as it is drawn under a fresh mail push.
  *
+ * The label is an *invitation*, not a state, and the difference is the whole
+ * point: the first version read "✓ Read" both before and after the tap, so
+ * the button did change and nobody could see it. A button says what tapping
+ * it will do; what it did belongs to `mailReadDone` below.
+ *
  * Exported so `push.ts` can ask for it without knowing what goes on a
  * button: the wording and the callback data stay in the one file that also
  * reads them back.
  */
 export function mailReadKeyboard(mailId: string): TelegramInlineKeyboard {
-  return [[{ text: '✓ Read', callbackData: MAIL_READ_PREFIX + mailId }]];
+  return [[{ text: 'Mark as read', callbackData: MAIL_READ_PREFIX + mailId }]];
 }
 
-/** The same button, spent. */
-const MAIL_READ_DONE: TelegramInlineKeyboard = [[{ text: '✓ Read', callbackData: MAIL_READ_SPENT }]];
+/**
+ * The same button, spent: a statement, with the time it happened.
+ *
+ * The clock is the server's own, because that is the room the user is in -
+ * Telegram tells a bot nothing about the phone's time zone.
+ */
+export function mailReadDone(at: number): TelegramInlineKeyboard {
+  const stamp = new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return [[{ text: '✓ Read at ' + stamp, callbackData: MAIL_READ_SPENT }]];
+}
 
 /**
  * How long an album is waited for.
@@ -1468,7 +1481,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     // never the read state that was already written.
     if (client && chatId !== undefined && messageId !== undefined) {
       try {
-        await client.editMessageReplyMarkup(chatId, messageId, MAIL_READ_DONE);
+        await client.editMessageReplyMarkup(chatId, messageId, mailReadDone(Date.now()));
       } catch (error) {
         log.debug('Telegram read button could not be redrawn', { error: errorText(error) });
       }
