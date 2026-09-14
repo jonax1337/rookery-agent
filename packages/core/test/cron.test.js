@@ -420,3 +420,24 @@ test('cron: start() skips runs missed long ago and fails runs left behind', asyn
   assert.equal(assistant.cron.started, false);
   assistant.close();
 });
+
+test('cron: a self-run schedule answering [SILENT] stays out of the inbox', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const orgId = assistant.org.activeOrganization().id;
+  const before = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
+  const job = assistant.cron.create({ orgId, name: 'Morgen-Bote', schedule: '* * * * *', kind: 'assistant',
+    prompt: 'Send the briefing by mail yourself, then answer [SILENT].', enabled: false, createdBy: 'user' });
+  const loud = await assistant.cron.runNow(job.id);
+  assert.equal(loud.status, 'done');
+  assert.match(loud.result, /^OUTPUT\(/, 'an ordinary self-run reports its text');
+  const afterLoud = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
+  assert.equal(afterLoud, before + 1, 'an ordinary self-run still lands in the inbox');
+  // The sentinel is whitespace-tolerant: the model ends its turn, not a protocol.
+  fake.provider.run = async function* () { yield { type: 'done', text: '  [SILENT]\n' }; };
+  const silent = await assistant.cron.runNow(job.id);
+  assert.equal(silent.status, 'done');
+  assert.ok(!silent.result, 'the sentinel is consumed, never reported as a result');
+  assert.equal(store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length, afterLoud, 'a silent self-run posts no completion mail');
+  assistant.close();
+});

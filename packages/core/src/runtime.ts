@@ -822,7 +822,7 @@ export class Assistant extends EventEmitter {
       else if (event.type === 'error' && event.fatal) error = event.message;
     }
     if (error && !text) return { status: 'failed', error, sessionId };
-    if (job.kind === 'script' && text.trim() === '[SILENT]') return { status: 'done', result: '', silent: true, sessionId };
+    if (text.trim() === '[SILENT]') return { status: 'done', result: '', silent: true, sessionId };
     return { status: 'done', result: text, sessionId };
   }
 
