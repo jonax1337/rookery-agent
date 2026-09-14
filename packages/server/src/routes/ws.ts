@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { WebSocket } from '@fastify/websocket';
 import type { ServerContext } from '../context.js';
-import { isAuthorized } from '../auth.js';
+import { isAuthorized, requireSameOrigin } from '../auth.js';
 import { clientFrameSchema, formatIssues } from '../schemas.js';
 import { pipeToSocket, sendFrame } from '../services/stream.js';
 
@@ -22,12 +22,17 @@ export async function registerWebsocketRoutes(
     '/ws',
     {
       websocket: true,
-      preValidation: (request: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
-        if (isAuthorized(context, request)) {
-          done();
+      preValidation: async (request: FastifyRequest, reply: FastifyReply) => {
+        if (!isAuthorized(context, request)) {
+          reply.code(401).send({ error: 'Unauthorized', message: 'A valid token is required.' });
           return;
         }
-        reply.code(401).send({ error: 'Unauthorized', message: 'A valid token is required.' });
+        // A WebSocket upgrade is a GET, so the global same-origin hook skips
+        // it — yet a browser page can open a socket cross-site and send
+        // write frames (chat/assign/run_task), which is exactly what
+        // requireSameOrigin exists to stop. Non-browser clients send no
+        // Origin and pass untouched.
+        await requireSameOrigin(request);
       },
     },
     (socket: WebSocket, request: FastifyRequest) => {

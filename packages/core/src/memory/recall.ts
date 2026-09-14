@@ -187,6 +187,9 @@ function expand(
 
   const offer = (record: MemoryRecord, score: number, hop: 'entity' | 'edge', reason: string): void => {
     if (seedIds.includes(record.id)) return;
+    // One bank only. The link table has no owner column, so a stray
+    // cross-owner link must not turn the second hop into a cross-owner read.
+    if (record.owner !== owner) return;
     if (record.forgotten || record.dormantAt || record.supersededBy) return;
     const existing = out.get(record.id);
     if (existing && existing.score >= score) return;
@@ -200,7 +203,7 @@ function expand(
       const damping = Math.min(1, 3 / Math.max(1, entity.mentions));
       const inherited = hopEntity * seed.score * damping;
       if (inherited < (options.threshold ?? 0.12) * 0.5) continue;
-      for (const record of store.memoriesForEntities([entity.id], { exclude: seedIds, limit: 8 })) {
+      for (const record of store.memoriesForEntities([entity.id], { owner, exclude: seedIds, limit: 8 })) {
         offer(record, inherited * (0.6 + 0.4 * record.importance), 'entity', 'connected through ' + entity.name);
       }
     }

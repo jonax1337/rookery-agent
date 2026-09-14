@@ -1,6 +1,6 @@
 # Belegpflicht im Gedaechtnis, und Skills, die sich der Agent selbst schreibt
 
-Stand: 2026-09-13. **Umgesetzt**, in zwei Schritten: Belegpflicht und selbstgeschriebene Skills,
+Stand: 2026-09-14. **Umgesetzt**, in zwei Schritten: Belegpflicht und selbstgeschriebene Skills,
 danach die automatische Ueberarbeitung. Der Code liegt in `packages/core/src/memory/gate.ts`,
 `extractor.ts`, `sleep.ts`, `store.ts`, `db.ts`, in `packages/core/src/skills/store.ts`,
 `packages/core/src/org/tools.ts` und `controller.ts`, die Oberflaeche in
@@ -221,6 +221,23 @@ die ersten Worte, die einen Fakt bestaetigt haben, sind die aufhebenswerten.
 - **Ein Nein bleibt unsichtbar.** „Ich nutze Docker nicht mehr" erzeugt weiterhin eine neue
   Erinnerung neben der alten; erst die Nacht entscheidet den Widerspruch. Die Belegpflicht
   aendert daran nichts.
+- **Ein Teilzitat kehrt die Bedeutung um.** `confirmedBy` prueft, ob der Beleg als
+  ununterbrochene Wortfolge in der Quelle steht — nie, ob die Behauptung dasselbe sagt wie
+  der Beleg. Dass die Wortnormalisierung Stoppwoerter haelt, zaehlt nur, solange das Zitat
+  die Verneinung mitfuehrt: „ich nutze Docker nicht" passt als Beleg nicht auf „ich nutze
+  Docker" — aber nichts zwingt das Modell, sie ueberhaupt zu zitieren. „nutze Docker"
+  erfuellt das Minimum von zwei Woertern, liegt als ununterbrochene Folge in „ich nutze
+  Docker nicht" und passiert zusammen mit der Behauptung „Der Nutzer nutzt Docker" das
+  Tor: Der Beleg belegt dann Woerter, keine Aussage, und die Aussage steht allein im
+  `content`, den das Tor nie ansieht. Anders als beim unsichtbaren Nein braucht es dazu
+  keinen Widerspruch, den die Nacht entscheiden koennte — die Erinnerung ist von Geburt an
+  falsch, und nichts widerspricht ihr. Der Inspektor zeigt Beleg und Behauptung
+  nebeneinander, die Umkehrung ist also von Hand pruefbar; automatisch gefangen wird sie
+  nicht. Zwei denkbare Gegenmassnahmen, keine entschieden: den Beleg die Kernbegriffe der
+  Behauptung abdecken lassen — das verengt den Umweg, sieht aber weiterhin keine
+  Verneinung —, oder Behauptung und Beleg von einem Modell auf Konsistenz pruefen lassen,
+  als eigene Stufe nach dem Tor; das Tor selbst bleibt bewusst synchron, lokal und ohne
+  Modellaufruf.
 - **Belege verwaisen.** Verdichtet die Nacht zwei Erinnerungen, hat die entstehende keinen
   eigenen Beleg. Die Kanten zu den Ausgangserinnerungen bleiben, die Spur ist also
   verfolgbar, aber der Inspektor zeigt fuer verdichtete Zeilen kein Zitat.

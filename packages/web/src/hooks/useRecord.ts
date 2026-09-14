@@ -43,17 +43,26 @@ export function useRecord<T>(
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
 
+  // Sequence guard: `load` runs from the effect below and from the page's own
+  // reload calls; only the newest run may write state, so a slow answer for
+  // the previous id cannot land on the record on screen now.
+  const loadSeq = useRef(0);
+
   const load = useCallback(async (): Promise<void> => {
+    const seq = ++loadSeq.current;
     if (!id) {
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
-      setRecord(await fetcherRef.current(id));
+      const next = await fetcherRef.current(id);
+      if (seq !== loadSeq.current) return;
+      setRecord(next);
       setMissing(false);
       setError(null);
     } catch (caught) {
+      if (seq !== loadSeq.current) return;
       // A 404 is not an outage: the record was deleted, and the page has to say
       // so instead of offering a retry that will never work.
       if (caught instanceof ApiError && caught.status === 404) {
@@ -64,7 +73,7 @@ export function useRecord<T>(
         setError(failureMessage(caught));
       }
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   }, [id]);
 

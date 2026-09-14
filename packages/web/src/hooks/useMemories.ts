@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import type { RookerySocket } from '../lib/socket';
 import type {
@@ -30,7 +30,13 @@ export function useMemories() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
 
+  // Sequence guard: the search debounce can start a new refresh while the
+  // previous one is still out; only the newest run may write state, so a slow
+  // older answer cannot bring back an outdated result list.
+  const refreshSeq = useRef(0);
+
   const refresh = useCallback(async (): Promise<void> => {
+    const seq = ++refreshSeq.current;
     setLoading(true);
     try {
       const [list, counts] = await Promise.all([
@@ -42,15 +48,17 @@ export function useMemories() {
         }),
         api.memoryStats(),
       ]);
+      if (seq !== refreshSeq.current) return;
       setItems(list);
       setStats(counts);
       setError(false);
     } catch {
+      if (seq !== refreshSeq.current) return;
       setItems([]);
       setStats(null);
       setError(true);
     } finally {
-      setLoading(false);
+      if (seq === refreshSeq.current) setLoading(false);
     }
   }, [includeForgotten, kind, query]);
 
@@ -139,21 +147,27 @@ export function useMemoryGraph(options: { limit?: number } = {}) {
   const [includeDormant, setIncludeDormant] = useState(false);
   const [loading, setLoading] = useState(false);
   const limit = options.limit ?? 300;
+  // Sequence guard: night runs and memory edits refresh in the background;
+  // a slow answer for a previous entity filter must not repaint the graph.
+  const seq = useRef(0);
 
   const refresh = useCallback(async (): Promise<void> => {
+    const run = ++seq.current;
     setLoading(true);
     try {
       const [data, names] = await Promise.all([
         api.memoryGraph({ entity: entity || undefined, includeDormant, limit }),
         api.entities({ limit: 100 }),
       ]);
+      if (run !== seq.current) return;
       setGraph(data);
       setEntities(names);
     } catch {
+      if (run !== seq.current) return;
       setGraph(null);
       setEntities([]);
     } finally {
-      setLoading(false);
+      if (run === seq.current) setLoading(false);
     }
   }, [entity, includeDormant, limit]);
 
@@ -184,7 +198,12 @@ export function useSleep(socket: RookerySocket, onFinished?: () => void) {
   // schlafen" button for the duration of both requests, even when nights exist.
   const [loading, setLoading] = useState(false);
 
+  // Sequence guard: mount, `undo` and the socket can overlap refreshes; only
+  // the newest run may write state over status and history.
+  const refreshSeq = useRef(0);
+
   const refresh = useCallback(async (): Promise<void> => {
+    const seq = ++refreshSeq.current;
     setLoading(true);
     try {
       // 200 nights is roughly half a year of nightly runs - enough to draw the
@@ -193,15 +212,17 @@ export function useSleep(socket: RookerySocket, onFinished?: () => void) {
         api.sleepStatus(),
         api.sleepRuns(undefined, SLEEP_RUN_LIMIT),
       ]);
+      if (seq !== refreshSeq.current) return;
       setStatus(state);
       setRuns(history);
       setError(false);
     } catch {
+      if (seq !== refreshSeq.current) return;
       setStatus(null);
       setRuns([]);
       setError(true);
     } finally {
-      setLoading(false);
+      if (seq === refreshSeq.current) setLoading(false);
     }
   }, []);
 

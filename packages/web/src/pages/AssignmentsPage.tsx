@@ -463,36 +463,56 @@ export function AssignmentsPage() {
   // shared with the other lists so the same tile is equally current.
   const totals = useStatsTotals(socket);
 
+  // Sequence guard: silent socket reloads, the retry and the drawer's
+  // "assigned" nudge can overlap; only the newest run may write state.
+  const baseSeq = React.useRef(0);
+
   /**
    * The unfiltered window. Everything above the table rests on it, which is
    * what keeps "Completed" meaning the same thing on every tab.
    */
   const loadBase = React.useCallback(async (silent = false): Promise<void> => {
+    const seq = ++baseSeq.current;
     if (!silent) setBaseState('loading');
     try {
-      setBase(await api.assignments({ limit: LIMIT }));
+      const list = await api.assignments({ limit: LIMIT });
+      if (seq !== baseSeq.current) return;
+      setBase(list);
       setBaseState('ready');
     } catch {
+      if (seq !== baseSeq.current) return;
+      // A silent failure must not strand the skeleton: if it invalidated an
+      // older visible load still showing `loading`, the newest run owes the
+      // view a verdict — error with its retry beats a frozen table.
       if (!silent) setBaseState('error');
+      else setBaseState((previous) => (previous === 'loading' ? 'error' : previous));
     }
   }, []);
 
   const statusKey = status?.join(',') ?? '';
+  // Sequence guard: switching the status tab or the agent filter starts a new
+  // request; a slow answer for the previous one must not land in the new list.
+  const narrowSeq = React.useRef(0);
   const loadNarrow = React.useCallback(
     async (silent = false): Promise<void> => {
+      const seq = ++narrowSeq.current;
       if (!narrowed) return;
       if (!silent) setNarrowState('loading');
       try {
-        setNarrow(
-          await api.assignments({
-            limit: LIMIT,
-            ...(statusKey ? { status: statusKey.split(',') as AssignmentStatus[] } : {}),
-            ...(agentId ? { agentId } : {}),
-          }),
-        );
+        const list = await api.assignments({
+          limit: LIMIT,
+          ...(statusKey ? { status: statusKey.split(',') as AssignmentStatus[] } : {}),
+          ...(agentId ? { agentId } : {}),
+        });
+        if (seq !== narrowSeq.current) return;
+        setNarrow(list);
         setNarrowState('ready');
       } catch {
+        if (seq !== narrowSeq.current) return;
+        // Same as loadBase: a silent failure owes a verdict to a view it
+        // invalidated, but stays quiet over a ready one.
         if (!silent) setNarrowState('error');
+        else setNarrowState((previous) => (previous === 'loading' ? 'error' : previous));
       }
     },
     [agentId, narrowed, statusKey],

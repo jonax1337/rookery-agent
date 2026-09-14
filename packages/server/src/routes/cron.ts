@@ -13,6 +13,9 @@ type IdParams = { Params: { id: string } };
  * the same way the timer's own runs do.
  */
 export async function registerCronRoutes(app: FastifyInstance, context: ServerContext): Promise<void> {
+  // The global same-origin preHandler in server.ts covers every mutating
+  // route; reads keep their own check because that hook exempts GET/HEAD and
+  // reflected CORS would otherwise allow cross-origin reads.
   const options = { preHandler: requireSameOrigin };
   const cron = context.assistant.cron;
   const store = context.assistant.store;
@@ -58,7 +61,7 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
     }
   });
 
-  app.post('/api/cron', options, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post('/api/cron', async (request: FastifyRequest, reply: FastifyReply) => {
     const input = parseOrThrow(cronJobSchema, request.body ?? {});
     if (input.agentId && !store.org.getAgent(input.agentId)) return notFound(reply, 'No agent ' + input.agentId);
     if (input.projectId && !store.org.getProject(input.projectId)) return notFound(reply, 'No project ' + input.projectId);
@@ -90,7 +93,7 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
     };
   });
 
-  app.patch<IdParams>('/api/cron/:id', options, async (request, reply) => {
+  app.patch<IdParams>('/api/cron/:id', async (request, reply) => {
     const job = cron.get(request.params.id);
     if (!job) return notFound(reply, 'No schedule ' + request.params.id);
     const patch = parseOrThrow(patchCronJobSchema, request.body ?? {});
@@ -99,13 +102,13 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
     return guarded(() => cron.update(job.id, patch));
   });
 
-  app.delete<IdParams>('/api/cron/:id', options, async (request, reply) => {
+  app.delete<IdParams>('/api/cron/:id', async (request, reply) => {
     if (!cron.remove(request.params.id)) return notFound(reply, 'No schedule ' + request.params.id);
     return { ok: true };
   });
 
   /** Fire now. Returns as soon as the run is booked; progress comes over the socket. */
-  app.post<IdParams>('/api/cron/:id/run', options, async (request, reply) => {
+  app.post<IdParams>('/api/cron/:id/run', async (request, reply) => {
     const job = cron.get(request.params.id);
     if (!job) return notFound(reply, 'No schedule ' + request.params.id);
     if (cron.isRunning(job.id)) {

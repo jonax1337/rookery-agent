@@ -87,7 +87,8 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     return store.getProject(request.params.id);
   });
 
-  app.delete('/api/org/projects/:id', async (request: FastifyRequest<IdParams>) => {
+  app.delete('/api/org/projects/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    if (!store.getProject(request.params.id)) return notFound(reply, 'No project ' + request.params.id);
     store.deleteProject(request.params.id);
     changed('project', request.params.id);
     return { ok: true };
@@ -149,7 +150,8 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     return store.getTeam(request.params.id);
   });
 
-  app.delete('/api/org/teams/:id', async (request: FastifyRequest<IdParams>) => {
+  app.delete('/api/org/teams/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    if (!store.getTeam(request.params.id)) return notFound(reply, 'No team ' + request.params.id);
     store.deleteTeam(request.params.id);
     changed('team', request.params.id);
     return { ok: true };
@@ -183,9 +185,19 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     return store.getAgent(request.params.id);
   });
 
-  app.delete('/api/org/agents/:id', async (request: FastifyRequest<IdParams>) => {
-    store.deleteAgent(request.params.id);
-    changed('agent', request.params.id);
+  /**
+   * No hard delete: `deleteAgent` would cascade the agent's assignment
+   * history away, and the documented decision is that parting ways means
+   * archiving instead - the history must stay
+   * (docs/concepts/agent-performance-management.md, stage 4). The route keeps
+   * the DELETE verb so a caller asking for removal degrades gracefully to an
+   * archive, same end state as PATCH with `{ archived: true }`.
+   */
+  app.delete('/api/org/agents/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const agent = store.getAgent(request.params.id);
+    if (!agent) return notFound(reply, 'No agent ' + request.params.id);
+    store.updateAgent(agent.id, { archived: true });
+    changed('agent', agent.id);
     return { ok: true };
   });
 

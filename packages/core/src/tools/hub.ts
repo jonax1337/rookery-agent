@@ -29,7 +29,7 @@ export interface ToolServerState {
   projectIds: string[];
   entry?: ToolCatalogEntry;
   custom?: ToolServerConfig['custom'];
-  /** Read out of the Claude Code or Codex installed here; never started unasked. */
+  /** Read out of the Claude Code installed here; never started unasked. */
   external?: ExternalMcpServer;
   /** Where an external server came from, for the badge on the page. */
   source?: string;
@@ -103,12 +103,20 @@ export function toolServerStates(config: RookeryConfig): ToolServerState[] {
       custom: stored.custom,
     });
   }
-  states.push(...externalServerStates(config));
+  // A discovered server sharing an id with a catalogue or custom entry loses
+  // it: two rows with one id would leave it open which of the two a switch on
+  // the page or `set_tool_server` actually starts. The entry out of this
+  // config wins; the other is dropped rather than listed beside it.
+  for (const state of externalServerStates(config)) {
+    if (seen.has(state.id)) continue;
+    seen.add(state.id);
+    states.push(state);
+  }
   return states;
 }
 
 /**
- * The MCP servers found in the Claude Code and Codex on this machine.
+ * The MCP servers found in the Claude Code on this machine.
  *
  * They are listed whether or not anybody wants them - seeing what is there
  * is the point - but they only ever run once a person has said so. That is
@@ -248,7 +256,7 @@ export function dormantToolsHint(config: RookeryConfig, who: 'assistant' | 'agen
   }
   if (installedElsewhere) {
     lines.push(
-      installedElsewhere + ' further MCP servers are installed in the Claude Code and Codex on this machine.',
+      installedElsewhere + ' further MCP servers are installed in the Claude Code on this machine.',
       'Those are not yours to switch on - starting somebody else\'s server is the user\'s decision,',
       'and they make it on the Tools page. Say so if one of them is what a task needs.',
     );
@@ -286,8 +294,8 @@ export async function ensureToolServers(
 /**
  * A config patch with one server changed; pure, so callers decide how to
  * persist it. Which block it lands in depends on the server: a catalogue or
- * custom entry lives under `tools`, a server discovered in Claude Code or
- * Codex under `external` - what was decided about somebody else's server is
+ * custom entry lives under `tools`, a server discovered in Claude Code
+ * under `external` - what was decided about somebody else's server is
  * a decision, not a copy of their configuration.
  */
 export function withToolServer(

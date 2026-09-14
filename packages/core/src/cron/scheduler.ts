@@ -261,6 +261,12 @@ export class CronScheduler extends EventEmitter {
   async runNow(id: string): Promise<CronRun> {
     const job = this.#store.cron.getJob(id);
     if (!job) throw new Error('No schedule ' + id + '.');
+    // Same guard as tick(): one run per job. A second execution would
+    // overwrite the abort controller and leave the first run unabortable.
+    if (this.#running.has(id)) {
+      const latest = this.#store.cron.listRuns(id, 1)[0];
+      if (latest) return latest;
+    }
     return this.#execute(job, 'manual');
   }
 

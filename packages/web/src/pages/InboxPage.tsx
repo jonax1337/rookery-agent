@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 
@@ -274,12 +274,20 @@ export function InboxPage() {
 
   /* --------------------------------- load ---------------------------------- */
 
+  // Sequence guard: switching the mailbox or the box starts a new load while
+  // the old one may still be out; only the newest run may write state, so the
+  // previous mailbox's slow answer cannot land in the one now open.
+  const loadSeq = useRef(0);
+
   const load = useCallback(async (): Promise<void> => {
+    const seq = ++loadSeq.current;
     try {
       const list = await api.mail(mailboxId, box, 200);
+      if (seq !== loadSeq.current) return;
       setMails(list);
       setOffline(false);
     } catch {
+      if (seq !== loadSeq.current) return;
       setOffline(true);
     }
   }, [mailboxId, box]);

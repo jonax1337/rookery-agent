@@ -116,6 +116,12 @@ export function useSpeechInput(options: SpeechInputOptions): SpeechInputState {
     [handsFree, wakeWord],
   );
 
+  // The recogniser instance is cached, so its handlers must read the current
+  // matcher via a ref — otherwise they keep matching the wake word (and
+  // hands-free flag) that was current when they were first bound.
+  const handleFinalRef = useRef(handleFinal);
+  handleFinalRef.current = handleFinal;
+
   const stop = useCallback(() => {
     wantRunningRef.current = false;
     manualRef.current = false;
@@ -145,7 +151,7 @@ export function useSpeechInput(options: SpeechInputOptions): SpeechInputState {
         const result = event.results[index];
         if (!result) continue;
         const text = result[0]?.transcript ?? '';
-        if (result.isFinal) handleFinal(text);
+        if (result.isFinal) handleFinalRef.current(text);
         else partial += text;
       }
       setInterim(partial);
@@ -181,7 +187,10 @@ export function useSpeechInput(options: SpeechInputOptions): SpeechInputState {
 
     recognitionRef.current = recognition;
     return recognition;
-  }, [handleFinal]);
+    // No handleFinal dependency on purpose: the handlers above read it through
+    // handleFinalRef, so wake-word changes must not churn this callback (and
+    // with it the hands-free effect) — the cached instance stays as is.
+  }, []);
 
   const start = useCallback(() => {
     const recognition = ensureRecognition();

@@ -429,8 +429,8 @@ export class OrgController extends EventEmitter {
           context.audience === 'agent' && context.projectId ? this.#store.org.getProject(context.projectId) : null;
         const who = context.audience === 'agent' ? 'agent' : 'assistant';
         const skills = context.audience === 'agent' ? this.#agentSkills(project) : this.#skills.for('assistant');
-        // Rookery's own shelf first, then the one installed in Claude Code
-        // and Codex - a skill a person wrote here outranks a plugin's.
+        // Rookery's own shelf first, then the one installed in Claude Code -
+        // a skill a person wrote here outranks a plugin's.
         const skill =
           skills.find((entry) => entry.name === text('name').toLowerCase()) ??
           openExternalSkill(this.#config, who, text('name'));
@@ -539,7 +539,7 @@ export class OrgController extends EventEmitter {
         const state = toolServerStates(this.#config).find((entry) => entry.id === text('id'));
         if (!state) return fail('No tool server "' + text('id') + '".');
         if (typeof args.enabled !== 'boolean') return fail('enabled must be true or false.');
-        // A server read out of Claude Code or Codex belongs to somebody else's
+        // A server read out of Claude Code belongs to somebody else's
         // installation. Starting it is the user's call, made on the Tools page.
         if (state.approvalRequired) {
           return fail(
@@ -582,7 +582,7 @@ export class OrgController extends EventEmitter {
           instructions: text('instructions'),
           teamId: team?.id,
           managerId: manager?.id,
-          provider: asProvider(text('provider')),
+          provider: this.#asProvider(text('provider')),
           model: text('model') || undefined,
           permission: asPermission(text('permission')),
         });
@@ -1462,8 +1462,8 @@ export class OrgController extends EventEmitter {
 
     const patch: Omit<Partial<RookeryConfig>, 'org'> & { org?: Partial<RookeryConfig['org']> } = {};
     if (text('defaultProvider')) {
-      const provider = asProvider(text('defaultProvider'));
-      if (!provider) return fail('Provider must be claude or codex.');
+      const provider = this.#asProvider(text('defaultProvider'));
+      if (!provider) return fail('No provider "' + text('defaultProvider') + '". Configured: ' + this.#providerIds() + '.');
       patch.defaultProvider = provider;
     }
     // An empty string clears a setting: the merge skips undefined, and
@@ -1524,7 +1524,9 @@ export class OrgController extends EventEmitter {
         patch.managerId = manager.id;
       }
     }
-    if (text('provider')) patch.provider = asProvider(text('provider')) ?? null;
+    // An id the registry does not serve clears the preference back to the
+    // company default, the same way an unknown permission does below.
+    if (text('provider')) patch.provider = this.#asProvider(text('provider')) ?? null;
     if (text('model')) patch.model = text('model');
     if (text('permission')) patch.permission = asPermission(text('permission')) ?? null;
     if (typeof args.archived === 'boolean') patch.archived = args.archived;
@@ -1668,7 +1670,12 @@ export class OrgController extends EventEmitter {
   async runTask(outer: ToolContext, task: Task): Promise<Task> {
     const org = this.#store.org;
     const reload = (): Task => org.getTask(task.id) ?? task;
-    if (reload().status === 'running') return reload();
+    // A task's row only says `running` once planning has finished, and
+    // planning awaits - so two first invocations (a double-click before the
+    // first scheduling) both read a not-yet-running row and both plan. The
+    // claim on `#activeTasks` below is written before the first await, which
+    // makes it the one check a concurrent invocation cannot slip past.
+    if (this.#activeTasks.has(task.id) || reload().status === 'running') return reload();
 
     // The run gets its own abort controller so cancelTask() can stop it
     // without touching the caller's turn; the caller's signal feeds into it.
@@ -1749,14 +1756,29 @@ export class OrgController extends EventEmitter {
     if (!agent) {
       org.updateTask(child.id, { status: 'failed', error: 'No assignee.', finishedAt: Date.now() });
     } else {
-      const deps = child.dependsOn.map((id) => org.getTask(id)).filter((t): t is Task => Boolean(t?.result));
-      const outcome = await this.#runTaskLeaf(context, child, agent, deps);
-      org.updateTask(child.id, {
-        status: outcome.status === 'done' ? 'done' : outcome.status === 'cancelled' ? 'cancelled' : 'failed',
-        result: outcome.result,
-        error: outcome.error,
-        finishedAt: Date.now(),
-      });
+      const deps = child.dependsOn.map((id) => org.getTask(id)).filter((t): t is Task => Boolean(t));
+      // A dependency that ended failed or cancelled used to be silently
+      // dropped (no result), and this subtask ran on a basis it never saw.
+      // It fails with the reason instead, the way a missing assignee does;
+      // the parent's summary then carries the failure. A dependency that is
+      // merely not finished yet (a cycle released in one wave) is not broken
+      // here - it stays dropped from the inputs, as before.
+      const broken = deps.filter((t) => t.status === 'failed' || t.status === 'cancelled');
+      if (broken.length) {
+        org.updateTask(child.id, {
+          status: 'failed',
+          error: 'Dependency did not finish: ' + broken.map((t) => t.title).join(', ') + '.',
+          finishedAt: Date.now(),
+        });
+      } else {
+        const outcome = await this.#runTaskLeaf(context, child, agent, deps.filter((t) => t.result));
+        org.updateTask(child.id, {
+          status: outcome.status === 'done' ? 'done' : outcome.status === 'cancelled' ? 'cancelled' : 'failed',
+          result: outcome.result,
+          error: outcome.error,
+          finishedAt: Date.now(),
+        });
+      }
     }
     this.#announceTask(org.getTask(child.id) ?? child, context.emit);
   }
@@ -1797,6 +1819,24 @@ export class OrgController extends EventEmitter {
   }
 
   /* ------------------------------- internals ------------------------------ */
+
+  /**
+   * A provider id the registry actually serves, or undefined.
+   *
+   * The set is open: both built-ins plus one id per configured provider
+   * profile, and a profile can appear or disappear while the process runs.
+   * So this asks the registry rather than carrying a list that goes stale the
+   * moment somebody adds a backend on the Providers page.
+   */
+  #asProvider(value: string): ProviderId | undefined {
+    const id = value.trim();
+    return id && this.#registry.has(id) ? id : undefined;
+  }
+
+  /** The ids currently served, for the message when one did not match. */
+  #providerIds(): string {
+    return this.#registry.list().map((provider) => provider.id).join(', ');
+  }
 
   /**
    * Skills for an agent turn: the home skills plus, when the project has a
@@ -1924,10 +1964,6 @@ export function describeAssignment(assignment: Assignment, agent: Agent | null):
   if (assignment.error) lines.push('Error: ' + assignment.error);
   if (assignment.result) lines.push('', clip(assignment.result, RESULT_BUDGET));
   return lines.join('\n');
-}
-
-function asProvider(value: string): ProviderId | undefined {
-  return value === 'claude' || value === 'codex' ? value : undefined;
 }
 
 function asMemoryKind(value: string): MemoryKind {

@@ -182,11 +182,6 @@ export function admitCandidates(store: Store, input: GateInput): GateResult {
   const seenThisTurn: { tokens: Set<string>; content: string }[] = [];
 
   for (const candidate of input.candidates) {
-    if (result.stored.length + result.reinforced.length >= gate.maxPerTurn) {
-      result.rejected.push({ content: candidate.content, reason: 'over-budget' });
-      continue;
-    }
-
     const content = candidate.content.trim();
     if (content.length < 8) {
       result.rejected.push({ content, reason: 'short' });
@@ -200,6 +195,14 @@ export function admitCandidates(store: Store, input: GateInput): GateResult {
     const evidence = candidate.evidence.trim();
     if (!confirmedBy(evidence, input.sources)) {
       result.rejected.push({ content, reason: 'unconfirmed' });
+      continue;
+    }
+
+    // The budget is counted only for candidates that survived the evidence
+    // check: charging it earlier filed unconfirmed claims as over-budget,
+    // which said nothing about how full the turn really was.
+    if (result.stored.length + result.reinforced.length >= gate.maxPerTurn) {
+      result.rejected.push({ content: candidate.content, reason: 'over-budget' });
       continue;
     }
 

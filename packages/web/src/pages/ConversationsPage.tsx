@@ -141,7 +141,8 @@ export function ConversationsPage() {
     useAllSessionsState();
   // The chat hub holds its own slice and its own active thread. A row mutated
   // here is very possibly the conversation that is open behind this page, so
-  // it has to be told - nothing on the wire tells it.
+  // it has to be told - the `changed` broadcast both routes send reaches the
+  // shared list, not the hub's own slice.
   const openThread = useSessionsState();
 
   // The real counts, from the one aggregate call in this API. Shared with the
@@ -231,10 +232,11 @@ export function ConversationsPage() {
   /**
    * Keep the open conversation in step with a row this page just changed.
    *
-   * The chat hub holds its own list and its own active thread, and neither
-   * `PATCH` nor `DELETE /api/sessions/:id` sends anything over the socket. So
-   * a deletion here would leave the hub answering into a session the server
-   * no longer has, and a rename would never reach its header.
+   * The chat hub holds its own list and its own active thread, and the
+   * `changed` broadcast these routes send only refetches the shared list -
+   * the hub's slice and its active thread are still told by hand, here. So a
+   * deletion here would leave the hub answering into a session the server no
+   * longer has, and a rename would never reach its header.
    */
   const syncOpenThread = React.useCallback(
     (id: string, effect?: { dropped?: boolean; cleared?: boolean }) => {

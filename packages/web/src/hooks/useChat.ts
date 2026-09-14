@@ -86,6 +86,19 @@ export function useChat(
   const [error, setError] = useState<string | null>(null);
 
   const turnRef = useRef<string | null>(null);
+  // Identity of the only turn allowed to write state right now. `reset()` and
+  // every new turn replace it, so the callbacks of an abandoned turn - whose
+  // server side may still be running - turn into no-ops instead of writing
+  // into whichever conversation is on screen by then.
+  const turnToken = useRef<unknown>(null);
+  // Synchronous mirror of `busy`: a second send in the same tick still sees
+  // `busy === false` until React re-renders, so the guard has to be a ref -
+  // the same `inFlight` idea as form-kit's `useFormSubmit`.
+  const inFlight = useRef(false);
+  // True while no turn is pending. `abort` settles a turn before the server
+  // has confirmed it, so a late `done` or `error` for that turn must not
+  // finish it a second time.
+  const finishedRef = useRef(true);
   const bufferRef = useRef('');
   const toolCallsRef = useRef<NonNullable<Message['toolCalls']>>([]);
   const [toolCalls, setToolCalls] = useState<NonNullable<Message['toolCalls']>>([]);
@@ -213,6 +226,10 @@ export function useChat(
 
   const finish = useCallback(
     (text: string, onSpoken?: (text: string) => void, usage?: TurnUsage) => {
+      // A turn settles exactly once; a second `finish` would append a
+      // duplicate assistant message and re-fire `onSettled`.
+      if (finishedRef.current) return;
+      finishedRef.current = true;
       const answer = text || bufferRef.current;
       const completedTools = toolCallsRef.current;
       if (answer || completedTools.length) {
@@ -237,6 +254,7 @@ export function useChat(
       setStreaming('');
       setThinking('');
       setBusy(false);
+      inFlight.current = false;
       onSettledRef.current?.();
     },
     [sessionId],
@@ -254,7 +272,11 @@ export function useChat(
     toolCallsRef.current = [];
     setToolCalls([]);
     setStreaming('');
+    finishedRef.current = false;
+    inFlight.current = true;
     setBusy(true);
+    const token = {};
+    turnToken.current = token;
     setMessages((current) => [
       ...current,
       {
@@ -265,52 +287,69 @@ export function useChat(
         createdAt: Date.now(),
       },
     ]);
+    return token;
   }, []);
 
   const send = useCallback<ChatState['send']>(
     (payload, options) => {
-      if (busy) return;
+      if (inFlight.current) return;
       const text = payload.text.trim();
       if (!text) return;
 
-      beginTurn(text);
+      const token = beginTurn(text);
 
       turnRef.current = socket.send(
         { ...payload, text, sessionId: sessionId ?? undefined },
         {
-          onEvent: handleEvent,
-          onDone: (answer, usage) => finish(answer, options?.onSpoken, usage),
+          // Frames of a turn that is no longer the active one belong to a
+          // conversation that was reset away; they write nothing here.
+          onEvent: (event) => {
+            if (turnToken.current !== token) return;
+            handleEvent(event);
+          },
+          onDone: (answer, usage) => {
+            if (turnToken.current !== token) return;
+            finish(answer, options?.onSpoken, usage);
+          },
           onError: (message) => {
+            if (turnToken.current !== token) return;
             setError(message);
             finish('');
           },
         },
       );
     },
-    [beginTurn, busy, finish, handleEvent, sessionId, socket],
+    [beginTurn, finish, handleEvent, sessionId, socket],
   );
 
   const sendAssign = useCallback<ChatState['sendAssign']>(
     (payload) => {
-      if (busy) return;
+      if (inFlight.current) return;
       const task = payload.task.trim();
       if (!task) return;
 
-      beginTurn(task);
+      const token = beginTurn(task);
 
       turnRef.current = socket.sendAssign(
         { ...payload, task, sessionId: payload.sessionId ?? sessionId ?? undefined },
         {
-          onEvent: handleEvent,
-          onDone: (answer, usage) => finish(answer, undefined, usage),
+          onEvent: (event) => {
+            if (turnToken.current !== token) return;
+            handleEvent(event);
+          },
+          onDone: (answer, usage) => {
+            if (turnToken.current !== token) return;
+            finish(answer, undefined, usage);
+          },
           onError: (message) => {
+            if (turnToken.current !== token) return;
             setError(message);
             finish('');
           },
         },
       );
     },
-    [beginTurn, busy, finish, handleEvent, sessionId, socket],
+    [beginTurn, finish, handleEvent, sessionId, socket],
   );
 
   const abort = useCallback(() => {
@@ -320,10 +359,19 @@ export function useChat(
   }, [finish, socket]);
 
   const reset = useCallback(() => {
+    // Detach the running turn first: stop it on the server and drop its
+    // socket entry, so its frames cannot follow the user into whichever
+    // conversation replaces this one.
+    if (turnRef.current) socket.abort(turnRef.current);
     bufferRef.current = '';
     toolCallsRef.current = [];
     setToolCalls([]);
     turnRef.current = null;
+    turnToken.current = null;
+    // Abandoning the conversation settles its turn too, so neither a stray
+    // abort nor a late server frame finishes into the fresh transcript.
+    finishedRef.current = true;
+    inFlight.current = false;
     setMessages([]);
     setStreaming('');
     setThinking('');
@@ -334,7 +382,7 @@ export function useChat(
     setTasks([]);
     setError(null);
     setBusy(false);
-  }, []);
+  }, [socket]);
 
   return {
     messages,

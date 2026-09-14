@@ -10,7 +10,7 @@ import {
   type MemoryLearnedEvent,
 } from '@rookery/core';
 import type { ServerContext } from './context.js';
-import { createAuthHook } from './auth.js';
+import { createAuthHook, createSameOriginHook } from './auth.js';
 import { BadRequestError } from './schemas.js';
 import { sendFrame } from './services/stream.js';
 import { registerStatic } from './static.js';
@@ -114,6 +114,13 @@ export async function buildServer(
     }
     auth.call(app, request, reply, done);
   });
+
+  // Same-origin enforcement closes the CSRF hole the reflected CORS policy
+  // above would otherwise leave open: with credentials allowed and every
+  // origin echoed back, any webpage in any browser tab could write
+  // cross-origin against the API. Registered before every route so it covers
+  // all of them; only mutating requests from a browser are affected.
+  app.addHook('preHandler', createSameOriginHook());
 
   await registerHealthRoutes(app, context);
   await registerStatsRoutes(app, context);

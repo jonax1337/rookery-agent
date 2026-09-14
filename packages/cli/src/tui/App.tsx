@@ -12,8 +12,9 @@
  *    `src/index.ts` falls back to `src/repl.ts` otherwise, so pipes, CI and
  *    `echo "/exit" | rookery` keep working exactly as before.
  *  - One turn is one AbortController. Ctrl+C during a turn aborts it and
- *    returns to the prompt; Ctrl+C at an idle prompt leaves. Either way the
- *    provider child process is signalled, never orphaned.
+ *    returns to the prompt, and so does Ctrl+C while a spoken reply is still
+ *    playing; Ctrl+C at an idle prompt leaves. Either way the provider child
+ *    process is signalled, never orphaned.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -110,6 +111,11 @@ export function App({
   const sessionRef = useRef(session);
   sessionRef.current = session;
 
+  // Speech outlives its turn: a reply is only spoken once the turn has ended,
+  // so it gets an AbortController of its own. While one is set here, Ctrl+C
+  // stops the voice instead of leaving, exactly as in the REPL.
+  const speechRef = useRef<AbortController | null>(null);
+
   const history = useHistory();
   const slash = useSlash(draft, cursor);
   const paletteOpen = slash.open && !dismissed;
@@ -149,11 +155,18 @@ export function App({
         }));
       }
       if (!current.voice || result.aborted || !result.text.trim()) return;
+      const speech = new AbortController();
+      speechRef.current = speech;
       void speak(result.text, {
         lang: config.voice.lang,
         rate: config.voice.rate,
         voiceName: config.voice.voiceName,
+        signal: speech.signal,
       }).then((spoken) => {
+        // leave() or a newer reply replaced this controller; its outcome
+        // no longer belongs to anyone.
+        if (speechRef.current !== speech) return;
+        speechRef.current = null;
         if (!spoken.ok && spoken.detail !== 'aborted') {
           append([
             { kind: 'activity', id: nextId(), icon: glyph.warn, text: 'Voice: ' + spoken.detail },
@@ -184,6 +197,7 @@ export function App({
 
   const leave = useCallback(() => {
     turnRef.current.abort();
+    speechRef.current?.abort();
     stopSpeaking();
     exit();
   }, [exit]);
@@ -271,8 +285,11 @@ export function App({
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') {
-      if (turn.busy) {
+      // Interrupt, don't leave: a turn in flight, or a spoken reply that is
+      // still playing, stops there and the prompt comes back.
+      if (turn.busy || speechRef.current) {
         turnRef.current.abort();
+        speechRef.current?.abort();
         stopSpeaking();
         return;
       }

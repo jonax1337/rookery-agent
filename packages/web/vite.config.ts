@@ -15,7 +15,9 @@ export default defineConfig({
     port: 5317,
     proxy: {
       '/api': { target: BACKEND, changeOrigin: false },
-      '/ws': { target: BACKEND, ws: true, changeOrigin: true },
+      // changeOrigin stays off so the browser's Origin keeps matching the
+      // forwarded Host — the server's same-origin check must see them equal.
+      '/ws': { target: BACKEND, ws: true, changeOrigin: false },
     },
   },
   build: { outDir: 'dist', sourcemap: false, chunkSizeWarningLimit: 900 },

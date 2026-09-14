@@ -894,6 +894,9 @@ export class SleepRunner extends EventEmitter {
       ...new Set(fresh.flatMap((memory) => this.#store.entitiesFor(memory.id).map((entity) => entity.id))),
     ];
     const neighbours = this.#store.memoriesForEntities(entityIds, {
+      // The link table has no owner column, so a stray cross-owner link
+      // would otherwise walk the night into another bank.
+      owner,
       exclude: fresh.map((memory) => memory.id),
       limit: 40,
     });

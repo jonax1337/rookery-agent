@@ -195,13 +195,19 @@ export function DashboardPage() {
   const [recentRuns, setRecentRuns] = useState<Assignment[] | null>(null);
   const [runsFailed, setRunsFailed] = useState(false);
 
+  // Sequence guard: the debounced socket refetch can overtake a load that is
+  // still in flight; only the newest run may write state.
+  const loadSeq = useRef(0);
+
   // Two requests, one refresh: the counts and the newest runs are the only
   // things on this page that have no hook of their own yet.
   const load = useCallback(async (): Promise<void> => {
+    const seq = ++loadSeq.current;
     const [snapshot, runs] = await Promise.allSettled([
       api.stats({ days: CHART_DAYS }),
       api.assignments({ limit: RECENT_ROWS }),
     ]);
+    if (seq !== loadSeq.current) return;
     if (snapshot.status === 'fulfilled') {
       setStats(snapshot.value);
       setStatsFailed(false);

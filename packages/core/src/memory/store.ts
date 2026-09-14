@@ -288,14 +288,21 @@ export class Store {
       // that confirmed a fact are the ones worth keeping, and a row written
       // before evidence existed gets one the next time it is heard again.
       const evidence = (existing.evidence as string | null) ?? input.evidence?.trim() ?? null;
+      // Waking a dormant row is a change to what the night did, so when a
+      // sleep run condensed a sentence that byte-exactly matches a memory an
+      // earlier night had filed away, the revival carries that run's id like
+      // every other touch - otherwise undoing the run cannot know it happened.
+      // A plain reinforcement of an awake row keeps the id it already has.
+      const revivedByRun = input.sleepRunId && existing.dormant_at != null ? input.sleepRunId : null;
       this.db
         .prepare(
           `UPDATE memories
               SET importance = ?, tags = ?, evidence = ?, updated_at = ?, forgotten = 0,
-                  dormant_at = NULL, superseded_by = NULL
+                  dormant_at = NULL, superseded_by = NULL,
+                  sleep_run_id = COALESCE(?, sleep_run_id)
             WHERE id = ?`,
         )
-        .run(importance, JSON.stringify(tags), evidence, now, existing.id as string);
+        .run(importance, JSON.stringify(tags), evidence, now, revivedByRun, existing.id as string);
       return this.getMemory(existing.id as string) as MemoryRecord;
     }
 
@@ -822,8 +829,15 @@ export class Store {
     return rows.map(mapEntity);
   }
 
-  /** Live memories linked to any of these entities, excluding the ones given. */
-  memoriesForEntities(entityIds: string[], options: { exclude?: string[]; limit?: number } = {}): MemoryRecord[] {
+  /**
+   * Live memories linked to any of these entities, excluding the ones given.
+   * `owner` keeps the result inside one bank: the link table has no owner
+   * column, so without the filter a cross-owner link would read across banks.
+   */
+  memoriesForEntities(
+    entityIds: string[],
+    options: { owner?: string; exclude?: string[]; limit?: number } = {},
+  ): MemoryRecord[] {
     if (!entityIds.length) return [];
     const exclude = options.exclude ?? [];
     const sql =
@@ -831,11 +845,14 @@ export class Store {
          JOIN memory_entity_links l ON l.memory_id = m.id
         WHERE l.entity_id IN (` + entityIds.map(() => '?').join(', ') + `)
           AND m.forgotten = 0 AND m.dormant_at IS NULL` +
+      (options.owner ? ' AND m.owner = ?' : '') +
       (exclude.length ? ' AND m.id NOT IN (' + exclude.map(() => '?').join(', ') + ')' : '') +
       ' ORDER BY m.importance DESC LIMIT ?';
     const rows = this.db
       .prepare(sql)
-      .all(...([...entityIds, ...exclude, options.limit ?? 40] as never[])) as Row[];
+      .all(
+        ...([...entityIds, ...(options.owner ? [options.owner] : []), ...exclude, options.limit ?? 40] as never[]),
+      ) as Row[];
     return rows.map(mapMemory);
   }
 
@@ -855,10 +872,18 @@ export class Store {
     runId?: string;
   }): MemoryEdge | null {
     if (input.srcId === input.dstId) return null;
+    // An edge whose endpoints do not both sit in the writer's bank would wire
+    // two banks together — refuse it rather than persist the bridge.
+    const endpoints = this.db
+      .prepare('SELECT owner FROM memories WHERE id IN (?, ?)')
+      .all(input.srcId, input.dstId) as Row[];
+    if (endpoints.length !== 2 || endpoints.some((row) => row.owner !== input.owner)) return null;
     const now = Date.now();
     const existing = this.db
-      .prepare('SELECT * FROM memory_edges WHERE src_id = ? AND dst_id = ? AND relation = ?')
-      .get(input.srcId, input.dstId, input.relation) as Row | undefined;
+      .prepare(
+        'SELECT * FROM memory_edges WHERE src_id = ? AND dst_id = ? AND relation = ? AND owner = ?',
+      )
+      .get(input.srcId, input.dstId, input.relation, input.owner) as Row | undefined;
     if (existing) {
       const weight = Math.min(1, Math.max(Number(existing.weight), input.weight ?? 0.5));
       this.db.prepare('UPDATE memory_edges SET weight = ? WHERE id = ?').run(weight, existing.id as string);
@@ -921,16 +946,16 @@ export class Store {
     if (!memory) return null;
     const outgoing = (this.db
       .prepare(
-        `SELECT e.*, m.id AS o_id FROM memory_edges e JOIN memories m ON m.id = e.dst_id WHERE e.src_id = ?`,
+        `SELECT e.*, m.id AS o_id FROM memory_edges e JOIN memories m ON m.id = e.dst_id WHERE e.src_id = ? AND e.owner = ?`,
       )
-      .all(id) as Row[])
+      .all(id, memory.owner) as Row[])
       .map((row) => ({ ...mapEdge(row), other: this.getMemory(row.o_id as string)! }))
       .filter((edge) => Boolean(edge.other));
     const incoming = (this.db
       .prepare(
-        `SELECT e.*, m.id AS o_id FROM memory_edges e JOIN memories m ON m.id = e.src_id WHERE e.dst_id = ?`,
+        `SELECT e.*, m.id AS o_id FROM memory_edges e JOIN memories m ON m.id = e.src_id WHERE e.dst_id = ? AND e.owner = ?`,
       )
-      .all(id) as Row[])
+      .all(id, memory.owner) as Row[])
       .map((row) => ({ ...mapEdge(row), other: this.getMemory(row.o_id as string)! }))
       .filter((edge) => Boolean(edge.other));
     return { memory, entities: this.entitiesFor(id), outgoing, incoming };
@@ -1363,12 +1388,17 @@ export class Store {
         // memories out of the day's conversations, and those are as much a
         // product of the night as an insight is. Still disjoint from the
         // branch below, which takes the memories the run put to SLEEP - a row
-        // the run wrote is never also a row the run retired.
+        // the run wrote is never also a row the run retired. Nor can a run
+        // have written a memory older than itself: a row that carries this
+        // run's id but predates it is one the run revived (see `upsertMemory`)
+        // or one somebody woke again, never one it created, so undo must not
+        // delete it.
         .prepare(
           `SELECT id FROM memories
-            WHERE sleep_run_id = ? AND origin IN ('sleep', 'extract') AND dormant_at IS NULL`,
+            WHERE sleep_run_id = ? AND origin IN ('sleep', 'extract') AND dormant_at IS NULL
+              AND created_at >= ?`,
         )
-        .all(id) as Row[];
+        .all(id, run.startedAt) as Row[];
       // Anything that pointed at a memory this run created must let go first.
       for (const row of written) {
         this.db
@@ -1454,8 +1484,8 @@ function mapMessage(row: Row): Message {
     provider: (row.provider as ProviderId) ?? undefined,
     model: (row.model as string) ?? undefined,
     agent: (row.agent as string) ?? undefined,
-    toolCalls: row.tool_calls ? JSON.parse(row.tool_calls as string) as Message['toolCalls'] : undefined,
-    usage: row.usage ? (JSON.parse(row.usage as string) as TurnUsage) : undefined,
+    toolCalls: parseJsonColumn<Message['toolCalls']>(row.tool_calls),
+    usage: parseJsonColumn<TurnUsage>(row.usage),
     createdAt: Number(row.created_at),
   };
 }
@@ -1550,6 +1580,20 @@ export function entitySlug(name: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 60);
+}
+
+/**
+ * A JSON column an older build may have written differently, or not at all.
+ * One malformed row must never cost the whole transcript: the field simply
+ * reads as absent, the way `parseTags` already degrades.
+ */
+function parseJsonColumn<T>(value: unknown): T | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseTags(value: unknown): string[] {

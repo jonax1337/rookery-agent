@@ -350,8 +350,11 @@ export class ClaudeCodeProvider implements Provider {
 
         if (type === 'result') {
           const text = typeof event.result === 'string' ? event.result : accumulated;
+          // An errored result is not a finished turn: the error ends it, and a
+          // done on top would make callers store the error text as the answer.
           if (event.is_error) {
             yield { type: 'error', message: text || 'Claude Code reported an error.', fatal: true };
+            continue;
           }
           emittedDone = true;
           yield {

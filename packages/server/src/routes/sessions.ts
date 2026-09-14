@@ -62,11 +62,17 @@ export async function registerSessionRoutes(
     if (patch.projectId === null) {
       context.assistant.store.db.prepare('UPDATE sessions SET project_id = NULL WHERE id = ?').run(session.id);
     }
+    // Announce it the way the org does: every tab refetches its lists on a
+    // `changed`, and the one holding this conversation rechecks it.
+    context.assistant.emit('changed', { kind: 'session', id: session.id });
     return context.assistant.getSession(session.id);
   });
 
   app.delete('/api/sessions/:id', async (request: FastifyRequest<IdParams>) => {
     context.assistant.deleteSession(request.params.id);
+    // Same broadcast: the row leaves every other tab's list, and the tab with
+    // this conversation open leaves it rather than answering into the void.
+    context.assistant.emit('changed', { kind: 'session', id: request.params.id });
     return { ok: true };
   });
 

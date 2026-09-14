@@ -3,6 +3,7 @@ import type {
   FastifyReply,
   FastifyRequest,
   HookHandlerDoneFunction,
+  preHandlerAsyncHookHandler,
   preHandlerHookHandler,
 } from 'fastify';
 import type { ServerContext } from './context.js';
@@ -13,6 +14,25 @@ export async function requireSameOrigin(request: FastifyRequest): Promise<void> 
   if (!origin && request.headers['sec-fetch-site'] !== 'cross-site') return;
   if (origin === `${request.protocol}://${request.headers.host}`) return;
   throw Object.assign(new Error('This operation requires the same origin as the Rookery server.'), { statusCode: 403 });
+}
+
+/**
+ * `requireSameOrigin` as a global preHandler: every route that can change
+ * state is default-deny for browser origins other than the server's own.
+ * GET/HEAD/OPTIONS cannot change state, and requests without an Origin
+ * header (CLI, gateways, curl, health probes) pass untouched anyway.
+ *
+ * The comparison uses the request's own protocol and host, which is honest
+ * for loopback and plain-HTTP LAN exposure. A TLS-terminating proxy in front
+ * of this plain-HTTP server sends an `https://` Origin that no longer
+ * matches, so every browser write (and the WS upgrade) 403s — until a
+ * forwarded-proto opt-in exists, expose over plain HTTP only.
+ */
+export function createSameOriginHook(): preHandlerAsyncHookHandler {
+  return async function sameOriginHook(request: FastifyRequest): Promise<void> {
+    if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') return;
+    await requireSameOrigin(request);
+  };
 }
 
 /**

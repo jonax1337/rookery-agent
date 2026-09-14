@@ -215,6 +215,11 @@ function run(backend: Backend, text: string, options: SpeakOptions): Promise<Spe
     }, SPEAK_TIMEOUT_MS);
     timer.unref?.();
 
+    // An abort that landed before the listener was attached — the first-ever
+    // speak awaits backend detection, a real window — never fires the event;
+    // the direct check closes it.
+    if (options.signal?.aborted) onAbort();
+
     child.on('error', (error: Error) => {
       finish({ ok: false, detail: error.message });
     });

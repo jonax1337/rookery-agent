@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import type { Nullable } from '../lib/api';
 import type { RookerySocket } from '../lib/socket';
@@ -59,17 +59,25 @@ export function useAllSessions(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiError | null>(null);
 
+  // Sequence guard: parameter changes and socket nudges can overlap
+  // refreshes; only the newest run may write state, so a slower old answer
+  // cannot overwrite the newer list.
+  const refreshSeq = useRef(0);
+
   const refresh = useCallback(async (): Promise<void> => {
+    const seq = ++refreshSeq.current;
     try {
       const list = await api.sessions(limit, undefined, undefined, includeArchived);
+      if (seq !== refreshSeq.current) return;
       setSessions(list);
       setError(null);
     } catch (caught) {
+      if (seq !== refreshSeq.current) return;
       // An offline server has to reach the page as such - the old list page
       // swallowed the failure and showed an empty table instead.
       setError(caught instanceof ApiError ? caught : new ApiError(String(caught), 0));
     } finally {
-      setLoading(false);
+      if (seq === refreshSeq.current) setLoading(false);
     }
   }, [limit, includeArchived]);
 

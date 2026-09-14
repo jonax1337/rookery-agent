@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { failureMessage, reportFailure } from '@/lib/errors';
 import { greeting, NO_PROJECT, UNTITLED_SESSION } from '@/lib/format';
 import { SESSION_TITLE_MAX, sessionTitleSchema } from '@/lib/session';
@@ -18,6 +18,7 @@ import {
   useAllSessionsState,
   useChatSession,
   useConfig,
+  useConnection,
   useOrgState,
   useSessionsState,
 } from '@/providers/rookery-provider';
@@ -76,6 +77,7 @@ export function ChatPage() {
   const { chat, turn } = useChatSession();
   const { assistantName, config } = useConfig();
   const org = useOrgState();
+  const { socket } = useConnection();
   const sessions = useSessionsState();
   const allSessions = useAllSessionsState();
   const { confirm, dialog } = useConfirm();
@@ -115,8 +117,8 @@ export function ChatPage() {
       // server no longer has.
       chat.reset();
       void sessions.refresh();
-      // `/chats` and the rail's badge read the shared list, and neither
-      // `PATCH` nor `DELETE /api/sessions/:id` sends anything over the socket.
+      // `/chats` and the rail's badge read the shared list; a reset sends no
+      // `changed` of its own, so they are told by hand.
       void allSessions.refresh();
       toast('Conversation reset');
     } catch (caught) {
@@ -143,6 +145,46 @@ export function ChatPage() {
       reportFailure('Delete', caught);
     }
   }, [activeId, allSessions, chat, confirm, navigate, sessions]);
+
+  /* ------------------------------ other tabs ------------------------------ */
+
+  // A rename or a deletion in another tab arrives as the session's `changed`
+  // broadcast. The shared list refetches on every `changed` by itself; the
+  // open thread does not, so it is rechecked here. A rename refreshes the
+  // hub's own slice, a deletion leaves for `/chats` the way this page's own
+  // delete does, rather than keep answering into a session the server no
+  // longer has.
+  const refreshThreads = sessions.refresh;
+  const dropActiveThread = sessions.setActiveId;
+  const resetTranscript = chat.reset;
+  React.useEffect(() => {
+    if (!activeId) return;
+    let disposed = false;
+    const unsubscribe = socket.onChanged((change) => {
+      if (change.kind !== 'session' || change.id !== activeId) return;
+      void api
+        .session(activeId)
+        .then(() => {
+          if (!disposed) void refreshThreads();
+        })
+        .catch((caught: unknown) => {
+          // Anything but a definite "gone" is no reason to leave, and once
+          // this page is gone there is nothing left to navigate.
+          if (disposed) return;
+          if (!(caught instanceof ApiError) || caught.status !== 404) return;
+          dropActiveThread(null);
+          resetTranscript();
+          // Replace, not push: in the tab that deleted, this races its own
+          // navigation to `/chats`, and a second entry for the same path
+          // would dead-end the Back button.
+          void navigate('/chats', { replace: true });
+        });
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [activeId, dropActiveThread, navigate, refreshThreads, resetTranscript, socket]);
 
   /* -------------------------------- meta --------------------------------- */
 

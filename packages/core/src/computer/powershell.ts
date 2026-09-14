@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 /**
@@ -7,11 +8,20 @@ import { createInterface } from 'node:readline';
  * click cost milliseconds instead of a second; a fresh shell per action
  * would recompile every time.
  *
- * Protocol: one base64 line in, a JSON line plus an end marker out. Requests
- * are serialised, so an action never overlaps a screenshot.
+ * Protocol: one base64 line in, a JSON line plus an end marker out. The
+ * marker carries the request's id, so the tail of an action that timed out
+ * can never be read as the answer to a later one. Requests are serialised,
+ * so an action never overlaps a screenshot.
  */
 
-const END = '<<RK-END>>';
+const END_PREFIX = '<<RK-END:';
+
+/** The request id an end-marker line carries, or null for a data line. */
+function endMarkerId(line: string): number | null {
+  if (!line.startsWith(END_PREFIX) || !line.endsWith('>>')) return null;
+  const id = Number(line.slice(END_PREFIX.length, -2));
+  return Number.isInteger(id) ? id : null;
+}
 
 /** The C# behind the helpers: raw Win32, because .NET has no mouse of its own. */
 const NATIVE = `
@@ -257,6 +267,9 @@ while ($true) {
   $line = [Console]::In.ReadLine()
   if ($null -eq $line) { break }
   $script = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line))
+  # The script sets $rkId first; the marker echoes it back so a late reply
+  # can never be mistaken for a newer request's answer.
+  $rkId = 0
   try {
     $out = Invoke-Expression $script
     $json = ConvertTo-Json -InputObject $out -Compress -Depth 5
@@ -265,7 +278,7 @@ while ($true) {
     $err = @{ error = $_.Exception.Message }
     [Console]::Out.WriteLine((ConvertTo-Json -InputObject $err -Compress))
   }
-  [Console]::Out.WriteLine('${END}')
+  [Console]::Out.WriteLine(('<<RK-END:' + $rkId + '>>'))
   [Console]::Out.Flush()
 }
 `;
@@ -286,6 +299,7 @@ export class PowerShellSession {
   #queue: Promise<unknown> = Promise.resolve();
   #lines: ((line: string) => void) | null = null;
   #stderr = '';
+  #requestId = 0;
 
   /** Spawn the shell with the prelude loaded; the first call waits for the compile. */
   start(): void {
@@ -294,7 +308,7 @@ export class PowerShellSession {
     const child = spawn(
       powershellBinary(),
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
-      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
+      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' },
     );
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk: string) => {
@@ -303,7 +317,9 @@ export class PowerShellSession {
     const reader = createInterface({ input: child.stdout! });
     reader.on('line', (line) => this.#lines?.(line));
     child.on('exit', () => {
-      this.#child = null;
+      // Only forget this child; a dying shell replaced after a timeout must
+      // not null out the fresh one that already took its place.
+      if (this.#child === child) this.#child = null;
     });
     this.#child = child;
   }
@@ -319,6 +335,7 @@ export class PowerShellSession {
     this.start();
     const child = this.#child;
     if (!child?.stdin) return Promise.reject(new Error('PowerShell is not running.' + this.#tail()));
+    const id = ++this.#requestId;
     return new Promise<T>((resolve, reject) => {
       const chunks: string[] = [];
       const finish = (): void => {
@@ -328,6 +345,9 @@ export class PowerShellSession {
       };
       const timer = setTimeout(() => {
         finish();
+        // Left alone the shell would finish the action anyway, and whatever
+        // it prints after this belongs to no request anymore.
+        this.#kill(child);
         reject(new Error('The action timed out after ' + Math.round(timeoutMs / 1000) + ' s.' + this.#tail()));
       }, timeoutMs);
       const onExit = (): void => {
@@ -336,8 +356,15 @@ export class PowerShellSession {
       };
       child.once('exit', onExit);
       this.#lines = (line) => {
-        if (line !== END) {
+        const marker = endMarkerId(line);
+        if (marker === null) {
           chunks.push(line);
+          return;
+        }
+        // A foreign marker is the tail of an earlier request whose reply
+        // arrived late; the lines collected so far are its, not this one's.
+        if (marker !== id) {
+          chunks.length = 0;
           return;
         }
         finish();
@@ -353,12 +380,29 @@ export class PowerShellSession {
         if (error) reject(new Error(error));
         else resolve(parsed as T);
       };
-      child.stdin!.write(Buffer.from(expression, 'utf8').toString('base64') + '\n');
+      child.stdin!.write(Buffer.from('$rkId = ' + id + '; ' + expression, 'utf8').toString('base64') + '\n');
     });
   }
 
   #tail(): string {
     return this.#stderr.trim() ? '\n' + this.#stderr.trim().slice(-600) : '';
+  }
+
+  /**
+   * Kill the shell and anything it started, then forget it: the next action
+   * spawns a fresh shell instead of racing a dying one. Same tree kill the
+   * cron runner uses (taskkill /T on Windows, the process group elsewhere);
+   * a plain child.kill() would leave processes the shell started alive.
+   */
+  #kill(child: ChildProcess): void {
+    if (this.#child === child) this.#child = null;
+    if (!child.pid) return;
+    if (process.platform === 'win32') {
+      const killer = spawn(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      killer.on('error', () => child.kill('SIGKILL'));
+    } else {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+    }
   }
 
   close(): void {
