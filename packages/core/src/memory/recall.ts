@@ -101,6 +101,7 @@ export function recall(store: Store, options: RecallOptions): ScoredMemory[] {
         AND m.forgotten = 0
         AND m.dormant_at IS NULL
         AND m.superseded_by IS NULL
+        AND m.archived_at IS NULL
         AND m.importance >= ?` +
     kindFilter +
     ` ORDER BY relevance DESC LIMIT ?`;
@@ -190,7 +191,7 @@ function expand(
     // One bank only. The link table has no owner column, so a stray
     // cross-owner link must not turn the second hop into a cross-owner read.
     if (record.owner !== owner) return;
-    if (record.forgotten || record.dormantAt || record.supersededBy) return;
+    if (record.forgotten || record.dormantAt || record.supersededBy || record.archivedAt) return;
     const existing = out.get(record.id);
     if (existing && existing.score >= score) return;
     out.set(record.id, { ...record, score, hop, reason });
@@ -274,6 +275,7 @@ export function coreProfile(
     .prepare(
       `SELECT * FROM memories
         WHERE owner = ? AND forgotten = 0 AND dormant_at IS NULL AND superseded_by IS NULL
+          AND archived_at IS NULL
           AND (importance >= ? OR pinned = 1)
         ORDER BY pinned DESC, (kind = 'insight') DESC, importance DESC, updated_at DESC
         LIMIT ?`,

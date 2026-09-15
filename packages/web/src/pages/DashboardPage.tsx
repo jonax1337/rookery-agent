@@ -14,6 +14,7 @@ import { PROVIDER_LABEL, shorten } from '@/lib/format';
 import { dayKey, fillDayGaps, formatDateTime, formatNumber } from '@/lib/stats';
 import type {
   Assignment,
+  OrgPerformanceEntry,
   ProviderId,
   ProviderQuota,
   ProviderStatus,
@@ -290,6 +291,15 @@ export function DashboardPage() {
   const runningTasks = tasks.countByStatus.running;
   const waiting = <Skeleton className="h-7 w-20" />;
 
+  // Fetched once, not through the socket: a performance recalculation is a
+  // read-model detail, not something worth a live subscription for.
+  const [performance, setPerformance] = useState<OrgPerformanceEntry[]>([]);
+  useEffect(() => {
+    api.orgPerformance().then(setPerformance).catch(() => setPerformance([]));
+  }, []);
+  const flagged = performance.filter((row) => row.performance.stage > 0).length;
+  const proposals = performance.filter((row) => row.pendingProposal).length;
+
   const cards: StatCardProps[] = [
     {
       label: 'Memories',
@@ -318,12 +328,19 @@ export function DashboardPage() {
     {
       label: 'Agents',
       value: totals ? formatNumber(totals.agents) : waiting,
-      ...(totals && totals.runningAssignments > 0
-        ? { badge: <RunningBadge count={totals.runningAssignments} /> }
-        : {}),
-      headline: teams === 1 ? 'In a team' : 'In ' + formatNumber(teams) + ' teams',
+      ...(proposals > 0
+        ? { badge: <Badge variant="destructive">{formatNumber(proposals)} replacement proposed</Badge> }
+        : totals && totals.runningAssignments > 0
+          ? { badge: <RunningBadge count={totals.runningAssignments} /> }
+          : {}),
+      headline:
+        flagged > 0
+          ? formatNumber(flagged) + (flagged === 1 ? ' agent needs attention' : ' agents need attention')
+          : teams === 1
+            ? 'In a team'
+            : 'In ' + formatNumber(teams) + ' teams',
       footnote: 'Excluding archived agents',
-      to: '/org/agents',
+      to: flagged > 0 ? '/org/hr' : '/org/agents',
     },
     {
       label: 'Open tasks',

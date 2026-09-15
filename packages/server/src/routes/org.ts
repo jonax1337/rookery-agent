@@ -5,6 +5,7 @@ import type { ServerContext } from '../context.js';
 import {
   agentSchema,
   assignInputSchema,
+  assignmentReviewSchema,
   formatIssues,
   markMailReadSchema,
   sendMailSchema,
@@ -18,6 +19,7 @@ import {
   patchProjectSchema,
   patchTeamSchema,
   projectSchema,
+  replaceAgentSchema,
   teamSchema,
 } from '../schemas.js';
 import { openSse, pipeToSse } from '../services/stream.js';
@@ -170,12 +172,60 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
   app.get('/api/org/agents/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent) return notFound(reply, 'No agent ' + request.params.id);
+    // The identity chain (agent-performance-management, phase 4, decision
+    // E4): at most one of predecessor/successor is ever set on a given
+    // agent, since a replaced agent stays archived rather than replaced
+    // again under the same identity.
+    const predecessor = store.predecessorFor(agent.id);
+    const replacement = store.replacementFor(agent.id);
+    const successorId = replacement?.successorAgentId;
     return {
       agent,
       assignments: store.listAssignments(agent.orgId, { agentId: agent.id, limit: 30 }),
-      memories: context.assistant.store.listMemories({ owner: agent.id, limit: 100 }),
+      memories: context.assistant.store.listMemories({
+        owner: agent.id,
+        limit: 100,
+        // An archived predecessor's memories stay visible on its own page,
+        // audit-only - `listMemories` already includes them by default.
+      }),
       reports: store.listAgents(agent.orgId, { managerId: agent.id }),
+      performance: store.performance(agent.id),
+      actions: store.listActions(agent.id, { limit: 30 }),
+      predecessor: predecessor ? { id: predecessor.id, name: predecessor.name, slug: predecessor.slug } : null,
+      successor: successorId ? (() => {
+        const successor = store.getAgent(successorId);
+        return successor ? { id: successor.id, name: successor.name, slug: successor.slug } : null;
+      })() : null,
+      handover: predecessor ? undefined : replacement?.handoverText,
     };
+  });
+
+  /** An agent's review history, newest first (docs/concepts/agent-performance-management.md). */
+  app.get(
+    '/api/org/agents/:id/reviews',
+    async (request: FastifyRequest<IdParams & { Querystring: { limit?: string } }>, reply: FastifyReply) => {
+      const agent = store.getAgent(request.params.id);
+      if (!agent) return notFound(reply, 'No agent ' + request.params.id);
+      return store.listReviews(agent.id, { limit: clampLimit(request.query.limit, 20, 100) });
+    },
+  );
+
+  /**
+   * Stage 4 (section 4): the user approves a pending replacement proposal.
+   * Archives the outgoing agent and its memory, hires the successor with
+   * the given identity, and carries over team/manager/reports - all inside
+   * `OrgController.replaceAgent`, never as separate calls a half-finished
+   * request could leave inconsistent.
+   */
+  app.post('/api/org/agents/:id/replace', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const agent = store.getAgent(request.params.id);
+    if (!agent) return notFound(reply, 'No agent ' + request.params.id);
+    const input = parseOrThrow(replaceAgentSchema, request.body ?? {});
+    if (input.name.trim().toLowerCase() === agent.name.trim().toLowerCase()) {
+      return badRequest(reply, 'The successor needs a different name from ' + agent.name + '.');
+    }
+    const successor = await context.assistant.org.replaceAgent(agent.orgId, agent.id, input);
+    return { predecessor: store.getAgent(agent.id), successor };
   });
 
   app.patch('/api/org/agents/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
@@ -199,6 +249,25 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     store.updateAgent(agent.id, { archived: true });
     changed('agent', agent.id);
     return { ok: true };
+  });
+
+  /**
+   * The company-wide performance view - the "HR" page's one call. Archived
+   * agents are excluded: there is nothing left to develop once an agent has
+   * been replaced, and its personnel record stays reachable from its own
+   * (archived) page instead.
+   */
+  app.get('/api/org/performance', async () => {
+    const orgId = context.assistant.org.activeOrganization().id;
+    return store.listAgents(orgId).map((agent) => {
+      const performance = store.performance(agent.id);
+      const latest = store.listActions(agent.id, { limit: 1 })[0];
+      return {
+        agent: { id: agent.id, name: agent.name, slug: agent.slug, title: agent.title },
+        performance,
+        pendingProposal: performance.stage === 3 && latest?.kind === 'probation' ? latest : null,
+      };
+    });
   });
 
   /* -------------------------------- assignments ------------------------------- */
@@ -229,7 +298,32 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
       // Durable, survives a rerun overwriting the task's own `assignmentId`
       // pointer with a newer run - see `task_assignments` in memory/db.ts.
       taskId: store.getTaskIdForAssignment(assignment.id),
+      // At most one per source (idx_agent_reviews_once): the run's own
+      // `system` verdict if it failed technically, plus Jarvis's and the
+      // user's once those exist.
+      reviews: store.reviewsForAssignment(assignment.id),
     };
+  });
+
+  /**
+   * A user rating for one assignment - a star plus an optional comment,
+   * upserted (docs/concepts/agent-performance-management.md, phase 1). Saves
+   * on a single click; there is no confirmation step to abandon.
+   */
+  app.post('/api/org/assignments/:id/review', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const assignment = store.getAssignment(request.params.id);
+    if (!assignment) return notFound(reply, 'No assignment ' + request.params.id);
+    const input = parseOrThrow(assignmentReviewSchema, request.body ?? {});
+    const review = store.upsertReview({
+      orgId: assignment.orgId,
+      agentId: assignment.agentId,
+      assignmentId: assignment.id,
+      taskId: store.getTaskIdForAssignment(assignment.id) ?? undefined,
+      source: 'user',
+      ...input,
+    });
+    changed('agent', assignment.agentId);
+    return review;
   });
 
   /** Pull the plug on a queued or running assignment; it ends as cancelled. */

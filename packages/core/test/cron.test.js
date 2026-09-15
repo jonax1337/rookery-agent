@@ -80,7 +80,7 @@ function createAssistant(fake) {
   const assistant = new Assistant({
     store,
     registry: new ProviderRegistry([fake.provider]),
-    config: { home, logLevel: 'silent', memory: { enabled: false, autoExtract: false } },
+    config: { home, logLevel: 'silent', memory: { enabled: false, autoExtract: false }, org: { autoReview: false } },
   });
   openAssistants.push(assistant);
   return { assistant, store, home };

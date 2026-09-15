@@ -552,12 +552,86 @@ export interface OrgSnapshot {
   active: Assignment[];
 }
 
+/** A short reference to another agent - the identity chain, never the full record. */
+export interface AgentRef {
+  id: string;
+  name: string;
+  slug: string;
+}
+
 /** GET /api/org/agents/:id */
 export interface AgentDetail {
   agent: Agent;
   assignments: Assignment[];
   memories: MemoryRecord[];
   reports: Agent[];
+  performance: AgentPerformance;
+  actions: AgentAction[];
+  /** Set when this agent was hired to replace another one. */
+  predecessor: AgentRef | null;
+  /** Set when this agent was replaced by another one. */
+  successor: AgentRef | null;
+  /** Set only for a successor: the condensed handover from its predecessor. */
+  handover?: string;
+}
+
+export type ReviewSource = 'user' | 'assistant' | 'system';
+
+/** A judgment of one assignment, against the agent's own role. */
+export interface AgentReview {
+  id: string;
+  orgId: string;
+  agentId: string;
+  assignmentId?: string;
+  taskId?: string;
+  source: ReviewSource;
+  overall: number;
+  quality?: number;
+  completeness?: number;
+  reliability?: number;
+  communication?: number;
+  efficiency?: number;
+  comment?: string;
+  tags: string[];
+  failedRun: boolean;
+  createdAt: number;
+}
+
+/** The computed, never-materialised view of one agent's standing. */
+export interface AgentPerformance {
+  average: number | null;
+  count: number;
+  trend: number | null;
+  stage: 0 | 1 | 2 | 3;
+  failureRate: number;
+  lastReviewAt?: number;
+}
+
+export type AgentActionKind = 'note' | 'reconfig' | 'probation' | 'replace';
+
+/** One entry in an agent's personnel record. */
+export interface AgentAction {
+  id: string;
+  orgId: string;
+  agentId: string;
+  kind: AgentActionKind;
+  stage: number;
+  reason: string;
+  beforeText?: string;
+  afterText?: string;
+  agentNote?: string;
+  handoverText?: string;
+  reviewIds: string[];
+  decidedBy: 'user' | 'assistant';
+  successorAgentId?: string;
+  createdAt: number;
+}
+
+/** One row of GET /api/org/performance - the company-wide "HR" view. */
+export interface OrgPerformanceEntry {
+  agent: { id: string; name: string; slug: string; title: string };
+  performance: AgentPerformance;
+  pendingProposal: AgentAction | null;
 }
 
 /** GET /api/org/assignments/:id */
@@ -567,6 +641,8 @@ export interface AssignmentDetail {
   children: Assignment[];
   /** The board task this run belongs to, from the durable history, not `assignment_id` scans. */
   taskId: string | null;
+  /** At most one per source - the run's own `system` verdict, Jarvis's, the user's. */
+  reviews: AgentReview[];
 }
 
 /* --------------------------------- events -------------------------------- */

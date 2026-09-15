@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type {
   Agent,
+  AgentAction,
+  AgentActionKind,
   AgentMessage,
+  AgentPerformance,
+  AgentReview,
   Assignment,
   AssignmentStatus,
   Mail,
@@ -12,6 +16,7 @@ import type {
   Project,
   ProviderId,
   RequesterKind,
+  ReviewSource,
   Task,
   TaskPriority,
   TaskStatus,
@@ -914,6 +919,328 @@ export class OrgStore {
     return row?.task_id ?? null;
   }
 
+  /* ------------------------------ agent reviews ------------------------------- */
+
+  /**
+   * A judgment of one assignment, or a periodic one when `assignmentId` is
+   * unset. Always inserts a new row - callers that mean "replace the review
+   * for this assignment and source" want {@link upsertReview} instead, which
+   * is every caller today (there is no periodic review yet).
+   */
+  createReview(input: {
+    orgId: string;
+    agentId: string;
+    assignmentId?: string;
+    taskId?: string;
+    source: ReviewSource;
+    overall: number;
+    quality?: number;
+    completeness?: number;
+    reliability?: number;
+    communication?: number;
+    efficiency?: number;
+    comment?: string;
+    tags?: string[];
+    failedRun?: boolean;
+  }): AgentReview {
+    const review: AgentReview = {
+      id: randomUUID(),
+      orgId: input.orgId,
+      agentId: input.agentId,
+      assignmentId: blank(input.assignmentId),
+      taskId: blank(input.taskId),
+      source: input.source,
+      overall: clampReviewScore(input.overall),
+      quality: clampReviewScoreOptional(input.quality),
+      completeness: clampReviewScoreOptional(input.completeness),
+      reliability: clampReviewScoreOptional(input.reliability),
+      communication: clampReviewScoreOptional(input.communication),
+      efficiency: clampReviewScoreOptional(input.efficiency),
+      comment: blank(input.comment),
+      tags: [...new Set(input.tags ?? [])],
+      failedRun: input.failedRun ?? false,
+      createdAt: Date.now(),
+    };
+    this.#db
+      .prepare(
+        `INSERT INTO agent_reviews
+           (id, org_id, agent_id, assignment_id, task_id, source, overall, quality, completeness,
+            reliability, communication, efficiency, comment, tags, failed_run, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        review.id,
+        review.orgId,
+        review.agentId,
+        review.assignmentId ?? null,
+        review.taskId ?? null,
+        review.source,
+        review.overall,
+        review.quality ?? null,
+        review.completeness ?? null,
+        review.reliability ?? null,
+        review.communication ?? null,
+        review.efficiency ?? null,
+        review.comment ?? null,
+        JSON.stringify(review.tags),
+        review.failedRun ? 1 : 0,
+        review.createdAt,
+      );
+    return review;
+  }
+
+  /**
+   * One effective review per (assignment, source) - a second call for the
+   * same pair replaces it instead of stacking beside it, matching
+   * `idx_agent_reviews_once`. A periodic review (`assignmentId` unset) never
+   * collides with another: each is its own row.
+   */
+  upsertReview(input: {
+    orgId: string;
+    agentId: string;
+    assignmentId?: string;
+    taskId?: string;
+    source: ReviewSource;
+    overall: number;
+    quality?: number;
+    completeness?: number;
+    reliability?: number;
+    communication?: number;
+    efficiency?: number;
+    comment?: string;
+    tags?: string[];
+    failedRun?: boolean;
+  }): AgentReview {
+    if (input.assignmentId) {
+      const existing = this.#db
+        .prepare('SELECT id FROM agent_reviews WHERE assignment_id = ? AND source = ?')
+        .get(input.assignmentId, input.source) as { id: string } | undefined;
+      if (existing) {
+        const overall = clampReviewScore(input.overall);
+        const quality = clampReviewScoreOptional(input.quality);
+        const completeness = clampReviewScoreOptional(input.completeness);
+        const reliability = clampReviewScoreOptional(input.reliability);
+        const communication = clampReviewScoreOptional(input.communication);
+        const efficiency = clampReviewScoreOptional(input.efficiency);
+        const comment = blank(input.comment);
+        const tags = [...new Set(input.tags ?? [])];
+        const failedRun = input.failedRun ?? false;
+        this.#db
+          .prepare(
+            `UPDATE agent_reviews
+                SET task_id = ?, overall = ?, quality = ?, completeness = ?, reliability = ?,
+                    communication = ?, efficiency = ?, comment = ?, tags = ?, failed_run = ?, created_at = ?
+              WHERE id = ?`,
+          )
+          .run(
+            blank(input.taskId) ?? null,
+            overall,
+            quality ?? null,
+            completeness ?? null,
+            reliability ?? null,
+            communication ?? null,
+            efficiency ?? null,
+            comment ?? null,
+            JSON.stringify(tags),
+            failedRun ? 1 : 0,
+            Date.now(),
+            existing.id,
+          );
+        return this.getReview(existing.id) as AgentReview;
+      }
+    }
+    return this.createReview(input);
+  }
+
+  getReview(id: string): AgentReview | null {
+    const row = this.#db.prepare('SELECT * FROM agent_reviews WHERE id = ?').get(id) as Row | undefined;
+    return row ? mapReview(row) : null;
+  }
+
+  /** An agent's review history, newest first. */
+  listReviews(agentId: string, options: { limit?: number } = {}): AgentReview[] {
+    const rows = this.#db
+      .prepare('SELECT * FROM agent_reviews WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(agentId, options.limit ?? 20) as Row[];
+    return rows.map(mapReview);
+  }
+
+  /** Every review of one assignment - at most one per source. */
+  reviewsForAssignment(assignmentId: string): AgentReview[] {
+    const rows = this.#db
+      .prepare('SELECT * FROM agent_reviews WHERE assignment_id = ? ORDER BY created_at DESC')
+      .all(assignmentId) as Row[];
+    return rows.map(mapReview);
+  }
+
+  /* ------------------------------ agent actions ------------------------------- */
+
+  /** Append one entry to an agent's personnel record. */
+  createAction(input: {
+    orgId: string;
+    agentId: string;
+    kind: AgentActionKind;
+    stage: number;
+    reason: string;
+    beforeText?: string;
+    afterText?: string;
+    agentNote?: string;
+    handoverText?: string;
+    reviewIds?: string[];
+    decidedBy: 'user' | 'assistant';
+    successorAgentId?: string;
+  }): AgentAction {
+    const action: AgentAction = {
+      id: randomUUID(),
+      orgId: input.orgId,
+      agentId: input.agentId,
+      kind: input.kind,
+      stage: input.stage,
+      reason: input.reason.trim(),
+      beforeText: blank(input.beforeText),
+      afterText: blank(input.afterText),
+      agentNote: blank(input.agentNote),
+      handoverText: blank(input.handoverText),
+      reviewIds: [...new Set(input.reviewIds ?? [])],
+      decidedBy: input.decidedBy,
+      successorAgentId: blank(input.successorAgentId),
+      createdAt: Date.now(),
+    };
+    this.#db
+      .prepare(
+        `INSERT INTO agent_actions
+           (id, org_id, agent_id, kind, stage, reason, before_text, after_text, agent_note,
+            handover_text, review_ids, decided_by, successor_agent_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        action.id,
+        action.orgId,
+        action.agentId,
+        action.kind,
+        action.stage,
+        action.reason,
+        action.beforeText ?? null,
+        action.afterText ?? null,
+        action.agentNote ?? null,
+        action.handoverText ?? null,
+        JSON.stringify(action.reviewIds),
+        action.decidedBy,
+        action.successorAgentId ?? null,
+        action.createdAt,
+      );
+    return action;
+  }
+
+  /** An agent's personnel record, newest first. */
+  listActions(agentId: string, options: { limit?: number } = {}): AgentAction[] {
+    const rows = this.#db
+      .prepare('SELECT * FROM agent_actions WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(agentId, options.limit ?? 50) as Row[];
+    return rows.map(mapAction);
+  }
+
+  /**
+   * The judgment that actually counts for one assignment: at most one review
+   * per assignment survives, and where several sources judged the same run,
+   * `user` beats `assistant` beats `system` (section 2, "Wer bewertet
+   * wann"). A periodic review (no `assignmentId`) never competes with
+   * anything and always survives on its own. Newest first.
+   */
+  effectiveReviews(agentId: string, limit = 30): AgentReview[] {
+    const rank: Record<string, number> = { user: 0, assistant: 1, system: 2 };
+    const rows = this.#db
+      .prepare('SELECT * FROM agent_reviews WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
+      .all(agentId, Math.max(limit * 6, 200)) as Row[];
+    const byAssignment = new Map<string, Row>();
+    const periodic: Row[] = [];
+    for (const row of rows) {
+      const assignmentId = row.assignment_id as string | null;
+      if (!assignmentId) {
+        periodic.push(row);
+        continue;
+      }
+      const existing = byAssignment.get(assignmentId);
+      const rowRank = rank[row.source as string] ?? 9;
+      const existingRank = existing ? rank[existing.source as string] ?? 9 : 9;
+      if (!existing || rowRank < existingRank) {
+        byAssignment.set(assignmentId, row);
+      }
+    }
+    return [...byAssignment.values(), ...periodic]
+      .map(mapReview)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit);
+  }
+
+  /**
+   * The computed, never-materialised view of one agent's standing
+   * (docs/concepts/agent-performance-management.md, section 3: "on the fly,
+   * not materialised" - O1). A technically failed run counts only toward
+   * `failureRate`, never toward the quality average or the escalation
+   * triggers below it - punishing an agent for a missing provider or a
+   * timeout would blame it for infrastructure.
+   */
+  performance(agentId: string): AgentPerformance {
+    const effective = this.effectiveReviews(agentId, 30);
+    const quality = effective.filter((review) => !review.failedRun);
+    const last20 = effective.slice(0, 20);
+    const failedInLast20 = last20.filter((review) => review.failedRun).length;
+
+    const average10 = quality.slice(0, 10);
+    const average = average10.length >= 3 ? mean(average10.map((review) => review.overall)) : null;
+
+    let trend: number | null = null;
+    if (quality.length >= 10) {
+      const recent5 = mean(quality.slice(0, 5).map((review) => review.overall));
+      const prior5 = mean(quality.slice(5, 10).map((review) => review.overall));
+      if (recent5 !== null && prior5 !== null) trend = recent5 - prior5;
+    }
+
+    return {
+      average,
+      count: average10.length,
+      trend,
+      stage: stageFromReviews(quality, this.listActions(agentId, { limit: 50 })),
+      failureRate: last20.length ? failedInLast20 / last20.length : 0,
+      lastReviewAt: effective[0]?.createdAt,
+    };
+  }
+
+  /**
+   * `agent_note` texts written for this agent since its last `reconfig` -
+   * the only part of the personnel record an agent's own prompt is allowed
+   * to carry (decision E2). Newest first, capped by the caller.
+   */
+  agentNotesSince(agentId: string, since?: number): { note: string; createdAt: number }[] {
+    const actions = this.listActions(agentId, { limit: 50 });
+    const cutoff = since ?? actions.find((action) => action.kind === 'reconfig')?.createdAt ?? 0;
+    return actions
+      .filter((action) => action.agentNote && action.createdAt >= cutoff)
+      .map((action) => ({ note: action.agentNote as string, createdAt: action.createdAt }));
+  }
+
+  /**
+   * The identity chain (agent-performance-management, phase 4, decision E4):
+   * the `replace` action that retired this agent, if any - carries the
+   * successor's id and the handover text. Newest first, though there is at
+   * most one per agent.
+   */
+  replacementFor(agentId: string): AgentAction | null {
+    const row = this.#db
+      .prepare("SELECT * FROM agent_actions WHERE agent_id = ? AND kind = 'replace' ORDER BY created_at DESC LIMIT 1")
+      .get(agentId) as Row | undefined;
+    return row ? mapAction(row) : null;
+  }
+
+  /** The predecessor this agent replaced, if it was hired as one's successor. */
+  predecessorFor(agentId: string): Agent | null {
+    const row = this.#db
+      .prepare("SELECT agent_id FROM agent_actions WHERE kind = 'replace' AND successor_agent_id = ? LIMIT 1")
+      .get(agentId) as { agent_id: string } | undefined;
+    return row ? this.getAgent(row.agent_id) : null;
+  }
+
   /* --------------------------------- internals -------------------------------- */
 
   /** Generic partial update. `undefined` skips a column, `null` clears it. */
@@ -950,6 +1277,93 @@ export function slugify(text: string): string {
 function blank(value: string | undefined | null): string | undefined {
   const text = value?.trim();
   return text ? text : undefined;
+}
+
+/** 1..5, rounded to the nearest whole star. */
+function clampReviewScore(value: number): number {
+  return Math.min(5, Math.max(1, Math.round(value)));
+}
+
+function clampReviewScoreOptional(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : clampReviewScore(value);
+}
+
+function parseStringArray(raw: unknown): string[] {
+  try {
+    const parsed: unknown = JSON.parse(String(raw ?? '[]'));
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function optionalScore(value: unknown): number | undefined {
+  return value === null || value === undefined ? undefined : Number(value);
+}
+
+function mean(values: number[]): number | null {
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+/**
+ * A pure function of the review history and the last action taken - nothing
+ * beyond that is stored, by design (section 4 of the concept doc). `quality`
+ * is newest-first, failed runs already excluded.
+ *
+ * Deliberately simplified against the concept doc's exact wording in two
+ * places:
+ *
+ * - The "one user rating of 1" trigger is read over the last five reviews
+ *   rather than unboundedly, and re-triggering a note after one already
+ *   exists uses "three fresh reviews since it" rather than a hand-tracked
+ *   per-decline counter - the doc stores no extra state, and this is the
+ *   simplest function of the data that will not renote the same decline on
+ *   every single review while still reacting to a fresh one.
+ * - The doc allows up to two reconfigs before a replacement is proposed;
+ *   this collapses that to one. `#develop`'s idempotency (only act when the
+ *   computed stage exceeds the last action's) cannot represent "stay at
+ *   stage 2, but take a second reconfig action" without a second piece of
+ *   stored state, which is exactly what O1 rules out - so a single
+ *   probation window after the one reconfig decides it: recovered (stage 0)
+ *   or a replacement is proposed (stage 3), never a second autonomous
+ *   reconfig.
+ */
+function stageFromReviews(quality: AgentReview[], actions: AgentAction[]): 0 | 1 | 2 | 3 {
+  const minData = quality.length;
+  if (minData < 3) return 0;
+
+  // A good user rating right after a weak stretch resets everything - the
+  // user always wins.
+  const newest = quality[0];
+  if (newest && newest.source === 'user' && newest.overall >= 4) return 0;
+
+  const recent3 = quality.slice(0, 3);
+  const recent5 = quality.slice(0, 5);
+  const weakLast3 = recent3.filter((review) => review.overall <= 2).length >= 2;
+  const oneStarUser = recent5.some((review) => review.source === 'user' && review.overall === 1);
+  const avgLast5 = mean(recent5.map((review) => review.overall));
+  const weak = weakLast3 || oneStarUser || (avgLast5 !== null && avgLast5 < 3.0);
+
+  const lastReconfig = actions.find((action) => action.kind === 'reconfig');
+  const lastNote = actions.find((action) => action.kind === 'note');
+
+  if (lastReconfig) {
+    if (minData < 10) return weak ? 2 : 0; // not enough fresh data yet to judge the probation window
+    const probationWindow = quality.filter((review) => review.createdAt > lastReconfig.createdAt).slice(0, 5);
+    if (probationWindow.length < 5) return weak ? 2 : 0; // window still filling
+    const probationAverage = mean(probationWindow.map((review) => review.overall));
+    return probationAverage !== null && probationAverage < 3.0 ? 3 : 0;
+  }
+
+  if (!weak) return 0;
+
+  // Re-trigger a note only once three reviews have landed since the last
+  // one, so the same decline is not renoted on every single new review.
+  if (lastNote) {
+    const since = quality.filter((review) => review.createdAt > lastNote.createdAt);
+    return since.length >= 3 ? 2 : 1;
+  }
+  return 1;
 }
 
 function optional(value: unknown): string | undefined {
@@ -1110,6 +1524,46 @@ function mapMail(row: Row, recipients: MailRecipient[]): Mail {
     assignmentId: optional(row.assignment_id),
     createdAt: Number(row.created_at),
     recipients,
+  };
+}
+
+function mapReview(row: Row): AgentReview {
+  return {
+    id: row.id as string,
+    orgId: row.org_id as string,
+    agentId: row.agent_id as string,
+    assignmentId: optional(row.assignment_id),
+    taskId: optional(row.task_id),
+    source: row.source as ReviewSource,
+    overall: Number(row.overall),
+    quality: optionalScore(row.quality),
+    completeness: optionalScore(row.completeness),
+    reliability: optionalScore(row.reliability),
+    communication: optionalScore(row.communication),
+    efficiency: optionalScore(row.efficiency),
+    comment: optional(row.comment),
+    tags: parseStringArray(row.tags),
+    failedRun: Number(row.failed_run) === 1,
+    createdAt: Number(row.created_at),
+  };
+}
+
+function mapAction(row: Row): AgentAction {
+  return {
+    id: row.id as string,
+    orgId: row.org_id as string,
+    agentId: row.agent_id as string,
+    kind: row.kind as AgentActionKind,
+    stage: Number(row.stage),
+    reason: row.reason as string,
+    beforeText: optional(row.before_text),
+    afterText: optional(row.after_text),
+    agentNote: optional(row.agent_note),
+    handoverText: optional(row.handover_text),
+    reviewIds: parseStringArray(row.review_ids),
+    decidedBy: row.decided_by as 'user' | 'assistant',
+    successorAgentId: optional(row.successor_agent_id),
+    createdAt: Number(row.created_at),
   };
 }
 

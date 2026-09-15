@@ -61,7 +61,14 @@ function createAssistant(fake, overrides = {}) {
   const assistant = new Assistant({
     store,
     registry: new ProviderRegistry([fake.provider]),
-    config: { home, logLevel: 'silent', memory: { enabled: false, autoExtract: false }, ...overrides },
+    config: {
+      home,
+      logLevel: 'silent',
+      memory: { enabled: false, autoExtract: false },
+      // See org.test.js: keeps fake.runs counting the assignments themselves.
+      org: { autoReview: false },
+      ...overrides,
+    },
   });
   openAssistants.push(assistant);
   return { assistant, store, home };

@@ -18,7 +18,7 @@ import { api } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
 import { PERMISSION_LABEL, relativeTime, shorten } from '@/lib/format';
 import { formatDateTime, formatNumber } from '@/lib/stats';
-import type { Agent, Assignment, PermissionLevel } from '@/lib/types';
+import type { Agent, Assignment, OrgPerformanceEntry, PermissionLevel } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
@@ -89,6 +89,7 @@ const COLUMN_LABELS: Record<string, string> = {
   manager: 'Manager',
   provider: 'Provider',
   permission: 'Permission',
+  stage: 'Performance',
   actions: 'Actions',
 };
 
@@ -105,6 +106,17 @@ export function OrgAgentsPage() {
   const [permission, setPermission] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [drawerId, setDrawerId] = useState<string | null>(null);
+
+  // Fetched once, alongside the list rather than through org state: the
+  // score badge is a nice-to-have on this page, not something the socket
+  // needs to keep live-updated for every column in the app.
+  const [performance, setPerformance] = useState<Map<string, OrgPerformanceEntry>>(new Map());
+  useEffect(() => {
+    api
+      .orgPerformance()
+      .then((rows) => setPerformance(new Map(rows.map((row) => [row.agent.id, row]))))
+      .catch(() => setPerformance(new Map()));
+  }, []);
 
   /**
    * The team filter lives in the URL so the Teams tab can link into it. Written
@@ -265,6 +277,19 @@ export function OrgAgentsPage() {
             ),
         }),
 
+        column.accessor((agent) => performance.get(agent.id)?.performance.stage ?? 0, {
+          id: 'stage',
+          header: ({ column: head }) => <DataTableColumnHeader column={head} title="Performance" />,
+          cell: ({ row }) => {
+            const stage = performance.get(row.original.id)?.performance.stage ?? 0;
+            return stage > 0 ? (
+              <StatusBadge kind="agentStage" status={stage} />
+            ) : (
+              <span className="text-muted-foreground">Normal</span>
+            );
+          },
+        }),
+
         actionsColumn<Agent>((agent) => (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -298,7 +323,7 @@ export function OrgAgentsPage() {
           </DropdownMenu>
         )),
       ]),
-    [archive, navigate, org],
+    [archive, navigate, org, performance],
   );
 
   /* --------------------------------- rows --------------------------------- */

@@ -135,7 +135,17 @@ function createAssistant(fake, overrides = {}, providers = [fake.provider]) {
   const assistant = new Assistant({
     store,
     registry: new ProviderRegistry(providers),
-    config: { home, logLevel: 'silent', memory: { enabled: false, autoExtract: false }, ...overrides },
+    config: {
+      home,
+      logLevel: 'silent',
+      memory: { enabled: false, autoExtract: false },
+      // Off by default here: the automatic review adds a second provider.run()
+      // call after every successful assignment, which throws off every test
+      // that reads fake.runs.at(-1) expecting the assignment's own call. The
+      // dedicated review tests turn it back on explicitly.
+      org: { autoReview: false },
+      ...overrides,
+    },
   });
   openAssistants.push(assistant);
   return { assistant, store, home };
@@ -431,7 +441,7 @@ test('a direct assignment streams events, records the result, and fails cleanly'
 
 test('assignments respect the concurrency cap and can be aborted', async () => {
   const fake = createFakeProvider({ delay: 60 });
-  const { assistant } = createAssistant(fake, { org: { maxConcurrentAssignments: 1 } });
+  const { assistant } = createAssistant(fake, { org: { maxConcurrentAssignments: 1, autoReview: false } });
   hire(assistant, { name: 'A' });
   hire(assistant, { name: 'B' });
   const collect = async (gen) => {

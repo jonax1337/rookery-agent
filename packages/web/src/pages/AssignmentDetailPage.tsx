@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useParams } from 'react-router';
-import { BanIcon, ListTodoIcon, SendIcon, TriangleAlertIcon, UserRoundIcon } from 'lucide-react';
+import { BanIcon, ListTodoIcon, SendIcon, StarIcon, TriangleAlertIcon, UserRoundIcon } from 'lucide-react';
 
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import {
   ASSIGNMENT_STATUS_LABEL,
   REQUESTER_LABEL,
@@ -12,7 +12,8 @@ import {
   timeAgo,
 } from '@/lib/format';
 import { formatDateTime, formatNumber } from '@/lib/stats';
-import type { AssignmentDetail } from '@/lib/types';
+import { cn } from '@/lib/utils';
+import type { AgentReview, AssignmentDetail } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
 
@@ -37,6 +38,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,6 +47,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Textarea } from '@/components/ui/textarea';
 
 /**
  * One assignment: what was asked, who did it, what came back.
@@ -80,6 +83,17 @@ export function AssignmentDetailPage() {
     error: loadError,
     reload,
   } = useRecord<AssignmentDetail>(id, api.assignment);
+
+  // The reviews for this run - at most one per source. Kept in local state so
+  // saving a rating updates the star row instantly instead of waiting for the
+  // next reload() the socket happens to trigger.
+  const [reviews, setReviews] = useState<AgentReview[]>([]);
+  useEffect(() => {
+    setReviews(detail?.reviews ?? []);
+  }, [detail?.reviews]);
+  const handleReviewSaved = useCallback((saved: AgentReview) => {
+    setReviews((prev) => [saved, ...prev.filter((entry) => entry.source !== saved.source)]);
+  }, []);
 
   const live = id ? org.live[id] : undefined;
   /**
@@ -328,7 +342,7 @@ export function AssignmentDetailPage() {
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="ergebnis" className="mt-4">
+        <TabsContent value="ergebnis" className="mt-4 flex flex-col gap-4">
           {result ? (
             <ResultCard
               text={result}
@@ -347,6 +361,13 @@ export function AssignmentDetailPage() {
               size="sm"
             />
           )}
+          {!open && id ? (
+            <AssignmentReviewCard
+              assignmentId={id}
+              review={reviews.find((entry) => entry.source === 'user')}
+              onSaved={handleReviewSaved}
+            />
+          ) : null}
         </TabsContent>
 
         {error ? (
@@ -390,6 +411,90 @@ export function AssignmentDetailPage() {
 }
 
 /* ---------------------------------- parts --------------------------------- */
+
+/**
+ * A star rating plus an optional comment, for one finished assignment - the
+ * "Sternleiste" from docs/concepts/agent-performance-management.md, phase 1.
+ * A click on a star saves immediately (no confirm step, no dialog); the
+ * comment saves on blur, but only once a rating exists to attach it to.
+ */
+function AssignmentReviewCard({
+  assignmentId,
+  review,
+  onSaved,
+}: {
+  assignmentId: string;
+  review: AgentReview | undefined;
+  onSaved: (review: AgentReview) => void;
+}) {
+  const [comment, setComment] = useState(review?.comment ?? '');
+  const [hover, setHover] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const value = review?.overall ?? 0;
+
+  useEffect(() => {
+    setComment(review?.comment ?? '');
+  }, [review?.id, review?.comment]);
+
+  const save = useCallback(
+    async (overall: number): Promise<void> => {
+      setSaving(true);
+      setError(null);
+      try {
+        const saved = await api.reviewAssignment(assignmentId, {
+          overall,
+          comment: comment.trim() || undefined,
+        });
+        onSaved(saved);
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'Could not save the rating.');
+      } finally {
+        setSaving(false);
+      }
+    },
+    [assignmentId, comment, onSaved],
+  );
+
+  return (
+    <Card size="sm">
+      <CardHeader>
+        <CardTitle>{value ? 'Your rating' : 'Rate this run'}</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex items-center gap-1">
+          {[1, 2, 3, 4, 5].map((star) => (
+            <button
+              key={star}
+              type="button"
+              disabled={saving}
+              className="text-muted-foreground hover:text-amber-400 disabled:opacity-60"
+              onMouseEnter={() => setHover(star)}
+              onMouseLeave={() => setHover(0)}
+              onClick={() => void save(star)}
+              aria-label={'Rate ' + star + (star === 1 ? ' star' : ' stars')}
+            >
+              <StarIcon
+                className={cn('size-5', (hover || value) >= star ? 'fill-amber-400 text-amber-400' : '')}
+              />
+            </button>
+          ))}
+        </div>
+        <Textarea
+          placeholder="What was good or bad about this? (optional)"
+          value={comment}
+          onChange={(event) => setComment(event.target.value)}
+          onBlur={() => {
+            if (value) void save(value);
+          }}
+          rows={2}
+          disabled={saving}
+        />
+        {error ? <p className="text-destructive text-sm">{error}</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
 
 /** The loading state in the geometry the loaded page will have. */
 function AssignmentDetailSkeleton() {

@@ -3,7 +3,10 @@ import { existsSync } from 'node:fs';
 import { readProfileExcerpt, searchProfile } from '../profile.js';
 import type {
   Agent,
+  AgentAction,
   AgentEvent,
+  AgentPerformance,
+  AgentReview,
   Assignment,
   AssignmentStatus,
   AssignmentView,
@@ -37,6 +40,14 @@ import type { SleepRunner } from '../memory/sleep.js';
 import { clip, shorten, tail } from '../util/queue.js';
 import type { BridgeServer, ToolCallResult, ToolHandler } from './bridge.js';
 import { buildAgentPrompt, renderBoard, renderMail, renderOrgOverview, renderSchedules, type OrgSnapshot } from './prompts.js';
+import {
+  draftHandover,
+  draftNote,
+  draftReconfig,
+  draftReplacementProposal,
+  judgeAssignment,
+  type WeakReview,
+} from './review.js';
 import { buildTaskWaves, planTask, type TaskPlan } from './planner.js';
 import { toolsFor, type ToolAudience } from './tools.js';
 import { ensureToolServers, renderToolServers, toolServerStates, toolServersFor, withToolServer } from '../tools/hub.js';
@@ -240,6 +251,31 @@ export class OrgController extends EventEmitter {
         const assignment = this.findAssignment(context.orgId, text('id'));
         if (!assignment) return fail('No assignment with that id.');
         return { text: describeAssignment(assignment, this.#store.org.getAgent(assignment.agentId)) };
+      }
+
+      case 'review_assignment': {
+        if (context.audience !== 'assistant') return fail('Only the assistant records reviews.');
+        const assignment = this.findAssignment(context.orgId, text('id'));
+        if (!assignment) return fail('No assignment with that id.');
+        const overall = clampNumber(args.overall, 1, 5, 3);
+        const review = this.#store.org.upsertReview({
+          orgId: context.orgId,
+          agentId: assignment.agentId,
+          assignmentId: assignment.id,
+          taskId: this.#store.org.getTaskIdForAssignment(assignment.id) ?? undefined,
+          source: 'assistant',
+          overall,
+          comment: text('comment') || undefined,
+        });
+        this.emit('changed', { kind: 'agent', id: assignment.agentId });
+        return { text: 'Review recorded (overall ' + review.overall + ').' };
+      }
+
+      case 'agent_performance': {
+        if (context.audience !== 'assistant') return fail('Only the assistant sees the personnel record.');
+        const agent = this.#store.org.findAgent(context.orgId, text('agent'));
+        if (!agent) return fail('No agent "' + text('agent') + '".');
+        return { text: describeAgentPerformance(agent, this.#store.org) };
       }
 
       case 'cancel_assignment': {
@@ -571,6 +607,37 @@ export class OrgController extends EventEmitter {
 
       case 'hire_agent': {
         if (context.audience !== 'assistant') return fail('Only the assistant can hire.');
+        const replaces = text('replaces') ? this.#store.org.findAgent(context.orgId, text('replaces')) : null;
+        if (text('replaces') && !replaces) return fail('No agent "' + text('replaces') + '" to replace.');
+        if (replaces) {
+          // Stage 4 (docs/concepts/agent-performance-management.md, section
+          // 4): archiving, the handover and the hire happen together in
+          // #replaceAgent, never as three separate steps a half-finished
+          // call could leave inconsistent.
+          if (!text('name') || !text('title') || !text('instructions')) {
+            return fail('Replacing an agent still needs a name, a title and instructions for the successor.');
+          }
+          if (text('name').trim().toLowerCase() === replaces.name.trim().toLowerCase()) {
+            return fail('The successor needs a different name from ' + replaces.name + " - decision E4: a new identity, not a reused one.");
+          }
+          const successor = await this.replaceAgent(
+            context.orgId,
+            replaces.id,
+            {
+              name: text('name'),
+              slug: text('slug') || undefined,
+              title: text('title'),
+              instructions: text('instructions'),
+              handover: text('handover') || undefined,
+            },
+            this.#asProvider(text('provider')) ?? replaces.provider,
+          );
+          return {
+            text:
+              'Archived ' + replaces.name + ' (' + replaces.slug + ') and hired ' + successor.name + ' as ' +
+              successor.title + ' (slug: ' + successor.slug + ') in their place.',
+          };
+        }
         const team = text('team') ? this.#store.org.findTeam(context.orgId, text('team')) : null;
         if (text('team') && !team) return fail('No team "' + text('team') + '". Create it first.');
         const manager = text('manager') ? this.#store.org.findAgent(context.orgId, text('manager')) : null;
@@ -1212,8 +1279,33 @@ export class OrgController extends EventEmitter {
       announce(extra);
       return assignment;
     };
-    const fail = (error: string, started: number): Assignment =>
-      finish({ status: 'failed', error, finishedAt: Date.now(), durationMs: Date.now() - started }, { error });
+    const fail = (error: string, started: number): Assignment => {
+      const failed = finish(
+        { status: 'failed', error, finishedAt: Date.now(), durationMs: Date.now() - started },
+        { error },
+      );
+      // Every fail() path is a hard signal (timeout, no provider, empty
+      // output, a fatal provider error) - no model call, and it marks the run
+      // as a technical failure rather than a quality judgement (see
+      // docs/concepts/agent-performance-management.md). A write that cannot
+      // land must never take the assignment result down with it.
+      try {
+        org.upsertReview({
+          orgId: input.orgId,
+          agentId: agent.id,
+          assignmentId: assignment.id,
+          source: 'system',
+          overall: 1,
+          failedRun: true,
+        });
+      } catch (reviewError) {
+        this.#log.warn('System review failed to write', {
+          assignment: assignment.id,
+          error: (reviewError as Error).message,
+        });
+      }
+      return failed;
+    };
 
     // One abort controller per assignment, live from the moment it is queued:
     // the caller going away, a cancel() by id and the timeout all end in it.
@@ -1310,6 +1402,8 @@ export class OrgController extends EventEmitter {
           : undefined,
         toolHints,
         skillsIndex,
+        agentNotes: org.agentNotesSince(agent.id).slice(0, 2),
+        handoverFrom: this.#handoverFor(agent),
       });
       if (unreadMail.length) org.markMailReadFor(unreadMail, mailWho);
 
@@ -1394,6 +1488,7 @@ export class OrgController extends EventEmitter {
       if (this.#config.memory.enabled && this.#config.memory.autoExtract) {
         void this.#learn(agent, input.task, text, providerId);
       }
+      if (this.#config.org.autoReview) void this.#review(agent, done, input.task, text, providerId);
       if (input.sourceMail) {
         const sourceMail = input.sourceMail;
         const replier: MailWho = { kind: 'agent', id: agent.id };
@@ -1512,10 +1607,25 @@ export class OrgController extends EventEmitter {
     const agent = this.#store.org.findAgent(context.orgId, text('agent'));
     if (!agent) return fail('No agent "' + text('agent') + '".');
 
+    const newInstructions = text('instructions');
+    // Once an agent is flagged (stage >= 1), a silent instruction change is
+    // the exact failure `agent_actions` exists to prevent - "protocol before
+    // effect", decision E1. Below stage 1 this is unchanged: a free
+    // restructuring of the company is not a personnel action.
+    if (newInstructions && newInstructions !== agent.instructions) {
+      const stage = this.#store.org.performance(agent.id).stage;
+      if (stage >= 1 && !text('reason')) {
+        return fail(
+          agent.name + ' is at escalation stage ' + stage + '; changing standing instructions needs a "reason" ' +
+            '(it is written to the personnel record as a reconfig). Use agent_performance to see why.',
+        );
+      }
+    }
+
     const patch: Parameters<OrgStore['updateAgent']>[1] = {};
     if (text('name')) patch.name = text('name');
     if (text('title')) patch.title = text('title');
-    if (text('instructions')) patch.instructions = text('instructions');
+    if (newInstructions) patch.instructions = newInstructions;
     if (text('team')) {
       if (text('team').toLowerCase() === 'none') patch.teamId = null;
       else {
@@ -1541,6 +1651,23 @@ export class OrgController extends EventEmitter {
     if (typeof args.archived === 'boolean') patch.archived = args.archived;
 
     this.#store.org.updateAgent(agent.id, patch);
+    // A `reason` on an instructions change is a personnel action by hand,
+    // same rule as the automatic one in #develop: the record and the change
+    // land together (decision E1). `stage` here is the one this reconfig
+    // responds to, not necessarily still current a moment later.
+    if (patch.instructions && text('reason')) {
+      const stage = this.#store.org.performance(agent.id).stage;
+      this.#store.org.createAction({
+        orgId: context.orgId,
+        agentId: agent.id,
+        kind: 'reconfig',
+        stage: Math.max(stage, 1),
+        reason: text('reason'),
+        beforeText: agent.instructions,
+        afterText: patch.instructions,
+        decidedBy: 'assistant',
+      });
+    }
     this.emit('changed', { kind: 'agent', id: agent.id });
     return { text: 'Updated ' + agent.name + ' (' + agent.slug + '): ' + Object.keys(patch).join(', ') + '.' };
   }
@@ -1908,6 +2035,212 @@ export class OrgController extends EventEmitter {
     }
   }
 
+  /** A successor's handover section, straight from the `replace` action - never through recall (decision E3). */
+  #handoverFor(agent: Agent): { predecessorName: string; text: string } | undefined {
+    const predecessor = this.#store.org.predecessorFor(agent.id);
+    if (!predecessor) return undefined;
+    const handoverText = this.#store.org.replacementFor(predecessor.id)?.handoverText;
+    return handoverText ? { predecessorName: predecessor.name, text: handoverText } : undefined;
+  }
+
+  /**
+   * Jarvis's own judgment of one finished assignment
+   * (docs/concepts/agent-performance-management.md). Runs after every
+   * `status: 'done'` run, exactly like `#learn` above and with the same
+   * fault tolerance - a review that cannot be written is logged, never
+   * thrown. Deliberately no `smallModelFor`: judging whether work is good
+   * is a decision, not extraction, so this runs on the provider's own
+   * default model unless the deployment has set one explicitly.
+   */
+  async #review(agent: Agent, assignment: Assignment, task: string, report: string, providerId: ProviderId): Promise<void> {
+    try {
+      const judged = await judgeAssignment(this.#registry.get(providerId), {
+        role: agent.title,
+        instructions: agent.instructions,
+        task,
+        report,
+      });
+      if (!judged) return;
+      this.#store.org.upsertReview({
+        orgId: assignment.orgId,
+        agentId: agent.id,
+        assignmentId: assignment.id,
+        taskId: this.#store.org.getTaskIdForAssignment(assignment.id) ?? undefined,
+        source: 'assistant',
+        ...judged,
+      });
+      await this.#develop(agent, assignment.orgId, providerId);
+    } catch (error) {
+      this.#log.warn('Agent review failed', { agent: agent.slug, error: (error as Error).message });
+    }
+  }
+
+  /**
+   * After a review lands, see whether the agent's escalation stage rose
+   * since the last thing done about it, and if so, act on it - a `note` at
+   * stage 1, a self-executed `reconfig` at stage 2, or (at stage 3) a
+   * replacement proposal that only logs itself as a pending action; nothing
+   * beyond the user approving it moves the agent. Comparing against
+   * `lastAction.stage` is what keeps this idempotent: unless the computed
+   * stage has actually moved past what the last action recorded, nothing
+   * happens, so a steady stream of weak-but-unchanged reviews writes one
+   * note, not one per review.
+   */
+  async #develop(agent: Agent, orgId: string, providerId: ProviderId): Promise<void> {
+    const performance = this.#store.org.performance(agent.id);
+    const actions = this.#store.org.listActions(agent.id, { limit: 1 });
+    const lastStage = actions[0]?.stage ?? 0;
+    if (performance.stage <= lastStage) return;
+
+    const reviews = this.#store.org.effectiveReviews(agent.id, 10).filter((review) => !review.failedRun);
+    const weak: WeakReview[] = reviews.slice(0, 5).map((review) => ({
+      overall: review.overall,
+      source: review.source,
+      comment: review.comment,
+      tags: review.tags,
+      createdAt: review.createdAt,
+    }));
+    const provider = this.#registry.get(providerId);
+
+    if (performance.stage === 1) {
+      const drafted = await draftNote(provider, { roleTitle: agent.title, instructions: agent.instructions, reviews: weak });
+      if (!drafted) return;
+      this.#store.org.createAction({
+        orgId,
+        agentId: agent.id,
+        kind: 'note',
+        stage: 1,
+        reason: drafted.reason,
+        agentNote: drafted.agentNote,
+        reviewIds: reviews.slice(0, 3).map((review) => review.id),
+        decidedBy: 'assistant',
+      });
+      this.emit('changed', { kind: 'agent', id: agent.id });
+      return;
+    }
+
+    if (performance.stage === 2) {
+      const drafted = await draftReconfig(provider, { roleTitle: agent.title, instructions: agent.instructions, reviews: weak });
+      if (!drafted) return;
+      // Protocol before effect (decision E1): the action and the instruction
+      // change happen together, or not at all - `updateAgent` never runs
+      // ahead of a personnel-file entry that justifies it.
+      this.#store.org.createAction({
+        orgId,
+        agentId: agent.id,
+        kind: 'reconfig',
+        stage: 2,
+        reason: drafted.reason,
+        beforeText: agent.instructions,
+        afterText: drafted.newInstructions,
+        agentNote: drafted.agentNote,
+        reviewIds: reviews.slice(0, 5).map((review) => review.id),
+        decidedBy: 'assistant',
+      });
+      this.#store.org.updateAgent(agent.id, { instructions: drafted.newInstructions });
+      this.emit('changed', { kind: 'agent', id: agent.id });
+      return;
+    }
+
+    if (performance.stage === 3) {
+      const drafted = await draftReplacementProposal(provider, {
+        currentName: agent.name,
+        roleTitle: agent.title,
+        instructions: agent.instructions,
+        reviews: weak,
+      });
+      if (!drafted) return;
+      // Only a proposal (section 4, stage 3): logged so the agent page can
+      // show it as a pending action item, nothing about the agent changes
+      // until the user approves the replacement.
+      this.#store.org.createAction({
+        orgId,
+        agentId: agent.id,
+        kind: 'probation',
+        stage: 3,
+        reason:
+          drafted.reason +
+          '\n\nProposed successor: ' + drafted.successorName + ' (' + drafted.successorSlug + '), ' +
+          drafted.successorTitle + '.\n\n' + drafted.successorInstructions,
+        reviewIds: reviews.slice(0, 5).map((review) => review.id),
+        decidedBy: 'assistant',
+      });
+      this.emit('changed', { kind: 'agent', id: agent.id });
+    }
+  }
+
+  /**
+   * Stage 4 (section 4): the user has approved parting ways. Archives the
+   * predecessor and its memory, condenses a handover, and hires the
+   * successor in its place - team, manager and reports carried over, new
+   * name and slug (decision E4), the predecessor's slug never freed.
+   */
+  async replaceAgent(
+    orgId: string,
+    predecessorId: string,
+    successor: { name: string; slug?: string; title: string; instructions: string; handover?: string },
+    providerId?: ProviderId,
+  ): Promise<Agent> {
+    const predecessor = this.#store.org.getAgent(predecessorId);
+    if (!predecessor) throw new Error('No agent ' + predecessorId + '.');
+
+    let handover = successor.handover?.trim();
+    if (!handover) {
+      const resolvedProvider = await this.#registry.resolveUsable(providerId ?? this.#config.defaultProvider);
+      if (resolvedProvider) {
+        try {
+          const memories = this.#store.listMemories({ owner: predecessor.id, limit: 300, includeDormant: false });
+          handover =
+            (await draftHandover(this.#registry.get(resolvedProvider), {
+              predecessorName: predecessor.name,
+              roleTitle: predecessor.title,
+              instructions: predecessor.instructions,
+              memories: memories.map((memory) => ({
+                content: memory.content,
+                importance: memory.importance,
+                createdAt: memory.createdAt,
+              })),
+            })) ?? undefined;
+        } catch (error) {
+          this.#log.warn('Handover draft failed', { agent: predecessor.slug, error: (error as Error).message });
+        }
+      }
+    }
+
+    const newAgent = this.#store.org.createAgent({
+      orgId,
+      slug: successor.slug,
+      name: successor.name,
+      title: successor.title,
+      instructions: successor.instructions,
+      teamId: predecessor.teamId,
+      managerId: predecessor.managerId,
+      provider: predecessor.provider,
+      model: predecessor.model,
+      permission: predecessor.permission,
+    });
+    // The predecessor's own reports now answer to the successor - otherwise
+    // a whole team would silently report to an archived agent.
+    for (const report of this.#store.org.listAgents(orgId, { managerId: predecessor.id })) {
+      this.#store.org.updateAgent(report.id, { managerId: newAgent.id });
+    }
+    this.#store.org.updateAgent(predecessor.id, { archived: true });
+    this.#store.archiveMemories(predecessor.id);
+    this.#store.org.createAction({
+      orgId,
+      agentId: predecessor.id,
+      kind: 'replace',
+      stage: 4,
+      reason: 'Replaced by ' + newAgent.name + ' (' + newAgent.slug + ').',
+      handoverText: handover,
+      decidedBy: 'user',
+      successorAgentId: newAgent.id,
+    });
+    this.emit('changed', { kind: 'agent', id: predecessor.id });
+    this.emit('changed', { kind: 'agent', id: newAgent.id });
+    return newAgent;
+  }
+
   /** Concurrency gate: at most `maxConcurrentAssignments` provider processes at once. */
   #acquire(signal?: AbortSignal): Promise<void> {
     if (this.#running < this.#config.org.maxConcurrentAssignments) {
@@ -1972,6 +2305,31 @@ export function describeAssignment(assignment: Assignment, agent: Agent | null):
   if (assignment.durationMs !== undefined) lines.push('Duration: ' + Math.round(assignment.durationMs / 1000) + ' s');
   if (assignment.error) lines.push('Error: ' + assignment.error);
   if (assignment.result) lines.push('', clip(assignment.result, RESULT_BUDGET));
+  return lines.join('\n');
+}
+
+const STAGE_LABEL = ['normal', 'flagged', 'reconfigured/on probation', 'replacement proposed'] as const;
+
+/** The "development conversation" tool's text: history, average, trend, stage, open actions. */
+export function describeAgentPerformance(agent: Agent, org: OrgStore): string {
+  const performance = org.performance(agent.id);
+  const actions = org.listActions(agent.id, { limit: 10 });
+  const lines = [
+    agent.name + ' (' + agent.slug + '), ' + agent.title,
+    'Stage: ' + performance.stage + ' - ' + STAGE_LABEL[performance.stage],
+    'Average (last ' + performance.count + '): ' + (performance.average?.toFixed(2) ?? 'not enough data'),
+    'Trend: ' + (performance.trend === null ? 'not enough data' : (performance.trend >= 0 ? '+' : '') + performance.trend.toFixed(2)),
+    'Failure rate (last 20): ' + Math.round(performance.failureRate * 100) + '%',
+  ];
+  if (actions.length) {
+    lines.push('', 'Personnel record:');
+    for (const action of actions) {
+      const when = new Date(action.createdAt).toISOString().slice(0, 10);
+      lines.push('- ' + when + ' ' + action.kind + ' (stage ' + action.stage + '): ' + clip(action.reason, 200));
+    }
+  } else {
+    lines.push('', 'No actions on record yet.');
+  }
   return lines.join('\n');
 }
 

@@ -64,6 +64,8 @@ const TABS: readonly OrgTab[] = [
   { value: 'agents', to: '/org/agents', label: 'Agents', createLabel: 'Hire agent' },
   { value: 'teams', to: '/org/teams', label: 'Teams', createLabel: 'Create team' },
   { value: 'projects', to: '/org/projects', label: 'Projects', createLabel: 'Create project' },
+  { value: 'chart', to: '/org/chart', label: 'Org chart', createLabel: 'Hire agent' },
+  { value: 'hr', to: '/org/hr', label: 'HR', createLabel: 'Hire agent' },
 ];
 
 const organizationSchema = z.object({
@@ -251,6 +253,12 @@ export function OrgLayout() {
                 Projects
                 <Badge variant="secondary">{formatNumber(org.projects.length)}</Badge>
               </NavLink>
+            </TabsTrigger>
+            <TabsTrigger value="chart" asChild>
+              <NavLink to="/org/chart">Org chart</NavLink>
+            </TabsTrigger>
+            <TabsTrigger value="hr" asChild>
+              <NavLink to="/org/hr">HR</NavLink>
             </TabsTrigger>
           </TabsList>
         </div>

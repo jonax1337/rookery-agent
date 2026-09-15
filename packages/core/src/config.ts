@@ -111,6 +111,7 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     maxDelegationDepth: 3,
     assignmentTimeoutMs: 45 * 60 * 1000,
     lazyCoding: true,
+    autoReview: true,
   },
   gateways: {
     telegram: {

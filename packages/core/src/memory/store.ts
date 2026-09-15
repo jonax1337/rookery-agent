@@ -522,6 +522,19 @@ export class Store {
       .run(Date.now(), id);
   }
 
+  /**
+   * Retiring an agent (agent-performance-management, phase 4): its whole
+   * bank goes out of recall for good, but stays on the record rather than
+   * being deleted - unlike `forgetMemory`, there is no path back from this.
+   * Returns how many rows it touched, for the report.
+   */
+  archiveMemories(owner: string): number {
+    const result = this.db
+      .prepare('UPDATE memories SET archived_at = ? WHERE owner = ? AND archived_at IS NULL')
+      .run(Date.now(), owner) as { changes: number };
+    return Number(result.changes ?? 0);
+  }
+
   deleteMemory(id: string): void {
     this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
   }
@@ -844,7 +857,7 @@ export class Store {
       `SELECT DISTINCT m.* FROM memories m
          JOIN memory_entity_links l ON l.memory_id = m.id
         WHERE l.entity_id IN (` + entityIds.map(() => '?').join(', ') + `)
-          AND m.forgotten = 0 AND m.dormant_at IS NULL` +
+          AND m.forgotten = 0 AND m.dormant_at IS NULL AND m.archived_at IS NULL` +
       (options.owner ? ' AND m.owner = ?' : '') +
       (exclude.length ? ' AND m.id NOT IN (' + exclude.map(() => '?').join(', ') + ')' : '') +
       ' ORDER BY m.importance DESC LIMIT ?';
@@ -1511,6 +1524,7 @@ export function mapMemory(row: Row): MemoryRecord {
     supersededBy: (row.superseded_by as string) ?? undefined,
     sleepRunId: (row.sleep_run_id as string) ?? undefined,
     usefulness: Number(row.usefulness ?? 0),
+    archivedAt: row.archived_at ? Number(row.archived_at) : undefined,
   };
 }
 

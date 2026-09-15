@@ -13,6 +13,7 @@ import type {
   Team,
 } from '../types.js';
 import type { OrgStore } from './store.js';
+import type { Store } from '../memory/store.js';
 import { renderMemoryBlock } from '../memory/recall.js';
 import { PONYTAIL_RULESET } from './ponytail.js';
 import { describeCronJob } from '../cron/scheduler.js';
@@ -143,6 +144,7 @@ export function assistantOrgBlock(
   mail: Mail[],
   activeProject?: Project,
   schedules: CronJob[] = [],
+  store?: Store,
 ): string {
   const sections: string[] = [];
 
@@ -205,6 +207,11 @@ export function assistantOrgBlock(
 
   sections.push(renderOrgOverview(snapshot));
 
+  if (store) {
+    const flags = renderPerformanceFlags(snapshot, store.org);
+    if (flags) sections.push(flags);
+  }
+
   if (activeProject) {
     sections.push(
       'Active project for this conversation: ' + activeProject.name +
@@ -229,6 +236,32 @@ export function renderSchedules(schedules: CronJob[], snapshot: OrgSnapshot): st
   return 'Your schedules (cron jobs, local time):\n' + lines.join('\n');
 }
 
+/**
+ * One line per agent at escalation stage >= 1 (agent-performance-
+ * management, section 5): the point is that Jarvis brings this up on its
+ * own turn rather than waiting to be asked. Empty string when nobody is
+ * flagged, so a healthy company adds nothing to the prompt.
+ */
+function renderPerformanceFlags(snapshot: OrgSnapshot, org: OrgStore): string {
+  const lines: string[] = [];
+  for (const agent of snapshot.agents) {
+    const performance = org.performance(agent.id);
+    if (performance.stage === 0) continue;
+    const detail =
+      performance.stage === 1
+        ? 'flagged, a development note is on record'
+        : performance.stage === 2
+          ? 'reconfigured, on probation'
+          : 'reconfigured twice, a replacement has been proposed - awaiting your decision';
+    lines.push(
+      '- ' + agent.slug + ': stage ' + performance.stage + ' (' + detail + ')' +
+        (performance.average !== null ? ', average ' + performance.average.toFixed(1) : ''),
+    );
+  }
+  if (!lines.length) return '';
+  return 'Staff performance needing your attention (agent_performance for detail):\n' + lines.join('\n');
+}
+
 export interface AgentPromptInput {
   config: RookeryConfig;
   agent: Agent;
@@ -250,6 +283,15 @@ export interface AgentPromptInput {
   toolHints?: string[];
   /** The skills index, when there are skills for agents. */
   skillsIndex?: string;
+  /**
+   * Development feedback written since the last reconfig (decision E2): no
+   * number, no dimension name and no reference to being reviewed ever
+   * reaches this far - only the qualitative note itself. Newest first,
+   * at most two shown.
+   */
+  agentNotes?: { note: string; createdAt: number }[];
+  /** Set only for a successor agent: who it replaced, and the condensed handover (decision E3). */
+  handoverFrom?: { predecessorName: string; text: string };
 }
 
 /** The complete system prompt for one agent running one assignment. */
@@ -376,6 +418,21 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
       'described above, not into the report. Write in the language the assignment is written in.',
     ].join(' '),
   );
+
+  // Decision E2: qualitative, never a number - see AgentPromptInput.agentNotes.
+  if (input.agentNotes?.length) {
+    const notes = input.agentNotes
+      .slice(0, 2)
+      .map((entry) => '- ' + entry.note)
+      .join('\n');
+    sections.push('Feedback on your work:\n' + notes);
+  }
+
+  // Decision E3: fixed prompt text, never through recall - a successor gets
+  // exactly one telling of this, not a memory that might not surface.
+  if (input.handoverFrom) {
+    sections.push('Handover from ' + input.handoverFrom.predecessorName + ':\n' + input.handoverFrom.text);
+  }
 
   sections.push('Today is ' + new Date().toISOString().slice(0, 10) + '.');
   return sections.join('\n\n');

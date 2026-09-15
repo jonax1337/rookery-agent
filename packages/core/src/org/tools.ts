@@ -284,16 +284,20 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'hire_agent',
     description:
       'Create a permanent agent in the company. Give it a clear role: a name, a job title, and ' +
-      'standing instructions describing how it works and what it is responsible for.',
+      'standing instructions describing how it works and what it is responsible for. With ' +
+      '`replaces` set, this is a stage-4 personnel action instead: archives that agent and its ' +
+      'memory, generates a handover (or uses the one you pass), hires the successor with the ' +
+      'name/title/instructions given, and carries over its team, manager and reports. Only call ' +
+      'that after the user has approved the replacement agent_performance proposed.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: str('Display name, e.g. "Mara".'),
+        name: str('Display name, e.g. "Mara". With replaces set, must differ from the outgoing agent\'s name.'),
         title: str('Job title, e.g. "Backend Engineer".'),
         instructions: str('Standing instructions for the role, two to six sentences.'),
         slug: str('Short handle, lowercase with dashes. Derived from the name when omitted.'),
-        team: str('Team name or id. Optional.'),
-        manager: str('Manager agent slug. Omit for an agent reporting to you directly.'),
+        team: str('Team name or id. Optional. Ignored when replaces is set (inherited instead).'),
+        manager: str('Manager agent slug. Omit for an agent reporting to you directly. Ignored when replaces is set.'),
         provider: str(PROVIDER_HINT + ' Optional.'),
         model: str('Model name for that provider. Optional.'),
         permission: {
@@ -301,6 +305,13 @@ export const ORG_TOOLS: ToolDefinition[] = [
           enum: ['chat', 'read', 'write', 'full'],
           description: 'What the agent may do on the machine. Optional; defaults to the company default.',
         },
+        replaces: str(
+          'Slug of an agent to retire and replace with this one (stage 4). Their team, manager and ' +
+            'reports pass to the successor; the outgoing slug is never freed. Optional.',
+        ),
+        handover: str(
+          'Override the auto-generated handover document for the successor, when replaces is set. Optional.',
+        ),
       },
       required: ['name', 'title', 'instructions'],
       additionalProperties: false,
@@ -312,7 +323,10 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'Change an existing agent: move it to a team, give it a manager, rewrite its title or ' +
       'standing instructions, change provider, model or permission, or archive it. Only the ' +
-      'fields you pass change.',
+      'fields you pass change. An agent at escalation stage 1 or higher (check with ' +
+      'agent_performance) needs `reason` set to change its instructions - that reason is written ' +
+      'to its personnel record as a reconfig, together with the before/after text, so the change ' +
+      'stays accountable and reversible.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -326,7 +340,46 @@ export const ORG_TOOLS: ToolDefinition[] = [
         model: str('Optional.'),
         permission: { type: 'string', enum: ['chat', 'read', 'write', 'full'], description: 'Optional.' },
         archived: { type: 'boolean', description: 'true retires the agent, false brings it back. Optional.' },
+        reason: str(
+          'Why the instructions are changing. Required to change instructions once the agent is at ' +
+            'escalation stage 1 or higher; logged to the personnel record as a reconfig either way ' +
+            'when instructions change and this is set.',
+        ),
       },
+      required: ['agent'],
+      additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
+  },
+  {
+    name: 'review_assignment',
+    description:
+      'Add or correct your own judgment of one finished assignment - the same review that runs ' +
+      'automatically after every run, but by hand: after the user disagreed with the automatic ' +
+      'one, or for a run from before this existed. Upserts: a second call for the same assignment ' +
+      'replaces your earlier judgment rather than adding a second one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: str('Assignment id or prefix.'),
+        overall: { type: 'number', description: '1 to 5. 5 as good as a good colleague would do it, 1 unusable or invented.' },
+        comment: str('One to three sentences on what was good or bad. Optional.'),
+      },
+      required: ['id', 'overall'],
+      additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
+  },
+  {
+    name: 'agent_performance',
+    description:
+      'One agent\'s standing: review history, rolling average, trend, escalation stage, failure ' +
+      'rate, and its personnel record (notes, reconfigs, probation, replacement proposals). This ' +
+      'is the "development conversation" tool - open it before deciding whether a weak run is a ' +
+      'pattern or a one-off, and before update_agent on a flagged agent.',
+    inputSchema: {
+      type: 'object',
+      properties: { agent: str('Agent slug or name.') },
       required: ['agent'],
       additionalProperties: false,
     },

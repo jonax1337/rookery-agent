@@ -488,7 +488,7 @@ export class Assistant extends EventEmitter {
       resumed,
       // A voice session speaks whichever surface the turn came from.
       voice: input.voice ?? session.kind === 'voice',
-      orgBlock: assistantOrgBlock(this.config, snapshot, mail, project, this.cron.list(organization.id)),
+      orgBlock: assistantOrgBlock(this.config, snapshot, mail, project, this.cron.list(organization.id), this.store),
       toolHints,
       skillsIndex,
       // Lets the memory block group itself by entity.
@@ -629,7 +629,7 @@ export class Assistant extends EventEmitter {
         memories,
         resumed: true,
         voice: input.voice ?? session.kind === 'voice',
-        orgBlock: assistantOrgBlock(this.config, snapshot, [], project, this.cron.list(organization.id)),
+        orgBlock: assistantOrgBlock(this.config, snapshot, [], project, this.cron.list(organization.id), this.store),
         toolHints: [...next.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean),
         skillsIndex,
         store: this.store,

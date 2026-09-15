@@ -365,6 +365,26 @@ export const REQUESTER_LABEL: Record<RequesterKind, string> = {
   agent: 'By an agent',
 };
 
+/**
+ * An agent's escalation stage (agent-performance-management). Four pages
+ * show this badge - the agents list, the agent's own page, the org chart,
+ * the HR overview - so it is stated once, the same way `ASSIGNMENT_STATUS_*`
+ * above is.
+ */
+export const AGENT_STAGE_LABEL: Record<0 | 1 | 2 | 3, string> = {
+  0: 'Normal',
+  1: 'Flagged',
+  2: 'On probation',
+  3: 'Replacement proposed',
+};
+
+export const AGENT_STAGE_VARIANT: Record<0 | 1 | 2 | 3, 'default' | 'secondary' | 'destructive' | 'outline'> = {
+  0: 'secondary',
+  1: 'outline',
+  2: 'outline',
+  3: 'destructive',
+};
+
 /* -------------------------------- sentinels ------------------------------- */
 
 /**

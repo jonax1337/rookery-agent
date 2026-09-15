@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 15;
 
 export type Db = DatabaseSync;
 
@@ -588,6 +588,73 @@ function migrate(db: Db): void {
   migrateAgentMessagesToMail(db);
   backfillMailSessionKind(db);
   backfillScheduleSessionKind(db);
+
+  /* ------------------------- agent performance reviews -------------------------
+     docs/concepts/agent-performance-management.md. A review judges one
+     assignment against the agent's own role, never against other agents -
+     `agent_reviews` is organisation data, not a memory, so it never enters an
+     agent's own prompt. An action is the personnel record behind a review
+     trail: what actually changed about an agent, and why, so a later
+     reconfig can be judged and rolled back instead of vanishing the way
+     `updateAgent` silently overwrites `instructions` today. */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_reviews (
+      id            TEXT PRIMARY KEY,
+      org_id        TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      agent_id      TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      assignment_id TEXT REFERENCES assignments(id) ON DELETE CASCADE,
+      task_id       TEXT,
+      source        TEXT NOT NULL,
+      overall       INTEGER NOT NULL,
+      quality       INTEGER,
+      completeness  INTEGER,
+      reliability   INTEGER,
+      communication INTEGER,
+      efficiency    INTEGER,
+      comment       TEXT,
+      tags          TEXT NOT NULL DEFAULT '[]',
+      failed_run    INTEGER NOT NULL DEFAULT 0,
+      created_at    INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_reviews_agent
+      ON agent_reviews(agent_id, created_at DESC);
+    -- One effective review per source per assignment; a later user rating on
+    -- the same assignment upserts instead of stacking beside the first.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_reviews_once
+      ON agent_reviews(assignment_id, source);
+
+    CREATE TABLE IF NOT EXISTS agent_actions (
+      id                 TEXT PRIMARY KEY,
+      org_id             TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      agent_id           TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      kind               TEXT NOT NULL,
+      stage              INTEGER NOT NULL DEFAULT 0,
+      reason             TEXT NOT NULL,
+      before_text        TEXT,
+      after_text         TEXT,
+      agent_note         TEXT,
+      handover_text      TEXT,
+      review_ids         TEXT NOT NULL DEFAULT '[]',
+      decided_by         TEXT NOT NULL,
+      successor_agent_id TEXT,
+      created_at         INTEGER NOT NULL,
+      CHECK (kind <> 'reconfig' OR (before_text IS NOT NULL AND after_text IS NOT NULL))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_actions_agent
+      ON agent_actions(agent_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_agent_actions_successor
+      ON agent_actions(successor_agent_id);
+  `);
+
+  // Schema 14 -> 15: replacing an agent archives its memory bank instead of
+  // deleting it - archived rows stay auditable on the retired agent's page
+  // and, once the recall path is taught to filter them, out of reach for
+  // anyone else.
+  if (!hasColumn(db, 'memories', 'archived_at')) {
+    db.exec('ALTER TABLE memories ADD COLUMN archived_at INTEGER');
+  }
 
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',

@@ -2,14 +2,19 @@ import { useCallback, useMemo, useState } from 'react';
 import { NavLink, useNavigate, useParams } from 'react-router';
 import {
   ArchiveIcon,
+  ArrowRightIcon,
   BrainIcon,
   Building2Icon,
+  ClipboardListIcon,
   CpuIcon,
   InboxIcon,
   MailPlusIcon,
+  MinusIcon,
   PencilIcon,
   SendIcon,
   ShieldIcon,
+  TrendingDownIcon,
+  TrendingUpIcon,
   TriangleAlertIcon,
   UserRoundIcon,
   UsersIcon,
@@ -65,7 +70,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
 import {
   formatDuration,
@@ -75,7 +80,7 @@ import {
   shorten,
 } from '@/lib/format';
 import { average, formatNumber } from '@/lib/stats';
-import type { AgentDetail, Agent, Assignment, AssignmentView } from '@/lib/types';
+import type { AgentAction, AgentDetail, Agent, Assignment, AssignmentView } from '@/lib/types';
 import { useConfig, useConnection, useOrgState } from '@/providers/rookery-provider';
 
 /**
@@ -131,6 +136,15 @@ export function AgentDetailPage() {
   const assignments = useMemo(() => detail?.assignments ?? [], [detail]);
   const memories = useMemo(() => detail?.memories ?? [], [detail]);
   const reports = useMemo(() => detail?.reports ?? [], [detail]);
+  const performance = detail?.performance;
+  const actions = useMemo(() => detail?.actions ?? [], [detail]);
+  const predecessor = detail?.predecessor ?? null;
+  const successor = detail?.successor ?? null;
+  const handover = detail?.handover;
+  // Only the newest pending proposal ever matters: stage 3 with a
+  // `probation` action on top means nothing since has moved the agent on.
+  const pendingProposal =
+    performance?.stage === 3 && actions[0]?.kind === 'probation' ? actions[0] : undefined;
 
   /* -------------------------------- live now ------------------------------ */
 
@@ -496,6 +510,24 @@ export function AgentDetailPage() {
           {agent.slug}
         </Badge>
         {agent.archived && <Badge variant="secondary">archived</Badge>}
+        {performance ? <StatusBadge kind="agentStage" status={performance.stage} /> : null}
+        {predecessor ? (
+          <NavLink
+            to={'/org/agents/' + predecessor.id}
+            className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
+          >
+            Successor of {predecessor.name}
+          </NavLink>
+        ) : null}
+        {successor ? (
+          <NavLink
+            to={'/org/agents/' + successor.id}
+            className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
+          >
+            Replaced by {successor.name}
+            <ArrowRightIcon className="size-3.5" />
+          </NavLink>
+        ) : null}
       </div>
 
       <div className="px-4 lg:px-6">
@@ -535,6 +567,33 @@ export function AgentDetailPage() {
       </div>
 
       <StatCards items={cards} />
+
+      {performance ? (
+        <div className="grid gap-4 px-4 lg:px-6 lg:grid-cols-2">
+          <PerformanceCard performance={performance} />
+          <PersonnelRecordCard actions={actions} />
+        </div>
+      ) : null}
+
+      {handover ? (
+        <div className="px-4 lg:px-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Handover from {predecessor?.name}</CardTitle>
+              <CardDescription>Condensed working knowledge, carried over on replacement.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ResultMarkdown text={handover} />
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
+
+      {pendingProposal ? (
+        <div className="px-4 lg:px-6">
+          <ReplacementProposalCard agent={agent} action={pendingProposal} onDecided={() => void reload()} />
+        </div>
+      ) : null}
 
       {/* Live only while this agent has a run in flight, wherever it was
           started from - the org-wide broadcast Workstream B adds is what
@@ -780,6 +839,253 @@ export function AgentDetailPage() {
         )}
       </DetailDrawer>
     </PageBody>
+  );
+}
+
+/* ---------------------------------- parts --------------------------------- */
+
+/**
+ * "Leistung": the rolling average, its trend, the escalation stage and the
+ * failure rate kept apart from it - a technical failure rate has nothing to
+ * do with quality, so showing it folded into the average would blame an
+ * agent for infrastructure (docs/concepts/agent-performance-management.md).
+ */
+function PerformanceCard({ performance }: { performance: AgentDetail['performance'] }) {
+  const TrendIcon =
+    performance.trend === null ? null : performance.trend > 0.05 ? TrendingUpIcon : performance.trend < -0.05 ? TrendingDownIcon : MinusIcon;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Performance</CardTitle>
+        <CardDescription>
+          Rolling average over the last {performance.count || 0} reviews, judged against the role, never against other staff.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex items-baseline gap-3">
+          <span className="text-3xl font-semibold tabular-nums">
+            {performance.average !== null ? performance.average.toFixed(1) : '–'}
+          </span>
+          <span className="text-sm text-muted-foreground">/ 5</span>
+          {TrendIcon ? (
+            <span
+              className={
+                'flex items-center gap-1 text-sm ' +
+                (performance.trend !== null && performance.trend > 0.05
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : performance.trend !== null && performance.trend < -0.05
+                    ? 'text-destructive'
+                    : 'text-muted-foreground')
+              }
+            >
+              <TrendIcon className="size-4" />
+              {performance.trend !== null ? (performance.trend >= 0 ? '+' : '') + performance.trend.toFixed(1) : null}
+            </span>
+          ) : null}
+        </div>
+        {performance.average === null ? (
+          <p className="text-sm text-muted-foreground">Not enough reviewed assignments yet.</p>
+        ) : null}
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted-foreground">Failure rate (last 20)</span>
+          <span className="tabular-nums">{Math.round(performance.failureRate * 100)}%</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const ACTION_KIND_LABEL: Record<AgentAction['kind'], string> = {
+  note: 'Note',
+  reconfig: 'Reconfigured',
+  probation: 'Replacement proposed',
+  replace: 'Replaced',
+};
+
+/**
+ * "Personalakte": the personnel record, chronological, with a reconfig's
+ * before/after expandable. The agent's own `agentNote` text is marked as
+ * seen by the agent - everything else here never reaches its prompt
+ * (decision E2).
+ */
+function PersonnelRecordCard({ actions }: { actions: AgentAction[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Personnel record</CardTitle>
+        <CardDescription>Notes, reconfigs and proposals, most recent first.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {actions.length === 0 ? (
+          <EmptyState
+            icon={ClipboardListIcon}
+            title="Nothing on record"
+            description="No development note, reconfig or proposal has been logged yet."
+            variant="plain"
+            size="sm"
+          />
+        ) : (
+          <Accordion type="single" collapsible className="w-full">
+            {actions.map((action) => (
+              <AccordionItem key={action.id} value={action.id}>
+                <AccordionTrigger className="text-sm">
+                  <span className="flex flex-1 items-center gap-2 text-left">
+                    <Badge variant="outline">{ACTION_KIND_LABEL[action.kind]}</Badge>
+                    <span className="text-muted-foreground">{relativeTimeCell(action.createdAt)}</span>
+                  </span>
+                </AccordionTrigger>
+                <AccordionContent className="flex flex-col gap-3">
+                  {action.agentNote ? (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground">Feedback shown to the agent</p>
+                      <p className="text-sm">{action.agentNote}</p>
+                    </div>
+                  ) : null}
+                  {action.kind === 'reconfig' && action.beforeText && action.afterText ? (
+                    <div className="flex flex-col gap-2">
+                      <div>
+                        <p className="text-xs font-medium text-muted-foreground">Before</p>
+                        <p className="text-sm whitespace-pre-wrap text-muted-foreground line-through decoration-muted-foreground/40">
+                          {action.beforeText}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-muted-foreground">After</p>
+                        <p className="text-sm whitespace-pre-wrap">{action.afterText}</p>
+                      </div>
+                    </div>
+                  ) : null}
+                  {action.kind !== 'reconfig' || !action.agentNote ? (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground">Internal reason</p>
+                      <p className="text-sm whitespace-pre-wrap text-muted-foreground">{action.reason}</p>
+                    </div>
+                  ) : null}
+                </AccordionContent>
+              </AccordionItem>
+            ))}
+          </Accordion>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Pulls the successor draft out of a stage-3 `probation` action's `reason` text - see org/controller.ts#develop. */
+function parseProposal(reason: string): { name: string; slug: string; title: string; instructions: string } | null {
+  const match = reason.match(/Proposed successor: (.+?) \((.+?)\), (.+?)\.\n\n([\s\S]+)$/);
+  if (!match) return null;
+  const [, name, slug, title, instructions] = match;
+  if (!name || !slug || !title || !instructions) return null;
+  return { name, slug, title, instructions };
+}
+
+/**
+ * Stage 4's confirmation: not a modal, but a handled-in-place action item on
+ * the agent's own page (docs/concepts/agent-performance-management.md,
+ * section 6) - the reasoning, the drafted successor, and the editable
+ * handover, with the approval right below.
+ */
+function ReplacementProposalCard({
+  agent,
+  action,
+  onDecided,
+}: {
+  agent: Agent;
+  action: AgentAction;
+  onDecided: () => void;
+}) {
+  const draft = useMemo(() => parseProposal(action.reason), [action.reason]);
+  const [name, setName] = useState(draft?.name ?? '');
+  const [title, setTitle] = useState(draft?.title ?? agent.title);
+  const [instructions, setInstructions] = useState(draft?.instructions ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const approve = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.replaceAgent(agent.id, { name, title, instructions });
+      toast(name + ' hired in place of ' + agent.name);
+      onDecided();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : 'Could not complete the replacement.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card className="border-destructive/40">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <TriangleAlertIcon className="size-4 text-destructive" />
+          Replacement proposed
+        </CardTitle>
+        <CardDescription>
+          {agent.name} has been reconfigured and is still performing weakly. Review the successor draft below,
+          adjust anything, and approve to archive {agent.name} and hire the successor in their place.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <div>
+          <p className="text-xs font-medium text-muted-foreground">Why</p>
+          <p className="text-sm whitespace-pre-wrap">
+            {draft ? action.reason.slice(0, action.reason.indexOf('\n\nProposed successor:')) : action.reason}
+          </p>
+        </div>
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="successor-name">Successor name</FieldLabel>
+            <input
+              id="successor-name"
+              className="border-input flex h-9 w-full rounded-md border bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              disabled={busy}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="successor-title">Title</FieldLabel>
+            <input
+              id="successor-title"
+              className="border-input flex h-9 w-full rounded-md border bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              disabled={busy}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="successor-instructions">Standing instructions</FieldLabel>
+            <Textarea
+              id="successor-instructions"
+              rows={4}
+              value={instructions}
+              onChange={(event) => setInstructions(event.target.value)}
+              disabled={busy}
+            />
+          </Field>
+        </FieldGroup>
+        {error ? (
+          <Alert variant="destructive">
+            <TriangleAlertIcon />
+            <AlertTitle>The replacement failed</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+      </CardContent>
+      <CardContent className="pt-0">
+        <Button
+          variant="destructive"
+          disabled={busy || !name.trim() || !title.trim() || !instructions.trim()}
+          onClick={() => void approve()}
+        >
+          <ArchiveIcon data-icon="inline-start" />
+          Archive {agent.name} and hire {name || 'successor'}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 

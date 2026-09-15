@@ -1,7 +1,29 @@
 # Leistungsbewertung fuer Agenten (HR-Modell)
 
-Stand: 2026-09-10. Konzept, kein Code. Betrifft `packages/core/src/org/`, `packages/core/src/memory/db.ts`,
-`packages/server/src/routes/org.ts` und die Firmen-Seiten der Web-UI.
+Stand: 2026-09-10, Umsetzung nachgetragen am 2026-09-15. **Alle vier Phasen umgesetzt.** Code liegt in
+`packages/core/src/memory/db.ts` (Schema 15), `packages/core/src/org/store.ts`, `org/controller.ts`,
+`org/review.ts` (die Modellaufrufe), `org/tools.ts`; Server in `packages/server/src/routes/org.ts` und
+`schemas.ts`; UI in `AssignmentDetailPage.tsx` (Sternleiste), `AgentDetailPage.tsx` (Leistung,
+Personalakte, Uebergabe, Trennungs-Handlungspunkt), `OrgAgentsPage.tsx` (Stage-Spalte), `DashboardPage.tsx`
+(Firma-Kachel). Zwei Seiten kamen ueber das Konzept hinaus hinzu, auf Nutzerwunsch:
+`OrgHrPage.tsx` (`/org/hr`, firmenweite Uebersicht) und `OrgChartPage.tsx` (`/org/chart`, Organigramm nach
+`Agent.managerId`) — beide unten in Abschnitt 9 dokumentiert, nicht Teil des urspruenglichen Konzepts.
+
+Zwei Abweichungen vom Text unten, beide bewusst:
+
+- **E5 (neu, 2026-09-15) — Jarvis' Bewertung laeuft nie auf dem kleinen Modell.** Der Text unten (Abschnitt
+  2, "Wer bewertet wann") modelliert die automatische Bewertung auf `#learn` und damit auf
+  `smallModelFor`. Jonas widersprach explizit: Eine Bewertung ist ein Urteil, keine Extraktion — dieselbe
+  Begruendung wie E6 in `memory-graph-and-sleep.md` fuer den Schlaf. `org/review.ts` ruft deshalb nie
+  `smallModelFor` auf; jeder Aufruf (Review, Note, Reconfig, Replacement-Vorschlag, Handover) laeuft auf
+  dem Standardmodell des Providers, sofern kein anderes explizit gesetzt ist.
+- **Stufe 3 vereinfacht: ein Reconfig statt zwei.** Abschnitt 4 unten erlaubt bis zu zwei Reconfigs
+  innerhalb von 20 Auftraegen, bevor eine Ersetzung vorgeschlagen wird. Die Idempotenz-Regel in
+  `#develop` (nur handeln, wenn die berechnete Stufe die Stufe der letzten Massnahme uebersteigt) kann
+  "bleibe auf Stufe 2, aber fuehre eine zweite Reconfig aus" ohne zusaetzlichen gespeicherten Zustand
+  nicht ausdruecken — genau das schliesst O1 aus. Ein Bewaehrungsfenster nach dem einen Reconfig
+  entscheidet daher direkt: erholt (Stufe 0) oder Ersetzung vorgeschlagen (Stufe 3), nie ein zweiter
+  automatischer Reconfig. Siehe Kommentar bei `stageFromReviews` in `org/store.ts`.
 
 ## 1. Zielsetzung
 
@@ -279,3 +301,23 @@ Alles in bestehende Seiten, keine Modals (Konvention aus `CLAUDE.md`).
 
 Phase 1 und 2 sind unabhaengig nutzbar (reines Feedback-System). Erst Phase 3 aendert Agenten,
 erst Phase 4 trennt sich von ihnen. Ab Phase 3 aendert Jarvis Agenten selbstaendig - deshalb gehoert die Personalakte in dieselbe Phase und nicht spaeter.
+
+## 9. HR-Uebersicht und Organigramm (ueber das Konzept hinaus)
+
+Zwei Seiten, die Jonas beim Umsetzen zusaetzlich wollte - nicht im urspruenglichen Konzept, hier
+nachgetragen, damit sie nicht verwaist im Code stehen:
+
+- **`GET /api/org/performance`** (neu): fuer jeden aktiven Agenten `{ agent, performance, pendingProposal }`
+  in einem Aufruf - die eine Abfrage, auf der beide Seiten unten stehen, statt N+1 Aufrufen von
+  `GET /api/org/agents/:id`.
+- **`/org/hr`** (`OrgHrPage.tsx`) - "Personalabteilung": offene Ersetzungsvorschlaege oben als
+  Handlungspunkte (verlinkt auf die Agentenseite, wo der Entwurf und die Freigabe liegen - keine
+  Duplizierung der Freigabe-UI), darunter jeder aktive Agent nach Stufe und Schnitt sortiert,
+  schwaechster zuerst.
+- **`/org/chart`** (`OrgChartPage.tsx`) - das Organigramm. Zeigt genau `Agent.managerId` als Baum, mit dem
+  Assistenten als synthetischer Wurzel fuer alle Agenten ohne Manager; ein Team ist im Datenmodell keine
+  Baumebene (es nistet keine Agenten unter sich), sondern eine Zuordnung - taucht deshalb bewusst nicht
+  als Ebene auf. Eingerueckte, verbundene Liste statt Kaesten-und-Linien-Diagramm: bei einer kleinen
+  Firma genauso lesbar und bricht nicht auf schmalen Bildschirmen.
+
+Beide sitzen als weitere Tabs unter `/org` (`OrgLayout.tsx`), neben Agents/Teams/Projects.

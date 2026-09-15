@@ -11,6 +11,7 @@ import type {
   Agent,
   AgentDetail,
   AgentMessage,
+  AgentReview,
   Assignment,
   AssignmentDetail,
   AssignmentStatus,
@@ -31,6 +32,7 @@ import type {
   MemoryStats,
   Message,
   Organization,
+  OrgPerformanceEntry,
   OrgSnapshot,
   PermissionLevel,
   Project,
@@ -151,6 +153,24 @@ export interface MigrationResult {
   jobs?: string[];
   backupPath?: string;
   warnings: string[];
+}
+
+export interface ReplaceAgentInput {
+  name: string;
+  slug?: string;
+  title: string;
+  instructions: string;
+  handover?: string;
+}
+
+export interface AssignmentReviewInput {
+  overall: number;
+  quality?: number;
+  completeness?: number;
+  reliability?: number;
+  communication?: number;
+  efficiency?: number;
+  comment?: string;
 }
 
 export interface ProjectInput {
@@ -517,6 +537,7 @@ export const api = {
   /* ------------------------------ organisation ----------------------------- */
 
   org: () => request<OrgSnapshot>('/api/org'),
+  orgPerformance: () => request<OrgPerformanceEntry[]>('/api/org/performance'),
 
   updateOrganization: (id: string, patch: { name?: string; mission?: Nullable<string> }) =>
     request<Organization>('/api/org/organizations/' + id, { method: 'PATCH', ...json(patch) }),
@@ -547,6 +568,18 @@ export const api = {
     request<Agent>('/api/org/agents/' + id, { method: 'PATCH', ...json(patch) }),
   deleteAgent: (id: string) =>
     request<{ ok: true }>('/api/org/agents/' + id, { method: 'DELETE' }),
+  agentReviews: (id: string, options: { limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (options.limit) params.set('limit', String(options.limit));
+    const query = params.toString();
+    return request<AgentReview[]>('/api/org/agents/' + id + '/reviews' + (query ? '?' + query : ''));
+  },
+  /** Stage 4: the user approving a pending replacement proposal. */
+  replaceAgent: (id: string, input: ReplaceAgentInput) =>
+    request<{ predecessor: Agent; successor: Agent }>('/api/org/agents/' + id + '/replace', {
+      method: 'POST',
+      ...json(input),
+    }),
 
   assignments: (
     options: { limit?: number; status?: AssignmentStatus[]; agentId?: string } = {},
@@ -561,6 +594,8 @@ export const api = {
   assignment: (id: string) => request<AssignmentDetail>('/api/org/assignments/' + id),
   cancelAssignment: (id: string) =>
     request<{ ok: true }>('/api/org/assignments/' + id + '/cancel', { method: 'POST' }),
+  reviewAssignment: (id: string, input: AssignmentReviewInput) =>
+    request<AgentReview>('/api/org/assignments/' + id + '/review', { method: 'POST', ...json(input) }),
 
   /* ---------------------------------- tasks -------------------------------- */
 

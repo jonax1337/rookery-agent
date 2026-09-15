@@ -136,6 +136,27 @@ export const patchAgentSchema = z.object({
   archived: z.boolean().optional(),
 });
 
+/** POST /api/org/assignments/:id/review - a user rating, upserted per assignment. */
+export const assignmentReviewSchema = z.object({
+  overall: z.number().int().min(1).max(5),
+  quality: z.number().int().min(1).max(5).optional(),
+  completeness: z.number().int().min(1).max(5).optional(),
+  reliability: z.number().int().min(1).max(5).optional(),
+  communication: z.number().int().min(1).max(5).optional(),
+  efficiency: z.number().int().min(1).max(5).optional(),
+  comment: z.string().max(2000).optional(),
+});
+
+/** POST /api/org/agents/:id/replace - stage 4, the user approving a replacement proposal. */
+export const replaceAgentSchema = z.object({
+  name: z.string().min(1, 'name must not be empty'),
+  slug: z.string().optional(),
+  title: z.string().min(1, 'title must not be empty'),
+  instructions: z.string().min(1, 'instructions must not be empty'),
+  /** Overrides the auto-generated handover document. Optional. */
+  handover: z.string().optional(),
+});
+
 export const taskSchema = z.object({
   title: z.string().min(1, 'title must not be empty'),
   description: z.string().min(1, 'description must not be empty'),

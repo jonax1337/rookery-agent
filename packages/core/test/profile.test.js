@@ -78,7 +78,10 @@ test('runtime supplies the portable profile through MCP-only assistant turns and
   const runs = [];
   const provider = { id: 'claude', displayName: 'Fake', models: () => [], async status() { return { id: 'claude', available: true, authenticated: true }; }, async *run(options) { runs.push(options); yield { type: 'session', providerSessionId: 'fake-session' }; yield { type: 'text', delta: 'Hello' }; yield { type: 'done' }; } };
   const home = mkdtempSync(join(tmpdir(), 'rookery-profile-runtime-'));
-  const assistant = new Assistant({ config: { home, logLevel: 'silent', memory: { autoExtract: false }, tools: { servers: [] } }, registry: new ProviderRegistry([provider]) });
+  const assistant = new Assistant({
+    config: { home, logLevel: 'silent', memory: { autoExtract: false }, tools: { servers: [] }, org: { autoReview: false } },
+    registry: new ProviderRegistry([provider]),
+  });
   t.after(async () => { await assistant.org.bridge.close(); assistant.close(); rmSync(home, { recursive: true, force: true }); });
   writeProfileFile(assistant.config, 'SOUL.md', 'You are Nova.');
   let sessionId;

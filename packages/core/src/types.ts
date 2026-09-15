@@ -237,6 +237,12 @@ export interface MemoryRecord {
   /** The sleep run that wrote this memory, when one did. */
   sleepRunId?: string;
   /**
+   * Set when the agent this belonged to was replaced (agent-performance-
+   * management, phase 4). Archived memories stay out of recall for good but
+   * remain visible, audit-only, on the retired agent's own page.
+   */
+  archivedAt?: number;
+  /**
    * 0..1 - how often this memory actually got recalled. Separate from
    * `importance` on purpose: importance says how much it should matter,
    * usefulness says how much it demonstrably did.
@@ -528,6 +534,97 @@ export interface AssignmentView {
   lastActivity?: { kind: 'tool' | 'status'; label: string; at: number };
   durationMs?: number;
   error?: string;
+}
+
+/** Who judged a run: a hard signal with no model call, Jarvis, or the user. */
+export type ReviewSource = 'user' | 'assistant' | 'system';
+
+/**
+ * A judgment of one completed assignment, always against the agent's own
+ * role - never against other agents. `overall` is its own judgement rather
+ * than an average of the five dimensions below: averaging would wash out
+ * exactly the outlier that makes a review worth having.
+ *
+ * Organisation data, not a memory: it never enters `memories` and never
+ * reaches the reviewed agent's own prompt (see
+ * docs/concepts/agent-performance-management.md, decision E2).
+ */
+export interface AgentReview {
+  id: string;
+  orgId: string;
+  agentId: string;
+  /** Unset for a periodic review with no single run behind it. */
+  assignmentId?: string;
+  /** Convenience for the UI; the assignment id is the durable link. */
+  taskId?: string;
+  source: ReviewSource;
+  /** 1..5, the only required judgement. */
+  overall: number;
+  quality?: number;
+  completeness?: number;
+  reliability?: number;
+  communication?: number;
+  efficiency?: number;
+  /** One to three sentences on what was good or bad. */
+  comment?: string;
+  tags: string[];
+  /**
+   * A technically failed run (timeout, no provider, empty output) - counts
+   * toward the agent's failure rate, never toward its quality average.
+   */
+  failedRun: boolean;
+  createdAt: number;
+}
+
+export type AgentActionKind = 'note' | 'reconfig' | 'probation' | 'replace';
+
+/**
+ * The personnel record behind a review trail: what actually changed about an
+ * agent, and why. Exists so a `reconfig` is a documented, reversible step
+ * instead of `updateAgent` silently overwriting `instructions`.
+ */
+export interface AgentAction {
+  id: string;
+  orgId: string;
+  agentId: string;
+  kind: AgentActionKind;
+  /** The escalation stage in effect when this action was taken. */
+  stage: number;
+  /** Internal diagnosis with evidence; the agent never sees this. */
+  reason: string;
+  /** Required together with `afterText` when `kind` is `reconfig`. */
+  beforeText?: string;
+  afterText?: string;
+  /** Qualitative feedback addressed to the agent itself - no numbers, no dimension names. */
+  agentNote?: string;
+  /** Set on `replace`: the condensed handover for the successor. */
+  handoverText?: string;
+  /** The reviews that justified this action. */
+  reviewIds: string[];
+  decidedBy: 'user' | 'assistant';
+  /** Set on `replace`: the newly hired agent taking over. */
+  successorAgentId?: string;
+  createdAt: number;
+}
+
+/**
+ * The computed, never-materialised view of one agent's standing: a rolling
+ * average over effective reviews, a trend, the escalation stage, and a
+ * failure rate kept apart from it so infrastructure trouble never reads as a
+ * quality problem. See `OrgStore.performance()`.
+ */
+export interface AgentPerformance {
+  /** Mean `overall` of the last 10 effective, non-failed reviews. Null with fewer than 3. */
+  average: number | null;
+  /** How many effective reviews fed the average. */
+  count: number;
+  /** avg(last 5) - avg(previous 5). Null with fewer than 10 effective reviews. */
+  trend: number | null;
+  /** 0 normal, 1 flagged, 2 reconfigured/on probation, 3 replacement proposed. */
+  stage: 0 | 1 | 2 | 3;
+  /** Technically failed runs over the last 20 effective reviews, 0..1. */
+  failureRate: number;
+  lastReviewAt?: number;
 }
 
 export interface AgentMessage {
@@ -1140,6 +1237,13 @@ export interface OrgConfig {
    * judgement.
    */
   lazyCoding: boolean;
+  /**
+   * Jarvis's own judgment of every finished assignment, one model call in
+   * the background (agent-performance-management, phase 2). On by default;
+   * off leaves only the automatic `system` review that hard failures write
+   * with no model call at all.
+   */
+  autoReview: boolean;
   /** Explicitly chosen company; the newest one otherwise. */
   activeOrganizationId?: string;
 }
