@@ -51,7 +51,13 @@ export function PageBody({ width = 'full', className, children }: PageBodyProps)
   }, [pathname]);
 
   return (
-    <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+    <div
+      ref={scrollRef}
+      // `scrollbar-gutter: stable` keeps the content width still when a tab or
+      // filter drops the content below the viewport height - without it the
+      // disappearing scrollbar makes the whole table jump 10px sideways.
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]"
+    >
       {/*
         The measure sits on the container-query element on purpose: a card row
         inside a 2xl page should count its columns against 2xl, not against the

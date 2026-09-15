@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from 'recharts';
 
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import {
   Card,
   CardAction,
@@ -273,178 +274,204 @@ export function TrendChartCard<T extends TrendPoint>({
   return (
     <Card className={cn('@container/card', className)}>
       <CardHeader>
-        <CardTitle>{title}</CardTitle>
+        {/*
+          The head fades in with a small stagger (title, then description).
+          `asChild` puts the fade on the cards' own divs, so the header grid
+          keeps addressing the very same children and the resting DOM stays
+          what it was - a wrapper div would sit between them for no reason.
+        */}
+        <Fade asChild>
+          <CardTitle>{title}</CardTitle>
+        </Fade>
         {description !== undefined ? (
-          <CardDescription>
-            {descriptionShort !== undefined ? (
-              <>
-                <span className="hidden @[540px]/card:block">{description}</span>
-                <span className="@[540px]/card:hidden">{descriptionShort}</span>
-              </>
-            ) : (
-              description
-            )}
-          </CardDescription>
+          <Fade asChild delay={50}>
+            <CardDescription>
+              {descriptionShort !== undefined ? (
+                <>
+                  <span className="hidden @[540px]/card:block">{description}</span>
+                  <span className="@[540px]/card:hidden">{descriptionShort}</span>
+                </>
+              ) : (
+                description
+              )}
+            </CardDescription>
+          </Fade>
         ) : null}
-        <CardAction className="flex items-center gap-2">
-          {badge}
-          <ToggleGroup
-            type="single"
-            value={activeRange}
-            onValueChange={(value) => {
-              if (value) setRange(value as TrendRange);
-            }}
-            variant="outline"
-            className="hidden *:data-[slot=toggle-group-item]:px-4! @[767px]/card:flex"
-          >
-            {RANGES.map((value) => (
-              <ToggleGroupItem key={value} value={value}>
-                {RANGE_LABEL[value]}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-          <Select value={activeRange} onValueChange={(value) => setRange(value as TrendRange)}>
-            <SelectTrigger
-              className="flex w-40 **:data-[slot=select-value]:block **:data-[slot=select-value]:truncate @[767px]/card:hidden"
-              size="sm"
-              aria-label="Choose time range"
+        {/*
+          The toolbar follows the description and completes the head's
+          stagger. `asChild` again, and for a harder reason than looks: the
+          header grid places CardAction by its own grid classes, and a wrapper
+          div between them would forfeit the column the action sits in.
+        */}
+        <Fade asChild delay={100}>
+          <CardAction className="flex items-center gap-2">
+            {badge}
+            <ToggleGroup
+              type="single"
+              value={activeRange}
+              onValueChange={(value) => {
+                if (value) setRange(value as TrendRange);
+              }}
+              variant="outline"
+              className="hidden *:data-[slot=toggle-group-item]:px-4! @[767px]/card:flex"
             >
-              <SelectValue placeholder={RANGE_LABEL['90d']} />
-            </SelectTrigger>
-            <SelectContent className="rounded-xl">
               {RANGES.map((value) => (
-                <SelectItem key={value} value={value} className="rounded-lg">
+                <ToggleGroupItem key={value} value={value}>
                   {RANGE_LABEL[value]}
-                </SelectItem>
+                </ToggleGroupItem>
               ))}
-            </SelectContent>
-          </Select>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
-        {filtered.length === 0 ? (
-          empty
-        ) : (
-          <>
-            {/*
-              Die Kurve ist ein Bild aus <path>-Elementen: ohne Textfassung
-              bleibt von ihr nichts uebrig, was vorgelesen werden koennte. Die
-              Tabelle unter dem Diagramm ist genau diese Fassung, deshalb ist
-              das Diagramm selbst fuer Vorlesehilfen ausgeblendet - sonst
-              stuende dieselbe Reihe zweimal da. Bedienbar ist im Diagramm
-              nichts, was dabei verloren ginge; der Zeitraumschalter sitzt im
-              Kartenkopf.
-            */}
-            <ChartContainer
-              config={chartConfig}
-              aria-hidden="true"
-              className="aspect-auto h-[250px] w-full"
-            >
-              <AreaChart data={filtered.slice()}>
-                <defs>
-                  {series.map((entry, index) => (
-                    <linearGradient
-                      key={entry.key}
-                      id={`${gradientPrefix}-fill-${entry.key}`}
-                      x1="0"
-                      y1="0"
-                      x2="0"
-                      y2="1"
-                    >
-                      <stop
-                        offset="5%"
-                        stopColor={`var(--color-${entry.key})`}
-                        stopOpacity={index === 0 ? 1.0 : 0.8}
-                      />
-                      <stop
-                        offset="95%"
-                        stopColor={`var(--color-${entry.key})`}
-                        stopOpacity={0.1}
-                      />
-                    </linearGradient>
-                  ))}
-                </defs>
-                <CartesianGrid vertical={false} />
-                <XAxis
-                  dataKey="day"
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={8}
-                  minTickGap={32}
-                  tickFormatter={(value) => formatDayAxis(value as string)}
-                />
-                {/*
-                  Narrow on purpose: the curve is the message, the scale is the
-                  footnote. `allowDecimals={false}` because every series here
-                  counts whole things, and four ticks is the most that fits a
-                  250 px plot without turning into a ruler.
-                */}
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  width={32}
-                  allowDecimals={false}
-                  tickCount={4}
-                  tickFormatter={(value) => formatNumber(value as number)}
-                />
-                <ChartTooltip
-                  cursor={false}
-                  content={
-                    <ChartTooltipContent
-                      labelFormatter={(value) => formatDate(value as string)}
-                      indicator="dot"
-                    />
-                  }
-                />
-                {series.map((entry) => (
-                  <Area
-                    key={entry.key}
-                    dataKey={entry.key}
-                    // The block draws `"natural"`. Its spline overshoots around
-                    // a spike, and on a thin counting series that pulls the
-                    // curve visibly below the zero line before a busy day -
-                    // the chart claiming minus two conversations. Monotone
-                    // interpolation cannot overshoot, so correctness wins over
-                    // block fidelity at exactly this one line.
-                    type="monotone"
-                    fill={`url(#${gradientPrefix}-fill-${entry.key})`}
-                    stroke={`var(--color-${entry.key})`}
-                    stackId="a"
-                  />
+            </ToggleGroup>
+            <Select value={activeRange} onValueChange={(value) => setRange(value as TrendRange)}>
+              <SelectTrigger
+                className="flex w-40 **:data-[slot=select-value]:block **:data-[slot=select-value]:truncate @[767px]/card:hidden"
+                size="sm"
+                aria-label="Choose time range"
+              >
+                <SelectValue placeholder={RANGE_LABEL['90d']} />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl">
+                {RANGES.map((value) => (
+                  <SelectItem key={value} value={value} className="rounded-lg">
+                    {RANGE_LABEL[value]}
+                  </SelectItem>
                 ))}
-                {/* One band needs no key: the title already names it. */}
-                {series.length > 1 ? <ChartLegend content={<ChartLegendContent />} /> : null}
-              </AreaChart>
-            </ChartContainer>
-            <table className="sr-only">
-              <caption>
-                {title}
-                {' — ' + RANGE_LABEL[activeRange]}
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">Day</th>
+              </SelectContent>
+            </Select>
+          </CardAction>
+        </Fade>
+      </CardHeader>
+      {/*
+        The body joins one step after the head. `asChild` puts the fade on the
+        card's own content div, so ResponsiveContainer measures the very box
+        it always did - only its opacity moves, never its layout.
+      */}
+      <Fade asChild delay={150}>
+        <CardContent className="px-2 pt-4 sm:px-6 sm:pt-6">
+          {filtered.length === 0 ? (
+            /* Fades in per mount - also when a range switch empties the window. */
+            <Fade>{empty}</Fade>
+          ) : (
+            <>
+              {/*
+                Die Kurve ist ein Bild aus <path>-Elementen: ohne Textfassung
+                bleibt von ihr nichts uebrig, was vorgelesen werden koennte. Die
+                Tabelle unter dem Diagramm ist genau diese Fassung, deshalb ist
+                das Diagramm selbst fuer Vorlesehilfen ausgeblendet - sonst
+                stuende dieselbe Reihe zweimal da. Bedienbar ist im Diagramm
+                nichts, was dabei verloren ginge; der Zeitraumschalter sitzt im
+                Kartenkopf.
+              */}
+              <ChartContainer
+                config={chartConfig}
+                aria-hidden="true"
+                className="aspect-auto h-[250px] w-full"
+              >
+                <AreaChart data={filtered.slice()}>
+                  <defs>
+                    {series.map((entry, index) => (
+                      <linearGradient
+                        key={entry.key}
+                        id={`${gradientPrefix}-fill-${entry.key}`}
+                        x1="0"
+                        y1="0"
+                        x2="0"
+                        y2="1"
+                      >
+                        <stop
+                          offset="5%"
+                          stopColor={`var(--color-${entry.key})`}
+                          stopOpacity={index === 0 ? 1.0 : 0.8}
+                        />
+                        <stop
+                          offset="95%"
+                          stopColor={`var(--color-${entry.key})`}
+                          stopOpacity={0.1}
+                        />
+                      </linearGradient>
+                    ))}
+                  </defs>
+                  <CartesianGrid vertical={false} />
+                  <XAxis
+                    dataKey="day"
+                    tickLine={false}
+                    axisLine={false}
+                    tickMargin={8}
+                    minTickGap={32}
+                    tickFormatter={(value) => formatDayAxis(value as string)}
+                  />
+                  {/*
+                    Narrow on purpose: the curve is the message, the scale is the
+                    footnote. `allowDecimals={false}` because every series here
+                    counts whole things, and four ticks is the most that fits a
+                    250 px plot without turning into a ruler.
+                  */}
+                  <YAxis
+                    tickLine={false}
+                    axisLine={false}
+                    width={32}
+                    allowDecimals={false}
+                    tickCount={4}
+                    tickFormatter={(value) => formatNumber(value as number)}
+                  />
+                  <ChartTooltip
+                    cursor={false}
+                    content={
+                      <ChartTooltipContent
+                        labelFormatter={(value) => formatDate(value as string)}
+                        indicator="dot"
+                      />
+                    }
+                  />
                   {series.map((entry) => (
-                    <th key={entry.key} scope="col">
-                      {entry.label}
-                    </th>
+                    <Area
+                      key={entry.key}
+                      dataKey={entry.key}
+                      // The block draws `"natural"`. Its spline overshoots around
+                      // a spike, and on a thin counting series that pulls the
+                      // curve visibly below the zero line before a busy day -
+                      // the chart claiming minus two conversations. Monotone
+                      // interpolation cannot overshoot, so correctness wins over
+                      // block fidelity at exactly this one line.
+                      type="monotone"
+                      fill={`url(#${gradientPrefix}-fill-${entry.key})`}
+                      stroke={`var(--color-${entry.key})`}
+                      stackId="a"
+                    />
                   ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((point) => (
-                  <tr key={point.day}>
-                    <th scope="row">{formatDate(point.day)}</th>
+                  {/* One band needs no key: the title already names it. */}
+                  {series.length > 1 ? <ChartLegend content={<ChartLegendContent />} /> : null}
+                </AreaChart>
+              </ChartContainer>
+              <table className="sr-only">
+                <caption>
+                  {title}
+                  {' — ' + RANGE_LABEL[activeRange]}
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Day</th>
                     {series.map((entry) => (
-                      <td key={entry.key}>{formatNumber(seriesValue(point, entry.key))}</td>
+                      <th key={entry.key} scope="col">
+                        {entry.label}
+                      </th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </>
-        )}
-      </CardContent>
+                </thead>
+                <tbody>
+                  {filtered.map((point) => (
+                    <tr key={point.day}>
+                      <th scope="row">{formatDate(point.day)}</th>
+                      {series.map((entry) => (
+                        <td key={entry.key}>{formatNumber(seriesValue(point, entry.key))}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </CardContent>
+      </Fade>
     </Card>
   );
 }

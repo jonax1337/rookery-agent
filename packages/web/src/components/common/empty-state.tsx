@@ -1,7 +1,9 @@
-import type * as React from 'react';
+import * as React from 'react';
 import { NavLink } from 'react-router';
-import { PlugZapIcon, SearchXIcon, ServerOffIcon } from 'lucide-react';
+import { SearchXIcon, ServerOffIcon } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { PlugZapIcon } from '@/components/animate-ui/icons/plug-zap';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { Button } from '@/components/ui/button';
 import {
   Empty,
@@ -21,6 +23,10 @@ import { cn } from '@/lib/utils';
  * about it, and each one sat at a different size in a different place. A
  * symbol, a sentence and a way forward - that is the whole contract, and the
  * call to action is the part that earns the component.
+ *
+ * Motion: the block fades in where it mounts and the way forward joins a tenth
+ * of a second later, so the eye lands on the symbol before the remedy. Icons
+ * with an animate-ui twin (the reconnect plug) pulse once in view.
  */
 
 export interface EmptyStateProps {
@@ -63,41 +69,55 @@ export function EmptyState({
   const hasButton = Boolean(actionLabel && (actionTo || onAction));
 
   return (
-    <Empty
-      className={cn(
-        variant === 'outline' && 'border',
-        size === 'sm' && 'gap-3 p-6',
-        className,
-      )}
-    >
-      <EmptyHeader>
-        {Icon && (
-          <EmptyMedia variant="icon" className={cn(size === 'sm' && 'mb-1 size-8')}>
-            <Icon />
-          </EmptyMedia>
+    <Fade asChild>
+      <Empty
+        className={cn(
+          variant === 'outline' && 'border',
+          size === 'sm' && 'gap-3 p-6',
+          className,
         )}
-        <EmptyTitle className={cn(size === 'sm' && 'text-base')}>{title}</EmptyTitle>
-        {description && <EmptyDescription>{description}</EmptyDescription>}
-      </EmptyHeader>
+      >
+        <EmptyHeader>
+          {Icon && (
+            <EmptyMedia variant="icon" className={cn(size === 'sm' && 'mb-1 size-8')}>
+              <Icon />
+            </EmptyMedia>
+          )}
+          <EmptyTitle className={cn(size === 'sm' && 'text-base')}>{title}</EmptyTitle>
+          {description && <EmptyDescription>{description}</EmptyDescription>}
+        </EmptyHeader>
 
-      {(hasButton || action) && (
-        <EmptyContent>
-          {hasButton &&
-            (actionTo ? (
-              <Button asChild size={size === 'sm' ? 'sm' : 'default'}>
-                <NavLink to={actionTo}>{actionLabel}</NavLink>
-              </Button>
-            ) : (
-              <Button type="button" size={size === 'sm' ? 'sm' : 'default'} onClick={onAction}>
-                {actionLabel}
-              </Button>
-            ))}
-          {action}
-        </EmptyContent>
-      )}
-    </Empty>
+        {(hasButton || action) && (
+          <Fade asChild delay={100}>
+            <EmptyContent>
+              {hasButton &&
+                (actionTo ? (
+                  <Button asChild size={size === 'sm' ? 'sm' : 'default'}>
+                    <NavLink to={actionTo}>{actionLabel}</NavLink>
+                  </Button>
+                ) : (
+                  <Button type="button" size={size === 'sm' ? 'sm' : 'default'} onClick={onAction}>
+                    {actionLabel}
+                  </Button>
+                ))}
+              {action}
+            </EmptyContent>
+          </Fade>
+        )}
+      </Empty>
+    </Fade>
   );
 }
+
+/**
+ * The reconnect empty state swaps its lucide plug for the animate-ui one:
+ * same silhouette and stroke, the bolt pulses once when the state enters
+ * the viewport. `EmptyState` types its `icon` as a `LucideIcon` and renders
+ * it without props, so the `animateOnView` trigger rides along in this shell.
+ */
+const AnimatedPlugZapIcon = React.forwardRef<SVGSVGElement>(function AnimatedPlugZapIcon() {
+  return <PlugZapIcon size={24} animateOnView />;
+});
 
 /**
  * The server is not answering.
@@ -117,7 +137,7 @@ export function ServerOffline({
 }) {
   return (
     <EmptyState
-      icon={onRetry ? PlugZapIcon : ServerOffIcon}
+      icon={onRetry ? AnimatedPlugZapIcon : ServerOffIcon}
       title="No connection to the Rookery server"
       description="The data on this page may be out of date. Is the server still running?"
       actionLabel={onRetry ? 'Try again' : undefined}

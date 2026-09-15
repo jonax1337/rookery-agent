@@ -1,6 +1,7 @@
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import { NavLink } from 'react-router';
 import type { LucideIcon } from 'lucide-react';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -36,26 +37,28 @@ export function NavSecondary({
   return (
     <SidebarGroup {...props}>
       <SidebarGroupContent>
-        <SidebarMenu>
-          {items.map((item) => (
-            <SidebarMenuItem key={item.title}>
-              {item.url ? (
-                <SidebarMenuButton asChild tooltip={item.title} isActive={item.isActive}>
-                  <NavLink to={item.url} onClick={() => setOpenMobile(false)}>
+        <Fade delay={100}>
+          <SidebarMenu>
+            {items.map((item) => (
+              <SidebarMenuItem key={item.title}>
+                {item.url ? (
+                  <SidebarMenuButton asChild tooltip={item.title} isActive={item.isActive}>
+                    <NavLink to={item.url} onClick={() => setOpenMobile(false)}>
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </NavLink>
+                  </SidebarMenuButton>
+                ) : (
+                  <SidebarMenuButton tooltip={item.title} onClick={item.onClick}>
                     <item.icon />
                     <span>{item.title}</span>
-                  </NavLink>
-                </SidebarMenuButton>
-              ) : (
-                <SidebarMenuButton tooltip={item.title} onClick={item.onClick}>
-                  <item.icon />
-                  <span>{item.title}</span>
-                </SidebarMenuButton>
-              )}
-              {item.badge !== undefined && <SidebarMenuBadge>{item.badge}</SidebarMenuBadge>}
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
+                  </SidebarMenuButton>
+                )}
+                {item.badge !== undefined && <SidebarMenuBadge>{item.badge}</SidebarMenuBadge>}
+              </SidebarMenuItem>
+            ))}
+          </SidebarMenu>
+        </Fade>
       </SidebarGroupContent>
     </SidebarGroup>
   );

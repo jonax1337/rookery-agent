@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
-import { ChevronRightIcon, MinusIcon, SquareArrowOutUpRightIcon, TrendingDownIcon, TrendingUpIcon, TriangleAlertIcon, UsersIcon } from 'lucide-react';
+import {
+  ChevronRightIcon,
+  MinusIcon,
+  SquareArrowOutUpRightIcon,
+  TrendingDownIcon,
+  TrendingUpIcon,
+  TriangleAlertIcon,
+} from 'lucide-react';
+import type { LucideIcon, LucideProps } from 'lucide-react';
 
 import { api } from '@/lib/api';
 import type { OrgPerformanceEntry } from '@/lib/types';
 import { usePageMeta } from '@/components/shell/page-meta';
+import { UsersIcon } from '@/components/animate-ui/icons/users';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import { actionsColumn, emptyCell } from '@/components/blocks/data-table/table-columns';
@@ -54,6 +65,12 @@ function TrendCell({ trend }: { trend: number | null }) {
     </span>
   );
 }
+
+/**
+ * `EmptyState` expects a lucide component; this bridges to the animated
+ * users icon so the empty table's symbol bounces in on view.
+ */
+const UsersEmptyIcon = (() => <UsersIcon animateOnView size={24} />) as unknown as LucideIcon;
 
 export function OrgHrPage() {
   usePageMeta({ title: 'HR' }, []);
@@ -164,70 +181,80 @@ export function OrgHrPage() {
   return (
     <div className="flex flex-col gap-4">
       {proposals.length > 0 ? (
-        <div className="px-4 lg:px-6">
-          <Card className="border-destructive/40">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <TriangleAlertIcon className="size-4 text-destructive" />
-                {proposals.length === 1 ? 'One replacement proposed' : proposals.length + ' replacements proposed'}
-              </CardTitle>
-              <CardDescription>
-                Review the successor draft and approve or adjust it on the agent&apos;s own page.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              {proposals.map((row) => (
-                <NavLink
-                  key={row.agent.id}
-                  to={'/org/agents/' + row.agent.id}
-                  className="flex items-center justify-between gap-2 rounded-lg border p-3 text-sm hover:bg-accent"
-                >
-                  <span>
-                    <span className="font-medium">{row.agent.name}</span>
-                    <span className="text-muted-foreground"> · {row.agent.title}</span>
-                  </span>
-                  <ChevronRightIcon className="size-4 text-muted-foreground" />
-                </NavLink>
-              ))}
-            </CardContent>
-          </Card>
-        </div>
+        <Fade>
+          <div className="px-4 lg:px-6">
+            <Card className="border-destructive/40">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <TriangleAlertIcon className="size-4 text-destructive" />
+                  {proposals.length === 1 ? (
+                    'One replacement proposed'
+                  ) : (
+                    <span>
+                      <CountingNumber number={proposals.length} /> replacements proposed
+                    </span>
+                  )}
+                </CardTitle>
+                <CardDescription>
+                  Review the successor draft and approve or adjust it on the agent&apos;s own page.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2">
+                {proposals.map((row) => (
+                  <NavLink
+                    key={row.agent.id}
+                    to={'/org/agents/' + row.agent.id}
+                    className="flex items-center justify-between gap-2 rounded-lg border p-3 text-sm hover:bg-accent"
+                  >
+                    <span>
+                      <span className="font-medium">{row.agent.name}</span>
+                      <span className="text-muted-foreground"> · {row.agent.title}</span>
+                    </span>
+                    <ChevronRightIcon className="size-4 text-muted-foreground" />
+                  </NavLink>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+        </Fade>
       ) : null}
 
-      <DataTable
-        data={rows}
-        columns={columns}
-        getRowId={(row) => row.agent.id}
-        idPrefix="hr"
-        onRowClick={(row) => void navigate('/org/agents/' + row.agent.id)}
-        rowClickIgnoreColumns={['name', 'actions']}
-        searchable
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Search agents"
-        searchText={(row) => row.agent.name + ' ' + row.agent.title}
-        columnLabels={COLUMN_LABELS}
-        initialSorting={[
-          { id: 'stage', desc: true },
-          { id: 'average', desc: false },
-        ]}
-        rowLabel={{ singular: 'Agent', plural: 'Agents' }}
-        loading={loading && !entries}
-        error={error && !entries ? <ServerOffline onRetry={() => void load()} /> : undefined}
-        empty={
-          <EmptyState
-            icon={UsersIcon}
-            title="No agents yet"
-            description="Hire an agent to see their performance here once they have completed a few assignments."
-            actionLabel="Hire agent"
-            actionTo="/org/agents/new"
-            variant="plain"
-          />
-        }
-        filteredEmpty={
-          <NoResults {...(search.trim() ? { query: search.trim() } : {})} onReset={() => setSearch('')} />
-        }
-      />
+      <Fade delay={50}>
+        <DataTable
+          data={rows}
+          columns={columns}
+          getRowId={(row) => row.agent.id}
+          idPrefix="hr"
+          onRowClick={(row) => void navigate('/org/agents/' + row.agent.id)}
+          rowClickIgnoreColumns={['name', 'actions']}
+          searchable
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Search agents"
+          searchText={(row) => row.agent.name + ' ' + row.agent.title}
+          columnLabels={COLUMN_LABELS}
+          initialSorting={[
+            { id: 'stage', desc: true },
+            { id: 'average', desc: false },
+          ]}
+          rowLabel={{ singular: 'Agent', plural: 'Agents' }}
+          loading={loading && !entries}
+          error={error && !entries ? <ServerOffline onRetry={() => void load()} /> : undefined}
+          empty={
+            <EmptyState
+              icon={UsersEmptyIcon}
+              title="No agents yet"
+              description="Hire an agent to see their performance here once they have completed a few assignments."
+              actionLabel="Hire agent"
+              actionTo="/org/agents/new"
+              variant="plain"
+            />
+          }
+          filteredEmpty={
+            <NoResults {...(search.trim() ? { query: search.trim() } : {})} onReset={() => setSearch('')} />
+          }
+        />
+      </Fade>
     </div>
   );
 }

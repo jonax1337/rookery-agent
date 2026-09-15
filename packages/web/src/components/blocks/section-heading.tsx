@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { cn } from '@/lib/utils';
 
 /**
@@ -34,10 +35,10 @@ export function SectionHeading({
 }: SectionHeadingProps) {
   return (
     <div className={cn('flex flex-col gap-4', className)}>
-      <div className={flush ? undefined : 'px-4 lg:px-6'}>
+      <Fade className={flush ? undefined : 'px-4 lg:px-6'} delay={50}>
         <h2 className="text-base font-medium">{title}</h2>
         {hint ? <p className="text-sm text-muted-foreground">{hint}</p> : null}
-      </div>
+      </Fade>
       {children}
     </div>
   );

@@ -1,25 +1,45 @@
-"use client"
-
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 import { Tabs as TabsPrimitive } from "radix-ui"
+import { AnimatePresence, motion, type HTMLMotionProps } from "motion/react"
+
+import { getStrictContext } from "@/lib/get-strict-context"
+import { useControlledState } from "@/hooks/use-controlled-state"
+
+type TabsProps = React.ComponentProps<typeof TabsPrimitive.Root>
+
+type TabsContextType = {
+  value: string | undefined
+  setValue: TabsProps["onValueChange"]
+}
+
+const [TabsProvider, useTabs] = getStrictContext<TabsContextType>("TabsContext")
 
 function Tabs({
   className,
   orientation = "horizontal",
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Root>) {
+}: TabsProps) {
+  const [value, setValue] = useControlledState({
+    value: props.value,
+    defaultValue: props.defaultValue,
+    onChange: props.onValueChange,
+  })
+
   return (
-    <TabsPrimitive.Root
-      data-slot="tabs"
-      data-orientation={orientation}
-      className={cn(
-        "group/tabs flex gap-2 data-horizontal:flex-col",
-        className
-      )}
-      {...props}
-    />
+    <TabsProvider value={{ value, setValue }}>
+      <TabsPrimitive.Root
+        data-slot="tabs"
+        data-orientation={orientation}
+        className={cn(
+          "group/tabs flex gap-2 data-horizontal:flex-col",
+          className
+        )}
+        {...props}
+        onValueChange={setValue}
+      />
+    </TabsProvider>
   )
 }
 
@@ -73,16 +93,37 @@ function TabsTrigger({
   )
 }
 
+type TabsContentProps = React.ComponentProps<typeof TabsPrimitive.Content> &
+  HTMLMotionProps<"div">
+
 function TabsContent({
+  value,
+  forceMount,
+  transition = { duration: 0.3, ease: "easeOut" },
   className,
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Content>) {
+}: TabsContentProps) {
   return (
-    <TabsPrimitive.Content
-      data-slot="tabs-content"
-      className={cn("flex-1 text-sm outline-none", className)}
-      {...props}
-    />
+    <AnimatePresence mode="wait">
+      <TabsPrimitive.Content asChild forceMount={forceMount} value={value}>
+        {/*
+          Bewusst ohne `layout`/`layoutDependency`: eine Layout-Projektion
+          tweent die Groessenaenderung als scale-Matrix ueber den Inhalt und
+          verzerrt dabei alles (Tab-Wechsel an einer Datentabelle mit stark
+          unterschiedlicher Zeilenzahl sah aus wie gequetscht). Der Wechsel
+          faedet und blurred nur - die Hoehe springt sofort, ohne Verzerrung.
+        */}
+        <motion.div
+          data-slot="tabs-content"
+          initial={{ opacity: 0, filter: "blur(4px)" }}
+          animate={{ opacity: 1, filter: "blur(0px)" }}
+          exit={{ opacity: 0, filter: "blur(4px)" }}
+          transition={transition}
+          className={cn("flex-1 text-sm outline-none", className)}
+          {...props}
+        />
+      </TabsPrimitive.Content>
+    </AnimatePresence>
   )
 }
 

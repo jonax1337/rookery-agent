@@ -1,13 +1,37 @@
-"use client"
-
 import * as React from "react"
 import { cn } from "cn"
 import { Popover as PopoverPrimitive } from "radix-ui"
+import { AnimatePresence, motion, type HTMLMotionProps } from "motion/react"
+
+import { getStrictContext } from "@/lib/get-strict-context"
+import { useControlledState } from "@/hooks/use-controlled-state"
+
+type PopoverContextType = {
+  isOpen: boolean
+  setIsOpen: (isOpen: boolean) => void
+}
+
+const [PopoverProvider, usePopover] =
+  getStrictContext<PopoverContextType>("PopoverContext")
 
 function Popover({
   ...props
 }: React.ComponentProps<typeof PopoverPrimitive.Root>) {
-  return <PopoverPrimitive.Root data-slot="popover" {...props} />
+  const [isOpen, setIsOpen] = useControlledState({
+    value: props?.open,
+    defaultValue: props?.defaultOpen,
+    onChange: props?.onOpenChange,
+  })
+
+  return (
+    <PopoverProvider value={{ isOpen, setIsOpen }}>
+      <PopoverPrimitive.Root
+        data-slot="popover"
+        {...props}
+        onOpenChange={setIsOpen}
+      />
+    </PopoverProvider>
+  )
 }
 
 function PopoverTrigger({
@@ -16,25 +40,76 @@ function PopoverTrigger({
   return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />
 }
 
+type PopoverContentProps = Omit<
+  React.ComponentProps<typeof PopoverPrimitive.Content>,
+  "forceMount" | "asChild"
+> &
+  HTMLMotionProps<"div">
+
 function PopoverContent({
   className,
   align = "center",
   sideOffset = 4,
+  onOpenAutoFocus,
+  onCloseAutoFocus,
+  onEscapeKeyDown,
+  onPointerDownOutside,
+  onFocusOutside,
+  onInteractOutside,
+  alignOffset,
+  side,
+  avoidCollisions,
+  collisionBoundary,
+  collisionPadding,
+  arrowPadding,
+  sticky,
+  hideWhenDetached,
+  transition = { type: "spring", stiffness: 300, damping: 25 },
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+}: PopoverContentProps) {
+  const { isOpen } = usePopover()
+
   return (
-    <PopoverPrimitive.Portal>
-      <PopoverPrimitive.Content
-        data-slot="popover-content"
-        align={align}
-        sideOffset={sideOffset}
-        className={cn(
-          "z-50 flex w-72 origin-(--radix-popover-content-transform-origin) flex-col gap-4 rounded-md bg-popover p-4 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-hidden duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          className
-        )}
-        {...props}
-      />
-    </PopoverPrimitive.Portal>
+    <AnimatePresence>
+      {isOpen && (
+        <PopoverPrimitive.Portal forceMount>
+          <PopoverPrimitive.Content
+            asChild
+            forceMount
+            align={align}
+            alignOffset={alignOffset}
+            side={side}
+            sideOffset={sideOffset}
+            avoidCollisions={avoidCollisions}
+            collisionBoundary={collisionBoundary}
+            collisionPadding={collisionPadding}
+            arrowPadding={arrowPadding}
+            sticky={sticky}
+            hideWhenDetached={hideWhenDetached}
+            onOpenAutoFocus={onOpenAutoFocus}
+            onCloseAutoFocus={onCloseAutoFocus}
+            onEscapeKeyDown={onEscapeKeyDown}
+            onPointerDownOutside={onPointerDownOutside}
+            onInteractOutside={onInteractOutside}
+            onFocusOutside={onFocusOutside}
+          >
+            <motion.div
+              key="popover-content"
+              data-slot="popover-content"
+              initial={{ opacity: 0, scale: 0.5 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.5 }}
+              transition={transition}
+              className={cn(
+                "z-50 flex w-72 origin-(--radix-popover-content-transform-origin) flex-col gap-4 rounded-md bg-popover p-4 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-hidden",
+                className
+              )}
+              {...props}
+            />
+          </PopoverPrimitive.Content>
+        </PopoverPrimitive.Portal>
+      )}
+    </AnimatePresence>
   )
 }
 

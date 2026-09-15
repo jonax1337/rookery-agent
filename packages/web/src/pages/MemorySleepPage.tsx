@@ -1,5 +1,5 @@
-import { useCallback, useMemo, useState } from 'react';
-import { MoonIcon, RotateCcwIcon, SunIcon, TriangleAlertIcon } from 'lucide-react';
+import { forwardRef, useCallback, useMemo, useState } from 'react';
+import { RotateCcwIcon, TriangleAlertIcon } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { reportFailure } from '@/lib/errors';
@@ -10,6 +10,14 @@ import { bucketByDay, daysAgo, formatDateTime, formatNumber } from '@/lib/stats'
 import type { SleepRun } from '@/lib/types';
 import { SLEEP_RUN_LIMIT } from '@/hooks/useMemories';
 import { useMemoryState } from '@/providers/rookery-provider';
+import { MoonIcon as AnimatedMoonIcon } from '@/components/animate-ui/icons/moon';
+import { SunIcon as AnimatedSunIcon } from '@/components/animate-ui/icons/sun';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import {
+  RotatingText,
+  RotatingTextContainer,
+} from '@/components/animate-ui/primitives/texts/rotating';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import { EMPTY_CELL, actionsColumn } from '@/components/blocks/data-table/table-columns';
@@ -101,6 +109,15 @@ function undoable(run: SleepRun): boolean {
 function reportText(run: SleepRun): string {
   return run.error ?? run.report ?? '';
 }
+
+/**
+ * The empty-state moon as an animate-ui version. `EmptyState` takes a
+ * `LucideIcon` and renders it without props, so the animated icon sits in a
+ * forwardRef shell that carries its `animateOnView` trigger along.
+ */
+const EmptyMoonIcon = forwardRef<SVGSVGElement>(function EmptyMoonIcon() {
+  return <AnimatedMoonIcon animateOnView />;
+});
 
 export function MemorySleepPage() {
   const { sleep } = useMemoryState();
@@ -295,142 +312,170 @@ export function MemorySleepPage() {
     <>
       {dialog}
 
-      <div className="px-4 lg:px-6">
-        <TrendChartCard
-          title="What the nights produced"
-          description={
-            'Consolidated, linked, put to sleep, and resolved per night, as recorded by the server.' +
-            (runs.length > 0
-              ? ' Based on the latest ' +
-                formatNumber(runs.length) +
-                (runs.length === 1 ? ' recorded night.' : ' recorded nights.')
-              : '')
-          }
-          descriptionShort="Per night"
-          data={nights}
-          series={NIGHT_SERIES}
-          {...cappedBadge(runsCapped)}
-          empty={
-            <EmptyState
-              icon={MoonIcon}
-              title="No night ran during this period"
-              description="A longer period may show more."
-              variant="plain"
-              size="sm"
-            />
-          }
-        />
-      </div>
+      <Fade asChild>
+        <div className="px-4 lg:px-6">
+          <TrendChartCard
+            title="What the nights produced"
+            description={
+              'Consolidated, linked, put to sleep, and resolved per night, as recorded by the server.' +
+              (runs.length > 0
+                ? ' Based on the latest ' +
+                  formatNumber(runs.length) +
+                  (runs.length === 1 ? ' recorded night.' : ' recorded nights.')
+                : '')
+            }
+            descriptionShort="Per night"
+            data={nights}
+            series={NIGHT_SERIES}
+            {...cappedBadge(runsCapped)}
+            empty={
+              <Fade>
+                <EmptyState
+                  icon={EmptyMoonIcon}
+                  title="No night ran during this period"
+                  description="A longer period may show more."
+                  variant="plain"
+                  size="sm"
+                />
+              </Fade>
+            }
+          />
+        </div>
+      </Fade>
 
-      <div className="px-4 lg:px-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex flex-wrap items-center gap-2">
-              <MoonIcon
-                className={running ? 'animate-pulse text-primary' : 'text-muted-foreground'}
-                aria-hidden="true"
-              />
-              Sleep
-              {running ? (
-                <>
-                  <Badge variant="secondary">{SLEEP_PHASE_LABEL[sleep.phase] ?? 'is running'}</Badge>
-                  {sleep.cycle > 0 ? (
-                    <span className="text-sm font-normal text-muted-foreground tabular-nums">
-                      Cycle {formatNumber(sleep.cycle)}
-                    </span>
-                  ) : null}
-                  <Spinner aria-label="Running" />
-                </>
+      <Fade asChild delay={50}>
+        <div className="px-4 lg:px-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex flex-wrap items-center gap-2">
+                {/* size keeps the resting pose: the card title has no CSS
+                    sizing for svgs, and lucide's default was 24. */}
+                <AnimatedMoonIcon
+                  animateOnHover
+                  size={24}
+                  className={running ? 'animate-pulse text-primary' : 'text-muted-foreground'}
+                  aria-hidden="true"
+                />
+                Sleep
+                {running ? (
+                  <>
+                    {/* The one label here that changes on its own; RotatingText
+                        slides it over whenever the sleep phase flips. The
+                        container's default block padding is zeroed so the
+                        badge keeps its height. */}
+                    <Badge variant="secondary">
+                      <RotatingTextContainer
+                        text={SLEEP_PHASE_LABEL[sleep.phase] ?? 'is running'}
+                        style={{ paddingBlock: 0 }}
+                      >
+                        <RotatingText />
+                      </RotatingTextContainer>
+                    </Badge>
+                    {sleep.cycle > 0 ? (
+                      <span className="text-sm font-normal text-muted-foreground tabular-nums">
+                        Cycle{' '}
+                        <SlidingNumber number={sleep.cycle} thousandSeparator="," />
+                      </span>
+                    ) : null}
+                    <Spinner aria-label="Running" />
+                  </>
+                ) : null}
+              </CardTitle>
+              <CardDescription>
+                {running
+                  ? (SLEEP_PHASE_DETAIL[sleep.phase] ?? 'Memory is being reorganized.')
+                  : 'Light sleep cleans up, deep sleep consolidates and resolves conflicts, and dream sleep creates connections and insights. Nothing is deleted.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <div className="flex flex-wrap items-center gap-2">
+                {running ? (
+                  <Button variant="outline" onClick={() => void sleep.cancel()}>
+                    {/* animateOnView, not animateOnHover: the button base carries
+                        `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
+                    <AnimatedSunIcon data-icon="inline-start" animateOnView />
+                    Wake
+                  </Button>
+                ) : (
+                  <Button disabled={sleep.busy} onClick={() => void start()}>
+                    {sleep.busy ? (
+                      <Spinner data-icon="inline-start" aria-hidden="true" />
+                    ) : (
+                      <AnimatedMoonIcon data-icon="inline-start" animateOnView />
+                    )}
+                    Run memory sleep now
+                  </Button>
+                )}
+                <span className="text-sm text-muted-foreground">
+                  {nextRun
+                    ? 'Next run ' + nextRun
+                    : config?.enabled === false
+                      ? 'The nightly run is disabled.'
+                      : 'No schedule configured.'}
+                </span>
+              </div>
+
+              {config ? (
+                <MetaList
+                  columns={3}
+                  items={[
+                    { label: 'Schedule', value: config.schedule, mono: true },
+                    {
+                      label: 'Scope',
+                      value: config.scope === 'all' ? 'Assistant and agents' : 'assistant only',
+                    },
+                    { label: 'Cycles per night', value: formatNumber(config.cycles) },
+                    { label: 'Consolidate with', value: config.model || 'Default model' },
+                    {
+                      label: 'Generate insights with',
+                      value: config.insightModel || config.model || 'Default model',
+                    },
+                    {
+                      label: 'Put to sleep after',
+                      value: formatNumber(config.dormantAfterDays) + ' days without recall',
+                    },
+                  ]}
+                />
               ) : null}
-            </CardTitle>
-            <CardDescription>
-              {running
-                ? (SLEEP_PHASE_DETAIL[sleep.phase] ?? 'Memory is being reorganized.')
-                : 'Light sleep cleans up, deep sleep consolidates and resolves conflicts, and dream sleep creates connections and insights. Nothing is deleted.'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <div className="flex flex-wrap items-center gap-2">
-              {running ? (
-                <Button variant="outline" onClick={() => void sleep.cancel()}>
-                  <SunIcon data-icon="inline-start" />
-                  Wake
-                </Button>
-              ) : (
-                <Button disabled={sleep.busy} onClick={() => void start()}>
-                  {sleep.busy ? (
-                    <Spinner data-icon="inline-start" aria-hidden="true" />
-                  ) : (
-                    <MoonIcon data-icon="inline-start" />
-                  )}
-                  Run memory sleep now
-                </Button>
-              )}
-              <span className="text-sm text-muted-foreground">
-                {nextRun
-                  ? 'Next run ' + nextRun
-                  : config?.enabled === false
-                    ? 'The nightly run is disabled.'
-                    : 'No schedule configured.'}
-              </span>
-            </div>
+            </CardContent>
+          </Card>
+        </div>
+      </Fade>
 
-            {config ? (
-              <MetaList
-                columns={3}
-                items={[
-                  { label: 'Schedule', value: config.schedule, mono: true },
-                  {
-                    label: 'Scope',
-                    value: config.scope === 'all' ? 'Assistant and agents' : 'assistant only',
-                  },
-                  { label: 'Cycles per night', value: formatNumber(config.cycles) },
-                  { label: 'Consolidate with', value: config.model || 'Default model' },
-                  {
-                    label: 'Generate insights with',
-                    value: config.insightModel || config.model || 'Default model',
-                  },
-                  {
-                    label: 'Put to sleep after',
-                    value: formatNumber(config.dormantAfterDays) + ' days without recall',
-                  },
-                ]}
-              />
-            ) : null}
-          </CardContent>
-        </Card>
-      </div>
-
-      <SectionHeading title="Nights" hint="Recent nightly cleanup runs.">
-        <DataTable
-          data={runs}
-          columns={columns}
-          getRowId={(run) => run.id}
-          idPrefix="naechte"
-          initialSorting={[{ id: 'startedAt', desc: true }]}
-          pageSize={10}
-          columnLabels={COLUMN_LABELS}
-          initialColumnVisibility={{ readCount: false, modelCalls: false }}
-          rowLabel={{ singular: 'Night', plural: 'nights' }}
-          capped={runsCapped}
-          loading={sleep.loading}
-          onRowClick={setReport}
-          rowClickIgnoreColumns={['actions']}
-          rowClassName={(run) => (run.undoneAt ? 'opacity-70' : undefined)}
-          error={sleep.error ? <ServerOffline onRetry={() => void sleep.refresh()} /> : undefined}
-          empty={
-            <EmptyState
-              icon={MoonIcon}
-              title="No nights have run yet"
-              description="A night tidies memory, consolidates duplicates and creates connections. You can review the report and undo recorded changes."
-              actionLabel="Run memory sleep now"
-              onAction={() => void start()}
-              variant="plain"
-              size="sm"
-            />
-          }
-        />
-      </SectionHeading>
+      <Fade delay={100}>
+        <SectionHeading title="Nights" hint="Recent nightly cleanup runs.">
+          <DataTable
+            data={runs}
+            columns={columns}
+            getRowId={(run) => run.id}
+            idPrefix="naechte"
+            initialSorting={[{ id: 'startedAt', desc: true }]}
+            pageSize={10}
+            columnLabels={COLUMN_LABELS}
+            initialColumnVisibility={{ readCount: false, modelCalls: false }}
+            rowLabel={{ singular: 'Night', plural: 'nights' }}
+            capped={runsCapped}
+            loading={sleep.loading}
+            onRowClick={setReport}
+            rowClickIgnoreColumns={['actions']}
+            rowClassName={(run) => (run.undoneAt ? 'opacity-70' : undefined)}
+            error={sleep.error ? <ServerOffline onRetry={() => void sleep.refresh()} /> : undefined}
+            empty={
+              <Fade>
+                <EmptyState
+                  icon={EmptyMoonIcon}
+                  title="No nights have run yet"
+                  description="A night tidies memory, consolidates duplicates and creates connections. You can review the report and undo recorded changes."
+                  actionLabel="Run memory sleep now"
+                  onAction={() => void start()}
+                  variant="plain"
+                  size="sm"
+                />
+              </Fade>
+            }
+          />
+        </SectionHeading>
+      </Fade>
 
       {/*
         One drawer for the whole table instead of one per row: two hundred

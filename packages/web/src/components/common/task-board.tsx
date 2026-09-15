@@ -16,6 +16,8 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from '@dnd-kit/utilities';
 import { GripVerticalIcon } from 'lucide-react';
 
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { StatusBadge } from '@/components/common/status-badge';
 import { Badge } from '@/components/ui/badge';
 import { isSettableTaskStatus, TASK_STATUS_LABEL, TASK_STATUS_ORDER } from '@/lib/format';
@@ -161,15 +163,19 @@ export function TaskBoard({ tasks, agentById, onOpenDetail, onStatusChange, onRe
       onDragCancel={() => setColumns(byColumn(tasks))}
     >
       <div className="flex gap-4 overflow-x-auto pb-2">
-        {TASK_STATUS_ORDER.map((status) => (
-          <BoardColumn
-            key={status}
-            status={status}
-            taskIds={columns[status]}
-            tasksById={tasksById}
-            agentById={agentById}
-            onOpenDetail={onOpenDetail}
-          />
+        {TASK_STATUS_ORDER.map((status, index) => (
+          // The Fade wrapper only owns the mount fade and the flex-child slot
+          // (`flex` keeps the column stretching to the row height); the
+          // droppable node itself stays untouched so dnd-kit keeps its rects.
+          <Fade key={status} delay={Math.min(index * 50, 400)} className="flex w-72 shrink-0">
+            <BoardColumn
+              status={status}
+              taskIds={columns[status]}
+              tasksById={tasksById}
+              agentById={agentById}
+              onOpenDetail={onOpenDetail}
+            />
+          </Fade>
         ))}
       </div>
       <DragOverlay>
@@ -206,7 +212,9 @@ function BoardColumn({ status, taskIds, tasksById, agentById, onOpenDetail }: Bo
     >
       <div className="flex items-center justify-between px-1 pt-1">
         <span className="text-sm font-medium">{TASK_STATUS_LABEL[status]}</span>
-        <Badge variant="outline">{taskIds.length}</Badge>
+        <Badge variant="outline">
+          <SlidingNumber number={taskIds.length} fromNumber={0} />
+        </Badge>
       </div>
       <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
         <div className="flex min-h-8 flex-col gap-2">

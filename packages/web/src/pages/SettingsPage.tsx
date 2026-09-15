@@ -1,19 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, Navigate, useNavigate, useParams } from 'react-router';
 import {
-  AudioLinesIcon,
   BrainIcon,
   Building2Icon,
   ImportIcon,
   PaletteIcon,
-  SlidersHorizontalIcon,
   SquareIcon,
-  UserRoundIcon,
-  Volume2Icon,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useTheme } from 'next-themes';
 
+import { ThemeTogglerButton } from '@/components/animate-ui/components/buttons/theme-toggler';
+import { AudioLinesIcon } from '@/components/animate-ui/icons/audio-lines';
+import { SlidersHorizontalIcon } from '@/components/animate-ui/icons/sliders-horizontal';
+import { UserRoundIcon } from '@/components/animate-ui/icons/user-round';
+import { Volume2Icon } from '@/components/animate-ui/icons/volume-2';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { FormPage } from '@/components/blocks/form-page';
 import { PageBody } from '@/components/blocks/page-body';
 import { EmptyState } from '@/components/common/empty-state';
@@ -134,12 +135,34 @@ interface SectionMeta {
   icon: LucideIcon;
 }
 
+/*
+  Drei der sieben Abschnitts-Icons gibt es als animate-ui-Fassung; sie spielen
+  ihre kleine Geste beim Hover der Navigation ab. Der Rest bleibt Lucide, weil
+  die Bibliothek kein Gegenstueck hat (Migration, Memory, Organization,
+  Appearance). Der forwardRef-Mantel ist noetig, weil `SectionMeta.icon` als
+  LucideIcon getypt ist und prop-los gerendert wird - derselbe Trick wie
+  AnimatedPlugZapIcon im EmptyState.
+*/
+const AnimatedUserRoundIcon = forwardRef<SVGSVGElement>(function AnimatedUserRoundIcon() {
+  return <UserRoundIcon animateOnHover />;
+});
+
+const AnimatedSlidersHorizontalIcon = forwardRef<SVGSVGElement>(
+  function AnimatedSlidersHorizontalIcon() {
+    return <SlidersHorizontalIcon animateOnHover />;
+  },
+);
+
+const AnimatedAudioLinesIcon = forwardRef<SVGSVGElement>(function AnimatedAudioLinesIcon() {
+  return <AudioLinesIcon animateOnHover />;
+});
+
 const SECTIONS = [
   {
     slug: 'identity',
     label: 'Identity',
     description: 'The assistant name and how it addresses the user.',
-    icon: UserRoundIcon,
+    icon: AnimatedUserRoundIcon,
   },
   {
     slug: 'migration',
@@ -151,13 +174,13 @@ const SECTIONS = [
     slug: 'defaults',
     label: 'Defaults',
     description: 'How conversations start when no other options are selected.',
-    icon: SlidersHorizontalIcon,
+    icon: AnimatedSlidersHorizontalIcon,
   },
   {
     slug: 'voice',
     label: 'Voice',
     description: 'How spoken replies are generated and how they sound.',
-    icon: AudioLinesIcon,
+    icon: AnimatedAudioLinesIcon,
   },
   {
     slug: 'memory',
@@ -406,12 +429,25 @@ export function SettingsPage() {
             <SectionSkeleton />
           ) : (
             <>
-              {current.slug === 'identity' ? <><IdentitySection draft={draft} set={set} /><AssistantProfile /></> : null}
-              {current.slug === 'migration' ? <AssistantMigration /> : null}
+              {current.slug === 'identity' ? (
+                <>
+                  <IdentitySection draft={draft} set={set} />
+                  <Fade delay={50}>
+                    <AssistantProfile />
+                  </Fade>
+                </>
+              ) : null}
+              {current.slug === 'migration' ? (
+                <Fade>
+                  <AssistantMigration />
+                </Fade>
+              ) : null}
               {current.slug === 'defaults' ? (
                 <>
                   <DefaultsSection draft={draft} providers={providers} set={set} />
-                  <ProviderProfilesSection providers={providers} />
+                  <Fade delay={200}>
+                    <ProviderProfilesSection providers={providers} />
+                  </Fade>
                 </>
               ) : null}
               {current.slug === 'voice' ? (
@@ -458,29 +494,31 @@ function SectionNav({
         <SelectContent>{SECTIONS.map((entry) => <SelectItem key={entry.slug} value={entry.slug}>{entry.label}</SelectItem>)}</SelectContent>
       </Select>
 
-      <ItemGroup className="hidden gap-1 self-start md:sticky md:top-6 md:flex">
-        {SECTIONS.map((entry) => {
-          const selected = entry.slug === current.slug;
-          return (
-            <Item
-              key={entry.slug}
-              asChild
-              size="sm"
-              variant={selected ? 'muted' : 'default'}
-              className={cn(selected && 'font-medium text-foreground')}
-            >
-              <NavLink to={'/settings/' + entry.slug}>
-                <ItemMedia variant="icon">
-                  <entry.icon />
-                </ItemMedia>
-                <ItemContent>
-                  <ItemTitle>{entry.label}</ItemTitle>
-                </ItemContent>
-              </NavLink>
-            </Item>
-          );
-        })}
-      </ItemGroup>
+      <Fade asChild>
+        <ItemGroup className="hidden gap-1 self-start md:sticky md:top-6 md:flex">
+          {SECTIONS.map((entry) => {
+            const selected = entry.slug === current.slug;
+            return (
+              <Item
+                key={entry.slug}
+                asChild
+                size="sm"
+                variant={selected ? 'muted' : 'default'}
+                className={cn(selected && 'font-medium text-foreground')}
+              >
+                <NavLink to={'/settings/' + entry.slug}>
+                  <ItemMedia variant="icon">
+                    <entry.icon />
+                  </ItemMedia>
+                  <ItemContent>
+                    <ItemTitle>{entry.label}</ItemTitle>
+                  </ItemContent>
+                </NavLink>
+              </Item>
+            );
+          })}
+        </ItemGroup>
+      </Fade>
     </>
   );
 }
@@ -509,56 +547,58 @@ function IdentitySection({
   set(patch: Partial<PublicConfig>): void;
 }) {
   return (
-    <FieldSet>
-      <Field>
-        <FieldLabel htmlFor="set-name">Assistant name</FieldLabel>
-        <Input
-          id="set-name"
-          value={draft.assistantName}
-          onChange={(event) => set({ assistantName: event.target.value })}
-        />
-        <FieldDescription>
-          Display name in the sidebar and spoken replies. Also used by default profile templates; imported Markdown keeps its own identity.
-        </FieldDescription>
-      </Field>
-
-      <Field>
-        <FieldLabel htmlFor="set-user">User name</FieldLabel>
-        <Input
-          id="set-user"
-          value={draft.userName ?? ''}
-          placeholder="optional"
-          onChange={(event) => set({ userName: event.target.value })}
-        />
-      </Field>
-
-      <Field orientation="horizontal">
-        <FieldContent>
-          <FieldLabel htmlFor="set-formal">Formal address</FieldLabel>
+    <Fade>
+      <FieldSet>
+        <Field>
+          <FieldLabel htmlFor="set-name">Assistant name</FieldLabel>
+          <Input
+            id="set-name"
+            value={draft.assistantName}
+            onChange={(event) => set({ assistantName: event.target.value })}
+          />
           <FieldDescription>
-            Use a formal register in both chat and voice conversations.
+            Display name in the sidebar and spoken replies. Also used by default profile templates; imported Markdown keeps its own identity.
           </FieldDescription>
-        </FieldContent>
-        <Switch
-          id="set-formal"
-          checked={draft.formalAddress}
-          onCheckedChange={(on) => set({ formalAddress: on })}
-        />
-      </Field>
+        </Field>
 
-      <Field>
-        <FieldLabel htmlFor="set-honorific">Honorific</FieldLabel>
-        <Input
-          id="set-honorific"
-          value={draft.honorific}
-          placeholder="optional"
-          onChange={(event) => set({ honorific: event.target.value })}
-        />
-        <FieldDescription>
-          An occasional form of address, such as “Sir”. Leave empty to use the user name above.
-        </FieldDescription>
-      </Field>
-    </FieldSet>
+        <Field>
+          <FieldLabel htmlFor="set-user">User name</FieldLabel>
+          <Input
+            id="set-user"
+            value={draft.userName ?? ''}
+            placeholder="optional"
+            onChange={(event) => set({ userName: event.target.value })}
+          />
+        </Field>
+
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="set-formal">Formal address</FieldLabel>
+            <FieldDescription>
+              Use a formal register in both chat and voice conversations.
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="set-formal"
+            checked={draft.formalAddress}
+            onCheckedChange={(on) => set({ formalAddress: on })}
+          />
+        </Field>
+
+        <Field>
+          <FieldLabel htmlFor="set-honorific">Honorific</FieldLabel>
+          <Input
+            id="set-honorific"
+            value={draft.honorific}
+            placeholder="optional"
+            onChange={(event) => set({ honorific: event.target.value })}
+          />
+          <FieldDescription>
+            An occasional form of address, such as “Sir”. Leave empty to use the user name above.
+          </FieldDescription>
+        </Field>
+      </FieldSet>
+    </Fade>
   );
 }
 
@@ -587,122 +627,130 @@ function DefaultsSection({
 
   return (
     <>
-      <FieldSet>
-        <FieldLegend variant="label">Provider</FieldLegend>
-        <FieldDescription>
-          Who responds when no other provider is selected in the composer.
-        </FieldDescription>
-        <RadioGroup
-          value={draft.defaultProvider}
-          onValueChange={(value) =>
-            // A model name belongs to exactly one provider; it goes with the switch.
-            set({ defaultProvider: value as ProviderId, defaultModel: '' })
-          }
-        >
-          {providers.map((status) => {
-            const label = PROVIDER_LABEL[status.id] ?? status.displayName;
-            // A provider that cannot answer must not become the default: the
-            // composer would show it while the runtime quietly fell back to
-            // another one. Setting it up is a click away, in the section below.
-            const ready = status.available && status.authenticated;
-            return (
-              <FieldLabel key={status.id} htmlFor={'set-provider-' + status.id}>
-                <Field orientation="horizontal" data-disabled={!ready || undefined}>
-                  <ProviderIcon
-                    provider={status.id}
-                    label={status.displayName}
-                    className="size-5 text-muted-foreground"
-                  />
+      <Fade>
+        <FieldSet>
+          <FieldLegend variant="label">Provider</FieldLegend>
+          <FieldDescription>
+            Who responds when no other provider is selected in the composer.
+          </FieldDescription>
+          <RadioGroup
+            value={draft.defaultProvider}
+            onValueChange={(value) =>
+              // A model name belongs to exactly one provider; it goes with the switch.
+              set({ defaultProvider: value as ProviderId, defaultModel: '' })
+            }
+          >
+            {providers.map((status) => {
+              const label = PROVIDER_LABEL[status.id] ?? status.displayName;
+              // A provider that cannot answer must not become the default: the
+              // composer would show it while the runtime quietly fell back to
+              // another one. Setting it up is a click away, in the section below.
+              const ready = status.available && status.authenticated;
+              return (
+                <FieldLabel key={status.id} htmlFor={'set-provider-' + status.id}>
+                  <Field orientation="horizontal" data-disabled={!ready || undefined}>
+                    <ProviderIcon
+                      provider={status.id}
+                      label={status.displayName}
+                      className="size-5 text-muted-foreground"
+                    />
+                    <FieldContent>
+                      <FieldTitle>{label}</FieldTitle>
+                      {!ready ? <FieldDescription>{status.detail ?? 'Not ready yet.'}</FieldDescription> : null}
+                    </FieldContent>
+                    <RadioGroupItem
+                      value={status.id}
+                      id={'set-provider-' + status.id}
+                      aria-label={label}
+                      disabled={!ready}
+                    />
+                  </Field>
+                </FieldLabel>
+              );
+            })}
+          </RadioGroup>
+        </FieldSet>
+      </Fade>
+
+      <Fade delay={50}>
+        <FieldSet>
+          <Field>
+            <FieldLabel htmlFor="set-model">Model</FieldLabel>
+            <EntityCombobox
+              id="set-model"
+              options={options}
+              value={draft.defaultModel || null}
+              onChange={(value) => set({ defaultModel: value ?? '' })}
+              placeholder="Provider default"
+              emptyLabel="No model found"
+            />
+            <FieldDescription>
+              Leave empty to use the provider default model.
+            </FieldDescription>
+          </Field>
+        </FieldSet>
+      </Fade>
+
+      <Fade delay={100}>
+        <FieldSet>
+          <FieldLegend variant="label">Effort</FieldLegend>
+          <FieldDescription>How much reasoning effort the model uses before responding.</FieldDescription>
+          <RadioGroup
+            value={draft.defaultEffort || DEFAULT}
+            onValueChange={(value) =>
+              // Empty rather than undefined: the server's merge skips undefined,
+              // so only '' actually clears a stored value.
+              set({ defaultEffort: value === DEFAULT ? '' : (value as EffortLevel) })
+            }
+          >
+            <FieldLabel htmlFor="set-effort-default">
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldTitle>Provider default</FieldTitle>
+                  <FieldDescription>Use the provider default.</FieldDescription>
+                </FieldContent>
+                <RadioGroupItem value={DEFAULT} id="set-effort-default" aria-label="Provider default" />
+              </Field>
+            </FieldLabel>
+            {EFFORT_LEVELS.map((level) => (
+              <FieldLabel key={level} htmlFor={'set-effort-' + level}>
+                <Field orientation="horizontal">
                   <FieldContent>
-                    <FieldTitle>{label}</FieldTitle>
-                    {!ready ? <FieldDescription>{status.detail ?? 'Not ready yet.'}</FieldDescription> : null}
+                    <FieldTitle>{EFFORT_LABEL[level]}</FieldTitle>
+                    <FieldDescription>{EFFORT_HINT[level]}</FieldDescription>
                   </FieldContent>
-                  <RadioGroupItem
-                    value={status.id}
-                    id={'set-provider-' + status.id}
-                    aria-label={label}
-                    disabled={!ready}
-                  />
+                  <RadioGroupItem value={level} id={'set-effort-' + level} aria-label={EFFORT_LABEL[level]} />
                 </Field>
               </FieldLabel>
-            );
-          })}
-        </RadioGroup>
-      </FieldSet>
+            ))}
+          </RadioGroup>
+        </FieldSet>
+      </Fade>
 
-      <FieldSet>
-        <Field>
-          <FieldLabel htmlFor="set-model">Model</FieldLabel>
-          <EntityCombobox
-            id="set-model"
-            options={options}
-            value={draft.defaultModel || null}
-            onChange={(value) => set({ defaultModel: value ?? '' })}
-            placeholder="Provider default"
-            emptyLabel="No model found"
-          />
+      <Fade delay={150}>
+        <FieldSet>
+          <FieldLegend variant="label">Permissions</FieldLegend>
           <FieldDescription>
-            Leave empty to use the provider default model.
+            The default permission level for each conversation.
           </FieldDescription>
-        </Field>
-      </FieldSet>
-
-      <FieldSet>
-        <FieldLegend variant="label">Effort</FieldLegend>
-        <FieldDescription>How much reasoning effort the model uses before responding.</FieldDescription>
-        <RadioGroup
-          value={draft.defaultEffort || DEFAULT}
-          onValueChange={(value) =>
-            // Empty rather than undefined: the server's merge skips undefined,
-            // so only '' actually clears a stored value.
-            set({ defaultEffort: value === DEFAULT ? '' : (value as EffortLevel) })
-          }
-        >
-          <FieldLabel htmlFor="set-effort-default">
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldTitle>Provider default</FieldTitle>
-                <FieldDescription>Use the provider default.</FieldDescription>
-              </FieldContent>
-              <RadioGroupItem value={DEFAULT} id="set-effort-default" aria-label="Provider default" />
-            </Field>
-          </FieldLabel>
-          {EFFORT_LEVELS.map((level) => (
-            <FieldLabel key={level} htmlFor={'set-effort-' + level}>
-              <Field orientation="horizontal">
-                <FieldContent>
-                  <FieldTitle>{EFFORT_LABEL[level]}</FieldTitle>
-                  <FieldDescription>{EFFORT_HINT[level]}</FieldDescription>
-                </FieldContent>
-                <RadioGroupItem value={level} id={'set-effort-' + level} aria-label={EFFORT_LABEL[level]} />
-              </Field>
-            </FieldLabel>
-          ))}
-        </RadioGroup>
-      </FieldSet>
-
-      <FieldSet>
-        <FieldLegend variant="label">Permissions</FieldLegend>
-        <FieldDescription>
-          The default permission level for each conversation.
-        </FieldDescription>
-        <RadioGroup
-          value={draft.defaultPermission}
-          onValueChange={(value) => set({ defaultPermission: value as PermissionLevel })}
-        >
-          {(Object.keys(PERMISSION_LABEL) as PermissionLevel[]).map((level) => (
-            <FieldLabel key={level} htmlFor={'set-permission-' + level}>
-              <Field orientation="horizontal">
-                <FieldContent>
-                  <FieldTitle>{PERMISSION_LABEL[level]}</FieldTitle>
-                  <FieldDescription>{PERMISSION_HINT[level]}</FieldDescription>
-                </FieldContent>
-                <RadioGroupItem value={level} id={'set-permission-' + level} aria-label={PERMISSION_LABEL[level]} />
-              </Field>
-            </FieldLabel>
-          ))}
-        </RadioGroup>
-      </FieldSet>
+          <RadioGroup
+            value={draft.defaultPermission}
+            onValueChange={(value) => set({ defaultPermission: value as PermissionLevel })}
+          >
+            {(Object.keys(PERMISSION_LABEL) as PermissionLevel[]).map((level) => (
+              <FieldLabel key={level} htmlFor={'set-permission-' + level}>
+                <Field orientation="horizontal">
+                  <FieldContent>
+                    <FieldTitle>{PERMISSION_LABEL[level]}</FieldTitle>
+                    <FieldDescription>{PERMISSION_HINT[level]}</FieldDescription>
+                  </FieldContent>
+                  <RadioGroupItem value={level} id={'set-permission-' + level} aria-label={PERMISSION_LABEL[level]} />
+                </Field>
+              </FieldLabel>
+            ))}
+          </RadioGroup>
+        </FieldSet>
+      </Fade>
     </>
   );
 }
@@ -820,6 +868,16 @@ function ProviderProfilesSection({ providers }: { providers: readonly ProviderSt
 
 /* --------------------------------- voice --------------------------------- */
 
+/*
+  Der Fehlzustand "Sprachkatalog nicht erreichbar" zeigt den Lautsprecher als
+  animate-ui-Icon: die Wellen ziehen einmal ab, wenn der Block in den
+  Viewport kommt. Gleiche forwardRef-Kapsel wie bei den Abschnitts-Icons,
+  weil EmptyState sein Icon als LucideIcon ohne Props zeichnet.
+*/
+const AnimatedVolume2Icon = forwardRef<SVGSVGElement>(function AnimatedVolume2Icon() {
+  return <Volume2Icon size={24} animateOnView />;
+});
+
 function VoiceSection({
   draft,
   catalogue,
@@ -859,332 +917,348 @@ function VoiceSection({
 
   return (
     <>
-      <FieldSet>
-        <FieldLegend>Output</FieldLegend>
-        <FieldDescription>
-          Choose a speech engine. If a service key is missing, the browser voice takes over.
-        </FieldDescription>
-
-        {failed ? (
-          <EmptyState
-            icon={Volume2Icon}
-            title="Voice catalogue unavailable"
-            description="New voices cannot be selected without the catalogue. Your saved voice remains selected."
-            actionLabel="Try again"
-            onAction={onRetry}
-            variant="plain"
-            size="sm"
-          />
-        ) : (
-          <ItemGroup className="gap-2">
-            {VOICE_ENGINES.map((engine) => {
-              const selected = voice.engine === engine.id;
-              const missing = Boolean(catalogue && !catalogue.engines[engine.id]);
-              return (
-                <Item
-                  key={engine.id}
-                  asChild
-                  variant="outline"
-                  size="sm"
-                  className={cn(
-                    'cursor-pointer hover:bg-muted/50',
-                    selected && 'border-primary bg-primary/5 dark:bg-primary/10',
-                  )}
-                >
-                  <button
-                    type="button"
-                    aria-pressed={selected}
-                    className="text-left"
-                    onClick={() => setVoice({ engine: engine.id })}
-                  >
-                    <ItemMedia variant="icon">
-                      <engine.icon />
-                    </ItemMedia>
-                    <ItemContent>
-                      <ItemTitle>{engine.label}</ItemTitle>
-                      <ItemDescription>{engine.description}</ItemDescription>
-                    </ItemContent>
-                    {missing && engine.env ? (
-                      <ItemActions>
-                        <Badge variant="destructive">Key missing</Badge>
-                      </ItemActions>
-                    ) : null}
-                  </button>
-                </Item>
-              );
-            })}
-          </ItemGroup>
-        )}
-
-        {missingVoiceEnv(voice.engine, catalogue) ? (
+      <Fade>
+        <FieldSet>
+          <FieldLegend>Output</FieldLegend>
           <FieldDescription>
-            Add a key under Speech service keys below to enable this engine. Until then, the browser voice is used.
+            Choose a speech engine. If a service key is missing, the browser voice takes over.
           </FieldDescription>
-        ) : null}
-      </FieldSet>
 
-      <VoiceKeys onSaved={onRetry} />
+          {failed ? (
+            <EmptyState
+              icon={AnimatedVolume2Icon}
+              title="Voice catalogue unavailable"
+              description="New voices cannot be selected without the catalogue. Your saved voice remains selected."
+              actionLabel="Try again"
+              onAction={onRetry}
+              variant="plain"
+              size="sm"
+            />
+          ) : (
+            <ItemGroup className="gap-2">
+              {VOICE_ENGINES.map((engine) => {
+                const selected = voice.engine === engine.id;
+                const missing = Boolean(catalogue && !catalogue.engines[engine.id]);
+                return (
+                  <Item
+                    key={engine.id}
+                    asChild
+                    variant="outline"
+                    size="sm"
+                    className={cn(
+                      'cursor-pointer hover:bg-muted/50',
+                      selected && 'border-primary bg-primary/5 dark:bg-primary/10',
+                    )}
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={selected}
+                      className="text-left"
+                      onClick={() => setVoice({ engine: engine.id })}
+                    >
+                      <ItemMedia variant="icon">
+                        <engine.icon />
+                      </ItemMedia>
+                      <ItemContent>
+                        <ItemTitle>{engine.label}</ItemTitle>
+                        <ItemDescription>{engine.description}</ItemDescription>
+                      </ItemContent>
+                      {missing && engine.env ? (
+                        <ItemActions>
+                          <Badge variant="destructive">Key missing</Badge>
+                        </ItemActions>
+                      ) : null}
+                    </button>
+                  </Item>
+                );
+              })}
+            </ItemGroup>
+          )}
+
+          {missingVoiceEnv(voice.engine, catalogue) ? (
+            <FieldDescription>
+              Add a key under Speech service keys below to enable this engine. Until then, the browser voice is used.
+            </FieldDescription>
+          ) : null}
+        </FieldSet>
+      </Fade>
+
+      <Fade delay={50}>
+        <VoiceKeys onSaved={onRetry} />
+      </Fade>
 
       {!failed && voice.engine === 'edge' ? (
-        <FieldSet>
-          <FieldLegend variant="label">Edge Neural</FieldLegend>
-          <Field>
-            <FieldLabel htmlFor="set-edge-voice">Voice</FieldLabel>
-            <EntityCombobox
-              id="set-edge-voice"
-              options={edgeOptions}
-              value={voice.edgeVoice || null}
-              onChange={(value) => setVoice({ edgeVoice: value ?? '' })}
-              placeholder="Search voices"
-              emptyLabel="No voice found"
-              clearable={false}
-            />
-            <FieldDescription>
-              Ryan is the default British English voice. Multilingual voices support multiple languages.
-            </FieldDescription>
-          </Field>
-        </FieldSet>
+        <Fade delay={100}>
+          <FieldSet>
+            <FieldLegend variant="label">Edge Neural</FieldLegend>
+            <Field>
+              <FieldLabel htmlFor="set-edge-voice">Voice</FieldLabel>
+              <EntityCombobox
+                id="set-edge-voice"
+                options={edgeOptions}
+                value={voice.edgeVoice || null}
+                onChange={(value) => setVoice({ edgeVoice: value ?? '' })}
+                placeholder="Search voices"
+                emptyLabel="No voice found"
+                clearable={false}
+              />
+              <FieldDescription>
+                Ryan is the default British English voice. Multilingual voices support multiple languages.
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+        </Fade>
       ) : null}
 
       {!failed && voice.engine === 'elevenlabs' ? (
-        <FieldSet>
-          <FieldLegend variant="label">ElevenLabs</FieldLegend>
-          <Field>
-            <FieldLabel htmlFor="set-eleven-voice">Voice</FieldLabel>
-            {/* One field, one config value. There used to be a select and a text
-                input writing to `elevenLabsVoiceId` side by side, and whichever
-                was touched last silently won. */}
-            <InputGroup>
-              <InputGroupInput
-                id="set-eleven-voice"
-                value={voice.elevenLabsVoiceId}
-                placeholder="Default (George)"
-                onChange={(event) => setVoice({ elevenLabsVoiceId: event.target.value })}
-              />
-              <InputGroupAddon align="inline-end">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <InputGroupButton>Library</InputGroupButton>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="max-h-72 w-64 overflow-y-auto">
-                    <DropdownMenuLabel>Voice library</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuRadioGroup
-                      value={voice.elevenLabsVoiceId || DEFAULT}
-                      onValueChange={(value) =>
-                        setVoice({ elevenLabsVoiceId: value === DEFAULT ? '' : value })
-                      }
-                    >
-                      <DropdownMenuRadioItem value={DEFAULT}>Default (George)</DropdownMenuRadioItem>
-                      {(catalogue?.elevenlabs ?? []).map((entry) => (
-                        <DropdownMenuRadioItem key={entry.id} value={entry.id}>
-                          {entry.name}
-                        </DropdownMenuRadioItem>
-                      ))}
-                    </DropdownMenuRadioGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </InputGroupAddon>
-            </InputGroup>
-            <FieldDescription>
-              You can also enter a voice ID directly from the Voice Library. George is the default.
-            </FieldDescription>
-          </Field>
+        <Fade delay={100}>
+          <FieldSet>
+            <FieldLegend variant="label">ElevenLabs</FieldLegend>
+            <Field>
+              <FieldLabel htmlFor="set-eleven-voice">Voice</FieldLabel>
+              {/* One field, one config value. There used to be a select and a text
+                  input writing to `elevenLabsVoiceId` side by side, and whichever
+                  was touched last silently won. */}
+              <InputGroup>
+                <InputGroupInput
+                  id="set-eleven-voice"
+                  value={voice.elevenLabsVoiceId}
+                  placeholder="Default (George)"
+                  onChange={(event) => setVoice({ elevenLabsVoiceId: event.target.value })}
+                />
+                <InputGroupAddon align="inline-end">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <InputGroupButton>Library</InputGroupButton>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="max-h-72 w-64 overflow-y-auto">
+                      <DropdownMenuLabel>Voice library</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuRadioGroup
+                        value={voice.elevenLabsVoiceId || DEFAULT}
+                        onValueChange={(value) =>
+                          setVoice({ elevenLabsVoiceId: value === DEFAULT ? '' : value })
+                        }
+                      >
+                        <DropdownMenuRadioItem value={DEFAULT}>Default (George)</DropdownMenuRadioItem>
+                        {(catalogue?.elevenlabs ?? []).map((entry) => (
+                          <DropdownMenuRadioItem key={entry.id} value={entry.id}>
+                            {entry.name}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </InputGroupAddon>
+              </InputGroup>
+              <FieldDescription>
+                You can also enter a voice ID directly from the Voice Library. George is the default.
+              </FieldDescription>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="set-eleven-model">Model</FieldLabel>
-            <Select
-              value={voice.elevenLabsModel}
-              onValueChange={(value) =>
-                setVoice({ elevenLabsModel: value as VoiceConfig['elevenLabsModel'] })
-              }
-            >
-              <SelectTrigger id="set-eleven-model" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(ELEVEN_MODEL_LABEL) as VoiceConfig['elevenLabsModel'][]).map((id) => (
-                  <SelectItem key={id} value={id}>
-                    {ELEVEN_MODEL_LABEL[id]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <FieldDescription>
-              Choose a model, then preview the voice to compare its sound and response time.
-            </FieldDescription>
-          </Field>
-        </FieldSet>
+            <Field>
+              <FieldLabel htmlFor="set-eleven-model">Model</FieldLabel>
+              <Select
+                value={voice.elevenLabsModel}
+                onValueChange={(value) =>
+                  setVoice({ elevenLabsModel: value as VoiceConfig['elevenLabsModel'] })
+                }
+              >
+                <SelectTrigger id="set-eleven-model" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(ELEVEN_MODEL_LABEL) as VoiceConfig['elevenLabsModel'][]).map((id) => (
+                    <SelectItem key={id} value={id}>
+                      {ELEVEN_MODEL_LABEL[id]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                Choose a model, then preview the voice to compare its sound and response time.
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+        </Fade>
       ) : null}
 
       {!failed && voice.engine === 'openai' ? (
-        <FieldSet>
-          <FieldLegend variant="label">OpenAI</FieldLegend>
-          <Field>
-            <FieldLabel htmlFor="set-openai-voice">Voice</FieldLabel>
-            <EntityCombobox
-              id="set-openai-voice"
-              options={openaiOptions}
-              value={voice.openaiVoice || null}
-              onChange={(value) => setVoice({ openaiVoice: value ?? '' })}
-              placeholder="Search voices"
-              emptyLabel="No voice found"
-              clearable={false}
-            />
-            <FieldDescription>
-              Onyx is the default. Style instructions add the butler register to the selected voice.
-            </FieldDescription>
-          </Field>
-        </FieldSet>
+        <Fade delay={100}>
+          <FieldSet>
+            <FieldLegend variant="label">OpenAI</FieldLegend>
+            <Field>
+              <FieldLabel htmlFor="set-openai-voice">Voice</FieldLabel>
+              <EntityCombobox
+                id="set-openai-voice"
+                options={openaiOptions}
+                value={voice.openaiVoice || null}
+                onChange={(value) => setVoice({ openaiVoice: value ?? '' })}
+                placeholder="Search voices"
+                emptyLabel="No voice found"
+                clearable={false}
+              />
+              <FieldDescription>
+                Onyx is the default. Style instructions add the butler register to the selected voice.
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+        </Fade>
       ) : null}
 
       {!failed && voice.engine === 'browser' ? (
+        <Fade delay={100}>
+          <FieldSet>
+            <FieldLegend variant="label">Browser</FieldLegend>
+            <Field>
+              <FieldLabel htmlFor="set-browser-voice">Voice</FieldLabel>
+              <EntityCombobox
+                id="set-browser-voice"
+                options={browserOptions}
+                value={voice.voiceName || null}
+                onChange={(value) => setVoice({ voiceName: value ?? '' })}
+                placeholder="Automatic"
+                emptyLabel="No voice found"
+              />
+              <FieldDescription>
+                Voices available on this operating system. Automatic selects a voice for the configured language.
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+        </Fade>
+      ) : null}
+
+      <Fade delay={150}>
         <FieldSet>
-          <FieldLegend variant="label">Browser</FieldLegend>
+          <FieldLegend>Sound</FieldLegend>
+
+          <SliderField
+            id="set-rate"
+            label="Speed"
+            {...VOICE_RATE}
+            value={voice.rate}
+            description="Speaking speed. 1.00 uses the voice default pace."
+            onChange={(value) => setVoice({ rate: value })}
+          />
+
+          <SliderField
+            id="set-pitch"
+            label="Pitch"
+            {...VOICE_PITCH}
+            value={voice.pitch}
+            description="Applies to Edge and browser voices. ElevenLabs and OpenAI ignore this setting."
+            onChange={(value) => setVoice({ pitch: value })}
+          />
+
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel htmlFor="set-jarvis">Jarvis effect</FieldLabel>
+              <FieldDescription>
+                Adds presence EQ, light compression and a short room effect during playback.
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              id="set-jarvis"
+              checked={voice.jarvisEffect}
+              onCheckedChange={(on) => setVoice({ jarvisEffect: on })}
+            />
+          </Field>
+
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel htmlFor="set-clean">Speak clean text</FieldLabel>
+              <FieldDescription>
+                Removes code blocks, list markers and links before reading aloud.
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              id="set-clean"
+              checked={voice.speakCleanText}
+              onCheckedChange={(on) => setVoice({ speakCleanText: on })}
+            />
+          </Field>
+
           <Field>
-            <FieldLabel htmlFor="set-browser-voice">Voice</FieldLabel>
-            <EntityCombobox
-              id="set-browser-voice"
-              options={browserOptions}
-              value={voice.voiceName || null}
-              onChange={(value) => setVoice({ voiceName: value ?? '' })}
-              placeholder="Automatic"
-              emptyLabel="No voice found"
+            <FieldLabel htmlFor="set-style">Speaking style</FieldLabel>
+            <Select
+              value={voice.style}
+              onValueChange={(value) => setVoice({ style: value as VoiceConfig['style'] })}
+            >
+              <SelectTrigger id="set-style" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="jarvis">Jarvis</SelectItem>
+                <SelectItem value="neutral">Neutral</SelectItem>
+              </SelectContent>
+            </Select>
+            <FieldDescription>
+              Jarvis: a composed British butler, dry and concise with a touch of irony. Changes the wording of voice replies only.
+            </FieldDescription>
+          </Field>
+
+          <ButtonGroup>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={preview.speaking}
+              onClick={() => {
+                preview.unlock();
+                preview.speak('Good evening. All systems are running. Ready when you are.');
+              }}
+            >
+              {preview.speaking ? <Spinner aria-label="Speaking" /> : null}
+              Preview voice
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!preview.speaking}
+              onClick={() => preview.stop()}
+            >
+              <SquareIcon data-icon="inline-start" />
+              Stop
+            </Button>
+          </ButtonGroup>
+          <FieldDescription>
+            Uses the settings on this screen, including unsaved changes.
+            {preview.error ? ' Server voice failed: ' + preview.error : ''}
+          </FieldDescription>
+        </FieldSet>
+      </Fade>
+
+      <Fade delay={200}>
+        <FieldSet>
+          <FieldLegend>Recognition</FieldLegend>
+          <FieldDescription>Applies to voice conversations and composer dictation.</FieldDescription>
+
+          <Field>
+            <FieldLabel htmlFor="set-lang">Language</FieldLabel>
+            <Input
+              id="set-lang"
+              value={voice.lang}
+              placeholder="en-GB"
+              onChange={(event) => setVoice({ lang: event.target.value })}
             />
             <FieldDescription>
-              Voices available on this operating system. Automatic selects a voice for the configured language.
+              A BCP 47 language code. Controls speech recognition and voice filtering.
+            </FieldDescription>
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="set-wake">Wake word</FieldLabel>
+            <Input
+              id="set-wake"
+              value={voice.wakeWord}
+              placeholder="optional"
+              onChange={(event) => setVoice({ wakeWord: event.target.value })}
+            />
+            <FieldDescription>
+              Can be enabled in voice mode. Without a wake word, every utterance is accepted.
             </FieldDescription>
           </Field>
         </FieldSet>
-      ) : null}
-
-      <FieldSet>
-        <FieldLegend>Sound</FieldLegend>
-
-        <SliderField
-          id="set-rate"
-          label="Speed"
-          {...VOICE_RATE}
-          value={voice.rate}
-          description="Speaking speed. 1.00 uses the voice default pace."
-          onChange={(value) => setVoice({ rate: value })}
-        />
-
-        <SliderField
-          id="set-pitch"
-          label="Pitch"
-          {...VOICE_PITCH}
-          value={voice.pitch}
-          description="Applies to Edge and browser voices. ElevenLabs and OpenAI ignore this setting."
-          onChange={(value) => setVoice({ pitch: value })}
-        />
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="set-jarvis">Jarvis effect</FieldLabel>
-            <FieldDescription>
-              Adds presence EQ, light compression and a short room effect during playback.
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="set-jarvis"
-            checked={voice.jarvisEffect}
-            onCheckedChange={(on) => setVoice({ jarvisEffect: on })}
-          />
-        </Field>
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="set-clean">Speak clean text</FieldLabel>
-            <FieldDescription>
-              Removes code blocks, list markers and links before reading aloud.
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="set-clean"
-            checked={voice.speakCleanText}
-            onCheckedChange={(on) => setVoice({ speakCleanText: on })}
-          />
-        </Field>
-
-        <Field>
-          <FieldLabel htmlFor="set-style">Speaking style</FieldLabel>
-          <Select
-            value={voice.style}
-            onValueChange={(value) => setVoice({ style: value as VoiceConfig['style'] })}
-          >
-            <SelectTrigger id="set-style" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="jarvis">Jarvis</SelectItem>
-              <SelectItem value="neutral">Neutral</SelectItem>
-            </SelectContent>
-          </Select>
-          <FieldDescription>
-            Jarvis: a composed British butler, dry and concise with a touch of irony. Changes the wording of voice replies only.
-          </FieldDescription>
-        </Field>
-
-        <ButtonGroup>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={preview.speaking}
-            onClick={() => {
-              preview.unlock();
-              preview.speak('Good evening. All systems are running. Ready when you are.');
-            }}
-          >
-            {preview.speaking ? <Spinner aria-label="Speaking" /> : null}
-            Preview voice
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={!preview.speaking}
-            onClick={() => preview.stop()}
-          >
-            <SquareIcon data-icon="inline-start" />
-            Stop
-          </Button>
-        </ButtonGroup>
-        <FieldDescription>
-          Uses the settings on this screen, including unsaved changes.
-          {preview.error ? ' Server voice failed: ' + preview.error : ''}
-        </FieldDescription>
-      </FieldSet>
-
-      <FieldSet>
-        <FieldLegend>Recognition</FieldLegend>
-        <FieldDescription>Applies to voice conversations and composer dictation.</FieldDescription>
-
-        <Field>
-          <FieldLabel htmlFor="set-lang">Language</FieldLabel>
-          <Input
-            id="set-lang"
-            value={voice.lang}
-            placeholder="en-GB"
-            onChange={(event) => setVoice({ lang: event.target.value })}
-          />
-          <FieldDescription>
-            A BCP 47 language code. Controls speech recognition and voice filtering.
-          </FieldDescription>
-        </Field>
-
-        <Field>
-          <FieldLabel htmlFor="set-wake">Wake word</FieldLabel>
-          <Input
-            id="set-wake"
-            value={voice.wakeWord}
-            placeholder="optional"
-            onChange={(event) => setVoice({ wakeWord: event.target.value })}
-          />
-          <FieldDescription>
-            Can be enabled in voice mode. Without a wake word, every utterance is accepted.
-          </FieldDescription>
-        </Field>
-      </FieldSet>
+      </Fade>
     </>
   );
 }
@@ -1218,89 +1292,95 @@ function MemorySection({
 
   return (
     <>
-      <FieldSet>
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="set-memory-enabled">Use memory</FieldLabel>
-            <FieldDescription>
-              When off, saved memories are not recalled. Existing memories remain stored.
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="set-memory-enabled"
-            checked={memory.enabled}
-            onCheckedChange={(on) => setMemory({ enabled: on })}
+      <Fade>
+        <FieldSet>
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel htmlFor="set-memory-enabled">Use memory</FieldLabel>
+              <FieldDescription>
+                When off, saved memories are not recalled. Existing memories remain stored.
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              id="set-memory-enabled"
+              checked={memory.enabled}
+              onCheckedChange={(on) => setMemory({ enabled: on })}
+            />
+          </Field>
+
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel htmlFor="set-memory-extract">Learn automatically</FieldLabel>
+              <FieldDescription>
+                After each exchange, the assistant checks what is worth remembering.
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              id="set-memory-extract"
+              checked={memory.autoExtract}
+              onCheckedChange={(on) => setMemory({ autoExtract: on })}
+            />
+          </Field>
+        </FieldSet>
+      </Fade>
+
+      <Fade delay={50}>
+        <FieldSet>
+          <FieldLegend variant="label">Recall</FieldLegend>
+
+          <NumberField
+            id="set-memory-recall"
+            label="Memories per reply"
+            value={memory.recallLimit}
+            min={0}
+            max={50}
+            suffix="items"
+            description="Maximum number of matching memories recalled for a reply."
+            onChange={(value) => setMemory({ recallLimit: value })}
           />
-        </Field>
 
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="set-memory-extract">Learn automatically</FieldLabel>
-            <FieldDescription>
-              After each exchange, the assistant checks what is worth remembering.
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="set-memory-extract"
-            checked={memory.autoExtract}
-            onCheckedChange={(on) => setMemory({ autoExtract: on })}
+          <SliderField
+            id="set-memory-threshold"
+            label="Minimum match score"
+            value={memory.recallThreshold}
+            min={0}
+            max={1}
+            step={0.01}
+            fallback={0.12}
+            format={(value) => formatPercent(Math.round(value * 100))}
+            description="How closely a memory must match the topic to appear. Higher values are stricter."
+            onChange={(value) => setMemory({ recallThreshold: value })}
           />
-        </Field>
-      </FieldSet>
+        </FieldSet>
+      </Fade>
 
-      <FieldSet>
-        <FieldLegend variant="label">Recall</FieldLegend>
+      <Fade delay={100}>
+        <FieldSet>
+          <FieldLegend variant="label">Context size</FieldLegend>
 
-        <NumberField
-          id="set-memory-recall"
-          label="Memories per reply"
-          value={memory.recallLimit}
-          min={0}
-          max={50}
-          suffix="items"
-          description="Maximum number of matching memories recalled for a reply."
-          onChange={(value) => setMemory({ recallLimit: value })}
-        />
+          <NumberField
+            id="set-memory-window"
+            label="Working window"
+            value={memory.workingWindow}
+            min={0}
+            max={200}
+            suffix="messages"
+            description="How many recent messages are included verbatim when rebuilding context."
+            onChange={(value) => setMemory({ workingWindow: value })}
+          />
 
-        <SliderField
-          id="set-memory-threshold"
-          label="Minimum match score"
-          value={memory.recallThreshold}
-          min={0}
-          max={1}
-          step={0.01}
-          fallback={0.12}
-          format={(value) => formatPercent(Math.round(value * 100))}
-          description="How closely a memory must match the topic to appear. Higher values are stricter."
-          onChange={(value) => setMemory({ recallThreshold: value })}
-        />
-      </FieldSet>
-
-      <FieldSet>
-        <FieldLegend variant="label">Context size</FieldLegend>
-
-        <NumberField
-          id="set-memory-window"
-          label="Working window"
-          value={memory.workingWindow}
-          min={0}
-          max={200}
-          suffix="messages"
-          description="How many recent messages are included verbatim when rebuilding context."
-          onChange={(value) => setMemory({ workingWindow: value })}
-        />
-
-        <NumberField
-          id="set-memory-budget"
-          label="Context budget"
-          value={memory.contextBudget}
-          min={200}
-          max={200000}
-          suffix="characters"
-          description="The budget for context contributed by memory."
-          onChange={(value) => setMemory({ contextBudget: value })}
-        />
-      </FieldSet>
+          <NumberField
+            id="set-memory-budget"
+            label="Context budget"
+            value={memory.contextBudget}
+            min={200}
+            max={200000}
+            suffix="characters"
+            description="The budget for context contributed by memory."
+            onChange={(value) => setMemory({ contextBudget: value })}
+          />
+        </FieldSet>
+      </Fade>
     </>
   );
 }
@@ -1315,43 +1395,45 @@ function OrgSection({
   setOrg(patch: Partial<OrgConfig>): void;
 }) {
   return (
-    <FieldSet>
-      <NumberField
-        id="set-concurrency"
-        label="Concurrent assignments"
-        value={draft.org.maxConcurrentAssignments}
-        min={1}
-        max={16}
-        suffix="processes"
-        description="Maximum number of agent processes running at once."
-        onChange={(value) => setOrg({ maxConcurrentAssignments: value })}
-      />
-
-      <NumberField
-        id="set-depth"
-        label="Delegation depth"
-        value={draft.org.maxDelegationDepth}
-        min={1}
-        max={6}
-        suffix="levels"
-        description="How many levels agents can delegate below the assistant."
-        onChange={(value) => setOrg({ maxDelegationDepth: value })}
-      />
-
-      <Field orientation="horizontal">
-        <FieldContent>
-          <FieldLabel htmlFor="set-lazy">Keep code minimal</FieldLabel>
-          <FieldDescription>
-            Agents receive Ponytail instructions: understand the task, check what already exists, and use the smallest working solution. Validation, error handling, security and accessibility remain required.
-          </FieldDescription>
-        </FieldContent>
-        <Switch
-          id="set-lazy"
-          checked={draft.org.lazyCoding}
-          onCheckedChange={(on) => setOrg({ lazyCoding: on })}
+    <Fade>
+      <FieldSet>
+        <NumberField
+          id="set-concurrency"
+          label="Concurrent assignments"
+          value={draft.org.maxConcurrentAssignments}
+          min={1}
+          max={16}
+          suffix="processes"
+          description="Maximum number of agent processes running at once."
+          onChange={(value) => setOrg({ maxConcurrentAssignments: value })}
         />
-      </Field>
-    </FieldSet>
+
+        <NumberField
+          id="set-depth"
+          label="Delegation depth"
+          value={draft.org.maxDelegationDepth}
+          min={1}
+          max={6}
+          suffix="levels"
+          description="How many levels agents can delegate below the assistant."
+          onChange={(value) => setOrg({ maxDelegationDepth: value })}
+        />
+
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="set-lazy">Keep code minimal</FieldLabel>
+            <FieldDescription>
+              Agents receive Ponytail instructions: understand the task, check what already exists, and use the smallest working solution. Validation, error handling, security and accessibility remain required.
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="set-lazy"
+            checked={draft.org.lazyCoding}
+            onCheckedChange={(on) => setOrg({ lazyCoding: on })}
+          />
+        </Field>
+      </FieldSet>
+    </Fade>
   );
 }
 
@@ -1359,44 +1441,35 @@ function OrgSection({
 
 const LOCAL_HINT = 'Applies immediately and is saved in this browser only.';
 
-const THEMES: { value: string; label: string; description: string }[] = [
-  { value: 'light', label: 'Light', description: 'Always use the light palette.' },
-  { value: 'dark', label: 'Dark', description: 'Always use the dark palette.' },
-  { value: 'system', label: 'System', description: 'Follow the operating system setting.' },
-];
-
 /**
  * Appearance preferences never reach the server.
  *
  * They sit in their own section instead of hanging below the tabs, because
  * the two storage models are genuinely different: everything else on this
  * page needs "Speichern" and then applies everywhere, these apply at once and
- * only here. The appearance radio is the same choice the sidebar footer
- * offers - named in full where a person goes looking for it.
+ * only here. The theme choice is the same one the sidebar footer offers; the
+ * toggler cycles light, dark and system, and the icon says where the cycle
+ * stands.
  */
 function ViewSection() {
-  const { theme, setTheme } = useTheme();
-
   return (
-    <>
+    <Fade>
       <FieldSet>
         <FieldLegend variant="label">Theme</FieldLegend>
         <FieldDescription>{LOCAL_HINT}</FieldDescription>
-        <RadioGroup value={theme ?? 'system'} onValueChange={setTheme}>
-          {THEMES.map((entry) => (
-            <FieldLabel key={entry.value} htmlFor={'set-theme-' + entry.value}>
-              <Field orientation="horizontal">
-                <FieldContent>
-                  <FieldTitle>{entry.label}</FieldTitle>
-                  <FieldDescription>{entry.description}</FieldDescription>
-                </FieldContent>
-                <RadioGroupItem value={entry.value} id={'set-theme-' + entry.value} aria-label={entry.label} />
-              </Field>
-            </FieldLabel>
-          ))}
-        </RadioGroup>
+        {/*
+          Policy B9: der Radio-Dreier ist einem ThemeTogglerButton gewichen,
+          der zyklisch light - dark - system schaltet und den Wechsel als
+          Wisch ueber die Flaeche zieht. Optik an unseren Outline-Button
+          angeglichen (Muted statt Accent beim Hover).
+        */}
+        <ThemeTogglerButton
+          variant="outline"
+          aria-label="Change theme"
+          className="hover:bg-muted hover:text-foreground"
+        />
       </FieldSet>
-    </>
+    </Fade>
   );
 }
 

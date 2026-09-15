@@ -1,6 +1,9 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router';
-import { ArrowLeftIcon, PanelLeftIcon, SearchIcon } from 'lucide-react';
+import { ArrowLeftIcon } from '@/components/animate-ui/icons/arrow-left';
+import { PanelLeftIcon } from '@/components/animate-ui/icons/panel-left';
+import { SearchIcon } from '@/components/animate-ui/icons/search';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { useBreadcrumbs } from '@/lib/nav';
 import { useConfig, useConnection } from '@/providers/rookery-provider';
 import { usePageMetaValue } from '@/components/shell/page-meta';
@@ -93,7 +96,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
           onClick={toggleSidebar}
           aria-label="Toggle sidebar"
         >
-          <PanelLeftIcon />
+          <PanelLeftIcon animateOnHover />
         </Button>
         <Separator
           orientation="vertical"
@@ -102,35 +105,37 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
         {parent?.to ? (
           <Button variant="ghost" size="icon" className="size-8 shrink-0 sm:hidden" asChild>
             <Link to={parent.to} aria-label={'Back: ' + parent.label}>
-              <ArrowLeftIcon />
+              <ArrowLeftIcon animateOnHover />
             </Link>
           </Button>
         ) : null}
 
-        <Breadcrumb className="hidden min-w-0 flex-1 sm:block">
-          <BreadcrumbList className="flex-nowrap">
-            {crumbs.map((crumb, index) => (
-              <Fragment key={crumb.label + index}>
-                {index > 0 && <BreadcrumbSeparator />}
-                <BreadcrumbItem className="min-w-0">
-                  {/*
-                    The last crumb is where you already stand, so it never
-                    becomes a link - not even when a page hands one a `to`.
-                    Guarding it here rather than at every call site is the only
-                    way it stays true for pages written later.
-                  */}
-                  {crumb.to && index < crumbs.length - 1 ? (
-                    <BreadcrumbLink asChild>
-                      <Link to={crumb.to} className="truncate">{crumb.label}</Link>
-                    </BreadcrumbLink>
-                  ) : (
-                    <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
-                  )}
-                </BreadcrumbItem>
-              </Fragment>
-            ))}
-          </BreadcrumbList>
-        </Breadcrumb>
+        <Fade asChild>
+          <Breadcrumb className="hidden min-w-0 flex-1 sm:block">
+            <BreadcrumbList className="flex-nowrap">
+              {crumbs.map((crumb, index) => (
+                <Fragment key={crumb.label + index}>
+                  {index > 0 && <BreadcrumbSeparator />}
+                  <BreadcrumbItem className="min-w-0">
+                    {/*
+                      The last crumb is where you already stand, so it never
+                      becomes a link - not even when a page hands one a `to`.
+                      Guarding it here rather than at every call site is the only
+                      way it stays true for pages written later.
+                    */}
+                    {crumb.to && index < crumbs.length - 1 ? (
+                      <BreadcrumbLink asChild>
+                        <Link to={crumb.to} className="truncate">{crumb.label}</Link>
+                      </BreadcrumbLink>
+                    ) : (
+                      <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
+                    )}
+                  </BreadcrumbItem>
+                </Fragment>
+              ))}
+            </BreadcrumbList>
+          </Breadcrumb>
+        </Fade>
         {/*
           Narrow screens have no room for a chain, only for where you are -
           and from `sm` up the breadcrumb takes that job over visually. The
@@ -138,7 +143,9 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
           takes no room in this flex row, and without it no page in the app
           would have a level-one heading at all.
         */}
-        <h1 className="min-w-0 flex-1 truncate text-base font-medium sm:sr-only">{leaf}</h1>
+        <Fade asChild delay={50}>
+          <h1 className="min-w-0 flex-1 truncate text-base font-medium sm:sr-only">{leaf}</h1>
+        </Fade>
 
         {!connected && (
           <Badge variant="destructive" className="ml-1">
@@ -172,7 +179,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
             onClick={onSearch}
             className="hidden w-56 justify-start text-muted-foreground xl:flex"
           >
-            <SearchIcon />
+            <SearchIcon animateOnHover />
             Search …
             <KbdGroup className="ml-auto">
               <Kbd>Ctrl</Kbd>
@@ -187,7 +194,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
             aria-label="Search"
             className="xl:hidden"
           >
-            <SearchIcon />
+            <SearchIcon animateOnHover />
           </Button>
         </div>
       </div>

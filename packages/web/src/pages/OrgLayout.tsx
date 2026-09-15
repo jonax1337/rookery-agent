@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
-import { Building2Icon, ChevronDownIcon, PencilIcon, PlusIcon } from 'lucide-react';
+import { Building2Icon, PencilIcon, PlusIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
+
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { Plus } from '@/components/animate-ui/icons/plus';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
+import { RotatingText, RotatingTextContainer } from '@/components/animate-ui/primitives/texts/rotating';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 
 import { api } from '@/lib/api';
 import { formatNumber } from '@/lib/stats';
@@ -105,8 +112,10 @@ export function OrgLayout() {
         <>
           <Button size="sm" asChild>
             <NavLink to={(activeTab?.to ?? '/org/agents') + '/new'}>
-              <PlusIcon data-icon="inline-start" />
-              {activeTab?.createLabel ?? 'Hire agent'}
+              <Plus animateOnView data-icon="inline-start" />
+              <RotatingTextContainer text={activeTab?.createLabel ?? 'Hire agent'}>
+                <RotatingText />
+              </RotatingTextContainer>
             </NavLink>
           </Button>
           <DropdownMenu>
@@ -156,7 +165,7 @@ export function OrgLayout() {
   const cards: StatCardProps[] = [
     {
       label: 'Agents',
-      value: formatNumber(org.agents.length),
+      value: <CountingNumber number={org.agents.length} />,
       headline:
         counts.withoutTeam === 0
           ? 'All assigned to a team'
@@ -166,7 +175,7 @@ export function OrgLayout() {
     },
     {
       label: 'Teams',
-      value: formatNumber(org.teams.length),
+      value: <CountingNumber number={org.teams.length} />,
       headline:
         counts.withoutLead === 0
           ? 'Every team has a lead'
@@ -176,7 +185,7 @@ export function OrgLayout() {
     },
     {
       label: 'Projects',
-      value: formatNumber(org.projects.length),
+      value: <CountingNumber number={org.projects.length} />,
       headline:
         counts.withPath === 0
           ? 'All use the shared workspace'
@@ -186,7 +195,7 @@ export function OrgLayout() {
     },
     {
       label: 'Running assignments',
-      value: formatNumber(running),
+      value: <CountingNumber number={running} />,
       ...(running > 0 ? { badge: <RunningBadge count={running} /> } : {}),
       headline:
         running === 0 ? 'No one is working right now' : shorten(counts.busy.join(', '), 40),
@@ -202,17 +211,19 @@ export function OrgLayout() {
   if (!organization) {
     return (
       <PageBody width="3xl">
-        {org.error ? (
-          <ServerOffline onRetry={() => void org.refresh()} />
-        ) : (
-          <EmptyState
-            icon={Building2Icon}
-            title="Organization not found"
-            description="Rookery creates the organization automatically on first launch. Is the server using a different database?"
-            actionLabel="Reload"
-            onAction={() => void org.refresh()}
-          />
-        )}
+        <Fade>
+          {org.error ? (
+            <ServerOffline onRetry={() => void org.refresh()} />
+          ) : (
+            <EmptyState
+              icon={Building2Icon}
+              title="Organization not found"
+              description="Rookery creates the organization automatically on first launch. Is the server using a different database?"
+              actionLabel="Reload"
+              onAction={() => void org.refresh()}
+            />
+          )}
+        </Fade>
       </PageBody>
     );
   }
@@ -220,9 +231,11 @@ export function OrgLayout() {
   return (
     <PageBody>
       <div className="px-4 lg:px-6">
-        <p className="text-sm text-muted-foreground">
-          {organization.mission || 'No mission provided yet.'}
-        </p>
+        <Blur>
+          <p className="text-sm text-muted-foreground">
+            {organization.mission || 'No mission provided yet.'}
+          </p>
+        </Blur>
       </div>
 
       {/*
@@ -231,40 +244,54 @@ export function OrgLayout() {
         announce - a bare row of links would drop it.
       */}
       <Tabs value={active} className="gap-4">
-        <div className="overflow-x-auto px-4 lg:px-6">
-          <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:rounded-full **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1">
-            <TabsTrigger value="overview" asChild>
-              <NavLink to="/org" end>Overview</NavLink>
-            </TabsTrigger>
-            <TabsTrigger value="agents" asChild>
-              <NavLink to="/org/agents">
-                Agents
-                <Badge variant="secondary">{formatNumber(org.agents.length)}</Badge>
-              </NavLink>
-            </TabsTrigger>
-            <TabsTrigger value="teams" asChild>
-              <NavLink to="/org/teams">
-                Teams
-                <Badge variant="secondary">{formatNumber(org.teams.length)}</Badge>
-              </NavLink>
-            </TabsTrigger>
-            <TabsTrigger value="projects" asChild>
-              <NavLink to="/org/projects">
-                Projects
-                <Badge variant="secondary">{formatNumber(org.projects.length)}</Badge>
-              </NavLink>
-            </TabsTrigger>
-            <TabsTrigger value="chart" asChild>
-              <NavLink to="/org/chart">Org chart</NavLink>
-            </TabsTrigger>
-            <TabsTrigger value="hr" asChild>
-              <NavLink to="/org/hr">HR</NavLink>
-            </TabsTrigger>
-          </TabsList>
-        </div>
+        <Fade delay={50}>
+          <div className="overflow-x-auto px-4 lg:px-6">
+            <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:rounded-full **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1">
+              <TabsTrigger value="overview" asChild>
+                <NavLink to="/org" end>Overview</NavLink>
+              </TabsTrigger>
+              <TabsTrigger value="agents" asChild>
+                <NavLink to="/org/agents">
+                  Agents
+                  <Badge variant="secondary">
+                    <SlidingNumber number={org.agents.length} thousandSeparator="," />
+                  </Badge>
+                </NavLink>
+              </TabsTrigger>
+              <TabsTrigger value="teams" asChild>
+                <NavLink to="/org/teams">
+                  Teams
+                  <Badge variant="secondary">
+                    <SlidingNumber number={org.teams.length} thousandSeparator="," />
+                  </Badge>
+                </NavLink>
+              </TabsTrigger>
+              <TabsTrigger value="projects" asChild>
+                <NavLink to="/org/projects">
+                  Projects
+                  <Badge variant="secondary">
+                    <SlidingNumber number={org.projects.length} thousandSeparator="," />
+                  </Badge>
+                </NavLink>
+              </TabsTrigger>
+              <TabsTrigger value="chart" asChild>
+                <NavLink to="/org/chart">Org chart</NavLink>
+              </TabsTrigger>
+              <TabsTrigger value="hr" asChild>
+                <NavLink to="/org/hr">HR</NavLink>
+              </TabsTrigger>
+            </TabsList>
+          </div>
+        </Fade>
 
         <TabsContent value={active} forceMount className="flex flex-col gap-4">
-          {isIndex ? <StatCards items={cards} /> : <Outlet />}
+          {isIndex ? (
+            <Fade delay={100}>
+              <StatCards items={cards} />
+            </Fade>
+          ) : (
+            <Outlet />
+          )}
         </TabsContent>
       </Tabs>
 

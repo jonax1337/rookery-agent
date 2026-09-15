@@ -24,6 +24,8 @@ import {
 } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
 
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { Thread, type ThreadComponents } from '@/components/assistant-ui/elements/thread.aui';
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, EmptyStateGreeting } from '@/components/assistant-ui/elements/empty-state';
@@ -273,19 +275,29 @@ export function ChatPage() {
   const components = React.useMemo<ThreadComponents>(
     () => ({
       Welcome: () => (
-        <EmptyState className="mx-auto mb-8 max-w-none gap-4">
-          <div className="flex items-center gap-3 text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
-            <span aria-hidden="true" className="h-px w-6 bg-border" />
-            {assistantName}
-            <span aria-hidden="true" className="h-px w-6 bg-border" />
-          </div>
-          <EmptyStateGreeting className="font-heading text-4xl leading-[1.1] tracking-[-0.035em] text-balance sm:text-5xl">
-            {greeting(new Date(), { honorific: config?.honorific, userName: config?.userName })}
-          </EmptyStateGreeting>
-          <p className="max-w-sm text-center text-sm leading-relaxed text-muted-foreground">
-            A thought, a plan, or a fresh start. What’s on your mind?
-          </p>
-        </EmptyState>
+        <Fade asChild>
+          <EmptyState className="mx-auto mb-8 max-w-none gap-4">
+            <Fade asChild>
+              <div className="flex items-center gap-3 text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+                <span aria-hidden="true" className="h-px w-6 bg-border" />
+                {assistantName}
+                <span aria-hidden="true" className="h-px w-6 bg-border" />
+              </div>
+            </Fade>
+            {/* The greeting keeps its own CSS entrance, so the blur stays on
+                a wrapper - no element animates twice. */}
+            <Blur delay={50}>
+              <EmptyStateGreeting className="font-heading text-4xl leading-[1.1] tracking-[-0.035em] text-balance sm:text-5xl">
+                {greeting(new Date(), { honorific: config?.honorific, userName: config?.userName })}
+              </EmptyStateGreeting>
+            </Blur>
+            <Fade asChild delay={100}>
+              <p className="max-w-sm text-center text-sm leading-relaxed text-muted-foreground">
+                A thought, a plan, or a fresh start. What’s on your mind?
+              </p>
+            </Fade>
+          </EmptyState>
+        </Fade>
       ),
     }),
     [assistantName, config?.honorific, config?.userName],
@@ -300,10 +312,12 @@ export function ChatPage() {
 
       {chat.assignments.length > 0 && (
         <div className="mx-auto w-full max-w-3xl px-4 pt-4">
-          <LiveRunList
-            assignments={chat.assignments}
-            onCancel={(id) => void cancelAssignment(id)}
-          />
+          <Fade>
+            <LiveRunList
+              assignments={chat.assignments}
+              onCancel={(id) => void cancelAssignment(id)}
+            />
+          </Fade>
         </div>
       )}
 
@@ -312,15 +326,17 @@ export function ChatPage() {
         // carries the way to try again; this stays until the next turn, so
         // the composer is never idle for a reason nobody can see any more.
         <div className="mx-auto w-full max-w-3xl px-4 pt-4">
-          <Item variant="outline" size="sm" className="border-destructive/50 items-start">
-            <ItemMedia>
-              <TriangleAlertIcon className="text-destructive" />
-            </ItemMedia>
-            <ItemContent>
-              <ItemTitle className="text-destructive">The turn failed</ItemTitle>
-              <ItemDescription className="text-foreground">{chat.error}</ItemDescription>
-            </ItemContent>
-          </Item>
+          <Fade>
+            <Item variant="outline" size="sm" className="border-destructive/50 items-start">
+              <ItemMedia>
+                <TriangleAlertIcon className="text-destructive" />
+              </ItemMedia>
+              <ItemContent>
+                <ItemTitle className="text-destructive">The turn failed</ItemTitle>
+                <ItemDescription className="text-foreground">{chat.error}</ItemDescription>
+              </ItemContent>
+            </Item>
+          </Fade>
         </div>
       )}
 

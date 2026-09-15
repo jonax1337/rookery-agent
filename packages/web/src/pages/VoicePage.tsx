@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import {
-  AudioLinesIcon,
-  MicIcon,
-  MicOffIcon,
-  RotateCcwIcon,
-  SettingsIcon,
-  SquareIcon,
-  TriangleAlertIcon,
-  XIcon,
-} from 'lucide-react';
+import { MicIcon, MicOffIcon, SquareIcon, TriangleAlertIcon } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router';
 
 import { VoiceOrb, type OrbState } from '@/components/VoiceOrb';
+import { AudioLinesIcon } from '@/components/animate-ui/icons/audio-lines';
+import { RotateCcwIcon } from '@/components/animate-ui/icons/rotate-ccw';
+import { SettingsIcon } from '@/components/animate-ui/icons/settings';
+import { XIcon } from '@/components/animate-ui/icons/x';
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import {
+  RotatingText,
+  RotatingTextContainer,
+} from '@/components/animate-ui/primitives/texts/rotating';
 import { DetailDrawer } from '@/components/blocks/detail-drawer';
 import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
 import { SliderField } from '@/components/forms/form-kit';
@@ -478,31 +479,37 @@ export function VoicePage() {
         {/* Every white on `--voice-ground` here is held at /55 or above: below
             that the 4,5:1 minimum breaks, and the orb behind the text is not a
             constant ground to borrow contrast from. */}
-        <div className="flex items-center gap-2 text-xs uppercase tracking-[0.28em] text-white/55">
-          <AudioLinesIcon className="size-4" />
-          <span>{assistantName}</span>
-          <span className="text-white/40" aria-hidden="true">
-            ·
-          </span>
-          <span>Voice</span>
-        </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Exit voice mode"
-              className="rounded-full text-white/60 hover:bg-white/10 hover:text-white"
-              onClick={exit}
-            >
-              <XIcon />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="left">
-            Exit <Kbd>Esc</Kbd>
-          </TooltipContent>
-        </Tooltip>
+        <Blur>
+          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.28em] text-white/55">
+            {/* The equaliser dances only under the pointer, not forever: the
+                orb is this screen's one steady motion. */}
+            <AudioLinesIcon className="size-4" animateOnHover />
+            <span>{assistantName}</span>
+            <span className="text-white/40" aria-hidden="true">
+              ·
+            </span>
+            <span>Voice</span>
+          </div>
+        </Blur>
+        <Fade delay={50}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Exit voice mode"
+                className="rounded-full text-white/60 hover:bg-white/10 hover:text-white"
+                onClick={exit}
+              >
+                <XIcon animateOnView />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="left">
+              Exit <Kbd>Esc</Kbd>
+            </TooltipContent>
+          </Tooltip>
+        </Fade>
       </div>
 
       {/* The gate: one sentence and one button, on the dimmed orb. */}
@@ -510,24 +517,31 @@ export function VoicePage() {
         <Empty className="absolute inset-0 justify-center border-0 bg-transparent">
           <EmptyHeader>
             {/* No EmptyMedia: the orb behind this block *is* the medium, and a
-                24-pixel icon in front of it would only compete with it. */}
-            <EmptyTitle className="text-2xl font-light tracking-tight text-white sm:text-3xl">
-              {status}
-            </EmptyTitle>
-            <EmptyDescription className="max-w-md text-white/50">
-              {stt.supported
-                ? 'Click to enable full screen, the microphone and speech. Voice: ' +
-                  voiceLabel +
-                  '.'
-                : 'Speech recognition is unavailable in this browser. Try Chrome or Edge.'}
-            </EmptyDescription>
+                24-pixel icon in front of it would only compete with it. The
+                entrance therefore staggers text and button, not an icon. */}
+            <Blur delay={100}>
+              <EmptyTitle className="text-2xl font-light tracking-tight text-white sm:text-3xl">
+                {status}
+              </EmptyTitle>
+            </Blur>
+            <Fade delay={150}>
+              <EmptyDescription className="max-w-md text-white/50">
+                {stt.supported
+                  ? 'Click to enable full screen, the microphone and speech. Voice: ' +
+                    voiceLabel +
+                    '.'
+                  : 'Speech recognition is unavailable in this browser. Try Chrome or Edge.'}
+              </EmptyDescription>
+            </Fade>
           </EmptyHeader>
-          <EmptyContent>
-            <Button type="button" size="lg" disabled={!stt.supported} onClick={() => void start()}>
-              <MicIcon />
-              Start listening
-            </Button>
-          </EmptyContent>
+          <Fade delay={200}>
+            <EmptyContent>
+              <Button type="button" size="lg" disabled={!stt.supported} onClick={() => void start()}>
+                <MicIcon />
+                Start listening
+              </Button>
+            </EmptyContent>
+          </Fade>
         </Empty>
       ) : null}
 
@@ -553,7 +567,7 @@ export function VoicePage() {
         // line: when the voice stays silent (no microphone, server voice
         // unreachable), the answer below is the only place the reply appears,
         // and a screen reader has to hear it change.
-        <div
+        <Fade
           className="pointer-events-none absolute inset-x-0 top-[calc(50%+21vmin)] bottom-28 flex flex-col items-center gap-3 overflow-hidden px-6 text-center"
           aria-live="polite"
         >
@@ -575,12 +589,15 @@ export function VoicePage() {
               ) : null}
             </div>
           ) : null}
-        </div>
+        </Fade>
       ) : null}
 
       {/* Bottom controls */}
       {phase === 'live' ? (
-        <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 bg-gradient-to-t from-black/85 via-black/50 to-transparent p-5 pt-16 sm:p-7 sm:pt-16">
+        <Fade
+          delay={50}
+          className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 bg-gradient-to-t from-black/85 via-black/50 to-transparent p-5 pt-16 sm:p-7 sm:pt-16"
+        >
           {warning ? (
             <Badge variant="outline" className="gap-1.5 border-amber-400/40 bg-amber-500/15 text-amber-200">
               <TriangleAlertIcon className="size-3.5" />
@@ -646,10 +663,13 @@ export function VoicePage() {
               <ButtonGroupSeparator />
 
               <VoiceAction label="New conversation" onClick={newConversation}>
-                <RotateCcwIcon />
+                {/* animateOnView, not animateOnHover: the button base carries
+                    `[&_svg]:pointer-events-none`, a hover on the icon itself
+                    never fires. The full turn ends where the glyph began. */}
+                <RotateCcwIcon animateOnView animation="rotate" />
               </VoiceAction>
               <VoiceAction label="Voice and microphone" onClick={() => setSettingsOpen(true)}>
-                <SettingsIcon />
+                <SettingsIcon animateOnView animation="rotate" />
               </VoiceAction>
             </ButtonGroup>
           </div>
@@ -665,7 +685,7 @@ export function VoicePage() {
             <span>exits</span>
             <span className="text-white/55">· Voice: {voiceLabel}</span>
           </KbdGroup>
-        </div>
+        </Fade>
       ) : null}
 
       <VoiceSettingsDrawer
@@ -774,7 +794,12 @@ function VoiceToggle({
               on && 'border-transparent bg-white/20 text-white',
             )}
           >
-          {on ? 'on' : 'off'}
+            {/* The label flips between on and off; let it roll instead of
+                snapping. `paddingBlock: 0` keeps the badge at its own height -
+                the container's 0.25rem default would grow it. */}
+            <RotatingTextContainer text={on ? 'on' : 'off'} style={{ paddingBlock: 0 }}>
+              <RotatingText />
+            </RotatingTextContainer>
           </Badge>
         </Button>
       </TooltipTrigger>

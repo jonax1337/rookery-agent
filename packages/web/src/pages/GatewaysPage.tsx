@@ -1,7 +1,10 @@
 import { useMemo } from 'react';
 import { NavLink, useNavigate } from 'react-router';
-import { RadioTowerIcon, SquareArrowOutUpRightIcon } from 'lucide-react';
+import { SquareArrowOutUpRightIcon } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
+import { RadioTower } from '@/components/animate-ui/icons/radio-tower';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import { actionsColumn } from '@/components/blocks/data-table/table-columns';
@@ -40,6 +43,14 @@ const COLUMN_LABELS: Record<string, string> = {
   allowedCount: 'Allowed IDs',
   actions: 'Actions',
 };
+
+/**
+ * The empty-state icon as its animate-ui twin: same 24px silhouette and
+ * stroke as the lucide original, but the arcs blink once when the empty
+ * state enters the viewport. Needs this shim because `EmptyState` types its
+ * `icon` as `LucideIcon` and renders it without any props.
+ */
+const RadioTowerAnimated = (() => <RadioTower size={24} animateOnView />) as unknown as LucideIcon;
 
 export function GatewaysPage() {
   const navigate = useNavigate();
@@ -103,28 +114,31 @@ export function GatewaysPage() {
 
   return (
     <PageBody>
-      <DataTable
-        data={gateways}
-        columns={columns}
-        getRowId={(gateway) => gateway.id}
-        idPrefix="gateways"
-        onRowClick={(gateway) => void navigate('/gateways/' + gateway.id)}
-        rowClickIgnoreColumns={['label', 'actions']}
-        columnLabels={COLUMN_LABELS}
-        initialSorting={[{ id: 'label', desc: false }]}
-        rowLabel={{ singular: 'Gateway', plural: 'Gateways' }}
-        loading={loading}
-        error={error ? <ServerOffline onRetry={() => void refresh()} /> : undefined}
-        empty={
-          <EmptyState
-            icon={RadioTowerIcon}
-            title="No gateway configured yet"
-            description="A gateway connects the assistant to a channel such as Telegram."
-            variant="plain"
-            size="sm"
-          />
-        }
-      />
+      <Fade>
+        <DataTable
+          data={gateways}
+          columns={columns}
+          getRowId={(gateway) => gateway.id}
+          idPrefix="gateways"
+          onRowClick={(gateway) => void navigate('/gateways/' + gateway.id)}
+          rowClickIgnoreColumns={['label', 'actions']}
+          columnLabels={COLUMN_LABELS}
+          initialSorting={[{ id: 'label', desc: false }]}
+          rowLabel={{ singular: 'Gateway', plural: 'Gateways' }}
+          loading={loading}
+          error={error ? <ServerOffline onRetry={() => void refresh()} /> : undefined}
+          // EmptyState brings its own Fade, so no wrapper here - one fade, not two.
+          empty={
+            <EmptyState
+              icon={RadioTowerAnimated}
+              title="No gateway configured yet"
+              description="A gateway connects the assistant to a channel such as Telegram."
+              variant="plain"
+              size="sm"
+            />
+          }
+        />
+      </Fade>
     </PageBody>
   );
 }

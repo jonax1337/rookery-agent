@@ -3,13 +3,16 @@ import { NavLink, useNavigate } from 'react-router';
 import {
   DownloadIcon,
   ExternalLinkIcon,
-  PlusIcon,
   RotateCcwIcon,
   SquareArrowOutUpRightIcon,
   Trash2Icon,
   WrenchIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
+import { PlusIcon } from '@/components/animate-ui/icons/plus';
 
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
@@ -86,7 +89,7 @@ export function ToolsPage() {
     actions: (
       <Button asChild size="sm">
         <NavLink to="/tools/new">
-          <PlusIcon data-icon="inline-start" />
+          <PlusIcon data-icon="inline-start" animateOnHover />
           Add custom server
         </NavLink>
       </Button>
@@ -277,26 +280,26 @@ export function ToolsPage() {
   const cards: StatCardProps[] = [
     {
       label: 'Active',
-      value: formatNumber(counts.aktiv),
+      value: <CountingNumber number={counts.aktiv} />,
       headline: 'Of ' + formatNumber(counts.alle) + ' in the catalog',
       footnote: 'Enabled, installed, and configured with all required keys',
     },
     {
       label: 'Requires keys',
-      value: formatNumber(counts.schluessel),
+      value: <CountingNumber number={counts.schluessel} />,
       badge:
         counts.schluessel > 0 ? <Badge variant="destructive">remains disabled</Badge> : undefined,
       headline: counts.schluessel > 0 ? 'Waiting for credentials' : 'Nothing pending',
     },
     {
       label: 'Found here',
-      value: formatNumber(counts.gefunden),
+      value: <CountingNumber number={counts.gefunden} />,
       headline: 'Installed in Claude Code',
       footnote: 'Read from ~/.claude; each one runs only once you switch it on',
     },
     {
       label: 'Custom servers',
-      value: formatNumber(counts.eigene),
+      value: <CountingNumber number={counts.eigene} />,
       headline: 'Added manually',
       to: '/tools',
     },
@@ -306,84 +309,92 @@ export function ToolsPage() {
     <PageBody>
       {dialog}
 
-      <StatCards items={cards} />
+      <Fade>
+        <StatCards items={cards} />
+      </Fade>
 
-      <DataTable
-        data={rows}
-        columns={columns}
-        getRowId={(tool) => tool.id}
-        idPrefix="werkzeuge"
-        onRowClick={(tool) => void navigate('/tools/' + tool.id)}
-        rowClickIgnoreColumns={['select', 'name', 'enabled', 'actions']}
-        tabs={[
-          { value: 'alle', label: 'All', count: counts.alle },
-          { value: 'aktiv', label: 'Active', count: counts.aktiv },
-          { value: 'schluessel', label: 'Requires keys', count: counts.schluessel },
-          { value: 'eigene', label: 'Custom', count: counts.eigene },
-          { value: 'gefunden', label: 'Found here', count: counts.gefunden },
-        ]}
-        tab={tab}
-        onTabChange={(value) => setTab(value as Tab)}
-        tabLabel="Tool selection"
-        searchable
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Tools durchsuchen"
-        searchText={(tool) => tool.name + ' ' + tool.description + ' ' + tool.id}
-        columnLabels={COLUMN_LABELS}
-        initialSorting={[{ id: 'name', desc: false }]}
-        rowLabel={{ singular: 'Tool', plural: 'tools' }}
-        loading={loading}
-        error={error ? <ServerOffline onRetry={() => void refresh()} /> : undefined}
-        bulkActions={(selected, clear) => (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                for (const tool of selected) {
-                  if (tool.installed && !tool.enabled) void toggle(tool, true);
-                }
-                clear();
-              }}
-            >
-              Enable
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                for (const tool of selected) {
-                  if (tool.enabled) void toggle(tool, false);
-                }
-                clear();
-              }}
-            >
-              Disable
-            </Button>
-          </>
-        )}
-        empty={
-          <EmptyState
-            icon={WrenchIcon}
-            title="No tools in this selection"
-            description="There is nothing in this tab right now. The complete catalog is available under “All”."
-            actionLabel="Show all"
-            onAction={() => {
-              setTab('alle');
-              setSearch('');
-            }}
-            variant="plain"
-            size="sm"
-          />
-        }
-        filteredEmpty={
-          <NoResults
-            {...(search.trim() ? { query: search.trim() } : {})}
-            onReset={() => setSearch('')}
-          />
-        }
-      />
+      <Fade delay={50}>
+        <DataTable
+          data={rows}
+          columns={columns}
+          getRowId={(tool) => tool.id}
+          idPrefix="werkzeuge"
+          onRowClick={(tool) => void navigate('/tools/' + tool.id)}
+          rowClickIgnoreColumns={['select', 'name', 'enabled', 'actions']}
+          tabs={[
+            { value: 'alle', label: 'All', count: counts.alle },
+            { value: 'aktiv', label: 'Active', count: counts.aktiv },
+            { value: 'schluessel', label: 'Requires keys', count: counts.schluessel },
+            { value: 'eigene', label: 'Custom', count: counts.eigene },
+            { value: 'gefunden', label: 'Found here', count: counts.gefunden },
+          ]}
+          tab={tab}
+          onTabChange={(value) => setTab(value as Tab)}
+          tabLabel="Tool selection"
+          searchable
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Tools durchsuchen"
+          searchText={(tool) => tool.name + ' ' + tool.description + ' ' + tool.id}
+          columnLabels={COLUMN_LABELS}
+          initialSorting={[{ id: 'name', desc: false }]}
+          rowLabel={{ singular: 'Tool', plural: 'tools' }}
+          loading={loading}
+          error={error ? <ServerOffline onRetry={() => void refresh()} /> : undefined}
+          bulkActions={(selected, clear) => (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  for (const tool of selected) {
+                    if (tool.installed && !tool.enabled) void toggle(tool, true);
+                  }
+                  clear();
+                }}
+              >
+                Enable
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  for (const tool of selected) {
+                    if (tool.enabled) void toggle(tool, false);
+                  }
+                  clear();
+                }}
+              >
+                Disable
+              </Button>
+            </>
+          )}
+          empty={
+            <Fade>
+              <EmptyState
+                icon={WrenchIcon}
+                title="No tools in this selection"
+                description="There is nothing in this tab right now. The complete catalog is available under “All”."
+                actionLabel="Show all"
+                onAction={() => {
+                  setTab('alle');
+                  setSearch('');
+                }}
+                variant="plain"
+                size="sm"
+              />
+            </Fade>
+          }
+          filteredEmpty={
+            <Fade>
+              <NoResults
+                {...(search.trim() ? { query: search.trim() } : {})}
+                onReset={() => setSearch('')}
+              />
+            </Fade>
+          }
+        />
+      </Fade>
 
       {/* The preparation can print a whole npm log; a toast would swallow it. */}
       <DetailDrawer

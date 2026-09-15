@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
 import {
   PencilIcon,
@@ -15,6 +15,11 @@ import { PERMISSION_LABEL } from '@/lib/format';
 import { formatDateTime, formatNumber } from '@/lib/stats';
 import type { Agent, Team } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
+import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
+import { UserRoundIcon as AnimatedUserRoundIcon } from '@/components/animate-ui/icons/user-round';
+import { UsersIcon as AnimatedUsersIcon } from '@/components/animate-ui/icons/users';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import {
@@ -62,6 +67,19 @@ const COLUMN_LABELS: Record<string, string> = {
   members: 'Members',
   actions: 'Actions',
 };
+
+/**
+ * The empty-state icons as animate-ui versions. `EmptyState` takes a
+ * `LucideIcon` and renders it without props, so each animated icon sits in a
+ * forwardRef shell that carries its `animateOnView` trigger along.
+ */
+const EmptyUsersIcon = forwardRef<SVGSVGElement>(function EmptyUsersIcon() {
+  return <AnimatedUsersIcon animateOnView />;
+});
+
+const EmptyUserRoundIcon = forwardRef<SVGSVGElement>(function EmptyUserRoundIcon() {
+  return <AnimatedUserRoundIcon animateOnView />;
+});
 
 export function OrgTeamsPage() {
   const org = useOrgState();
@@ -244,69 +262,71 @@ export function OrgTeamsPage() {
       {dialog}
       {bulk.dialog}
 
-      <DataTable
-        data={org.teams}
-        columns={columns}
-        getRowId={(team) => team.id}
-        idPrefix="teams"
-        onRowClick={(team) => setDrawerId(team.id)}
-        rowClickIgnoreColumns={['select', 'name', 'members', 'actions']}
-        searchable
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Search teams"
-        searchText={(team) => team.name + ' ' + (team.purpose ?? '')}
-        columnLabels={COLUMN_LABELS}
-        initialSorting={[{ id: 'name', desc: false }]}
-        rowLabel={{ singular: 'Team', plural: 'Teams' }}
-        loading={org.loading && org.teams.length === 0}
-        error={org.error ? <ServerOffline onRetry={() => void org.refresh()} /> : undefined}
-        bulkActions={(selected, clear) => (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              const affected = affectedBy(selected);
-              void bulk.run({
-                rows: selected,
-                noun: { singular: 'Team', plural: 'Teams' },
-                nameOf: (team) => team.name,
-                verb: 'disband',
-                done: 'disbanded',
-                confirmLabel: 'Disband',
-                description:
-                  affected === 0
-                    ? 'None of these teams has members.'
-                    : formatNumber(affected) +
-                      (affected === 1 ? ' agent will be' : ' agents will be') +
-                      ' without a team afterward.',
-                run: (team) => api.deleteTeam(team.id),
-                after: org.refresh,
-                clear,
-              });
-            }}
-          >
-            <Trash2Icon data-icon="inline-start" />
-            Disband
-          </Button>
-        )}
-        empty={
-          <EmptyState
-            icon={UsersIcon}
-            title="No teams yet"
-            description="A team groups agents under a lead. Reporting relationships are configured separately for each agent."
-            actionLabel="Create team"
-            actionTo="/org/teams/new"
-            variant="plain"
-          />
-        }
-        filteredEmpty={
-          <NoResults
-            {...(search.trim() ? { query: search.trim() } : {})}
-            onReset={() => setSearch('')}
-          />
-        }
-      />
+      <Fade>
+        <DataTable
+          data={org.teams}
+          columns={columns}
+          getRowId={(team) => team.id}
+          idPrefix="teams"
+          onRowClick={(team) => setDrawerId(team.id)}
+          rowClickIgnoreColumns={['select', 'name', 'members', 'actions']}
+          searchable
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Search teams"
+          searchText={(team) => team.name + ' ' + (team.purpose ?? '')}
+          columnLabels={COLUMN_LABELS}
+          initialSorting={[{ id: 'name', desc: false }]}
+          rowLabel={{ singular: 'Team', plural: 'Teams' }}
+          loading={org.loading && org.teams.length === 0}
+          error={org.error ? <ServerOffline onRetry={() => void org.refresh()} /> : undefined}
+          bulkActions={(selected, clear) => (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                const affected = affectedBy(selected);
+                void bulk.run({
+                  rows: selected,
+                  noun: { singular: 'Team', plural: 'Teams' },
+                  nameOf: (team) => team.name,
+                  verb: 'disband',
+                  done: 'disbanded',
+                  confirmLabel: 'Disband',
+                  description:
+                    affected === 0
+                      ? 'None of these teams has members.'
+                      : formatNumber(affected) +
+                        (affected === 1 ? ' agent will be' : ' agents will be') +
+                        ' without a team afterward.',
+                  run: (team) => api.deleteTeam(team.id),
+                  after: org.refresh,
+                  clear,
+                });
+              }}
+            >
+              <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
+              Disband
+            </Button>
+          )}
+          empty={
+            <EmptyState
+              icon={EmptyUsersIcon}
+              title="No teams yet"
+              description="A team groups agents under a lead. Reporting relationships are configured separately for each agent."
+              actionLabel="Create team"
+              actionTo="/org/teams/new"
+              variant="plain"
+            />
+          }
+          filteredEmpty={
+            <NoResults
+              {...(search.trim() ? { query: search.trim() } : {})}
+              onReset={() => setSearch('')}
+            />
+          }
+        />
+      </Fade>
 
       <TeamDrawer
         team={drawerTeam}
@@ -346,56 +366,60 @@ function TeamDrawer({ team, members, leadName, onOpenChange }: TeamDrawerProps) 
     >
       {team ? (
         <>
-          <MetaList
-            columns={1}
-            items={[
-              {
-                label: 'Lead',
-                value: leadName ?? 'No lead',
-                icon: UserRoundIcon,
-                ...(team.leadId ? { to: '/org/agents/' + team.leadId } : {}),
-              },
-              {
-                label: 'Members',
-                value: formatNumber(members.length),
-                icon: UsersIcon,
-                to: '/org/agents?team=' + team.id,
-              },
-              { label: 'Created', value: formatDateTime(team.createdAt) },
-              { label: 'Last updated', value: formatDateTime(team.updatedAt) },
-            ]}
-          />
+          <Fade>
+            <MetaList
+              columns={1}
+              items={[
+                {
+                  label: 'Lead',
+                  value: leadName ?? 'No lead',
+                  icon: UserRoundIcon,
+                  ...(team.leadId ? { to: '/org/agents/' + team.leadId } : {}),
+                },
+                {
+                  label: 'Members',
+                  value: <CountingNumber number={members.length} />,
+                  icon: UsersIcon,
+                  to: '/org/agents?team=' + team.id,
+                },
+                { label: 'Created', value: formatDateTime(team.createdAt) },
+                { label: 'Last updated', value: formatDateTime(team.updatedAt) },
+              ]}
+            />
+          </Fade>
 
-          <div>
-            <h3 className="mb-2 text-sm font-medium">Who works here</h3>
-            {members.length === 0 ? (
-              <EmptyState
-                icon={UserRoundIcon}
-                title="No members in this team yet"
-                description="Assign the team in an agent’s profile to add that agent."
-                actionLabel="Hire agent"
-                actionTo="/org/agents/new"
-                variant="plain"
-                size="sm"
-              />
-            ) : (
-              <ItemGroup className="gap-2">
-                {members.map((agent) => (
-                  <RelatedItem
-                    key={agent.id}
-                    to={'/org/agents/' + agent.id}
-                    title={agent.name}
-                    description={agent.title + (agent.id === team.leadId ? ' · Lead' : '')}
-                    trailing={
-                      <span className="text-xs text-muted-foreground">
-                        {agent.permission ? PERMISSION_LABEL[agent.permission] : 'Default'}
-                      </span>
-                    }
-                  />
-                ))}
-              </ItemGroup>
-            )}
-          </div>
+          <Fade delay={50}>
+            <div>
+              <h3 className="mb-2 text-sm font-medium">Who works here</h3>
+              {members.length === 0 ? (
+                <EmptyState
+                  icon={EmptyUserRoundIcon}
+                  title="No members in this team yet"
+                  description="Assign the team in an agent’s profile to add that agent."
+                  actionLabel="Hire agent"
+                  actionTo="/org/agents/new"
+                  variant="plain"
+                  size="sm"
+                />
+              ) : (
+                <ItemGroup className="gap-2">
+                  {members.map((agent) => (
+                    <RelatedItem
+                      key={agent.id}
+                      to={'/org/agents/' + agent.id}
+                      title={agent.name}
+                      description={agent.title + (agent.id === team.leadId ? ' · Lead' : '')}
+                      trailing={
+                        <span className="text-xs text-muted-foreground">
+                          {agent.permission ? PERMISSION_LABEL[agent.permission] : 'Default'}
+                        </span>
+                      }
+                    />
+                  ))}
+                </ItemGroup>
+              )}
+            </div>
+          </Fade>
         </>
       ) : null}
     </DetailDrawer>

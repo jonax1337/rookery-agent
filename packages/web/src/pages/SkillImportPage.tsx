@@ -1,13 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { forwardRef, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import {
   DownloadIcon,
   FolderSearchIcon,
   GitBranchIcon,
-  SearchIcon,
   SparklesIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { DownloadIcon as AnimatedDownloadIcon } from '@/components/animate-ui/icons/download';
+import { SearchIcon as AnimatedSearchIcon } from '@/components/animate-ui/icons/search';
+import { SparklesIcon as AnimatedSparklesIcon } from '@/components/animate-ui/icons/sparkles';
 
 import { PageBody } from '@/components/blocks/page-body';
 import { EmptyState, NoResults } from '@/components/common/empty-state';
@@ -60,6 +65,16 @@ function guessName(source: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 }
+
+/**
+ * The collection-error empty state gets the animate-ui sparkles instead of the
+ * lucide one: same silhouette and stroke, blinking in once when the state
+ * enters the viewport. `EmptyState` types its `icon` as a `LucideIcon` and
+ * renders it without props, so the trigger rides along in this shell.
+ */
+const EmptySparklesIcon = forwardRef<SVGSVGElement>(function EmptySparklesIcon() {
+  return <AnimatedSparklesIcon size={24} animateOnView />;
+});
 
 export function SkillImportPage() {
   const navigate = useNavigate();
@@ -117,12 +132,15 @@ export function SkillImportPage() {
 
   return (
     <PageBody width="3xl">
-      <p className="text-sm text-muted-foreground">
-        Skills use an open format: a folder containing SKILL.md. Import compatible folders from
-        Anthropic, skills.sh, or your own GitHub repository.
-      </p>
+      <Blur>
+        <p className="text-sm text-muted-foreground">
+          Skills use an open format: a folder containing SKILL.md. Import compatible folders from
+          Anthropic, skills.sh, or your own GitHub repository.
+        </p>
+      </Blur>
 
       {/* ------------------------------ GitHub ------------------------------ */}
+      <Fade delay={50}>
       <Card>
         <CardHeader>
           <CardTitle>From GitHub</CardTitle>
@@ -155,7 +173,9 @@ export function SkillImportPage() {
                 {busy === source.trim() ? (
                   <Spinner data-icon="inline-start" aria-label="Importing" />
                 ) : (
-                  <DownloadIcon data-icon="inline-start" />
+                  /* size-3.5 keeps the rest-pose size: the xs button sizes only
+                     direct svg children, and the animated icon sits in a span. */
+                  <AnimatedDownloadIcon data-icon="inline-start" animateOnHover className="size-3.5" />
                 )}
                 Import
               </InputGroupButton>
@@ -163,6 +183,7 @@ export function SkillImportPage() {
           </InputGroup>
 
           {candidates !== null && candidates.length > 0 ? (
+            <Fade>
             <div className="flex flex-col gap-2">
               <p className="text-sm font-medium">Multiple skills found</p>
               <ItemGroup className="gap-2">
@@ -186,9 +207,11 @@ export function SkillImportPage() {
                 ))}
               </ItemGroup>
             </div>
+            </Fade>
           ) : null}
 
           {candidates !== null && candidates.length === 0 ? (
+            <Fade>
             <EmptyState
               icon={FolderSearchIcon}
               title="No skill found there"
@@ -196,11 +219,14 @@ export function SkillImportPage() {
               variant="plain"
               size="sm"
             />
+            </Fade>
           ) : null}
         </CardContent>
       </Card>
+      </Fade>
 
       {/* ------------------------------ Sammlung ---------------------------- */}
+      <Fade delay={100}>
       <Card>
         <CardHeader>
           <CardTitle>Anthropic collection</CardTitle>
@@ -211,8 +237,9 @@ export function SkillImportPage() {
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           {catalogError ? (
+            <Fade>
             <EmptyState
-              icon={SparklesIcon}
+              icon={EmptySparklesIcon}
               title="The collection cannot be loaded right now"
               description="The list comes from GitHub. It remains empty without a network connection or during an outage there; a custom path above will still work."
               actionLabel="Try again"
@@ -220,6 +247,7 @@ export function SkillImportPage() {
               variant="plain"
               size="sm"
             />
+            </Fade>
           ) : catalogLoading && catalog.length === 0 ? (
             <div className="flex flex-col gap-2">
               {Array.from({ length: 5 }, (_, index) => (
@@ -230,7 +258,9 @@ export function SkillImportPage() {
             <>
               <InputGroup>
                 <InputGroupAddon align="inline-start">
-                  <SearchIcon />
+                  {/* size-4 mirrors the addon's own svg sizing, which only
+                     reaches direct svg children. */}
+                  <AnimatedSearchIcon animateOnHover className="size-4" />
                 </InputGroupAddon>
                 <InputGroupInput
                   value={filter}
@@ -241,10 +271,12 @@ export function SkillImportPage() {
               </InputGroup>
 
               {shelf.length === 0 ? (
+                <Fade>
                 <NoResults
                   {...(filter.trim() ? { query: filter.trim() } : {})}
                   onReset={() => setFilter('')}
                 />
+                </Fade>
               ) : (
                 <ItemGroup className="gap-2">
                   {shelf.map((entry) => {
@@ -292,6 +324,7 @@ export function SkillImportPage() {
           )}
         </CardContent>
       </Card>
+      </Fade>
     </PageBody>
   );
 }

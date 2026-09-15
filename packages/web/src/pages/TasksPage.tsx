@@ -1,13 +1,10 @@
-import { useCallback, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
 import {
   BanIcon,
-  ClipboardListIcon,
   LayoutGridIcon,
-  ListIcon,
   PencilIcon,
   PlayIcon,
-  PlusIcon,
   SquareArrowOutUpRightIcon,
   WandSparklesIcon,
 } from 'lucide-react';
@@ -25,6 +22,11 @@ import { countSince, formatNumber } from '@/lib/stats';
 import type { Task, TaskStatus } from '@/lib/types';
 import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-provider';
 import { useStatsTotals } from '@/hooks/useStatsTotals';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
+import { ClipboardListIcon } from '@/components/animate-ui/icons/clipboard-list';
+import { ListIcon } from '@/components/animate-ui/icons/list';
+import { PlusIcon } from '@/components/animate-ui/icons/plus';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { PageBody } from '@/components/blocks/page-body';
 import { cappedBadge, StatCards } from '@/components/blocks/stat-cards';
@@ -91,6 +93,17 @@ function startOfWeek(now = Date.now()): number {
   return date.getTime();
 }
 
+/**
+ * The empty states swap their lucide clipboard for the animate-ui one: same
+ * silhouette and stroke, the list lines draw themselves once when the state
+ * enters the viewport. `EmptyState` types its `icon` as a `LucideIcon` and
+ * renders it without props, so the `animateOnView` trigger rides along in
+ * this shell (same pattern as the plug in `empty-state.tsx`).
+ */
+const AnimatedClipboardListIcon = forwardRef<SVGSVGElement>(function AnimatedClipboardListIcon() {
+  return <ClipboardListIcon size={24} animateOnView />;
+});
+
 export function TasksPage() {
   const tasks = useTasksState();
   const org = useOrgState();
@@ -130,7 +143,7 @@ export function TasksPage() {
           }}
         >
           <ToggleGroupItem value="table" aria-label="Table view">
-            <ListIcon />
+            <ListIcon animateOnHover />
           </ToggleGroupItem>
           <ToggleGroupItem value="board" aria-label="Board view">
             <LayoutGridIcon />
@@ -138,7 +151,7 @@ export function TasksPage() {
         </ToggleGroup>
         <Button asChild size="sm">
           <NavLink to="/tasks/new">
-            <PlusIcon data-icon="inline-start" />
+            <PlusIcon data-icon="inline-start" animateOnHover />
             Create task
           </NavLink>
         </Button>
@@ -394,178 +407,188 @@ export function TasksPage() {
       {dialog}
       {bulk.dialog}
 
-      <StatCards
-        items={[
-          {
-            label: 'Open',
-            value: formatNumber(board.open + board.planned),
-            badge: <Badge variant="outline">{formatNumber(board.planned)} planned</Badge>,
-            headline: 'Waiting to run',
-            footnote: base,
-          },
-          {
-            label: 'Running',
-            value: formatNumber(board.running),
-            // `RunningBadge` gibt bei 0 nichts zurueck; die Kachel darf dann
-            // aber auch keinen leeren Aktionsplatz aufmachen.
-            badge: board.running > 0 ? <RunningBadge count={board.running} /> : undefined,
-            headline: board.running > 0 ? 'Agents are working' : 'No one is working right now',
-            footnote: base,
-          },
-          {
-            label: 'Done',
-            value: formatNumber(board.done),
-            headline: formatNumber(doneThisWeek) + ' this week',
-            footnote: base,
-          },
-          {
-            label: 'Not done',
-            value: formatNumber(notDone),
-            badge:
-              board.failed > 0 ? (
-                <Badge variant="destructive">{formatNumber(board.failed)} failed</Badge>
-              ) : undefined,
-            headline: 'Failed or cancelled',
-            footnote: base,
-          },
-        ]}
-      />
-
-      <div className="px-4 lg:px-6">
-        <TrendChartCard
-          title="Completed tasks per day"
-          description={
-            'By completion date; cancelled tasks are excluded. Based on the ' +
-            formatNumber(loaded) +
-            ' loaded tasks, including subtasks'
-          }
-          descriptionShort={formatNumber(loaded) + ' loaded tasks'}
-          data={trend}
-          series={[
-            { key: 'done', label: 'Done', color: 'var(--chart-2)' },
-            { key: 'failed', label: 'Failed', color: 'var(--destructive)' },
+      <Fade>
+        <StatCards
+          items={[
+            {
+              label: 'Open',
+              value: <CountingNumber number={board.open + board.planned} />,
+              badge: <Badge variant="outline">{formatNumber(board.planned)} planned</Badge>,
+              headline: 'Waiting to run',
+              footnote: base,
+            },
+            {
+              label: 'Running',
+              value: <CountingNumber number={board.running} />,
+              // `RunningBadge` gibt bei 0 nichts zurueck; die Kachel darf dann
+              // aber auch keinen leeren Aktionsplatz aufmachen.
+              badge: board.running > 0 ? <RunningBadge count={board.running} /> : undefined,
+              headline: board.running > 0 ? 'Agents are working' : 'No one is working right now',
+              footnote: base,
+            },
+            {
+              label: 'Done',
+              value: <CountingNumber number={board.done} />,
+              headline: formatNumber(doneThisWeek) + ' this week',
+              footnote: base,
+            },
+            {
+              label: 'Not done',
+              value: <CountingNumber number={notDone} />,
+              badge:
+                board.failed > 0 ? (
+                  <Badge variant="destructive">{formatNumber(board.failed)} failed</Badge>
+                ) : undefined,
+              headline: 'Failed or cancelled',
+              footnote: base,
+            },
           ]}
-          {...cappedBadge(capped)}
-          empty={
-            <EmptyState
-              icon={ClipboardListIcon}
-              title="Nothing completed yet"
-              description="This chart records each task when it completes or fails."
-              variant="plain"
-              size="sm"
-            />
-          }
         />
-      </div>
+      </Fade>
 
-      {view === 'board' ? (
+      <Fade delay={50}>
         <div className="px-4 lg:px-6">
-          <TaskBoard
-            tasks={filtered}
-            agentById={org.agentById}
-            onOpenDetail={(task) => setDrawerId(task.id)}
-            onStatusChange={(task, status) => {
-              if (status === 'open' || status === 'done' || status === 'cancelled') {
-                void setStatus(task, status);
-              }
-            }}
-            onReorder={reorderTask}
+          <TrendChartCard
+            title="Completed tasks per day"
+            description={
+              'By completion date; cancelled tasks are excluded. Based on the ' +
+              formatNumber(loaded) +
+              ' loaded tasks, including subtasks'
+            }
+            descriptionShort={formatNumber(loaded) + ' loaded tasks'}
+            data={trend}
+            series={[
+              { key: 'done', label: 'Done', color: 'var(--chart-2)' },
+              { key: 'failed', label: 'Failed', color: 'var(--destructive)' },
+            ]}
+            {...cappedBadge(capped)}
+            empty={
+              <Fade>
+                <EmptyState
+                  icon={AnimatedClipboardListIcon}
+                  title="Nothing completed yet"
+                  description="This chart records each task when it completes or fails."
+                  variant="plain"
+                  size="sm"
+                />
+              </Fade>
+            }
           />
         </div>
-      ) : (
-        <DataTable
-          data={visible}
-          columns={columns}
-          getRowId={(task) => task.id}
-          tabs={tabs}
-          tab={tab}
-          onTabChange={setTab}
-          tabLabel="Status"
-          searchable
-          searchPlaceholder="Search tasks"
-          searchText={(task) => task.title + ' ' + task.description}
-          columnLabels={TASK_COLUMN_LABELS}
-          rowLabel={{ singular: 'task', plural: 'tasks' }}
-          capped={capped}
-          loading={tasks.loading && tasks.topLevel.length === 0}
-          error={tasks.error ? <ServerOffline onRetry={() => void tasks.refresh()} /> : undefined}
-          initialSorting={TASK_SORTING}
-          onRowClick={(task) => setDrawerId(task.id)}
-          rowClickIgnoreColumns={['select', 'title', 'actions']}
-          filters={
-            <>
-              <FilterCombobox
-                label="Assignee"
-                placeholder="Assignee"
-                value={assignee}
-                onChange={setAssignee}
-                options={[
-                  { value: UNASSIGNED, label: TASK_UNASSIGNED },
-                  ...org.agents.map((agent) => ({ value: agent.id, label: agent.name })),
-                ]}
-              />
-              <FilterCombobox
-                label="Project"
-                placeholder="Project"
-                value={project}
-                onChange={setProject}
-                options={[
-                  { value: NO_PROJECT, label: 'No project' },
-                  ...org.projects.map((entry) => ({ value: entry.id, label: entry.name })),
-                ]}
-              />
-            </>
-          }
-          /*
-            Die Primaeraktion steht im Seitenkopf, nicht noch einmal hier - und
-            die Auswahl-Spalten sind nicht mehr folgenlos: Cancel ist die
-            einzige Sammelaktion, die dieses API kennt (es gibt kein DELETE fuer
-            Tasks), und es ist dieselbe Tat wie unten im Zeilenmenue.
-          */
-          bulkActions={(selected, clear) => {
-            const open = selected.filter(
-              (task) => task.status !== 'done' && task.status !== 'cancelled',
-            );
-            return (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={open.length === 0}
-                onClick={() =>
-                  void bulk.run({
-                    rows: open,
-                    noun: { singular: 'task', plural: 'tasks' },
-                    nameOf: (task) => task.title,
-                    verb: 'cancel',
-                    done: 'cancelled',
-                    confirmLabel: 'Cancel',
-                    cancelLabel: 'Keep running',
-                    icon: BanIcon,
-                    description:
-                      'Their running assignments will be stopped. This cannot be undone.',
-                    run: (task) => api.updateTask(task.id, { status: 'cancelled' }),
-                    after: tasks.refresh,
-                    clear,
-                  })
+      </Fade>
+
+      <Fade delay={100} key={view}>
+        {view === 'board' ? (
+          <div className="px-4 lg:px-6">
+            <TaskBoard
+              tasks={filtered}
+              agentById={org.agentById}
+              onOpenDetail={(task) => setDrawerId(task.id)}
+              onStatusChange={(task, status) => {
+                if (status === 'open' || status === 'done' || status === 'cancelled') {
+                  void setStatus(task, status);
                 }
-              >
-                <BanIcon data-icon="inline-start" />
-                Cancel {formatNumber(open.length)}
-              </Button>
-            );
-          }}
-          empty={
-            <EmptyState
-              icon={ClipboardListIcon}
-              title="No tasks yet"
-              description="Larger goals start here before they are planned and run as assignments. The assistant can add tasks too."
-              actionLabel="Create task"
-              actionTo="/tasks/new"
-              variant="plain"
+              }}
+              onReorder={reorderTask}
             />
-          }
-        />
-      )}
+          </div>
+        ) : (
+          <DataTable
+            data={visible}
+            columns={columns}
+            getRowId={(task) => task.id}
+            tabs={tabs}
+            tab={tab}
+            onTabChange={setTab}
+            tabLabel="Status"
+            searchable
+            searchPlaceholder="Search tasks"
+            searchText={(task) => task.title + ' ' + task.description}
+            columnLabels={TASK_COLUMN_LABELS}
+            rowLabel={{ singular: 'task', plural: 'tasks' }}
+            capped={capped}
+            loading={tasks.loading && tasks.topLevel.length === 0}
+            error={tasks.error ? <ServerOffline onRetry={() => void tasks.refresh()} /> : undefined}
+            initialSorting={TASK_SORTING}
+            onRowClick={(task) => setDrawerId(task.id)}
+            rowClickIgnoreColumns={['select', 'title', 'actions']}
+            filters={
+              <>
+                <FilterCombobox
+                  label="Assignee"
+                  placeholder="Assignee"
+                  value={assignee}
+                  onChange={setAssignee}
+                  options={[
+                    { value: UNASSIGNED, label: TASK_UNASSIGNED },
+                    ...org.agents.map((agent) => ({ value: agent.id, label: agent.name })),
+                  ]}
+                />
+                <FilterCombobox
+                  label="Project"
+                  placeholder="Project"
+                  value={project}
+                  onChange={setProject}
+                  options={[
+                    { value: NO_PROJECT, label: 'No project' },
+                    ...org.projects.map((entry) => ({ value: entry.id, label: entry.name })),
+                  ]}
+                />
+              </>
+            }
+            /*
+              Die Primaeraktion steht im Seitenkopf, nicht noch einmal hier - und
+              die Auswahl-Spalten sind nicht mehr folgenlos: Cancel ist die
+              einzige Sammelaktion, die dieses API kennt (es gibt kein DELETE fuer
+              Tasks), und es ist dieselbe Tat wie unten im Zeilenmenue.
+            */
+            bulkActions={(selected, clear) => {
+              const open = selected.filter(
+                (task) => task.status !== 'done' && task.status !== 'cancelled',
+              );
+              return (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={open.length === 0}
+                  onClick={() =>
+                    void bulk.run({
+                      rows: open,
+                      noun: { singular: 'task', plural: 'tasks' },
+                      nameOf: (task) => task.title,
+                      verb: 'cancel',
+                      done: 'cancelled',
+                      confirmLabel: 'Cancel',
+                      cancelLabel: 'Keep running',
+                      icon: BanIcon,
+                      description:
+                        'Their running assignments will be stopped. This cannot be undone.',
+                      run: (task) => api.updateTask(task.id, { status: 'cancelled' }),
+                      after: tasks.refresh,
+                      clear,
+                    })
+                  }
+                >
+                  <BanIcon data-icon="inline-start" />
+                  Cancel {formatNumber(open.length)}
+                </Button>
+              );
+            }}
+            empty={
+              <Fade>
+                <EmptyState
+                  icon={AnimatedClipboardListIcon}
+                  title="No tasks yet"
+                  description="Larger goals start here before they are planned and run as assignments. The assistant can add tasks too."
+                  actionLabel="Create task"
+                  actionTo="/tasks/new"
+                  variant="plain"
+                />
+              </Fade>
+            }
+          />
+        )}
+      </Fade>
 
       <DetailDrawer
         open={drawerTask !== null}

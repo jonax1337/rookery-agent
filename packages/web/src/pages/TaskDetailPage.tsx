@@ -3,18 +3,17 @@ import { NavLink, useParams } from 'react-router';
 import {
   BanIcon,
   CheckIcon,
-  ClipboardListIcon,
   FolderIcon,
   LinkIcon,
   ListTodoIcon,
   PencilIcon,
   PencilLineIcon,
-  PlayIcon,
   SendIcon,
   SquareArrowOutUpRightIcon,
   UserRoundIcon,
   WandSparklesIcon,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { ApiError, api } from '@/lib/api';
@@ -35,6 +34,16 @@ import type {
 } from '@/lib/types';
 import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
+
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
+import {
+  RotatingText,
+  RotatingTextContainer,
+} from '@/components/animate-ui/primitives/texts/rotating';
+import { Play as PlayAnimatedIcon } from '@/components/animate-ui/icons/play';
+import { ClipboardList as ClipboardListAnimatedIcon } from '@/components/animate-ui/icons/clipboard-list';
+import { Send as SendAnimatedIcon } from '@/components/animate-ui/icons/send';
 
 import { PageBody } from '@/components/blocks/page-body';
 import { StatCards, StatCardsSkeleton, type StatCardProps } from '@/components/blocks/stat-cards';
@@ -389,9 +398,18 @@ export function TaskDetailPage() {
             {isRunning ? (
               <Spinner aria-label="Running" data-icon="inline-start" />
             ) : (
-              <PlayIcon data-icon="inline-start" />
+              <PlayAnimatedIcon
+                animateOnHover
+                size={16}
+                data-icon="inline-start"
+              />
             )}
-            {isRunning ? 'Running…' : 'Run'}
+            <RotatingTextContainer
+              text={isRunning ? 'Running…' : 'Run'}
+              style={{ paddingBlock: 0 }}
+            >
+              <RotatingText />
+            </RotatingTextContainer>
           </Button>
 
           <Popover open={planOpen} onOpenChange={setPlanOpen}>
@@ -402,7 +420,12 @@ export function TaskDetailPage() {
                 ) : (
                   <WandSparklesIcon data-icon="inline-start" />
                 )}
-                Plan
+                <RotatingTextContainer
+                  text={planning ? 'Planning…' : 'Plan'}
+                  style={{ paddingBlock: 0 }}
+                >
+                  <RotatingText />
+                </RotatingTextContainer>
               </Button>
             </PopoverTrigger>
             <PopoverContent align="end" className="w-80">
@@ -432,7 +455,12 @@ export function TaskDetailPage() {
                   ) : (
                     <WandSparklesIcon data-icon="inline-start" />
                   )}
-                  {planning ? 'Planning…' : 'Plan'}
+                  <RotatingTextContainer
+                    text={planning ? 'Planning…' : 'Plan'}
+                    style={{ paddingBlock: 0 }}
+                  >
+                    <RotatingText />
+                  </RotatingTextContainer>
                 </Button>
               </FieldGroup>
             </PopoverContent>
@@ -532,13 +560,15 @@ export function TaskDetailPage() {
   if (missing) {
     return (
       <PageBody width="3xl">
-        <EmptyState
-          icon={ClipboardListIcon}
-          title="This task does not exist"
-          description="The entry was deleted, or the address is incorrect."
-          actionLabel="View tasks"
-          actionTo="/tasks"
-        />
+        <Fade className="flex min-w-0 flex-1 flex-col">
+          <EmptyState
+            icon={ClipboardListEmptyIcon as unknown as LucideIcon}
+            title="This task does not exist"
+            description="The entry was deleted, or the address is incorrect."
+            actionLabel="View tasks"
+            actionTo="/tasks"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -548,15 +578,19 @@ export function TaskDetailPage() {
     return (
       <PageBody width="3xl">
         {loadError ? (
-          <ServerOffline onRetry={() => void reload()} />
+          <Fade className="flex min-w-0 flex-1 flex-col">
+            <ServerOffline onRetry={() => void reload()} />
+          </Fade>
         ) : (
-          <EmptyState
-            icon={ClipboardListIcon}
-            title="This task does not exist"
-            description="The entry was deleted, or the address is incorrect."
-            actionLabel="View tasks"
-            actionTo="/tasks"
-          />
+          <Fade className="flex min-w-0 flex-1 flex-col">
+            <EmptyState
+              icon={ClipboardListEmptyIcon as unknown as LucideIcon}
+              title="This task does not exist"
+              description="The entry was deleted, or the address is incorrect."
+              actionLabel="View tasks"
+              actionTo="/tasks"
+            />
+          </Fade>
         )}
       </PageBody>
     );
@@ -579,7 +613,16 @@ export function TaskDetailPage() {
     },
     {
       label: 'Subtasks',
-      value: children.length > 0 ? doneChildren + '/' + children.length : '–',
+      value:
+        children.length > 0 ? (
+          <>
+            <CountingNumber number={doneChildren} />
+            {'/'}
+            {children.length}
+          </>
+        ) : (
+          '–'
+        ),
       headline:
         children.length === 0
           ? 'Not split into subtasks'
@@ -590,7 +633,7 @@ export function TaskDetailPage() {
     },
     {
       label: 'Runs',
-      value: formatNumber(runIds.length),
+      value: <CountingNumber number={runIds.length} />,
       // Not `RunningBadge`: this counts pending *and* running, which is a
       // different state than "running". It borrows the look, not the word.
       ...(openRuns > 0
@@ -623,95 +666,102 @@ export function TaskDetailPage() {
       {dialog}
       {cancelDialog}
 
-      <div className="px-4 lg:px-6">
-        <MetaList
-          columns={2}
-          items={[
-            {
-              label: 'Project',
-              value: project?.name ?? 'No project',
-              icon: FolderIcon,
-            },
-            {
-              label: 'Assignee',
-              value: assignee?.name ?? 'Unassigned',
-              icon: UserRoundIcon,
-              ...(assignee ? { to: '/org/agents/' + assignee.id } : {}),
-            },
-            {
-              label: 'Created by',
-              value:
-                REQUESTER_LABEL[task.createdBy] +
-                (task.createdByAgentId
-                  ? ' · ' + (org.agentById(task.createdByAgentId)?.name ?? 'Unknown')
-                  : ''),
-              icon: PencilLineIcon,
-            },
-            {
-              label: 'Dependencies',
-              icon: LinkIcon,
-              value:
-                task.dependsOn.length === 0 ? null : (
-                  <span className="flex flex-wrap gap-1">
-                    {task.dependsOn.map((dependency) => {
-                      const label = titleOf(dependency);
-                      return (
-                        <Badge
-                          key={dependency}
-                          variant="outline"
-                          className={label ? 'font-normal' : 'font-mono text-[11px] font-normal'}
-                        >
-                          {label ?? dependency}
-                        </Badge>
-                      );
-                    })}
-                  </span>
-                ),
-            },
-          ]}
-        />
-      </div>
+      <Fade>
+        <div className="px-4 lg:px-6">
+          <MetaList
+            columns={2}
+            items={[
+              {
+                label: 'Project',
+                value: project?.name ?? 'No project',
+                icon: FolderIcon,
+              },
+              {
+                label: 'Assignee',
+                value: assignee?.name ?? 'Unassigned',
+                icon: UserRoundIcon,
+                ...(assignee ? { to: '/org/agents/' + assignee.id } : {}),
+              },
+              {
+                label: 'Created by',
+                value:
+                  REQUESTER_LABEL[task.createdBy] +
+                  (task.createdByAgentId
+                    ? ' · ' + (org.agentById(task.createdByAgentId)?.name ?? 'Unknown')
+                    : ''),
+                icon: PencilLineIcon,
+              },
+              {
+                label: 'Dependencies',
+                icon: LinkIcon,
+                value:
+                  task.dependsOn.length === 0 ? null : (
+                    <span className="flex flex-wrap gap-1">
+                      {task.dependsOn.map((dependency) => {
+                        const label = titleOf(dependency);
+                        return (
+                          <Badge
+                            key={dependency}
+                            variant="outline"
+                            className={label ? 'font-normal' : 'font-mono text-[11px] font-normal'}
+                          >
+                            {label ?? dependency}
+                          </Badge>
+                        );
+                      })}
+                    </span>
+                  ),
+              },
+            ]}
+          />
+        </div>
+      </Fade>
 
       {task.error || streamError ? (
-        <div className="px-4 lg:px-6">
-          <Alert variant="destructive">
-            <BanIcon />
-            <AlertTitle>The task failed</AlertTitle>
-            <AlertDescription className="whitespace-pre-wrap">
-              {streamError ?? task.error}
-            </AlertDescription>
-          </Alert>
-        </div>
+        <Fade delay={50}>
+          <div className="px-4 lg:px-6">
+            <Alert variant="destructive">
+              <BanIcon />
+              <AlertTitle>The task failed</AlertTitle>
+              <AlertDescription className="whitespace-pre-wrap">
+                {streamError ?? task.error}
+              </AlertDescription>
+            </Alert>
+          </div>
+        </Fade>
       ) : null}
 
-      <StatCards items={cards} />
+      <Fade delay={100}>
+        <StatCards items={cards} />
+      </Fade>
 
-      <div className="px-4 lg:px-6">
-        <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
-          <TabsList>
-            <TabsTrigger value="ueberblick">Overview</TabsTrigger>
-            <TabsTrigger value="teilaufgaben">
-              Subtasks
-              {children.length > 0 ? (
-                <Badge variant="secondary" className="tabular-nums">
-                  {children.length}
-                </Badge>
-              ) : null}
-            </TabsTrigger>
-            <TabsTrigger value="laeufe">
-              Runs
-              {openRuns > 0 ? (
-                <Badge variant="secondary" className="animate-pulse tabular-nums">
-                  {openRuns}
-                </Badge>
-              ) : runIds.length > 0 ? (
-                <Badge variant="secondary" className="tabular-nums">
-                  {runIds.length}
-                </Badge>
-              ) : null}
-            </TabsTrigger>
-            <TabsTrigger value="ergebnis">Result</TabsTrigger>
-          </TabsList>
+      <Fade delay={150}>
+        <div className="px-4 lg:px-6">
+          <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
+            <TabsList>
+              <TabsTrigger value="ueberblick">Overview</TabsTrigger>
+              <TabsTrigger value="teilaufgaben">
+                Subtasks
+                {children.length > 0 ? (
+                  <Badge variant="secondary" className="tabular-nums">
+                    {children.length}
+                  </Badge>
+                ) : null}
+              </TabsTrigger>
+              <TabsTrigger value="laeufe">
+                Runs
+                {openRuns > 0 ? (
+                  <Badge variant="secondary" className="animate-pulse tabular-nums">
+                    {openRuns}
+                  </Badge>
+                ) : runIds.length > 0 ? (
+                  <Badge variant="secondary" className="tabular-nums">
+                    {runIds.length}
+                  </Badge>
+                ) : null}
+              </TabsTrigger>
+              <TabsTrigger value="ergebnis">Result</TabsTrigger>
+            </TabsList>
 
           {/* ----------------------------- overview ---------------------------- */}
           <TabsContent value="ueberblick" className="mt-4 flex flex-col gap-4">
@@ -828,7 +878,7 @@ export function TaskDetailPage() {
               rowLabel={ASSIGNMENT_ROW_LABEL}
               empty={
                 <EmptyState
-                  icon={SendIcon}
+                  icon={SendEmptyIcon as unknown as LucideIcon}
                   title="No runs yet"
                   description="Run sends the task to its assigned agents. Each run is then listed here."
                   actionLabel="Run"
@@ -846,7 +896,7 @@ export function TaskDetailPage() {
               <ResultCard text={result} description="What the run produced." />
             ) : (
               <EmptyState
-                icon={ClipboardListIcon}
+                icon={ClipboardListEmptyIcon as unknown as LucideIcon}
                 title="No result yet"
                 description="The response will appear here once the task has run."
                 actionLabel="Run"
@@ -856,11 +906,27 @@ export function TaskDetailPage() {
           </TabsContent>
         </Tabs>
       </div>
+      </Fade>
     </PageBody>
   );
 }
 
 /* ---------------------------------- parts --------------------------------- */
+
+/**
+ * `EmptyState` types its `icon` as a `LucideIcon` and renders it without
+ * props, so the animate-ui icons ride along in these shells: same silhouette
+ * and stroke as their lucide counterparts, drawing themselves once when the
+ * state enters the viewport (the pattern of `AnimatedPlugZapIcon` in
+ * `empty-state.tsx`).
+ */
+function ClipboardListEmptyIcon() {
+  return <ClipboardListAnimatedIcon size={24} animateOnView />;
+}
+
+function SendEmptyIcon() {
+  return <SendAnimatedIcon size={24} animateOnView />;
+}
 
 /**
  * The loading state in the geometry the loaded page will have - facts, four

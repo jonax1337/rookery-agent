@@ -21,6 +21,9 @@ import type { Project, Session } from '@/lib/types';
 import { useAllSessions } from '@/hooks/useAllSessions';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useConnection, useOrgState } from '@/providers/rookery-provider';
+import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import {
@@ -258,76 +261,78 @@ export function OrgProjectsPage() {
       {dialog}
       {bulk.dialog}
 
-      <DataTable
-        data={org.projects}
-        columns={columns}
-        getRowId={(project) => project.id}
-        idPrefix="projekte"
-        onRowClick={(project) => setDrawerId(project.id)}
-        rowClickIgnoreColumns={['select', 'name', 'path', 'actions']}
-        searchable
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Search projects"
-        searchText={(project) =>
-          project.name + ' ' + (project.description ?? '') + ' ' + (project.path ?? '')
-        }
-        columnLabels={COLUMN_LABELS}
-        initialSorting={[{ id: 'name', desc: false }]}
-        rowLabel={{ singular: 'Project', plural: 'projects' }}
-        loading={org.loading && org.projects.length === 0}
-        error={org.error ? <ServerOffline onRetry={() => void org.refresh()} /> : undefined}
-        filters={
-          // The conversation column rests on a capped list; when the cap bites,
-          // the number is a lower bound and the table has to admit it.
-          sessions.capped ? (
-            <Badge variant="outline">
-              Conversations: based on {formatNumber(sessions.limit)} loaded conversations
-            </Badge>
-          ) : undefined
-        }
-        bulkActions={(selected, clear) => (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() =>
-              void bulk.run({
-                rows: selected,
-                noun: { singular: 'Project', plural: 'Projects' },
-                nameOf: (project) => project.name,
-                verb: 'delete',
-                done: 'deleted',
-                confirmLabel: 'Delete',
-                description:
-                  'The entries will be deleted; the directories on disk remain ' +
-                  'untouched.',
-                run: (project) => api.deleteProject(project.id),
-                after: org.refresh,
-                clear,
-              })
-            }
-          >
-            <Trash2Icon data-icon="inline-start" />
-            Delete
-          </Button>
-        )}
-        empty={
-          <EmptyState
-            icon={FolderIcon}
-            title="No projects yet"
-            description="A project gives assignments a working directory and organizes conversations. Without a project, everything runs in the shared workspace."
-            actionLabel="Create project"
-            actionTo="/org/projects/new"
-            variant="plain"
-          />
-        }
-        filteredEmpty={
-          <NoResults
-            {...(search.trim() ? { query: search.trim() } : {})}
-            onReset={() => setSearch('')}
-          />
-        }
-      />
+      <Fade>
+        <DataTable
+          data={org.projects}
+          columns={columns}
+          getRowId={(project) => project.id}
+          idPrefix="projekte"
+          onRowClick={(project) => setDrawerId(project.id)}
+          rowClickIgnoreColumns={['select', 'name', 'path', 'actions']}
+          searchable
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Search projects"
+          searchText={(project) =>
+            project.name + ' ' + (project.description ?? '') + ' ' + (project.path ?? '')
+          }
+          columnLabels={COLUMN_LABELS}
+          initialSorting={[{ id: 'name', desc: false }]}
+          rowLabel={{ singular: 'Project', plural: 'projects' }}
+          loading={org.loading && org.projects.length === 0}
+          error={org.error ? <ServerOffline onRetry={() => void org.refresh()} /> : undefined}
+          filters={
+            // The conversation column rests on a capped list; when the cap bites,
+            // the number is a lower bound and the table has to admit it.
+            sessions.capped ? (
+              <Badge variant="outline">
+                Conversations: based on {formatNumber(sessions.limit)} loaded conversations
+              </Badge>
+            ) : undefined
+          }
+          bulkActions={(selected, clear) => (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                void bulk.run({
+                  rows: selected,
+                  noun: { singular: 'Project', plural: 'Projects' },
+                  nameOf: (project) => project.name,
+                  verb: 'delete',
+                  done: 'deleted',
+                  confirmLabel: 'Delete',
+                  description:
+                    'The entries will be deleted; the directories on disk remain ' +
+                    'untouched.',
+                  run: (project) => api.deleteProject(project.id),
+                  after: org.refresh,
+                  clear,
+                })
+              }
+            >
+              <AnimatedTrash2Icon data-icon="inline-start" animateOnHover />
+              Delete
+            </Button>
+          )}
+          empty={
+            <EmptyState
+              icon={FolderIcon}
+              title="No projects yet"
+              description="A project gives assignments a working directory and organizes conversations. Without a project, everything runs in the shared workspace."
+              actionLabel="Create project"
+              actionTo="/org/projects/new"
+              variant="plain"
+            />
+          }
+          filteredEmpty={
+            <NoResults
+              {...(search.trim() ? { query: search.trim() } : {})}
+              onReset={() => setSearch('')}
+            />
+          }
+        />
+      </Fade>
 
       <ProjectDrawer
         project={drawerProject}
@@ -417,7 +422,7 @@ function ProjectDrawer({ project, sessions, capped, limit, onOpenChange }: Proje
               },
               {
                 label: 'Conversations',
-                value: formatNumber(sessions.length),
+                value: <CountingNumber number={sessions.length} />,
                 icon: MessagesSquareIcon,
               },
               {

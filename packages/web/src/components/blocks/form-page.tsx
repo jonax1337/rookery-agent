@@ -2,11 +2,12 @@ import type { FormEvent, ReactNode } from 'react';
 import { useId } from 'react';
 import { useNavigate } from 'react-router';
 
+import { LoaderCircle } from '@/components/animate-ui/icons/loader-circle';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { FieldGroup } from '@/components/ui/field';
-import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 
 /**
@@ -98,7 +99,7 @@ export function FormActions({
           {cancelLabel}
         </Button>
         <Button type="submit" form={form} disabled={submitDisabled || submitting}>
-          {submitting ? <Spinner aria-label="Saving" /> : null}
+          {submitting ? <LoaderCircle animate aria-label="Saving" role="status" className="size-4" /> : null}
           {submitLabel}
         </Button>
       </div>
@@ -158,22 +159,38 @@ export function FormPage({
       <Card>
         {title !== undefined || description !== undefined ? (
           <CardHeader>
-            {title !== undefined ? <CardTitle>{title}</CardTitle> : null}
-            {description !== undefined ? <CardDescription>{description}</CardDescription> : null}
+            {title !== undefined ? (
+              <Fade>
+                <CardTitle>{title}</CardTitle>
+              </Fade>
+            ) : null}
+            {description !== undefined ? (
+              <Fade delay={50}>
+                <CardDescription>{description}</CardDescription>
+              </Fade>
+            ) : null}
           </CardHeader>
         ) : null}
-        <CardContent>
-          <FieldGroup>{children}</FieldGroup>
-        </CardContent>
+        <Fade delay={100}>
+          <CardContent>
+            <FieldGroup>{children}</FieldGroup>
+          </CardContent>
+        </Fade>
       </Card>
-      {aside}
+      {aside ? <Fade delay={150}>{aside}</Fade> : null}
       {error ? (
-        <Alert variant="destructive">
-          <AlertTitle>Not saved</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <Fade>
+          <Alert variant="destructive">
+            <AlertTitle>Not saved</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        </Fade>
       ) : null}
-      {showActions ? <FormActions form={id} {...actions} /> : null}
+      {showActions ? (
+        <Fade delay={200}>
+          <FormActions form={id} {...actions} />
+        </Fade>
+      ) : null}
     </form>
   );
 }

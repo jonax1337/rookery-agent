@@ -10,6 +10,8 @@ import {
   useOrgState,
   useTasksState,
 } from '@/providers/rookery-provider';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { NavMain, type NavMainItem, type NavSubItem } from '@/components/shell/nav-main';
 import { NavPrimary } from '@/components/shell/nav-primary';
 import { NavSecondary, type NavSecondaryItem } from '@/components/shell/nav-secondary';
@@ -72,11 +74,19 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
   const runningTasks = tasks.countByStatus.running;
   const liveAssignments = org.running.length;
 
+  // The counts are live values, so their digits roll into place (and across
+  // on every change) instead of jumping. `thousandSeparator` matches the
+  // en-GB grouping `formatNumber` below uses for the labels.
   const badges: Record<string, { node: ReactNode; label?: string }> = {
     ...(openConversations > 0
       ? {
           '/chats': {
-            node: formatNumber(openConversations) + (capped ? '+' : ''),
+            node: (
+              <>
+                <SlidingNumber number={openConversations} thousandSeparator="," />
+                {capped ? '+' : ''}
+              </>
+            ),
             ...(capped
               ? {
                   label:
@@ -92,17 +102,26 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
     ...(runningTasks > 0
       ? {
           '/tasks': {
-            node: formatNumber(runningTasks),
+            node: <SlidingNumber number={runningTasks} thousandSeparator="," />,
             label: 'running top-level tasks; subtasks are not included',
           },
         }
       : {}),
-    ...(liveAssignments > 0 ? { '/assignments': { node: formatNumber(liveAssignments) } } : {}),
+    ...(liveAssignments > 0
+      ? {
+          '/assignments': { node: <SlidingNumber number={liveAssignments} thousandSeparator="," /> },
+        }
+      : {}),
     // The inbox is its own top-level row now, so the count sits on it
     // directly rather than on `/org`, which no longer has anything to do
     // with it.
     ...(mail.unreadCount > 0
-      ? { '/inbox': { node: formatNumber(mail.unreadCount), label: 'unread messages in the inbox' } }
+      ? {
+          '/inbox': {
+            node: <SlidingNumber number={mail.unreadCount} thousandSeparator="," />,
+            label: 'unread messages in the inbox',
+          },
+        }
       : {}),
   };
 
@@ -136,6 +155,12 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
     })),
   ];
 
+  // The rail builds itself top to bottom: one stagger across all sections
+  // (brand first, footer last), capped so a longer navigation cannot string
+  // it out. Sections, never single rows - the rows themselves stay still.
+  const labelledGroups = NAV_GROUPS.filter(isLabelled);
+  const sectionDelay = (index: number) => Math.min(index * 50, 400);
+
   return (
     <Sidebar
       collapsible="icon"
@@ -145,60 +170,70 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
       {...props}
     >
       <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild>
-              <NavLink to="/dashboard" onClick={() => setOpenMobile(false)}>
-                {/*
-                  The brand, not a stand-in for it. The rail collapses to icon
-                  width, so the mark carries the collapsed state and the
-                  wordmark the expanded one. Both are solid-colour artwork
-                  rather than themeable SVG, so each ships a light and a dark
-                  cut; the mark is decorative because the wordmark beside it
-                  already names the app.
+        <Fade>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton size="lg" asChild>
+                <NavLink to="/dashboard" onClick={() => setOpenMobile(false)}>
+                  {/*
+                    The brand, not a stand-in for it. The rail collapses to icon
+                    width, so the mark carries the collapsed state and the
+                    wordmark the expanded one. Both are solid-colour artwork
+                    rather than themeable SVG, so each ships a light and a dark
+                    cut; the mark is decorative because the wordmark beside it
+                    already names the app.
 
-                  The assistant's name does not belong up here as well - it is
-                  on the avatar in the footer, and printing it twice made the
-                  header read as two labels for one thing.
-                */}
-                <img
-                  src="/mark.svg"
-                  alt="Rookery"
-                  className="hidden size-7 shrink-0 group-data-[collapsible=icon]:block dark:group-data-[collapsible=icon]:hidden"
-                />
-                <img
-                  src="/mark-light.svg"
-                  alt="Rookery"
-                  className="hidden size-7 shrink-0 dark:group-data-[collapsible=icon]:block"
-                />
-                <img
-                  src="/logo.svg"
-                  alt="Rookery"
-                  className="h-8 w-auto group-data-[collapsible=icon]:hidden dark:hidden"
-                />
-                <img
-                  src="/logo-light.svg"
-                  alt="Rookery"
-                  className="hidden h-8 w-auto group-data-[collapsible=icon]:hidden dark:block dark:group-data-[collapsible=icon]:hidden"
-                />
-              </NavLink>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+                    The assistant's name does not belong up here as well - it is
+                    on the avatar in the footer, and printing it twice made the
+                    header read as two labels for one thing.
+                  */}
+                  <img
+                    src="/mark.svg"
+                    alt="Rookery"
+                    className="hidden size-7 shrink-0 group-data-[collapsible=icon]:block dark:group-data-[collapsible=icon]:hidden"
+                  />
+                  <img
+                    src="/mark-light.svg"
+                    alt="Rookery"
+                    className="hidden size-7 shrink-0 dark:group-data-[collapsible=icon]:block"
+                  />
+                  <img
+                    src="/logo.svg"
+                    alt="Rookery"
+                    className="h-8 w-auto group-data-[collapsible=icon]:hidden dark:hidden"
+                  />
+                  <img
+                    src="/logo-light.svg"
+                    alt="Rookery"
+                    className="hidden h-8 w-auto group-data-[collapsible=icon]:hidden dark:block dark:group-data-[collapsible=icon]:hidden"
+                  />
+                </NavLink>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </Fade>
       </SidebarHeader>
 
       <SidebarContent className="gap-0">
-        <NavPrimary />
-        {NAV_GROUPS.filter(isLabelled).map((group) => (
-          <NavMain key={group.id} label={group.label} items={navItems(group.id).map(buildItem)} />
+        <Fade delay={sectionDelay(1)}>
+          <NavPrimary />
+        </Fade>
+        {labelledGroups.map((group, index) => (
+          <Fade key={group.id} delay={sectionDelay(index + 2)}>
+            <NavMain label={group.label} items={navItems(group.id).map(buildItem)} />
+          </Fade>
         ))}
       </SidebarContent>
 
       <SidebarFooter className="mt-auto shrink-0 gap-0 bg-sidebar p-0">
-        <NavSecondary items={secondary} />
-        <div className="border-t p-2">
-          <NavStatus />
-        </div>
+        <Fade delay={sectionDelay(labelledGroups.length + 2)}>
+          <NavSecondary items={secondary} />
+        </Fade>
+        <Fade delay={sectionDelay(labelledGroups.length + 3)}>
+          <div className="border-t p-2">
+            <NavStatus />
+          </div>
+        </Fade>
       </SidebarFooter>
     </Sidebar>
   );

@@ -1,13 +1,40 @@
 import * as React from "react"
 import { cn } from "cn"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
+import { AnimatePresence, motion, type HTMLMotionProps } from "motion/react"
 
 import { Button } from "@/components/ui/button"
+import { useControlledState } from "@/hooks/use-controlled-state"
+import { getStrictContext } from "@/lib/get-strict-context"
+
+type AlertDialogContextType = {
+  isOpen: boolean
+  setIsOpen: React.ComponentProps<
+    typeof AlertDialogPrimitive.Root
+  >["onOpenChange"]
+}
+
+const [AlertDialogProvider, useAlertDialog] =
+  getStrictContext<AlertDialogContextType>("AlertDialogContext")
 
 function AlertDialog({
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Root>) {
-  return <AlertDialogPrimitive.Root data-slot="alert-dialog" {...props} />
+  const [isOpen, setIsOpen] = useControlledState({
+    value: props.open,
+    defaultValue: props.defaultOpen,
+    onChange: props.onOpenChange,
+  })
+
+  return (
+    <AlertDialogProvider value={{ isOpen, setIsOpen }}>
+      <AlertDialogPrimitive.Root
+        data-slot="alert-dialog"
+        {...props}
+        onOpenChange={setIsOpen}
+      />
+    </AlertDialogProvider>
+  )
 }
 
 function AlertDialogTrigger({
@@ -20,47 +47,117 @@ function AlertDialogTrigger({
 
 function AlertDialogPortal({
   ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Portal>) {
+}: Omit<
+  React.ComponentProps<typeof AlertDialogPrimitive.Portal>,
+  "forceMount"
+>) {
+  const { isOpen } = useAlertDialog()
+
   return (
-    <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" {...props} />
+    <AnimatePresence>
+      {isOpen && (
+        <AlertDialogPrimitive.Portal
+          data-slot="alert-dialog-portal"
+          forceMount
+          {...props}
+        />
+      )}
+    </AnimatePresence>
   )
 }
 
 function AlertDialogOverlay({
+  transition = { duration: 0.2, ease: "easeInOut" },
   className,
   ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Overlay>) {
+}: Omit<
+  React.ComponentProps<typeof AlertDialogPrimitive.Overlay>,
+  "forceMount" | "asChild"
+> &
+  HTMLMotionProps<"div">) {
   return (
     <AlertDialogPrimitive.Overlay
       data-slot="alert-dialog-overlay"
-      className={cn(
-        "fixed inset-0 z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
-        className
-      )}
-      {...props}
-    />
-  )
-}
-
-function AlertDialogContent({
-  className,
-  size = "default",
-  ...props
-}: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
-  size?: "default" | "sm"
-}) {
-  return (
-    <AlertDialogPortal>
-      <AlertDialogOverlay />
-      <AlertDialogPrimitive.Content
-        data-slot="alert-dialog-content"
-        data-size={size}
+      asChild
+      forceMount
+    >
+      <motion.div
+        key="alert-dialog-overlay"
+        initial={{ opacity: 0, filter: "blur(4px)" }}
+        animate={{ opacity: 1, filter: "blur(0px)" }}
+        exit={{ opacity: 0, filter: "blur(4px)" }}
+        transition={transition}
         className={cn(
-          "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-6 rounded-xl bg-popover p-6 text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-lg data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "fixed inset-0 z-50 bg-black/10 supports-backdrop-filter:backdrop-blur-xs",
           className
         )}
         {...props}
       />
+    </AlertDialogPrimitive.Overlay>
+  )
+}
+
+type AlertDialogFlipDirection = "top" | "bottom" | "left" | "right"
+
+function AlertDialogContent({
+  className,
+  size = "default",
+  from = "top",
+  onOpenAutoFocus,
+  onCloseAutoFocus,
+  onEscapeKeyDown,
+  transition = { type: "spring", stiffness: 150, damping: 25 },
+  ...props
+}: Omit<
+  React.ComponentProps<typeof AlertDialogPrimitive.Content>,
+  "forceMount" | "asChild"
+> &
+  HTMLMotionProps<"div"> & {
+    size?: "default" | "sm"
+    from?: AlertDialogFlipDirection
+  }) {
+  const initialRotation =
+    from === "bottom" || from === "left" ? "20deg" : "-20deg"
+  const isVertical = from === "top" || from === "bottom"
+  const rotateAxis = isVertical ? "rotateX" : "rotateY"
+
+  return (
+    <AlertDialogPortal>
+      <AlertDialogOverlay />
+      <AlertDialogPrimitive.Content
+        asChild
+        forceMount
+        onOpenAutoFocus={onOpenAutoFocus}
+        onCloseAutoFocus={onCloseAutoFocus}
+        onEscapeKeyDown={onEscapeKeyDown}
+      >
+        <motion.div
+          key="alert-dialog-content"
+          data-slot="alert-dialog-content"
+          data-size={size}
+          initial={{
+            opacity: 0,
+            filter: "blur(4px)",
+            transform: `perspective(500px) ${rotateAxis}(${initialRotation}) scale(0.8)`,
+          }}
+          animate={{
+            opacity: 1,
+            filter: "blur(0px)",
+            transform: `perspective(500px) ${rotateAxis}(0deg) scale(1)`,
+          }}
+          exit={{
+            opacity: 0,
+            filter: "blur(4px)",
+            transform: `perspective(500px) ${rotateAxis}(${initialRotation}) scale(0.8)`,
+          }}
+          transition={transition}
+          className={cn(
+            "group/alert-dialog-content fixed top-1/2 left-1/2 z-50 grid w-full -translate-x-1/2 -translate-y-1/2 gap-6 rounded-xl bg-popover p-6 text-popover-foreground ring-1 ring-foreground/10 outline-none data-[size=default]:max-w-xs data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-lg",
+            className
+          )}
+          {...props}
+        />
+      </AlertDialogPrimitive.Content>
     </AlertDialogPortal>
   )
 }

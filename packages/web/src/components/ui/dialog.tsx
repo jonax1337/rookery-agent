@@ -3,14 +3,37 @@
 import * as React from "react"
 import { cn } from "cn"
 import { Dialog as DialogPrimitive } from "radix-ui"
+import { AnimatePresence, motion, type HTMLMotionProps } from "motion/react"
 
 import { Button } from "@/components/ui/button"
 import { IconPlaceholder } from "@/components/ui/icon-placeholder"
+import { useControlledState } from "@/hooks/use-controlled-state"
+import { getStrictContext } from "@/lib/get-strict-context"
 
-function Dialog({
-  ...props
-}: React.ComponentProps<typeof DialogPrimitive.Root>) {
-  return <DialogPrimitive.Root data-slot="dialog" {...props} />
+type DialogContextType = {
+  isOpen: boolean
+  setIsOpen: React.ComponentProps<typeof DialogPrimitive.Root>["onOpenChange"]
+}
+
+const [DialogProvider, useDialog] =
+  getStrictContext<DialogContextType>("DialogContext")
+
+function Dialog(props: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  const [isOpen, setIsOpen] = useControlledState({
+    value: props.open,
+    defaultValue: props.defaultOpen,
+    onChange: props.onOpenChange,
+  })
+
+  return (
+    <DialogProvider value={{ isOpen, setIsOpen }}>
+      <DialogPrimitive.Root
+        data-slot="dialog"
+        {...props}
+        onOpenChange={setIsOpen}
+      />
+    </DialogProvider>
+  )
 }
 
 function DialogTrigger({
@@ -21,8 +44,20 @@ function DialogTrigger({
 
 function DialogPortal({
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Portal>) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
+}: Omit<React.ComponentProps<typeof DialogPrimitive.Portal>, "forceMount">) {
+  const { isOpen } = useDialog()
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <DialogPrimitive.Portal
+          data-slot="dialog-portal"
+          forceMount
+          {...props}
+        />
+      )}
+    </AnimatePresence>
+  )
 }
 
 function DialogClose({
@@ -32,59 +67,116 @@ function DialogClose({
 }
 
 function DialogOverlay({
+  transition = { duration: 0.2, ease: "easeInOut" },
   className,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Overlay>) {
+}: Omit<
+  React.ComponentProps<typeof DialogPrimitive.Overlay>,
+  "forceMount" | "asChild"
+> &
+  HTMLMotionProps<"div">) {
   return (
-    <DialogPrimitive.Overlay
-      data-slot="dialog-overlay"
-      className={cn(
-        "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
-        className
-      )}
-      {...props}
-    />
+    <DialogPrimitive.Overlay data-slot="dialog-overlay" asChild forceMount>
+      <motion.div
+        key="dialog-overlay"
+        initial={{ opacity: 0, filter: "blur(4px)" }}
+        animate={{ opacity: 1, filter: "blur(0px)" }}
+        exit={{ opacity: 0, filter: "blur(4px)" }}
+        transition={transition}
+        className={cn(
+          "fixed inset-0 isolate z-50 bg-black/10 supports-backdrop-filter:backdrop-blur-xs",
+          className
+        )}
+        {...props}
+      />
+    </DialogPrimitive.Overlay>
   )
 }
+
+type DialogFlipDirection = "top" | "bottom" | "left" | "right"
 
 function DialogContent({
   className,
   children,
   showCloseButton = true,
+  from = "top",
+  onOpenAutoFocus,
+  onCloseAutoFocus,
+  onEscapeKeyDown,
+  onPointerDownOutside,
+  onInteractOutside,
+  transition = { type: "spring", stiffness: 150, damping: 25 },
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & {
-  showCloseButton?: boolean
-}) {
+}: Omit<
+  React.ComponentProps<typeof DialogPrimitive.Content>,
+  "forceMount" | "asChild"
+> &
+  HTMLMotionProps<"div"> & {
+    showCloseButton?: boolean
+    from?: DialogFlipDirection
+  }) {
+  const initialRotation =
+    from === "bottom" || from === "left" ? "20deg" : "-20deg"
+  const isVertical = from === "top" || from === "bottom"
+  const rotateAxis = isVertical ? "rotateX" : "rotateY"
+
   return (
     <DialogPortal>
       <DialogOverlay />
       <DialogPrimitive.Content
-        data-slot="dialog-content"
-        className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-6 overflow-y-auto overscroll-contain rounded-xl bg-popover p-6 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-md data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          className
-        )}
-        {...props}
+        asChild
+        forceMount
+        onOpenAutoFocus={onOpenAutoFocus}
+        onCloseAutoFocus={onCloseAutoFocus}
+        onEscapeKeyDown={onEscapeKeyDown}
+        onPointerDownOutside={onPointerDownOutside}
+        onInteractOutside={onInteractOutside}
       >
-        {children}
-        {showCloseButton && (
-          <DialogPrimitive.Close data-slot="dialog-close" asChild>
-            <Button
-              variant="ghost"
-              className="absolute top-4 right-4"
-              size="icon-sm"
-            >
-              <IconPlaceholder
-                lucide="XIcon"
-                tabler="IconX"
-                hugeicons="Cancel01Icon"
-                phosphor="XIcon"
-                remixicon="RiCloseLine"
-              />
-              <span className="sr-only">Close</span>
-            </Button>
-          </DialogPrimitive.Close>
-        )}
+        <motion.div
+          key="dialog-content"
+          data-slot="dialog-content"
+          initial={{
+            opacity: 0,
+            filter: "blur(4px)",
+            transform: `perspective(500px) ${rotateAxis}(${initialRotation}) scale(0.8)`,
+          }}
+          animate={{
+            opacity: 1,
+            filter: "blur(0px)",
+            transform: `perspective(500px) ${rotateAxis}(0deg) scale(1)`,
+          }}
+          exit={{
+            opacity: 0,
+            filter: "blur(4px)",
+            transform: `perspective(500px) ${rotateAxis}(${initialRotation}) scale(0.8)`,
+          }}
+          transition={transition}
+          className={cn(
+            "fixed top-1/2 left-1/2 z-50 grid max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-6 overflow-y-auto overscroll-contain rounded-xl bg-popover p-6 text-sm text-popover-foreground ring-1 ring-foreground/10 outline-none sm:max-w-md",
+            className
+          )}
+          {...props}
+        >
+          {children}
+          {showCloseButton && (
+            <DialogPrimitive.Close data-slot="dialog-close" asChild>
+              <Button
+                variant="ghost"
+                className="absolute top-4 right-4"
+                size="icon-sm"
+              >
+                <IconPlaceholder
+                  lucide="XIcon"
+                  tabler="IconX"
+                  hugeicons="Cancel01Icon"
+                  phosphor="XIcon"
+                  remixicon="RiCloseLine"
+                />
+                <span className="sr-only">Close</span>
+              </Button>
+            </DialogPrimitive.Close>
+          )}
+        </motion.div>
       </DialogPrimitive.Content>
     </DialogPortal>
   )

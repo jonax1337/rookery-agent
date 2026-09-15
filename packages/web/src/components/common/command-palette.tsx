@@ -9,6 +9,8 @@ import {
   UsersIcon,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SearchIcon } from '@/components/animate-ui/icons/search';
 import {
   Command,
   CommandDialog,
@@ -160,26 +162,41 @@ export function CommandPalette({
       <Command>
         <CommandInput value={query} onValueChange={setQuery} placeholder="Search loaded items…" />
         <CommandList className="max-h-[60svh]">
-          <CommandEmpty>Nothing found.</CommandEmpty>
+          {/* cmdk unmounts Empty as soon as a query matches again, so the fade
+              and the search-icon wiggle re-trigger on every dry search. */}
+          <CommandEmpty>
+            <Fade>
+              <div className="flex flex-col items-center gap-2">
+                <SearchIcon className="size-6 text-muted-foreground" animateOnView />
+                Nothing found.
+              </div>
+            </Fade>
+          </CommandEmpty>
 
+          {/* Each group fades in as the palette opens, staggered by section
+              index: min(i * 0.05s, 0.4s) - Fade takes the delay in ms. Row
+              icons stay plain lucide: these are dense list rows, not
+              single prominent icons. */}
           {actions.length > 0 && (
-            <CommandGroup heading="Actions">
-              {actions.map((action) => (
-                <CommandItem
-                  key={action.id}
-                  value={'aktion ' + action.label + ' ' + (action.keywords?.join(' ') ?? '') + ' ' + action.id}
-                  onSelect={() => runAction(action)}
-                >
-                  {action.icon && <action.icon />}
-                  <span>{action.label}</span>
-                  {action.shortcut && <CommandShortcut>{action.shortcut}</CommandShortcut>}
-                </CommandItem>
-              ))}
-            </CommandGroup>
+            <Fade delay={0}>
+              <CommandGroup heading="Actions">
+                {actions.map((action) => (
+                  <CommandItem
+                    key={action.id}
+                    value={'aktion ' + action.label + ' ' + (action.keywords?.join(' ') ?? '') + ' ' + action.id}
+                    onSelect={() => runAction(action)}
+                  >
+                    {action.icon && <action.icon />}
+                    <span>{action.label}</span>
+                    {action.shortcut && <CommandShortcut>{action.shortcut}</CommandShortcut>}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </Fade>
           )}
 
           {recentSessions.length > 0 && (
-            <>
+            <Fade delay={50}>
               <CommandSeparator />
               <CommandGroup heading="Conversations">
                 {recentSessions.map((session) => (
@@ -194,11 +211,11 @@ export function CommandPalette({
                   </CommandItem>
                 ))}
               </CommandGroup>
-            </>
+            </Fade>
           )}
 
           {agents.length > 0 && (
-            <>
+            <Fade delay={100}>
               <CommandSeparator />
               <CommandGroup heading="Agents">
                 {agents.map((agent) => (
@@ -213,11 +230,11 @@ export function CommandPalette({
                   </CommandItem>
                 ))}
               </CommandGroup>
-            </>
+            </Fade>
           )}
 
           {teams.length > 0 && (
-            <>
+            <Fade delay={150}>
               <CommandSeparator />
               <CommandGroup heading="Teams">
                 {teams.map((team) => (
@@ -231,11 +248,11 @@ export function CommandPalette({
                   </CommandItem>
                 ))}
               </CommandGroup>
-            </>
+            </Fade>
           )}
 
           {projects.length > 0 && (
-            <>
+            <Fade delay={200}>
               <CommandSeparator />
               <CommandGroup heading="Projects">
                 {projects.map((project) => (
@@ -249,11 +266,11 @@ export function CommandPalette({
                   </CommandItem>
                 ))}
               </CommandGroup>
-            </>
+            </Fade>
           )}
 
           {liveAssignments.length > 0 && (
-            <>
+            <Fade delay={250}>
               <CommandSeparator />
               <CommandGroup heading="Assignments">
                 {liveAssignments.map((assignment) => (
@@ -268,11 +285,11 @@ export function CommandPalette({
                   </CommandItem>
                 ))}
               </CommandGroup>
-            </>
+            </Fade>
           )}
 
           {recentTasks.length > 0 && (
-            <>
+            <Fade delay={300}>
               <CommandSeparator />
               <CommandGroup heading="Tasks">
                 {recentTasks.map((task) => (
@@ -286,25 +303,27 @@ export function CommandPalette({
                   </CommandItem>
                 ))}
               </CommandGroup>
-            </>
+            </Fade>
           )}
 
-          <CommandSeparator />
-          <CommandGroup heading="Pages">
-            {pages.map((page) => (
-              <CommandItem
-                key={page.path}
-                value={'seite ' + page.label + ' ' + (page.navLabel ?? '') + ' ' + page.path}
-                onSelect={() => go(page.redirect ?? page.path)}
-              >
-                {page.icon && <page.icon />}
-                <span>{page.navLabel ?? page.label}</span>
-                <CommandShortcut className="font-mono tracking-normal">
-                  {page.path}
-                </CommandShortcut>
-              </CommandItem>
-            ))}
-          </CommandGroup>
+          <Fade delay={350}>
+            <CommandSeparator />
+            <CommandGroup heading="Pages">
+              {pages.map((page) => (
+                <CommandItem
+                  key={page.path}
+                  value={'seite ' + page.label + ' ' + (page.navLabel ?? '') + ' ' + page.path}
+                  onSelect={() => go(page.redirect ?? page.path)}
+                >
+                  {page.icon && <page.icon />}
+                  <span>{page.navLabel ?? page.label}</span>
+                  <CommandShortcut className="font-mono tracking-normal">
+                    {page.path}
+                  </CommandShortcut>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </Fade>
         </CommandList>
       </Command>
     </CommandDialog>

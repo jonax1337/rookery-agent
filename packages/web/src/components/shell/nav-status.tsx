@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink } from 'react-router';
-import { EllipsisVerticalIcon, RefreshCwIcon, Settings2Icon } from 'lucide-react';
 import { useTheme } from 'next-themes';
 import { api } from '@/lib/api';
 import { PROVIDER_LABEL } from '@/lib/format';
-import { formatDateTime, formatPercent } from '@/lib/stats';
+import { formatDateTime } from '@/lib/stats';
 import type { ProviderQuota, ProviderStatus } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { useChatSession, useConfig, useConnection } from '@/providers/rookery-provider';
+import { EllipsisVerticalIcon } from '@/components/animate-ui/icons/ellipsis-vertical';
+import { RefreshCwIcon } from '@/components/animate-ui/icons/refresh-cw';
+import { SlidersHorizontalIcon } from '@/components/animate-ui/icons/sliders-horizontal';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
+import {
+  RotatingText,
+  RotatingTextContainer,
+} from '@/components/animate-ui/primitives/texts/rotating';
 import { ProviderIcon } from '@/components/provider-icon';
 import { AssistantAvatar } from '@/components/shell/assistant-avatar';
 import {
@@ -102,10 +109,16 @@ export function NavStatus() {
                   status === 'connecting' && 'text-amber-700 dark:text-amber-400',
                 )}>
                   <StatusDot status={status} />
-                  {statusLabel}
+                  {/* The one label here that changes on its own; RotatingText
+                      slides it over whenever the connection state flips. The
+                      container's default block padding is zeroed so the line
+                      keeps its height. */}
+                  <RotatingTextContainer text={statusLabel} style={{ paddingBlock: 0 }}>
+                    <RotatingText />
+                  </RotatingTextContainer>
                 </span>
               </div>
-              <EllipsisVerticalIcon className="ml-auto size-4" />
+              <EllipsisVerticalIcon className="ml-auto size-4" animateOnHover />
             </SidebarMenuButton>
           </DropdownMenuTrigger>
 
@@ -152,12 +165,18 @@ export function NavStatus() {
 
             <DropdownMenuItem asChild>
               <NavLink to="/settings">
-                <Settings2Icon />
+                {/* animateOnView like Reconnect below: menu items carry
+                    `[&_svg]:pointer-events-none`, so hover never fires. */}
+                <SlidersHorizontalIcon animateOnView />
                 Settings
               </NavLink>
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={reconnect}>
-              <RefreshCwIcon />
+              {/* animateOnView, not animateOnHover: menu items carry
+                  `[&_svg]:pointer-events-none`, so a hover trigger never
+                  fires. `initialOnAnimateEnd` returns the arrows to their
+                  resting angle instead of parking them at the 45° end pose. */}
+              <RefreshCwIcon animateOnView initialOnAnimateEnd />
               Reconnect
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -231,7 +250,10 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
               <div className="flex items-baseline justify-between gap-2 text-xs">
                 <span className="truncate">{window.label}</span>
                 <span className="tabular-nums text-muted-foreground">
-                  {formatPercent(window.percent)}
+                  {/* Counts up when the submenu opens; at rest this is
+                      `formatPercent`'s "42%" again - en-GB percent puts no
+                      space before the sign. */}
+                  <CountingNumber number={window.percent} decimalPlaces={0} />%
                 </span>
               </div>
               <Progress value={window.percent} />

@@ -3,13 +3,46 @@
 import * as React from "react"
 import { cn } from "cn"
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
+import { AnimatePresence, motion, type HTMLMotionProps } from "motion/react"
 
 import { IconPlaceholder } from "@/components/ui/icon-placeholder"
+import { useControlledState } from "@/hooks/use-controlled-state"
+import { getStrictContext } from "@/lib/get-strict-context"
+
+type DropdownMenuContextType = {
+  isOpen: boolean
+  setIsOpen: (o: boolean) => void
+}
+
+type DropdownMenuSubContextType = {
+  isOpen: boolean
+  setIsOpen: (o: boolean) => void
+}
+
+const [DropdownMenuProvider, useDropdownMenu] =
+  getStrictContext<DropdownMenuContextType>("DropdownMenuContext")
+
+const [DropdownMenuSubProvider, useDropdownMenuSub] =
+  getStrictContext<DropdownMenuSubContextType>("DropdownMenuSubContext")
 
 function DropdownMenu({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+  const [isOpen, setIsOpen] = useControlledState({
+    value: props?.open,
+    defaultValue: props?.defaultOpen,
+    onChange: props?.onOpenChange,
+  })
+
+  return (
+    <DropdownMenuProvider value={{ isOpen, setIsOpen }}>
+      <DropdownMenuPrimitive.Root
+        data-slot="dropdown-menu"
+        {...props}
+        onOpenChange={setIsOpen}
+      />
+    </DropdownMenuProvider>
+  )
 }
 
 function DropdownMenuPortal({
@@ -31,25 +64,83 @@ function DropdownMenuTrigger({
   )
 }
 
+type DropdownMenuContentProps = Omit<
+  React.ComponentProps<typeof DropdownMenuPrimitive.Content>,
+  "forceMount" | "asChild"
+> &
+  Omit<
+    React.ComponentProps<typeof DropdownMenuPrimitive.Portal>,
+    "forceMount"
+  > &
+  HTMLMotionProps<"div">
+
 function DropdownMenuContent({
-  className,
-  align = "start",
+  loop,
+  onCloseAutoFocus,
+  onEscapeKeyDown,
+  onPointerDownOutside,
+  onFocusOutside,
+  onInteractOutside,
+  side,
   sideOffset = 4,
+  align = "start",
+  alignOffset,
+  avoidCollisions,
+  collisionBoundary,
+  collisionPadding,
+  arrowPadding,
+  sticky,
+  hideWhenDetached,
+  transition = { duration: 0.2 },
+  style,
+  container,
+  className,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
+}: DropdownMenuContentProps) {
+  const { isOpen } = useDropdownMenu()
+
   return (
-    <DropdownMenuPrimitive.Portal>
-      <DropdownMenuPrimitive.Content
-        data-slot="dropdown-menu-content"
-        sideOffset={sideOffset}
-        align={align}
-        className={cn(
-          "cn-menu-target cn-menu-translucent z-50 max-h-(--radix-dropdown-menu-content-available-height) w-(--radix-dropdown-menu-trigger-width) min-w-32 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:overflow-hidden data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          className
-        )}
-        {...props}
-      />
-    </DropdownMenuPrimitive.Portal>
+    <AnimatePresence>
+      {isOpen && (
+        <DropdownMenuPortal forceMount container={container}>
+          <DropdownMenuPrimitive.Content
+            asChild
+            forceMount
+            loop={loop}
+            onCloseAutoFocus={onCloseAutoFocus}
+            onEscapeKeyDown={onEscapeKeyDown}
+            onPointerDownOutside={onPointerDownOutside}
+            onFocusOutside={onFocusOutside}
+            onInteractOutside={onInteractOutside}
+            side={side}
+            sideOffset={sideOffset}
+            align={align}
+            alignOffset={alignOffset}
+            avoidCollisions={avoidCollisions}
+            collisionBoundary={collisionBoundary}
+            collisionPadding={collisionPadding}
+            arrowPadding={arrowPadding}
+            sticky={sticky}
+            hideWhenDetached={hideWhenDetached}
+          >
+            <motion.div
+              key="dropdown-menu-content"
+              data-slot="dropdown-menu-content"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={transition}
+              style={{ willChange: "opacity, transform", ...style }}
+              className={cn(
+                "cn-menu-target cn-menu-translucent z-50 max-h-(--radix-dropdown-menu-content-available-height) w-(--radix-dropdown-menu-trigger-width) min-w-32 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 data-[state=closed]:overflow-hidden",
+                className
+              )}
+              {...props}
+            />
+          </DropdownMenuPrimitive.Content>
+        </DropdownMenuPortal>
+      )}
+    </AnimatePresence>
   )
 }
 
@@ -223,7 +314,21 @@ function DropdownMenuShortcut({
 function DropdownMenuSub({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) {
-  return <DropdownMenuPrimitive.Sub data-slot="dropdown-menu-sub" {...props} />
+  const [isOpen, setIsOpen] = useControlledState({
+    value: props?.open,
+    defaultValue: props?.defaultOpen,
+    onChange: props?.onOpenChange,
+  })
+
+  return (
+    <DropdownMenuSubProvider value={{ isOpen, setIsOpen }}>
+      <DropdownMenuPrimitive.Sub
+        data-slot="dropdown-menu-sub"
+        {...props}
+        onOpenChange={setIsOpen}
+      />
+    </DropdownMenuSubProvider>
+  )
 }
 
 function DropdownMenuSubTrigger({
@@ -257,19 +362,77 @@ function DropdownMenuSubTrigger({
   )
 }
 
+type DropdownMenuSubContentProps = Omit<
+  React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>,
+  "forceMount" | "asChild"
+> &
+  Omit<
+    React.ComponentProps<typeof DropdownMenuPrimitive.Portal>,
+    "forceMount"
+  > &
+  HTMLMotionProps<"div">
+
 function DropdownMenuSubContent({
+  loop,
+  onEscapeKeyDown,
+  onPointerDownOutside,
+  onFocusOutside,
+  onInteractOutside,
+  sideOffset,
+  alignOffset,
+  avoidCollisions,
+  collisionBoundary,
+  collisionPadding,
+  arrowPadding,
+  sticky,
+  hideWhenDetached,
+  transition = { duration: 0.2 },
+  style,
+  container,
   className,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.SubContent>) {
+}: DropdownMenuSubContentProps) {
+  const { isOpen } = useDropdownMenuSub()
+
   return (
-    <DropdownMenuPrimitive.SubContent
-      data-slot="dropdown-menu-sub-content"
-      className={cn(
-        "cn-menu-target cn-menu-translucent z-50 min-w-[96px] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-md bg-popover p-1 text-popover-foreground shadow-lg ring-1 ring-foreground/10 duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-        className
+    <AnimatePresence>
+      {isOpen && (
+        <DropdownMenuPortal forceMount container={container}>
+          <DropdownMenuPrimitive.SubContent
+            asChild
+            forceMount
+            loop={loop}
+            onEscapeKeyDown={onEscapeKeyDown}
+            onPointerDownOutside={onPointerDownOutside}
+            onFocusOutside={onFocusOutside}
+            onInteractOutside={onInteractOutside}
+            sideOffset={sideOffset}
+            alignOffset={alignOffset}
+            avoidCollisions={avoidCollisions}
+            collisionBoundary={collisionBoundary}
+            collisionPadding={collisionPadding}
+            arrowPadding={arrowPadding}
+            sticky={sticky}
+            hideWhenDetached={hideWhenDetached}
+          >
+            <motion.div
+              key="dropdown-menu-sub-content"
+              data-slot="dropdown-menu-sub-content"
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={transition}
+              style={{ willChange: "opacity, transform", ...style }}
+              className={cn(
+                "cn-menu-target cn-menu-translucent z-50 min-w-[96px] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-md bg-popover p-1 text-popover-foreground shadow-lg ring-1 ring-foreground/10",
+                className
+              )}
+              {...props}
+            />
+          </DropdownMenuPrimitive.SubContent>
+        </DropdownMenuPortal>
       )}
-      {...props}
-    />
+    </AnimatePresence>
   )
 }
 

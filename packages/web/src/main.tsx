@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router';
+import { MotionConfig } from 'motion/react';
 import { ThemeProvider } from 'next-themes';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { Toaster } from '@/components/ui/sonner';
@@ -27,21 +28,25 @@ if (!container) throw new Error('Root element is missing from index.html');
  */
 createRoot(container).render(
   <StrictMode>
-    <BrowserRouter>
-      <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
-        <TooltipProvider delayDuration={350}>
-          <RookeryProvider>
-            <PageMetaProvider>
-              <RookeryRuntimeProvider>
-                <RookeryComposerSlots>
-                  <App />
-                  <Toaster />
-                </RookeryComposerSlots>
-              </RookeryRuntimeProvider>
-            </PageMetaProvider>
-          </RookeryProvider>
-        </TooltipProvider>
-      </ThemeProvider>
-    </BrowserRouter>
+    {/* Every motion animation in the app respects the user's
+        prefers-reduced-motion setting from this one place. */}
+    <MotionConfig reducedMotion="user">
+      <BrowserRouter>
+        <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+          <TooltipProvider delayDuration={350}>
+            <RookeryProvider>
+              <PageMetaProvider>
+                <RookeryRuntimeProvider>
+                  <RookeryComposerSlots>
+                    <App />
+                    <Toaster />
+                  </RookeryComposerSlots>
+                </RookeryRuntimeProvider>
+              </PageMetaProvider>
+            </RookeryProvider>
+          </TooltipProvider>
+        </ThemeProvider>
+      </BrowserRouter>
+    </MotionConfig>
   </StrictMode>,
 );

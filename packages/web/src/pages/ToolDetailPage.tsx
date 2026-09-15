@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { FormPage } from '@/components/blocks/form-page';
 import { DetailDrawer } from '@/components/blocks/detail-drawer';
 import { PageBody } from '@/components/blocks/page-body';
@@ -327,285 +329,299 @@ export function ToolDetailPage() {
       {dialog}
 
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={look.variant} className="gap-1">
-            {look.icon ? <look.icon className={look.iconClassName} aria-hidden="true" /> : null}
-            {look.label}
-          </Badge>
-          <Badge variant="outline" className="font-mono font-normal">
-            {tool.id}
-          </Badge>
-        </div>
-        <p className="text-sm text-muted-foreground">{tool.description}</p>
+        <Fade>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={look.variant} className="gap-1">
+              {look.icon ? <look.icon className={look.iconClassName} aria-hidden="true" /> : null}
+              {look.label}
+            </Badge>
+            <Badge variant="outline" className="font-mono font-normal">
+              {tool.id}
+            </Badge>
+          </div>
+        </Fade>
+        <Blur delay={50}>
+          <p className="text-sm text-muted-foreground">{tool.description}</p>
+        </Blur>
       </div>
 
-      <MetaList
-        columns={2}
-        items={[
-          { label: 'Audience', value: AUDIENCE_LABEL[tool.audience], icon: UsersIcon },
-          { label: 'Source', value: INSTALL_LABEL[tool.install], icon: PackageIcon },
-          {
-            label: 'Installed',
-            value: tool.installed ? 'Yes' : 'Not downloaded yet',
-            icon: PlugIcon,
-          },
-          {
-            label: 'Active',
-            value: tool.active
-              ? 'Running with'
-              : tool.enabled
-                ? 'Enabled but not ready'
-                : 'Off',
-            icon: PlugIcon,
-          },
-          {
-            label: 'Projects',
-            value: tool.projectIds.length
-              ? tool.projectIds
-                  .map((id) => org.projects.find((project) => project.id === id)?.name ?? id)
-                  .join(', ')
-              : 'All projects',
-            icon: FolderIcon,
-          },
-          {
-            label: 'Project page',
-            // An external address, so a plain anchor - `MetaList.to` routes
-            // inside the app and would swallow it.
-            value: tool.homepage ? (
-              <a
-                href={tool.homepage}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 hover:underline"
-              >
-                <span className="truncate">{tool.homepage.replace(/^https?:\/\//, '')}</span>
-                <ExternalLinkIcon className="size-3.5 shrink-0 text-muted-foreground" />
-              </a>
-            ) : (
-              ''
-            ),
-            icon: ExternalLinkIcon,
-          },
-        ]}
-      />
+      <Fade delay={100}>
+        <MetaList
+          columns={2}
+          items={[
+            { label: 'Audience', value: AUDIENCE_LABEL[tool.audience], icon: UsersIcon },
+            { label: 'Source', value: INSTALL_LABEL[tool.install], icon: PackageIcon },
+            {
+              label: 'Installed',
+              value: tool.installed ? 'Yes' : 'Not downloaded yet',
+              icon: PlugIcon,
+            },
+            {
+              label: 'Active',
+              value: tool.active
+                ? 'Running with'
+                : tool.enabled
+                  ? 'Enabled but not ready'
+                  : 'Off',
+              icon: PlugIcon,
+            },
+            {
+              label: 'Projects',
+              value: tool.projectIds.length
+                ? tool.projectIds
+                    .map((id) => org.projects.find((project) => project.id === id)?.name ?? id)
+                    .join(', ')
+                : 'All projects',
+              icon: FolderIcon,
+            },
+            {
+              label: 'Project page',
+              // An external address, so a plain anchor - `MetaList.to` routes
+              // inside the app and would swallow it.
+              value: tool.homepage ? (
+                <a
+                  href={tool.homepage}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 hover:underline"
+                >
+                  <span className="truncate">{tool.homepage.replace(/^https?:\/\//, '')}</span>
+                  <ExternalLinkIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                </a>
+              ) : (
+                ''
+              ),
+              icon: ExternalLinkIcon,
+            },
+          ]}
+        />
+      </Fade>
 
       {tool.missingEnv.length > 0 ? (
-        <p className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
-          Remains disabled until {tool.missingEnv.join(', ')} is provided.
-        </p>
+        <Fade delay={150}>
+          <p className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
+            Remains disabled until {tool.missingEnv.join(', ')} is provided.
+          </p>
+        </Fade>
       ) : null}
 
-      <FormPage
-        formId={FORM_ID}
-        showActions={false}
-        title="Settings"
-        description="Saved with “Save” and takes effect on the next turn."
-        error={saveError}
-        onSubmit={save}
-        aside={
-          <>
-            {tool.envDefs.length > 0 ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Keys</CardTitle>
-                  <CardDescription>
-                    Stored in Rookery configuration and passed only to the server process. Saved
-                    keys are never returned to the browser; enter a new value to update one.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <FieldSet>
-                    <FieldLegend variant="label">Credentials</FieldLegend>
-                    {tool.envDefs.map((item) => {
-                      const isSet = tool.envSet[item.name] === true;
-                      const typed = (draft.env[item.name] ?? '').trim();
-                      const missing =
-                        item.required && tool.missingEnv.includes(item.name) && typed === '';
-                      return (
-                        // FormField haengt Guidance und Meldung per
-                        // `aria-describedby` an die Eingabe; `data-invalid`
-                        // allein faerbte nur die Gruppe.
-                        <FormField
-                          key={item.name}
-                          id={'env-' + item.name}
-                          label={
-                            <>
-                              {item.label}
-                              <Badge
-                                variant={
-                                  isSet ? 'outline' : item.required ? 'destructive' : 'secondary'
-                                }
-                                className="font-normal"
-                              >
-                                {isSet ? 'set' : 'missing'}
-                              </Badge>
-                            </>
-                          }
-                          error={missing ? 'Required' : null}
-                          {...(item.hint ? { description: item.hint } : {})}
-                        >
-                          {(control) => (
-                            <InputGroup>
-                              <InputGroupInput
-                                {...control}
-                                type={item.secret ? 'password' : 'text'}
-                                autoComplete="off"
-                                placeholder={isSet ? '••••••••' : 'not set'}
-                                value={draft.env[item.name] ?? ''}
-                                onChange={(event) =>
-                                  set({ env: { ...draft.env, [item.name]: event.target.value } })
-                                }
-                              />
-                              <InputGroupAddon align="inline-end">
-                                {isSet ? (
-                                  <CheckIcon className="text-status-ok" aria-hidden="true" />
-                                ) : (
-                                  <TriangleAlertIcon
-                                    className={item.required ? 'text-destructive' : undefined}
-                                    aria-hidden="true"
-                                  />
-                                )}
-                              </InputGroupAddon>
-                            </InputGroup>
-                          )}
-                        </FormField>
-                      );
-                    })}
-                  </FieldSet>
-                </CardContent>
-              </Card>
-            ) : null}
+      <Fade delay={200}>
+        <FormPage
+          formId={FORM_ID}
+          showActions={false}
+          title="Settings"
+          description="Saved with “Save” and takes effect on the next turn."
+          error={saveError}
+          onSubmit={save}
+          aside={
+            <>
+              {tool.envDefs.length > 0 ? (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Keys</CardTitle>
+                    <CardDescription>
+                      Stored in Rookery configuration and passed only to the server process. Saved
+                      keys are never returned to the browser; enter a new value to update one.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <FieldSet>
+                      <FieldLegend variant="label">Credentials</FieldLegend>
+                      {tool.envDefs.map((item) => {
+                        const isSet = tool.envSet[item.name] === true;
+                        const typed = (draft.env[item.name] ?? '').trim();
+                        const missing =
+                          item.required && tool.missingEnv.includes(item.name) && typed === '';
+                        return (
+                          // FormField haengt Guidance und Meldung per
+                          // `aria-describedby` an die Eingabe; `data-invalid`
+                          // allein faerbte nur die Gruppe.
+                          <FormField
+                            key={item.name}
+                            id={'env-' + item.name}
+                            label={
+                              <>
+                                {item.label}
+                                <Badge
+                                  variant={
+                                    isSet ? 'outline' : item.required ? 'destructive' : 'secondary'
+                                  }
+                                  className="font-normal"
+                                >
+                                  {isSet ? 'set' : 'missing'}
+                                </Badge>
+                              </>
+                            }
+                            error={missing ? 'Required' : null}
+                            {...(item.hint ? { description: item.hint } : {})}
+                          >
+                            {(control) => (
+                              <InputGroup>
+                                <InputGroupInput
+                                  {...control}
+                                  type={item.secret ? 'password' : 'text'}
+                                  autoComplete="off"
+                                  placeholder={isSet ? '••••••••' : 'not set'}
+                                  value={draft.env[item.name] ?? ''}
+                                  onChange={(event) =>
+                                    set({ env: { ...draft.env, [item.name]: event.target.value } })
+                                  }
+                                />
+                                <InputGroupAddon align="inline-end">
+                                  {isSet ? (
+                                    <CheckIcon className="text-status-ok" aria-hidden="true" />
+                                  ) : (
+                                    <TriangleAlertIcon
+                                      className={item.required ? 'text-destructive' : undefined}
+                                      aria-hidden="true"
+                                    />
+                                  )}
+                                </InputGroupAddon>
+                              </InputGroup>
+                            )}
+                          </FormField>
+                        );
+                      })}
+                    </FieldSet>
+                  </CardContent>
+                </Card>
+              ) : null}
 
-            {tool.custom ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Command</CardTitle>
-                  <CardDescription>
-                    This is how the server starts. To change the command, remove this entry and
-                    create another.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-3">
-                  <pre className="overflow-x-auto rounded-lg bg-muted/60 p-3 font-mono text-xs">
-                    {tool.custom.command + ' ' + tool.custom.args.join(' ')}
-                  </pre>
-                  {tool.custom.hint ? (
-                    <p className="text-sm text-muted-foreground">{tool.custom.hint}</p>
-                  ) : null}
-                </CardContent>
-              </Card>
-            ) : null}
-          </>
-        }
-      >
-        <FieldSet>
-          <FieldLegend variant="label">Audience</FieldLegend>
-          <FieldDescription>
-            Determines who can see this server in their tools.
-          </FieldDescription>
-          <RadioGroup
-            value={draft.audience}
-            onValueChange={(value) => set({ audience: value as ToolServerAudience })}
-          >
-            {AUDIENCE_VALUES.map((value) => (
-              <FieldLabel key={value} htmlFor={'audience-' + value}>
-                <Field orientation="horizontal">
-                  <FieldContent>
-                    <FieldTitle>{AUDIENCE_SHORT_LABEL[value]}</FieldTitle>
-                    <FieldDescription>{AUDIENCE_HINT[value]}</FieldDescription>
-                  </FieldContent>
-                  <RadioGroupItem value={value} id={'audience-' + value} aria-label={AUDIENCE_SHORT_LABEL[value]} />
-                </Field>
-              </FieldLabel>
-            ))}
-          </RadioGroup>
-        </FieldSet>
+              {tool.custom ? (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Command</CardTitle>
+                    <CardDescription>
+                      This is how the server starts. To change the command, remove this entry and
+                      create another.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-3">
+                    <pre className="overflow-x-auto rounded-lg bg-muted/60 p-3 font-mono text-xs">
+                      {tool.custom.command + ' ' + tool.custom.args.join(' ')}
+                    </pre>
+                    {tool.custom.hint ? (
+                      <p className="text-sm text-muted-foreground">{tool.custom.hint}</p>
+                    ) : null}
+                  </CardContent>
+                </Card>
+              ) : null}
+            </>
+          }
+        >
+          <FieldSet>
+            <FieldLegend variant="label">Audience</FieldLegend>
+            <FieldDescription>
+              Determines who can see this server in their tools.
+            </FieldDescription>
+            <RadioGroup
+              value={draft.audience}
+              onValueChange={(value) => set({ audience: value as ToolServerAudience })}
+            >
+              {AUDIENCE_VALUES.map((value) => (
+                <FieldLabel key={value} htmlFor={'audience-' + value}>
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldTitle>{AUDIENCE_SHORT_LABEL[value]}</FieldTitle>
+                      <FieldDescription>{AUDIENCE_HINT[value]}</FieldDescription>
+                    </FieldContent>
+                    <RadioGroupItem value={value} id={'audience-' + value} aria-label={AUDIENCE_SHORT_LABEL[value]} />
+                  </Field>
+                </FieldLabel>
+              ))}
+            </RadioGroup>
+          </FieldSet>
 
-        <FieldSet>
-          <FieldLegend variant="label">Projects</FieldLegend>
-          <FieldDescription>
-            Limit this server to specific projects. Leave every box unchecked to keep it available
-            everywhere, including the workspace.
-          </FieldDescription>
-          {projects.length ? (
-            projects.map((project) => (
-              <FieldLabel key={project.id} htmlFor={'project-' + project.id}>
-                <Field orientation="horizontal">
-                  <FieldContent>
-                    <FieldTitle>{project.name}</FieldTitle>
-                  </FieldContent>
-                  <Checkbox
-                    id={'project-' + project.id}
-                    checked={draft.projectIds.includes(project.id)}
-                    onCheckedChange={(checked) =>
-                      set({
-                        projectIds:
-                          checked === true
-                            ? [...draft.projectIds, project.id]
-                            : draft.projectIds.filter((entry) => entry !== project.id),
-                      })
-                    }
-                  />
-                </Field>
-              </FieldLabel>
-            ))
-          ) : (
-            <FieldDescription>No projects exist yet.</FieldDescription>
-          )}
-        </FieldSet>
-
-        {tool.optionDefs.map((option) => (
-          <Field key={option.key}>
-            <FieldLabel htmlFor={'opt-' + option.key}>{option.label}</FieldLabel>
-            {option.type === 'select' ? (
-              <Select
-                value={draft.options[option.key] ?? option.default}
-                onValueChange={(value) =>
-                  set({ options: { ...draft.options, [option.key]: value } })
-                }
-              >
-                <SelectTrigger id={'opt-' + option.key} className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(option.choices ?? []).map((choice) => (
-                    <SelectItem key={choice.value} value={choice.value}>
-                      {choice.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <FieldSet>
+            <FieldLegend variant="label">Projects</FieldLegend>
+            <FieldDescription>
+              Limit this server to specific projects. Leave every box unchecked to keep it available
+              everywhere, including the workspace.
+            </FieldDescription>
+            {projects.length ? (
+              projects.map((project) => (
+                <FieldLabel key={project.id} htmlFor={'project-' + project.id}>
+                  <Field orientation="horizontal">
+                    <FieldContent>
+                      <FieldTitle>{project.name}</FieldTitle>
+                    </FieldContent>
+                    <Checkbox
+                      id={'project-' + project.id}
+                      checked={draft.projectIds.includes(project.id)}
+                      onCheckedChange={(checked) =>
+                        set({
+                          projectIds:
+                            checked === true
+                              ? [...draft.projectIds, project.id]
+                              : draft.projectIds.filter((entry) => entry !== project.id),
+                        })
+                      }
+                    />
+                  </Field>
+                </FieldLabel>
+              ))
             ) : (
-              <Input
-                id={'opt-' + option.key}
-                value={draft.options[option.key] ?? ''}
-                placeholder={option.default}
-                onChange={(event) =>
-                  set({ options: { ...draft.options, [option.key]: event.target.value } })
-                }
-              />
+              <FieldDescription>No projects exist yet.</FieldDescription>
             )}
-            {option.hint ? <FieldDescription>{option.hint}</FieldDescription> : null}
-          </Field>
-        ))}
-      </FormPage>
+          </FieldSet>
+
+          {tool.optionDefs.map((option) => (
+            <Field key={option.key}>
+              <FieldLabel htmlFor={'opt-' + option.key}>{option.label}</FieldLabel>
+              {option.type === 'select' ? (
+                <Select
+                  value={draft.options[option.key] ?? option.default}
+                  onValueChange={(value) =>
+                    set({ options: { ...draft.options, [option.key]: value } })
+                  }
+                >
+                  <SelectTrigger id={'opt-' + option.key} className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(option.choices ?? []).map((choice) => (
+                      <SelectItem key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  id={'opt-' + option.key}
+                  value={draft.options[option.key] ?? ''}
+                  placeholder={option.default}
+                  onChange={(event) =>
+                    set({ options: { ...draft.options, [option.key]: event.target.value } })
+                  }
+                />
+              )}
+              {option.hint ? <FieldDescription>{option.hint}</FieldDescription> : null}
+            </Field>
+          ))}
+        </FormPage>
+      </Fade>
 
       {!tool.installed ? (
-        <p className="text-sm text-muted-foreground">
-          Not installed yet.{' '}
-          {tool.prepare
-            ? '„' + tool.prepare.label + '” from the “More actions” menu downloads what is missing.'
-            : 'The server is downloaded with npx on first launch.'}
-        </p>
+        <Fade delay={250}>
+          <p className="text-sm text-muted-foreground">
+            Not installed yet.{' '}
+            {tool.prepare
+              ? '„' + tool.prepare.label + '” from the “More actions” menu downloads what is missing.'
+              : 'The server is downloaded with npx on first launch.'}
+          </p>
+        </Fade>
       ) : null}
 
-      <p className="text-xs text-muted-foreground">
-        All tools are available under{' '}
-        <NavLink to="/tools" className="underline underline-offset-2">
-          Tools
-        </NavLink>
-        .
-      </p>
+      <Fade delay={300}>
+        <p className="text-xs text-muted-foreground">
+          All tools are available under{' '}
+          <NavLink to="/tools" className="underline underline-offset-2">
+            Tools
+          </NavLink>
+          .
+        </p>
+      </Fade>
 
       {/* The preparation can print a whole npm log; a toast would swallow it. */}
       <DetailDrawer

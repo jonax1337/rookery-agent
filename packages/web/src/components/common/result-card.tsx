@@ -1,6 +1,11 @@
-import { CheckIcon, CopyIcon } from 'lucide-react';
-
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
+import { CheckIcon } from '@/components/animate-ui/icons/check';
+import { CopyIcon } from '@/components/animate-ui/icons/copy';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import {
+  RotatingText,
+  RotatingTextContainer,
+} from '@/components/animate-ui/primitives/texts/rotating';
 import { ResultMarkdown } from '@/components/result-markdown';
 import { Button } from '@/components/ui/button';
 import {
@@ -32,20 +37,31 @@ export function ResultCard({
   const { isCopied, copyToClipboard } = useCopyToClipboard();
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-        <CardAction>
-          <Button variant="outline" size="sm" onClick={() => copyToClipboard(text)}>
-            {isCopied ? <CheckIcon /> : <CopyIcon />}
-            {isCopied ? 'Copied' : 'Copy'}
-          </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent>
-        <ResultMarkdown text={text} />
-      </CardContent>
-    </Card>
+    <Fade asChild>
+      <Card>
+        <CardHeader>
+          <CardTitle>{title}</CardTitle>
+          <CardDescription>{description}</CardDescription>
+          <CardAction>
+            <Button variant="outline" size="sm" onClick={() => copyToClipboard(text)}>
+              {isCopied ? (
+                <CheckIcon className="size-4" animateOnView />
+              ) : (
+                <CopyIcon className="size-4" animateOnView />
+              )}
+              <RotatingTextContainer
+                text={isCopied ? 'Copied' : 'Copy'}
+                style={{ paddingBlock: 0 }}
+              >
+                <RotatingText />
+              </RotatingTextContainer>
+            </Button>
+          </CardAction>
+        </CardHeader>
+        <CardContent>
+          <ResultMarkdown text={text} />
+        </CardContent>
+      </Card>
+    </Fade>
   );
 }

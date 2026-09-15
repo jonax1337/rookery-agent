@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { Trash2Icon, UserMinusIcon, UsersRoundIcon } from 'lucide-react';
+import { UserMinusIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -8,6 +8,10 @@ import { api, type TeamInput, type TeamPatch } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
 import type { Team } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
+import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
+import { UsersRoundIcon as AnimatedUsersRoundIcon } from '@/components/animate-ui/icons/users-round';
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { PageBody } from '@/components/blocks/page-body';
 import { FormPage } from '@/components/blocks/form-page';
 import { usePageMeta } from '@/components/shell/page-meta';
@@ -82,6 +86,21 @@ function toInput(patch: TeamPatch): TeamInput {
     ...(patch.leadId ? { leadId: patch.leadId } : {}),
   };
 }
+
+/**
+ * The empty-state and menu icons as animate-ui twins: same paths and stroke
+ * as the lucide originals, wiggling once when they enter the viewport (the
+ * menu item, whenever the menu opens). `EmptyState` and the form header
+ * menu take a `LucideIcon` and render it without props, so each animated
+ * icon sits in a forwardRef shell that carries its trigger along.
+ */
+const EmptyUsersRoundIcon = forwardRef<SVGSVGElement>(function EmptyUsersRoundIcon() {
+  return <AnimatedUsersRoundIcon animateOnView />;
+});
+
+const MenuTrash2Icon = forwardRef<SVGSVGElement>(function MenuTrash2Icon() {
+  return <AnimatedTrash2Icon animateOnView />;
+});
 
 export function TeamFormPage() {
   const { id } = useParams<{ id: string }>();
@@ -200,7 +219,7 @@ export function TeamFormPage() {
               ? [
                   {
                     label: 'Team disband',
-                    icon: Trash2Icon,
+                    icon: MenuTrash2Icon,
                     destructive: true,
                     onSelect: () => void dissolve(),
                   },
@@ -218,13 +237,15 @@ export function TeamFormPage() {
   if (editing && !team && !org.loading) {
     return (
       <PageBody width="2xl">
-        <EmptyState
-          icon={UsersRoundIcon}
-          title="This team no longer exists"
-          description="It was disbanded or never existed."
-          actionLabel="View teams"
-          actionTo="/org/teams"
-        />
+        <Fade>
+          <EmptyState
+            icon={EmptyUsersRoundIcon}
+            title="This team no longer exists"
+            description="It was disbanded or never existed."
+            actionLabel="View teams"
+            actionTo="/org/teams"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -245,109 +266,115 @@ export function TeamFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        description="Teams group agents around a shared purpose."
+        description={<Blur>Teams group agents around a shared purpose.</Blur>}
       >
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="team-name">Name</FieldLabel>
-            <Input
-              id="team-name"
-              value={draft.name}
-              aria-invalid={Boolean(errors.name)}
-              onChange={(event) => set({ name: event.target.value })}
-            />
-            <FieldError>{errors.name}</FieldError>
-          </Field>
+        <Fade delay={50}>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="team-name">Name</FieldLabel>
+              <Input
+                id="team-name"
+                value={draft.name}
+                aria-invalid={Boolean(errors.name)}
+                onChange={(event) => set({ name: event.target.value })}
+              />
+              <FieldError>{errors.name}</FieldError>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="team-purpose">Purpose</FieldLabel>
-            <Textarea
-              id="team-purpose"
-              rows={3}
-              placeholder="What this team is responsible for."
-              value={draft.purpose}
-              onChange={(event) => set({ purpose: event.target.value })}
-            />
-          </Field>
+            <Field>
+              <FieldLabel htmlFor="team-purpose">Purpose</FieldLabel>
+              <Textarea
+                id="team-purpose"
+                rows={3}
+                placeholder="What this team is responsible for."
+                value={draft.purpose}
+                onChange={(event) => set({ purpose: event.target.value })}
+              />
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="team-lead">Lead</FieldLabel>
-            <EntityCombobox
-              id="team-lead"
-              options={leadOptions}
-              value={draft.leadId}
-              onChange={(leadId) => set({ leadId })}
-              placeholder="Unassigned"
-              emptyLabel="No agent found"
-            />
-            <FieldDescription>
-              The lead need not belong to the team; this identifies its point of contact.
-            </FieldDescription>
-          </Field>
-        </FieldSet>
+            <Field>
+              <FieldLabel htmlFor="team-lead">Lead</FieldLabel>
+              <EntityCombobox
+                id="team-lead"
+                options={leadOptions}
+                value={draft.leadId}
+                onChange={(leadId) => set({ leadId })}
+                placeholder="Unassigned"
+                emptyLabel="No agent found"
+              />
+              <FieldDescription>
+                The lead need not belong to the team; this identifies its point of contact.
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+        </Fade>
 
         {editing && id ? (
           <>
             <FieldSeparator />
-            <FieldSet>
-              <Field>
-                <FieldLabel htmlFor="team-add-member">Members</FieldLabel>
-                {members.length ? (
-                  <ItemGroup className="gap-2">
-                    {members.map((agent) => (
-                      <Item key={agent.id} variant="outline" size="sm">
-                        <ItemContent>
-                          <ItemTitle className="font-normal">{agent.name}</ItemTitle>
-                          <ItemDescription className="text-xs">{agent.title}</ItemDescription>
-                        </ItemContent>
-                        <ItemActions>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            disabled={moving === agent.id}
-                            onClick={() =>
-                              void setTeamOf(agent.id, null, agent.name + ' is now without a team')
-                            }
-                          >
-                            <UserMinusIcon data-icon="inline-start" />
-                            Remove
-                          </Button>
-                        </ItemActions>
-                      </Item>
-                    ))}
-                  </ItemGroup>
-                ) : (
-                  <EmptyState
-                    icon={UsersRoundIcon}
-                    title="No team members yet"
-                    description="Use the selection below to add the first agent."
-                    variant="plain"
-                    size="sm"
+            <Fade delay={100}>
+              <FieldSet>
+                <Field>
+                  <FieldLabel htmlFor="team-add-member">Members</FieldLabel>
+                  {members.length ? (
+                    <ItemGroup className="gap-2">
+                      {members.map((agent) => (
+                        <Item key={agent.id} variant="outline" size="sm">
+                          <ItemContent>
+                            <ItemTitle className="font-normal">{agent.name}</ItemTitle>
+                            <ItemDescription className="text-xs">{agent.title}</ItemDescription>
+                          </ItemContent>
+                          <ItemActions>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={moving === agent.id}
+                              onClick={() =>
+                                void setTeamOf(agent.id, null, agent.name + ' is now without a team')
+                              }
+                            >
+                              <UserMinusIcon data-icon="inline-start" />
+                              Remove
+                            </Button>
+                          </ItemActions>
+                        </Item>
+                      ))}
+                    </ItemGroup>
+                  ) : (
+                    <Fade>
+                      <EmptyState
+                        icon={EmptyUsersRoundIcon}
+                        title="No team members yet"
+                        description="Use the selection below to add the first agent."
+                        variant="plain"
+                        size="sm"
+                      />
+                    </Fade>
+                  )}
+                  <EntityCombobox
+                    id="team-add-member"
+                    options={candidates}
+                    value={null}
+                    clearable={false}
+                    onChange={(agentId) => {
+                      if (!agentId) return;
+                      const agent = org.agents.find((entry) => entry.id === agentId);
+                      void setTeamOf(
+                        agentId,
+                        id,
+                        (agent?.name ?? 'Agent') + ' now belongs to ' + draft.name,
+                      );
+                    }}
+                    placeholder="Add agent"
+                    emptyLabel="All agents are already here"
                   />
-                )}
-                <EntityCombobox
-                  id="team-add-member"
-                  options={candidates}
-                  value={null}
-                  clearable={false}
-                  onChange={(agentId) => {
-                    if (!agentId) return;
-                    const agent = org.agents.find((entry) => entry.id === agentId);
-                    void setTeamOf(
-                      agentId,
-                      id,
-                      (agent?.name ?? 'Agent') + ' now belongs to ' + draft.name,
-                    );
-                  }}
-                  placeholder="Add agent"
-                  emptyLabel="All agents are already here"
-                />
-                <FieldDescription>
-                  Membership changes are saved immediately, independently of the fields above.
-                </FieldDescription>
-              </Field>
-            </FieldSet>
+                  <FieldDescription>
+                    Membership changes are saved immediately, independently of the fields above.
+                  </FieldDescription>
+                </Field>
+              </FieldSet>
+            </Fade>
           </>
         ) : null}
       </FormPage>

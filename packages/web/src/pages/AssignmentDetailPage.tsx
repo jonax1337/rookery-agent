@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useParams } from 'react-router';
-import { BanIcon, ListTodoIcon, SendIcon, StarIcon, TriangleAlertIcon, UserRoundIcon } from 'lucide-react';
+import { BanIcon, ListTodoIcon, StarIcon, TriangleAlertIcon, UserRoundIcon } from 'lucide-react';
 
 import { api, ApiError } from '@/lib/api';
 import {
@@ -11,11 +11,18 @@ import {
   shorten,
   timeAgo,
 } from '@/lib/format';
-import { formatDateTime, formatNumber } from '@/lib/stats';
+import { formatDateTime } from '@/lib/stats';
 import { cn } from '@/lib/utils';
 import type { AgentReview, AssignmentDetail } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
+
+import { SendIcon } from '@/components/animate-ui/icons/send';
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
+import { RotatingText, RotatingTextContainer } from '@/components/animate-ui/primitives/texts/rotating';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 
 import { PageBody } from '@/components/blocks/page-body';
 import { StatCards, StatCardsSkeleton, type StatCardProps } from '@/components/blocks/stat-cards';
@@ -204,7 +211,7 @@ export function AssignmentDetailPage() {
           <ServerOffline onRetry={() => void reload()} />
         ) : (
           <EmptyState
-            icon={SendIcon}
+            icon={AnimatedSendIcon}
             title="This assignment does not exist"
             description="The entry was deleted, or the address is incorrect."
             actionLabel="View assignments"
@@ -230,7 +237,17 @@ export function AssignmentDetailPage() {
   const cards: StatCardProps[] = [
     {
       label: 'Status',
-      value: ASSIGNMENT_STATUS_LABEL[status],
+      // The one label on the page that changes on its own (pending → running →
+      // done), so it gets the rotating treatment; the container's default
+      // padding would push the number line around, hence zeroed here.
+      value: (
+        <RotatingTextContainer
+          text={ASSIGNMENT_STATUS_LABEL[status]}
+          style={{ paddingBlock: 0 }}
+        >
+          <RotatingText />
+        </RotatingTextContainer>
+      ),
       ...(open ? { badge: <RunningBadge count={1} /> } : {}),
       headline: agent ? agent.name + ' is handling it' : 'Agent unknown',
       footnote: 'Created ' + timeAgo(assignment.createdAt),
@@ -250,7 +267,10 @@ export function AssignmentDetailPage() {
     },
     {
       label: 'Characters',
-      value: chars > 0 ? formatNumber(chars) : '–',
+      // Sliding, not counting: `live.chars` keeps moving while the run streams,
+      // and the rollers follow. `formatNumber` groups with commas (en-GB), so
+      // the separator is passed through to keep the resting digits identical.
+      value: chars > 0 ? <SlidingNumber number={chars} thousandSeparator="," /> : '–',
       headline: chars > 0 ? 'Response length' : 'Nothing written yet',
       // Not a hedge but the plain truth: the assignment row carries `chars`
       // and nothing else - no tokens, no cost (see serverGaps).
@@ -258,7 +278,7 @@ export function AssignmentDetailPage() {
     },
     {
       label: 'Delegated',
-      value: formatNumber(children.length),
+      value: <CountingNumber number={children.length} />,
       headline: children.length === 0 ? 'Completed without delegation' : 'Subassignments delegated to other agents',
       footnote: 'Directly from this assignment',
     },
@@ -268,149 +288,170 @@ export function AssignmentDetailPage() {
     <PageBody width="3xl">
       {dialog}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <StatusBadge kind="assignment" status={status} />
-        {agent ? (
-          <Badge variant="outline" className="font-mono font-normal">
-            {agent.slug}
-          </Badge>
-        ) : null}
-        {assignment.depth > 0 ? (
-          <Badge variant="secondary" className="tabular-nums">
-            Level {assignment.depth}
-          </Badge>
-        ) : null}
-      </div>
+      <Fade>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusBadge kind="assignment" status={status} />
+          {agent ? (
+            <Badge variant="outline" className="font-mono font-normal">
+              {agent.slug}
+            </Badge>
+          ) : null}
+          {assignment.depth > 0 ? (
+            <Badge variant="secondary" className="tabular-nums">
+              Level {assignment.depth}
+            </Badge>
+          ) : null}
+        </div>
+      </Fade>
 
-      <p className="text-base leading-snug whitespace-pre-wrap">{assignment.task}</p>
+      <Blur delay={50}>
+        <p className="text-base leading-snug whitespace-pre-wrap">{assignment.task}</p>
+      </Blur>
 
-      <MetaList
-        columns={2}
-        items={[
-          {
-            label: 'Agent',
-            value: agent?.name ?? 'Unknown',
-            ...(agent ? { to: '/org/agents/' + agent.id } : {}),
-          },
-          {
-            label: 'Provider',
-            value: (
-              <ProviderCell
-                layout="inline"
-                showModel={false}
-                {...(assignment.provider ? { provider: assignment.provider } : {})}
-              />
-            ),
-          },
-          { label: 'Model', value: assignment.model ?? 'Default model', mono: true },
-          { label: 'Project', value: project?.name ?? 'No project' },
-          { label: 'Level', value: assignment.depth > 0 ? String(assignment.depth) : 'Direct' },
-          {
-            label: 'Requested by',
-            value:
-              REQUESTER_LABEL[assignment.requesterKind] +
-              (assignment.requesterAgentId
-                ? ' · ' + (org.agentById(assignment.requesterAgentId)?.name ?? 'Unknown')
-                : ''),
-          },
-          { label: 'Created', value: formatDateTime(assignment.createdAt) },
-          { label: 'Started', value: assignment.startedAt ? formatDateTime(assignment.startedAt) : null },
-          { label: 'Finished', value: assignment.finishedAt ? formatDateTime(assignment.finishedAt) : null },
-        ]}
-      />
+      <Fade delay={100}>
+        <MetaList
+          columns={2}
+          items={[
+            {
+              label: 'Agent',
+              value: agent?.name ?? 'Unknown',
+              ...(agent ? { to: '/org/agents/' + agent.id } : {}),
+            },
+            {
+              label: 'Provider',
+              value: (
+                <ProviderCell
+                  layout="inline"
+                  showModel={false}
+                  {...(assignment.provider ? { provider: assignment.provider } : {})}
+                />
+              ),
+            },
+            { label: 'Model', value: assignment.model ?? 'Default model', mono: true },
+            { label: 'Project', value: project?.name ?? 'No project' },
+            { label: 'Level', value: assignment.depth > 0 ? String(assignment.depth) : 'Direct' },
+            {
+              label: 'Requested by',
+              value:
+                REQUESTER_LABEL[assignment.requesterKind] +
+                (assignment.requesterAgentId
+                  ? ' · ' + (org.agentById(assignment.requesterAgentId)?.name ?? 'Unknown')
+                  : ''),
+            },
+            { label: 'Created', value: formatDateTime(assignment.createdAt) },
+            { label: 'Started', value: assignment.startedAt ? formatDateTime(assignment.startedAt) : null },
+            { label: 'Finished', value: assignment.finishedAt ? formatDateTime(assignment.finishedAt) : null },
+          ]}
+        />
+      </Fade>
 
       {/* The stat row brings its own `px-4 lg:px-6`, which would sit on top of
           the measure's padding and shift the cards against everything else. */}
-      <StatCards items={cards} className="px-0 lg:px-0" />
+      <Fade delay={150}>
+        <StatCards items={cards} className="px-0 lg:px-0" />
+      </Fade>
 
-      <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
-        <TabsList>
-          <TabsTrigger value="ergebnis">Result</TabsTrigger>
-          {error ? (
-            <TabsTrigger value="fehler">
-              Error
-              <Badge variant="destructive">1</Badge>
-            </TabsTrigger>
-          ) : null}
-          <TabsTrigger value="weitergegeben">
-            Delegated
-            {children.length > 0 ? (
-              <Badge variant="secondary" className="tabular-nums">
-                {children.length}
-              </Badge>
+      <Fade delay={200}>
+        <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
+          <TabsList>
+            <TabsTrigger value="ergebnis">Result</TabsTrigger>
+            {error ? (
+              <TabsTrigger value="fehler">
+                Error
+                <Badge variant="destructive">1</Badge>
+              </TabsTrigger>
             ) : null}
-          </TabsTrigger>
-        </TabsList>
+            <TabsTrigger value="weitergegeben">
+              Delegated
+              {children.length > 0 ? (
+                <Badge variant="secondary" className="tabular-nums">
+                  {children.length}
+                </Badge>
+              ) : null}
+            </TabsTrigger>
+          </TabsList>
 
-        <TabsContent value="ergebnis" className="mt-4 flex flex-col gap-4">
-          {result ? (
-            <ResultCard
-              text={result}
-              description="What the agent returned at the end of the run."
-            />
-          ) : (
-            <EmptyState
-              icon={SendIcon}
-              title="No result yet"
-              description={
-                open
-                  ? 'The assignment is still running. Its report appears here when the agent finishes.'
-                  : 'This assignment did not leave a response.'
-              }
-              variant="outline"
-              size="sm"
-            />
-          )}
-          {!open && id ? (
-            <AssignmentReviewCard
-              assignmentId={id}
-              review={reviews.find((entry) => entry.source === 'user')}
-              onSaved={handleReviewSaved}
-            />
-          ) : null}
-        </TabsContent>
-
-        {error ? (
-          <TabsContent value="fehler" className="mt-4">
-            <Alert variant="destructive">
-              <TriangleAlertIcon />
-              <AlertTitle>The assignment failed</AlertTitle>
-              <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
-            </Alert>
-          </TabsContent>
-        ) : null}
-
-        <TabsContent value="weitergegeben" className="mt-4">
-          <DataTable
-            flush
-            idPrefix="auftrag-kinder"
-            data={childRows}
-            columns={childColumns}
-            getRowId={(row) => row.id}
-            searchable
-            searchPlaceholder="Assignments durchsuchen"
-            searchText={(row) => row.task}
-            initialSorting={ASSIGNMENT_SORTING}
-            paginate={false}
-            columnLabels={ASSIGNMENT_COLUMN_LABELS}
-            rowLabel={ASSIGNMENT_ROW_LABEL}
-            empty={
+          <TabsContent value="ergebnis" className="mt-4 flex flex-col gap-4">
+            {result ? (
+              <ResultCard
+                text={result}
+                description="What the agent returned at the end of the run."
+              />
+            ) : (
               <EmptyState
-                icon={SendIcon}
-                title="This assignment was not delegated"
-                description="An agent can delegate parts of the work to others; this agent completed everything directly."
-                variant="plain"
+                icon={AnimatedSendIcon}
+                title="No result yet"
+                description={
+                  open
+                    ? 'The assignment is still running. Its report appears here when the agent finishes.'
+                    : 'This assignment did not leave a response.'
+                }
+                variant="outline"
                 size="sm"
               />
-            }
-          />
-        </TabsContent>
-      </Tabs>
+            )}
+            {!open && id ? (
+              <AssignmentReviewCard
+                assignmentId={id}
+                review={reviews.find((entry) => entry.source === 'user')}
+                onSaved={handleReviewSaved}
+              />
+            ) : null}
+          </TabsContent>
+
+          {error ? (
+            <TabsContent value="fehler" className="mt-4">
+              <Alert variant="destructive">
+                <TriangleAlertIcon />
+                <AlertTitle>The assignment failed</AlertTitle>
+                <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
+              </Alert>
+            </TabsContent>
+          ) : null}
+
+          <TabsContent value="weitergegeben" className="mt-4">
+            <DataTable
+              flush
+              idPrefix="auftrag-kinder"
+              data={childRows}
+              columns={childColumns}
+              getRowId={(row) => row.id}
+              searchable
+              searchPlaceholder="Assignments durchsuchen"
+              searchText={(row) => row.task}
+              initialSorting={ASSIGNMENT_SORTING}
+              paginate={false}
+              columnLabels={ASSIGNMENT_COLUMN_LABELS}
+              rowLabel={ASSIGNMENT_ROW_LABEL}
+              empty={
+                <EmptyState
+                  icon={AnimatedSendIcon}
+                  title="This assignment was not delegated"
+                  description="An agent can delegate parts of the work to others; this agent completed everything directly."
+                  variant="plain"
+                  size="sm"
+                />
+              }
+            />
+          </TabsContent>
+        </Tabs>
+      </Fade>
     </PageBody>
   );
 }
 
 /* ---------------------------------- parts --------------------------------- */
+
+/**
+ * The empty states' send icon as the animate-ui one: same silhouette and
+ * stroke, the paper plane flies once when the empty state enters the
+ * viewport. `EmptyState` types its `icon` as a `LucideIcon` and renders it
+ * without props, so the `animateOnView` trigger rides along in this shell -
+ * the same pattern `ServerOffline` established for its plug.
+ */
+const AnimatedSendIcon = forwardRef<SVGSVGElement>(function AnimatedSendIcon() {
+  return <SendIcon size={24} animateOnView />;
+});
 
 /**
  * A star rating plus an optional comment, for one finished assignment - the

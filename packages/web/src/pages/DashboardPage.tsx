@@ -1,13 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
-import {
-  ActivityIcon,
-  BotIcon,
-  ListTodoIcon,
-  MessagesSquareIcon,
-  PlusIcon,
-  SendIcon,
-} from 'lucide-react';
+import { ListTodoIcon, MessagesSquareIcon } from 'lucide-react';
 
 import { api } from '@/lib/api';
 import { PROVIDER_LABEL, shorten } from '@/lib/format';
@@ -32,6 +25,13 @@ import {
   useOrgState,
   useTasksState,
 } from '@/providers/rookery-provider';
+import { ActivityIcon } from '@/components/animate-ui/icons/activity';
+import { BotIcon } from '@/components/animate-ui/icons/bot';
+import { PlusIcon } from '@/components/animate-ui/icons/plus';
+import { SendIcon } from '@/components/animate-ui/icons/send';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { RollingText } from '@/components/animate-ui/primitives/texts/rolling';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { PageBody } from '@/components/blocks/page-body';
 import { SectionHeading } from '@/components/blocks/section-heading';
@@ -161,6 +161,25 @@ function sumSince(series: readonly StatsDay[], days: number, pick: (day: StatsDa
   return total;
 }
 
+/**
+ * The empty states draw their icon in when it enters the view. `EmptyState`
+ * takes its icon as a `LucideIcon`, which these `forwardRef` shells satisfy
+ * for the animated equivalents - the explicit `size` keeps the 24px the
+ * lucide default rests at (animate-ui would otherwise rest at 28 and grow
+ * the media circle).
+ */
+const AnimatedActivityIcon = forwardRef<SVGSVGElement>(function AnimatedActivityIcon() {
+  return <ActivityIcon animateOnView size={24} />;
+});
+
+const AnimatedBotIcon = forwardRef<SVGSVGElement>(function AnimatedBotIcon() {
+  return <BotIcon animateOnView size={24} />;
+});
+
+const AnimatedSendIcon = forwardRef<SVGSVGElement>(function AnimatedSendIcon() {
+  return <SendIcon animateOnView size={24} />;
+});
+
 export function DashboardPage() {
   const navigate = useNavigate();
   const { socket, offline, reload } = useConnection();
@@ -181,7 +200,7 @@ export function DashboardPage() {
       // and /tasks carries that action as its own primary.
       actions: (
         <Button size="sm" onClick={newConversation}>
-          <PlusIcon data-icon="inline-start" />
+          <PlusIcon data-icon="inline-start" animateOnHover />
           New conversation
         </Button>
       ),
@@ -300,10 +319,19 @@ export function DashboardPage() {
   const flagged = performance.filter((row) => row.performance.stage > 0).length;
   const proposals = performance.filter((row) => row.pendingProposal).length;
 
+  // The headline numbers are this page's living values: they roll in from
+  // zero once the snapshot arrives and keep rolling whenever a socket
+  // refetch moves them. `thousandSeparator` keeps `formatNumber`'s en-GB
+  // comma in the resting pose - `CountingNumber` has no separator support
+  // and would quietly drop it above a thousand.
+  const liveNumber = (value: number) => (
+    <SlidingNumber number={value} fromNumber={0} thousandSeparator="," />
+  );
+
   const cards: StatCardProps[] = [
     {
       label: 'Memories',
-      value: totals ? formatNumber(totals.memories) : waiting,
+      value: totals ? liveNumber(totals.memories) : waiting,
       // "gelernt", not "dazugekommen": the day series counts every memory
       // the assistant wrote, the number above counts the ones still awake.
       // A night that compacts or puts to sleep what was learned this week
@@ -327,7 +355,7 @@ export function DashboardPage() {
     },
     {
       label: 'Agents',
-      value: totals ? formatNumber(totals.agents) : waiting,
+      value: totals ? liveNumber(totals.agents) : waiting,
       ...(proposals > 0
         ? { badge: <Badge variant="destructive">{formatNumber(proposals)} replacement proposed</Badge> }
         : totals && totals.runningAssignments > 0
@@ -344,7 +372,7 @@ export function DashboardPage() {
     },
     {
       label: 'Open tasks',
-      value: totals ? formatNumber(totals.openTasks) : waiting,
+      value: totals ? liveNumber(totals.openTasks) : waiting,
       ...(runningTasks > 0 ? { badge: <RunningBadge count={runningTasks} /> } : {}),
       headline: totals ? 'Of ' + formatNumber(totals.tasks) + ' tasks total' : ' ',
       footnote:
@@ -353,7 +381,7 @@ export function DashboardPage() {
     },
     {
       label: 'Conversations',
-      value: totals ? formatNumber(totals.sessions) : waiting,
+      value: totals ? liveNumber(totals.sessions) : waiting,
       ...(totals && totals.archivedSessions > 0
         ? {
             badge: (
@@ -504,7 +532,9 @@ export function DashboardPage() {
   if (statsFailed && !stats) {
     return (
       <PageBody width="3xl">
-        <ServerOffline onRetry={() => void Promise.all([reload(), load()])} />
+        <Fade>
+          <ServerOffline onRetry={() => void Promise.all([reload(), load()])} />
+        </Fade>
       </PageBody>
     );
   }
@@ -512,74 +542,82 @@ export function DashboardPage() {
   if (untouched) {
     return (
       <PageBody>
-        <div className="px-4 lg:px-6">
-          <EmptyState
-            icon={ActivityIcon}
-            title="Get started"
-            description={
-              assistantName +
-              ' has nothing to show yet. One conversation, task, or agent is enough to bring this page to life.'
-            }
-            actionLabel="New conversation"
-            onAction={newConversation}
-            action={
-              <>
-                <Button variant="outline" asChild>
-                  <NavLink to="/tasks/new">Create task</NavLink>
-                </Button>
-                <Button variant="outline" asChild>
-                  <NavLink to="/org/agents/new">Hire agent</NavLink>
-                </Button>
-              </>
-            }
-          />
-        </div>
+        <Fade>
+          <div className="px-4 lg:px-6">
+            <EmptyState
+              icon={AnimatedActivityIcon}
+              title="Get started"
+              description={
+                assistantName +
+                ' has nothing to show yet. One conversation, task, or agent is enough to bring this page to life.'
+              }
+              actionLabel="New conversation"
+              onAction={newConversation}
+              action={
+                <>
+                  <Button variant="outline" asChild>
+                    <NavLink to="/tasks/new">Create task</NavLink>
+                  </Button>
+                  <Button variant="outline" asChild>
+                    <NavLink to="/org/agents/new">Hire agent</NavLink>
+                  </Button>
+                </>
+              }
+            />
+          </div>
+        </Fade>
         {/* The providers stay visible: on a fresh install the first question
             is usually whether the CLIs are signed in at all. */}
-        <div className="px-4 lg:px-6">
-          <ProviderPanel
-            providers={providers}
-            quotas={quotas}
-            defaultProvider={config?.defaultProvider}
-          />
-        </div>
+        <Fade delay={50}>
+          <div className="px-4 lg:px-6">
+            <ProviderPanel
+              providers={providers}
+              quotas={quotas}
+              defaultProvider={config?.defaultProvider}
+            />
+          </div>
+        </Fade>
       </PageBody>
     );
   }
 
   return (
     <PageBody>
-      <StatCards items={cards} />
+      <Fade>
+        <StatCards items={cards} />
+      </Fade>
 
-      <div className="px-4 lg:px-6">
-        <TrendChartCard
-          title="Activity"
-          description="Per day: conversations and messages including archive; assignments from the active organization."
-          descriptionShort="Created per day"
-          data={chartData}
-          series={ACTIVITY_SERIES}
-          range={range}
-          onRangeChange={setRange}
-          {...(windowTokens !== null
-            ? {
-                badge: (
-                  <Badge variant="outline" className="hidden @[540px]/card:inline-flex">
-                    {formatNumber(windowTokens)} Tokens {TREND_RANGE_SUFFIX[range]}
-                  </Badge>
-                ),
-              }
-            : {})}
-          empty={
-            <EmptyState
-              icon={ActivityIcon}
-              title="Nothing happened during this period"
-              description="A longer period may show more."
-              variant="plain"
-              size="sm"
-            />
-          }
-        />
-      </div>
+      <Fade delay={50}>
+        <div className="px-4 lg:px-6">
+          <TrendChartCard
+            title={<RollingText text="Activity" />}
+            description="Per day: conversations and messages including archive; assignments from the active organization."
+            descriptionShort="Created per day"
+            data={chartData}
+            series={ACTIVITY_SERIES}
+            range={range}
+            onRangeChange={setRange}
+            {...(windowTokens !== null
+              ? {
+                  badge: (
+                    <Badge variant="outline" className="hidden @[540px]/card:inline-flex">
+                      {formatNumber(windowTokens)} Tokens {TREND_RANGE_SUFFIX[range]}
+                    </Badge>
+                  ),
+                }
+              : {})}
+            empty={
+              <EmptyState
+                icon={AnimatedActivityIcon}
+                title="Nothing happened during this period"
+                description="A longer period may show more."
+                variant="plain"
+                size="sm"
+              />
+            }
+          />
+        </div>
+      </Fade>
 
       <SectionHeading
         title="Recent"
@@ -593,85 +631,93 @@ export function DashboardPage() {
           also what keeps the tab switch instant.
         */}
         {tab === 'tasks' ? (
-          <DataTable
-            {...shared}
-            data={recentTasks}
-            columns={taskColumns}
-            loading={tasks.loading && recentTasks.length === 0}
-            onRowClick={(task) => void navigate('/tasks/' + task.id)}
-            rowClickIgnoreColumns={['title', 'assignee']}
-            {...(tasks.error ? { error: <ServerOffline onRetry={() => void tasks.refresh()} size="sm" /> } : {})}
-            empty={
-              <EmptyState
-                icon={ListTodoIcon}
-                title="No tasks yet"
-                description="A task is planned, broken down, and assigned to agents."
-                actionLabel="Create task"
-                actionTo="/tasks/new"
-                variant="plain"
-                size="sm"
-              />
-            }
-          />
+          <Fade delay={100}>
+            <DataTable
+              {...shared}
+              data={recentTasks}
+              columns={taskColumns}
+              loading={tasks.loading && recentTasks.length === 0}
+              onRowClick={(task) => void navigate('/tasks/' + task.id)}
+              rowClickIgnoreColumns={['title', 'assignee']}
+              {...(tasks.error ? { error: <ServerOffline onRetry={() => void tasks.refresh()} size="sm" /> } : {})}
+              empty={
+                <EmptyState
+                  icon={ListTodoIcon}
+                  title="No tasks yet"
+                  description="A task is planned, broken down, and assigned to agents."
+                  actionLabel="Create task"
+                  actionTo="/tasks/new"
+                  variant="plain"
+                  size="sm"
+                />
+              }
+            />
+          </Fade>
         ) : null}
 
         {tab === 'assignments' ? (
-          <DataTable
-            {...shared}
-            data={recentRuns ?? []}
-            columns={assignmentColumns}
-            loading={recentRuns === null && !runsFailed}
-            onRowClick={(assignment) => void navigate('/assignments/' + assignment.id)}
-            {...(runsFailed
-              ? { error: <ServerOffline onRetry={() => void load()} size="sm" /> }
-              : {})}
-            empty={
-              <EmptyState
-                icon={SendIcon}
-                title="No assignments yet"
-                description="Assignments appear when work is delegated to an agent."
-                actionLabel="View agents"
-                actionTo="/org/agents"
-                variant="plain"
-                size="sm"
-              />
-            }
-          />
+          <Fade delay={100}>
+            <DataTable
+              {...shared}
+              data={recentRuns ?? []}
+              columns={assignmentColumns}
+              loading={recentRuns === null && !runsFailed}
+              onRowClick={(assignment) => void navigate('/assignments/' + assignment.id)}
+              {...(runsFailed
+                ? { error: <ServerOffline onRetry={() => void load()} size="sm" /> }
+                : {})}
+              empty={
+                <EmptyState
+                  icon={AnimatedSendIcon}
+                  title="No assignments yet"
+                  description="Assignments appear when work is delegated to an agent."
+                  actionLabel="View agents"
+                  actionTo="/org/agents"
+                  variant="plain"
+                  size="sm"
+                />
+              }
+            />
+          </Fade>
         ) : null}
 
         {tab === 'sessions' ? (
-          <DataTable
-            {...shared}
-            data={sessions.sessions}
-            columns={sessionColumns}
-            loading={sessions.loading}
-            onRowClick={(session) => openConversation(session.id)}
-            {...(sessions.error
-              ? { error: <ServerOffline onRetry={() => void sessions.refresh()} size="sm" /> }
-              : {})}
-            empty={
-              <EmptyState
-                icon={MessagesSquareIcon}
-                title="No conversations yet"
-                description={'The first conversation with ' + assistantName + ' starts here.'}
-                actionLabel="New conversation"
-                onAction={newConversation}
-                variant="plain"
-                size="sm"
-              />
-            }
-          />
+          <Fade delay={100}>
+            <DataTable
+              {...shared}
+              data={sessions.sessions}
+              columns={sessionColumns}
+              loading={sessions.loading}
+              onRowClick={(session) => openConversation(session.id)}
+              {...(sessions.error
+                ? { error: <ServerOffline onRetry={() => void sessions.refresh()} size="sm" /> }
+                : {})}
+              empty={
+                <EmptyState
+                  icon={MessagesSquareIcon}
+                  title="No conversations yet"
+                  description={'The first conversation with ' + assistantName + ' starts here.'}
+                  actionLabel="New conversation"
+                  onAction={newConversation}
+                  variant="plain"
+                  size="sm"
+                />
+              }
+            />
+          </Fade>
         ) : null}
       </SectionHeading>
 
-      <div className="px-4 lg:px-6">
-        <ProviderPanel
-          providers={providers}
-          quotas={quotas}
-          defaultProvider={config?.defaultProvider}
-          offline={offline}
-        />
-      </div>
+      <Fade delay={150}>
+        <div className="px-4 lg:px-6">
+          <ProviderPanel
+            providers={providers}
+            quotas={quotas}
+            defaultProvider={config?.defaultProvider}
+            offline={offline}
+          />
+        </div>
+      </Fade>
     </PageBody>
   );
 }
@@ -721,7 +767,7 @@ function ProviderPanel({
             <ServerOffline size="sm" />
           ) : (
             <EmptyState
-              icon={BotIcon}
+              icon={AnimatedBotIcon}
               title="No status data yet"
               description="The server has not reported which CLIs it found yet."
               variant="plain"

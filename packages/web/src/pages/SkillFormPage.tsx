@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useId, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { FileTextIcon, SparklesIcon, Trash2Icon } from 'lucide-react';
+import { FileTextIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
+import { SparklesIcon as AnimatedSparklesIcon } from '@/components/animate-ui/icons/sparkles';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { AUDIENCE_CHOICES } from '@/lib/tools';
 import type { Skill, ToolServerAudience } from '@/lib/types';
 import { useSkill } from '@/hooks/useSkills';
@@ -92,6 +94,15 @@ function draftOf(skill: Skill): SkillDraft {
   };
 }
 
+/**
+ * The empty-state icon as an animate-ui version. `EmptyState` takes a
+ * `LucideIcon` and renders it without props, so the animated icon sits in a
+ * forwardRef shell that carries its `animateOnView` trigger along.
+ */
+const EmptySparklesIcon = forwardRef<SVGSVGElement>(function EmptySparklesIcon() {
+  return <AnimatedSparklesIcon animateOnView />;
+});
+
 export function SkillFormPage() {
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
@@ -164,13 +175,15 @@ export function SkillFormPage() {
   if (editing && !skill && !loading) {
     return (
       <PageBody width="3xl">
-        <EmptyState
-          icon={SparklesIcon}
-          title="This skill no longer exists"
-          description="The folder was deleted or never existed."
-          actionLabel="View skills"
-          actionTo="/skills"
-        />
+        <Fade>
+          <EmptyState
+            icon={EmptySparklesIcon}
+            title="This skill no longer exists"
+            description="The folder was deleted or never existed."
+            actionLabel="View skills"
+            actionTo="/skills"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -178,7 +191,9 @@ export function SkillFormPage() {
   if (editing && !skill) {
     return (
       <PageBody width="3xl">
-        <FormFieldsSkeleton fields={3} />
+        <Fade>
+          <FormFieldsSkeleton fields={3} />
+        </Fade>
       </PageBody>
     );
   }
@@ -186,106 +201,108 @@ export function SkillFormPage() {
   return (
     <PageBody width="3xl">
       {dialog}
-      <FormPage
-        formId={formId}
-        showActions={false}
-        onSubmit={submit}
-        error={failure}
-        description={
-          skill?.origin === 'builtin'
-            ? 'This skill ships with Rookery. Saving does not change it: your version is written to the skills folder and takes precedence from then on.'
-            : 'The description determines when the skill is opened: one sentence that matches the task.'
-        }
-      >
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="skill-name">Name</FieldLabel>
-            <Input
-              id="skill-name"
-              className="font-mono"
-              placeholder="z. B. wochenbericht"
-              value={draft.name}
-              disabled={editing}
-              aria-invalid={Boolean(errors.name)}
-              onChange={(event) => set({ name: event.target.value })}
-            />
-            <FieldDescription>
-              {editing
-                ? 'The name is also the folder name and cannot be changed.'
-                : 'Lowercase letters, numbers, and hyphens. It becomes the folder name.'}
-            </FieldDescription>
-            <FieldError>{errors.name}</FieldError>
-          </Field>
+      <Fade>
+        <FormPage
+          formId={formId}
+          showActions={false}
+          onSubmit={submit}
+          error={failure}
+          description={
+            skill?.origin === 'builtin'
+              ? 'This skill ships with Rookery. Saving does not change it: your version is written to the skills folder and takes precedence from then on.'
+              : 'The description determines when the skill is opened: one sentence that matches the task.'
+          }
+        >
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="skill-name">Name</FieldLabel>
+              <Input
+                id="skill-name"
+                className="font-mono"
+                placeholder="z. B. wochenbericht"
+                value={draft.name}
+                disabled={editing}
+                aria-invalid={Boolean(errors.name)}
+                onChange={(event) => set({ name: event.target.value })}
+              />
+              <FieldDescription>
+                {editing
+                  ? 'The name is also the folder name and cannot be changed.'
+                  : 'Lowercase letters, numbers, and hyphens. It becomes the folder name.'}
+              </FieldDescription>
+              <FieldError>{errors.name}</FieldError>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="skill-audience-assistant">Audience</FieldLabel>
-            <ChoiceField
-              id="skill-audience"
-              options={AUDIENCE_CHOICES}
-              value={draft.audience}
-              onChange={(audience) => set({ audience })}
-            />
-          </Field>
+            <Field>
+              <FieldLabel htmlFor="skill-audience-assistant">Audience</FieldLabel>
+              <ChoiceField
+                id="skill-audience"
+                options={AUDIENCE_CHOICES}
+                value={draft.audience}
+                onChange={(audience) => set({ audience })}
+              />
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="skill-description">Description</FieldLabel>
-            <Input
-              id="skill-description"
-              placeholder="When this skill applies, in one sentence."
-              value={draft.description}
-              aria-invalid={Boolean(errors.description)}
-              onChange={(event) => set({ description: event.target.value })}
-            />
-            <FieldDescription>
-              One sentence that helps the assistant decide whether to open the skill.
-            </FieldDescription>
-            <FieldError>{errors.description}</FieldError>
-          </Field>
-        </FieldSet>
+            <Field>
+              <FieldLabel htmlFor="skill-description">Description</FieldLabel>
+              <Input
+                id="skill-description"
+                placeholder="When this skill applies, in one sentence."
+                value={draft.description}
+                aria-invalid={Boolean(errors.description)}
+                onChange={(event) => set({ description: event.target.value })}
+              />
+              <FieldDescription>
+                One sentence that helps the assistant decide whether to open the skill.
+              </FieldDescription>
+              <FieldError>{errors.description}</FieldError>
+            </Field>
+          </FieldSet>
 
-        <FieldSeparator />
+          <FieldSeparator />
 
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="skill-body">Content</FieldLabel>
-            <Tabs value={tab} onValueChange={setTab}>
-              <TabsList>
-                <TabsTrigger value="schreiben">Write</TabsTrigger>
-                <TabsTrigger value="vorschau">Preview</TabsTrigger>
-              </TabsList>
-              <TabsContent value="schreiben">
-                <Textarea
-                  id="skill-body"
-                  rows={18}
-                  className="font-mono text-[13px]"
-                  value={draft.body}
-                  onChange={(event) => set({ body: event.target.value })}
-                />
-              </TabsContent>
-              <TabsContent value="vorschau">
-                <div className="min-h-[24rem] rounded-md border p-4">
-                  {draft.body.trim() ? (
-                    <ResultMarkdown text={draft.body} />
-                  ) : (
-                    <EmptyState
-                      icon={FileTextIcon}
-                      title="Nothing written yet"
-                      description="The text in the “Write” tab appears here as Markdown."
-                      actionLabel="Started writing"
-                      onAction={() => setTab('schreiben')}
-                      variant="plain"
-                      size="sm"
-                    />
-                  )}
-                </div>
-              </TabsContent>
-            </Tabs>
-            <FieldDescription>
-              Markdown. This text is read verbatim when the skill is opened.
-            </FieldDescription>
-          </Field>
-        </FieldSet>
-      </FormPage>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="skill-body">Content</FieldLabel>
+              <Tabs value={tab} onValueChange={setTab}>
+                <TabsList>
+                  <TabsTrigger value="schreiben">Write</TabsTrigger>
+                  <TabsTrigger value="vorschau">Preview</TabsTrigger>
+                </TabsList>
+                <TabsContent value="schreiben">
+                  <Textarea
+                    id="skill-body"
+                    rows={18}
+                    className="font-mono text-[13px]"
+                    value={draft.body}
+                    onChange={(event) => set({ body: event.target.value })}
+                  />
+                </TabsContent>
+                <TabsContent value="vorschau">
+                  <div className="min-h-[24rem] rounded-md border p-4">
+                    {draft.body.trim() ? (
+                      <ResultMarkdown text={draft.body} />
+                    ) : (
+                      <EmptyState
+                        icon={FileTextIcon}
+                        title="Nothing written yet"
+                        description="The text in the “Write” tab appears here as Markdown."
+                        actionLabel="Started writing"
+                        onAction={() => setTab('schreiben')}
+                        variant="plain"
+                        size="sm"
+                      />
+                    )}
+                  </div>
+                </TabsContent>
+              </Tabs>
+              <FieldDescription>
+                Markdown. This text is read verbatim when the skill is opened.
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+        </FormPage>
+      </Fade>
     </PageBody>
   );
 }

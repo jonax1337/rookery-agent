@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { EllipsisVerticalIcon } from 'lucide-react';
 
+import { EllipsisVertical } from '@/components/animate-ui/icons/ellipsis-vertical';
+
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
@@ -13,8 +15,13 @@ import { cn } from '@/lib/utils';
  *
  * - `tone="row"` - the quiet glyph at the end of a table row. Eleven lists,
  *   32 px, muted, and it takes the muted background while the menu is open.
+ *   Dense rows keep the plain lucide glyph - no per-row motion.
  * - `tone="header"` - the overflow next to a detail page's `ButtonGroup`. It
  *   has to read as part of that group, so it is outlined like its neighbours.
+ *   This one glyph is the animate-ui twin: it swings its dots in once when it
+ *   enters the view (`animateOnView`, the button mutes pointer events on its
+ *   svg, so hover or tap triggers could never fire) and lands on the same
+ *   three dots, because they are rotation-symmetric.
  *
  * One glyph for the gesture: `EllipsisVerticalIcon`. `MoreVerticalIcon` draws
  * the same three dots under a second name and is retired here.
@@ -52,7 +59,13 @@ export function RowMenuButton({
       )}
       {...props}
     >
-      {busy ? <Spinner /> : <EllipsisVerticalIcon />}
+      {busy ? (
+        <Spinner />
+      ) : tone === 'header' ? (
+        <EllipsisVertical animateOnView className="size-4" />
+      ) : (
+        <EllipsisVerticalIcon />
+      )}
     </Button>
   );
 }

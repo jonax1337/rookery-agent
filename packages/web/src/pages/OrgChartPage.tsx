@@ -5,6 +5,7 @@ import { MonitorXIcon, NetworkIcon } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { Agent, OrgPerformanceEntry } from '@/lib/types';
 import { usePageMeta } from '@/components/shell/page-meta';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { EmptyState } from '@/components/common/empty-state';
 import { Spinner } from '@/components/ui/spinner';
 import { useOrgState } from '@/providers/rookery-provider';
@@ -250,46 +251,56 @@ export function OrgChartPage() {
 
   if (activeAgents.length === 0) {
     return (
-      <div className="px-4 lg:px-6">
-        <EmptyState
-          icon={NetworkIcon}
-          title="Nobody hired yet"
-          description="The org chart fills in as soon as an agent is hired."
-          actionLabel="Hire agent"
-          actionTo="/org/agents/new"
-        />
-      </div>
+      <Fade asChild>
+        <div className="px-4 lg:px-6">
+          <EmptyState
+            icon={NetworkIcon}
+            title="Nobody hired yet"
+            description="The org chart fills in as soon as an agent is hired."
+            actionLabel="Hire agent"
+            actionTo="/org/agents/new"
+          />
+        </div>
+      </Fade>
     );
   }
 
   return (
     <div ref={stageRef} className="org-chart-stage px-4 lg:px-6">
       {status === 'unavailable' ? (
-        <EmptyState
-          icon={MonitorXIcon}
-          title="The diagram could not be drawn"
-          description="Something in this browser refused to load or run the chart renderer."
-          variant="outline"
-        />
-      ) : (
-        <div className="relative">
-          {/*
-            Unconditionally mounted: the effect above writes Mermaid's own
-            SVG output (built from our own escaped agent data, see
-            `escapeLabel`) straight into this node by ref and wires up its
-            click handlers in the same tick - see the comment there for why
-            that stopped being optional.
-          */}
-          <div
-            ref={containerRef}
-            className="min-h-64 overflow-x-auto rounded-lg border py-4 [&_svg]:mx-auto [&_svg]:h-auto [&_a]:cursor-pointer"
+        <Fade>
+          <EmptyState
+            icon={MonitorXIcon}
+            title="The diagram could not be drawn"
+            description="Something in this browser refused to load or run the chart renderer."
+            variant="outline"
           />
-          {status === 'loading' ? (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <Spinner aria-hidden="true" />
-            </div>
-          ) : null}
-        </div>
+        </Fade>
+      ) : (
+        <Fade asChild>
+          <div className="relative">
+            {/*
+              Unconditionally mounted: the effect above writes Mermaid's own
+              SVG output (built from our own escaped agent data, see
+              `escapeLabel`) straight into this node by ref and wires up its
+              click handlers in the same tick - see the comment there for why
+              that stopped being optional.
+            */}
+            <div
+              ref={containerRef}
+              className="min-h-64 overflow-x-auto rounded-lg border py-4 [&_svg]:mx-auto [&_svg]:h-auto [&_a]:cursor-pointer"
+            />
+            {status === 'loading' ? (
+              // Fade instead of a plain div, the same way MemoryGraphPage
+              // brings its loading chip in: the spinner enters with the
+              // frame instead of popping over it, and leaves as abruptly
+              // as it always did.
+              <Fade className="absolute inset-0 flex items-center justify-center">
+                <Spinner aria-hidden="true" />
+              </Fade>
+            ) : null}
+          </div>
+        </Fade>
       )}
       <p className="sr-only" role="note">
         {agentByNodeId.size} agents in the reporting chart. Use the Agents list for a text version.

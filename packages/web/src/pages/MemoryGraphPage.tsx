@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { MaximizeIcon, MonitorXIcon, SquareArrowOutUpRightIcon } from 'lucide-react';
+import { MonitorXIcon } from 'lucide-react';
 
 import { MEMORY_KIND_LABEL, RELATION_LABEL } from '@/lib/format';
 import { formatNumber } from '@/lib/stats';
@@ -11,6 +11,10 @@ import {
   useGraphPalette,
   type GraphHandle,
 } from '@/components/MemoryGraph3D';
+import { MaximizeIcon } from '@/components/animate-ui/icons/maximize';
+import { SquareArrowOutUpRightIcon } from '@/components/animate-ui/icons/square-arrow-out-up-right';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { EmptyState } from '@/components/common/empty-state';
 import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
 import { Badge } from '@/components/ui/badge';
@@ -26,8 +30,8 @@ import { Switch } from '@/components/ui/switch';
  * The scene itself is unchanged - `MemoryGraph3D` still builds the same force
  * layout out of the same nodes. What changed is everything around it: the
  * filter row is a `ButtonGroup` like every other toolbar in the app, the
- * legend is an `ItemGroup`, and the stage has a real aspect ratio instead of
- * a fixed 680 pixels that was too tall on a laptop and too short on a monitor.
+ * legend is an `ItemGroup`, and the stage has a real aspect ratio instead
+ * of a fixed 680 pixels that was too tall on a laptop and too short on a monitor.
  *
  * The palette lives in `.graph-stage` in `styles/index.css`, because WebGL
  * cannot read the oklch tokens the rest of the app is painted with. The stage
@@ -67,125 +71,147 @@ export function MemoryGraphPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 px-4 lg:px-6">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-3">
-          <EntityCombobox
-            id="netz-thema"
-            options={entityOptions}
-            value={graph.entity || null}
-            onChange={(value) => graph.setEntity(value ?? '')}
-            placeholder="All topics"
-            emptyLabel="No topic found"
-            className="w-full sm:w-56"
-          />
-          <Field orientation="horizontal" className="w-auto">
-            <Switch
-              id="netz-schlafende"
-              checked={graph.includeDormant}
-              onCheckedChange={graph.setIncludeDormant}
+      <Fade>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <EntityCombobox
+              id="netz-thema"
+              options={entityOptions}
+              value={graph.entity || null}
+              onChange={(value) => graph.setEntity(value ?? '')}
+              placeholder="All topics"
+              emptyLabel="No topic found"
+              className="w-full sm:w-56"
             />
-            <FieldLabel htmlFor="netz-schlafende" className="font-normal whitespace-nowrap">
-              Show sleeping
-            </FieldLabel>
-          </Field>
-          <Button
-            variant="outline"
-            onClick={() => sceneRef.current?.fit()}
-            disabled={unavailable || empty}
-          >
-            <MaximizeIcon data-icon="inline-start" />
-            Fit to view
-          </Button>
-        </div>
-
-        {data ? (
-          <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground tabular-nums">
-            <span>{formatNumber(data.memories.length)} Memories</span>
-            <span aria-hidden="true">·</span>
-            <span>{formatNumber(data.entities.length)} topics</span>
-            <span aria-hidden="true">·</span>
-            <span>{formatNumber(data.edges.length)} Connections</span>
-            {data.truncated ? <Badge variant="outline">truncated</Badge> : null}
+            <Field orientation="horizontal" className="w-auto">
+              <Switch
+                id="netz-schlafende"
+                checked={graph.includeDormant}
+                onCheckedChange={graph.setIncludeDormant}
+              />
+              <FieldLabel htmlFor="netz-schlafende" className="font-normal whitespace-nowrap">
+                Show sleeping
+              </FieldLabel>
+            </Field>
+            <Button
+              variant="outline"
+              onClick={() => sceneRef.current?.fit()}
+              disabled={unavailable || empty}
+            >
+              {/* animateOnView, not animateOnHover: the button base carries
+                  `[&_svg]:pointer-events-none`, so a hover trigger never
+                  fires. `initialOnAnimateEnd` returns the corners to their
+                  rest pose once the pulse has played. */}
+              <MaximizeIcon data-icon="inline-start" animateOnView initialOnAnimateEnd />
+              Fit to view
+            </Button>
           </div>
-        ) : null}
-      </div>
+
+          {data ? (
+            <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground tabular-nums">
+              {/* These three roll in from zero and keep rolling whenever the
+                  topic filter or the sleeping toggle refetches the net;
+                  `thousandSeparator` keeps `formatNumber`'s en-GB comma. */}
+              <span>
+                <SlidingNumber number={data.memories.length} fromNumber={0} thousandSeparator="," /> Memories
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                <SlidingNumber number={data.entities.length} fromNumber={0} thousandSeparator="," /> topics
+              </span>
+              <span aria-hidden="true">·</span>
+              <span>
+                <SlidingNumber number={data.edges.length} fromNumber={0} thousandSeparator="," /> Connections
+              </span>
+              {data.truncated ? <Badge variant="outline">truncated</Badge> : null}
+            </div>
+          ) : null}
+        </div>
+      </Fade>
 
       {/*
         `.graph-stage` is what carries the scene's hex palette; the ref is
         handed to the palette hook and to nothing else, so the colours and the
-        canvas cannot get out of step.
+        canvas cannot get out of step. The `Fade` around it moves the frame
+        only - the force layout and its canvas are never animated.
       */}
-      <div
-        ref={stageRef}
-        className="graph-stage relative aspect-video min-h-80 w-full overflow-hidden rounded-lg border bg-card sm:min-h-[480px]"
-      >
-        {unavailable ? (
-          <div className="absolute inset-0 flex items-center justify-center p-6">
-            <EmptyState
-              icon={MonitorXIcon}
-              title="The network cannot be rendered here"
-              description="This view requires WebGL. The same memories are available in full in the list."
-              actionLabel="View memories"
-              actionTo="/memory/memories"
-              variant="plain"
-            />
-          </div>
-        ) : (
-          <>
-            <MemoryGraph3D
-              ref={sceneRef}
-              graph={data}
-              palette={palette}
-              onSelectMemory={setPicked}
-              onSelectEntity={graph.setEntity}
-              onUnavailable={onUnavailable}
-            />
+      <Fade delay={50}>
+        <div
+          ref={stageRef}
+          className="graph-stage relative aspect-video min-h-80 w-full overflow-hidden rounded-lg border bg-card sm:min-h-[480px]"
+        >
+          {unavailable ? (
+            <Fade className="absolute inset-0 flex items-center justify-center p-6">
+              <EmptyState
+                icon={MonitorXIcon}
+                title="The network cannot be rendered here"
+                description="This view requires WebGL. The same memories are available in full in the list."
+                actionLabel="View memories"
+                actionTo="/memory/memories"
+                variant="plain"
+              />
+            </Fade>
+          ) : (
+            <>
+              <MemoryGraph3D
+                ref={sceneRef}
+                graph={data}
+                palette={palette}
+                onSelectMemory={setPicked}
+                onSelectEntity={graph.setEntity}
+                onUnavailable={onUnavailable}
+              />
 
-            {graph.loading ? (
-              <div className="pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2 rounded-md bg-background/80 px-2 py-1 text-xs text-muted-foreground backdrop-blur">
-                <Spinner aria-hidden="true" />
-                loading
-              </div>
-            ) : null}
+              {graph.loading ? (
+                <Fade className="pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2 rounded-md bg-background/80 px-2 py-1 text-xs text-muted-foreground backdrop-blur">
+                  <Spinner aria-hidden="true" />
+                  loading
+                </Fade>
+              ) : null}
 
-            {empty ? (
-              <div className="absolute inset-0 flex items-center justify-center p-6">
-                <EmptyState
-                  icon={MonitorXIcon}
-                  title="Nothing in the network yet"
-                  description="Once conversations leave something lasting behind, a network will take shape here. Dream sleep draws the connections."
-                  actionLabel="View nights"
-                  actionTo="/memory/sleep"
-                  variant="plain"
-                />
-              </div>
-            ) : null}
+              {empty ? (
+                <Fade className="absolute inset-0 flex items-center justify-center p-6">
+                  <EmptyState
+                    icon={MonitorXIcon}
+                    title="Nothing in the network yet"
+                    description="Once conversations leave something lasting behind, a network will take shape here. Dream sleep draws the connections."
+                    actionLabel="View nights"
+                    actionTo="/memory/sleep"
+                    variant="plain"
+                  />
+                </Fade>
+              ) : null}
 
-            {/*
-              A clicked body names itself here and offers the one way on: the
-              sheet that can pin, wake or forget a memory is on the list page,
-              and a second copy of it here would drift apart from it.
-            */}
-            {picked ? (
-              <div className="absolute right-3 bottom-3 left-3 z-10 flex flex-wrap items-center gap-2 rounded-lg border bg-background/95 p-3 text-sm backdrop-blur">
-                <Badge variant="outline">{MEMORY_KIND_LABEL[picked.kind]}</Badge>
-                <span className="line-clamp-2 min-w-0 flex-1">{picked.content}</span>
-                <Button size="sm" asChild>
-                  <Link to={'/memory?erinnerung=' + picked.id}>
-                    <SquareArrowOutUpRightIcon data-icon="inline-start" />
-                    Open
-                  </Link>
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setPicked(null)}>
-                  Close
-                </Button>
-              </div>
-            ) : null}
-          </>
-        )}
-      </div>
+              {/*
+                A clicked body names itself here and offers the one way on: the
+                sheet that can pin, wake or forget a memory is on the list page,
+                and a second copy of it here would drift apart from it. The
+                `Fade` turns its appearance into an entrance; dismissing stays
+                immediate, as it always was.
+              */}
+              {picked ? (
+                <Fade className="absolute right-3 bottom-3 left-3 z-10 flex flex-wrap items-center gap-2 rounded-lg border bg-background/95 p-3 text-sm backdrop-blur">
+                  <Badge variant="outline">{MEMORY_KIND_LABEL[picked.kind]}</Badge>
+                  <span className="line-clamp-2 min-w-0 flex-1">{picked.content}</span>
+                  <Button size="sm" asChild>
+                    <Link to={'/memory?erinnerung=' + picked.id}>
+                      <SquareArrowOutUpRightIcon data-icon="inline-start" animateOnView initialOnAnimateEnd />
+                      Open
+                    </Link>
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setPicked(null)}>
+                    Close
+                  </Button>
+                </Fade>
+              ) : null}
+            </>
+          )}
+        </div>
+      </Fade>
 
-      <Legend palette={palette} />
+      <Fade delay={100}>
+        <Legend palette={palette} />
+      </Fade>
     </div>
   );
 }

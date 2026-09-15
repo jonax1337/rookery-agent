@@ -1,25 +1,29 @@
-import { useCallback, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useMemo, useState } from 'react';
 import { NavLink, useNavigate, useParams } from 'react-router';
 import {
   ArchiveIcon,
-  ArrowRightIcon,
   BrainIcon,
   Building2Icon,
-  ClipboardListIcon,
   CpuIcon,
   InboxIcon,
   MailPlusIcon,
   MinusIcon,
   PencilIcon,
-  SendIcon,
   ShieldIcon,
   TrendingDownIcon,
   TrendingUpIcon,
   TriangleAlertIcon,
-  UserRoundIcon,
   UsersIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+import { ArrowRightIcon } from '@/components/animate-ui/icons/arrow-right';
+import { ClipboardList } from '@/components/animate-ui/icons/clipboard-list';
+import { SendIcon } from '@/components/animate-ui/icons/send';
+import { UserRound } from '@/components/animate-ui/icons/user-round';
+import { Users } from '@/components/animate-ui/icons/users';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 
 import { PageBody } from '@/components/blocks/page-body';
 import { StatCards, StatCardsSkeleton, cappedBadge } from '@/components/blocks/stat-cards';
@@ -265,7 +269,9 @@ export function AgentDetailPage() {
       actions: agent ? (
         <>
           <Button size="sm" onClick={() => setAssignOpen(true)} disabled={agent.archived}>
-            <SendIcon data-icon="inline-start" />
+            {/* animateOnView, not animateOnHover: the button base carries
+                `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
+            <SendIcon data-icon="inline-start" animateOnView />
             Create assignment
           </Button>
           <Button
@@ -432,7 +438,7 @@ export function AgentDetailPage() {
           <ServerOffline onRetry={() => void reload()} />
         ) : (
           <EmptyState
-            icon={UserRoundIcon}
+            icon={AnimatedUserRoundIcon}
             title="This agent does not exist"
             description="The entry was deleted, or the address is incorrect."
             actionLabel="View agents"
@@ -461,14 +467,14 @@ export function AgentDetailPage() {
   const cards: StatCardProps[] = [
     {
       label: 'Assignments',
-      value: formatNumber(assignments.length),
+      value: <CountingNumber number={assignments.length} />,
       ...cappedBadge(assignmentsCapped),
       headline: assignments.length === 0 ? 'Nothing assigned yet' : 'Last run erteilte Assignments',
       footnote: 'The server returns the latest ' + ASSIGNMENT_LIMIT,
     },
     {
       label: 'Failed',
-      value: formatNumber(failedCount),
+      value: <CountingNumber number={failedCount} />,
       ...(cancelledCount > 0
         ? { badge: <Badge variant="outline">{cancelledCount} cancelled</Badge> }
         : {}),
@@ -483,7 +489,7 @@ export function AgentDetailPage() {
     },
     {
       label: 'Memories',
-      value: formatNumber(memories.length),
+      value: <CountingNumber number={memories.length} />,
       ...cappedBadge(memoriesCapped),
       headline: memories.length === 0 ? 'Nothing learned yet' : 'Own memory',
       footnote: 'The server returns the latest ' + MEMORY_LIMIT,
@@ -504,125 +510,139 @@ export function AgentDetailPage() {
       {dialog}
       {cancelDialog}
 
-      <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
-        <span className="text-sm text-muted-foreground">{agent.title}</span>
-        <Badge variant="outline" className="font-mono font-normal">
-          {agent.slug}
-        </Badge>
-        {agent.archived && <Badge variant="secondary">archived</Badge>}
-        {performance ? <StatusBadge kind="agentStage" status={performance.stage} /> : null}
-        {predecessor ? (
-          <NavLink
-            to={'/org/agents/' + predecessor.id}
-            className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
-          >
-            Successor of {predecessor.name}
-          </NavLink>
-        ) : null}
-        {successor ? (
-          <NavLink
-            to={'/org/agents/' + successor.id}
-            className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
-          >
-            Replaced by {successor.name}
-            <ArrowRightIcon className="size-3.5" />
-          </NavLink>
-        ) : null}
-      </div>
+      <Fade>
+        <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
+          <span className="text-sm text-muted-foreground">{agent.title}</span>
+          <Badge variant="outline" className="font-mono font-normal">
+            {agent.slug}
+          </Badge>
+          {agent.archived && <Badge variant="secondary">archived</Badge>}
+          {performance ? <StatusBadge kind="agentStage" status={performance.stage} /> : null}
+          {predecessor ? (
+            <NavLink
+              to={'/org/agents/' + predecessor.id}
+              className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
+            >
+              Successor of {predecessor.name}
+            </NavLink>
+          ) : null}
+          {successor ? (
+            <NavLink
+              to={'/org/agents/' + successor.id}
+              className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
+            >
+              Replaced by {successor.name}
+              <ArrowRightIcon className="size-3.5" animateOnHover />
+            </NavLink>
+          ) : null}
+        </div>
+      </Fade>
 
-      <div className="px-4 lg:px-6">
-        <MetaList
-          columns={2}
-          items={[
-            {
-              label: 'Team',
-              value: team?.name ?? 'No team',
-              icon: Building2Icon,
-              ...(team ? { to: '/org/teams' } : {}),
-            },
-            {
-              label: 'Manager',
-              value: manager?.name ?? 'The assistant',
-              icon: UsersIcon,
-              ...(manager ? { to: '/org/agents/' + manager.id } : {}),
-            },
-            {
-              label: 'Provider',
-              value: (
-                <ProviderCell
-                  layout="inline"
-                  {...(agent.provider ? { provider: agent.provider } : {})}
-                  {...(agent.model ? { model: agent.model } : {})}
-                />
-              ),
-              icon: CpuIcon,
-            },
-            {
-              label: 'Permission',
-              value: permission ? PERMISSION_LABEL[permission] : 'Default',
-              icon: ShieldIcon,
-            },
-          ]}
-        />
-      </div>
+      <Fade delay={50}>
+        <div className="px-4 lg:px-6">
+          <MetaList
+            columns={2}
+            items={[
+              {
+                label: 'Team',
+                value: team?.name ?? 'No team',
+                icon: Building2Icon,
+                ...(team ? { to: '/org/teams' } : {}),
+              },
+              {
+                label: 'Manager',
+                value: manager?.name ?? 'The assistant',
+                icon: UsersIcon,
+                ...(manager ? { to: '/org/agents/' + manager.id } : {}),
+              },
+              {
+                label: 'Provider',
+                value: (
+                  <ProviderCell
+                    layout="inline"
+                    {...(agent.provider ? { provider: agent.provider } : {})}
+                    {...(agent.model ? { model: agent.model } : {})}
+                  />
+                ),
+                icon: CpuIcon,
+              },
+              {
+                label: 'Permission',
+                value: permission ? PERMISSION_LABEL[permission] : 'Default',
+                icon: ShieldIcon,
+              },
+            ]}
+          />
+        </div>
+      </Fade>
 
-      <StatCards items={cards} />
+      <Fade delay={100}>
+        <StatCards items={cards} />
+      </Fade>
 
       {performance ? (
-        <div className="grid gap-4 px-4 lg:px-6 lg:grid-cols-2">
-          <PerformanceCard performance={performance} />
-          <PersonnelRecordCard actions={actions} />
-        </div>
+        <Fade delay={150}>
+          <div className="grid gap-4 px-4 lg:px-6 lg:grid-cols-2">
+            <PerformanceCard performance={performance} />
+            <PersonnelRecordCard actions={actions} />
+          </div>
+        </Fade>
       ) : null}
 
       {handover ? (
-        <div className="px-4 lg:px-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Handover from {predecessor?.name}</CardTitle>
-              <CardDescription>Condensed working knowledge, carried over on replacement.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ResultMarkdown text={handover} />
-            </CardContent>
-          </Card>
-        </div>
+        <Fade delay={150}>
+          <div className="px-4 lg:px-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Handover from {predecessor?.name}</CardTitle>
+                <CardDescription>Condensed working knowledge, carried over on replacement.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResultMarkdown text={handover} />
+              </CardContent>
+            </Card>
+          </div>
+        </Fade>
       ) : null}
 
       {pendingProposal ? (
-        <div className="px-4 lg:px-6">
-          <ReplacementProposalCard agent={agent} action={pendingProposal} onDecided={() => void reload()} />
-        </div>
+        <Fade delay={150}>
+          <div className="px-4 lg:px-6">
+            <ReplacementProposalCard agent={agent} action={pendingProposal} onDecided={() => void reload()} />
+          </div>
+        </Fade>
       ) : null}
 
       {/* Live only while this agent has a run in flight, wherever it was
           started from - the org-wide broadcast Workstream B adds is what
           makes this visible for a run this page never kicked off itself. */}
       {runningAssignment && (
-        <div className="px-4 lg:px-6">
-          <Card className="py-3">
-            <CardHeader className="flex flex-row flex-wrap items-center gap-2 border-b px-3! [&_[data-slot=card-title]]:flex-1">
-              <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-                Live now
-                <StatusBadge kind="assignment" status={runningAssignment.status} />
-              </CardTitle>
-              <span className="text-xs text-muted-foreground">
-                {shorten(runningAssignment.task, 80)}
-              </span>
-            </CardHeader>
-            <CardContent className="px-3!">
-              <ActivityTimeline
-                items={liveActivity}
-                variant="plain"
-                emptyLabel="Waiting for the first tool call…"
-                limit={8}
-              />
-            </CardContent>
-          </Card>
-        </div>
+        <Fade delay={200}>
+          <div className="px-4 lg:px-6">
+            <Card className="py-3">
+              <CardHeader className="flex flex-row flex-wrap items-center gap-2 border-b px-3! [&_[data-slot=card-title]]:flex-1">
+                <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
+                  Live now
+                  <StatusBadge kind="assignment" status={runningAssignment.status} />
+                </CardTitle>
+                <span className="text-xs text-muted-foreground">
+                  {shorten(runningAssignment.task, 80)}
+                </span>
+              </CardHeader>
+              <CardContent className="px-3!">
+                <ActivityTimeline
+                  items={liveActivity}
+                  variant="plain"
+                  emptyLabel="Waiting for the first tool call…"
+                  limit={8}
+                />
+              </CardContent>
+            </Card>
+          </div>
+        </Fade>
       )}
 
-      <div className="px-4 lg:px-6">
+      <Fade delay={250} className="px-4 lg:px-6">
         <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
           <TabsList>
             <TabsTrigger value="assignments">Assignments</TabsTrigger>
@@ -677,7 +697,7 @@ export function AgentDetailPage() {
               rowLabel={{ singular: 'Agent', plural: 'Agents' }}
               empty={
                 <EmptyState
-                  icon={UsersIcon}
+                  icon={AnimatedUsersIcon}
                   title={'No one reports to ' + agent.name}
                   description="Assign a manager in an agent’s profile to make that agent a direct report."
                   actionLabel="Hire agent"
@@ -760,7 +780,7 @@ export function AgentDetailPage() {
             </Card>
           </TabsContent>
         </Tabs>
-      </div>
+      </Fade>
 
       {/* ------------------------------ assign ------------------------------ */}
       <DetailDrawer
@@ -771,7 +791,9 @@ export function AgentDetailPage() {
         className="data-[vaul-drawer-direction=right]:sm:max-w-xl"
         footer={
           <Button onClick={assign} disabled={busy || !task.trim()}>
-            <SendIcon data-icon="inline-start" />
+            {/* Same as the header button: the svg gets no pointer events,
+                so the trigger is the drawer opening, not a hover. */}
+            <SendIcon data-icon="inline-start" animateOnView />
             {busy ? 'Running…' : 'Start'}
           </Button>
         }
@@ -845,6 +867,25 @@ export function AgentDetailPage() {
 /* ---------------------------------- parts --------------------------------- */
 
 /**
+ * The empty states' icons as the animate-ui ones: same silhouette and
+ * stroke, each draws itself once when its empty state enters the viewport.
+ * `EmptyState` types its `icon` as a `LucideIcon` and renders it without
+ * props, so the `animateOnView` trigger rides along in these shells - the
+ * same pattern `ServerOffline` established for its plug.
+ */
+const AnimatedUserRoundIcon = forwardRef<SVGSVGElement>(function AnimatedUserRoundIcon() {
+  return <UserRound size={24} animateOnView />;
+});
+
+const AnimatedUsersIcon = forwardRef<SVGSVGElement>(function AnimatedUsersIcon() {
+  return <Users size={24} animateOnView />;
+});
+
+const AnimatedClipboardListIcon = forwardRef<SVGSVGElement>(function AnimatedClipboardListIcon() {
+  return <ClipboardList size={24} animateOnView />;
+});
+
+/**
  * "Leistung": the rolling average, its trend, the escalation stage and the
  * failure rate kept apart from it - a technical failure rate has nothing to
  * do with quality, so showing it folded into the average would blame an
@@ -864,7 +905,11 @@ function PerformanceCard({ performance }: { performance: AgentDetail['performanc
       <CardContent className="flex flex-col gap-3">
         <div className="flex items-baseline gap-3">
           <span className="text-3xl font-semibold tabular-nums">
-            {performance.average !== null ? performance.average.toFixed(1) : '–'}
+            {performance.average !== null ? (
+              <CountingNumber number={performance.average} decimalPlaces={1} />
+            ) : (
+              '–'
+            )}
           </span>
           <span className="text-sm text-muted-foreground">/ 5</span>
           {TrendIcon ? (
@@ -888,7 +933,9 @@ function PerformanceCard({ performance }: { performance: AgentDetail['performanc
         ) : null}
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">Failure rate (last 20)</span>
-          <span className="tabular-nums">{Math.round(performance.failureRate * 100)}%</span>
+          <span className="tabular-nums">
+            <CountingNumber number={Math.round(performance.failureRate * 100)} />%
+          </span>
         </div>
       </CardContent>
     </Card>
@@ -918,7 +965,7 @@ function PersonnelRecordCard({ actions }: { actions: AgentAction[] }) {
       <CardContent>
         {actions.length === 0 ? (
           <EmptyState
-            icon={ClipboardListIcon}
+            icon={AnimatedClipboardListIcon}
             title="Nothing on record"
             description="No development note, reconfig or proposal has been logged yet."
             variant="plain"

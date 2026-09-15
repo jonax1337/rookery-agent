@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react';
 import { NavLink, useLocation } from 'react-router';
-import { ChevronRightIcon, type LucideIcon } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { ChevronRightIcon } from '@/components/animate-ui/icons/chevron-right';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   SidebarGroup,
@@ -58,62 +60,66 @@ export function NavMain({ label, items }: { label: string; items: NavMainItem[] 
   const { pathname } = useLocation();
   const { setOpenMobile } = useSidebar();
   return (
-    <SidebarGroup className="py-1">
-      <SidebarGroupLabel className="h-6">{label}</SidebarGroupLabel>
-      <SidebarMenu>
-        {items.map((item) => (
-          <Collapsible
-            key={`${item.title}:${item.isActive ? pathname : ''}`}
-            asChild
-            defaultOpen={item.isActive}
-          >
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                asChild
-                tooltip={item.badgeLabel ? item.title + ' — ' + item.badgeLabel : item.title}
-                isActive={item.isActive}
-              >
-                <NavLink to={item.url} onClick={() => setOpenMobile(false)}>
-                  <item.icon />
-                  <span>{item.title}</span>
-                </NavLink>
-              </SidebarMenuButton>
-              {item.badge !== undefined && item.badge !== null ? (
-                <SidebarMenuBadge>
-                  {item.badge}
-                  {item.badgeLabel ? <span className="sr-only"> {item.badgeLabel}</span> : null}
-                </SidebarMenuBadge>
-              ) : null}
-              {item.items?.length ? (
-                <>
-                  <CollapsibleTrigger asChild>
-                    <SidebarMenuAction className="data-[state=open]:rotate-90">
-                      <ChevronRightIcon />
-                      {/* The block's bare "Toggle" would read as several
-                          identical buttons in a row; the section name is right
-                          here in the same iteration. */}
-                      <span className="sr-only">{item.title} expand or collapse</span>
-                    </SidebarMenuAction>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <SidebarMenuSub>
-                      {item.items.map((subItem) => (
-                        <SidebarMenuSubItem key={subItem.title}>
-                          <SidebarMenuSubButton asChild isActive={subItem.isActive}>
-                            <NavLink to={subItem.url} onClick={() => setOpenMobile(false)}>
-                              <span>{subItem.title}</span>
-                            </NavLink>
-                          </SidebarMenuSubButton>
-                        </SidebarMenuSubItem>
-                      ))}
-                    </SidebarMenuSub>
-                  </CollapsibleContent>
-                </>
-              ) : null}
-            </SidebarMenuItem>
-          </Collapsible>
-        ))}
-      </SidebarMenu>
-    </SidebarGroup>
+    // One labelled navigation block counts as one section: it fades in as a
+    // whole on mount, never row by row.
+    <Fade>
+      <SidebarGroup className="py-1">
+        <SidebarGroupLabel className="h-6">{label}</SidebarGroupLabel>
+        <SidebarMenu>
+          {items.map((item) => (
+            <Collapsible
+              key={`${item.title}:${item.isActive ? pathname : ''}`}
+              asChild
+              defaultOpen={item.isActive}
+            >
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  tooltip={item.badgeLabel ? item.title + ' — ' + item.badgeLabel : item.title}
+                  isActive={item.isActive}
+                >
+                  <NavLink to={item.url} onClick={() => setOpenMobile(false)}>
+                    <item.icon />
+                    <span>{item.title}</span>
+                  </NavLink>
+                </SidebarMenuButton>
+                {item.badge !== undefined && item.badge !== null ? (
+                  <SidebarMenuBadge>
+                    {item.badge}
+                    {item.badgeLabel ? <span className="sr-only"> {item.badgeLabel}</span> : null}
+                  </SidebarMenuBadge>
+                ) : null}
+                {item.items?.length ? (
+                  <>
+                    <CollapsibleTrigger asChild>
+                      <SidebarMenuAction className="data-[state=open]:rotate-90">
+                        <ChevronRightIcon animateOnHover />
+                        {/* The block's bare "Toggle" would read as several
+                            identical buttons in a row; the section name is right
+                            here in the same iteration. */}
+                        <span className="sr-only">{item.title} expand or collapse</span>
+                      </SidebarMenuAction>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <SidebarMenuSub>
+                        {item.items.map((subItem) => (
+                          <SidebarMenuSubItem key={subItem.title}>
+                            <SidebarMenuSubButton asChild isActive={subItem.isActive}>
+                              <NavLink to={subItem.url} onClick={() => setOpenMobile(false)}>
+                                <span>{subItem.title}</span>
+                              </NavLink>
+                            </SidebarMenuSubButton>
+                          </SidebarMenuSubItem>
+                        ))}
+                      </SidebarMenuSub>
+                    </CollapsibleContent>
+                  </>
+                ) : null}
+              </SidebarMenuItem>
+            </Collapsible>
+          ))}
+        </SidebarMenu>
+      </SidebarGroup>
+    </Fade>
   );
 }

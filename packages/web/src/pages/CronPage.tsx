@@ -7,7 +7,6 @@ import {
   HistoryIcon,
   PencilIcon,
   PlayIcon,
-  PlusIcon,
   SquareArrowOutUpRightIcon,
   Trash2Icon,
 } from 'lucide-react';
@@ -20,6 +19,13 @@ import { CRON_JOB_KIND_LABEL, formatDateTime, formatDuration } from '@/lib/forma
 import { daysAgo, formatNumber } from '@/lib/stats';
 import type { CronJob, CronRun } from '@/lib/types';
 import { useCronState, useOrgState } from '@/providers/rookery-provider';
+import { PlusIcon } from '@/components/animate-ui/icons/plus';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
+import {
+  RotatingText,
+  RotatingTextContainer,
+} from '@/components/animate-ui/primitives/texts/rotating';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { PageBody } from '@/components/blocks/page-body';
 import { SectionHeading } from '@/components/blocks/section-heading';
@@ -75,7 +81,7 @@ export function CronPage() {
     actions: (
       <Button size="sm" asChild>
         <NavLink to="/cron/new">
-          <PlusIcon data-icon="inline-start" />
+          <PlusIcon data-icon="inline-start" animateOnHover />
           Create schedule
         </NavLink>
       </Button>
@@ -190,6 +196,15 @@ export function CronPage() {
   // Fifty is the server's ceiling for the shared run list; at exactly fifty
   // there may be more that nobody can reach.
   const runsCapped = cron.runs.length >= 50;
+
+  // The headline numbers are this page's living values: they roll in from
+  // zero once the hook has data and keep rolling whenever the socket moves
+  // them. `thousandSeparator` keeps `formatNumber`'s en-GB comma in the
+  // resting pose - `CountingNumber` has no separator support and would
+  // quietly drop it above a thousand.
+  const liveNumber = (value: number) => (
+    <SlidingNumber number={value} fromNumber={0} thousandSeparator="," />
+  );
 
   /* -------------------------------- Spalten ------------------------------- */
 
@@ -400,102 +415,124 @@ export function CronPage() {
     [cron, runColumn],
   );
 
-  const offline = cron.error ? <ServerOffline onRetry={() => void cron.refresh()} /> : undefined;
+  const offline = cron.error ? (
+    <Fade>
+      <ServerOffline onRetry={() => void cron.refresh()} />
+    </Fade>
+  ) : undefined;
 
   return (
     <PageBody>
       {dialog}
 
-      <StatCards
-        items={[
-          {
-            label: 'Active',
-            value: formatNumber(active),
-            headline: 'Run on schedule',
-            footnote: 'The system memory sleep schedule is not included',
-          },
-          {
-            label: 'Paused',
-            value: formatNumber(paused),
-            headline: 'Disabled but retained',
-            footnote: 'A paused schedule will not run again until it is enabled',
-          },
-          {
-            label: 'Running now',
-            value: formatNumber(cron.running.size),
-            headline: cron.running.size > 0 ? 'Work in progress' : 'No work in progress',
-            footnote: 'Runs whose assignments have not returned yet',
-          },
-          {
-            label: 'Failed (24 h)',
-            value: formatNumber(failed),
-            ...cappedBadge(runsCapped),
-            headline: failed > 0 ? 'Needs attention' : 'No incidents',
-            footnote: 'Based on the latest 50 runs across all schedules',
-          },
-        ]}
-      />
+      <Fade>
+        <StatCards
+          items={[
+            {
+              label: 'Active',
+              value: liveNumber(active),
+              headline: 'Run on schedule',
+              footnote: 'The system memory sleep schedule is not included',
+            },
+            {
+              label: 'Paused',
+              value: liveNumber(paused),
+              headline: 'Disabled but retained',
+              footnote: 'A paused schedule will not run again until it is enabled',
+            },
+            {
+              label: 'Running now',
+              value: liveNumber(cron.running.size),
+              headline: (
+                <RotatingHeadline
+                  text={cron.running.size > 0 ? 'Work in progress' : 'No work in progress'}
+                />
+              ),
+              footnote: 'Runs whose assignments have not returned yet',
+            },
+            {
+              label: 'Failed (24 h)',
+              value: liveNumber(failed),
+              ...cappedBadge(runsCapped),
+              headline: <RotatingHeadline text={failed > 0 ? 'Needs attention' : 'No incidents'} />,
+              footnote: 'Based on the latest 50 runs across all schedules',
+            },
+          ]}
+        />
+      </Fade>
 
-      <DataTable
-        data={jobs}
-        columns={jobColumns}
-        getRowId={(job) => job.id}
-        idPrefix="zeitplaene"
-        tabLabel="Schedules"
-        tabs={[
-          { value: 'alle', label: 'All', count: jobs.length },
-          { value: 'aktiv', label: 'Active', count: jobs.filter((job) => job.enabled).length },
-          { value: 'pausiert', label: 'Paused', count: jobs.filter((job) => !job.enabled).length },
-          { value: 'einmalig', label: 'One-time', count: jobs.filter((job) => job.once).length },
-        ]}
-        searchable
-        searchPlaceholder="Search schedules"
-        columnLabels={JOB_COLUMN_LABELS}
-        rowLabel={{ singular: 'Schedule', plural: 'schedules' }}
-        rowClickIgnoreColumns={['enabled', 'actions']}
-        onRowClick={(job) => void navigate('/cron/' + job.id)}
-        loading={cron.loading}
-        error={offline}
-        empty={
-          <EmptyState
-            icon={CalendarClockIcon}
-            title="No schedules yet"
-            description="A schedule handles something automatically, such as a morning briefing at 8:00 AM or a reminder for tomorrow afternoon. You can also create one in chat: “Every morning at 8…”"
-            actionLabel="Create schedule"
-            actionTo="/cron/new"
-            variant="plain"
-            size="sm"
-          />
-        }
-        filteredEmpty={<NoResults />}
-      />
-
-      <SectionHeading title="Recent runs" hint="The latest 50 runs across all schedules.">
+      <Fade delay={50}>
         <DataTable
-          data={cron.runs}
-          columns={runColumns}
-          getRowId={(run) => run.id}
-          idPrefix="laeufe"
-          initialSorting={[{ id: 'startedAt', desc: true }]}
-          pageSize={10}
-          capped={runsCapped}
-          rowLabel={{ singular: 'Run', plural: 'runs' }}
-          columnLabels={RUN_COLUMN_LABELS}
+          data={jobs}
+          columns={jobColumns}
+          getRowId={(job) => job.id}
+          idPrefix="zeitplaene"
+          tabLabel="Schedules"
+          tabs={[
+            { value: 'alle', label: 'All', count: jobs.length },
+            { value: 'aktiv', label: 'Active', count: jobs.filter((job) => job.enabled).length },
+            { value: 'pausiert', label: 'Paused', count: jobs.filter((job) => !job.enabled).length },
+            { value: 'einmalig', label: 'One-time', count: jobs.filter((job) => job.once).length },
+          ]}
+          searchable
+          searchPlaceholder="Search schedules"
+          columnLabels={JOB_COLUMN_LABELS}
+          rowLabel={{ singular: 'Schedule', plural: 'schedules' }}
+          rowClickIgnoreColumns={['enabled', 'actions']}
+          onRowClick={(job) => void navigate('/cron/' + job.id)}
           loading={cron.loading}
           error={offline}
           empty={
-            <EmptyState
-              icon={HistoryIcon}
-              title="No runs yet"
-              description="When a schedule runs, its run and report appear here."
-              actionLabel="Create schedule"
-              actionTo="/cron/new"
-              variant="plain"
-              size="sm"
-            />
+            <Fade>
+              <EmptyState
+                icon={CalendarClockIcon}
+                title="No schedules yet"
+                description="A schedule handles something automatically, such as a morning briefing at 8:00 AM or a reminder for tomorrow afternoon. You can also create one in chat: “Every morning at 8…”"
+                actionLabel="Create schedule"
+                actionTo="/cron/new"
+                variant="plain"
+                size="sm"
+              />
+            </Fade>
+          }
+          filteredEmpty={
+            <Fade>
+              <NoResults />
+            </Fade>
           }
         />
-      </SectionHeading>
+      </Fade>
+
+      <Fade delay={100}>
+        <SectionHeading title="Recent runs" hint="The latest 50 runs across all schedules.">
+          <DataTable
+            data={cron.runs}
+            columns={runColumns}
+            getRowId={(run) => run.id}
+            idPrefix="laeufe"
+            initialSorting={[{ id: 'startedAt', desc: true }]}
+            pageSize={10}
+            capped={runsCapped}
+            rowLabel={{ singular: 'Run', plural: 'runs' }}
+            columnLabels={RUN_COLUMN_LABELS}
+            loading={cron.loading}
+            error={offline}
+            empty={
+              <Fade>
+                <EmptyState
+                  icon={HistoryIcon}
+                  title="No runs yet"
+                  description="When a schedule runs, its run and report appear here."
+                  actionLabel="Create schedule"
+                  actionTo="/cron/new"
+                  variant="plain"
+                  size="sm"
+                />
+              </Fade>
+            }
+          />
+        </SectionHeading>
+      </Fade>
 
       {/*
         One drawer for the whole table instead of one per row: fifty mounted
@@ -568,6 +605,21 @@ function ownerLabel(job: CronJob, agentName: string | undefined): string {
 /** Sortable text behind the status badge; empty for a job that never ran. */
 function statusLabel(job: CronJob): string {
   return job.lastStatus ?? '';
+}
+
+/**
+ * The stat-card sentence that flips with live data: the number rolls its
+ * digits (`SlidingNumber`), the headline rolls its words when the socket
+ * turns the state around. `paddingBlock: 0` holds back the container's
+ * built-in breathing room, which would otherwise grow the card footer in
+ * the resting pose next to the cards with a plain-string headline.
+ */
+function RotatingHeadline({ text }: { text: string }) {
+  return (
+    <RotatingTextContainer text={text} style={{ paddingBlock: 0 }}>
+      <RotatingText />
+    </RotatingTextContainer>
+  );
 }
 
 /**

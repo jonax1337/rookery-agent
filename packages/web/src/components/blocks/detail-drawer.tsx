@@ -1,5 +1,7 @@
 import { useRef, type ComponentProps, type ReactNode } from 'react';
 
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { Button } from '@/components/ui/button';
 import {
   Drawer,
@@ -75,17 +77,28 @@ export function DetailDrawer({
       {trigger ? <DrawerTrigger asChild>{trigger}</DrawerTrigger> : null}
       <DrawerContent className={className}>
         <DrawerHeader className="gap-1">
-          <DrawerTitle>{title}</DrawerTitle>
+          <Blur>
+            <DrawerTitle>{title}</DrawerTitle>
+          </Blur>
           {/*
             Radix warns - rightly - about a dialog without a description. When
             the page has nothing to say here, the line stays for screen
-            readers instead of being invented into the visible layout.
+            readers instead of being invented into the visible layout. The
+            sr-only sits on the Blur wrapper so the hidden line keeps taking
+            no space in the header gap.
           */}
-          <DrawerDescription className={cn(!description && 'sr-only')}>
-            {description ?? 'Details for the selected item'}
-          </DrawerDescription>
+          <Blur delay={50} className={cn(!description && 'sr-only')}>
+            <DrawerDescription>
+              {description ?? 'Details for the selected item'}
+            </DrawerDescription>
+          </Blur>
         </DrawerHeader>
-        <div className="flex flex-col gap-4 overflow-y-auto px-4 text-sm">{children}</div>
+        <Fade
+          delay={100}
+          className="flex flex-col gap-4 overflow-y-auto px-4 text-sm"
+        >
+          {children}
+        </Fade>
         <DrawerFooter>
           {footer}
           <DrawerClose asChild>

@@ -3,7 +3,6 @@ import { NavLink, useNavigate } from 'react-router';
 import {
   BanIcon,
   ListTodoIcon,
-  SendIcon,
   SquareArrowOutUpRightIcon,
   UserRoundIcon,
 } from 'lucide-react';
@@ -33,6 +32,9 @@ import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-p
 import { useStatsTotals } from '@/hooks/useStatsTotals';
 import { usePageMeta } from '@/components/shell/page-meta';
 
+import { SendIcon as AnimatedSendIcon } from '@/components/animate-ui/icons/send';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { PageBody } from '@/components/blocks/page-body';
 import { cappedBadge, StatCards, type StatCardProps } from '@/components/blocks/stat-cards';
 import { TrendChartCard, type TrendSeries } from '@/components/blocks/trend-chart-card';
@@ -434,6 +436,16 @@ const CHART_KEYS: ChartKey[] = ['done', 'failed', 'cancelled'];
 
 /* ------------------------------- the page -------------------------------- */
 
+/**
+ * The empty states swap their lucide send for the animate-ui one: same
+ * silhouette and stroke, the paper plane flies once when the state enters
+ * the viewport. `EmptyState` types its `icon` as a `LucideIcon` and renders
+ * it without props, so the `animateOnView` trigger rides along in this shell.
+ */
+const EmptySendIcon = React.forwardRef<SVGSVGElement>(function EmptySendIcon() {
+  return <AnimatedSendIcon size={24} animateOnView />;
+});
+
 export function AssignmentsPage() {
   const navigate = useNavigate();
   const { socket } = useConnection();
@@ -618,10 +630,14 @@ export function AssignmentsPage() {
 
   const running = org.running.length;
 
+  // The number cards roll their digits rather than count: the counts keep
+  // changing with the socket, and only SlidingNumber holds formatNumber's
+  // en-GB grouping ("1,234") once it settles - CountingNumber would drop the
+  // separator and change the resting pose.
   const cards: StatCardProps[] = [
     {
       label: 'Running now',
-      value: formatNumber(running),
+      value: <SlidingNumber number={running} thousandSeparator="," />,
       ...(running > 0 ? { badge: <RunningBadge count={running} /> } : {}),
       headline: running > 0 ? 'The organization is working' : 'No work in progress',
       // The one card that is not an estimate at all: the socket knows every
@@ -630,7 +646,7 @@ export function AssignmentsPage() {
     },
     {
       label: 'Completed',
-      value: formatNumber(counts.done),
+      value: <SlidingNumber number={counts.done} thousandSeparator="," />,
       headline:
         base.length > 0
           ? formatPercent(ratePercent(counts.done, base.length)) + ' of loaded assignments'
@@ -639,7 +655,7 @@ export function AssignmentsPage() {
     },
     {
       label: 'Failed',
-      value: formatNumber(counts.failed),
+      value: <SlidingNumber number={counts.failed} thousandSeparator="," />,
       ...(counts.cancelled > 0
         ? {
             badge: (
@@ -697,7 +713,9 @@ export function AssignmentsPage() {
     breadcrumb: [{ label: 'Assignments' }],
     actions: (
       <Button size="sm" onClick={() => setAssignOpen(true)}>
-        <SendIcon data-icon="inline-start" />
+        {/* animateOnView, not animateOnHover: the button base carries
+            `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
+        <AnimatedSendIcon data-icon="inline-start" animateOnView />
         Assign agent
       </Button>
     ),
@@ -734,98 +752,110 @@ export function AssignmentsPage() {
       {dialog}
 
       {baseState === 'error' ? (
-        <div className="px-4 lg:px-6">
-          <ServerOffline onRetry={retry} />
-        </div>
+        <Fade>
+          <div className="px-4 lg:px-6">
+            <ServerOffline onRetry={retry} />
+          </div>
+        </Fade>
       ) : (
         <>
-          <StatCards items={cards} />
+          <Fade>
+            <StatCards items={cards} />
+          </Fade>
 
-          <div className="px-4 lg:px-6">
-            <TrendChartCard
-              title="Assignments created per day"
-              description={
-                'Colored by their current outcome; running assignments are not included yet. ' +
-                basis +
-                '.'
-              }
-              descriptionShort="Created per day"
-              data={chartData}
-              series={CHART_SERIES}
-              {...cappedBadge(baseCapped)}
-              empty={
-                <EmptyState
-                  icon={SendIcon}
-                  title="Nothing in this period"
-                  description="No assignment created during the selected days has been completed yet."
-                  variant="plain"
-                  size="sm"
-                />
-              }
-            />
-          </div>
+          <Fade delay={50}>
+            <div className="px-4 lg:px-6">
+              <TrendChartCard
+                title="Assignments created per day"
+                description={
+                  'Colored by their current outcome; running assignments are not included yet. ' +
+                  basis +
+                  '.'
+                }
+                descriptionShort="Created per day"
+                data={chartData}
+                series={CHART_SERIES}
+                {...cappedBadge(baseCapped)}
+                empty={
+                  <Fade>
+                    <EmptyState
+                      icon={EmptySendIcon}
+                      title="Nothing in this period"
+                      description="No assignment created during the selected days has been completed yet."
+                      variant="plain"
+                      size="sm"
+                    />
+                  </Fade>
+                }
+              />
+            </div>
+          </Fade>
         </>
       )}
 
-      <DataTable
-        data={rows}
-        columns={columns}
-        getRowId={(row) => row.id}
-        tabs={tabs}
-        tab={tab}
-        onTabChange={setTab}
-        tabLabel="Status"
-        searchable
-        searchPlaceholder="Assignments durchsuchen"
-        searchText={(row) => row.task}
-        filters={
-          <AgentFilter options={agentOptions} value={agentId} onChange={setAgentId} />
-        }
-        columnLabels={ASSIGNMENT_COLUMN_LABELS}
-        initialSorting={ASSIGNMENT_SORTING}
-        initialColumnVisibility={ASSIGNMENT_HIDDEN_COLUMNS}
-        pageSize={20}
-        capped={list.length >= LIMIT}
-        rowLabel={ASSIGNMENT_ROW_LABEL}
-        loading={listState === 'loading' && rows.length === 0}
-        idPrefix="auftraege"
-        // The ganze Zeile oeffnet die Schublade, wie auf /chats und /tasks -
-        // ausser dort, wo die Zelle selbst etwas anderes tut.
-        onRowClick={setDetailRow}
-        rowClickIgnoreColumns={['select', 'task', 'actions']}
-        bulkActions={(selected, clear) => {
-          const open = selected.filter(
-            (row) => row.status === 'pending' || row.status === 'running',
-          );
-          return (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={open.length === 0}
-              onClick={() => {
-                void cancelAssignments(open.map((row) => row.id)).then((stopped) => {
-                  if (stopped !== null) clear();
-                });
-              }}
-            >
-              <BanIcon data-icon="inline-start" />
-              {formatNumber(open.length)} cancel
-            </Button>
-          );
-        }}
-        error={listState === 'error' ? <ServerOffline onRetry={retry} size="sm" /> : undefined}
-        empty={
-          <EmptyState
-            icon={SendIcon}
-            title="No assignments yet"
-            description="Each agent run appears here with its result, duration, and reported usage."
-            actionLabel="Assign agent"
-            onAction={() => setAssignOpen(true)}
-            variant="plain"
-            size="sm"
-          />
-        }
-      />
+      <Fade delay={100}>
+        <DataTable
+          data={rows}
+          columns={columns}
+          getRowId={(row) => row.id}
+          tabs={tabs}
+          tab={tab}
+          onTabChange={setTab}
+          tabLabel="Status"
+          searchable
+          searchPlaceholder="Assignments durchsuchen"
+          searchText={(row) => row.task}
+          filters={
+            <AgentFilter options={agentOptions} value={agentId} onChange={setAgentId} />
+          }
+          columnLabels={ASSIGNMENT_COLUMN_LABELS}
+          initialSorting={ASSIGNMENT_SORTING}
+          initialColumnVisibility={ASSIGNMENT_HIDDEN_COLUMNS}
+          pageSize={20}
+          capped={list.length >= LIMIT}
+          rowLabel={ASSIGNMENT_ROW_LABEL}
+          loading={listState === 'loading' && rows.length === 0}
+          idPrefix="auftraege"
+          // The ganze Zeile oeffnet die Schublade, wie auf /chats und /tasks -
+          // ausser dort, wo die Zelle selbst etwas anderes tut.
+          onRowClick={setDetailRow}
+          rowClickIgnoreColumns={['select', 'task', 'actions']}
+          bulkActions={(selected, clear) => {
+            const open = selected.filter(
+              (row) => row.status === 'pending' || row.status === 'running',
+            );
+            return (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={open.length === 0}
+                onClick={() => {
+                  void cancelAssignments(open.map((row) => row.id)).then((stopped) => {
+                    if (stopped !== null) clear();
+                  });
+                }}
+              >
+                <BanIcon data-icon="inline-start" />
+                {formatNumber(open.length)} cancel
+              </Button>
+            );
+          }}
+          error={listState === 'error' ? <ServerOffline onRetry={retry} size="sm" /> : undefined}
+          empty={
+            <Fade>
+              <EmptyState
+                icon={EmptySendIcon}
+                title="No assignments yet"
+                description="Each agent run appears here with its result, duration, and reported usage."
+                actionLabel="Assign agent"
+                onAction={() => setAssignOpen(true)}
+                variant="plain"
+                size="sm"
+              />
+            </Fade>
+          }
+        />
+      </Fade>
 
       <AssignDrawer
         open={assignOpen}
@@ -1093,7 +1123,9 @@ function AssignDrawer({
       closeLabel="Cancel"
       footer={
         <Button onClick={submit} disabled={busy}>
-          {busy ? <Spinner aria-label="Starting" /> : <SendIcon data-icon="inline-start" />}
+          {busy ? <Spinner aria-label="Starting" /> : (
+            <AnimatedSendIcon data-icon="inline-start" animateOnView />
+          )}
           Assign
         </Button>
       }

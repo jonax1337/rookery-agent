@@ -14,6 +14,7 @@ import {
 } from '@/lib/format';
 import type { Task, TaskPriority } from '@/lib/types';
 import { useOrgState, useTasksState } from '@/providers/rookery-provider';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { PageBody } from '@/components/blocks/page-body';
 import { FormPage } from '@/components/blocks/form-page';
 import { usePageMeta } from '@/components/shell/page-meta';
@@ -183,13 +184,15 @@ export function TaskFormPage() {
   if (editing && !task && !tasks.loading) {
     return (
       <PageBody width="2xl">
-        <EmptyState
-          icon={ListTodoIcon}
-          title="This task no longer exists"
-          description="It was deleted or never existed."
-          actionLabel="View tasks"
-          actionTo="/tasks"
-        />
+        <Fade>
+          <EmptyState
+            icon={ListTodoIcon}
+            title="This task no longer exists"
+            description="It was deleted or never existed."
+            actionLabel="View tasks"
+            actionTo="/tasks"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -199,7 +202,9 @@ export function TaskFormPage() {
   if (editing && !task) {
     return (
       <PageBody width="2xl">
-        <FormFieldsSkeleton fields={4} />
+        <Fade>
+          <FormFieldsSkeleton fields={4} />
+        </Fade>
       </PageBody>
     );
   }
@@ -213,103 +218,107 @@ export function TaskFormPage() {
         error={failure}
         description="Make the description self-contained: it is the brief the agent receives."
       >
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="task-title">Title</FieldLabel>
-            <Input
-              id="task-title"
-              value={draft.title}
-              aria-invalid={Boolean(errors.title)}
-              onChange={(event) => set({ title: event.target.value })}
-            />
-            <FieldError>{errors.title}</FieldError>
-          </Field>
+        <Fade>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="task-title">Title</FieldLabel>
+              <Input
+                id="task-title"
+                value={draft.title}
+                aria-invalid={Boolean(errors.title)}
+                onChange={(event) => set({ title: event.target.value })}
+              />
+              <FieldError>{errors.title}</FieldError>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="task-description">Description</FieldLabel>
-            <Textarea
-              id="task-description"
-              rows={8}
-              placeholder="Goal, constraints, and how to know when it is complete."
-              value={draft.description}
-              aria-invalid={Boolean(errors.description)}
-              onChange={(event) => set({ description: event.target.value })}
-            />
-            <FieldDescription>The planner reads this text.</FieldDescription>
-            <FieldError>{errors.description}</FieldError>
-          </Field>
-        </FieldSet>
+            <Field>
+              <FieldLabel htmlFor="task-description">Description</FieldLabel>
+              <Textarea
+                id="task-description"
+                rows={8}
+                placeholder="Goal, constraints, and how to know when it is complete."
+                value={draft.description}
+                aria-invalid={Boolean(errors.description)}
+                onChange={(event) => set({ description: event.target.value })}
+              />
+              <FieldDescription>The planner reads this text.</FieldDescription>
+              <FieldError>{errors.description}</FieldError>
+            </Field>
+          </FieldSet>
+        </Fade>
 
         <FieldSeparator />
 
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="task-priority-high">Priority</FieldLabel>
-            <ChoiceField
-              id="task-priority"
-              options={PRIORITY_OPTIONS}
-              value={draft.priority}
-              onChange={(priority) => set({ priority })}
-            />
-          </Field>
-
-          <Field>
-            <FieldLabel htmlFor="task-project">Project</FieldLabel>
-            <EntityCombobox
-              id="task-project"
-              options={projectOptions}
-              value={draft.projectId}
-              onChange={(projectId) => set({ projectId })}
-              placeholder="No project"
-              emptyLabel="No project found"
-            />
-            <FieldDescription>
-              The project determines which directory the agent works in.
-            </FieldDescription>
-          </Field>
-
-          <Field>
-            <FieldLabel htmlFor="task-assignee">Assignee</FieldLabel>
-            <EntityCombobox
-              id="task-assignee"
-              options={agentOptions}
-              value={draft.assigneeId}
-              onChange={(assigneeId) => set({ assigneeId })}
-              placeholder="Unassigned"
-              emptyLabel="No agent found"
-            />
-            <FieldDescription>
-              Leaving this unassigned is normal: “Plan” decides who takes it.
-            </FieldDescription>
-          </Field>
-
-          {editing && task ? (
+        <Fade delay={50}>
+          <FieldSet>
             <Field>
-              <FieldLabel htmlFor="task-status">Status</FieldLabel>
-              <NativeSelect
-                id="task-status"
-                className="w-full"
-                value={draft.status ?? ''}
-                disabled={draft.status === null}
-                onChange={(event) => set({ status: event.target.value as SettableTaskStatus })}
-              >
-                {draft.status === null ? (
-                  <NativeSelectOption value="">{TASK_STATUS_LABEL[task.status]}</NativeSelectOption>
-                ) : null}
-                {SETTABLE_TASK_STATUS.map((status) => (
-                  <NativeSelectOption key={status} value={status}>
-                    {TASK_STATUS_LABEL[status]}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
+              <FieldLabel htmlFor="task-priority-high">Priority</FieldLabel>
+              <ChoiceField
+                id="task-priority"
+                options={PRIORITY_OPTIONS}
+                value={draft.priority}
+                onChange={(priority) => set({ priority })}
+              />
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="task-project">Project</FieldLabel>
+              <EntityCombobox
+                id="task-project"
+                options={projectOptions}
+                value={draft.projectId}
+                onChange={(projectId) => set({ projectId })}
+                placeholder="No project"
+                emptyLabel="No project found"
+              />
               <FieldDescription>
-                {draft.status === null
-                  ? 'The run sets this status automatically; only Open, Done, and Cancelled can be selected manually.'
-                  : 'Planned, Running, and Failed are set by the planner or the run itself.'}
+                The project determines which directory the agent works in.
               </FieldDescription>
             </Field>
-          ) : null}
-        </FieldSet>
+
+            <Field>
+              <FieldLabel htmlFor="task-assignee">Assignee</FieldLabel>
+              <EntityCombobox
+                id="task-assignee"
+                options={agentOptions}
+                value={draft.assigneeId}
+                onChange={(assigneeId) => set({ assigneeId })}
+                placeholder="Unassigned"
+                emptyLabel="No agent found"
+              />
+              <FieldDescription>
+                Leaving this unassigned is normal: “Plan” decides who takes it.
+              </FieldDescription>
+            </Field>
+
+            {editing && task ? (
+              <Field>
+                <FieldLabel htmlFor="task-status">Status</FieldLabel>
+                <NativeSelect
+                  id="task-status"
+                  className="w-full"
+                  value={draft.status ?? ''}
+                  disabled={draft.status === null}
+                  onChange={(event) => set({ status: event.target.value as SettableTaskStatus })}
+                >
+                  {draft.status === null ? (
+                    <NativeSelectOption value="">{TASK_STATUS_LABEL[task.status]}</NativeSelectOption>
+                  ) : null}
+                  {SETTABLE_TASK_STATUS.map((status) => (
+                    <NativeSelectOption key={status} value={status}>
+                      {TASK_STATUS_LABEL[status]}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+                <FieldDescription>
+                  {draft.status === null
+                    ? 'The run sets this status automatically; only Open, Done, and Cancelled can be selected manually.'
+                    : 'Planned, Running, and Failed are set by the planner or the run itself.'}
+                </FieldDescription>
+              </Field>
+            ) : null}
+          </FieldSet>
+        </Fade>
       </FormPage>
     </PageBody>
   );

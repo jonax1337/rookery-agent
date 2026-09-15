@@ -7,6 +7,7 @@ import { reportFailure } from '@/lib/errors';
 import { formatDateTime } from '@/lib/format';
 import type { Mail, MailRecipient, RequesterKind } from '@/lib/types';
 import { useConfig, useConnection, useMailState, useOrgState } from '@/providers/rookery-provider';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { ServerOffline } from '@/components/common/empty-state';
 import type { EntityOption } from '@/components/forms/entity-combobox';
@@ -531,19 +532,23 @@ export function InboxPage() {
 
   if (mails === null) {
     return (
-      <div className="flex flex-col gap-3 p-4 lg:p-6">
-        <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
-      </div>
+      <Fade asChild>
+        <div className="flex flex-col gap-3 p-4 lg:p-6">
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-16 w-full" />
+        </div>
+      </Fade>
     );
   }
 
   if (offline) {
     return (
-      <div className="p-4 lg:p-6">
-        <ServerOffline onRetry={() => void load()} />
-      </div>
+      <Fade asChild>
+        <div className="p-4 lg:p-6">
+          <ServerOffline onRetry={() => void load()} />
+        </div>
+      </Fade>
     );
   }
 
@@ -551,19 +556,23 @@ export function InboxPage() {
 
   return (
     <div className="flex min-h-0 flex-1">
-      <MailNav
-        agents={org.agents.filter((agent) => !agent.archived)}
-        assistantName={assistantName}
-        mailboxId={mailboxId}
-        mailboxLabel={mailboxLabel(mailboxId)}
-        mailboxRole={mailboxRole(mailboxId)}
-        onSelect={selectMailbox}
-        box={box}
-        onBoxChange={setBox}
-        unread={inboxUnread}
-        collapsed={navCollapsed}
-        onCollapsedChange={setNavCollapsed}
-      />
+      {/* `flex`: through this wrapper the rail keeps stretching to full height,
+          the way it did as a direct flex child of this row. */}
+      <Fade className="flex shrink-0">
+        <MailNav
+          agents={org.agents.filter((agent) => !agent.archived)}
+          assistantName={assistantName}
+          mailboxId={mailboxId}
+          mailboxLabel={mailboxLabel(mailboxId)}
+          mailboxRole={mailboxRole(mailboxId)}
+          onSelect={selectMailbox}
+          box={box}
+          onBoxChange={setBox}
+          unread={inboxUnread}
+          collapsed={navCollapsed}
+          onCollapsedChange={setNavCollapsed}
+        />
+      </Fade>
 
       {/* `min-w-0`: without it this flex child keeps its `min-width: auto` and
           a long unwrapped mail line stretches the panel group past the window,
@@ -571,41 +580,49 @@ export function InboxPage() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
           <ResizablePanel defaultSize="38" minSize="24">
-            <MailList
-              mails={filtered}
-              selectedId={selectedId}
-              onSelect={select}
-              title={mailboxLabel(mailboxId)}
-              box={box}
-              filter={filter}
-              onFilterChange={setFilter}
-              interactive={interactive}
-              onCompose={() => setComposeOpen(true)}
-              search={search}
-              onSearch={setSearch}
-              primaryLabel={primaryLabel}
-              primaryRole={primaryRole}
-              recipientChips={recipientChips}
-              isUnread={isUnread}
-            />
+            {/* The list enters as one section, never row by row - the rows are
+                too dense for that. The sizing classes hand MailList's own root
+                the full panel it sat in directly until now. */}
+            <Fade className="h-full min-h-0 w-full min-w-0" delay={50}>
+              <MailList
+                mails={filtered}
+                selectedId={selectedId}
+                onSelect={select}
+                title={mailboxLabel(mailboxId)}
+                box={box}
+                filter={filter}
+                onFilterChange={setFilter}
+                interactive={interactive}
+                onCompose={() => setComposeOpen(true)}
+                search={search}
+                onSearch={setSearch}
+                primaryLabel={primaryLabel}
+                primaryRole={primaryRole}
+                recipientChips={recipientChips}
+                isUnread={isUnread}
+              />
+            </Fade>
           </ResizablePanel>
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize="62" minSize="30">
-            <MailDisplay
-              mail={selected}
-              senderLabel={senderLabel}
-              senderRole={senderRole}
-              toLine={toLine}
-              ccLine={ccLine}
-              interactive={interactive}
-              replyTargetName={selected ? replyTargetLabel(selected) : null}
-              onReply={reply}
-              onReplyAll={replyAll}
-              onForward={forward}
-              canReplyAll={replyAllReach !== null && replyAllReach.to.length + replyAllReach.cc.length > 1}
-              onMarkUnread={unreadableRow ? markUnread : undefined}
-              sending={sending}
-            />
+            {/* Staggered after the list: rail, list, reading pane. */}
+            <Fade className="h-full min-h-0 w-full min-w-0" delay={100}>
+              <MailDisplay
+                mail={selected}
+                senderLabel={senderLabel}
+                senderRole={senderRole}
+                toLine={toLine}
+                ccLine={ccLine}
+                interactive={interactive}
+                replyTargetName={selected ? replyTargetLabel(selected) : null}
+                onReply={reply}
+                onReplyAll={replyAll}
+                onForward={forward}
+                canReplyAll={replyAllReach !== null && replyAllReach.to.length + replyAllReach.cc.length > 1}
+                onMarkUnread={unreadableRow ? markUnread : undefined}
+                sending={sending}
+              />
+            </Fade>
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>

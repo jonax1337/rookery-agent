@@ -4,10 +4,8 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   AudioLinesIcon,
-  ChevronDownIcon,
   MessagesSquareIcon,
   PencilIcon,
-  PlusIcon,
   RotateCcwIcon,
   SearchXIcon,
   SquareArrowOutUpRightIcon,
@@ -57,6 +55,12 @@ import {
   SESSION_COLUMN_LABELS,
   SESSION_SORTING,
 } from '@/components/common/session-columns';
+import { PlusIcon as AnimatedPlusIcon } from '@/components/animate-ui/icons/plus';
+import { RotateCcwIcon as AnimatedRotateCcwIcon } from '@/components/animate-ui/icons/rotate-ccw';
+import { SquareArrowOutUpRightIcon as AnimatedSquareArrowOutUpRightIcon } from '@/components/animate-ui/icons/square-arrow-out-up-right';
+import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -355,7 +359,9 @@ export function ConversationsPage() {
     actions: (
       <>
         <Button size="sm" onClick={newConversation}>
-          <PlusIcon data-icon="inline-start" />
+          {/* animateOnView, not animateOnHover: the button base carries
+              `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
+          <AnimatedPlusIcon data-icon="inline-start" animateOnView />
           New conversation
         </Button>
         <DropdownMenu>
@@ -388,6 +394,15 @@ export function ConversationsPage() {
   );
   const allConversations = totals ? totals.sessions + totals.archivedSessions : null;
 
+  // The headline numbers are this page's living values: they roll in from
+  // zero once the totals arrive and keep rolling whenever the socket moves
+  // them. `thousandSeparator` keeps `formatNumber`'s en-GB comma in the
+  // resting pose - `CountingNumber` has no separator support and would
+  // quietly drop it above a thousand.
+  const liveNumber = (value: number) => (
+    <SlidingNumber number={value} fromNumber={0} thousandSeparator="," />
+  );
+
   return (
     <PageBody>
       {dialog}
@@ -396,50 +411,52 @@ export function ConversationsPage() {
       {loading && sessions.length === 0 ? (
         <StatCardsSkeleton />
       ) : (
-        <StatCards
-          items={[
-            {
-              label: 'Conversations',
-              value: allConversations === null ? '–' : formatNumber(allConversations),
-              headline:
-                totals === null
-                  ? 'Loading totals'
-                  : formatNumber(totals.archivedSessions) + ' archived',
-              footnote: 'All conversations, including archive',
-            },
-            {
-              label: 'Messages',
-              value: totals === null ? '–' : formatNumber(totals.messages),
-              headline:
-                totals === null || allConversations === null || allConversations === 0
-                  ? 'Nothing written yet'
-                  : 'Average ' +
-                    formatNumber(Math.round(totals.messages / allConversations)) +
-                    ' per conversation',
-              footnote: 'All messages, including archive',
-            },
-            {
-              label: 'Voice conversations',
-              value: formatNumber(voice.length),
-              // This one has no COUNT(*) behind it: /api/stats knows sessions,
-              // not their kind. So it says which list it counted.
-              ...cappedBadge(capped),
-              headline: newestVoice ? 'Last run ' + timeAgo(newestVoice.updatedAt) : 'None yet',
-              footnote:
-                'Based on ' + formatNumber(sessions.length) + ' loaded conversations',
-            },
-            {
-              label: 'Last active',
-              value: newest ? relativeTime(newest.updatedAt) : '–',
-              headline: newest ? (
-                <span className="line-clamp-1">{newest.title || UNTITLED_SESSION}</span>
-              ) : (
-                'No conversations yet'
-              ),
-              footnote: 'Last opened',
-            },
-          ]}
-        />
+        <Fade>
+          <StatCards
+            items={[
+              {
+                label: 'Conversations',
+                value: allConversations === null ? '–' : liveNumber(allConversations),
+                headline:
+                  totals === null
+                    ? 'Loading totals'
+                    : formatNumber(totals.archivedSessions) + ' archived',
+                footnote: 'All conversations, including archive',
+              },
+              {
+                label: 'Messages',
+                value: totals === null ? '–' : liveNumber(totals.messages),
+                headline:
+                  totals === null || allConversations === null || allConversations === 0
+                    ? 'Nothing written yet'
+                    : 'Average ' +
+                      formatNumber(Math.round(totals.messages / allConversations)) +
+                      ' per conversation',
+                footnote: 'All messages, including archive',
+              },
+              {
+                label: 'Voice conversations',
+                value: liveNumber(voice.length),
+                // This one has no COUNT(*) behind it: /api/stats knows sessions,
+                // not their kind. So it says which list it counted.
+                ...cappedBadge(capped),
+                headline: newestVoice ? 'Last run ' + timeAgo(newestVoice.updatedAt) : 'None yet',
+                footnote:
+                  'Based on ' + formatNumber(sessions.length) + ' loaded conversations',
+              },
+              {
+                label: 'Last active',
+                value: newest ? relativeTime(newest.updatedAt) : '–',
+                headline: newest ? (
+                  <span className="line-clamp-1">{newest.title || UNTITLED_SESSION}</span>
+                ) : (
+                  'No conversations yet'
+                ),
+                footnote: 'Last opened',
+              },
+            ]}
+          />
+        </Fade>
       )}
 
       {/*
@@ -448,125 +465,129 @@ export function ConversationsPage() {
         what this page is for.
       */}
 
-      <DataTable<Session>
-        data={rows}
-        columns={columns}
-        getRowId={(session) => session.id}
-        idPrefix="gespraeche"
-        tabLabel="Tab"
-        tabs={TABS.map((value) => ({
-          value,
-          label: TAB_LABEL[value],
-          count: counts[value],
-        }))}
-        tab={tab}
-        onTabChange={setTab}
-        searchable
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Search conversations"
-        searchText={(session) => searchTextOf(session, assistantName)}
-        filters={
-          <>
-            <FilterCombobox
-              label="Project"
-              value={project}
-              onChange={(next) => setProject(next ?? ANY)}
-              showClear={false}
-              options={[
-                { value: ANY, label: 'All projects' },
-                { value: NO_PROJECT, label: 'No project' },
-                ...org.projects
-                  .filter((entry) => !entry.archived)
-                  .map((entry) => ({ value: entry.id, label: entry.name })),
-              ]}
+      {/* Nur der Container faellt in die Bewegung: eine Liste animiert die
+          Richtlinie als Ganzes, nie die Zeilen einzeln. */}
+      <Fade delay={50}>
+        <DataTable<Session>
+          data={rows}
+          columns={columns}
+          getRowId={(session) => session.id}
+          idPrefix="gespraeche"
+          tabLabel="Tab"
+          tabs={TABS.map((value) => ({
+            value,
+            label: TAB_LABEL[value],
+            count: counts[value],
+          }))}
+          tab={tab}
+          onTabChange={setTab}
+          searchable
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Search conversations"
+          searchText={(session) => searchTextOf(session, assistantName)}
+          filters={
+            <>
+              <FilterCombobox
+                label="Project"
+                value={project}
+                onChange={(next) => setProject(next ?? ANY)}
+                showClear={false}
+                options={[
+                  { value: ANY, label: 'All projects' },
+                  { value: NO_PROJECT, label: 'No project' },
+                  ...org.projects
+                    .filter((entry) => !entry.archived)
+                    .map((entry) => ({ value: entry.id, label: entry.name })),
+                ]}
+              />
+              <Select value={period} onValueChange={(value) => setPeriod(value as Period)}>
+                <SelectTrigger size="sm" className="w-36" aria-label="Time period">
+                  <SelectValue placeholder="Time period" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {(Object.keys(PERIOD_LABEL) as Period[]).map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {PERIOD_LABEL[value]}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </>
+          }
+          /*
+            Keine Primaeraktion in der Werkzeugleiste: "New conversation" steht im
+            Seitenkopf. Der zweite Knopf war nicht nur doppelt, er drueckte die
+            Leiste schon bei 1440 px in eine zweite Reihe.
+          */
+          columnLabels={SESSION_COLUMN_LABELS}
+          initialColumnVisibility={{ projekt: false }}
+          initialSorting={SESSION_SORTING}
+          groupTime={(session) => session.updatedAt}
+          groupSortId="zuletzt"
+          bulkActions={(selected, clear) => (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void bulk.run({
+                  rows: selected,
+                  noun: { singular: 'Conversation', plural: 'Conversations' },
+                  nameOf: (session) => session.title || UNTITLED_SESSION,
+                  verb: 'delete',
+                  done: 'deleted',
+                  confirmLabel: 'Delete',
+                  description:
+                    'The selected conversations and all their messages will be deleted.',
+                  run: async (session) => {
+                    await remove(session.id);
+                    syncOpenThread(session.id, { dropped: true });
+                  },
+                  clear,
+                })
+              }
+            >
+              <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
+              Delete
+            </Button>
+          )}
+          onRowClick={open}
+          rowClickIgnoreColumns={['select', 'titel', 'actions']}
+          rowClassName={(session) => (session.archived ? 'opacity-70' : undefined)}
+          capped={capped}
+          rowLabel={{ singular: 'Conversation', plural: 'conversations' }}
+          loading={loading}
+          {...(error ? { error: <ServerOffline onRetry={() => void refresh()} /> } : {})}
+          empty={
+            <EmptyState
+              icon={MessagesSquareIcon}
+              title="No conversations yet"
+              description="Ask the first question — everything you discuss will be collected here."
+              actionLabel="New conversation"
+              onAction={newConversation}
+              action={
+                <Button variant="outline" asChild>
+                  <NavLink to="/voice">Speak</NavLink>
+                </Button>
+              }
+              variant="plain"
             />
-            <Select value={period} onValueChange={(value) => setPeriod(value as Period)}>
-              <SelectTrigger size="sm" className="w-36" aria-label="Time period">
-                <SelectValue placeholder="Time period" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {(Object.keys(PERIOD_LABEL) as Period[]).map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {PERIOD_LABEL[value]}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          </>
-        }
-        /*
-          Keine Primaeraktion in der Werkzeugleiste: "New conversation" steht im
-          Seitenkopf. Der zweite Knopf war nicht nur doppelt, er drueckte die
-          Leiste schon bei 1440 px in eine zweite Reihe.
-        */
-        columnLabels={SESSION_COLUMN_LABELS}
-        initialColumnVisibility={{ projekt: false }}
-        initialSorting={SESSION_SORTING}
-        groupTime={(session) => session.updatedAt}
-        groupSortId="zuletzt"
-        bulkActions={(selected, clear) => (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              void bulk.run({
-                rows: selected,
-                noun: { singular: 'Conversation', plural: 'Conversations' },
-                nameOf: (session) => session.title || UNTITLED_SESSION,
-                verb: 'delete',
-                done: 'deleted',
-                confirmLabel: 'Delete',
-                description:
-                  'The selected conversations and all their messages will be deleted.',
-                run: async (session) => {
-                  await remove(session.id);
-                  syncOpenThread(session.id, { dropped: true });
-                },
-                clear,
-              })
-            }
-          >
-            <Trash2Icon data-icon="inline-start" />
-            Delete
-          </Button>
-        )}
-        onRowClick={open}
-        rowClickIgnoreColumns={['select', 'titel', 'actions']}
-        rowClassName={(session) => (session.archived ? 'opacity-70' : undefined)}
-        capped={capped}
-        rowLabel={{ singular: 'Conversation', plural: 'conversations' }}
-        loading={loading}
-        {...(error ? { error: <ServerOffline onRetry={() => void refresh()} /> } : {})}
-        empty={
-          <EmptyState
-            icon={MessagesSquareIcon}
-            title="No conversations yet"
-            description="Ask the first question — everything you discuss will be collected here."
-            actionLabel="New conversation"
-            onAction={newConversation}
-            action={
-              <Button variant="outline" asChild>
-                <NavLink to="/voice">Speak</NavLink>
-              </Button>
-            }
-            variant="plain"
-          />
-        }
-        filteredEmpty={
-          <EmptyState
-            icon={SearchXIcon}
-            title="No conversations match this selection"
-            description="Change the search, time period, or tab."
-            actionLabel={filtersActive ? 'Reset filters' : undefined}
-            onAction={resetFilters}
-            variant="plain"
-            size="sm"
-          />
-        }
-      />
+          }
+          filteredEmpty={
+            <EmptyState
+              icon={SearchXIcon}
+              title="No conversations match this selection"
+              description="Change the search, time period, or tab."
+              actionLabel={filtersActive ? 'Reset filters' : undefined}
+              onAction={resetFilters}
+              variant="plain"
+              size="sm"
+            />
+          }
+        />
+      </Fade>
 
       <ConversationDrawer
         session={detail}
@@ -686,15 +707,15 @@ function ConversationDrawer({
       footer={
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => onOpen(session)}>
-            <SquareArrowOutUpRightIcon data-icon="inline-start" />
+            <AnimatedSquareArrowOutUpRightIcon data-icon="inline-start" animateOnView />
             {session.kind === 'voice' ? 'Open transcript' : 'Open'}
           </Button>
           <Button variant="outline" onClick={() => onReset(session)}>
-            <RotateCcwIcon data-icon="inline-start" />
+            <AnimatedRotateCcwIcon data-icon="inline-start" animateOnView />
             Reset
           </Button>
           <Button variant="ghost" className="text-destructive" onClick={() => onDelete(session)}>
-            <Trash2Icon data-icon="inline-start" />
+            <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
             Delete
           </Button>
         </div>

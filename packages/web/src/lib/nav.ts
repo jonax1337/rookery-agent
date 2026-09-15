@@ -1,21 +1,19 @@
 import { useMemo } from 'react';
 import { useLocation } from 'react-router';
-import {
-  AudioLinesIcon,
-  BrainIcon,
-  Building2Icon,
-  CalendarClockIcon,
-  InboxIcon,
-  LayoutDashboardIcon,
-  ListTodoIcon,
-  MessagesSquareIcon,
-  RadioTowerIcon,
-  SendIcon,
-  Settings2Icon,
-  SparklesIcon,
-  WrenchIcon,
-} from 'lucide-react';
+import { BrainIcon, Building2Icon, InboxIcon, WrenchIcon } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+
+import {
+  AssignmentsIcon,
+  ConversationsIcon,
+  GatewaysIcon,
+  OverviewIcon,
+  SchedulesIcon,
+  SettingsIcon,
+  SkillsIcon,
+  TasksIcon,
+  VoiceIcon,
+} from '@/components/shell/nav-icons';
 
 /**
  * The one place that knows what a route is called.
@@ -80,17 +78,17 @@ export interface RouteMeta {
 /** In sidebar order within each group; the palette lists them the same way. */
 export const ROUTE_META: RouteMeta[] = [
   /* ------------------------------- arbeiten ------------------------------- */
-  { path: '/dashboard', label: 'Overview', icon: LayoutDashboardIcon, group: 'work' },
-  { path: '/chats', label: 'Conversations', icon: MessagesSquareIcon, group: 'work' },
+  { path: '/dashboard', label: 'Overview', icon: OverviewIcon, group: 'work' },
+  { path: '/chats', label: 'Conversations', icon: ConversationsIcon, group: 'work' },
   // The chat hub itself. It sits under Gespräche in the breadcrumb but is not
   // a sidebar entry - "Neues Gespräch" is a button, not a destination.
-  { path: '/', label: 'Chat', parent: '/chats', icon: MessagesSquareIcon, hidden: true },
-  { path: '/c/:sessionId', label: 'Conversation', parent: '/chats', icon: MessagesSquareIcon, hidden: true },
+  { path: '/', label: 'Chat', parent: '/chats', icon: ConversationsIcon, hidden: true },
+  { path: '/c/:sessionId', label: 'Conversation', parent: '/chats', icon: ConversationsIcon, hidden: true },
   // No `group`, so no sidebar row: the primary action already carries a voice
   // button beside "Neues Gespräch", and one destination does not need two
   // permanent doors. It keeps its label and icon, so the breadcrumb still names
   // it and the command palette still finds it.
-  { path: '/voice', label: 'Voice', icon: AudioLinesIcon },
+  { path: '/voice', label: 'Voice', icon: VoiceIcon },
   // A personal mailbox, not an org-management screen - the assistant itself
   // writes into it (a night's summary, a schedule reporting back), not only
   // agents. It used to sit under Organization; a top-level entry beside
@@ -99,20 +97,20 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/inbox', label: 'Inbox', icon: InboxIcon, group: 'work' },
 
   /* -------------------------------- betrieb ------------------------------- */
-  { path: '/tasks', label: 'Tasks', icon: ListTodoIcon, group: 'operations' },
+  { path: '/tasks', label: 'Tasks', icon: TasksIcon, group: 'operations' },
   { path: '/tasks/new', label: 'Create task', parent: '/tasks', hidden: true },
   { path: '/tasks/:id', label: 'Task', parent: '/tasks', hidden: true },
   { path: '/tasks/:id/edit', label: 'Edit task', parent: '/tasks', hidden: true },
 
-  { path: '/assignments', label: 'Assignments', icon: SendIcon, group: 'operations' },
+  { path: '/assignments', label: 'Assignments', icon: AssignmentsIcon, group: 'operations' },
   { path: '/assignments/:id', label: 'Assignment', parent: '/assignments', hidden: true },
 
-  { path: '/cron', label: 'Schedules', icon: CalendarClockIcon, group: 'operations' },
+  { path: '/cron', label: 'Schedules', icon: SchedulesIcon, group: 'operations' },
   { path: '/cron/new', label: 'Create schedule', parent: '/cron', hidden: true },
   { path: '/cron/:id', label: 'Schedule', parent: '/cron', hidden: true },
   { path: '/cron/:id/edit', label: 'Edit schedule', parent: '/cron', hidden: true },
 
-  { path: '/gateways', label: 'Gateways', icon: RadioTowerIcon, group: 'operations' },
+  { path: '/gateways', label: 'Gateways', icon: GatewaysIcon, group: 'operations' },
   { path: '/gateways/:id', label: 'Gateway', parent: '/gateways', hidden: true },
 
   /* --------------------------- firma & wissen ----------------------------- */
@@ -152,7 +150,7 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/tools/new', label: 'Custom server', parent: '/tools', hidden: true },
   { path: '/tools/:id', label: 'Tool', parent: '/tools', hidden: true },
 
-  { path: '/skills', label: 'Skills', icon: SparklesIcon, group: 'knowledge' },
+  { path: '/skills', label: 'Skills', icon: SkillsIcon, group: 'knowledge' },
   { path: '/skills/new', label: 'Create skill', parent: '/skills', hidden: true },
   { path: '/skills/import', label: 'Import', parent: '/skills', hidden: true },
   { path: '/skills/:name', label: 'Skill', parent: '/skills', hidden: true },
@@ -162,7 +160,7 @@ export const ROUTE_META: RouteMeta[] = [
   {
     path: '/settings',
     label: 'Settings',
-    icon: Settings2Icon,
+    icon: SettingsIcon,
     group: 'secondary',
     redirect: '/settings/identity',
   },

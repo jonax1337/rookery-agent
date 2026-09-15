@@ -3,6 +3,8 @@ import { ActivityIcon, BrainIcon, SparklesIcon, UsersIcon, WrenchIcon } from 'lu
 import type { LucideIcon } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from '@/components/ui/item';
+import { ActivityIcon as AnimatedActivityIcon } from '@/components/animate-ui/icons/activity';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { prettyToolName } from '@/hooks/useChat';
 import { relativeTime } from '@/lib/format';
 import type { ActivityItem, AssignmentView } from '@/lib/types';
@@ -66,7 +68,12 @@ export function ActivityTimeline({
 
   const body =
     rows.length === 0 ? (
-      <p className="text-sm text-muted-foreground">{emptyLabel}</p>
+      <Fade>
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <AnimatedActivityIcon animateOnView className="size-4" />
+          {emptyLabel}
+        </p>
+      </Fade>
     ) : (
       <ItemGroup className="gap-1.5">
         {rows.map((item) => {
@@ -91,15 +98,22 @@ export function ActivityTimeline({
       </ItemGroup>
     );
 
-  if (variant === 'plain') return <div className={className}>{body}</div>;
+  if (variant === 'plain')
+    return (
+      <Fade asChild>
+        <div className={className}>{body}</div>
+      </Fade>
+    );
 
   return (
-    <Card className={cn('py-3', className)}>
-      <CardHeader className="border-b px-3!">
-        <CardTitle className="text-sm">{title}</CardTitle>
-      </CardHeader>
-      <CardContent className="px-3!">{body}</CardContent>
-    </Card>
+    <Fade asChild>
+      <Card className={cn('py-3', className)}>
+        <CardHeader className="border-b px-3!">
+          <CardTitle className="text-sm">{title}</CardTitle>
+        </CardHeader>
+        <CardContent className="px-3!">{body}</CardContent>
+      </Card>
+    </Fade>
   );
 }
 

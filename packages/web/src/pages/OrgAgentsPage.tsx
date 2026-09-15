@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useNavigate, useSearchParams } from 'react-router';
 import {
   ArchiveIcon,
@@ -9,7 +9,6 @@ import {
   PencilIcon,
   ShieldIcon,
   SquareArrowOutUpRightIcon,
-  UserRoundIcon,
   UsersIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -20,6 +19,9 @@ import { PERMISSION_LABEL, relativeTime, shorten } from '@/lib/format';
 import { formatDateTime, formatNumber } from '@/lib/stats';
 import type { Agent, Assignment, OrgPerformanceEntry, PermissionLevel } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
+import { UserRoundIcon } from '@/components/animate-ui/icons/user-round';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import {
@@ -94,6 +96,16 @@ const COLUMN_LABELS: Record<string, string> = {
 };
 
 const PERMISSIONS: readonly PermissionLevel[] = ['chat', 'read', 'write', 'full'];
+
+/**
+ * The "no agents hired yet" state swaps its lucide silhouette for the
+ * animate-ui one: same stroke, the head nods once when the state scrolls
+ * into view. `EmptyState` types its `icon` as a `LucideIcon` and renders it
+ * without props, so the `animateOnView` trigger rides along in this shell.
+ */
+const AnimatedUserRoundIcon = forwardRef<SVGSVGElement>(function AnimatedUserRoundIcon() {
+  return <UserRoundIcon size={24} animateOnView />;
+});
 
 export function OrgAgentsPage() {
   const org = useOrgState();
@@ -351,128 +363,136 @@ export function OrgAgentsPage() {
       {dialog}
       {bulk.dialog}
 
-      <DataTable
-        data={rows}
-        columns={columns}
-        getRowId={(agent) => agent.id}
-        idPrefix="agenten"
-        onRowClick={(agent) => setDrawerId(agent.id)}
-        rowClickIgnoreColumns={['select', 'name', 'actions']}
-        searchable
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Search agents"
-        searchText={(agent) => agent.name + ' ' + agent.title + ' ' + agent.slug}
-        columnLabels={COLUMN_LABELS}
-        initialSorting={[{ id: 'name', desc: false }]}
-        rowLabel={{ singular: 'Agent', plural: 'Agents' }}
-        loading={org.loading && org.agents.length === 0}
-        error={org.error ? <ServerOffline onRetry={() => void org.refresh()} /> : undefined}
-        filters={
-          <>
-            <FilterCombobox
-              label="Team"
-              placeholder="Team"
-              value={team}
-              onChange={setTeam}
-              options={[
-                { value: NO_TEAM, label: 'No team' },
-                ...org.teams.map((entry) => ({ value: entry.id, label: entry.name })),
-              ]}
-            />
-            <FilterCombobox
-              label="Permission"
-              placeholder="Permission"
-              value={permission}
-              onChange={setPermission}
-              options={[
-                { value: INHERITED, label: 'Default' },
-                ...PERMISSIONS.map((level) => ({
-                  value: level,
-                  label: PERMISSION_LABEL[level],
-                })),
-              ]}
-            />
-          </>
-        }
-        bulkActions={(selected, clear) => (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() =>
-              void bulk.run({
-                rows: selected,
-                noun: { singular: 'Agent', plural: 'Agents' },
-                nameOf: (agent) => agent.name,
-                verb: 'archive',
-                done: 'archived',
-                confirmLabel: 'Archive',
-                icon: ArchiveIcon,
-                description:
-                  'They will no longer accept assignments and will disappear from this list. ' +
-                  'Assignments and memories will remain.',
-                run: (agent) => api.updateAgent(agent.id, { archived: true }),
-                after: org.refresh,
-                clear,
-              })
-            }
-          >
-            <ArchiveIcon data-icon="inline-start" />
-            Archive
-          </Button>
-        )}
-        empty={
-          // The table's own `empty` fires when nothing was handed over at all -
-          // which, with the facet filters applied before the hand-over, is also
-          // what an empty filter result looks like. The two say different
-          // things, so the page picks the right sentence.
-          filtered ? (
-            <NoResults
-              onReset={() => {
-                setSearch('');
-                setTeam(null);
-                setPermission(null);
-              }}
-            />
-          ) : (
-            <EmptyState
-              icon={UserRoundIcon}
-              title="No agents hired yet"
-              description="Without agents, the assistant works alone. An agent is a separate process with its own instructions, Memory, and permission level."
-              actionLabel="Hire agent"
-              actionTo="/org/agents/new"
-              variant="plain"
-            />
-          )
-        }
-        filteredEmpty={
-          <NoResults
-            {...(search.trim() ? { query: search.trim() } : {})}
-            onReset={() => {
-              setSearch('');
-              setTeam(null);
-              setPermission(null);
-            }}
-          />
-        }
-      />
+      <Fade>
+        <DataTable
+          data={rows}
+          columns={columns}
+          getRowId={(agent) => agent.id}
+          idPrefix="agenten"
+          onRowClick={(agent) => setDrawerId(agent.id)}
+          rowClickIgnoreColumns={['select', 'name', 'actions']}
+          searchable
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Search agents"
+          searchText={(agent) => agent.name + ' ' + agent.title + ' ' + agent.slug}
+          columnLabels={COLUMN_LABELS}
+          initialSorting={[{ id: 'name', desc: false }]}
+          rowLabel={{ singular: 'Agent', plural: 'Agents' }}
+          loading={org.loading && org.agents.length === 0}
+          error={org.error ? <ServerOffline onRetry={() => void org.refresh()} /> : undefined}
+          filters={
+            <>
+              <FilterCombobox
+                label="Team"
+                placeholder="Team"
+                value={team}
+                onChange={setTeam}
+                options={[
+                  { value: NO_TEAM, label: 'No team' },
+                  ...org.teams.map((entry) => ({ value: entry.id, label: entry.name })),
+                ]}
+              />
+              <FilterCombobox
+                label="Permission"
+                placeholder="Permission"
+                value={permission}
+                onChange={setPermission}
+                options={[
+                  { value: INHERITED, label: 'Default' },
+                  ...PERMISSIONS.map((level) => ({
+                    value: level,
+                    label: PERMISSION_LABEL[level],
+                  })),
+                ]}
+              />
+            </>
+          }
+          bulkActions={(selected, clear) => (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                void bulk.run({
+                  rows: selected,
+                  noun: { singular: 'Agent', plural: 'Agents' },
+                  nameOf: (agent) => agent.name,
+                  verb: 'archive',
+                  done: 'archived',
+                  confirmLabel: 'Archive',
+                  icon: ArchiveIcon,
+                  description:
+                    'They will no longer accept assignments and will disappear from this list. ' +
+                    'Assignments and memories will remain.',
+                  run: (agent) => api.updateAgent(agent.id, { archived: true }),
+                  after: org.refresh,
+                  clear,
+                })
+              }
+            >
+              <ArchiveIcon data-icon="inline-start" />
+              Archive
+            </Button>
+          )}
+          empty={
+            // The table's own `empty` fires when nothing was handed over at all -
+            // which, with the facet filters applied before the hand-over, is also
+            // what an empty filter result looks like. The two say different
+            // things, so the page picks the right sentence.
+            <Fade>
+              {filtered ? (
+                <NoResults
+                  onReset={() => {
+                    setSearch('');
+                    setTeam(null);
+                    setPermission(null);
+                  }}
+                />
+              ) : (
+                <EmptyState
+                  icon={AnimatedUserRoundIcon}
+                  title="No agents hired yet"
+                  description="Without agents, the assistant works alone. An agent is a separate process with its own instructions, Memory, and permission level."
+                  actionLabel="Hire agent"
+                  actionTo="/org/agents/new"
+                  variant="plain"
+                />
+              )}
+            </Fade>
+          }
+          filteredEmpty={
+            <Fade>
+              <NoResults
+                {...(search.trim() ? { query: search.trim() } : {})}
+                onReset={() => {
+                  setSearch('');
+                  setTeam(null);
+                  setPermission(null);
+                }}
+              />
+            </Fade>
+          }
+        />
+      </Fade>
 
       {filtered && rows.length > 0 ? (
-        <div className="px-4 lg:px-6">
-          <p className="text-xs text-muted-foreground">
-            Filtered from {formatNumber(org.agents.length)} active agents.{' '}
-            <button
-              type="button"
-              className="underline underline-offset-2"
-              onClick={() => {
-                setTeam(null);
-                setPermission(null);
-              }}
-            >
-              Clear filter
-            </button>
-          </p>
-        </div>
+        <Fade delay={50}>
+          <div className="px-4 lg:px-6">
+            <p className="text-xs text-muted-foreground">
+              Filtered from <CountingNumber number={org.agents.length} /> active agents.{' '}
+              <button
+                type="button"
+                className="underline underline-offset-2"
+                onClick={() => {
+                  setTeam(null);
+                  setPermission(null);
+                }}
+              >
+                Clear filter
+              </button>
+            </p>
+          </div>
+        </Fade>
       ) : null}
 
       <AgentDrawer

@@ -7,6 +7,8 @@ import {
   LoaderIcon,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { AnimatePresence, motion } from 'motion/react';
+import type { ReactNode } from 'react';
 import { Badge } from '@/components/ui/badge';
 import {
   AGENT_STAGE_LABEL,
@@ -137,6 +139,38 @@ function resolve(props: StatusKindProps): Resolved {
   }
 }
 
+/**
+ * The value inside these badges changes live: the websocket flips a run from
+ * "pending" to "running" while the user watches. On every change the old
+ * value rises out and the new one rises in - `popLayout`, so the badge never
+ * reserves space for both words at once, and `initial={false}`, so a badge
+ * whose value never changes never moves at all. Duration and easing are the
+ * animate-ui defaults of the rotating text; only the travel distance is
+ * scaled down from headline to badge size.
+ */
+function SwappingValue({
+  swapKey,
+  children,
+}: {
+  swapKey: string | number;
+  children: ReactNode;
+}) {
+  return (
+    <AnimatePresence mode="popLayout" initial={false}>
+      <motion.span
+        key={swapKey}
+        className="inline-block"
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -4 }}
+        transition={{ duration: 0.3, ease: 'easeOut' }}
+      >
+        {children}
+      </motion.span>
+    </AnimatePresence>
+  );
+}
+
 export function StatusBadge(props: StatusBadgeProps) {
   const { icon = true, className } = props;
   // A normal agent (stage 0) gets no badge anywhere - see the four call
@@ -147,7 +181,7 @@ export function StatusBadge(props: StatusBadgeProps) {
   return (
     <Badge variant={variant} className={cn('gap-1', className)}>
       {icon && Icon && <Icon className={cn(spin && 'animate-spin')} aria-hidden="true" />}
-      {label}
+      <SwappingValue swapKey={label}>{label}</SwappingValue>
     </Badge>
   );
 }
@@ -176,7 +210,7 @@ export function RunningBadge({
   if (count <= 0) return null;
   return (
     <Badge variant="secondary" className={cn('animate-pulse tabular-nums', className)}>
-      {formatNumber(count)} running
+      <SwappingValue swapKey={count}>{formatNumber(count)} running</SwappingValue>
     </Badge>
   );
 }

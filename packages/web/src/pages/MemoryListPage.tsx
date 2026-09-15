@@ -23,7 +23,7 @@ import {
   RELATION_LABEL,
   shorten,
 } from '@/lib/format';
-import { formatDateTime, formatNumber, formatPercent } from '@/lib/stats';
+import { formatDateTime, formatNumber } from '@/lib/stats';
 import type {
   MemoryKind,
   MemoryNeighbourhood,
@@ -32,6 +32,14 @@ import type {
   ScoredMemory,
 } from '@/lib/types';
 import { useMemoryState } from '@/providers/rookery-provider';
+import { MoonIcon as AnimatedMoonIcon } from '@/components/animate-ui/icons/moon';
+import { PinIcon as AnimatedPinIcon } from '@/components/animate-ui/icons/pin';
+import { PinOffIcon as AnimatedPinOffIcon } from '@/components/animate-ui/icons/pin-off';
+import { RotateCcwIcon as AnimatedRotateCcwIcon } from '@/components/animate-ui/icons/rotate-ccw';
+import { SunIcon as AnimatedSunIcon } from '@/components/animate-ui/icons/sun';
+import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { DataTable, type DataTableTab } from '@/components/blocks/data-table/data-table';
 import { DetailDrawer } from '@/components/blocks/detail-drawer';
 import { useConfirm } from '@/components/common/confirm-dialog';
@@ -255,71 +263,79 @@ export function MemoryListPage() {
     <>
       {dialog}
 
-      <DataTable
-        data={rows}
-        columns={columns}
-        getRowId={(memory) => memory.id}
-        idPrefix="erinnerungen"
-        tabs={tabs}
-        tab={tab}
-        onTabChange={setTab}
-        tabLabel="Memory type"
-        searchable
-        search={memories.query}
-        onSearchChange={memories.setQuery}
-        searchPlaceholder="Search memories"
-        searchServerSide
-        columnLabels={MEMORY_COLUMN_LABELS}
-        initialSorting={MEMORY_SORTING}
-        capped={memories.capped}
-        rowLabel={{ singular: 'Memory', plural: 'Memories' }}
-        loading={memories.loading && memories.items.length === 0}
-        error={memories.error ? <ServerOffline onRetry={() => void memories.refresh()} /> : undefined}
-        onRowClick={(memory) => setSelectedId(memory.id)}
-        rowClassName={(memory) => (memory.forgotten || memory.dormantAt ? 'opacity-70' : undefined)}
-        filters={
-          <div className="flex items-center gap-2">
-            <Switch
-              id="vergessene"
-              checked={memories.includeForgotten}
-              onCheckedChange={memories.setIncludeForgotten}
-            />
-            <Label htmlFor="vergessene" className="text-sm font-normal text-muted-foreground">
-              Show forgotten
-            </Label>
-          </div>
-        }
-        bulkActions={(selected, clear) => (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                for (const memory of selected) {
-                  if (!memory.pinned) void patch(memory.id, { pinned: true }, 'Pinned');
-                }
-                clear();
-              }}
-            >
-              Pin
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                for (const memory of selected) {
-                  if (!memory.dormantAt) void patch(memory.id, { dormant: true }, 'Sleeping');
-                }
-                clear();
-              }}
-            >
-              Put to sleep
-            </Button>
-          </>
-        )}
-        empty={nothing}
-        filteredEmpty={nothing}
-      />
+      {/* Nur der Container faellt in die Bewegung: die Richtlinie animiert
+          eine Liste als Ganzes, nie die Zeilen einzeln. */}
+      <Fade>
+        <DataTable
+          data={rows}
+          columns={columns}
+          getRowId={(memory) => memory.id}
+          idPrefix="erinnerungen"
+          tabs={tabs}
+          tab={tab}
+          onTabChange={setTab}
+          tabLabel="Memory type"
+          searchable
+          search={memories.query}
+          onSearchChange={memories.setQuery}
+          searchPlaceholder="Search memories"
+          searchServerSide
+          columnLabels={MEMORY_COLUMN_LABELS}
+          initialSorting={MEMORY_SORTING}
+          capped={memories.capped}
+          rowLabel={{ singular: 'Memory', plural: 'Memories' }}
+          loading={memories.loading && memories.items.length === 0}
+          error={
+            memories.error ? <ServerOffline onRetry={() => void memories.refresh()} /> : undefined
+          }
+          onRowClick={(memory) => setSelectedId(memory.id)}
+          rowClassName={(memory) =>
+            memory.forgotten || memory.dormantAt ? 'opacity-70' : undefined
+          }
+          filters={
+            <div className="flex items-center gap-2">
+              <Switch
+                id="vergessene"
+                checked={memories.includeForgotten}
+                onCheckedChange={memories.setIncludeForgotten}
+              />
+              <Label htmlFor="vergessene" className="text-sm font-normal text-muted-foreground">
+                Show forgotten
+              </Label>
+            </div>
+          }
+          bulkActions={(selected, clear) => (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  for (const memory of selected) {
+                    if (!memory.pinned) void patch(memory.id, { pinned: true }, 'Pinned');
+                  }
+                  clear();
+                }}
+              >
+                Pin
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  for (const memory of selected) {
+                    if (!memory.dormantAt) void patch(memory.id, { dormant: true }, 'Sleeping');
+                  }
+                  clear();
+                }}
+              >
+                Put to sleep
+              </Button>
+            </>
+          )}
+          empty={nothing}
+          filteredEmpty={nothing}
+        />
+      </Fade>
 
       <MemoryDrawer
         id={selectedId}
@@ -554,9 +570,9 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
               }
             >
               {current.pinned ? (
-                <PinOffIcon data-icon="inline-start" />
+                <AnimatedPinOffIcon data-icon="inline-start" animateOnView />
               ) : (
-                <PinIcon data-icon="inline-start" />
+                <AnimatedPinIcon data-icon="inline-start" animateOnView />
               )}
               {current.pinned ? 'Unpin' : 'Pin'}
             </Button>
@@ -572,9 +588,9 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
               }
             >
               {current.dormantAt ? (
-                <SunIcon data-icon="inline-start" />
+                <AnimatedSunIcon data-icon="inline-start" animateOnView />
               ) : (
-                <MoonIcon data-icon="inline-start" />
+                <AnimatedMoonIcon data-icon="inline-start" animateOnView />
               )}
               {current.dormantAt ? 'Wake' : 'Put to sleep'}
             </Button>
@@ -584,7 +600,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 size="sm"
                 onClick={() => void onPatch(current.id, { forgotten: false }, 'Restored')}
               >
-                <RotateCcwIcon data-icon="inline-start" />
+                <AnimatedRotateCcwIcon data-icon="inline-start" animateOnView />
                 Restore
               </Button>
             ) : (
@@ -594,7 +610,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                 onClick={() => void onForget(current)}
               >
-                <Trash2Icon data-icon="inline-start" />
+                <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
                 Forget
               </Button>
             )}
@@ -642,8 +658,10 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 onValueChange={(value) => setImportance(value[0] ?? 0.5)}
                 className="flex-1"
               />
+              {/* The slider's live value: the digits roll while formatPercent's
+                  resting pose ("50%") stays exactly as it was. */}
               <Badge variant="secondary" className="tabular-nums">
-                {formatPercent(importance * 100)}
+                <SlidingNumber number={Math.round(importance * 100)} />%
               </Badge>
             </div>
           </Field>
@@ -672,8 +690,22 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
             columns={1}
             items={[
               { label: 'Status', value: <StateBadges memory={current} /> },
-              { label: 'Accesses', value: formatNumber(current.accessCount) },
-              { label: 'Usage', value: formatPercent(current.usefulness * 100) },
+              {
+                label: 'Accesses',
+                // CountingNumber has no separator support and would drop
+                // formatNumber's en-GB grouping ("1,234") in the resting pose.
+                value: (
+                  <SlidingNumber number={current.accessCount} fromNumber={0} thousandSeparator="," />
+                ),
+              },
+              {
+                label: 'Usage',
+                value: (
+                  <>
+                    <SlidingNumber number={Math.round(current.usefulness * 100)} fromNumber={0} />%
+                  </>
+                ),
+              },
               {
                 label: 'Last used',
                 value: current.lastAccessedAt ? formatDateTime(current.lastAccessedAt) : 'never',

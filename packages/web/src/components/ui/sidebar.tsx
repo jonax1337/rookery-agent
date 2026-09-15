@@ -4,6 +4,7 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"
 import { Slot } from "radix-ui"
+import { type Transition } from "motion/react"
 
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Button } from "@/components/ui/button"
@@ -23,6 +24,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { IconPlaceholder } from "@/components/ui/icon-placeholder"
+import {
+  Highlight,
+  HighlightItem,
+} from "@/components/animate-ui/primitives/effects/highlight"
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state"
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
@@ -155,26 +160,49 @@ function Sidebar({
   className,
   children,
   dir,
+  animateOnHover = true,
+  containerClassName,
+  transition = { type: "spring", stiffness: 350, damping: 35 },
   ...props
 }: React.ComponentProps<"div"> & {
   side?: "left" | "right"
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
+  /**
+   * The animate-ui radix sidebar graft: one floating highlight springs
+   * between the menu rows on hover (primitives/effects/highlight) instead of
+   * every row painting its own hover background. The default matches the
+   * animate-ui component; `false` leaves the plain stock behaviour.
+   */
+  animateOnHover?: boolean
+  /** Lands on the highlight container that wraps the sidebar's children. */
+  containerClassName?: string
+  /** How the floating highlight travels from row to row. */
+  transition?: Transition
 }) {
   const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
 
   if (collapsible === "none") {
     return (
-      <div
-        data-slot="sidebar"
-        className={cn(
-          "flex h-full w-(--sidebar-width) flex-col bg-sidebar text-sidebar-foreground",
-          className
-        )}
-        {...props}
+      <Highlight
+        enabled={animateOnHover}
+        hover
+        controlledItems
+        mode="parent"
+        containerClassName={containerClassName}
+        transition={transition}
       >
-        {children}
-      </div>
+        <div
+          data-slot="sidebar"
+          className={cn(
+            "flex h-full w-(--sidebar-width) flex-col bg-sidebar text-sidebar-foreground",
+            className
+          )}
+          {...props}
+        >
+          {children}
+        </div>
+      </Highlight>
     )
   }
 
@@ -198,7 +226,16 @@ function Sidebar({
             <SheetTitle>Navigation</SheetTitle>
             <SheetDescription>Open app pages and sections.</SheetDescription>
           </SheetHeader>
-          <div className="flex h-full w-full flex-col">{children}</div>
+          <Highlight
+            enabled={animateOnHover}
+            hover
+            controlledItems
+            mode="parent"
+            containerClassName={cn("h-full", containerClassName)}
+            transition={transition}
+          >
+            <div className="flex h-full w-full flex-col">{children}</div>
+          </Highlight>
         </SheetContent>
       </Sheet>
     )
@@ -217,7 +254,9 @@ function Sidebar({
       <div
         data-slot="sidebar-gap"
         className={cn(
-          "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
+          // animate-ui's springy collapse: the bezier overshoots on purpose
+          // (values beyond 0..1), so the width swings out instead of easing.
+          "relative w-(--sidebar-width) bg-transparent transition-[width] duration-400 ease-[cubic-bezier(0.7,-0.15,0.25,1.15)]",
           "group-data-[collapsible=offcanvas]:w-0",
           "group-data-[side=right]:rotate-180",
           variant === "floating" || variant === "inset"
@@ -229,7 +268,7 @@ function Sidebar({
         data-slot="sidebar-container"
         data-side={side}
         className={cn(
-          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
+          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-400 ease-[cubic-bezier(0.75,0,0.25,1)] data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
           // Adjust the padding for floating and inset variants.
           variant === "floating" || variant === "inset"
             ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
@@ -238,13 +277,32 @@ function Sidebar({
         )}
         {...props}
       >
-        <div
-          data-sidebar="sidebar"
-          data-slot="sidebar-inner"
-          className="flex size-full flex-col bg-sidebar group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-sm group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border"
+        {/*
+          The animate-ui graft: the whole rail inner sits inside a parent-mode
+          Highlight. Every menu row registers itself as a HighlightItem, and a
+          single floating background springs to whichever row is hovered.
+          `forceUpdateBounds` because the rail collapses with a width tween -
+          the box has to re-measure its row every frame while it is active, or
+          it would sit at the pre-collapse bounds. The container keeps the
+          inner div's size so the layout is unchanged.
+        */}
+        <Highlight
+          containerClassName={cn("size-full", containerClassName)}
+          enabled={animateOnHover}
+          hover
+          controlledItems
+          mode="parent"
+          forceUpdateBounds
+          transition={transition}
         >
-          {children}
-        </div>
+          <div
+            data-sidebar="sidebar"
+            data-slot="sidebar-inner"
+            className="flex size-full flex-col bg-sidebar group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-sm group-data-[variant=floating]:ring-1 group-data-[variant=floating]:ring-sidebar-border"
+          >
+            {children}
+          </div>
+        </Highlight>
       </div>
     </div>
   )
@@ -472,14 +530,37 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
   )
 }
 
-const sidebarMenuButtonVariants = cva(
-  "peer/menu-button group/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate",
+/*
+ * What the floating highlight looks like while it sits on a row - the box
+ * itself, not the button. `data-highlight` marks every row that lives in a
+ * HighlightItem, so the guarded `hover:` classes in the variants below stay
+ * off exactly those rows: their hover feedback is the springing box, and a
+ * second, instantly-painting background under it would hide the spring.
+ */
+const sidebarMenuButtonActiveVariants = cva(
+  "bg-sidebar-accent text-sidebar-accent-foreground rounded-md",
   {
     variants: {
       variant: {
-        default: "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        default: "bg-sidebar-accent text-sidebar-accent-foreground",
         outline:
-          "bg-background shadow-[0_0_0_1px_var(--sidebar-border)] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-[0_0_0_1px_var(--sidebar-accent)]",
+          "bg-sidebar-accent text-sidebar-accent-foreground shadow-[0_0_0_1px_var(--sidebar-accent)]",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
+const sidebarMenuButtonVariants = cva(
+  "peer/menu-button group/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden transition-[width,height,padding] group-has-data-[sidebar=menu-action]/menu-item:pr-8 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! [&:not([data-highlight])]:hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&:not([data-highlight])]:data-open:hover:bg-sidebar-accent data-open:hover:text-sidebar-accent-foreground data-active:bg-sidebar-accent data-active:font-medium data-active:text-sidebar-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate",
+  {
+    variants: {
+      variant: {
+        default: "[&:not([data-highlight])]:hover:bg-sidebar-accent",
+        outline:
+          "bg-background shadow-[0_0_0_1px_var(--sidebar-border)] [&:not([data-highlight])]:hover:bg-sidebar-accent [&:not([data-highlight])]:hover:shadow-[0_0_0_1px_var(--sidebar-accent)]",
       },
       size: {
         default: "h-8 text-sm",
@@ -521,19 +602,45 @@ function SidebarMenuButton({
     />
   )
 
-  if (!tooltip) {
-    return button
-  }
-
   if (typeof tooltip === "string") {
     tooltip = {
       children: tooltip,
     }
   }
 
+  /*
+    The animate-ui graft, with one departure from their source: the Tooltip
+    sits around the HighlightItem, and the HighlightItem's child is the
+    TooltipTrigger, not the button. HighlightItem clones its data attributes
+    (the `data-highlight` that guards the hover classes above) onto its direct
+    child - a TooltipTrigger forwards them to the rendered button, a Tooltip
+    root would swallow them. The Tooltip's own hover handlers ride along on
+    the button through `asChild`, so tooltip and highlight never fight over
+    the same events. The wrapper carries `peer/menu-button` and `data-size`
+    because the badge and action in the same row are the wrapper's siblings
+    now, not the button's.
+  */
+  const item = (
+    <HighlightItem
+      className="peer/menu-button"
+      data-size={size}
+      activeClassName={sidebarMenuButtonActiveVariants({ variant })}
+    >
+      {tooltip ? (
+        <TooltipTrigger asChild>{button}</TooltipTrigger>
+      ) : (
+        button
+      )}
+    </HighlightItem>
+  )
+
+  if (!tooltip) {
+    return item
+  }
+
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      {item}
       <TooltipContent
         side="right"
         align="center"
@@ -666,18 +773,22 @@ function SidebarMenuSubButton({
 }) {
   const Comp = asChild ? Slot.Root : "a"
 
+  // Same graft as the menu button above: the row sits in a HighlightItem and
+  // the floating highlight carries its hover background.
   return (
-    <Comp
-      data-slot="sidebar-menu-sub-button"
-      data-sidebar="menu-sub-button"
-      data-size={size}
-      data-active={isActive}
-      className={cn(
-        "flex h-7 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-md px-2 text-sidebar-foreground ring-sidebar-ring outline-hidden group-data-[collapsible=icon]:hidden hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[size=md]:text-sm data-[size=sm]:text-xs data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-sidebar-accent-foreground",
-        className
-      )}
-      {...props}
-    />
+    <HighlightItem activeClassName="bg-sidebar-accent text-sidebar-accent-foreground rounded-md">
+      <Comp
+        data-slot="sidebar-menu-sub-button"
+        data-sidebar="menu-sub-button"
+        data-size={size}
+        data-active={isActive}
+        className={cn(
+          "flex h-7 min-w-0 -translate-x-px items-center gap-2 overflow-hidden rounded-md px-2 text-sidebar-foreground ring-sidebar-ring outline-hidden group-data-[collapsible=icon]:hidden [&:not([data-highlight])]:hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[size=md]:text-sm data-[size=sm]:text-xs data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0 [&>svg]:text-sidebar-accent-foreground",
+          className
+        )}
+        {...props}
+      />
+    </HighlightItem>
   )
 }
 

@@ -7,12 +7,16 @@ import {
   KeyRoundIcon,
   MessagesSquareIcon,
   PencilIcon,
-  PlayIcon,
   ShieldIcon,
   Trash2Icon,
   UserRoundIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+import { PlayIcon as AnimatedPlayIcon } from '@/components/animate-ui/icons/play';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { RotatingText, RotatingTextContainer } from '@/components/animate-ui/primitives/texts/rotating';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 
 import { api } from '@/lib/api';
 import { CRON_RUN_STATUS_LABEL, CRON_TRIGGER_LABEL, cronRunReport } from '@/lib/cron';
@@ -180,7 +184,9 @@ export function CronDetailPage() {
             {running ? (
               <Spinner aria-label="Running" data-icon="inline-start" />
             ) : (
-              <PlayIcon data-icon="inline-start" />
+              // animateOnView, not animateOnHover: the button base carries
+              // `[&_svg]:pointer-events-none`, so a hover trigger never fires.
+              <AnimatedPlayIcon data-icon="inline-start" animateOnView />
             )}
             Run now
           </Button>
@@ -300,13 +306,15 @@ export function CronDetailPage() {
   if (missing) {
     return (
       <PageBody width="3xl">
-        <EmptyState
-          icon={CalendarClockIcon}
-          title="Schedule not found"
-          description="This schedule was deleted or never existed."
-          actionLabel="View schedules"
-          actionTo="/cron"
-        />
+        <Fade>
+          <EmptyState
+            icon={CalendarClockIcon}
+            title="Schedule not found"
+            description="This schedule was deleted or never existed."
+            actionLabel="View schedules"
+            actionTo="/cron"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -314,7 +322,9 @@ export function CronDetailPage() {
   if (error && !detail) {
     return (
       <PageBody width="3xl">
-        <ServerOffline onRetry={() => void reload()} />
+        <Fade>
+          <ServerOffline onRetry={() => void reload()} />
+        </Fade>
       </PageBody>
     );
   }
@@ -322,14 +332,16 @@ export function CronDetailPage() {
   if (!detail || !job) {
     return (
       <PageBody>
-        <div className="grid grid-cols-1 gap-4 px-4 lg:px-6 @xl/main:grid-cols-2 @5xl/main:grid-cols-4">
-          {Array.from({ length: 4 }, (_, index) => (
-            <Skeleton key={index} className="h-32 w-full rounded-xl" />
-          ))}
-        </div>
-        <div className="px-4 lg:px-6">
-          <Skeleton className="h-64 w-full rounded-xl" />
-        </div>
+        <Fade>
+          <div className="grid grid-cols-1 gap-4 px-4 lg:px-6 @xl/main:grid-cols-2 @5xl/main:grid-cols-4">
+            {Array.from({ length: 4 }, (_, index) => (
+              <Skeleton key={index} className="h-32 w-full rounded-xl" />
+            ))}
+          </div>
+          <div className="px-4 lg:px-6">
+            <Skeleton className="h-64 w-full rounded-xl" />
+          </div>
+        </Fade>
       </PageBody>
     );
   }
@@ -343,181 +355,210 @@ export function CronDetailPage() {
 
   const upcoming = job.enabled ? next : [];
 
+  // The label this card flips to whenever a run finishes.
+  const latestStatus = running
+    ? CRON_RUN_STATUS_LABEL.running
+    : job.lastStatus
+      ? CRON_RUN_STATUS_LABEL[job.lastStatus]
+      : '–';
+
+  // Fade stagger for the sections below (policy: delay = min(i * 0.05, 0.4));
+  // the optional script card on top takes index 0 and shifts the rest by one.
+  const sectionBase = job.script ? 1 : 0;
+
   return (
     <PageBody>
       {dialog}
 
       {job.script && (
-        <div className="px-4 lg:px-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Imported script</CardTitle>
-              <CardDescription>
-                {job.script.noAgent ? 'Runs without a model. Empty output stays quiet.' : 'Runs before the assistant and passes its output as context.'}
-                {' '}Review dependencies and paths from the previous installation. Provider credentials and source environment files are not imported. Runs stop after two minutes.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="break-all font-mono text-xs">{job.script.path}</p>
-              {detail.scriptError && <p className="text-sm text-destructive">{detail.scriptError}</p>}
-              {detail.scriptSource !== undefined && <details><summary className="cursor-pointer text-sm">Review script source</summary><pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded border p-3 text-xs">{detail.scriptSource}</pre></details>}
-              {scriptNeedsReview && <Button disabled={busy || Boolean(detail.scriptError)} onClick={() => void reviewScript()}>Review and grant Full access</Button>}
-            </CardContent>
-          </Card>
-        </div>
+        <Fade>
+          <div className="px-4 lg:px-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Imported script</CardTitle>
+                <CardDescription>
+                  {job.script.noAgent ? 'Runs without a model. Empty output stays quiet.' : 'Runs before the assistant and passes its output as context.'}
+                  {' '}Review dependencies and paths from the previous installation. Provider credentials and source environment files are not imported. Runs stop after two minutes.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="break-all font-mono text-xs">{job.script.path}</p>
+                {detail.scriptError && <p className="text-sm text-destructive">{detail.scriptError}</p>}
+                {detail.scriptSource !== undefined && <details><summary className="cursor-pointer text-sm">Review script source</summary><pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded border p-3 text-xs">{detail.scriptSource}</pre></details>}
+                {scriptNeedsReview && <Button disabled={busy || Boolean(detail.scriptError)} onClick={() => void reviewScript()}>Review and grant Full access</Button>}
+              </CardContent>
+            </Card>
+          </div>
+        </Fade>
       )}
 
-      <StatCards
-        items={[
-          {
-            label: 'Runs',
-            value: formatNumber(job.runCount),
-            badge: job.once ? <Badge variant="outline">once</Badge> : undefined,
-            headline: job.lastRunAt ? 'Last run ' + timeAgo(job.lastRunAt) : 'Not run yet',
-            footnote: job.remainingRuns !== undefined ? job.remainingRuns + ' runs remaining' : 'Created on ' + formatDateTime(job.createdAt),
-          },
-          {
-            label: 'Latest status',
-            value: running
-              ? CRON_RUN_STATUS_LABEL.running
-              : job.lastStatus
-                ? CRON_RUN_STATUS_LABEL[job.lastStatus]
-                : '–',
-            headline: job.lastRunAt ? timeAgo(job.lastRunAt) : 'No runs',
-            footnote: job.lastError ? job.lastError : undefined,
-          },
-          {
-            label: 'Next run',
-            value: job.enabled ? formatDateTime(job.nextRunAt) : 'Disabled',
-            headline: job.enabled ? description : 'Paused',
-            footnote: job.schedule,
-          },
-          {
-            label: 'Average duration',
-            value: meanDuration || '–',
-            headline: meanDuration ? 'How long a run takes' : 'Nothing measured yet',
-            footnote: durations.length
-              ? 'Across ' + formatNumber(durations.length) + (durations.length === 1 ? ' run' : ' Runs')
-              : 'An average will appear here once a run completes',
-          },
-        ]}
-      />
-
-      <div className="grid gap-4 px-4 md:gap-6 lg:px-6 @4xl/main:grid-cols-[2fr_1fr]">
-        <Card>
-          <CardHeader>
-            <CardTitle>Instructions</CardTitle>
-            <CardDescription>
-              {managed
-                ? 'This system schedule uses the memory.sleep settings in your Rookery config.json.'
-                : 'What runs at the scheduled time.'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {job.prompt ? (
-              <ResultMarkdown text={job.prompt} />
-            ) : (
-              <EmptyState
-                icon={PencilIcon}
-                title="No custom instructions provided"
-                description={job.script ? 'The imported script defines the work.' : 'Without instructions, this schedule does not perform any custom work.'}
-                variant="plain"
-                size="sm"
-                {...(managed
-                  ? {}
-                  : { actionLabel: 'Edit', actionTo: '/cron/' + job.id + '/edit' })}
-              />
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Upcoming runs</CardTitle>
-            {/* The only German plain text of the expression there is - it
-                comes from the server, it is not derived here. */}
-            <CardDescription>{description}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {upcoming.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                {job.enabled
-                  ? 'This expression has no upcoming run.'
-                  : 'Paused — no run is scheduled.'}
-              </p>
-            ) : (
-              <ItemGroup className="gap-2">
-                {upcoming.map((at) => (
-                  <Item key={at} variant="muted" size="sm">
-                    <ItemMedia variant="icon">
-                      <CalendarClockIcon className="text-muted-foreground" />
-                    </ItemMedia>
-                    <ItemContent>
-                      <ItemTitle className="font-normal tabular-nums">
-                        {formatDateTime(at)}
-                      </ItemTitle>
-                    </ItemContent>
-                  </Item>
-                ))}
-              </ItemGroup>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="px-4 lg:px-6">
-        <MetaList
-          columns={3}
+      <Fade delay={sectionBase * 50}>
+        <StatCards
           items={[
             {
-              label: 'Run as',
-              value: agent ? agent.name + ' · ' + agent.title : CRON_JOB_KIND_LABEL[job.kind],
-              icon: UserRoundIcon,
-              ...(agent ? { to: '/org/agents/' + agent.id } : {}),
-            },
-            { label: 'Project', value: project?.name ?? '', icon: Building2Icon },
-            {
-              label: 'Conversation',
-              value: session?.title ?? '',
-              icon: MessagesSquareIcon,
-              ...(session ? { to: '/c/' + session.id } : {}),
-            },
-            {
-              label: 'Permission',
-              value: job.permission ? PERMISSION_LABEL[job.permission] : '',
-              icon: ShieldIcon,
+              label: 'Runs',
+              // The count rolls its digits rather than counts up: it keeps
+              // changing with the socket, and only SlidingNumber holds
+              // formatNumber's en-GB grouping ("1,234") once it settles -
+              // CountingNumber would drop the separator and change the
+              // resting pose.
+              value: <SlidingNumber number={job.runCount} thousandSeparator="," />,
+              badge: job.once ? <Badge variant="outline">once</Badge> : undefined,
+              headline: job.lastRunAt ? 'Last run ' + timeAgo(job.lastRunAt) : 'Not run yet',
+              footnote: job.remainingRuns !== undefined ? job.remainingRuns + ' runs remaining' : 'Created on ' + formatDateTime(job.createdAt),
             },
             {
-              label: 'Created by',
-              value: REQUESTER_LABEL[job.createdBy],
-              icon: KeyRoundIcon,
+              label: 'Latest status',
+              // The label flips with every finished run; RotatingText rolls
+              // it instead of snapping it. `paddingBlock: 0` keeps the
+              // card's rhythm - the container's 0.25rem default would grow it.
+              value: (
+                <RotatingTextContainer text={latestStatus} style={{ paddingBlock: 0 }}>
+                  <RotatingText />
+                </RotatingTextContainer>
+              ),
+              headline: job.lastRunAt ? timeAgo(job.lastRunAt) : 'No runs',
+              footnote: job.lastError ? job.lastError : undefined,
+            },
+            {
+              label: 'Next run',
+              value: job.enabled ? formatDateTime(job.nextRunAt) : 'Disabled',
+              headline: job.enabled ? description : 'Paused',
+              footnote: job.schedule,
+            },
+            {
+              label: 'Average duration',
+              value: meanDuration || '–',
+              headline: meanDuration ? 'How long a run takes' : 'Nothing measured yet',
+              footnote: durations.length
+                ? 'Across ' + formatNumber(durations.length) + (durations.length === 1 ? ' run' : ' Runs')
+                : 'An average will appear here once a run completes',
             },
           ]}
         />
-      </div>
+      </Fade>
 
-      <DataTable
-        data={runs}
-        columns={columns}
-        getRowId={(run) => run.id}
-        idPrefix="laeufe"
-        initialSorting={[{ id: 'startedAt', desc: true }]}
-        pageSize={10}
-        rowLabel={{ singular: 'Run', plural: 'runs' }}
-        columnLabels={RUN_COLUMN_LABELS}
-        // Fifty is the server's ceiling for one job's run list.
-        capped={runs.length >= 50}
-        empty={
-          <EmptyState
-            icon={HistoryIcon}
-            title="Not run yet"
-            description="When this schedule runs, automatically or manually, its run and report appear here."
-            {...(!scriptNeedsReview && !exhausted ? { actionLabel: 'Run now', onAction: () => void runNow() } : {})}
-            variant="plain"
-            size="sm"
+      <Fade delay={(sectionBase + 1) * 50}>
+        <div className="grid gap-4 px-4 md:gap-6 lg:px-6 @4xl/main:grid-cols-[2fr_1fr]">
+          <Card>
+            <CardHeader>
+              <CardTitle>Instructions</CardTitle>
+              <CardDescription>
+                {managed
+                  ? 'This system schedule uses the memory.sleep settings in your Rookery config.json.'
+                  : 'What runs at the scheduled time.'}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {job.prompt ? (
+                <ResultMarkdown text={job.prompt} />
+              ) : (
+                <EmptyState
+                  icon={PencilIcon}
+                  title="No custom instructions provided"
+                  description={job.script ? 'The imported script defines the work.' : 'Without instructions, this schedule does not perform any custom work.'}
+                  variant="plain"
+                  size="sm"
+                  {...(managed
+                    ? {}
+                    : { actionLabel: 'Edit', actionTo: '/cron/' + job.id + '/edit' })}
+                />
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Upcoming runs</CardTitle>
+              {/* The only German plain text of the expression there is - it
+                  comes from the server, it is not derived here. */}
+              <CardDescription>{description}</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {upcoming.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  {job.enabled
+                    ? 'This expression has no upcoming run.'
+                    : 'Paused — no run is scheduled.'}
+                </p>
+              ) : (
+                <ItemGroup className="gap-2">
+                  {upcoming.map((at) => (
+                    <Item key={at} variant="muted" size="sm">
+                      <ItemMedia variant="icon">
+                        <CalendarClockIcon className="text-muted-foreground" />
+                      </ItemMedia>
+                      <ItemContent>
+                        <ItemTitle className="font-normal tabular-nums">
+                          {formatDateTime(at)}
+                        </ItemTitle>
+                      </ItemContent>
+                    </Item>
+                  ))}
+                </ItemGroup>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </Fade>
+
+      <Fade delay={(sectionBase + 2) * 50}>
+        <div className="px-4 lg:px-6">
+          <MetaList
+            columns={3}
+            items={[
+              {
+                label: 'Run as',
+                value: agent ? agent.name + ' · ' + agent.title : CRON_JOB_KIND_LABEL[job.kind],
+                icon: UserRoundIcon,
+                ...(agent ? { to: '/org/agents/' + agent.id } : {}),
+              },
+              { label: 'Project', value: project?.name ?? '', icon: Building2Icon },
+              {
+                label: 'Conversation',
+                value: session?.title ?? '',
+                icon: MessagesSquareIcon,
+                ...(session ? { to: '/c/' + session.id } : {}),
+              },
+              {
+                label: 'Permission',
+                value: job.permission ? PERMISSION_LABEL[job.permission] : '',
+                icon: ShieldIcon,
+              },
+              {
+                label: 'Created by',
+                value: REQUESTER_LABEL[job.createdBy],
+                icon: KeyRoundIcon,
+              },
+            ]}
           />
-        }
-      />
+        </div>
+      </Fade>
+
+      <Fade delay={(sectionBase + 3) * 50}>
+        <DataTable
+          data={runs}
+          columns={columns}
+          getRowId={(run) => run.id}
+          idPrefix="laeufe"
+          initialSorting={[{ id: 'startedAt', desc: true }]}
+          pageSize={10}
+          rowLabel={{ singular: 'Run', plural: 'runs' }}
+          columnLabels={RUN_COLUMN_LABELS}
+          // Fifty is the server's ceiling for one job's run list.
+          capped={runs.length >= 50}
+          empty={
+            <EmptyState
+              icon={HistoryIcon}
+              title="Not run yet"
+              description="When this schedule runs, automatically or manually, its run and report appear here."
+              {...(!scriptNeedsReview && !exhausted ? { actionLabel: 'Run now', onAction: () => void runNow() } : {})}
+              variant="plain"
+              size="sm"
+            />
+          }
+        />
+      </Fade>
 
       {/* One drawer for the table, not one per row: a mounted vaul instance
           per run would bring fifty portals and focus traps along. */}

@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useOutletContext } from 'react-router';
-import { BrainIcon, ChevronDownIcon, MoonIcon, PlusIcon, SunIcon } from 'lucide-react';
+import { BrainIcon, MoonIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
+
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { PlusIcon } from '@/components/animate-ui/icons/plus';
+import { SunIcon } from '@/components/animate-ui/icons/sun';
+import { RotatingText, RotatingTextContainer } from '@/components/animate-ui/primitives/texts/rotating';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 
 import { api } from '@/lib/api';
 import {
@@ -159,7 +165,7 @@ export function MemoryLayout() {
       actions: (
         <>
           <Button size="sm" onClick={openRemember}>
-            <PlusIcon data-icon="inline-start" />
+            <PlusIcon data-icon="inline-start" animateOnHover size={24} />
             Save memory
           </Button>
           {running && (
@@ -212,10 +218,18 @@ export function MemoryLayout() {
 
   const waiting = <Skeleton className="h-7 w-16" />;
 
+  // The headline numbers roll in from zero once the stats arrive and keep
+  // rolling whenever a write or a finished night moves them. The separator
+  // keeps `formatNumber`'s en-GB comma in the resting pose, which neither
+  // counting variant would draw on its own above a thousand.
+  const liveNumber = (value: number) => (
+    <SlidingNumber number={value} fromNumber={0} thousandSeparator="," />
+  );
+
   const cards: StatCardProps[] = [
     {
       label: 'Memories',
-      value: stats ? formatNumber(stats.total) : waiting,
+      value: stats ? liveNumber(stats.total) : waiting,
       // "gelernt", nicht "dazugekommen": die Tagesreihe zählt jede neu
       // angelegte Memory, die Zahl darüber nur die noch wachen. Eine
       // Night, die das Gelernte verdichtet oder einschläfert, senkt die Zahl,
@@ -237,19 +251,19 @@ export function MemoryLayout() {
     },
     {
       label: 'Pinned',
-      value: stats ? formatNumber(stats.pinned) : waiting,
+      value: stats ? liveNumber(stats.pinned) : waiting,
       headline: 'Protected overnight',
       footnote: 'Pinned memories are untouched by nightly cleanup',
     },
     {
       label: 'Sleeping',
-      value: stats ? formatNumber(stats.dormant) : waiting,
+      value: stats ? liveNumber(stats.dormant) : waiting,
       headline: 'Skipped during recall',
       footnote: 'Not deleted — one click restores a sleeping memory',
     },
     {
       label: 'Connections',
-      value: stats ? formatNumber(stats.edges) : waiting,
+      value: stats ? liveNumber(stats.edges) : waiting,
       headline: stats
         ? 'Across ' + formatNumber(stats.entities) + (stats.entities === 1 ? ' topic' : ' topics')
         : ' ',
@@ -284,37 +298,50 @@ export function MemoryLayout() {
   return (
     <PageBody>
       {running ? (
-        <div className="px-4 lg:px-6">
-          <Item variant="outline" size="sm">
-            <ItemMedia variant="icon">
-              <Spinner aria-hidden="true" />
-            </ItemMedia>
-            <ItemContent>
-              <ItemTitle className="flex flex-wrap items-center gap-2">
-                <Badge variant="secondary">{SLEEP_PHASE_LABEL[sleep.phase] ?? 'is running'}</Badge>
-                {sleep.cycle > 0 ? (
-                  <span className="text-xs font-normal text-muted-foreground tabular-nums">
-                    Cycle {formatNumber(sleep.cycle)}
-                  </span>
-                ) : null}
-              </ItemTitle>
-              <ItemDescription>
-                {SLEEP_PHASE_DETAIL[sleep.phase] ?? 'Memory is being reorganized.'}
-              </ItemDescription>
-              <Progress
-                value={phaseProgress(sleep.phase)}
-                aria-label="Memory sleep progress"
-                className="mt-2 h-1"
-              />
-            </ItemContent>
-            <ItemActions>
-              <Button size="sm" variant="outline" onClick={() => void sleep.cancel()}>
-                <SunIcon data-icon="inline-start" />
-                Wake
-              </Button>
-            </ItemActions>
-          </Item>
-        </div>
+        <Fade>
+          <div className="px-4 lg:px-6">
+            <Item variant="outline" size="sm">
+              <ItemMedia variant="icon">
+                <Spinner aria-hidden="true" />
+              </ItemMedia>
+              <ItemContent>
+                <ItemTitle className="flex flex-wrap items-center gap-2">
+                  {/* The phase walks through the night; each step rolls the
+                      label rather than snapping it. `paddingBlock: 0` keeps
+                      the badge at its own height - the container's 0.25rem
+                      default would grow it. */}
+                  <Badge variant="secondary">
+                    <RotatingTextContainer
+                      text={SLEEP_PHASE_LABEL[sleep.phase] ?? 'is running'}
+                      style={{ paddingBlock: 0 }}
+                    >
+                      <RotatingText />
+                    </RotatingTextContainer>
+                  </Badge>
+                  {sleep.cycle > 0 ? (
+                    <span className="text-xs font-normal text-muted-foreground tabular-nums">
+                      Cycle {formatNumber(sleep.cycle)}
+                    </span>
+                  ) : null}
+                </ItemTitle>
+                <ItemDescription>
+                  {SLEEP_PHASE_DETAIL[sleep.phase] ?? 'Memory is being reorganized.'}
+                </ItemDescription>
+                <Progress
+                  value={phaseProgress(sleep.phase)}
+                  aria-label="Memory sleep progress"
+                  className="mt-2 h-1"
+                />
+              </ItemContent>
+              <ItemActions>
+                <Button size="sm" variant="outline" onClick={() => void sleep.cancel()}>
+                  <SunIcon data-icon="inline-start" animateOnHover size={24} />
+                  Wake
+                </Button>
+              </ItemActions>
+            </Item>
+          </div>
+        </Fade>
       ) : null}
 
       {/*
@@ -327,6 +354,7 @@ export function MemoryLayout() {
         panel of that id the promise points at nothing.
       */}
       <Tabs value={active.to} className="min-h-0 flex-1 gap-4">
+        <Fade delay={50}>
           <div className="overflow-x-auto px-4 lg:px-6">
             <TabsList>
               {TABS.map((tab) => (
@@ -338,6 +366,7 @@ export function MemoryLayout() {
               ))}
             </TabsList>
           </div>
+        </Fade>
 
         <TabsContent
           value={active.to}
@@ -346,32 +375,36 @@ export function MemoryLayout() {
         >
           {isIndex ? (
             <>
-              <StatCards items={cards} />
-              <div className="px-4 lg:px-6">
-                <TrendChartCard
-                  title="Memory growth"
-                  description="New memories per day, grouped by source."
-                  descriptionShort="Learned per day"
-                  data={growthCurve}
-                  series={GROWTH_SERIES}
-                  {...(graph.graph?.truncated
-                    ? { badge: <Badge variant="outline">truncated</Badge> }
-                    : {})}
-                  empty={
-                    <EmptyState
-                      icon={BrainIcon}
-                      title="Nothing was learned during this period"
-                      description="A longer period may show more."
-                      variant="plain"
-                      size="sm"
-                    />
-                  }
-                />
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Based on the loaded network nodes
-                  {nodes ? ' (' + formatNumber(nodes.length) + ')' : ''}, not the entire database.
-                </p>
-              </div>
+              <Fade delay={100}>
+                <StatCards items={cards} />
+              </Fade>
+              <Fade delay={150}>
+                <div className="px-4 lg:px-6">
+                  <TrendChartCard
+                    title="Memory growth"
+                    description="New memories per day, grouped by source."
+                    descriptionShort="Learned per day"
+                    data={growthCurve}
+                    series={GROWTH_SERIES}
+                    {...(graph.graph?.truncated
+                      ? { badge: <Badge variant="outline">truncated</Badge> }
+                      : {})}
+                    empty={
+                      <EmptyState
+                        icon={BrainIcon}
+                        title="Nothing was learned during this period"
+                        description="A longer period may show more."
+                        variant="plain"
+                        size="sm"
+                      />
+                    }
+                  />
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Based on the loaded network nodes
+                    {nodes ? ' (' + formatNumber(nodes.length) + ')' : ''}, not the entire database.
+                  </p>
+                </div>
+              </Fade>
             </>
           ) : (
             <Outlet context={{ openRemember } satisfies MemoryOutletContext} />

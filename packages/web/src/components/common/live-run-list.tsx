@@ -1,6 +1,8 @@
 import * as React from 'react';
 import { NavLink } from 'react-router';
 import { XIcon } from 'lucide-react';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { StatusBadge } from '@/components/common/status-badge';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -91,24 +93,50 @@ export function LiveRunList({
     </ItemGroup>
   );
 
-  if (variant === 'plain') return <div className={className}>{body}</div>;
+  if (variant === 'plain')
+    return (
+      <Fade asChild>
+        <div className={className}>{body}</div>
+      </Fade>
+    );
 
   return (
-    <Card className={cn('py-3', className)} aria-label="Assignments for this turn">
-      <CardHeader className="flex flex-wrap items-center gap-2 border-b px-3!">
-        <CardTitle className="text-sm">{title}</CardTitle>
-        <Badge variant="secondary" className="tabular-nums">
-          {assignments.length} {assignments.length === 1 ? 'assignment' : 'assignments'}
-        </Badge>
+    <Fade asChild>
+      <Card className={cn('py-3', className)} aria-label="Assignments for this turn">
+        <CardHeader className="flex flex-wrap items-center gap-2 border-b px-3!">
+          <CardTitle className="text-sm">{title}</CardTitle>
+          <Badge variant="secondary" className="tabular-nums">
+            {/* One inline wrapper so the animated count and its label stay a
+                single flex item: the badge's own gap must not widen the space. */}
+            <span>
+              <SlidingNumber number={assignments.length} fromNumber={0} />{' '}
+              {assignments.length === 1 ? 'assignment' : 'assignments'}
+            </span>
+          </Badge>
 
-        <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-          {running > 0 ? running + ' running · ' + done + ' done' : done + ' done'}
-          {failed > 0 && <span className="text-destructive"> · {failed} failed</span>}
-        </span>
-      </CardHeader>
+          <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+            {running > 0 && (
+              <>
+                <SlidingNumber number={running} fromNumber={0} /> running ·{' '}
+              </>
+            )}
+            <SlidingNumber number={done} fromNumber={0} /> done
+            {failed > 0 && (
+              <span className="text-destructive">
+                {' · '}
+                <SlidingNumber number={failed} fromNumber={0} /> failed
+              </span>
+            )}
+          </span>
+        </CardHeader>
 
-      <CardContent className="px-3!">{body}</CardContent>
-    </Card>
+        {/* One stagger step behind the head: the section moves, not the
+            single rows - their status badges and cancel buttons stay put. */}
+        <Fade asChild delay={50}>
+          <CardContent className="px-3!">{body}</CardContent>
+        </Fade>
+      </Card>
+    </Fade>
   );
 }
 

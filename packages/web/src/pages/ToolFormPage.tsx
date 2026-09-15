@@ -1,9 +1,11 @@
 import { useId, useMemo } from 'react';
 import { useNavigate } from 'react-router';
-import { TerminalIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
+import { TerminalIcon } from '@/components/animate-ui/icons/terminal';
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { AUDIENCE_CHOICES } from '@/lib/tools';
 import type { ToolServerAudience } from '@/lib/types';
 import { useTools } from '@/hooks/useTools';
@@ -113,88 +115,95 @@ export function ToolFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        description="Any stdio MCP server works. Keys and environment variables can be added on the server page afterward."
+        description={
+          <Blur>
+            Any stdio MCP server works. Keys and environment variables can be added on the server
+            page afterward.
+          </Blur>
+        }
       >
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="tool-name">Name</FieldLabel>
-            <Input
-              id="tool-name"
-              placeholder="e.g. Notion"
-              value={draft.name}
-              aria-invalid={Boolean(errors.name)}
-              onChange={(event) => set({ name: event.target.value })}
-            />
-            <FieldError>{errors.name}</FieldError>
-          </Field>
-
-          <Field>
-            <FieldLabel htmlFor="tool-command">Command</FieldLabel>
-            <InputGroup>
-              <InputGroupAddon align="inline-start">
-                <TerminalIcon />
-              </InputGroupAddon>
-              <InputGroupInput
-                id="tool-command"
-                className="font-mono"
-                placeholder="npx"
-                value={draft.command}
-                aria-invalid={Boolean(errors.command)}
-                onChange={(event) => set({ command: event.target.value })}
+        <Fade>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="tool-name">Name</FieldLabel>
+              <Input
+                id="tool-name"
+                placeholder="e.g. Notion"
+                value={draft.name}
+                aria-invalid={Boolean(errors.name)}
+                onChange={(event) => set({ name: event.target.value })}
               />
-            </InputGroup>
-            <FieldDescription>
-              The program itself, without arguments, available as an executable on this machine.
-            </FieldDescription>
-            <FieldError>{errors.command}</FieldError>
-          </Field>
+              <FieldError>{errors.name}</FieldError>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="tool-args">Arguments</FieldLabel>
-            <Input
-              id="tool-args"
-              className="font-mono"
-              placeholder="-y @notionhq/notion-mcp-server"
-              value={draft.args}
-              onChange={(event) => set({ args: event.target.value })}
-            />
-            <FieldDescription>Separated by spaces.</FieldDescription>
-            {args.length ? (
-              <div className="flex flex-wrap gap-1.5">
-                {args.map((arg, index) => (
-                  <Badge key={index + '-' + arg} variant="secondary" className="font-mono text-xs">
-                    {arg}
-                  </Badge>
-                ))}
-              </div>
-            ) : null}
-          </Field>
+            <Field>
+              <FieldLabel htmlFor="tool-command">Command</FieldLabel>
+              <InputGroup>
+                <InputGroupAddon align="inline-start">
+                  <TerminalIcon animateOnHover className="size-4" />
+                </InputGroupAddon>
+                <InputGroupInput
+                  id="tool-command"
+                  className="font-mono"
+                  placeholder="npx"
+                  value={draft.command}
+                  aria-invalid={Boolean(errors.command)}
+                  onChange={(event) => set({ command: event.target.value })}
+                />
+              </InputGroup>
+              <FieldDescription>
+                The program itself, without arguments, available as an executable on this machine.
+              </FieldDescription>
+              <FieldError>{errors.command}</FieldError>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="tool-audience-assistant">Audience</FieldLabel>
-            <ChoiceField
-              id="tool-audience"
-              options={AUDIENCE_CHOICES}
-              value={draft.audience}
-              onChange={(audience) => set({ audience })}
-            />
-          </Field>
+            <Field>
+              <FieldLabel htmlFor="tool-args">Arguments</FieldLabel>
+              <Input
+                id="tool-args"
+                className="font-mono"
+                placeholder="-y @notionhq/notion-mcp-server"
+                value={draft.args}
+                onChange={(event) => set({ args: event.target.value })}
+              />
+              <FieldDescription>Separated by spaces.</FieldDescription>
+              {args.length ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {args.map((arg, index) => (
+                    <Badge key={index + '-' + arg} variant="secondary" className="font-mono text-xs">
+                      {arg}
+                    </Badge>
+                  ))}
+                </div>
+              ) : null}
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="tool-hint">Guidance</FieldLabel>
-            <Textarea
-              id="tool-hint"
-              rows={3}
-              placeholder="What these tools are useful for and when they should be used."
-              value={draft.hint}
-              onChange={(event) => set({ hint: event.target.value })}
-            />
-            <FieldDescription>
-              Shown alongside tool names in the system prompt, helping the assistant decide when to
-              use this server.
-            </FieldDescription>
-          </Field>
-        </FieldSet>
+            <Field>
+              <FieldLabel htmlFor="tool-audience-assistant">Audience</FieldLabel>
+              <ChoiceField
+                id="tool-audience"
+                options={AUDIENCE_CHOICES}
+                value={draft.audience}
+                onChange={(audience) => set({ audience })}
+              />
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="tool-hint">Guidance</FieldLabel>
+              <Textarea
+                id="tool-hint"
+                rows={3}
+                placeholder="What these tools are useful for and when they should be used."
+                value={draft.hint}
+                onChange={(event) => set({ hint: event.target.value })}
+              />
+              <FieldDescription>
+                Shown alongside tool names in the system prompt, helping the assistant decide when
+                to use this server.
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+        </Fade>
       </FormPage>
     </PageBody>
   );

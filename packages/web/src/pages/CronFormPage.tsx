@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { CalendarClockIcon, ChevronDownIcon, Trash2Icon } from 'lucide-react';
+import { CalendarClockIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -15,6 +15,9 @@ import {
 } from '@/lib/format';
 import type { CronJob, CronPreview } from '@/lib/types';
 import { useCronState, useOrgState } from '@/providers/rookery-provider';
+import { ChevronDownIcon } from '@/components/animate-ui/icons/chevron-down';
+import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { PageBody } from '@/components/blocks/page-body';
 import { FormPage } from '@/components/blocks/form-page';
 import { usePageMeta } from '@/components/shell/page-meta';
@@ -180,6 +183,10 @@ function toInput(patch: CronJobPatch): CronJobInput {
   };
 }
 
+const MenuTrash2Icon = forwardRef<SVGSVGElement>(function MenuTrash2Icon() {
+  return <AnimatedTrash2Icon animateOnView />;
+});
+
 export function CronFormPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -306,7 +313,7 @@ export function CronFormPage() {
               ? [
                   {
                     label: 'Delete',
-                    icon: Trash2Icon,
+                    icon: MenuTrash2Icon,
                     destructive: true,
                     onSelect: () => void remove(),
                   },
@@ -324,13 +331,15 @@ export function CronFormPage() {
   if (editing && !job && !cron.loading) {
     return (
       <PageBody width="3xl">
-        <EmptyState
-          icon={CalendarClockIcon}
-          title="This schedule no longer exists"
-          description="It was deleted or never existed."
-          actionLabel="View schedules"
-          actionTo="/cron"
-        />
+        <Fade>
+          <EmptyState
+            icon={CalendarClockIcon}
+            title="This schedule no longer exists"
+            description="It was deleted or never existed."
+            actionLabel="View schedules"
+            actionTo="/cron"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -340,13 +349,15 @@ export function CronFormPage() {
   if (job?.kind === 'sleep') {
     return (
       <PageBody width="3xl">
-        <EmptyState
-          icon={CalendarClockIcon}
-          title="This schedule belongs to the system"
-          description="Configure the system sleep schedule under memory.sleep in your Rookery config.json."
-          actionLabel="Back to schedules"
-          actionTo="/cron"
-        />
+        <Fade>
+          <EmptyState
+            icon={CalendarClockIcon}
+            title="This schedule belongs to the system"
+            description="Configure the system sleep schedule under memory.sleep in your Rookery config.json."
+            actionLabel="Back to schedules"
+            actionTo="/cron"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -354,7 +365,9 @@ export function CronFormPage() {
   if (editing && !job) {
     return (
       <PageBody width="3xl">
-        <FormFieldsSkeleton fields={5} />
+        <Fade>
+          <FormFieldsSkeleton fields={5} />
+        </Fade>
       </PageBody>
     );
   }
@@ -362,45 +375,47 @@ export function CronFormPage() {
   /* -------------------------------- Preview ------------------------------ */
 
   const previewCard = (
-    <Card>
-      {preview && preview.ok ? (
-        <>
-          <CardHeader>
-            <CardTitle>{preview.description}</CardTitle>
-            <CardDescription>
-              Upcoming times in the time zone of the computer running the server.
-            </CardDescription>
-          </CardHeader>
+    <Fade delay={200}>
+      <Card>
+        {preview && preview.ok ? (
+          <>
+            <CardHeader>
+              <CardTitle>{preview.description}</CardTitle>
+              <CardDescription>
+                Upcoming times in the time zone of the computer running the server.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ItemGroup className="grid gap-2 @md/main:grid-cols-2">
+                {preview.next.slice(0, 5).map((at) => (
+                  <Item key={at} variant="outline" size="sm">
+                    <ItemContent>
+                      <ItemTitle className="font-normal tabular-nums">
+                        {formatDateTime(at)}
+                      </ItemTitle>
+                    </ItemContent>
+                  </Item>
+                ))}
+              </ItemGroup>
+            </CardContent>
+          </>
+        ) : preview && !preview.ok ? (
           <CardContent>
-            <ItemGroup className="grid gap-2 @md/main:grid-cols-2">
-              {preview.next.slice(0, 5).map((at) => (
-                <Item key={at} variant="outline" size="sm">
-                  <ItemContent>
-                    <ItemTitle className="font-normal tabular-nums">
-                      {formatDateTime(at)}
-                    </ItemTitle>
-                  </ItemContent>
-                </Item>
-              ))}
-            </ItemGroup>
+            <Alert variant="destructive">
+              <AlertTitle>This expression is invalid</AlertTitle>
+              <AlertDescription>
+                {preview.error ?? 'The server could not parse the expression.'}
+              </AlertDescription>
+            </Alert>
           </CardContent>
-        </>
-      ) : preview && !preview.ok ? (
-        <CardContent>
-          <Alert variant="destructive">
-            <AlertTitle>This expression is invalid</AlertTitle>
-            <AlertDescription>
-              {preview.error ?? 'The server could not parse the expression.'}
-            </AlertDescription>
-          </Alert>
-        </CardContent>
-      ) : (
-        <CardContent className="flex flex-col gap-2">
-          <Skeleton className="h-5 w-2/3" />
-          <Skeleton className="h-4 w-1/2" />
-        </CardContent>
-      )}
-    </Card>
+        ) : (
+          <CardContent className="flex flex-col gap-2">
+            <Skeleton className="h-5 w-2/3" />
+            <Skeleton className="h-4 w-1/2" />
+          </CardContent>
+        )}
+      </Card>
+    </Fade>
   );
 
   return (
@@ -418,172 +433,180 @@ export function CronFormPage() {
           Karte mit dem blossen Guidancesatz, waehrend die spaeteren Abschnitte
           eine Ueberschrift trugen - der Aufbau wirkte oben abgeschnitten.
         */}
-        <FieldSet>
-          <FieldLegend>Schedule</FieldLegend>
-          <FieldDescription>
-            Times use the time zone of the computer running the server.
-          </FieldDescription>
-          <Field>
-            <FieldLabel htmlFor="cron-schedule">Expression</FieldLabel>
-            <InputGroup>
-              <InputGroupInput
-                id="cron-schedule"
-                className="font-mono"
-                placeholder="Minute Hour Day Month Weekday"
-                value={draft.schedule}
-                aria-invalid={Boolean(errors.schedule) || invalidSchedule}
-                onChange={(event) => set({ schedule: event.target.value })}
-              />
-              <InputGroupAddon align="inline-end">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <InputGroupButton>
-                      Templates
-                      <ChevronDownIcon />
-                    </InputGroupButton>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-64">
-                    <DropdownMenuLabel>Common schedules</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    {CRON_PRESETS.map((entry) => (
-                      <DropdownMenuItem
-                        key={entry.schedule}
-                        onSelect={() => set({ schedule: entry.schedule })}
-                      >
-                        {entry.label}
-                      </DropdownMenuItem>
-                    ))}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </InputGroupAddon>
-            </InputGroup>
+        <Fade>
+          <FieldSet>
+            <FieldLegend>Schedule</FieldLegend>
             <FieldDescription>
-              Five fields: minute, hour, day, month, weekday. “0 8 * * 1-5” runs at 8:00 AM on
-              weekdays. {checking ? 'Checking…' : ''}
+              Times use the time zone of the computer running the server.
             </FieldDescription>
-            <FieldError>{errors.schedule}</FieldError>
-          </Field>
-
-          <Field orientation="horizontal">
-            <FieldContent>
-              <FieldTitle>Run only once</FieldTitle>
-              <FieldDescription>
-                The schedule disables itself after the first run.
-              </FieldDescription>
-            </FieldContent>
-            <Switch
-              id="cron-once"
-              checked={draft.once}
-              onCheckedChange={(once) => set({ once })}
-            />
-          </Field>
-        </FieldSet>
-
-        <FieldSeparator />
-
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="cron-runner-assistant">Execution</FieldLabel>
-            {job?.script ? <FieldDescription>Imported {job.script.runtime} script. Review the source and grant Full access on the schedule page.</FieldDescription> : <ChoiceField
-              id="cron-runner"
-              options={RUNNER_OPTIONS}
-              value={draft.runner}
-              onChange={(runner) => set({ runner })}
-            />}
-          </Field>
-
-          {draft.runner === 'agent' ? (
             <Field>
-              <FieldLabel htmlFor="cron-agent">Agent</FieldLabel>
-              <EntityCombobox
-                id="cron-agent"
-                options={agentOptions}
-                value={draft.agentId}
-                onChange={(agentId) => set({ agentId })}
-                placeholder="Select agent"
-                emptyLabel="No agent found"
-                invalid={Boolean(errors.agentId)}
-              />
-              <FieldError>{errors.agentId}</FieldError>
-            </Field>
-          ) : null}
-
-          <Field>
-            <FieldLabel htmlFor="cron-project">Project</FieldLabel>
-            <EntityCombobox
-              id="cron-project"
-              options={projectOptions}
-              value={draft.projectId}
-              onChange={(projectId) => set({ projectId })}
-              placeholder="No project"
-              emptyLabel="No project gefunden"
-            />
-            <FieldDescription>
-              {job?.script ? 'The script runs in its imported directory. The project applies to the assistant follow-up.' : 'The project determines which directory the run uses.'}
-            </FieldDescription>
-          </Field>
-
-          <Field>
-            <FieldLabel htmlFor="cron-permission-standard">Permission</FieldLabel>
-            {job?.script ? <FieldDescription>{job.permission === 'full' ? 'Full access granted.' : 'Review the script on its schedule page before granting Full access.'}</FieldDescription> : <ChoiceField
-              id="cron-permission"
-              options={PERMISSION_CHOICES}
-              value={draft.permission}
-              onChange={(permission) => set({ permission })}
-            />}
-          </Field>
-        </FieldSet>
-
-        <FieldSeparator />
-
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="cron-name">Name</FieldLabel>
-            <Input
-              id="cron-name"
-              placeholder="e.g. Morning briefing"
-              value={draft.name}
-              aria-invalid={Boolean(errors.name)}
-              onChange={(event) => set({ name: event.target.value })}
-            />
-            <FieldError>{errors.name}</FieldError>
-          </Field>
-
-          <Field>
-            <FieldLabel htmlFor="cron-prompt">Instructions</FieldLabel>
-            <Textarea
-              id="cron-prompt"
-              rows={10}
-              placeholder={PROMPT_PLACEHOLDER}
-              value={draft.prompt}
-              aria-invalid={Boolean(errors.prompt)}
-              onChange={(event) => set({ prompt: event.target.value })}
-            />
-            <FieldDescription>
-              Write self-contained instructions that can run without follow-up questions.
-            </FieldDescription>
-            <FieldError>{errors.prompt}</FieldError>
-          </Field>
-        </FieldSet>
-
-        <FieldSeparator />
-
-        <FieldSet>
-          <Field orientation="horizontal">
-            <FieldContent>
-              <FieldTitle>Active</FieldTitle>
+              <FieldLabel htmlFor="cron-schedule">Expression</FieldLabel>
+              <InputGroup>
+                <InputGroupInput
+                  id="cron-schedule"
+                  className="font-mono"
+                  placeholder="Minute Hour Day Month Weekday"
+                  value={draft.schedule}
+                  aria-invalid={Boolean(errors.schedule) || invalidSchedule}
+                  onChange={(event) => set({ schedule: event.target.value })}
+                />
+                <InputGroupAddon align="inline-end">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <InputGroupButton>
+                        Templates
+                        <ChevronDownIcon animateOnHover />
+                      </InputGroupButton>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-64">
+                      <DropdownMenuLabel>Common schedules</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      {CRON_PRESETS.map((entry) => (
+                        <DropdownMenuItem
+                          key={entry.schedule}
+                          onSelect={() => set({ schedule: entry.schedule })}
+                        >
+                          {entry.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </InputGroupAddon>
+              </InputGroup>
               <FieldDescription>
-                When disabled, the schedule remains saved but does not run.
+                Five fields: minute, hour, day, month, weekday. “0 8 * * 1-5” runs at 8:00 AM on
+                weekdays. {checking ? 'Checking…' : ''}
               </FieldDescription>
-            </FieldContent>
-            <Switch
-              id="cron-enabled"
-              checked={draft.enabled}
-              disabled={job?.kind === 'script' && job.permission !== 'full' || job?.remainingRuns === 0}
-              onCheckedChange={(enabled) => set({ enabled })}
-            />
-          </Field>
-        </FieldSet>
+              <FieldError>{errors.schedule}</FieldError>
+            </Field>
+
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldTitle>Run only once</FieldTitle>
+                <FieldDescription>
+                  The schedule disables itself after the first run.
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="cron-once"
+                checked={draft.once}
+                onCheckedChange={(once) => set({ once })}
+              />
+            </Field>
+          </FieldSet>
+        </Fade>
+
+        <FieldSeparator />
+
+        <Fade delay={50}>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="cron-runner-assistant">Execution</FieldLabel>
+              {job?.script ? <FieldDescription>Imported {job.script.runtime} script. Review the source and grant Full access on the schedule page.</FieldDescription> : <ChoiceField
+                id="cron-runner"
+                options={RUNNER_OPTIONS}
+                value={draft.runner}
+                onChange={(runner) => set({ runner })}
+              />}
+            </Field>
+
+            {draft.runner === 'agent' ? (
+              <Field>
+                <FieldLabel htmlFor="cron-agent">Agent</FieldLabel>
+                <EntityCombobox
+                  id="cron-agent"
+                  options={agentOptions}
+                  value={draft.agentId}
+                  onChange={(agentId) => set({ agentId })}
+                  placeholder="Select agent"
+                  emptyLabel="No agent found"
+                  invalid={Boolean(errors.agentId)}
+                />
+                <FieldError>{errors.agentId}</FieldError>
+              </Field>
+            ) : null}
+
+            <Field>
+              <FieldLabel htmlFor="cron-project">Project</FieldLabel>
+              <EntityCombobox
+                id="cron-project"
+                options={projectOptions}
+                value={draft.projectId}
+                onChange={(projectId) => set({ projectId })}
+                placeholder="No project"
+                emptyLabel="No project gefunden"
+              />
+              <FieldDescription>
+                {job?.script ? 'The script runs in its imported directory. The project applies to the assistant follow-up.' : 'The project determines which directory the run uses.'}
+              </FieldDescription>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="cron-permission-standard">Permission</FieldLabel>
+              {job?.script ? <FieldDescription>{job.permission === 'full' ? 'Full access granted.' : 'Review the script on its schedule page before granting Full access.'}</FieldDescription> : <ChoiceField
+                id="cron-permission"
+                options={PERMISSION_CHOICES}
+                value={draft.permission}
+                onChange={(permission) => set({ permission })}
+              />}
+            </Field>
+          </FieldSet>
+        </Fade>
+
+        <FieldSeparator />
+
+        <Fade delay={100}>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="cron-name">Name</FieldLabel>
+              <Input
+                id="cron-name"
+                placeholder="e.g. Morning briefing"
+                value={draft.name}
+                aria-invalid={Boolean(errors.name)}
+                onChange={(event) => set({ name: event.target.value })}
+              />
+              <FieldError>{errors.name}</FieldError>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="cron-prompt">Instructions</FieldLabel>
+              <Textarea
+                id="cron-prompt"
+                rows={10}
+                placeholder={PROMPT_PLACEHOLDER}
+                value={draft.prompt}
+                aria-invalid={Boolean(errors.prompt)}
+                onChange={(event) => set({ prompt: event.target.value })}
+              />
+              <FieldDescription>
+                Write self-contained instructions that can run without follow-up questions.
+              </FieldDescription>
+              <FieldError>{errors.prompt}</FieldError>
+            </Field>
+          </FieldSet>
+        </Fade>
+
+        <FieldSeparator />
+
+        <Fade delay={150}>
+          <FieldSet>
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldTitle>Active</FieldTitle>
+                <FieldDescription>
+                  When disabled, the schedule remains saved but does not run.
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="cron-enabled"
+                checked={draft.enabled}
+                disabled={job?.kind === 'script' && job.permission !== 'full' || job?.remainingRuns === 0}
+                onCheckedChange={(enabled) => set({ enabled })}
+              />
+            </Field>
+          </FieldSet>
+        </Fade>
       </FormPage>
     </PageBody>
   );

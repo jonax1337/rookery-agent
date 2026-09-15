@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink, useParams } from 'react-router';
-import { PlusIcon, RadioTowerIcon, SendIcon, XIcon } from 'lucide-react';
+import { PlusIcon, XIcon } from 'lucide-react';
 import { toast } from 'sonner';
 
+import { RadioTowerIcon } from '@/components/animate-ui/icons/radio-tower';
+import { SendIcon } from '@/components/animate-ui/icons/send';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { FormPage } from '@/components/blocks/form-page';
 import { PageBody } from '@/components/blocks/page-body';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
@@ -114,6 +117,15 @@ const TOKEN_SOURCE_LABEL: Record<GatewayStatus['tokenSource'], string> = {
   env: 'Environment variable TELEGRAM_BOT_TOKEN',
   none: 'None yet',
 };
+
+/**
+ * The empty-state icon as an animate-ui version. `EmptyState` takes a
+ * `LucideIcon` and renders it without props, so the animated icon sits in a
+ * forwardRef shell that carries its `animateOnView` trigger along.
+ */
+const EmptyRadioTowerIcon = forwardRef<SVGSVGElement>(function EmptyRadioTowerIcon() {
+  return <RadioTowerIcon animateOnView />;
+});
 
 export function GatewayDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -244,7 +256,11 @@ export function GatewayDetailPage() {
             </Badge>
           ) : null}
           <Button type="button" variant="outline" size="sm" disabled={testing} onClick={() => void runTest()}>
-            {testing ? <Spinner aria-label="Sending" /> : <SendIcon data-icon="inline-start" />}
+            {testing ? (
+              <Spinner aria-label="Sending" />
+            ) : (
+              <SendIcon data-icon="inline-start" animateOnHover size={24} />
+            )}
             Send test message
           </Button>
           <Button type="button" variant="ghost" size="sm" disabled={!dirty || saving} onClick={discard}>
@@ -265,13 +281,15 @@ export function GatewayDetailPage() {
   if (id !== 'telegram') {
     return (
       <PageBody width="3xl">
-        <EmptyState
-          icon={RadioTowerIcon}
-          title="Gateway not found"
-          description="The entry was removed or the address is incorrect."
-          actionLabel="Back to gateways"
-          actionTo="/gateways"
-        />
+        <Fade>
+          <EmptyState
+            icon={EmptyRadioTowerIcon}
+            title="Gateway not found"
+            description="The entry was removed or the address is incorrect."
+            actionLabel="Back to gateways"
+            actionTo="/gateways"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -279,14 +297,16 @@ export function GatewayDetailPage() {
   if (!gateway && loading) {
     return (
       <PageBody width="3xl">
-        <Card>
-          <CardHeader>
-            <CardTitle>Status</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <FormFieldsSkeleton fields={4} />
-          </CardContent>
-        </Card>
+        <Fade>
+          <Card>
+            <CardHeader>
+              <CardTitle>Status</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <FormFieldsSkeleton fields={4} />
+            </CardContent>
+          </Card>
+        </Fade>
       </PageBody>
     );
   }
@@ -294,17 +314,19 @@ export function GatewayDetailPage() {
   if (!gateway) {
     return (
       <PageBody width="3xl">
-        {error ? (
-          <ServerOffline onRetry={() => void refresh()} />
-        ) : (
-          <EmptyState
-            icon={RadioTowerIcon}
-            title="Gateway not found"
-            description="The entry was removed or the address is incorrect."
-            actionLabel="Back to gateways"
-            actionTo="/gateways"
-          />
-        )}
+        <Fade>
+          {error ? (
+            <ServerOffline onRetry={() => void refresh()} />
+          ) : (
+            <EmptyState
+              icon={EmptyRadioTowerIcon}
+              title="Gateway not found"
+              description="The entry was removed or the address is incorrect."
+              actionLabel="Back to gateways"
+              actionTo="/gateways"
+            />
+          )}
+        </Fade>
       </PageBody>
     );
   }
@@ -314,524 +336,532 @@ export function GatewayDetailPage() {
   return (
     <PageBody width="3xl">
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={look.variant} className="gap-1">
-            {look.icon ? <look.icon className={look.iconClassName} aria-hidden="true" /> : null}
-            {look.label}
-          </Badge>
-        </div>
+        <Fade>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant={look.variant} className="gap-1">
+              {look.icon ? <look.icon className={look.iconClassName} aria-hidden="true" /> : null}
+              {look.label}
+            </Badge>
+          </div>
+        </Fade>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Status</CardTitle>
-          <CardDescription>
-            Save the bot token below to apply it without restarting. It is stored in <code>~/.rookery/config.json</code>, but is never returned to this page. It only reports <em>whether</em> a token is set. Create a bot with{' '}
-            <a
-              href="https://t.me/BotFather"
-              target="_blank"
-              rel="noreferrer"
-              className="underline underline-offset-2"
-            >
-              @BotFather
-            </a>
-            .
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <MetaList
-            columns={2}
-            items={[
-              { label: 'Token configured', value: gateway.configured ? 'Yes' : 'No' },
-              { label: 'Source', value: TOKEN_SOURCE_LABEL[gateway.tokenSource] },
-              { label: 'Running', value: gateway.running ? 'Yes' : 'No' },
-              { label: 'Bot name', value: gateway.botUsername ? '@' + gateway.botUsername : '' },
-              { label: 'Last error', value: gateway.lastError },
-              {
-                label: 'Last event',
-                value: gateway.lastEventAt ? formatDateTime(gateway.lastEventAt) : '',
-              },
-            ]}
-          />
-        </CardContent>
-      </Card>
-
-      {draft === null ? (
+      <Fade delay={50}>
         <Card>
           <CardHeader>
-            <CardTitle>Settings</CardTitle>
+            <CardTitle>Status</CardTitle>
+            <CardDescription>
+              Save the bot token below to apply it without restarting. It is stored in <code>~/.rookery/config.json</code>, but is never returned to this page. It only reports <em>whether</em> a token is set. Create a bot with{' '}
+              <a
+                href="https://t.me/BotFather"
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2"
+              >
+                @BotFather
+              </a>
+              .
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <FormFieldsSkeleton fields={5} />
+            <MetaList
+              columns={2}
+              items={[
+                { label: 'Token configured', value: gateway.configured ? 'Yes' : 'No' },
+                { label: 'Source', value: TOKEN_SOURCE_LABEL[gateway.tokenSource] },
+                { label: 'Running', value: gateway.running ? 'Yes' : 'No' },
+                { label: 'Bot name', value: gateway.botUsername ? '@' + gateway.botUsername : '' },
+                { label: 'Last error', value: gateway.lastError },
+                {
+                  label: 'Last event',
+                  value: gateway.lastEventAt ? formatDateTime(gateway.lastEventAt) : '',
+                },
+              ]}
+            />
           </CardContent>
         </Card>
-      ) : (
-        <FormPage
-          formId={FORM_ID}
-          showActions={false}
-          onSubmit={submit}
-          title="Settings"
-          description="Save to apply changes immediately."
-        >
-          <FieldSet>
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-enabled">Gateway enabled</FieldLabel>
-                <FieldDescription>
-                  When off, the bot stops regardless of how many IDs are allowed.
-                </FieldDescription>
-              </FieldContent>
-              <Switch
-                id="gw-enabled"
-                checked={draft.enabled}
-                onCheckedChange={(on) => set({ enabled: on })}
-              />
-            </Field>
-          </FieldSet>
+      </Fade>
 
-          <Field>
-            <FieldLabel htmlFor="gw-token">Bot token</FieldLabel>
-            <Input
-              id="gw-token"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
-              disabled={gateway.tokenSource === 'env'}
-              value={draft.token ?? ''}
-              placeholder={gateway.configured ? 'Configured — leave empty to keep it' : 'From @BotFather'}
-              onChange={(event) => set({ token: event.target.value })}
-            />
-            <FieldDescription>
-              {gateway.tokenSource === 'env' ? (
-                <>
-                  Provided by environment variable <code>TELEGRAM_BOT_TOKEN</code> which takes precedence here. Remove the variable and restart the server to edit the token here.
-                </>
-              ) : (
-                <>
-                  The saved token is never returned. Leave this field empty to keep it, or enter a new value to replace it.
-                  {gateway.configured ? (
-                    <>
-                      {' '}
-                      <button
-                        type="button"
-                        className="underline underline-offset-2 hover:text-destructive"
-                        onClick={() => set({ token: null })}
-                      >
-                        Remove token
-                      </button>
-                      {draft.token === null ? ' — removed when you save.' : null}
-                    </>
-                  ) : null}
-                </>
-              )}
-            </FieldDescription>
-          </Field>
-
-          <FieldSet>
-            <FieldLegend variant="label">Permissions</FieldLegend>
-            <FieldDescription>Permissions for turns from this gateway.</FieldDescription>
-            <RadioGroup
-              value={draft.permission}
-              onValueChange={(value) => set({ permission: value as PermissionLevel })}
-            >
-              {PERMISSION_LEVELS.map((level) => (
-                <FieldLabel key={level} htmlFor={'gw-permission-' + level}>
-                  <Field orientation="horizontal">
-                    <FieldContent>
-                      <FieldTitle>{PERMISSION_LABEL[level]}</FieldTitle>
-                      <FieldDescription>{PERMISSION_HINT[level]}</FieldDescription>
-                    </FieldContent>
-                    <RadioGroupItem value={level} id={'gw-permission-' + level} aria-label={PERMISSION_LABEL[level]} />
-                  </Field>
-                </FieldLabel>
-              ))}
-            </RadioGroup>
-          </FieldSet>
-
-          <Field>
-            <FieldLabel htmlFor="gw-model">Model</FieldLabel>
-            <Input
-              id="gw-model"
-              value={draft.model ?? ''}
-              placeholder="Assistant default"
-              onChange={(event) => set({ model: event.target.value })}
-            />
-            <FieldDescription>Leave empty to use the default model.</FieldDescription>
-          </Field>
-
-          <FieldSet>
-            <FieldLegend variant="label">In the chat</FieldLegend>
-            <FieldDescription>How an answer arrives on the phone.</FieldDescription>
-
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-stream">Write as it is produced</FieldLabel>
-                <FieldDescription>
-                  One message, rewritten while the answer is written, instead of a wall of text at the end.
-                  Telegram has no streaming of its own, so this is an edit every second and a half — switch it
-                  off on a slow line or a rate-limited account.
-                </FieldDescription>
-              </FieldContent>
-              <Switch id="gw-stream" checked={draft.stream} onCheckedChange={(on) => set({ stream: on })} />
-            </Field>
-
-          </FieldSet>
-
-          <FieldSet>
-            <FieldLegend variant="label">Files and speech</FieldLegend>
-            <FieldDescription>
-              What arrives from the phone besides text. Files are saved in the workspace under{' '}
-              <code>inbox/telegram/</code>, where a turn can open them, and swept after 30 days.
-            </FieldDescription>
-
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-media">Accept attachments</FieldLabel>
-                <FieldDescription>
-                  Photos, voice messages, documents. When off, they are dropped and only logged.
-                </FieldDescription>
-              </FieldContent>
-              <Switch
-                id="gw-media"
-                checked={draft.media}
-                onCheckedChange={(on) => set({ media: on })}
-              />
-            </Field>
+      <Fade delay={100}>
+        {draft === null ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>Settings</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <FormFieldsSkeleton fields={5} />
+            </CardContent>
+          </Card>
+        ) : (
+          <FormPage
+            formId={FORM_ID}
+            showActions={false}
+            onSubmit={submit}
+            title="Settings"
+            description="Save to apply changes immediately."
+          >
+            <FieldSet>
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-enabled">Gateway enabled</FieldLabel>
+                  <FieldDescription>
+                    When off, the bot stops regardless of how many IDs are allowed.
+                  </FieldDescription>
+                </FieldContent>
+                <Switch
+                  id="gw-enabled"
+                  checked={draft.enabled}
+                  onCheckedChange={(on) => set({ enabled: on })}
+                />
+              </Field>
+            </FieldSet>
 
             <Field>
-              <FieldLabel htmlFor="gw-max-attachment">Largest attachment</FieldLabel>
-              <InputGroup>
-                <InputGroupInput
-                  id="gw-max-attachment"
-                  inputMode="numeric"
-                  disabled={!draft.media}
-                  value={String(draft.maxAttachmentMb)}
-                  onChange={(event) => {
-                    const parsed = Number(event.target.value);
-                    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 20) set({ maxAttachmentMb: parsed });
-                    else if (event.target.value === '') set({ maxAttachmentMb: 1 });
-                  }}
-                />
-                <InputGroupAddon align="inline-end">
-                  <InputGroupText>MB</InputGroupText>
-                </InputGroupAddon>
-              </InputGroup>
+              <FieldLabel htmlFor="gw-token">Bot token</FieldLabel>
+              <Input
+                id="gw-token"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                disabled={gateway.tokenSource === 'env'}
+                value={draft.token ?? ''}
+                placeholder={gateway.configured ? 'Configured — leave empty to keep it' : 'From @BotFather'}
+                onChange={(event) => set({ token: event.target.value })}
+              />
               <FieldDescription>
-                Telegram hands a bot at most 20 MB, so that is the ceiling here too.
+                {gateway.tokenSource === 'env' ? (
+                  <>
+                    Provided by environment variable <code>TELEGRAM_BOT_TOKEN</code> which takes precedence here. Remove the variable and restart the server to edit the token here.
+                  </>
+                ) : (
+                  <>
+                    The saved token is never returned. Leave this field empty to keep it, or enter a new value to replace it.
+                    {gateway.configured ? (
+                      <>
+                        {' '}
+                        <button
+                          type="button"
+                          className="underline underline-offset-2 hover:text-destructive"
+                          onClick={() => set({ token: null })}
+                        >
+                          Remove token
+                        </button>
+                        {draft.token === null ? ' — removed when you save.' : null}
+                      </>
+                    ) : null}
+                  </>
+                )}
               </FieldDescription>
             </Field>
 
             <FieldSet>
-              <FieldLegend variant="label">Voice messages</FieldLegend>
-              <FieldDescription>Which engine turns a recording into words.</FieldDescription>
+              <FieldLegend variant="label">Permissions</FieldLegend>
+              <FieldDescription>Permissions for turns from this gateway.</FieldDescription>
               <RadioGroup
-                value={draft.transcribe}
-                onValueChange={(value) => set({ transcribe: value as TranscribeEngine })}
+                value={draft.permission}
+                onValueChange={(value) => set({ permission: value as PermissionLevel })}
               >
-                {TRANSCRIBE_ENGINES.map((engine) => (
-                  <FieldLabel key={engine} htmlFor={'gw-transcribe-' + engine}>
+                {PERMISSION_LEVELS.map((level) => (
+                  <FieldLabel key={level} htmlFor={'gw-permission-' + level}>
                     <Field orientation="horizontal">
                       <FieldContent>
-                        <FieldTitle>{TRANSCRIBE_LABEL[engine]}</FieldTitle>
-                        <FieldDescription>{TRANSCRIBE_HINT[engine]}</FieldDescription>
+                        <FieldTitle>{PERMISSION_LABEL[level]}</FieldTitle>
+                        <FieldDescription>{PERMISSION_HINT[level]}</FieldDescription>
                       </FieldContent>
-                      <RadioGroupItem
-                        value={engine}
-                        id={'gw-transcribe-' + engine}
-                        disabled={!draft.media}
-                        aria-label={TRANSCRIBE_LABEL[engine]}
-                      />
+                      <RadioGroupItem value={level} id={'gw-permission-' + level} aria-label={PERMISSION_LABEL[level]} />
                     </Field>
                   </FieldLabel>
                 ))}
               </RadioGroup>
             </FieldSet>
 
-            {draft.transcribe === 'auto' || draft.transcribe === 'local' ? (
-              <Field>
-                <FieldLabel htmlFor="gw-transcribe-model">Local model</FieldLabel>
-                <Input
-                  id="gw-transcribe-model"
-                  spellCheck={false}
-                  value={draft.transcribeModel}
-                  placeholder="onnx-community/whisper-base"
-                  onChange={(event) => set({ transcribeModel: event.target.value })}
-                />
-                <FieldDescription>
-                  <code>whisper-base</code> is the balance that holds on a laptop.{' '}
-                  <code>onnx-community/whisper-small</code> hears more and takes about four times as long. The
-                  model is downloaded once into <code>models/</code> in the Rookery home, and ffmpeg has to be
-                  installed for the audio to be decoded.
-                </FieldDescription>
-              </Field>
-            ) : null}
-          </FieldSet>
-
-          <FieldSet>
-            <FieldLegend variant="label">Allowed controller IDs</FieldLegend>
-            <FieldDescription>
-              An empty list allows no control access. To find your own ID, enable the gateway and pairing, save, then send <code>/id</code> to the bot in a private chat.
-            </FieldDescription>
-            {draft.allowedUserIds.length > 0 ? (
-              <div className="flex flex-wrap gap-2">
-                {draft.allowedUserIds.map((value) => (
-                  <Badge key={value} variant="secondary" className="gap-1 font-mono tabular-nums">
-                    {value}
-                    <button
-                      type="button"
-                      aria-label={'Remove ' + value}
-                      className="rounded-full hover:text-destructive"
-                      onClick={() => removeAllowedId(value)}
-                    >
-                      <XIcon data-icon="inline-end" />
-                    </button>
-                  </Badge>
-                ))}
-              </div>
-            ) : null}
-            <Field data-invalid={newIdError ? true : undefined}>
-              <InputGroup>
-                <InputGroupInput
-                  id="gw-new-id"
-                  aria-label="Controller user ID"
-                  inputMode="numeric"
-                  placeholder="Telegram ID, e.g. 123456789"
-                  value={newId}
-                  onChange={(event) => {
-                    setNewId(event.target.value);
-                    setNewIdError(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      addAllowedId();
-                    }
-                  }}
-                />
-                <InputGroupAddon align="inline-end">
-                  <InputGroupButton onClick={addAllowedId}>
-                    <PlusIcon data-icon="inline-start" />
-                    Add
-                  </InputGroupButton>
-                </InputGroupAddon>
-              </InputGroup>
-              {newIdError ? <p className="text-sm text-destructive">{newIdError}</p> : null}
-            </Field>
-
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-pairing">Pairing</FieldLabel>
-                <FieldDescription>
-                  Allows an enabled gateway to run with an empty allowlist so <code>/id</code> can reply. Only <code>/id</code> replies with the sender ID; all other messages are rejected. Adding the first allowed ID turns pairing off.
-                </FieldDescription>
-              </FieldContent>
-              <Switch
-                id="gw-pairing"
-                checked={draft.pairing}
-                onCheckedChange={(on) => set({ pairing: on })}
-              />
-            </Field>
-          </FieldSet>
-
-          <FieldSet>
-            <FieldLegend variant="label">Push</FieldLegend>
-            <FieldDescription>
-              Notifications the assistant sends outside an active conversation.
-            </FieldDescription>
-
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-push-enabled">Push enabled</FieldLabel>
-                <FieldDescription>When off, all notification types below are disabled.</FieldDescription>
-              </FieldContent>
-              <Switch
-                id="gw-push-enabled"
-                checked={draft.push.enabled}
-                onCheckedChange={(on) => setPush({ enabled: on })}
-              />
-            </Field>
-
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-push-mail">Mail</FieldLabel>
-                <FieldDescription>
-                  Mail addressed to you, To or Cc. Who it is worth a push for is set below.
-                </FieldDescription>
-              </FieldContent>
-              <Switch
-                id="gw-push-mail"
-                checked={draft.push.mail}
-                onCheckedChange={(on) => setPush({ mail: on })}
-              />
-            </Field>
-            <RadioGroup
-              value={draft.push.mailFrom}
-              onValueChange={(value) => setPush({ mailFrom: value as TelegramPushConfig['mailFrom'] })}
-            >
-              {MAIL_FROM_LEVELS.map((level) => (
-                <FieldLabel key={level} htmlFor={'gw-push-mail-from-' + level}>
-                  <Field orientation="horizontal">
-                    <FieldContent>
-                      <FieldTitle>{MAIL_FROM_LABEL[level]}</FieldTitle>
-                      <FieldDescription>{MAIL_FROM_HINT[level]}</FieldDescription>
-                    </FieldContent>
-                    <RadioGroupItem
-                      value={level}
-                      id={'gw-push-mail-from-' + level}
-                      aria-label={MAIL_FROM_LABEL[level]}
-                      disabled={!draft.push.mail}
-                    />
-                  </Field>
-                </FieldLabel>
-              ))}
-            </RadioGroup>
-
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-push-assignments">Assignments</FieldLabel>
-                <FieldDescription>
-                  One message per finished run. Off by default: the company reports in mail.
-                </FieldDescription>
-              </FieldContent>
-              <Switch
-                id="gw-push-assignments"
-                checked={draft.push.assignments}
-                onCheckedChange={(on) => setPush({ assignments: on })}
-              />
-            </Field>
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-push-cron">Schedules</FieldLabel>
-              </FieldContent>
-              <Switch
-                id="gw-push-cron"
-                checked={draft.push.cron}
-                onCheckedChange={(on) => setPush({ cron: on })}
-              />
-            </Field>
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-push-sleep">Sleep</FieldLabel>
-              </FieldContent>
-              <Switch
-                id="gw-push-sleep"
-                checked={draft.push.sleep}
-                onCheckedChange={(on) => setPush({ sleep: on })}
-              />
-            </Field>
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-push-activity">Activity</FieldLabel>
-                <FieldDescription>
-                  What the app shows as a toast, as it happens: a memory stored, a skill written, an agent or
-                  project saved. Collected for a few seconds and sent as one message.
-                </FieldDescription>
-              </FieldContent>
-              <Switch
-                id="gw-push-activity"
-                checked={draft.push.activity}
-                onCheckedChange={(on) => setPush({ activity: on })}
-              />
-            </Field>
-
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-push-tools">Tool calls</FieldLabel>
-                <FieldDescription>
-                  Every tool the assistant reaches for, one short line each — <code>Read · package.json</code>.
-                  Loud by nature, and never held for later: during quiet hours these are dropped rather than
-                  delivered in the morning.
-                </FieldDescription>
-              </FieldContent>
-              <Switch
-                id="gw-push-tools"
-                checked={draft.push.tools}
-                onCheckedChange={(on) => setPush({ tools: on })}
-              />
-            </Field>
-
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldLabel htmlFor="gw-push-tasks">Tasks</FieldLabel>
-              </FieldContent>
-              <Switch
-                id="gw-push-tasks"
-                checked={draft.push.tasks}
-                onCheckedChange={(on) => setPush({ tasks: on })}
-              />
-            </Field>
-
-            <div className="grid gap-4 @md/main:grid-cols-2">
-              <Field>
-                <FieldLabel htmlFor="gw-quiet-from">Quiet hours from</FieldLabel>
-                <Input
-                  id="gw-quiet-from"
-                  type="time"
-                  value={draft.push.quietFrom}
-                  onChange={(event) => setPush({ quietFrom: event.target.value })}
-                />
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="gw-quiet-until">Quiet hours until</FieldLabel>
-                <Input
-                  id="gw-quiet-until"
-                  type="time"
-                  value={draft.push.quietUntil}
-                  onChange={(event) => setPush({ quietUntil: event.target.value })}
-                />
-              </Field>
-            </div>
-            <FieldDescription>Leave both empty to disable quiet hours.</FieldDescription>
-
-            <NumberField
-              id="gw-max-per-hour"
-              label="Hourly limit"
-              value={draft.push.maxPerHour}
-              min={1}
-              max={1000}
-              suffix="messages"
-              onChange={(value) => setPush({ maxPerHour: value })}
-            />
-
             <Field>
-              <FieldLabel>Recipients</FieldLabel>
+              <FieldLabel htmlFor="gw-model">Model</FieldLabel>
+              <Input
+                id="gw-model"
+                value={draft.model ?? ''}
+                placeholder="Assistant default"
+                onChange={(event) => set({ model: event.target.value })}
+              />
+              <FieldDescription>Leave empty to use the default model.</FieldDescription>
+            </Field>
+
+            <FieldSet>
+              <FieldLegend variant="label">In the chat</FieldLegend>
+              <FieldDescription>How an answer arrives on the phone.</FieldDescription>
+
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-stream">Write as it is produced</FieldLabel>
+                  <FieldDescription>
+                    One message, rewritten while the answer is written, instead of a wall of text at the end.
+                    Telegram has no streaming of its own, so this is an edit every second and a half — switch it
+                    off on a slow line or a rate-limited account.
+                  </FieldDescription>
+                </FieldContent>
+                <Switch id="gw-stream" checked={draft.stream} onCheckedChange={(on) => set({ stream: on })} />
+              </Field>
+
+            </FieldSet>
+
+            <FieldSet>
+              <FieldLegend variant="label">Files and speech</FieldLegend>
               <FieldDescription>
-                Choose from the allowed IDs. Leave empty to use the first allowed ID.
+                What arrives from the phone besides text. Files are saved in the workspace under{' '}
+                <code>inbox/telegram/</code>, where a turn can open them, and swept after 30 days.
+              </FieldDescription>
+
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-media">Accept attachments</FieldLabel>
+                  <FieldDescription>
+                    Photos, voice messages, documents. When off, they are dropped and only logged.
+                  </FieldDescription>
+                </FieldContent>
+                <Switch
+                  id="gw-media"
+                  checked={draft.media}
+                  onCheckedChange={(on) => set({ media: on })}
+                />
+              </Field>
+
+              <Field>
+                <FieldLabel htmlFor="gw-max-attachment">Largest attachment</FieldLabel>
+                <InputGroup>
+                  <InputGroupInput
+                    id="gw-max-attachment"
+                    inputMode="numeric"
+                    disabled={!draft.media}
+                    value={String(draft.maxAttachmentMb)}
+                    onChange={(event) => {
+                      const parsed = Number(event.target.value);
+                      if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 20) set({ maxAttachmentMb: parsed });
+                      else if (event.target.value === '') set({ maxAttachmentMb: 1 });
+                    }}
+                  />
+                  <InputGroupAddon align="inline-end">
+                    <InputGroupText>MB</InputGroupText>
+                  </InputGroupAddon>
+                </InputGroup>
+                <FieldDescription>
+                  Telegram hands a bot at most 20 MB, so that is the ceiling here too.
+                </FieldDescription>
+              </Field>
+
+              <FieldSet>
+                <FieldLegend variant="label">Voice messages</FieldLegend>
+                <FieldDescription>Which engine turns a recording into words.</FieldDescription>
+                <RadioGroup
+                  value={draft.transcribe}
+                  onValueChange={(value) => set({ transcribe: value as TranscribeEngine })}
+                >
+                  {TRANSCRIBE_ENGINES.map((engine) => (
+                    <FieldLabel key={engine} htmlFor={'gw-transcribe-' + engine}>
+                      <Field orientation="horizontal">
+                        <FieldContent>
+                          <FieldTitle>{TRANSCRIBE_LABEL[engine]}</FieldTitle>
+                          <FieldDescription>{TRANSCRIBE_HINT[engine]}</FieldDescription>
+                        </FieldContent>
+                        <RadioGroupItem
+                          value={engine}
+                          id={'gw-transcribe-' + engine}
+                          disabled={!draft.media}
+                          aria-label={TRANSCRIBE_LABEL[engine]}
+                        />
+                      </Field>
+                    </FieldLabel>
+                  ))}
+                </RadioGroup>
+              </FieldSet>
+
+              {draft.transcribe === 'auto' || draft.transcribe === 'local' ? (
+                <Field>
+                  <FieldLabel htmlFor="gw-transcribe-model">Local model</FieldLabel>
+                  <Input
+                    id="gw-transcribe-model"
+                    spellCheck={false}
+                    value={draft.transcribeModel}
+                    placeholder="onnx-community/whisper-base"
+                    onChange={(event) => set({ transcribeModel: event.target.value })}
+                  />
+                  <FieldDescription>
+                    <code>whisper-base</code> is the balance that holds on a laptop.{' '}
+                    <code>onnx-community/whisper-small</code> hears more and takes about four times as long. The
+                    model is downloaded once into <code>models/</code> in the Rookery home, and ffmpeg has to be
+                    installed for the audio to be decoded.
+                  </FieldDescription>
+                </Field>
+              ) : null}
+            </FieldSet>
+
+            <FieldSet>
+              <FieldLegend variant="label">Allowed controller IDs</FieldLegend>
+              <FieldDescription>
+                An empty list allows no control access. To find your own ID, enable the gateway and pairing, save, then send <code>/id</code> to the bot in a private chat.
               </FieldDescription>
               {draft.allowedUserIds.length > 0 ? (
-                <div className="flex flex-col gap-2">
+                <div className="flex flex-wrap gap-2">
                   {draft.allowedUserIds.map((value) => (
-                    <Label
-                      key={value}
-                      htmlFor={'gw-recipient-' + value}
-                      className="flex items-center gap-2 font-mono font-normal tabular-nums"
-                    >
-                      <Checkbox
-                        id={'gw-recipient-' + value}
-                        checked={draft.push.recipients.includes(value)}
-                        onCheckedChange={(checked) => toggleRecipient(value, checked === true)}
-                      />
+                    <Badge key={value} variant="secondary" className="gap-1 font-mono tabular-nums">
                       {value}
-                    </Label>
+                      <button
+                        type="button"
+                        aria-label={'Remove ' + value}
+                        className="rounded-full hover:text-destructive"
+                        onClick={() => removeAllowedId(value)}
+                      >
+                        <XIcon data-icon="inline-end" />
+                      </button>
+                    </Badge>
                   ))}
                 </div>
-              ) : (
-                <p className="text-sm text-muted-foreground">
-                  Add an allowed ID above before selecting a recipient.
-                </p>
-              )}
-            </Field>
-          </FieldSet>
-        </FormPage>
-      )}
+              ) : null}
+              <Field data-invalid={newIdError ? true : undefined}>
+                <InputGroup>
+                  <InputGroupInput
+                    id="gw-new-id"
+                    aria-label="Controller user ID"
+                    inputMode="numeric"
+                    placeholder="Telegram ID, e.g. 123456789"
+                    value={newId}
+                    onChange={(event) => {
+                      setNewId(event.target.value);
+                      setNewIdError(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        addAllowedId();
+                      }
+                    }}
+                  />
+                  <InputGroupAddon align="inline-end">
+                    <InputGroupButton onClick={addAllowedId}>
+                      <PlusIcon data-icon="inline-start" />
+                      Add
+                    </InputGroupButton>
+                  </InputGroupAddon>
+                </InputGroup>
+                {newIdError ? <p className="text-sm text-destructive">{newIdError}</p> : null}
+              </Field>
 
-      <p className="text-xs text-muted-foreground">
-        View all gateways under{' '}
-        <NavLink to="/gateways" className="underline underline-offset-2">
-          Gateways
-        </NavLink>
-        .
-      </p>
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-pairing">Pairing</FieldLabel>
+                  <FieldDescription>
+                    Allows an enabled gateway to run with an empty allowlist so <code>/id</code> can reply. Only <code>/id</code> replies with the sender ID; all other messages are rejected. Adding the first allowed ID turns pairing off.
+                  </FieldDescription>
+                </FieldContent>
+                <Switch
+                  id="gw-pairing"
+                  checked={draft.pairing}
+                  onCheckedChange={(on) => set({ pairing: on })}
+                />
+              </Field>
+            </FieldSet>
+
+            <FieldSet>
+              <FieldLegend variant="label">Push</FieldLegend>
+              <FieldDescription>
+                Notifications the assistant sends outside an active conversation.
+              </FieldDescription>
+
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-push-enabled">Push enabled</FieldLabel>
+                  <FieldDescription>When off, all notification types below are disabled.</FieldDescription>
+                </FieldContent>
+                <Switch
+                  id="gw-push-enabled"
+                  checked={draft.push.enabled}
+                  onCheckedChange={(on) => setPush({ enabled: on })}
+                />
+              </Field>
+
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-push-mail">Mail</FieldLabel>
+                  <FieldDescription>
+                    Mail addressed to you, To or Cc. Who it is worth a push for is set below.
+                  </FieldDescription>
+                </FieldContent>
+                <Switch
+                  id="gw-push-mail"
+                  checked={draft.push.mail}
+                  onCheckedChange={(on) => setPush({ mail: on })}
+                />
+              </Field>
+              <RadioGroup
+                value={draft.push.mailFrom}
+                onValueChange={(value) => setPush({ mailFrom: value as TelegramPushConfig['mailFrom'] })}
+              >
+                {MAIL_FROM_LEVELS.map((level) => (
+                  <FieldLabel key={level} htmlFor={'gw-push-mail-from-' + level}>
+                    <Field orientation="horizontal">
+                      <FieldContent>
+                        <FieldTitle>{MAIL_FROM_LABEL[level]}</FieldTitle>
+                        <FieldDescription>{MAIL_FROM_HINT[level]}</FieldDescription>
+                      </FieldContent>
+                      <RadioGroupItem
+                        value={level}
+                        id={'gw-push-mail-from-' + level}
+                        aria-label={MAIL_FROM_LABEL[level]}
+                        disabled={!draft.push.mail}
+                      />
+                    </Field>
+                  </FieldLabel>
+                ))}
+              </RadioGroup>
+
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-push-assignments">Assignments</FieldLabel>
+                  <FieldDescription>
+                    One message per finished run. Off by default: the company reports in mail.
+                  </FieldDescription>
+                </FieldContent>
+                <Switch
+                  id="gw-push-assignments"
+                  checked={draft.push.assignments}
+                  onCheckedChange={(on) => setPush({ assignments: on })}
+                />
+              </Field>
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-push-cron">Schedules</FieldLabel>
+                </FieldContent>
+                <Switch
+                  id="gw-push-cron"
+                  checked={draft.push.cron}
+                  onCheckedChange={(on) => setPush({ cron: on })}
+                />
+              </Field>
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-push-sleep">Sleep</FieldLabel>
+                </FieldContent>
+                <Switch
+                  id="gw-push-sleep"
+                  checked={draft.push.sleep}
+                  onCheckedChange={(on) => setPush({ sleep: on })}
+                />
+              </Field>
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-push-activity">Activity</FieldLabel>
+                  <FieldDescription>
+                    What the app shows as a toast, as it happens: a memory stored, a skill written, an agent or
+                    project saved. Collected for a few seconds and sent as one message.
+                  </FieldDescription>
+                </FieldContent>
+                <Switch
+                  id="gw-push-activity"
+                  checked={draft.push.activity}
+                  onCheckedChange={(on) => setPush({ activity: on })}
+                />
+              </Field>
+
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-push-tools">Tool calls</FieldLabel>
+                  <FieldDescription>
+                    Every tool the assistant reaches for, one short line each — <code>Read · package.json</code>.
+                    Loud by nature, and never held for later: during quiet hours these are dropped rather than
+                    delivered in the morning.
+                  </FieldDescription>
+                </FieldContent>
+                <Switch
+                  id="gw-push-tools"
+                  checked={draft.push.tools}
+                  onCheckedChange={(on) => setPush({ tools: on })}
+                />
+              </Field>
+
+              <Field orientation="horizontal">
+                <FieldContent>
+                  <FieldLabel htmlFor="gw-push-tasks">Tasks</FieldLabel>
+                </FieldContent>
+                <Switch
+                  id="gw-push-tasks"
+                  checked={draft.push.tasks}
+                  onCheckedChange={(on) => setPush({ tasks: on })}
+                />
+              </Field>
+
+              <div className="grid gap-4 @md/main:grid-cols-2">
+                <Field>
+                  <FieldLabel htmlFor="gw-quiet-from">Quiet hours from</FieldLabel>
+                  <Input
+                    id="gw-quiet-from"
+                    type="time"
+                    value={draft.push.quietFrom}
+                    onChange={(event) => setPush({ quietFrom: event.target.value })}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="gw-quiet-until">Quiet hours until</FieldLabel>
+                  <Input
+                    id="gw-quiet-until"
+                    type="time"
+                    value={draft.push.quietUntil}
+                    onChange={(event) => setPush({ quietUntil: event.target.value })}
+                  />
+                </Field>
+              </div>
+              <FieldDescription>Leave both empty to disable quiet hours.</FieldDescription>
+
+              <NumberField
+                id="gw-max-per-hour"
+                label="Hourly limit"
+                value={draft.push.maxPerHour}
+                min={1}
+                max={1000}
+                suffix="messages"
+                onChange={(value) => setPush({ maxPerHour: value })}
+              />
+
+              <Field>
+                <FieldLabel>Recipients</FieldLabel>
+                <FieldDescription>
+                  Choose from the allowed IDs. Leave empty to use the first allowed ID.
+                </FieldDescription>
+                {draft.allowedUserIds.length > 0 ? (
+                  <div className="flex flex-col gap-2">
+                    {draft.allowedUserIds.map((value) => (
+                      <Label
+                        key={value}
+                        htmlFor={'gw-recipient-' + value}
+                        className="flex items-center gap-2 font-mono font-normal tabular-nums"
+                      >
+                        <Checkbox
+                          id={'gw-recipient-' + value}
+                          checked={draft.push.recipients.includes(value)}
+                          onCheckedChange={(checked) => toggleRecipient(value, checked === true)}
+                        />
+                        {value}
+                      </Label>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Add an allowed ID above before selecting a recipient.
+                  </p>
+                )}
+              </Field>
+            </FieldSet>
+          </FormPage>
+        )}
+      </Fade>
+
+      <Fade delay={150}>
+        <p className="text-xs text-muted-foreground">
+          View all gateways under{' '}
+          <NavLink to="/gateways" className="underline underline-offset-2">
+            Gateways
+          </NavLink>
+          .
+        </p>
+      </Fade>
     </PageBody>
   );
 }

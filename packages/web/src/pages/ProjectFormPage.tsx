@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { FolderIcon, PlugIcon, Trash2Icon } from 'lucide-react';
+import { FolderIcon, Trash2Icon } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -8,6 +8,9 @@ import { api, type ProjectInput, type ProjectPatch } from '@/lib/api';
 import { failureMessage, reportFailure } from '@/lib/errors';
 import type { Project, ProjectMcpInfo } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
+import { PlugZap } from '@/components/animate-ui/icons/plug-zap';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { PageBody } from '@/components/blocks/page-body';
 import { FormPage } from '@/components/blocks/form-page';
 import { usePageMeta } from '@/components/shell/page-meta';
@@ -230,13 +233,15 @@ export function ProjectFormPage() {
   if (editing && !project && !org.loading) {
     return (
       <PageBody width="2xl">
-        <EmptyState
-          icon={FolderIcon}
-          title="This project no longer exists"
-          description="It was deleted or never existed."
-          actionLabel="View projects"
-          actionTo="/org/projects"
-        />
+        <Fade>
+          <EmptyState
+            icon={FolderIcon}
+            title="This project no longer exists"
+            description="It was deleted or never existed."
+            actionLabel="View projects"
+            actionTo="/org/projects"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -259,142 +264,156 @@ export function ProjectFormPage() {
         error={failure}
         description="A project groups conversations and assignments and defines the directory where work happens."
       >
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="project-name">Name</FieldLabel>
-            <Input
-              id="project-name"
-              value={draft.name}
-              aria-invalid={Boolean(errors.name)}
-              onChange={(event) => set({ name: event.target.value })}
-            />
-            <FieldError>{errors.name}</FieldError>
-          </Field>
+        <Fade>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="project-name">Name</FieldLabel>
+              <Input
+                id="project-name"
+                value={draft.name}
+                aria-invalid={Boolean(errors.name)}
+                onChange={(event) => set({ name: event.target.value })}
+              />
+              <FieldError>{errors.name}</FieldError>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="project-description">Description</FieldLabel>
-            <Textarea
-              id="project-description"
-              rows={3}
-              placeholder="What this project is about."
-              value={draft.description}
-              onChange={(event) => set({ description: event.target.value })}
-            />
-          </Field>
-        </FieldSet>
+            <Field>
+              <FieldLabel htmlFor="project-description">Description</FieldLabel>
+              <Textarea
+                id="project-description"
+                rows={3}
+                placeholder="What this project is about."
+                value={draft.description}
+                onChange={(event) => set({ description: event.target.value })}
+              />
+            </Field>
+          </FieldSet>
+        </Fade>
 
         <FieldSeparator />
 
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="project-path">Directory</FieldLabel>
-            <InputGroup>
-              <InputGroupAddon align="inline-start">
-                <FolderIcon />
-              </InputGroupAddon>
-              <InputGroupInput
-                id="project-path"
-                className="font-mono"
-                placeholder="E:\DEV\my-project"
-                value={draft.path}
-                onChange={(event) => set({ path: event.target.value })}
-              />
-            </InputGroup>
-            <FieldDescription>
-              Leave empty to use the Rookery workspace. The path is checked only when an assignment
-              first runs.
-            </FieldDescription>
-          </Field>
-        </FieldSet>
+        <Fade delay={50}>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="project-path">Directory</FieldLabel>
+              <InputGroup>
+                <InputGroupAddon align="inline-start">
+                  <FolderIcon />
+                </InputGroupAddon>
+                <InputGroupInput
+                  id="project-path"
+                  className="font-mono"
+                  placeholder="E:\DEV\my-project"
+                  value={draft.path}
+                  onChange={(event) => set({ path: event.target.value })}
+                />
+              </InputGroup>
+              <FieldDescription>
+                Leave empty to use the Rookery workspace. The path is checked only when an
+                assignment first runs.
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+        </Fade>
 
         {editing && project?.path ? (
           <>
             <FieldSeparator />
-            <FieldSet>
-              <FieldLegend variant="label">MCP servers</FieldLegend>
-              <FieldDescription>
-                Servers listed in this project&rsquo;s own .mcp.json - the same file a person&rsquo;s
-                own Claude Code session in this folder would read. Starting them for an assignment
-                needs approval here first, and an edit to the file needs approving again.
-              </FieldDescription>
-              {mcpLoading ? (
-                <Spinner aria-label="Loading" />
-              ) : mcpError ? (
-                <p className="text-sm text-destructive">{mcpError}</p>
-              ) : mcp && mcp.servers.length ? (
-                <Card>
-                  <CardHeader className="flex-row items-center justify-between gap-3">
-                    <div>
-                      <CardTitle>
-                        <Badge
-                          variant={
-                            mcp.status === 'trusted'
-                              ? 'secondary'
-                              : mcp.status === 'changed'
-                                ? 'destructive'
-                                : 'outline'
-                          }
-                        >
-                          {MCP_STATUS_LABEL[mcp.status]}
-                        </Badge>
-                      </CardTitle>
-                      <CardDescription>
-                        {mcp.servers.length} server{mcp.servers.length === 1 ? '' : 's'} declared.
-                      </CardDescription>
-                    </div>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={mcp.status === 'trusted' ? 'outline' : 'default'}
-                      disabled={mcpBusy}
-                      onClick={() => void (mcp.status === 'trusted' ? revokeMcp() : trustMcp())}
-                    >
-                      {mcpBusy ? <Spinner aria-label="Working" data-icon="inline-start" /> : <PlugIcon />}
-                      {mcp.status === 'trusted' ? 'Revoke' : 'Trust'}
-                    </Button>
-                  </CardHeader>
-                  <CardContent>
-                    <ul className="flex flex-col gap-1.5">
-                      {mcp.servers.map((server) => (
-                        <li key={server.name} className="font-mono text-xs">
-                          {server.name}: {server.command} {server.args.join(' ')}
-                        </li>
-                      ))}
-                    </ul>
-                  </CardContent>
-                </Card>
-              ) : (
-                <FieldDescription>No .mcp.json in this directory.</FieldDescription>
-              )}
-            </FieldSet>
+            <Fade delay={100}>
+              <FieldSet>
+                <FieldLegend variant="label">MCP servers</FieldLegend>
+                <FieldDescription>
+                  Servers listed in this project&rsquo;s own .mcp.json - the same file a
+                  person&rsquo;s own Claude Code session in this folder would read. Starting them
+                  for an assignment needs approval here first, and an edit to the file needs
+                  approving again.
+                </FieldDescription>
+                {mcpLoading ? (
+                  <Spinner aria-label="Loading" />
+                ) : mcpError ? (
+                  <p className="text-sm text-destructive">{mcpError}</p>
+                ) : mcp && mcp.servers.length ? (
+                  <Card>
+                    <CardHeader className="flex-row items-center justify-between gap-3">
+                      <div>
+                        <CardTitle>
+                          <Badge
+                            variant={
+                              mcp.status === 'trusted'
+                                ? 'secondary'
+                                : mcp.status === 'changed'
+                                  ? 'destructive'
+                                  : 'outline'
+                            }
+                          >
+                            {MCP_STATUS_LABEL[mcp.status]}
+                          </Badge>
+                        </CardTitle>
+                        <CardDescription>
+                          <CountingNumber number={mcp.servers.length} /> server
+                          {mcp.servers.length === 1 ? '' : 's'} declared.
+                        </CardDescription>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={mcp.status === 'trusted' ? 'outline' : 'default'}
+                        disabled={mcpBusy}
+                        onClick={() => void (mcp.status === 'trusted' ? revokeMcp() : trustMcp())}
+                      >
+                        {mcpBusy ? (
+                          <Spinner aria-label="Working" data-icon="inline-start" />
+                        ) : (
+                          <PlugZap animateOnView />
+                        )}
+                        {mcp.status === 'trusted' ? 'Revoke' : 'Trust'}
+                      </Button>
+                    </CardHeader>
+                    <CardContent>
+                      <ul className="flex flex-col gap-1.5">
+                        {mcp.servers.map((server) => (
+                          <li key={server.name} className="font-mono text-xs">
+                            {server.name}: {server.command} {server.args.join(' ')}
+                          </li>
+                        ))}
+                      </ul>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <FieldDescription>No .mcp.json in this directory.</FieldDescription>
+                )}
+              </FieldSet>
+            </Fade>
           </>
         ) : null}
 
         <FieldSeparator />
 
-        <FieldSet>
-          {/*
-            Im Neu-Modus abgeschaltet statt ausgeblendet: eine Feldzahl, die
-            sich zwischen Create und Edit ändert, liest sich wie ein
-            anderes Formular.
-          */}
-          <Field orientation="horizontal">
-            <FieldContent>
-              <FieldTitle>Archived</FieldTitle>
-              <FieldDescription>
-                {editing
-                  ? 'Archived projects disappear from selection lists but remain linked to their assignments.'
-                  : 'A new project is always active. You can archive it later.'}
-              </FieldDescription>
-            </FieldContent>
-            <Switch
-              id="project-archived"
-              checked={draft.archived}
-              disabled={!editing}
-              onCheckedChange={(archived) => set({ archived })}
-            />
-          </Field>
-        </FieldSet>
+        <Fade delay={150}>
+          <FieldSet>
+            {/*
+              Im Neu-Modus abgeschaltet statt ausgeblendet: eine Feldzahl, die
+              sich zwischen Create und Edit ändert, liest sich wie ein
+              anderes Formular.
+            */}
+            <Field orientation="horizontal">
+              <FieldContent>
+                <FieldTitle>Archived</FieldTitle>
+                <FieldDescription>
+                  {editing
+                    ? 'Archived projects disappear from selection lists but remain linked to their assignments.'
+                    : 'A new project is always active. You can archive it later.'}
+                </FieldDescription>
+              </FieldContent>
+              <Switch
+                id="project-archived"
+                checked={draft.archived}
+                disabled={!editing}
+                onCheckedChange={(archived) => set({ archived })}
+              />
+            </Field>
+          </FieldSet>
+        </Fade>
       </FormPage>
     </PageBody>
   );

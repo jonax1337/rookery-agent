@@ -2,15 +2,17 @@ import { useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
 import {
   BookOpenIcon,
-  ChevronDownIcon,
-  DownloadIcon,
   PencilIcon,
-  PlusIcon,
-  RefreshCwIcon,
   SquareArrowOutUpRightIcon,
   Trash2Icon,
 } from 'lucide-react';
 
+import { DownloadIcon } from '@/components/animate-ui/icons/download';
+import { PlusIcon } from '@/components/animate-ui/icons/plus';
+import { RefreshCwIcon } from '@/components/animate-ui/icons/refresh-cw';
+import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import {
@@ -115,7 +117,9 @@ export function SkillsPage() {
       <>
         <Button asChild size="sm">
           <NavLink to="/skills/new">
-            <PlusIcon data-icon="inline-start" />
+            {/* animateOnView, not animateOnHover: the button base carries
+                `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
+            <PlusIcon data-icon="inline-start" animateOnView />
             Create skill
           </NavLink>
         </Button>
@@ -126,7 +130,7 @@ export function SkillsPage() {
           <DropdownMenuContent align="end">
             <DropdownMenuItem asChild>
               <NavLink to="/skills/import">
-                <DownloadIcon />
+                <DownloadIcon animateOnView />
                 Import
               </NavLink>
             </DropdownMenuItem>
@@ -317,16 +321,24 @@ export function SkillsPage() {
     [skills],
   );
 
+  // The headline counts roll in from zero once the hook has data and keep
+  // rolling whenever a refetch moves them. `thousandSeparator` keeps
+  // `formatNumber`'s en-GB comma in the resting pose - `CountingNumber`
+  // has no separator support and would quietly drop it above a thousand.
+  const animatedCount = (value: number) => (
+    <SlidingNumber number={value} fromNumber={0} thousandSeparator="," />
+  );
+
   const cards: StatCardProps[] = [
     {
       label: 'Skills',
-      value: formatNumber(counts.alle),
+      value: animatedCount(counts.alle),
       headline: counts.alle === 0 ? 'Nothing added yet' : 'Guides in the skills folder',
       footnote: 'One folder with a SKILL.md file in the Rookery directory',
     },
     {
       label: 'For the assistant',
-      value: formatNumber(counts.assistant),
+      value: animatedCount(counts.assistant),
       headline: 'Only in chat and voice mode',
       footnote:
         counts.both > 0
@@ -335,7 +347,7 @@ export function SkillsPage() {
     },
     {
       label: 'For agents',
-      value: formatNumber(counts.agents),
+      value: animatedCount(counts.agents),
       headline: 'Only in agent assignments',
       footnote:
         counts.both > 0
@@ -355,106 +367,116 @@ export function SkillsPage() {
       {dialog}
       {bulk.dialog}
 
-      <StatCards items={cards} />
+      <Fade>
+        <StatCards items={cards} />
+      </Fade>
 
-      <DataTable
-        data={rows}
-        columns={columns}
-        getRowId={(skill) => skill.name}
-        idPrefix="skills"
-        onRowClick={(skill) => void navigate('/skills/' + skill.name)}
-        rowClickIgnoreColumns={['select', 'name', 'actions']}
-        tabs={[
-          { value: 'alle', label: 'All', count: counts.alle },
-          { value: 'assistant', label: 'Assistant', count: counts.assistant },
-          { value: 'agents', label: 'Agents', count: counts.agents },
-          { value: 'both', label: 'Both', count: counts.both },
-        ]}
-        tab={tab}
-        onTabChange={(value) => setTab(value as Tab)}
-        tabLabel="Skill selection"
-        searchable
-        search={search}
-        onSearchChange={setSearch}
-        searchPlaceholder="Skills durchsuchen"
-        searchText={(skill) => skill.name + ' ' + skill.description}
-        columnLabels={COLUMN_LABELS}
-        initialSorting={[{ id: 'name', desc: false }]}
-        rowLabel={{ singular: 'Skill', plural: 'Skills' }}
-        loading={loading}
-        error={error ? <ServerOffline onRetry={() => void refresh()} /> : undefined}
-        bulkActions={(selected, clear) => {
-          // A skill that ships with Rookery has no folder to delete, so it is
-          // left out of the run rather than counted as a failure afterwards.
-          const removable = selected.filter((skill) => skill.origin !== 'builtin');
-          return (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={removable.length === 0}
-            onClick={() =>
-              void bulk.run({
-                rows: removable,
-                noun: { singular: 'Skill', plural: 'Skills' },
-                nameOf: (skill) => skill.name,
-                verb: 'delete',
-                done: 'deleted',
-                confirmLabel: 'Delete',
-                description:
-                  'The folders for ' +
-                  removable.map((skill) => '„' + skill.name + '“').join(', ') +
-                  ' will be deleted. This cannot be undone.',
-                run: (skill) => remove(skill.name),
-                clear,
-              })
-            }
-          >
-            <Trash2Icon data-icon="inline-start" />
-            Delete
-          </Button>
-          );
-        }}
-        empty={
-          tab === 'alle' ? (
-            <EmptyState
-              icon={BookOpenIcon}
-              title="No skills yet"
-              description="A skill is a written guide for a type of task, such as “Write a weekly report,” with steps that stay the same. The assistant and agents see the list in every turn."
-              actionLabel="Create skill"
-              actionTo="/skills/new"
-              action={
-                <Button variant="outline" asChild>
-                  <NavLink to="/skills/import">
-                    <DownloadIcon data-icon="inline-start" />
-                    Import from GitHub
-                  </NavLink>
-                </Button>
+      <Fade delay={50}>
+        <DataTable
+          data={rows}
+          columns={columns}
+          getRowId={(skill) => skill.name}
+          idPrefix="skills"
+          onRowClick={(skill) => void navigate('/skills/' + skill.name)}
+          rowClickIgnoreColumns={['select', 'name', 'actions']}
+          tabs={[
+            { value: 'alle', label: 'All', count: counts.alle },
+            { value: 'assistant', label: 'Assistant', count: counts.assistant },
+            { value: 'agents', label: 'Agents', count: counts.agents },
+            { value: 'both', label: 'Both', count: counts.both },
+          ]}
+          tab={tab}
+          onTabChange={(value) => setTab(value as Tab)}
+          tabLabel="Skill selection"
+          searchable
+          search={search}
+          onSearchChange={setSearch}
+          searchPlaceholder="Skills durchsuchen"
+          searchText={(skill) => skill.name + ' ' + skill.description}
+          columnLabels={COLUMN_LABELS}
+          initialSorting={[{ id: 'name', desc: false }]}
+          rowLabel={{ singular: 'Skill', plural: 'Skills' }}
+          loading={loading}
+          error={error ? <ServerOffline onRetry={() => void refresh()} /> : undefined}
+          bulkActions={(selected, clear) => {
+            // A skill that ships with Rookery has no folder to delete, so it is
+            // left out of the run rather than counted as a failure afterwards.
+            const removable = selected.filter((skill) => skill.origin !== 'builtin');
+            return (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={removable.length === 0}
+              onClick={() =>
+                void bulk.run({
+                  rows: removable,
+                  noun: { singular: 'Skill', plural: 'Skills' },
+                  nameOf: (skill) => skill.name,
+                  verb: 'delete',
+                  done: 'deleted',
+                  confirmLabel: 'Delete',
+                  description:
+                    'The folders for ' +
+                    removable.map((skill) => '„' + skill.name + '“').join(', ') +
+                    ' will be deleted. This cannot be undone.',
+                  run: (skill) => remove(skill.name),
+                  clear,
+                })
               }
-              variant="plain"
-              size="sm"
-            />
-          ) : (
-            <EmptyState
-              icon={BookOpenIcon}
-              title="No skills in this selection"
-              description="There is nothing in this tab right now. You can find every skill under “All”."
-              actionLabel="Show all"
-              onAction={() => {
-                setTab('alle');
-                setSearch('');
-              }}
-              variant="plain"
-              size="sm"
-            />
-          )
-        }
-        filteredEmpty={
-          <NoResults
-            {...(search.trim() ? { query: search.trim() } : {})}
-            onReset={() => setSearch('')}
-          />
-        }
-      />
+            >
+              <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
+              Delete
+            </Button>
+            );
+          }}
+          empty={
+            tab === 'alle' ? (
+              <Fade>
+                <EmptyState
+                  icon={BookOpenIcon}
+                  title="No skills yet"
+                  description="A skill is a written guide for a type of task, such as “Write a weekly report,” with steps that stay the same. The assistant and agents see the list in every turn."
+                  actionLabel="Create skill"
+                  actionTo="/skills/new"
+                  action={
+                    <Button variant="outline" asChild>
+                      <NavLink to="/skills/import">
+                        <DownloadIcon data-icon="inline-start" animateOnView />
+                        Import from GitHub
+                      </NavLink>
+                    </Button>
+                  }
+                  variant="plain"
+                  size="sm"
+                />
+              </Fade>
+            ) : (
+              <Fade>
+                <EmptyState
+                  icon={BookOpenIcon}
+                  title="No skills in this selection"
+                  description="There is nothing in this tab right now. You can find every skill under “All”."
+                  actionLabel="Show all"
+                  onAction={() => {
+                    setTab('alle');
+                    setSearch('');
+                  }}
+                  variant="plain"
+                  size="sm"
+                />
+              </Fade>
+            )
+          }
+          filteredEmpty={
+            <Fade>
+              <NoResults
+                {...(search.trim() ? { query: search.trim() } : {})}
+                onReset={() => setSearch('')}
+              />
+            </Fade>
+          }
+        />
+      </Fade>
 
       {/*
         The other shelf. These are read out of the Claude Code on this
@@ -464,47 +486,51 @@ export function SkillsPage() {
         a single plugin can hold three hundred entries, which is why one is
         never available until somebody says so.
       */}
-      <SectionHeading
-        title="From Claude Code"
-        hint={
-          externalSources.length
-            ? formatNumber(availableSkills) +
-              ' of ' +
-              formatNumber(installedSkills) +
-              ' installed skills are available. The assistant is told they exist and searches them when a task needs one.'
-            : 'Nothing installed in the Claude Code on this machine, or reading it is switched off.'
-        }
-      >
-        <DataTable
-          data={externalSources}
-          columns={sourceColumns}
-          getRowId={(source) => source.id}
-          idPrefix="skill-sources"
-          columnLabels={SOURCE_COLUMN_LABELS}
-          searchable
-          searchPlaceholder="Quellen durchsuchen"
-          searchText={(source) => source.label + ' ' + (source.plugin ?? '')}
-          initialSorting={[{ id: 'skillCount', desc: true }]}
-          rowLabel={{ singular: 'Source', plural: 'Sources' }}
-          loading={external.loading}
-          error={external.error ? <ServerOffline onRetry={() => void external.reload()} /> : undefined}
-          actions={
-            <Button size="sm" variant="outline" onClick={() => void external.rescan()}>
-              <RefreshCwIcon data-icon="inline-start" />
-              Read again
-            </Button>
+      <Fade delay={100}>
+        <SectionHeading
+          title="From Claude Code"
+          hint={
+            externalSources.length
+              ? formatNumber(availableSkills) +
+                ' of ' +
+                formatNumber(installedSkills) +
+                ' installed skills are available. The assistant is told they exist and searches them when a task needs one.'
+              : 'Nothing installed in the Claude Code on this machine, or reading it is switched off.'
           }
-          empty={
-            <EmptyState
-              icon={BookOpenIcon}
-              title="Nothing found"
-              description="Rookery reads ~/.claude: the skills folder of Claude Code and those of every plugin switched on there. It never writes to them."
-              variant="plain"
-              size="sm"
-            />
-          }
-        />
-      </SectionHeading>
+        >
+          <DataTable
+            data={externalSources}
+            columns={sourceColumns}
+            getRowId={(source) => source.id}
+            idPrefix="skill-sources"
+            columnLabels={SOURCE_COLUMN_LABELS}
+            searchable
+            searchPlaceholder="Quellen durchsuchen"
+            searchText={(source) => source.label + ' ' + (source.plugin ?? '')}
+            initialSorting={[{ id: 'skillCount', desc: true }]}
+            rowLabel={{ singular: 'Source', plural: 'Sources' }}
+            loading={external.loading}
+            error={external.error ? <ServerOffline onRetry={() => void external.reload()} /> : undefined}
+            actions={
+              <Button size="sm" variant="outline" onClick={() => void external.rescan()}>
+                <RefreshCwIcon data-icon="inline-start" animateOnView />
+                Read again
+              </Button>
+            }
+            empty={
+              <Fade>
+                <EmptyState
+                  icon={BookOpenIcon}
+                  title="Nothing found"
+                  description="Rookery reads ~/.claude: the skills folder of Claude Code and those of every plugin switched on there. It never writes to them."
+                  variant="plain"
+                  size="sm"
+                />
+              </Fade>
+            }
+          />
+        </SectionHeading>
+      </Fade>
     </PageBody>
   );
 }

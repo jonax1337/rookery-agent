@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useId, useMemo } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { ArchiveIcon, ArchiveRestoreIcon, UsersRoundIcon } from 'lucide-react';
+import { ArchiveIcon, ArchiveRestoreIcon, type LucideProps } from 'lucide-react';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -12,9 +12,12 @@ import {
   STANDARD_CHOICE,
   type PermissionChoice,
 } from '@/lib/format';
-import { formatNumber } from '@/lib/stats';
 import type { Agent, ProviderId } from '@/lib/types';
 import { useConfig, useOrgState } from '@/providers/rookery-provider';
+import { UsersRoundIcon } from '@/components/animate-ui/icons/users-round';
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { PageBody } from '@/components/blocks/page-body';
 import { FormPage } from '@/components/blocks/form-page';
 import { usePageMeta } from '@/components/shell/page-meta';
@@ -53,6 +56,18 @@ import { Textarea } from '@/components/ui/textarea';
  * leaves it alone with `undefined`, which is exactly what the comboboxes
  * produce. That is why there are no `'__none__'` sentinels any more.
  */
+
+/**
+ * `EmptyState` types its `icon` as a lucide component, so the animate-ui
+ * variant needs this shim to carry the view trigger - without `animateOnView`
+ * the animated icons render statically. Same glyph at the same 24 px, waving
+ * once when the empty state appears.
+ */
+const UsersRoundViewIcon = forwardRef<SVGSVGElement, LucideProps>(
+  function UsersRoundViewIcon(_props, _ref) {
+    return <UsersRoundIcon size={24} animateOnView />;
+  },
+);
 
 /** The provider picker needs the same "leave it to the settings" entry. */
 type ProviderChoice = typeof STANDARD_CHOICE | ProviderId;
@@ -319,13 +334,17 @@ export function AgentFormPage() {
   if (editing && !agent && !org.loading) {
     return (
       <PageBody width="3xl">
-        <EmptyState
-          icon={UsersRoundIcon}
-          title="This agent no longer exists"
-          description="The agent was removed or never existed."
-          actionLabel="View agents"
-          actionTo="/org/agents"
-        />
+        {/* The flex classes keep the empty state stretching the page the way
+            it did as a direct child of the rhythm container. */}
+        <Fade className="flex flex-1 flex-col">
+          <EmptyState
+            icon={UsersRoundViewIcon}
+            title="This agent no longer exists"
+            description="The agent was removed or never existed."
+            actionLabel="View agents"
+            actionTo="/org/agents"
+          />
+        </Fade>
       </PageBody>
     );
   }
@@ -353,152 +372,163 @@ export function AgentFormPage() {
         onSubmit={submit}
         error={failure}
         description={
-          editing
-            ? 'Role, instructions, and Memory persist; every assignment still starts a fresh process.'
-            : 'An agent is a permanent team member: role, instructions, and personal Memory persist.'
+          <Blur>
+            {editing
+              ? 'Role, instructions, and Memory persist; every assignment still starts a fresh process.'
+              : 'An agent is a permanent team member: role, instructions, and personal Memory persist.'}
+          </Blur>
         }
       >
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="agent-name">Name</FieldLabel>
-            <Input
-              id="agent-name"
-              value={draft.name}
-              aria-invalid={Boolean(errors.name)}
-              onChange={(event) => set({ name: event.target.value })}
-            />
-            <FieldError>{errors.name}</FieldError>
-          </Field>
+        <Fade>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="agent-name">Name</FieldLabel>
+              <Input
+                id="agent-name"
+                value={draft.name}
+                aria-invalid={Boolean(errors.name)}
+                onChange={(event) => set({ name: event.target.value })}
+              />
+              <FieldError>{errors.name}</FieldError>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="agent-title">Title</FieldLabel>
-            <Input
-              id="agent-title"
-              placeholder="e.g. Backend engineer"
-              value={draft.title}
-              aria-invalid={Boolean(errors.title)}
-              onChange={(event) => set({ title: event.target.value })}
-            />
-            <FieldError>{errors.title}</FieldError>
-          </Field>
+            <Field>
+              <FieldLabel htmlFor="agent-title">Title</FieldLabel>
+              <Input
+                id="agent-title"
+                placeholder="e.g. Backend engineer"
+                value={draft.title}
+                aria-invalid={Boolean(errors.title)}
+                onChange={(event) => set({ title: event.target.value })}
+              />
+              <FieldError>{errors.title}</FieldError>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="agent-slug">Slug</FieldLabel>
-            <Input
-              id="agent-slug"
-              className="font-mono"
-              placeholder={suggestSlug(draft.name || 'Agent')}
-              value={draft.slug}
-              aria-invalid={Boolean(errors.slug)}
-              onChange={(event) => set({ slug: event.target.value })}
-            />
-            <FieldDescription>{slugHint}</FieldDescription>
-            <FieldError>{errors.slug}</FieldError>
-          </Field>
-        </FieldSet>
-
-        <FieldSeparator />
-
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="agent-team">Team</FieldLabel>
-            <EntityCombobox
-              id="agent-team"
-              options={teamOptions}
-              value={draft.teamId}
-              onChange={(teamId) => set({ teamId })}
-              placeholder="No team"
-              emptyLabel="No team found"
-            />
-            <FieldDescription>
-              Without a team, the agent works independently. You can also change the assignment from the team page.
-            </FieldDescription>
-          </Field>
-
-          <Field>
-            <FieldLabel htmlFor="agent-manager">Manager</FieldLabel>
-            <EntityCombobox
-              id="agent-manager"
-              options={managerOptions}
-              value={draft.managerId}
-              onChange={(managerId) => set({ managerId })}
-              placeholder="The assistant"
-              emptyLabel="No agent found"
-            />
-            <FieldDescription>
-              Without a manager, the agent reports to the assistant.
-            </FieldDescription>
-          </Field>
-
-          <Field>
-            <FieldLabel htmlFor="agent-permission-standard">Permission</FieldLabel>
-            <ChoiceField
-              id="agent-permission"
-              options={PERMISSION_CHOICES}
-              value={draft.permission}
-              onChange={(permission) => set({ permission })}
-            />
-          </Field>
-        </FieldSet>
+            <Field>
+              <FieldLabel htmlFor="agent-slug">Slug</FieldLabel>
+              <Input
+                id="agent-slug"
+                className="font-mono"
+                placeholder={suggestSlug(draft.name || 'Agent')}
+                value={draft.slug}
+                aria-invalid={Boolean(errors.slug)}
+                onChange={(event) => set({ slug: event.target.value })}
+              />
+              <FieldDescription>{slugHint}</FieldDescription>
+              <FieldError>{errors.slug}</FieldError>
+            </Field>
+          </FieldSet>
+        </Fade>
 
         <FieldSeparator />
 
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="agent-provider-standard">Provider</FieldLabel>
-            <ChoiceField
-              id="agent-provider"
-              options={providerOptions}
-              value={draft.provider}
-              onChange={(provider) => set({ provider, model: null })}
-            />
-            <FieldDescription>
-              Changing provider resets the model selection.
-            </FieldDescription>
-          </Field>
+        <Fade delay={50}>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="agent-team">Team</FieldLabel>
+              <EntityCombobox
+                id="agent-team"
+                options={teamOptions}
+                value={draft.teamId}
+                onChange={(teamId) => set({ teamId })}
+                placeholder="No team"
+                emptyLabel="No team found"
+              />
+              <FieldDescription>
+                Without a team, the agent works independently. You can also change the assignment
+                from the team page.
+              </FieldDescription>
+            </Field>
 
-          <Field>
-            <FieldLabel htmlFor="agent-model">Model</FieldLabel>
-            <EntityCombobox
-              id="agent-model"
-              options={modelOptions}
-              value={draft.model}
-              onChange={(model) => set({ model })}
-              placeholder="Default model"
-              emptyLabel="No model found"
-            />
-            <FieldDescription>
-              {modelOptions.length
-                ? 'Models from ' +
-                  effectiveLabel +
-                  (draft.provider === STANDARD_CHOICE ? ' (Default)' : '') +
-                  '. Empty means the provider chooses.'
-                : effectiveLabel +
-                  ' currently reports no models. Empty means the provider chooses.'}
-            </FieldDescription>
-          </Field>
-        </FieldSet>
+            <Field>
+              <FieldLabel htmlFor="agent-manager">Manager</FieldLabel>
+              <EntityCombobox
+                id="agent-manager"
+                options={managerOptions}
+                value={draft.managerId}
+                onChange={(managerId) => set({ managerId })}
+                placeholder="The assistant"
+                emptyLabel="No agent found"
+              />
+              <FieldDescription>
+                Without a manager, the agent reports to the assistant.
+              </FieldDescription>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="agent-permission-standard">Permission</FieldLabel>
+              <ChoiceField
+                id="agent-permission"
+                options={PERMISSION_CHOICES}
+                value={draft.permission}
+                onChange={(permission) => set({ permission })}
+              />
+            </Field>
+          </FieldSet>
+        </Fade>
 
         <FieldSeparator />
 
-        <FieldSet>
-          <Field>
-            <FieldLabel htmlFor="agent-instructions">Instructions</FieldLabel>
-            <Textarea
-              id="agent-instructions"
-              rows={12}
-              placeholder="The permanent role description. Never the assistant’s persona."
-              value={draft.instructions}
-              aria-invalid={Boolean(errors.instructions)}
-              onChange={(event) => set({ instructions: event.target.value })}
-            />
-            <FieldDescription>
-              {formatNumber(draft.instructions.length)} characters. Included verbatim in every
-              assignment system prompt.
-            </FieldDescription>
-            <FieldError>{errors.instructions}</FieldError>
-          </Field>
-        </FieldSet>
+        <Fade delay={100}>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="agent-provider-standard">Provider</FieldLabel>
+              <ChoiceField
+                id="agent-provider"
+                options={providerOptions}
+                value={draft.provider}
+                onChange={(provider) => set({ provider, model: null })}
+              />
+              <FieldDescription>
+                Changing provider resets the model selection.
+              </FieldDescription>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="agent-model">Model</FieldLabel>
+              <EntityCombobox
+                id="agent-model"
+                options={modelOptions}
+                value={draft.model}
+                onChange={(model) => set({ model })}
+                placeholder="Default model"
+                emptyLabel="No model found"
+              />
+              <FieldDescription>
+                {modelOptions.length
+                  ? 'Models from ' +
+                    effectiveLabel +
+                    (draft.provider === STANDARD_CHOICE ? ' (Default)' : '') +
+                    '. Empty means the provider chooses.'
+                  : effectiveLabel +
+                    ' currently reports no models. Empty means the provider chooses.'}
+              </FieldDescription>
+            </Field>
+          </FieldSet>
+        </Fade>
+
+        <FieldSeparator />
+
+        <Fade delay={150}>
+          <FieldSet>
+            <Field>
+              <FieldLabel htmlFor="agent-instructions">Instructions</FieldLabel>
+              <Textarea
+                id="agent-instructions"
+                rows={12}
+                placeholder="The permanent role description. Never the assistant’s persona."
+                value={draft.instructions}
+                aria-invalid={Boolean(errors.instructions)}
+                onChange={(event) => set({ instructions: event.target.value })}
+              />
+              <FieldDescription>
+                <SlidingNumber number={draft.instructions.length} thousandSeparator="," />{' '}
+                characters. Included verbatim in every assignment system prompt.
+              </FieldDescription>
+              <FieldError>{errors.instructions}</FieldError>
+            </Field>
+          </FieldSet>
+        </Fade>
       </FormPage>
     </PageBody>
   );

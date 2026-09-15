@@ -1,10 +1,19 @@
 import { useLocation, useNavigate } from 'react-router';
-import { CompassIcon } from 'lucide-react';
 
+import { CompassIcon as AnimatedCompassIcon } from '@/components/animate-ui/icons/compass';
+import { Blur } from '@/components/animate-ui/primitives/effects/blur';
+import { RollingText } from '@/components/animate-ui/primitives/texts/rolling';
 import { PageBody } from '@/components/blocks/page-body';
-import { EmptyState } from '@/components/common/empty-state';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Button } from '@/components/ui/button';
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 
 /**
@@ -32,30 +41,43 @@ export function NotFoundPage() {
 
   return (
     <PageBody width="2xl">
-      <EmptyState
-        icon={CompassIcon}
-        title="This page does not exist"
-        description={
-          <>
-            <span className="font-mono text-foreground">{pathname}</span> was not found. The link may
-            be outdated or mistyped.
-          </>
-        }
-        action={
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <Button type="button" onClick={() => void navigate('/dashboard')}>
-              Go to dashboard
-            </Button>
-            <Button type="button" variant="outline" onClick={openPalette}>
-              Search
-              <KbdGroup>
-                <Kbd>Ctrl</Kbd>
-                <Kbd>K</Kbd>
-              </KbdGroup>
-            </Button>
-          </div>
-        }
-      />
+      {/* Spelled out with the same `ui/empty` primitives EmptyState uses
+          (variant "outline", size "default" - so `border` on the frame)
+          because its `icon` prop takes a plain lucide component and renders
+          it without animation props: inline, the compass and the title get
+          to move. The Blur wrapper carries the flex growth the card had as
+          a direct child of the page rhythm, so it still owns the page. */}
+      <Blur className="flex flex-1 flex-col">
+        <Empty className="border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <AnimatedCompassIcon animateOnView />
+            </EmptyMedia>
+            <EmptyTitle>
+              <RollingText text="This page does not exist" />
+            </EmptyTitle>
+            <EmptyDescription>
+              <span className="font-mono text-foreground">{pathname}</span> was not found. The link may
+              be outdated or mistyped.
+            </EmptyDescription>
+          </EmptyHeader>
+
+          <EmptyContent>
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Button type="button" onClick={() => void navigate('/dashboard')}>
+                Go to dashboard
+              </Button>
+              <Button type="button" variant="outline" onClick={openPalette}>
+                Search
+                <KbdGroup>
+                  <Kbd>Ctrl</Kbd>
+                  <Kbd>K</Kbd>
+                </KbdGroup>
+              </Button>
+            </div>
+          </EmptyContent>
+        </Empty>
+      </Blur>
     </PageBody>
   );
 }

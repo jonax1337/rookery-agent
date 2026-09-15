@@ -1,6 +1,7 @@
 import type * as React from 'react';
 import { NavLink } from 'react-router';
 import type { LucideIcon } from 'lucide-react';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import {
   Item,
   ItemContent,
@@ -70,29 +71,31 @@ export function MetaList({
   if (shown.length === 0) return null;
 
   return (
-    <ItemGroup className={cn('grid gap-2', COLUMNS[columns], className)}>
-      {shown.map((item) => (
-        <Item key={item.label} variant={variant === 'plain' ? 'default' : variant} size={size} className="min-w-0">
-          {item.icon && (
-            <ItemMedia variant="icon">
-              <item.icon className="text-muted-foreground" />
-            </ItemMedia>
-          )}
-          <ItemContent className="min-w-0">
-            <ItemDescription className="text-xs">{item.label}</ItemDescription>
-            <ItemTitle className={cn('max-w-full min-w-0 break-words font-normal', item.mono && 'font-mono text-xs')}>
-              {item.to ? (
-                <NavLink to={item.to} className="hover:underline">
-                  {item.value}
-                </NavLink>
-              ) : (
-                item.value
-              )}
-            </ItemTitle>
-          </ItemContent>
-        </Item>
-      ))}
-    </ItemGroup>
+    <Fade asChild>
+      <ItemGroup className={cn('grid gap-2', COLUMNS[columns], className)}>
+        {shown.map((item) => (
+          <Item key={item.label} variant={variant === 'plain' ? 'default' : variant} size={size} className="min-w-0">
+            {item.icon && (
+              <ItemMedia variant="icon">
+                <item.icon className="text-muted-foreground" />
+              </ItemMedia>
+            )}
+            <ItemContent className="min-w-0">
+              <ItemDescription className="text-xs">{item.label}</ItemDescription>
+              <ItemTitle className={cn('max-w-full min-w-0 break-words font-normal', item.mono && 'font-mono text-xs')}>
+                {item.to ? (
+                  <NavLink to={item.to} className="hover:underline">
+                    {item.value}
+                  </NavLink>
+                ) : (
+                  item.value
+                )}
+              </ItemTitle>
+            </ItemContent>
+          </Item>
+        ))}
+      </ItemGroup>
+    </Fade>
   );
 }
 
@@ -114,10 +117,12 @@ export function MetaListSkeleton({
   className?: string;
 }) {
   return (
-    <div className={cn('grid gap-2', COLUMNS[columns], className)} aria-hidden="true">
-      {Array.from({ length: rows }, (_, index) => (
-        <Skeleton key={index} className="h-14 w-full rounded-lg" />
-      ))}
-    </div>
+    <Fade asChild>
+      <div className={cn('grid gap-2', COLUMNS[columns], className)} aria-hidden="true">
+        {Array.from({ length: rows }, (_, index) => (
+          <Skeleton key={index} className="h-14 w-full rounded-lg" />
+        ))}
+      </div>
+    </Fade>
   );
 }
