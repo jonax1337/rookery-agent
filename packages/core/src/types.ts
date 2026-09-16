@@ -1041,6 +1041,8 @@ export interface RookeryConfig {
   providerProfiles: ProviderProfile[];
   /** The Rookery-managed `claude-code-router` process, used by `via: 'router'` profiles. */
   router: RouterConfig;
+  /** Switching providers when one runs low on quota. */
+  providerFallback: ProviderFallbackConfig;
   /** Name the assistant answers to, used in the persona and as wake word base. */
   assistantName: string;
   userName?: string;
@@ -1048,6 +1050,22 @@ export interface RookeryConfig {
   formalAddress: boolean;
   /** What the assistant calls the user now and then, e.g. "Master" or "Sir". Empty: the name. */
   honorific: string;
+}
+
+/**
+ * Routing around a provider whose quota is running out: one that reports a
+ * window this full is avoided while a roomier one is signed in, and one whose
+ * turn died on a usage limit is left alone until the window resets.
+ */
+export interface ProviderFallbackConfig {
+  enabled: boolean;
+  /** A window at or above this share of its quota counts as "running low". */
+  thresholdPercent: number;
+  /**
+   * Which provider to try after the preferred one, in this order. Empty: the
+   * preferred provider, then the rest as they were configured.
+   */
+  order: ProviderId[];
 }
 
 export interface MemoryConfig {

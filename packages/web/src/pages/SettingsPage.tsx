@@ -3,6 +3,8 @@ import { NavLink, Navigate, useNavigate, useParams } from 'react-router';
 import {
   BrainIcon,
   Building2Icon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   ImportIcon,
   PaletteIcon,
   SquareIcon,
@@ -446,6 +448,9 @@ export function SettingsPage() {
                 <>
                   <DefaultsSection draft={draft} providers={providers} set={set} />
                   <Fade delay={200}>
+                    <ProviderFallbackSection draft={draft} providers={providers} set={set} />
+                  </Fade>
+                  <Fade delay={250}>
                     <ProviderProfilesSection providers={providers} />
                   </Fade>
                 </>
@@ -752,6 +757,118 @@ function DefaultsSection({
         </FieldSet>
       </Fade>
     </>
+  );
+}
+
+/* --------------------------- provider fallback ---------------------------- */
+
+/**
+ * Was passiert, wenn ein Provider seine Quota verliert: wer als Naechster dran
+ * ist, und ab wie viel Verbrauch ein Provider als "fast voll" gilt. Die
+ * Reihenfolge zeigt jeden bekannten Provider - einer, der spaeter hinzukommt,
+ * haengt sich hinten an, statt hier unsichtbar zu bleiben.
+ */
+function ProviderFallbackSection({
+  draft,
+  providers,
+  set,
+}: {
+  draft: PublicConfig;
+  providers: readonly ProviderStatus[];
+  set(patch: Partial<PublicConfig>): void;
+}) {
+  const fallback = draft.providerFallback ?? { enabled: true, thresholdPercent: 95, order: [] };
+  // Die gespeicherte Reihenfolge zuerst, dann was die Registry kennt und die
+  // Datei nicht: so steht ein neuer Provider ganz hinten statt gar nicht.
+  const ordered: ProviderId[] = [
+    ...fallback.order.filter((id) => providers.some((status) => status.id === id)),
+    ...providers.map((status) => status.id).filter((id) => !fallback.order.includes(id)),
+  ];
+
+  const move = (index: number, delta: -1 | 1): void => {
+    const target = index + delta;
+    if (target < 0 || target >= ordered.length) return;
+    const entry = ordered[index];
+    const other = ordered[target];
+    if (entry === undefined || other === undefined) return;
+    const next = [...ordered];
+    next[index] = other;
+    next[target] = entry;
+    set({ providerFallback: { ...fallback, order: next } });
+  };
+
+  return (
+    <FieldSet>
+      <FieldLegend variant="label">Fallback</FieldLegend>
+      <FieldDescription>
+        When a provider runs out of quota, turns and assignments continue on another one instead of failing.
+      </FieldDescription>
+
+      <Field orientation="horizontal">
+        <FieldContent>
+          <FieldLabel htmlFor="set-fallback">Switch automatically</FieldLabel>
+          <FieldDescription>
+            Route around a provider that hit its usage limit or is nearly spent.
+          </FieldDescription>
+        </FieldContent>
+        <Switch
+          id="set-fallback"
+          checked={fallback.enabled}
+          onCheckedChange={(on) => set({ providerFallback: { ...fallback, enabled: on } })}
+        />
+      </Field>
+
+      <SliderField
+        id="set-fallback-threshold"
+        label="Threshold"
+        value={fallback.thresholdPercent}
+        min={50}
+        max={100}
+        step={1}
+        fallback={95}
+        format={(value) => value + ' % used'}
+        description="A provider whose window is this full is avoided while a roomier one is signed in."
+        onChange={(value) => set({ providerFallback: { ...fallback, thresholdPercent: value } })}
+      />
+
+      <Field>
+        <FieldLabel>Fallback order</FieldLabel>
+        <FieldDescription>Who a turn tries next when the preferred provider cannot serve it.</FieldDescription>
+        <div className="flex flex-col gap-1">
+          {ordered.map((id, index) => {
+            const status = providers.find((entry) => entry.id === id);
+            const label = PROVIDER_LABEL[id] ?? status?.displayName ?? id;
+            return (
+              <div key={id} className="flex items-center gap-2 rounded-lg border px-3 py-1.5">
+                <ProviderIcon provider={id} label={label} className="size-4 text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
+                {status?.usageBlocked ? <Badge variant="outline">Avoided</Badge> : null}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={index === 0}
+                  onClick={() => move(index, -1)}
+                  aria-label={'Move ' + label + ' up'}
+                >
+                  <ChevronUpIcon className="size-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={index === ordered.length - 1}
+                  onClick={() => move(index, 1)}
+                  aria-label={'Move ' + label + ' down'}
+                >
+                  <ChevronDownIcon className="size-4" />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      </Field>
+    </FieldSet>
   );
 }
 

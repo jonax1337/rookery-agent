@@ -730,6 +730,12 @@ export interface ProviderCatalogItem {
   authTokenSet: boolean;
 }
 
+/** Why the runtime is routing around a provider: its quota is spent. */
+export interface UsageBlock {
+  reason: 'limit' | 'failure';
+  until?: string;
+}
+
 export interface ProviderStatus {
   id: ProviderId;
   /** For rendering an id with no hardcoded label, e.g. a profile. */
@@ -743,6 +749,8 @@ export interface ProviderStatus {
   models?: string[];
   modelOptions?: ProviderModel[];
   modelsError?: string;
+  /** Set while the runtime is routing around this provider for quota. */
+  usageBlocked?: UsageBlock | null;
 }
 
 /** Reasoning effort ladder, shared by both providers. */
@@ -935,6 +943,15 @@ export interface GatewayTestResult {
   recipient: number;
 }
 
+/** Routing around a provider whose quota is running out, as the server exposes it. */
+export interface ProviderFallbackConfig {
+  enabled: boolean;
+  /** A window at or above this share counts as "running low". */
+  thresholdPercent: number;
+  /** Which provider to try after the preferred one, in this order. */
+  order: ProviderId[];
+}
+
 /** The subset of RookeryConfig the server exposes. It never includes the token. */
 export interface PublicConfig {
   /**
@@ -960,6 +977,7 @@ export interface PublicConfig {
   org: OrgConfig;
   gateways: GatewaysConfig;
   router?: RouterConfig;
+  providerFallback?: ProviderFallbackConfig;
 }
 
 /* ------------------------------ tool hub ------------------------------ */

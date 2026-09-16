@@ -378,6 +378,14 @@ export const patchConfigSchema = z
     org: orgConfigSchema,
     gateways: gatewaysConfigSchema,
     router: z.object({ enabled: z.boolean(), port: z.number().int().min(1).max(65535) }).partial(),
+    providerFallback: z
+      .object({
+        enabled: z.boolean(),
+        // The wall is 100; under 50 the threshold would dodge almost nothing.
+        thresholdPercent: z.number().int().min(50).max(100),
+        order: z.array(providerIdSchema).max(20),
+      })
+      .partial(),
   })
   .partial();
 

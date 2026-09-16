@@ -1,7 +1,14 @@
-import type { Provider, ProviderId, ProviderModel, ProviderStatus, RookeryConfig } from '../types.js';
+import type {
+  Provider,
+  ProviderFallbackConfig,
+  ProviderId,
+  ProviderModel,
+  ProviderStatus,
+  RookeryConfig,
+} from '../types.js';
 import { ClaudeCodeProvider } from './claude-code.js';
 import { CODEX_PROFILE, codexModels, profileWithCatalog, providerCatalogEntry } from './provider-catalog.js';
-import { rememberProviderProfiles } from './quota.js';
+import { providerBlocked, providerLow, rememberProviderProfiles } from './quota.js';
 
 /** Never removed or replaced by `sync()`, whatever the config says. */
 const BUILTIN_IDS = new Set<ProviderId>(['claude', 'codex']);
@@ -16,6 +23,8 @@ export class ProviderRegistry {
   #providers = new Map<ProviderId, Provider>();
   #cache = new Map<ProviderId, { status: ProviderStatus; at: number }>();
   #ttlMs: number;
+  /** Set from config by `sync`; the default matches DEFAULT_CONFIG so a registry asked before its first sync switches too. */
+  #fallback: ProviderFallbackConfig = { enabled: true, thresholdPercent: 95, order: [] };
 
   constructor(providers?: Provider[], ttlMs = 5 * 60 * 1000) {
     // Both built-ins are the same adapter now: the plain `claude` login, and
@@ -81,14 +90,49 @@ export class ProviderRegistry {
    * Pick a usable provider: the preferred one when it is logged in, otherwise
    * any other authenticated provider. Returns null when nothing is ready, so
    * callers can show a proper onboarding message instead of a stack trace.
+   *
+   * With fallback switching on, usable also means not out of quota: a
+   * provider with a recorded failure or a full window is skipped even as the
+   * last resort, and one whose windows report it nearly full is passed over
+   * while a roomier one is signed in - though never left behind when every
+   * other provider is in the same state. `exclude` takes ids out of the race
+   * entirely, which is how a retry after a mid-turn failure avoids landing
+   * on the provider that just died.
    */
-  async resolveUsable(preferred: ProviderId): Promise<ProviderId | null> {
+  async resolveUsable(
+    preferred: ProviderId,
+    options: { exclude?: readonly ProviderId[] } = {},
+  ): Promise<ProviderId | null> {
     const statuses = await this.statuses();
     const byId = new Map(statuses.map((status) => [status.id, status]));
-    const wanted = byId.get(preferred);
-    if (wanted?.available && wanted.authenticated) return preferred;
-    const fallback = statuses.find((status) => status.available && status.authenticated);
-    return fallback?.id ?? null;
+    const usable = (id: ProviderId): boolean => {
+      const status = byId.get(id);
+      return (
+        Boolean(status?.available && status.authenticated) &&
+        !options.exclude?.includes(id) &&
+        (!this.#fallback.enabled || !providerBlocked(id))
+      );
+    };
+    const candidates = this.#candidates(preferred);
+    if (this.#fallback.enabled) {
+      const roomy = candidates.find(
+        (id) => usable(id) && !providerLow(id, this.#fallback.thresholdPercent),
+      );
+      if (roomy) return roomy;
+    }
+    return candidates.find(usable) ?? null;
+  }
+
+  /** Preferred first, then the configured fallback order, then the rest. */
+  #candidates(preferred: ProviderId): ProviderId[] {
+    const ids: ProviderId[] = [preferred];
+    for (const id of this.#fallback.order) {
+      if (id !== preferred && this.has(id)) ids.push(id);
+    }
+    for (const provider of this.list()) {
+      if (!ids.includes(provider.id)) ids.push(provider.id);
+    }
+    return ids;
   }
 
   /** Drop cached probes, e.g. after the user logs in from the UI. */
@@ -102,6 +146,8 @@ export class ProviderRegistry {
    * `claude` and `codex` are never touched here.
    */
   sync(config: RookeryConfig): void {
+    // Tests hand in partial configs; the fallback default then simply stays.
+    this.#fallback = config.providerFallback ?? this.#fallback;
     const configured = config.providerProfiles.map(profileWithCatalog);
     // A profile's usage is read with the same key and against the same
     // backend its turns run on, so the quota reader is handed the same list,

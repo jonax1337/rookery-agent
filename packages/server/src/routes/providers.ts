@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   PROVIDER_CATALOG,
   applyConfig,
+  providerBlocked,
   providerCatalogEntry,
   providerQuota,
   publicProviderProfile,
@@ -29,6 +30,9 @@ export async function registerProviderRoutes(
       if (refresh) registry.invalidate();
       const statuses = await registry.statuses(refresh);
       return Promise.all(statuses.map(async (status) => {
+        // Parked for quota says so here too, so a signed-in provider that is
+        // still not being chosen can explain itself on the dashboard.
+        const usageBlocked = providerBlocked(status.id);
         try {
           // Catalogue-backed providers answer without a login, so the composer
           // can show what they serve while their key is still missing; the
@@ -36,12 +40,12 @@ export async function registerProviderRoutes(
           // logged in would only produce an error, so that case still waits.
           const known = Boolean(providerCatalogEntry(status.id));
           if (!known && (!status.available || !status.authenticated)) {
-            return { ...status, models: [], modelOptions: [] };
+            return { ...status, usageBlocked, models: [], modelOptions: [] };
           }
           const modelOptions = await registry.models(status.id);
-          return { ...status, models: modelOptions.map((model) => model.id), modelOptions };
+          return { ...status, usageBlocked, models: modelOptions.map((model) => model.id), modelOptions };
         } catch (error) {
-          return { ...status, models: [], modelOptions: [], modelsError: (error as Error).message };
+          return { ...status, usageBlocked, models: [], modelOptions: [], modelsError: (error as Error).message };
         }
       }));
     },

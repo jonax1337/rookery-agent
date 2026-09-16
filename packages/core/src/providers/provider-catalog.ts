@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { ProviderModel, ProviderProfile } from '../types.js';
+import type { ProviderId, ProviderModel, ProviderProfile } from '../types.js';
 
 /**
  * The providers Rookery knows how to set up.
@@ -131,6 +131,48 @@ export function codexContextWindow(slug: string): number | undefined {
 
 export function providerCatalogEntry(id: string): ProviderCatalogEntry | undefined {
   return PROVIDER_CATALOG.find((entry) => entry.id === id);
+}
+
+/** The model ids one provider is statically known to serve. */
+function knownModels(provider: ProviderId): string[] {
+  if (provider === 'codex') return codexModels().map((model) => model.id);
+  return providerCatalogEntry(provider)?.models?.map((model) => model.id) ?? [];
+}
+
+/** The provider's own default model, from the same static knowledge. */
+function defaultModelOf(provider: ProviderId): string | undefined {
+  if (provider === 'codex') return CODEX_PROFILE.defaultModel;
+  return providerCatalogEntry(provider)?.models?.find((model) => model.isDefault)?.id;
+}
+
+/** Every model id any provider is statically known to serve. */
+function allKnownModels(): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of PROVIDER_CATALOG) {
+    for (const model of entry.models ?? []) ids.add(model.id);
+  }
+  for (const model of codexModels()) ids.add(model.id);
+  return ids;
+}
+
+/**
+ * A model chosen on one provider, translated for another: what a fallback
+ * turn should run. Only static knowledge - the catalogues and the Codex
+ * cache - because asking a provider to discover its models costs a process
+ * run, far too much for every switch. A model the target is not known to
+ * serve becomes the target's own default; one nobody knows stays as it is,
+ * so a wrong guess surfaces as an ordinary turn failure rather than being
+ * silently dropped.
+ */
+export function remapModel(target: ProviderId, model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  const known = knownModels(target);
+  if (known.includes(model)) return model;
+  if (known.length) return defaultModelOf(target);
+  // The target serves no statically known list - the plain `claude` login, or
+  // a profile without a catalogue entry. A model that belongs to somebody
+  // else definitely is not the target's; anything else passes through.
+  return allKnownModels().has(model) ? defaultModelOf(target) : model;
 }
 
 /**

@@ -792,6 +792,11 @@ function ProviderPanel({
                     {status.id === defaultProvider ? (
                       <Badge variant="outline">Default</Badge>
                     ) : null}
+                    {status.usageBlocked ? (
+                      <Badge variant="outline">
+                        {status.usageBlocked.until ? 'Avoided until ' + formatDateTime(status.usageBlocked.until) : 'Avoided'}
+                      </Badge>
+                    ) : null}
                     {providerBadge(status)}
                   </ItemActions>
                   {quota && quota.windows.length > 0 ? (

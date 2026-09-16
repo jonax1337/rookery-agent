@@ -52,7 +52,16 @@ export {
 
 export { ClaudeCodeProvider } from './providers/claude-code.js';
 export { ProviderRegistry } from './providers/registry.js';
-export { providerQuota, rememberQuota } from './providers/quota.js';
+export {
+  providerQuota,
+  rememberQuota,
+  isUsageLimitError,
+  rememberUsageFailure,
+  rememberUsageRecovered,
+  providerBlocked,
+  providerLow,
+  type UsageBlock,
+} from './providers/quota.js';
 export { withProviderProfile, withoutProviderProfile, publicProviderProfile } from './providers/profiles.js';
 export { RouterManager, sharedRouterManager } from './providers/router.js';
 export { CodexBridge, sharedCodexBridge } from './providers/codex-bridge.js';
@@ -70,6 +79,7 @@ export {
   prettifyModelId,
   providerCatalogEntry,
   profileWithCatalog,
+  remapModel,
   type ProviderCatalogEntry,
 } from './providers/provider-catalog.js';
 export {

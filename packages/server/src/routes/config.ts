@@ -43,6 +43,13 @@ export async function registerConfigRoutes(
     // sees the new settings without anything being copied across.
     const updated = applyConfig(context.config, patch as Partial<RookeryConfig>);
 
+    // The registry keeps its own copy of the fallback settings for provider
+    // resolution, refreshed by `sync` like after a profile change; without
+    // this, a threshold change would only take effect after a restart.
+    if (patch.providerFallback) {
+      context.assistant.providers.sync(updated);
+    }
+
     // A gateway reads its settings live but only notices a change when it is
     // told: without this, switching Telegram on in the UI would do nothing
     // until the next restart, while the page already refetches the status and

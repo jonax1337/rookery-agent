@@ -21,6 +21,8 @@ import { ASSISTANT_MEMORY_OWNER } from './types.js';
 import { databasePath, loadConfig } from './config.js';
 import { createLogger, silentLogger, type Logger } from './logger.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { remapModel } from './providers/provider-catalog.js';
+import { isUsageLimitError, providerBlocked, providerLow, rememberUsageFailure } from './providers/quota.js';
 import { sharedCodexBridge } from './providers/codex-bridge.js';
 import { Store } from './memory/store.js';
 import { coreProfile, dropContradicted, recall } from './memory/recall.js';
@@ -48,10 +50,11 @@ import { EventQueue } from './util/queue.js';
  *
  * There is no routing step and no agent selection. Rookery is one personal
  * assistant: the identity is fixed, and the provider only ever changes when
- * the caller asks for it or the current one is logged out. That matters
- * beyond persona - switching provider throws away `providerSessionId`, so a
- * router that changed its mind mid-conversation would silently drop the
- * thread the assistant was holding.
+ * the caller asks for it, when the current one is logged out, or - the one
+ * exception - when it runs out of quota, in which case the turn switches
+ * once and says so. That matters beyond persona: switching provider throws
+ * away `providerSessionId`, so a router that changed its mind
+ * mid-conversation would silently drop the thread the assistant was holding.
  *
  * What the assistant can do beyond talking is run its company: every turn
  * gets Rookery's tools through the MCP bridge, and an `assign` call from
@@ -69,6 +72,13 @@ import { EventQueue } from './util/queue.js';
  * because a third would let the assistant loop over its own switches.
  */
 const MAX_PROVIDER_PASSES = 2;
+
+/**
+ * How many providers one turn may run on. The second only happens when the
+ * first died on its usage limit with nothing to show for it, so a switch
+ * costs one provider session, never the thread the turn was holding.
+ */
+const MAX_PROVIDER_ATTEMPTS = 2;
 
 /** Add up what two passes of one turn cost; the last pass owns the context gauge. */
 function mergeUsage(base: TurnUsage | undefined, next: TurnUsage | undefined): TurnUsage | undefined {
@@ -409,12 +419,16 @@ export class Assistant extends EventEmitter {
     const providerId = await this.providers.resolveUsable(wanted);
     if (!providerId) {
       const statuses = await this.providers.statuses();
-      const detail = statuses.map((s) => s.id + ': ' + (s.detail ?? 'unavailable')).join(' | ');
+      // A provider parked for quota says so here rather than hiding behind
+      // its login state: "out of quota" tells the user what to wait for.
+      const detail = statuses
+        .map((s) => s.id + ': ' + (providerBlocked(s.id) ? 'out of quota' : (s.detail ?? 'unavailable')))
+        .join(' | ');
       yield { type: 'error', message: 'No AI provider is ready. ' + detail, fatal: true };
       return;
     }
     if (providerId !== wanted) {
-      yield { type: 'status', label: 'provider', detail: wanted + ' is not logged in, using ' + providerId };
+      yield { type: 'status', label: 'provider', detail: this.#switchReason(wanted, providerId) };
     }
 
     // Resuming the provider's own thread only works on the same provider.
@@ -448,7 +462,10 @@ export class Assistant extends EventEmitter {
       }
     }
 
-    const history = resumed ? [] : this.store.getMessages(session.id, this.config.memory.workingWindow);
+    // Read before the turn stores its own user message: a retry that cannot
+    // resume the dead provider's thread rebuilds its prompt from this.
+    const turnHistory = this.store.getMessages(session.id, this.config.memory.workingWindow);
+    const history = resumed ? [] : turnHistory;
 
     // The company block: who works here, what is running, what arrived in
     // the mail. Read once per turn; the mail is then marked as read.
@@ -458,16 +475,9 @@ export class Assistant extends EventEmitter {
     const project = session.projectId ? (this.store.org.getProject(session.projectId) ?? undefined) : undefined;
     if (mail.length) this.store.org.markMailReadFor(mail, { kind: 'assistant' });
 
-    // The hub decides which extra MCP servers this turn gets, and the prompt
-    // carries one paragraph per server plus the index of skills to open.
+    // Who is asking: the assistant. The tool servers and the prompt built on
+    // them are per provider attempt, because each provider attaches its own.
     const who = 'assistant';
-    await ensureToolServers(this.config, who, providerId, project?.id, (id, error) =>
-      this.log.warn('Tool server could not prepare', { id, error: error.message }),
-    );
-    const extra = toolServersFor(this.config, who, providerId, project?.id);
-    // The assistant also hears about the servers it could attach but has not:
-    // a switch it does not know about is a wall it cannot climb.
-    const toolHints = [...extra.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean);
     // Rookery's own shelf in full, and one paragraph for the far larger one
     // installed in Claude Code: what is there, not what it says. Then the few
     // that look like this turn - searched here rather than left to a tool call
@@ -480,168 +490,212 @@ export class Assistant extends EventEmitter {
     ]
       .filter(Boolean)
       .join('\n\n');
-    const systemPrompt = buildSystemPrompt({
-      config: this.config,
-      query: prompt,
-      memories,
-      history,
-      resumed,
-      // A voice session speaks whichever surface the turn came from.
-      voice: input.voice ?? session.kind === 'voice',
-      orgBlock: assistantOrgBlock(this.config, snapshot, mail, project, this.cron.list(organization.id), this.store),
-      toolHints,
-      skillsIndex,
-      // Lets the memory block group itself by entity.
-      store: this.store,
-    });
-
     this.store.addMessage({ sessionId: session.id, role: 'user', content: prompt });
     if (session.messageCount === 0 && session.title === 'New conversation') {
       this.store.updateSession(session.id, { title: deriveTitle(prompt) });
     }
 
-    const provider = this.providers.get(providerId);
     const started = Date.now();
     let answer = '';
     const toolCalls: Extract<AgentEvent, { type: 'tool' }>[] = [];
     let providerSessionId = resumed ? session.providerSessionId : undefined;
-    let failed = false;
     let usage: TurnUsage | undefined;
+    let lastFatal: string | null = null;
+    /** The provider and model the turn ends up having run with. */
+    let usedProvider = providerId;
+    let usedModel = model;
+    const tried = new Set<ProviderId>([providerId]);
 
-    yield { type: 'session', sessionId: session.id, providerSessionId, provider: providerId, model };
+    for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
+      const pid = usedProvider;
+      // A different backend serves different names; the fallback provider's
+      // own default stands in for a model it has never heard of.
+      usedModel = attempt === 1 ? model : remapModel(pid, model);
 
-    // The assistant stays in the workspace, not a project directory - it is
-    // a person, not Claude Code's coding agent.
-    const cwd = this.config.workspace;
-
-    // What this pass of the provider is run with. A turn usually has exactly
-    // one pass; see the continuation below for why it sometimes has two.
-    let passPrompt = prompt;
-    let passSystemPrompt = systemPrompt;
-    let passExtra = extra;
-    let attached = new Set(extra.specs.map((spec) => spec.name));
-
-    for (let pass = 1; pass <= MAX_PROVIDER_PASSES; pass += 1) {
-      // Everything the turn produces goes through one queue: the provider's
-      // own events, and whatever the tool calls it makes cause in the company.
-      const queue = new EventQueue<AgentEvent>();
-      const token = this.org.register({
-        orgId: organization.id,
-        audience: 'assistant',
-        agentId: undefined,
-        sessionId: session.id,
-        projectId: session.projectId,
-        depth: -1,
-        emit: (event) => queue.push(event),
-        signal: input.signal,
-      });
-
-      const currentPrompt = passPrompt;
-      const currentSystemPrompt = passSystemPrompt;
-      const currentSpecs = passExtra.specs;
-      const currentResume = providerSessionId;
-      const pump = (async () => {
-        try {
-          const mcp = await this.org.bridge.spec(token);
-          for await (const event of provider.run({
-            prompt: currentPrompt,
-            systemPrompt: currentSystemPrompt,
-            systemPromptMode: 'replace',
-            providerSessionId: currentResume,
-            model,
-            effort,
-            cwd,
-            permission: input.permission ?? this.config.defaultPermission,
-            mcp,
-            mcpExtra: currentSpecs.length ? currentSpecs : undefined,
-            signal: input.signal,
-          })) {
-            queue.push(event);
-          }
-        } catch (error) {
-          queue.push({ type: 'error', message: (error as Error).message, fatal: true });
-        } finally {
-          queue.close();
-        }
-      })();
-
-      let passText = '';
-      try {
-        for await (const event of queue.drain()) {
-          switch (event.type) {
-            case 'tool':
-              toolCalls.push(event);
-              // Also on the assistant's own emitter, not just this stream:
-              // a channel that is not the one that started the turn - the
-              // phone, watching a schedule run - has no other way to see
-              // what is being done. Nobody has to listen; the web UI reads
-              // these off the turn stream it already holds.
-              this.emit('tool', event);
-              yield event;
-              break;
-            case 'text':
-              passText += event.delta;
-              yield event;
-              break;
-            case 'session':
-              providerSessionId = event.providerSessionId ?? providerSessionId;
-              break;
-            case 'done':
-              providerSessionId = event.providerSessionId ?? providerSessionId;
-              passText = event.text || passText;
-              usage = mergeUsage(usage, event.usage);
-              break;
-            case 'error':
-              if (event.fatal) failed = true;
-              yield event;
-              break;
-            default:
-              yield event;
-          }
-        }
-      } finally {
-        await pump;
-        this.org.unregister(token);
-      }
-
-      answer = answer && passText ? answer + '\n\n' + passText : answer || passText;
-
-      // The continuation. A tool server the assistant switched on mid-turn
-      // can only be attached to a provider process that has not started yet,
-      // so without this the work stalls until the user asks again - exactly
-      // the dead end the assistant is told not to accept. Instead the turn
-      // runs once more with the new servers attached and the provider's own
-      // session resumed, and the two answers are joined.
-      if (failed || pass === MAX_PROVIDER_PASSES) break;
-      if (input.signal?.aborted) break;
-      const next = toolServersFor(this.config, who, providerId, project?.id);
-      const fresh = next.specs.map((spec) => spec.name).filter((name) => !attached.has(name));
-      if (!fresh.length) break;
-
-      await ensureToolServers(this.config, who, providerId, project?.id, (id, error) =>
+      // The hub decides which extra MCP servers this attempt gets, and the
+      // prompt carries one paragraph per server plus the index of skills to
+      // open. Provider-scoped, so a switch attaches its own set.
+      await ensureToolServers(this.config, who, pid, project?.id, (id, error) =>
         this.log.warn('Tool server could not prepare', { id, error: error.message }),
       );
-      passExtra = next;
-      attached = new Set(next.specs.map((spec) => spec.name));
-      passSystemPrompt = buildSystemPrompt({
+      const extra = toolServersFor(this.config, who, pid, project?.id);
+      // The assistant also hears about the servers it could attach but has not:
+      // a switch it does not know about is a wall it cannot climb.
+      const toolHints = [...extra.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean);
+      const systemPrompt = buildSystemPrompt({
         config: this.config,
         query: prompt,
         memories,
-        resumed: true,
+        // A retry cannot resume the dead provider's thread, so it rebuilds
+        // its context from the history it still has.
+        history: attempt === 1 ? history : turnHistory,
+        resumed: attempt === 1 && resumed,
+        // A voice session speaks whichever surface the turn came from.
         voice: input.voice ?? session.kind === 'voice',
-        orgBlock: assistantOrgBlock(this.config, snapshot, [], project, this.cron.list(organization.id), this.store),
-        toolHints: [...next.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean),
+        orgBlock: assistantOrgBlock(this.config, snapshot, mail, project, this.cron.list(organization.id), this.store),
+        toolHints,
         skillsIndex,
+        // Lets the memory block group itself by entity.
         store: this.store,
       });
-      passPrompt = continuePrompt(fresh);
-      yield { type: 'status', label: 'tools', detail: fresh.join(', ') + ' attached, carrying on' };
-    }
 
-    if (failed && !answer && !toolCalls.length) {
-      // Nothing usable came back; leave the session context untouched so the
-      // next attempt can still resume cleanly.
-      return;
+      const provider = this.providers.get(pid);
+      // Only the first attempt may resume the provider's own thread; a
+      // fallback starts a fresh one on the new backend.
+      providerSessionId = attempt === 1 && resumed ? session.providerSessionId : undefined;
+      let failed = false;
+
+      yield { type: 'session', sessionId: session.id, providerSessionId, provider: pid, model: usedModel };
+
+      // The assistant stays in the workspace, not a project directory - it is
+      // a person, not Claude Code's coding agent.
+      const cwd = this.config.workspace;
+
+      // What this pass of the provider is run with. A turn usually has exactly
+      // one pass; see the continuation below for why it sometimes has two.
+      let passPrompt = prompt;
+      let passSystemPrompt = systemPrompt;
+      let passExtra = extra;
+      let attached = new Set(extra.specs.map((spec) => spec.name));
+
+      for (let pass = 1; pass <= MAX_PROVIDER_PASSES; pass += 1) {
+        // Everything the turn produces goes through one queue: the provider's
+        // own events, and whatever the tool calls it makes cause in the company.
+        const queue = new EventQueue<AgentEvent>();
+        const token = this.org.register({
+          orgId: organization.id,
+          audience: 'assistant',
+          agentId: undefined,
+          sessionId: session.id,
+          projectId: session.projectId,
+          depth: -1,
+          emit: (event) => queue.push(event),
+          signal: input.signal,
+        });
+
+        const currentPrompt = passPrompt;
+        const currentSystemPrompt = passSystemPrompt;
+        const currentSpecs = passExtra.specs;
+        const currentResume = providerSessionId;
+        const pump = (async () => {
+          try {
+            const mcp = await this.org.bridge.spec(token);
+            for await (const event of provider.run({
+              prompt: currentPrompt,
+              systemPrompt: currentSystemPrompt,
+              systemPromptMode: 'replace',
+              providerSessionId: currentResume,
+              model: usedModel,
+              effort,
+              cwd,
+              permission: input.permission ?? this.config.defaultPermission,
+              mcp,
+              mcpExtra: currentSpecs.length ? currentSpecs : undefined,
+              signal: input.signal,
+            })) {
+              queue.push(event);
+            }
+          } catch (error) {
+            queue.push({ type: 'error', message: (error as Error).message, fatal: true });
+          } finally {
+            queue.close();
+          }
+        })();
+
+        let passText = '';
+        try {
+          for await (const event of queue.drain()) {
+            switch (event.type) {
+              case 'tool':
+                toolCalls.push(event);
+                // Also on the assistant's own emitter, not just this stream:
+                // a channel that is not the one that started the turn - the
+                // phone, watching a schedule run - has no other way to see
+                // what is being done. Nobody has to listen; the web UI reads
+                // these off the turn stream it already holds.
+                this.emit('tool', event);
+                yield event;
+                break;
+              case 'text':
+                passText += event.delta;
+                yield event;
+                break;
+              case 'session':
+                providerSessionId = event.providerSessionId ?? providerSessionId;
+                break;
+              case 'done':
+                providerSessionId = event.providerSessionId ?? providerSessionId;
+                passText = event.text || passText;
+                usage = mergeUsage(usage, event.usage);
+                break;
+              case 'error':
+                if (event.fatal) {
+                  failed = true;
+                  lastFatal = event.message;
+                }
+                yield event;
+                break;
+              default:
+                yield event;
+            }
+          }
+        } finally {
+          await pump;
+          this.org.unregister(token);
+        }
+
+        answer = answer && passText ? answer + '\n\n' + passText : answer || passText;
+
+        // The continuation. A tool server the assistant switched on mid-turn
+        // can only be attached to a provider process that has not started yet,
+        // so without this the work stalls until the user asks again - exactly
+        // the dead end the assistant is told not to accept. Instead the turn
+        // runs once more with the new servers attached and the provider's own
+        // session resumed, and the two answers are joined.
+        if (failed || pass === MAX_PROVIDER_PASSES) break;
+        if (input.signal?.aborted) break;
+        const next = toolServersFor(this.config, who, pid, project?.id);
+        const fresh = next.specs.map((spec) => spec.name).filter((name) => !attached.has(name));
+        if (!fresh.length) break;
+
+        await ensureToolServers(this.config, who, pid, project?.id, (id, error) =>
+          this.log.warn('Tool server could not prepare', { id, error: error.message }),
+        );
+        passExtra = next;
+        attached = new Set(next.specs.map((spec) => spec.name));
+        passSystemPrompt = buildSystemPrompt({
+          config: this.config,
+          query: prompt,
+          memories,
+          resumed: true,
+          voice: input.voice ?? session.kind === 'voice',
+          orgBlock: assistantOrgBlock(this.config, snapshot, [], project, this.cron.list(organization.id), this.store),
+          toolHints: [...next.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean),
+          skillsIndex,
+          store: this.store,
+        });
+        passPrompt = continuePrompt(fresh);
+        yield { type: 'status', label: 'tools', detail: fresh.join(', ') + ' attached, carrying on' };
+      }
+
+      // A turn that died on its usage limit with nothing to show goes around
+      // once more on another provider. Anything else keeps today's semantics:
+      // nothing usable came back, so the session context stays untouched for
+      // the next attempt to resume cleanly.
+      if (!failed || answer || toolCalls.length) break;
+      const alternate =
+        this.config.providerFallback.enabled &&
+        attempt < MAX_PROVIDER_ATTEMPTS &&
+        !input.signal?.aborted &&
+        lastFatal !== null &&
+        isUsageLimitError(lastFatal)
+          ? await this.providers.resolveUsable(wanted, { exclude: [...tried] })
+          : null;
+      if (!alternate) return;
+      rememberUsageFailure(pid);
+      yield { type: 'status', label: 'provider', detail: pid + ' hit its usage limit, continuing on ' + alternate };
+      usedProvider = alternate;
+      tried.add(alternate);
     }
 
     // The provider's numbers plus the wall-clock of the whole turn, so a
@@ -651,19 +705,41 @@ export class Assistant extends EventEmitter {
       sessionId: session.id,
       role: 'assistant',
       content: answer,
-      provider: providerId,
-      model,
+      provider: usedProvider,
+      model: usedModel,
       usage: turnUsage,
       toolCalls,
     });
-    if (failed && !answer) return;
-    this.store.updateSession(session.id, { provider: providerId, model, providerSessionId });
+    if (lastFatal !== null && !answer) return;
+    this.store.updateSession(session.id, { provider: usedProvider, model: usedModel, providerSessionId });
 
     yield { type: 'done', text: answer, providerSessionId, usage: turnUsage };
 
     if (this.config.memory.enabled && this.config.memory.autoExtract) {
-      void this.#learn(session.id, prompt, answer, providerId, owner);
+      void this.#learn(session.id, prompt, answer, usedProvider, owner);
     }
+  }
+
+  /**
+   * What to say when a turn starts on a provider it did not ask for. Quota
+   * reasons first - they are the ones the user cannot see anywhere else - and
+   * a missing login last, which the provider list already shows.
+   */
+  #switchReason(wanted: ProviderId, chosen: ProviderId): string {
+    const blocked = providerBlocked(wanted);
+    if (blocked) {
+      return (
+        wanted +
+        ' is out of quota' +
+        (blocked.until ? ' until ' + new Date(blocked.until).toLocaleTimeString() : '') +
+        ', using ' +
+        chosen
+      );
+    }
+    if (this.config.providerFallback.enabled && providerLow(wanted, this.config.providerFallback.thresholdPercent)) {
+      return wanted + ' is nearly out of quota, using ' + chosen + ' for now';
+    }
+    return wanted + ' is not logged in, using ' + chosen;
   }
 
   /* ------------------------------ assign ---------------------------- */

@@ -157,6 +157,10 @@ export const DEFAULT_CONFIG: RookeryConfig = {
   tools: { servers: [] },
   providerProfiles: [],
   router: { enabled: false },
+  // On unless switched off: a provider that runs out of quota should cost a
+  // switch, not a failed run. The threshold stays just under the wall because
+  // windows lag a little behind the turns that fill them.
+  providerFallback: { enabled: true, thresholdPercent: 95, order: [] },
   // Looking is free and always on; what is found stays out of the way until
   // a person switches it on. See `ExternalConfig`.
   external: { enabled: true, skillSources: {}, servers: {} },

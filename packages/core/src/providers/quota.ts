@@ -367,6 +367,9 @@ export async function providerQuota(provider: ProviderId, force = false): Promis
         : provider === 'codex'
           ? await fetchCodex()
           : await fetchProfile(provider);
+    // A successful read that shows headroom clears a recorded failure; the
+    // catch path below carries stale windows forward and must not.
+    recoverIfHealthy(quota);
   } catch (error) {
     const status = error instanceof HttpError ? error.status : 0;
     ttl = status === 429 ? COOLDOWN_429_MS : COOLDOWN_ERROR_MS;
@@ -391,8 +394,131 @@ export async function providerQuota(provider: ProviderId, force = false): Promis
 /** Feed a quota the provider stream reported, so the next read is fresh. */
 export function rememberQuota(quota: ProviderQuota): void {
   const previous = cache.get(quota.provider)?.quota;
-  cache.set(quota.provider, {
-    quota: { ...quota, ...(quota.plan || !previous?.plan ? {} : { plan: previous.plan }) },
-    until: Date.now() + CACHE_MS,
-  });
+  const merged: ProviderQuota = {
+    ...quota,
+    ...(quota.plan || !previous?.plan ? {} : { plan: previous.plan }),
+  };
+  cache.set(quota.provider, { quota: merged, until: Date.now() + CACHE_MS });
+  recoverIfHealthy(merged);
+}
+
+/* ------------------------------- usage gate ------------------------------- */
+
+/** Why a provider is being routed around, and until when. */
+export interface UsageBlock {
+  reason: 'limit' | 'failure';
+  until?: string;
+}
+
+/** A turn that died on quota parks its provider this long when no window reset is known. */
+const FAILURE_COOLDOWN_MS = 15 * 60 * 1000;
+/** A maxed-out window that states no reset time is trusted only this long. */
+const WINDOW_STALE_MS = 10 * 60 * 1000;
+/** How old the cached quota may be before a read kicks off a background refresh. */
+const REFRESH_AFTER_MS = 2 * CACHE_MS;
+
+/** Set by a turn that died on quota; cleared by windows that show headroom again. */
+const failures = new Map<ProviderId, { until: number }>();
+
+/**
+ * Whether a fatal turn error says the provider's quota gave out. Phrases, not
+ * codes: the CLIs report usage limits as text, and the set stays narrow so an
+ * ordinary tool or permission error never reads as one. `429` keeps to word
+ * boundaries so a file count or a duration cannot match.
+ */
+const USAGE_LIMIT_PATTERNS: RegExp[] = [
+  /usage limit/i,
+  /rate.?limit/i,
+  /\b429\b/,
+  /quota (?:exceeded|exhausted|reached)/i,
+  /insufficient (?:balance|quota|credit)/i,
+  /limit reached/i,
+];
+
+export function isUsageLimitError(message: string): boolean {
+  return USAGE_LIMIT_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/** Live windows under the wall prove a provider takes turns again. */
+function recoverIfHealthy(quota: ProviderQuota): void {
+  if (quota.windows.length && !quota.windows.some((window) => window.percent >= 100)) {
+    failures.delete(quota.provider);
+  }
+}
+
+/** The earliest window reset still in the future, in epoch ms. */
+function futureReset(quota: ProviderQuota): number | undefined {
+  const resets = quota.windows
+    .map((window) => (window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN))
+    .filter((at) => Number.isFinite(at) && at > Date.now());
+  return resets.length ? Math.min(...resets) : undefined;
+}
+
+/** A provider whose turn died on quota is left alone until its window resets. */
+export function rememberUsageFailure(provider: ProviderId): void {
+  const quota = cache.get(provider)?.quota;
+  const until = (quota ? futureReset(quota) : undefined) ?? Date.now() + FAILURE_COOLDOWN_MS;
+  const previous = failures.get(provider);
+  // The longer horizon wins: a second failure never shortens the time the
+  // first one already bought.
+  if (!previous || previous.until < until) failures.set(provider, { until });
+}
+
+/** Forget a recorded failure, e.g. because a turn on the provider succeeded. */
+export function rememberUsageRecovered(provider: ProviderId): void {
+  failures.delete(provider);
+}
+
+/** Refresh a quota nobody has looked at for a while, without waiting for it. */
+const refreshKicked = new Map<ProviderId, number>();
+
+function refreshIfStale(provider: ProviderId, until: number): void {
+  if (Date.now() < until + (REFRESH_AFTER_MS - CACHE_MS)) return;
+  const kicked = refreshKicked.get(provider) ?? 0;
+  // One kick per cache span: a fetch already in flight answers for the next.
+  if (Date.now() - kicked < CACHE_MS) return;
+  refreshKicked.set(provider, Date.now());
+  void providerQuota(provider);
+}
+
+/**
+ * Hard routing block: a recorded failure, or a window that is full and says
+ * when it empties. Windows without a reset time only count while fresh,
+ * because a full window that never states its end is indistinguishable from a
+ * stale one. Never throws and never fetches on its own beyond a refresh.
+ */
+export function providerBlocked(provider: ProviderId): UsageBlock | null {
+  const failure = failures.get(provider);
+  if (failure) {
+    if (failure.until > Date.now()) {
+      return { reason: 'failure', until: new Date(failure.until).toISOString() };
+    }
+    failures.delete(provider);
+  }
+
+  const entry = cache.get(provider);
+  if (!entry || entry.quota.error) return null;
+  refreshIfStale(provider, entry.until);
+  for (const window of entry.quota.windows) {
+    if (window.percent < 100) continue;
+    const reset = window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN;
+    if (Number.isFinite(reset)) {
+      if (reset > Date.now()) return { reason: 'limit', until: new Date(reset).toISOString() };
+    } else if (Date.now() - entry.quota.fetchedAt < WINDOW_STALE_MS) {
+      return { reason: 'limit' };
+    }
+  }
+  return null;
+}
+
+/**
+ * Soft routing signal: some window of the provider's quota is at or above the
+ * configured share. A provider nobody has reported usage for is never low -
+ * unknown is not nearly-empty.
+ */
+export function providerLow(provider: ProviderId, thresholdPercent: number): boolean {
+  const entry = cache.get(provider);
+  if (!entry) return false;
+  refreshIfStale(provider, entry.until);
+  return entry.quota.windows.some((window) => window.percent >= thresholdPercent);
 }

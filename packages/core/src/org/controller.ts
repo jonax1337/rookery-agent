@@ -31,6 +31,8 @@ import { agentWorkspace, applyConfig } from '../config.js';
 import type { Logger } from '../logger.js';
 import { silentLogger } from '../logger.js';
 import type { ProviderRegistry } from '../providers/registry.js';
+import { remapModel } from '../providers/provider-catalog.js';
+import { isUsageLimitError, providerBlocked, rememberUsageFailure } from '../providers/quota.js';
 import type { Store } from '../memory/store.js';
 import type { OrgStore } from './store.js';
 import { coreProfile, recall } from '../memory/recall.js';
@@ -155,6 +157,12 @@ export interface OrgControllerOptions {
 const PROGRESS_EVERY = 700;
 /** How much of a result travels back into the caller's tool response. */
 const RESULT_BUDGET = 24000;
+/**
+ * How many providers one assignment may run on. The second only happens when
+ * the first died on its usage limit before producing anything, so a switch
+ * costs one provider process, never the assignment's place in the queue.
+ */
+const MAX_PROVIDER_ATTEMPTS = 2;
 
 export class OrgController extends EventEmitter {
   readonly #store: Store;
@@ -1326,14 +1334,26 @@ export class OrgController extends EventEmitter {
     try {
       if (controller.signal.aborted) return finish({ status: 'cancelled', finishedAt: started, durationMs: 0 });
 
-      const providerId = await this.#registry.resolveUsable(agent.provider ?? this.#config.defaultProvider);
-      if (!providerId) return fail('No provider is logged in.', started);
+      const preferred = agent.provider ?? this.#config.defaultProvider;
+      const providerId = await this.#registry.resolveUsable(preferred);
+      if (!providerId) {
+        // A company parked entirely for quota says so: there is nothing to
+        // log in to, only windows to wait out.
+        const ready = (await this.#registry.statuses()).filter((status) => status.available && status.authenticated);
+        return fail(
+          ready.length > 0 && ready.every((status) => providerBlocked(status.id))
+            ? 'Every provider is out of quota.'
+            : 'No provider is logged in.',
+          started,
+        );
+      }
 
       const cwd = project?.path || agentWorkspace(this.#config, agent.id);
       if (!existsSync(cwd)) return fail('The project directory ' + cwd + ' does not exist.', started);
 
-      finish({ status: 'running', provider: providerId, model: agent.model, startedAt: started });
-
+      // Everything below is shared by every provider attempt of this
+      // assignment: the company, the memory, the inbox and the skills are the
+      // agent's, not the backend's.
       const snapshot = this.snapshot(input.orgId);
       const memories = this.#memoriesFor(agent.id, input.task);
       const mailWho: MailWho = { kind: 'agent', id: agent.id };
@@ -1344,11 +1364,9 @@ export class OrgController extends EventEmitter {
           : input.requesterKind === 'user'
             ? 'the user, directly'
             : 'the assistant';
-
-      await ensureToolServers(this.#config, 'agent', providerId, project?.id, (id, error) =>
-        this.#log.warn('Tool server could not prepare', { id, error: error.message }),
-      );
-      const extra = toolServersFor(this.#config, 'agent', providerId, project?.id);
+      // Read once the context is assembled: the mail is in the prompt, so a
+      // provider switch must not deliver it a second time.
+      if (unreadMail.length) org.markMailReadFor(unreadMail, mailWho);
 
       // The project's own MCP servers - read from its `.mcp.json`, the same
       // file a person's own session in that folder would read - only start
@@ -1371,45 +1389,12 @@ export class OrgController extends EventEmitter {
       ]
         .filter(Boolean)
         .join('\n\n');
-      const toolHints = [...extra.hints];
-      if (projectMcp?.servers.length && projectMcpState !== 'trusted') {
-        toolHints.push(
-          "This project's .mcp.json lists " + projectMcp.servers.length + ' MCP server(s) not yet trusted' +
-            (projectMcpState === 'changed' ? ' (the file changed since it was approved)' : '') +
-            '; the assistant can review them with project_mcp_servers and trust_project_mcp.',
-        );
-      }
 
-      const systemPrompt = buildAgentPrompt({
-        config: this.#config,
-        agent,
-        snapshot,
-        project: project ?? undefined,
-        memories,
-        mail: unreadMail,
-        assignmentId: assignment.id,
-        requestedBy: requester,
-        sourceMailSubject: input.sourceMail?.subject,
-        sourceMailId: input.sourceMail?.id,
-        sourceMailThreadId: input.sourceMail?.threadId,
-        // Everything said before the mail that woke this run, minus that mail
-        // itself - it is already the task above. Listed as an index only; the
-        // prompt points at `read_mail_thread` for the text.
-        sourceMailThread: input.sourceMail
-          ? org
-              .thread(input.orgId, input.sourceMail.threadId, { who: mailWho })
-              .filter((entry) => entry.id !== input.sourceMail?.id)
-          : undefined,
-        toolHints,
-        skillsIndex,
-        agentNotes: org.agentNotesSince(agent.id).slice(0, 2),
-        handoverFrom: this.#handoverFor(agent),
-      });
-      if (unreadMail.length) org.markMailReadFor(unreadMail, mailWho);
-
+      // The timeout and the bridge token span every provider attempt: a
+      // switch does not buy a second timeout, and the bridge serves whichever
+      // process is currently running.
       const timer = setTimeout(() => controller.abort(), this.#config.org.assignmentTimeoutMs);
       timer.unref?.();
-
       const token = this.register({
         orgId: input.orgId,
         audience: 'agent',
@@ -1426,49 +1411,131 @@ export class OrgController extends EventEmitter {
       });
 
       let text = '';
-      let sinceProgress = 0;
       let fatal: string | null = null;
+      /** The provider and model the assignment ends up having run with. */
+      let usedProvider = providerId;
+      let usedModel = agent.model;
+      const tried = new Set<ProviderId>([providerId]);
 
       try {
-        const mcp = await this.#bridge.spec(token);
-        const mcpExtra = [...extra.specs, ...projectMcpSpecs];
-        for await (const event of this.#registry.get(providerId).run({
-          prompt: input.task,
-          systemPrompt,
-          model: agent.model,
-          effort: this.#config.defaultEffort,
-          cwd,
-          permission: agent.permission ?? this.#config.defaultPermission,
-          mcp,
-          mcpExtra: mcpExtra.length ? mcpExtra : undefined,
-          signal: controller.signal,
-        })) {
-          if (event.type === 'text') {
-            text += event.delta;
-            sinceProgress += event.delta.length;
-            if (sinceProgress >= PROGRESS_EVERY) {
-              sinceProgress = 0;
-              org.updateAssignment(assignment.id, { chars: text.length });
-              announce({ chars: text.length, preview: shorten(tail(text, 160), 110) });
-            }
-          } else if (event.type === 'tool') {
-            input.emit({ ...event, detail: '[' + agent.slug + '] ' + (event.detail ?? '') });
-            // A tool starting is the one moment worth telling everyone about,
-            // not just the turn that started this run - the same `announce`
-            // that already carries `chars`/`preview` org-wide, extended with
-            // what the run is doing right now. Not persisted, same as
-            // `preview`: a live-only field, gone once the run finishes.
-            if (event.status === 'start') {
-              announce({ lastActivity: { kind: 'tool', label: event.name, at: Date.now() } });
-            }
-          } else if (event.type === 'done') {
-            text = event.text || text;
-          } else if (event.type === 'error' && event.fatal) {
-            fatal = event.message;
+        for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
+          const pid = usedProvider;
+          // A different backend serves different names; the fallback
+          // provider's own default stands in for a model it has never
+          // heard of.
+          usedModel = attempt === 1 ? agent.model : remapModel(pid, agent.model);
+
+          finish({ status: 'running', provider: pid, model: usedModel, startedAt: started });
+
+          await ensureToolServers(this.#config, 'agent', pid, project?.id, (id, error) =>
+            this.#log.warn('Tool server could not prepare', { id, error: error.message }),
+          );
+          const extra = toolServersFor(this.#config, 'agent', pid, project?.id);
+          const toolHints = [...extra.hints];
+          if (projectMcp?.servers.length && projectMcpState !== 'trusted') {
+            toolHints.push(
+              "This project's .mcp.json lists " + projectMcp.servers.length + ' MCP server(s) not yet trusted' +
+                (projectMcpState === 'changed' ? ' (the file changed since it was approved)' : '') +
+                '; the assistant can review them with project_mcp_servers and trust_project_mcp.',
+            );
           }
+
+          const systemPrompt = buildAgentPrompt({
+            config: this.#config,
+            agent,
+            snapshot,
+            project: project ?? undefined,
+            memories,
+            mail: unreadMail,
+            assignmentId: assignment.id,
+            requestedBy: requester,
+            sourceMailSubject: input.sourceMail?.subject,
+            sourceMailId: input.sourceMail?.id,
+            sourceMailThreadId: input.sourceMail?.threadId,
+            // Everything said before the mail that woke this run, minus that mail
+            // itself - it is already the task above. Listed as an index only; the
+            // prompt points at `read_mail_thread` for the text.
+            sourceMailThread: input.sourceMail
+              ? org
+                  .thread(input.orgId, input.sourceMail.threadId, { who: mailWho })
+                  .filter((entry) => entry.id !== input.sourceMail?.id)
+              : undefined,
+            toolHints,
+            skillsIndex,
+            agentNotes: org.agentNotesSince(agent.id).slice(0, 2),
+            handoverFrom: this.#handoverFor(agent),
+          });
+
+          // A switch discards the dead attempt's partial text: an assignment
+          // has no resume, so it starts over rather than stitching.
+          text = '';
+          let sinceProgress = 0;
+          fatal = null;
+
+          try {
+            const mcp = await this.#bridge.spec(token);
+            const mcpExtra = [...extra.specs, ...projectMcpSpecs];
+            for await (const event of this.#registry.get(pid).run({
+              prompt: input.task,
+              systemPrompt,
+              model: usedModel,
+              effort: this.#config.defaultEffort,
+              cwd,
+              permission: agent.permission ?? this.#config.defaultPermission,
+              mcp,
+              mcpExtra: mcpExtra.length ? mcpExtra : undefined,
+              signal: controller.signal,
+            })) {
+              if (event.type === 'text') {
+                text += event.delta;
+                sinceProgress += event.delta.length;
+                if (sinceProgress >= PROGRESS_EVERY) {
+                  sinceProgress = 0;
+                  org.updateAssignment(assignment.id, { chars: text.length });
+                  announce({ chars: text.length, preview: shorten(tail(text, 160), 110) });
+                }
+              } else if (event.type === 'tool') {
+                input.emit({ ...event, detail: '[' + agent.slug + '] ' + (event.detail ?? '') });
+                // A tool starting is the one moment worth telling everyone about,
+                // not just the turn that started this run - the same `announce`
+                // that already carries `chars`/`preview` org-wide, extended with
+                // what the run is doing right now. Not persisted, same as
+                // `preview`: a live-only field, gone once the run finishes.
+                if (event.status === 'start') {
+                  announce({ lastActivity: { kind: 'tool', label: event.name, at: Date.now() } });
+                }
+              } else if (event.type === 'done') {
+                text = event.text || text;
+              } else if (event.type === 'error' && event.fatal) {
+                fatal = event.message;
+              }
+            }
+          } catch (error) {
+            fatal = (error as Error).message;
+          }
+
+          // Only a usage-limit death goes around once more, on a provider
+          // that has not been tried yet; anything else falls through to the
+          // ordinary ending below. Cancelled and timed-out runs are never
+          // retried on another backend.
+          if (
+            fatal === null ||
+            !isUsageLimitError(fatal) ||
+            attempt >= MAX_PROVIDER_ATTEMPTS ||
+            cancelled() ||
+            controller.signal.aborted ||
+            !this.#config.providerFallback.enabled
+          ) {
+            break;
+          }
+          rememberUsageFailure(pid);
+          const alternate = await this.#registry.resolveUsable(preferred, { exclude: [...tried] });
+          if (!alternate) break;
+          input.emit({ type: 'status', label: 'provider', detail: pid + ' hit its usage limit, continuing on ' + alternate });
+          announce({ lastActivity: { kind: 'status', label: 'provider', at: Date.now() } });
+          usedProvider = alternate;
+          tried.add(alternate);
         }
-      } catch (error) {
-        fatal = (error as Error).message;
       } finally {
         clearTimeout(timer);
         this.unregister(token);
@@ -1486,9 +1553,9 @@ export class OrgController extends EventEmitter {
         { chars: text.length, preview: shorten(tail(text, 160), 110) },
       );
       if (this.#config.memory.enabled && this.#config.memory.autoExtract) {
-        void this.#learn(agent, input.task, text, providerId);
+        void this.#learn(agent, input.task, text, usedProvider);
       }
-      if (this.#config.org.autoReview) void this.#review(agent, done, input.task, text, providerId);
+      if (this.#config.org.autoReview) void this.#review(agent, done, input.task, text, usedProvider);
       if (input.sourceMail) {
         const sourceMail = input.sourceMail;
         const replier: MailWho = { kind: 'agent', id: agent.id };
