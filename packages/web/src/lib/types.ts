@@ -215,10 +215,16 @@ export interface SleepConfig {
   schedule: string;
   /** Which banks sleep: only the assistant's, or every agent's too. */
   scope: 'assistant' | 'all';
+  /** Hard cap on the night's expensive model calls; phases are funded by measured demand. */
+  nightBudget: number;
   maxMergeCalls: number;
+  maxResolveCalls: number;
+  maxLinkCalls: number;
   dormantAfterDays: number;
   minStrength: number;
   insights: number;
+  /** How far back the insight phase looks for a pattern. */
+  insightWindowDays: number;
   /** How many of the day's conversations one night may read in full. */
   replaySessions: number;
   /** How many skills one night may distil out of the bank. */
@@ -226,7 +232,6 @@ export interface SleepConfig {
   /** How many skills one night may rewrite. Repair outranks invention. */
   skillRevisions: number;
   cycles: number;
-  maxResolveCalls: number;
   /** An agent bank sleeps only after this many new memories. */
   agentThreshold: number;
   model: string;

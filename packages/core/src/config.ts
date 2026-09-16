@@ -62,18 +62,33 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       // that the machine is usually still awake.
       schedule: '30 3 * * *',
       scope: 'assistant',
-      maxMergeCalls: 12,
+      // The night's wallet for the consolidation phases. Each phase measures
+      // its own workload first - clusters, open contradictions, fresh
+      // memories, suspect skills - and only that demand gets funded, up to
+      // this ceiling. A quiet week sleeps shallow and cheap; after a loud
+      // day the night runs long, but never past the cap. The replay pass
+      // lives outside the wallet: its deep reads are capped by
+      // `replaySessions`, and its triage runs on the cheap model.
+      nightBudget: 70,
+      // Per-phase ceilings inside that wallet. The allocation never spends
+      // more than the work there is, and never more than these.
+      maxMergeCalls: 24,
+      maxResolveCalls: 8,
+      maxLinkCalls: 8,
       dormantAfterDays: 45,
       minStrength: 0.25,
-      insights: 2,
+      insights: 3,
+      // Patterns need distance: one week can be a coincidence, two are a habit.
+      insightWindowDays: 14,
+      // Thirty-six deep reads a night at most. The cheap triage pass runs
+      // over every conversation since the last night, so this caps only the
+      // expensive half - a talkative day costs a handful of small calls plus
+      // up to thirty-six proper ones, and anything beyond that waits for
+      // tomorrow.
+      replaySessions: 36,
       // One a night. A skill that gets rewritten every night is not a skill,
       // it is noise with a folder of its own; `write_skill` covers the case
       // where something needs writing down in the moment.
-      // Twelve deep reads a night. The cheap triage pass runs over every
-      // conversation of the day, so this caps only the expensive half - a
-      // talkative day costs a handful of small calls plus at most twelve
-      // proper ones, and anything beyond that waits for tomorrow.
-      replaySessions: 12,
       skills: 1,
       // Two repairs against one invention. A skill whose ground has shifted
       // is actively misleading whoever opens it next, which is worse than a
@@ -83,9 +98,8 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       // Two cycles: the second one sees the bank the first one tidied, so
       // dream sleep connects what deep sleep just made connectable.
       cycles: 2,
-      maxResolveCalls: 5,
-      // Sonnet, not haiku. Sixteen calls once a night is cheap; a merge that
-      // throws two different facts into one sentence is not.
+      // Sonnet, not haiku. Seventy calls once a night are cheap; a merge
+      // that throws two different facts into one sentence is not.
       model: 'sonnet',
       insightModel: 'sonnet',
     },

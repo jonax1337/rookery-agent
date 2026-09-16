@@ -530,6 +530,12 @@ export const api = {
       '/api/sleep/cancel' + (owner ? '?owner=' + encodeURIComponent(owner) : ''),
       { method: 'POST' },
     ),
+  /** Reshape the nightly run's own schedule: a cron expression, on/off, or both. */
+  updateSleepSchedule: (patch: { schedule?: string; enabled?: boolean }) =>
+    request<{ schedule: SleepStatusView['schedule']; config: SleepStatusView['config'] }>('/api/sleep/schedule', {
+      method: 'PATCH',
+      ...json(patch),
+    }),
   undoSleep: (id: string) =>
     request<{ woken: number; removed: number; edges: number; skills: number }>('/api/sleep/runs/' + id + '/undo', {
       method: 'POST',

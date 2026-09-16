@@ -151,8 +151,16 @@ export class CronScheduler extends EventEmitter {
 
   /* --------------------------------- CRUD --------------------------------- */
 
-  list(orgId: string): CronJob[] {
-    return this.#store.cron.listJobs(orgId);
+  /**
+   * The schedules a person can see. The nightly memory run is Rookery's own
+   * clockwork, not one of them: it rides the same timer and ledger, but it
+   * is shown, edited, switched off and fired from the memory page alone, so
+   * every user-facing list leaves it out unless it is asked for by name.
+   */
+  list(orgId: string, options: { includeSystem?: boolean } = {}): CronJob[] {
+    const jobs = this.#store.cron.listJobs(orgId);
+    if (options.includeSystem) return jobs;
+    return jobs.filter((job) => job.kind !== 'sleep');
   }
 
   get(id: string): CronJob | null {
@@ -168,7 +176,9 @@ export class CronScheduler extends EventEmitter {
   }
 
   recentRuns(orgId: string, limit?: number): CronRun[] {
-    return this.#store.cron.listRecentRuns(orgId, limit);
+    const runs = this.#store.cron.listRecentRuns(orgId, limit);
+    const kinds = new Map(this.#store.cron.listJobs(orgId).map((job) => [job.id, job.kind]));
+    return runs.filter((run) => kinds.get(run.jobId) !== 'sleep');
   }
 
   isRunning(jobId: string): boolean {

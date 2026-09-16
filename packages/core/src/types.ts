@@ -1159,14 +1159,28 @@ export interface SleepConfig {
   schedule: string;
   /** Which banks sleep: only the assistant's, or every agent's too. */
   scope: 'assistant' | 'all';
-  /** Upper bound on condensation calls per night. */
+  /**
+   * Hard cap on the night's expensive model calls across the consolidation
+   * phases (condense, resolve, link, reflect, revise, practise). The budget
+   * is not spent by the clock: each phase first measures how much work there
+   * actually is, and only that demand is funded, up to this ceiling. A quiet
+   * week costs a few calls; a loud one runs until the cap. The replay pass
+   * sits outside the wallet - it is bounded by `replaySessions`, and its
+   * cheap triage pass does not count against anything.
+   */
+  nightBudget: number;
+  /** Ceiling on condensation calls per night; the adaptive budget may spend less. */
   maxMergeCalls: number;
+  /** Ceiling on the calls that draw new edges between memories. */
+  maxLinkCalls: number;
   /** Untouched for this long and weak enough, a memory goes dormant. */
   dormantAfterDays: number;
   /** Blended strength below which a memory may be put to sleep. */
   minStrength: number;
   /** How many insights one night may write. */
   insights: number;
+  /** How far back the insight phase looks for a pattern. */
+  insightWindowDays: number;
   /**
    * How many skills one night may write. A memory says what is true; a skill
    * says how something is done, and the night is where the second is

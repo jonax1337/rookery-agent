@@ -36,9 +36,13 @@ export {
 } from './memory/gate.js';
 export {
   SleepRunner,
+  allocateNightBudget,
   describeSleep,
   parseObject,
   share,
+  type NightBudgets,
+  type NightCeilings,
+  type NightDemand,
   type SleepInput,
   type SleepRunnerOptions,
 } from './memory/sleep.js';

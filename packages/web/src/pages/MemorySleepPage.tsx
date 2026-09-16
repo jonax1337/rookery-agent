@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   BadgeAlertIcon as TriangleAlertIcon,
@@ -9,6 +9,8 @@ import {
 import { toast } from 'sonner';
 
 import { reportFailure } from '@/lib/errors';
+
+import { api } from '@/lib/api';
 
 import { CRON_TRIGGER_LABEL } from '@/lib/cron';
 import { SLEEP_PHASE_DETAIL, SLEEP_PHASE_LABEL, formatDuration } from '@/lib/format';
@@ -37,7 +39,10 @@ import { StatusBadge } from '@/components/common/status-badge';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
+import { Switch } from '@/components/ui/switch';
 import type { IconComponent } from "@/components/icons";
 
 /**
@@ -313,6 +318,54 @@ export function MemorySleepPage() {
 
   const nextRun = schedule?.enabled && schedule.nextRunAt ? formatDateTime(schedule.nextRunAt) : null;
 
+  // The draft follows the server until the user types into it, so a schedule
+  // changed elsewhere (or by the server normalising the expression) shows up
+  // without a reload. Once dirty, the page stops overwriting what is typed.
+  const [scheduleDraft, setScheduleDraft] = useState('');
+  const [scheduleDirty, setScheduleDirty] = useState(false);
+  const [savingSchedule, setSavingSchedule] = useState(false);
+  useEffect(() => {
+    if (scheduleDirty) return;
+    setScheduleDraft(schedule?.schedule ?? config?.schedule ?? '');
+  }, [scheduleDirty, schedule?.schedule, config?.schedule]);
+
+  const saveEnabled = useCallback(
+    async (enabled: boolean): Promise<void> => {
+      setSavingSchedule(true);
+      const ok = await sleep.saveSchedule({ enabled });
+      setSavingSchedule(false);
+      if (ok) toast(enabled ? 'The nightly run is on' : 'The nightly run is off');
+      else toast.error('The nightly schedule could not be saved');
+    },
+    [sleep],
+  );
+
+  const applySchedule = useCallback(async (): Promise<void> => {
+    const draft = scheduleDraft.trim();
+    if (!draft) return;
+    setSavingSchedule(true);
+    try {
+      // Validate and normalise through the same endpoint the schedules page
+      // uses, so the description shown is the server's own reading.
+      const check = await api.cronPreview(draft);
+      if (!check.ok) {
+        toast.error(check.error || 'That is not a valid cron expression.');
+        return;
+      }
+      const ok = await sleep.saveSchedule({ schedule: check.schedule });
+      if (ok) {
+        setScheduleDirty(false);
+        toast('Nightly schedule saved: ' + check.description);
+      } else {
+        toast.error('The nightly schedule could not be saved');
+      }
+    } catch (caught) {
+      reportFailure('Save schedule', caught);
+    } finally {
+      setSavingSchedule(false);
+    }
+  }, [scheduleDraft, sleep]);
+
   return (
     <>
       {dialog}
@@ -415,11 +468,48 @@ export function MemorySleepPage() {
                 </span>
               </div>
 
+              {/* The nightly run's own clock: hidden from the schedules page,
+                  so this row is where it is read and changed. */}
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="sleep-enabled"
+                    checked={schedule?.enabled ?? config?.enabled ?? true}
+                    onCheckedChange={(checked) => void saveEnabled(checked)}
+                    disabled={savingSchedule}
+                  />
+                  <Label htmlFor="sleep-enabled" className="text-sm font-normal text-muted-foreground">
+                    Nightly run
+                  </Label>
+                </div>
+                <Input
+                  value={scheduleDraft}
+                  onChange={(event) => {
+                    setScheduleDraft(event.target.value);
+                    setScheduleDirty(true);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void applySchedule();
+                  }}
+                  placeholder="30 3 * * *"
+                  className="w-44 font-mono text-sm"
+                  aria-label="Cron expression for the nightly run"
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!scheduleDirty || savingSchedule || !scheduleDraft.trim()}
+                  onClick={() => void applySchedule()}
+                >
+                  {savingSchedule ? <Spinner data-icon="inline-start" aria-hidden="true" /> : null}
+                  Save schedule
+                  </Button>
+              </div>
+
               {config ? (
                 <MetaList
                   columns={3}
                   items={[
-                    { label: 'Schedule', value: config.schedule, mono: true },
                     {
                       label: 'Scope',
                       value: config.scope === 'all' ? 'Assistant and agents' : 'assistant only',
@@ -433,6 +523,10 @@ export function MemorySleepPage() {
                     {
                       label: 'Put to sleep after',
                       value: formatNumber(config.dormantAfterDays) + ' days without recall',
+                    },
+                    {
+                      label: 'Night budget',
+                      value: formatNumber(config.nightBudget) + ' model calls at most',
                     },
                   ]}
                 />

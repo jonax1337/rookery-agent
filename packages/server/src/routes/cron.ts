@@ -1,10 +1,16 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { CronSyntaxError, describeCron, parseCron, readCronScript, upcomingCronRuns } from '@rookery/core';
+import type { CronJob } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import { requireSameOrigin } from '../auth.js';
 import { BadRequestError, cronJobSchema, parseOrThrow, patchCronJobSchema } from '../schemas.js';
 
 type IdParams = { Params: { id: string } };
+
+/** The one job that is Rookery's own clockwork rather than a user's schedule. */
+function isInternal(job: CronJob): boolean {
+  return job.kind === 'sleep';
+}
 
 /**
  * Schedules: the clock's REST surface. The web UI manages jobs here; the
@@ -72,7 +78,10 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
 
   app.get<IdParams>('/api/cron/:id', options, async (request, reply) => {
     const job = cron.get(request.params.id);
-    if (!job) return notFound(reply, 'No schedule ' + request.params.id);
+    // Same story as the list above: the nightly memory run is not a user
+    // schedule, so from this surface it does not exist - not even to read.
+    // The memory page asks for it through /api/sleep/status instead.
+    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
     let scriptSource: string | undefined;
     let scriptError: string | undefined;
     if (job.kind === 'script' && job.script) {
@@ -95,7 +104,7 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
 
   app.patch<IdParams>('/api/cron/:id', async (request, reply) => {
     const job = cron.get(request.params.id);
-    if (!job) return notFound(reply, 'No schedule ' + request.params.id);
+    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
     const patch = parseOrThrow(patchCronJobSchema, request.body ?? {});
     if (patch.agentId && !store.org.getAgent(patch.agentId)) return notFound(reply, 'No agent ' + patch.agentId);
     if (patch.projectId && !store.org.getProject(patch.projectId)) return notFound(reply, 'No project ' + patch.projectId);
@@ -103,6 +112,10 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
   });
 
   app.delete<IdParams>('/api/cron/:id', async (request, reply) => {
+    const job = cron.get(request.params.id);
+    // The nightly memory run is machinery, not a row somebody deletes: from
+    // here it does not exist, and the memory page is where it is managed.
+    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
     if (!cron.remove(request.params.id)) return notFound(reply, 'No schedule ' + request.params.id);
     return { ok: true };
   });
@@ -110,7 +123,7 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
   /** Fire now. Returns as soon as the run is booked; progress comes over the socket. */
   app.post<IdParams>('/api/cron/:id/run', async (request, reply) => {
     const job = cron.get(request.params.id);
-    if (!job) return notFound(reply, 'No schedule ' + request.params.id);
+    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
     if (cron.isRunning(job.id)) {
       reply.code(409);
       return { error: 'Conflict', message: 'The schedule is running.' };

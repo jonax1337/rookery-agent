@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { ASSISTANT_MEMORY_OWNER } from '@rookery/core';
+import { CronSyntaxError, applyConfig, ASSISTANT_MEMORY_OWNER, parseCron } from '@rookery/core';
+import type { RookeryConfig } from '@rookery/core';
 import type { ServerContext } from '../context.js';
+import { BadRequestError } from '../schemas.js';
 
 /**
  * The night shift, over HTTP.
@@ -17,7 +19,13 @@ export async function registerSleepRoutes(app: FastifyInstance, context: ServerC
     let schedule = null;
     try {
       const organization = context.assistant.org.activeOrganization();
-      schedule = context.assistant.cron.list(organization.id).find((entry) => entry.kind === 'sleep') ?? null;
+      // The sleep job is Rookery's internal clockwork: `cron.list` hides it
+      // from every user-facing surface, and this is the one place that asks
+      // for it by name.
+      schedule =
+        context.assistant.cron
+          .list(organization.id, { includeSystem: true })
+          .find((entry) => entry.kind === 'sleep') ?? null;
     } catch {
       // No company yet is not an error; it only means no schedule row exists.
     }
@@ -30,6 +38,78 @@ export async function registerSleepRoutes(app: FastifyInstance, context: ServerC
       config: context.config.memory.sleep,
     };
   });
+
+  /**
+   * Manage the nightly run's own schedule from the memory page. The sleep
+   * job is not reachable through /api/cron on purpose - it is not a user
+   * schedule - so this is the only door to it. A change is written to the
+   * cron row and mirrored into the config, because the config is what the
+   * next boot checks; changing only the row would quietly drift back.
+   */
+  app.patch(
+    '/api/sleep/schedule',
+    async (
+      request: FastifyRequest<{ Body?: { schedule?: string; enabled?: boolean } }>,
+      reply: FastifyReply,
+    ) => {
+      const scheduleInput = typeof request.body?.schedule === 'string' ? request.body.schedule.trim() : '';
+      const enabledInput = typeof request.body?.enabled === 'boolean' ? request.body.enabled : undefined;
+      if (!scheduleInput && enabledInput === undefined) {
+        reply.code(400);
+        return { error: 'Nothing to change; pass a schedule or an enabled flag.' };
+      }
+
+      let expression: string | undefined;
+      if (scheduleInput) {
+        try {
+          expression = parseCron(scheduleInput).expression;
+        } catch (error) {
+          if (error instanceof CronSyntaxError) {
+            reply.code(400);
+            return { error: (error as Error).message };
+          }
+          throw error;
+        }
+      }
+
+      const organization = context.assistant.org.activeOrganization();
+      const cron = context.assistant.cron;
+      let job = cron.list(organization.id, { includeSystem: true }).find((entry) => entry.kind === 'sleep');
+      if (!job) {
+        job = cron.create({
+          orgId: organization.id,
+          name: 'Memory sleep',
+          schedule: expression ?? context.config.memory.sleep.schedule,
+          kind: 'sleep',
+          prompt: context.config.memory.sleep.scope,
+          enabled: enabledInput,
+          createdBy: 'user',
+        });
+      } else {
+        job = cron.update(job.id, {
+          ...(expression ? { schedule: expression } : {}),
+          ...(enabledInput === undefined ? {} : { enabled: enabledInput }),
+        });
+      }
+
+      // Mirror what changed into the config: `ensureSleepSchedule` follows
+      // the config on the next boot, so the row and the config have to say
+      // the same thing or the change would not survive a restart.
+      applyConfig(context.config, {
+        memory: {
+          sleep: {
+            ...(expression ? { schedule: expression } : {}),
+            ...(enabledInput === undefined ? {} : { enabled: enabledInput }),
+          },
+        },
+        // A deep-partial sleep object is exactly what applyConfig merges; the
+        // cast only bridges the full-object shape of RookeryConfig, the same
+        // bridge routes/config.ts crosses for its PATCHes.
+      } as unknown as Partial<RookeryConfig>);
+
+      return { schedule: job, config: context.config.memory.sleep };
+    },
+  );
 
   app.get(
     '/api/sleep/runs',

@@ -281,5 +281,16 @@ export function useSleep(socket: RookerySocket, onFinished?: () => void) {
     [onFinished, refresh],
   );
 
-  return { status, runs, phase, cycle, busy, error, loading, refresh, start, cancel, undo };
+  /** Reshape the nightly run's own schedule from the memory page. */
+  const saveSchedule = useCallback(async (patch: { schedule?: string; enabled?: boolean }): Promise<boolean> => {
+    try {
+      const updated = await api.updateSleepSchedule(patch);
+      setStatus((current) => (current ? { ...current, schedule: updated.schedule, config: updated.config } : current));
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  return { status, runs, phase, cycle, busy, error, loading, refresh, start, cancel, undo, saveSchedule };
 }

@@ -108,6 +108,14 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Set when the running assignment itself came from mail; carries the auto-trigger loop guard. */
   sourceMail?: { id: string; threadId: string; depth: number };
+  /**
+   * Set when the caller is a scheduled run rather than a person's
+   * conversation. Automated runs work, but they write nothing back: no
+   * memories are extracted from them and `write_skill` refuses, so a cron
+   * job cannot quietly author its own job description into permanent
+   * storage.
+   */
+  scheduled?: boolean;
 }
 
 export interface RunAssignmentInput {
@@ -120,6 +128,8 @@ export interface RunAssignmentInput {
   requesterKind: RequesterKind;
   requesterAgentId?: string;
   depth: number;
+  /** A schedule fired this assignment; it works, but it does not learn. */
+  scheduled?: boolean;
   emit: (event: AgentEvent) => void;
   signal?: AbortSignal;
   /**
@@ -460,7 +470,21 @@ export class OrgController extends EventEmitter {
         return { text: searchProfile(this.#config, text('query')) };
       }
       case 'remember': {
-        if (context.audience !== 'assistant') return fail('Only the assistant has this memory.');
+        // The assistant keeps facts about the user; an agent keeps facts
+        // about its own work. Either way the write lands in the caller's own
+        // bank and nowhere else - there is no path here that writes across
+        // the owner boundary.
+        const owner =
+          context.audience === 'agent' && context.agentId ? context.agentId : ASSISTANT_MEMORY_OWNER;
+        // Same rule as write_skill below: a scheduled run has nobody present
+        // to confirm anything, and a memory it pinned would even carry
+        // origin 'user' - protected from the very night that should weigh it.
+        if (context.scheduled) {
+          return fail(
+            'This run was started by a schedule. Automated runs leave no memories - if this ' +
+              'belongs in memory, bring it up in a conversation.',
+          );
+        }
         if (!text('content')) return fail('A memory needs content.');
         const tags = text('tags').split(',').map((v) => v.trim()).filter(Boolean);
         const record = this.#store.upsertMemory({
@@ -468,18 +492,27 @@ export class OrgController extends EventEmitter {
           content: text('content'),
           tags,
           importance: clampNumber(args.importance, 0, 1, 0.7),
-          owner: ASSISTANT_MEMORY_OWNER,
+          owner,
           sourceSessionId: context.sessionId,
           // Asked for explicitly, so the night never merges it away.
           origin: 'user',
         });
-        linkEntities(this.#store, ASSISTANT_MEMORY_OWNER, record.id, tags);
+        linkEntities(this.#store, owner, record.id, tags);
         this.emit('changed', { kind: 'memory', id: record.id });
         return { text: 'Remembered (' + record.id.slice(0, 8) + '): ' + record.content };
       }
 
       case 'forget': {
         if (context.audience !== 'assistant') return fail('Only the assistant has this memory.');
+        // Forgetting is a deletion, and E1 of the memory concept says a
+        // deletion happens only on the user's explicit word - a schedule has
+        // nobody behind it to give that word.
+        if (context.scheduled) {
+          return fail(
+            'This run was started by a schedule. Nothing is forgotten on an automated run - ask ' +
+              'in a conversation instead.',
+          );
+        }
         const ref = text('id');
         if (!ref) return fail('Which memory? Give its id.');
         const record =
@@ -492,12 +525,16 @@ export class OrgController extends EventEmitter {
       }
 
       case 'search_memory': {
-        if (context.audience !== 'assistant') return fail('Only the assistant has this memory.');
+        // Read-only, and strictly inside the caller's own bank: the
+        // assistant searches what it knows about the user, an agent searches
+        // its own working memory. One owner in, one owner out.
+        const owner =
+          context.audience === 'agent' && context.agentId ? context.agentId : ASSISTANT_MEMORY_OWNER;
         const limit = clampNumber(args.limit, 1, 100, 20);
         const query = text('query');
         const rows = query
-          ? recall(this.#store, { text: query, limit, owner: ASSISTANT_MEMORY_OWNER, touch: false })
-          : this.#store.listMemories({ owner: ASSISTANT_MEMORY_OWNER, limit });
+          ? recall(this.#store, { text: query, limit, owner, touch: false })
+          : this.#store.listMemories({ owner, limit });
         if (!rows.length) return { text: query ? 'Nothing in memory matches.' : 'Memory is empty.' };
         return {
           text: rows
@@ -593,6 +630,16 @@ export class OrgController extends EventEmitter {
       }
 
       case 'write_skill': {
+        // A scheduled run has a person's trust but not a person present:
+        // what it writes down would echo its own job prompt, and nothing
+        // standing behind it would ever be read by anyone. It says so and
+        // carries on without the skill.
+        if (context.scheduled) {
+          return fail(
+            'This run was started by a schedule. Automated runs leave no memories and write no ' +
+              'skills - if this procedure matters, ask for it in a conversation or write it yourself.',
+          );
+        }
         // Always the home store, never the project one: a skill written in
         // the middle of an assignment must not land in somebody's repository.
         const audience =
@@ -900,6 +947,12 @@ export class OrgController extends EventEmitter {
 
     const job = cron.find(context.orgId, text('id'));
     if (!job) return fail('No schedule "' + text('id') + '". list_schedules shows the ids.');
+    // The nightly memory run is Rookery's internal clockwork: it is not on
+    // the list, and it is not the assistant's to delete, fire or reschedule.
+    // The memory page owns it.
+    if (job.kind === 'sleep') {
+      return fail('"' + job.name + '" is the memory\'s own nightly run, not a schedule of yours. It is managed on the memory page.');
+    }
 
     if (name === 'delete_schedule') {
       cron.remove(job.id);
@@ -1515,6 +1568,7 @@ export class OrgController extends EventEmitter {
         depth: input.depth,
         emit: input.emit,
         signal: controller.signal,
+        scheduled: input.scheduled,
         sourceMail: input.sourceMail
           ? { id: input.sourceMail.id, threadId: input.sourceMail.threadId, depth: input.sourceMail.depth }
           : undefined,
@@ -1676,7 +1730,10 @@ export class OrgController extends EventEmitter {
         { status: 'done', result: text, chars: text.length, finishedAt: Date.now(), durationMs: Date.now() - started },
         { chars: text.length, preview: shorten(tail(text, 160), 110) },
       );
-      if (this.#config.memory.enabled && this.#config.memory.autoExtract) {
+      // A scheduled assignment does not learn: its "task" is the job's own
+      // prompt, written once when the schedule was created, and every firing
+      // would otherwise quote it back into the bank as if it were news.
+      if (this.#config.memory.enabled && this.#config.memory.autoExtract && !input.scheduled) {
         void this.#learn(agent, input.task, text, usedProvider);
       }
       if (this.#config.org.autoReview) void this.#review(agent, done, input.task, text, usedProvider);

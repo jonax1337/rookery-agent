@@ -670,10 +670,10 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'remember',
     description:
-      'Write one fact into your long-term memory of the user, so it comes back in later ' +
-      'conversations. One self-contained sentence per call. Use it when the user tells you to ' +
-      'remember something, or for something clearly worth keeping that the automatic extraction ' +
-      'might miss.',
+      'Write one fact into your long-term memory, so it comes back later. For the assistant this ' +
+      'is the memory of the user; an agent writes into its own working memory of its assignments. ' +
+      'One self-contained sentence per call. Use it when you are told to remember something, or ' +
+      'for something clearly worth keeping that the automatic extraction might miss.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -685,7 +685,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
       required: ['content'],
       additionalProperties: false,
     },
-    audience: ASSISTANT_ONLY,
+    audience: BOTH,
   },
   {
     name: 'forget',
@@ -703,8 +703,9 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'search_memory',
     description:
-      'Search your long-term memory of the user. Without a query, the most important memories. ' +
-      'Returns ids, so a wrong one can be passed to forget.',
+      'Search your long-term memory - for the assistant that is what it knows about the user, for ' +
+      'an agent its own working memory. Without a query, the most important memories. Returns ids, ' +
+      'so a wrong one can be passed to forget.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -713,7 +714,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
       },
       additionalProperties: false,
     },
-    audience: ASSISTANT_ONLY,
+    audience: BOTH,
   },
   {
     name: 'get_settings',

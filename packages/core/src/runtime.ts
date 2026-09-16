@@ -149,6 +149,13 @@ export interface AssignInput {
   projectId?: string;
   sessionId?: string;
   signal?: AbortSignal;
+  /**
+   * Set when a schedule fired this assignment. An automated run works, but
+   * it does not learn: its words are the job's prompt, written once when
+   * the schedule was created, and re-extracting them on every firing would
+   * fill the agent's bank with echoes of its own job description.
+   */
+  scheduled?: boolean;
 }
 
 export interface AssistantOptions {
@@ -372,16 +379,19 @@ export class Assistant extends EventEmitter {
 
   /**
    * Make sure the nightly run has a schedule. Called once when the clock
-   * starts. The job is an ordinary `cron_jobs` row, so it shows up on the
-   * schedules page, can be edited, switched off or run by hand like any
-   * other - there is no second, hidden timer anywhere.
+   * starts. The job is an ordinary `cron_jobs` row - one timer, no second
+   * hidden one anywhere - but it is Rookery's internal clockwork, not a
+   * user schedule: every list filters it out, and the memory page is the
+   * only place it is shown and managed.
    */
   ensureSleepSchedule(): CronJob | null {
     const sleep = this.config.memory.sleep;
     if (!sleep.enabled) return null;
     try {
       const organization = this.org.activeOrganization();
-      const existing = this.cron.list(organization.id).find((job) => job.kind === 'sleep');
+      const existing = this.cron
+        .list(organization.id, { includeSystem: true })
+        .find((job) => job.kind === 'sleep');
       if (existing) {
         // Follow the config when the user changes it there, but never
         // re-enable a job they switched off by hand.
@@ -581,6 +591,10 @@ export class Assistant extends EventEmitter {
           sessionId: session.id,
           projectId: session.projectId,
           depth: -1,
+          // A scheduled chat run works under the same rule as a scheduled
+          // assignment: it may read memory and open skills, but nothing it
+          // does lands back in the bank - no extraction, no tools that write.
+          scheduled: session.kind === 'schedule',
           emit: (event) => queue.push(event),
           signal: input.signal,
         });
@@ -740,7 +754,16 @@ export class Assistant extends EventEmitter {
 
     yield { type: 'done', text: answer, providerSessionId, usage: turnUsage };
 
-    if (this.config.memory.enabled && this.config.memory.autoExtract) {
+    // Scheduled runs stay out of the memory: the "user" side of that
+    // exchange is Rookery's own boilerplate plus the job's prompt, not
+    // something the user said today, and quoting it would file the job
+    // description again on every firing. Mail answers are deliberately
+    // still extracted - a person wrote in, and what they wrote stands.
+    if (
+      this.config.memory.enabled &&
+      this.config.memory.autoExtract &&
+      session.kind !== 'schedule'
+    ) {
       void this.#learn(session.id, prompt, answer, usedProvider, owner);
     }
   }
@@ -800,6 +823,7 @@ export class Assistant extends EventEmitter {
         sessionId: input.sessionId,
         requesterKind: 'user',
         depth: 0,
+        scheduled: input.scheduled,
         emit: (event) => queue.push(event),
         signal: input.signal,
       })
@@ -933,7 +957,9 @@ export class Assistant extends EventEmitter {
       let assignmentId: string | undefined;
       let text = '';
       let error: string | undefined;
-      for await (const event of this.assign({ agent: agent.id, task: job.prompt, projectId: job.projectId, signal })) {
+      // `scheduled` keeps the run from learning: the assignment's words are
+      // the job's own prompt, and no memory should grow out of them.
+      for await (const event of this.assign({ agent: agent.id, task: job.prompt, projectId: job.projectId, signal, scheduled: true })) {
         if (event.type === 'assignment' && !assignmentId) assignmentId = event.assignment.id;
         else if (event.type === 'done') text = event.text;
         else if (event.type === 'error' && event.fatal) error = event.message;

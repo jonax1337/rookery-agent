@@ -10,6 +10,7 @@ import {
   type Provider,
   type ProviderId,
   type RookeryConfig,
+  type Session,
   type SleepRun,
   type SleepStage,
   type ToolServerAudience,
@@ -229,10 +230,20 @@ export class SleepRunner extends EventEmitter {
       const provider = providerId ? this.#registry.get(providerId) : null;
       const model = providerId ? settings.model.trim() || smallModelFor(providerId) : undefined;
       const insightModel = settings.insightModel.trim() || model;
-      counters.readCount = this.#store.liveMemories(owner).length;
+      const live = this.#store.liveMemories(owner);
+      counters.readCount = live.length;
 
       if (!provider) {
         this.#log.warn('Sleep ran without a provider; only light sleep happened', { owner });
+      }
+
+      // The replay list is measured first, because the read has to happen
+      // before anything else: what the night harvests there should be
+      // condensed tonight, not tomorrow.
+      let budgets: NightBudgets | null = null;
+      let replaySessions: Session[] = [];
+      if (provider) {
+        replaySessions = owner === ASSISTANT_MEMORY_OWNER ? this.#replayCandidates(owner) : [];
       }
 
       /* ---- replay: the day, read again and properly. Before the cycles ----
@@ -245,6 +256,7 @@ export class SleepRunner extends EventEmitter {
           model,
           owner,
           run.id,
+          replaySessions,
           controller.signal,
         );
         counters.replayedCount += replayed.read;
@@ -255,6 +267,30 @@ export class SleepRunner extends EventEmitter {
         counters.readCount = this.#store.liveMemories(owner).length;
         this.#phase(run.id, 'replay', counters, 1);
         this.#throwIfAborted(controller.signal);
+      }
+
+      // The night's wallet is filled by need, not by the clock, and it is
+      // filled HERE - after the replay, not before it. The re-read grows the
+      // bank, surfaces contradictions and pulls corrections out of the day's
+      // words, and that is precisely the work the later phases exist to do;
+      // a budget measured before the read funds the night for a quieter day
+      // than the one it just had. Everything is database arithmetic, so
+      // measuring costs nothing.
+      if (provider) {
+        const demand = this.#demand(owner, this.#store.liveMemories(owner));
+        budgets = allocateNightBudget(
+          demand,
+          settings.nightBudget,
+          {
+            condense: settings.maxMergeCalls,
+            resolve: settings.maxResolveCalls,
+            link: settings.maxLinkCalls,
+            reflect: settings.insights > 0 ? 2 : 0,
+            revise: settings.skillRevisions,
+            practise: settings.skills,
+          },
+        );
+        this.#log.info('Night measured', { owner, demand, budgets });
       }
 
       for (let cycle = 1; cycle <= cycles; cycle += 1) {
@@ -272,7 +308,7 @@ export class SleepRunner extends EventEmitter {
         }
         this.#store.recountEntities(owner);
         this.#throwIfAborted(controller.signal);
-        if (!provider) continue;
+        if (!provider || !budgets) continue;
 
         /* ---- deep sleep: filing. What repeats becomes one, what cannot ----
            ---- both be true gets decided.                                ---- */
@@ -285,7 +321,7 @@ export class SleepRunner extends EventEmitter {
           run.id,
           clusters,
           controller.signal,
-          share(settings.maxMergeCalls, cycles, cycle, 'early'),
+          share(budgets.condense, cycles, cycle, 'early'),
         );
         counters.mergedCount += condensed.merged;
         counters.dormantCount += condensed.retired;
@@ -298,7 +334,7 @@ export class SleepRunner extends EventEmitter {
           owner,
           run.id,
           controller.signal,
-          share(settings.maxResolveCalls, cycles, cycle, 'late'),
+          share(budgets.resolve, cycles, cycle, 'late'),
         );
         counters.resolvedCount += settled.resolved;
         counters.dormantCount += settled.retired;
@@ -316,7 +352,7 @@ export class SleepRunner extends EventEmitter {
           owner,
           run.id,
           controller.signal,
-          share(3, cycles, cycle, 'late'),
+          share(budgets.link, cycles, cycle, 'late'),
         );
         counters.edgeCount += linked.edges;
         counters.conflictCount += linked.conflicts;
@@ -324,7 +360,14 @@ export class SleepRunner extends EventEmitter {
 
         // Insights come last, once the bank is as tidy as it will get tonight.
         if (cycle === cycles) {
-          const insight = await this.#reflect(provider, insightModel, owner, run.id, controller.signal);
+          const insight = await this.#reflect(
+            provider,
+            insightModel,
+            owner,
+            run.id,
+            controller.signal,
+            budgets.reflect,
+          );
           counters.insightCount += insight.written;
           counters.edgeCount += insight.edges;
           counters.modelCalls += insight.calls;
@@ -333,11 +376,25 @@ export class SleepRunner extends EventEmitter {
           // outside the bank. Repair comes first on purpose: a procedure that
           // has gone stale is actively misleading whoever opens it next,
           // which is worth more than a ninth procedure nobody asked for.
-          const revised = await this.#revise(provider, insightModel, owner, run.id, controller.signal);
+          const revised = await this.#revise(
+            provider,
+            insightModel,
+            owner,
+            run.id,
+            controller.signal,
+            budgets.revise,
+          );
           counters.skillRevisedCount += revised.written;
           counters.modelCalls += revised.calls;
 
-          const practised = await this.#practise(provider, insightModel, owner, run.id, controller.signal);
+          const practised = await this.#practise(
+            provider,
+            insightModel,
+            owner,
+            run.id,
+            controller.signal,
+            budgets.practise,
+          );
           counters.skillCount += practised.written;
           counters.modelCalls += practised.calls;
         }
@@ -379,6 +436,92 @@ export class SleepRunner extends EventEmitter {
   /* ------------------------------ phase 0 ------------------------------ */
 
   /**
+   * How much work the night actually has, per phase, in model calls.
+   *
+   * Everything here is database arithmetic - a night that measures itself
+   * costs nothing to measure. The numbers are ceilings on what each phase
+   * may ask for, not promises: a phase that finds less work than its budget
+   * simply stops early, exactly as before. The replay pass is measured
+   * separately (`#replayCandidates`), because it runs before this and
+   * changes what there is to measure.
+   */
+  #demand(owner: string, live: MemoryRecord[]): NightDemand {
+    const settings = this.#config.memory.sleep;
+    const since = this.#store.lastSleepAt(owner);
+
+    const condense = this.#cluster(owner, live).length;
+    const resolve = this.#openContradictions(owner).length;
+
+    const fresh = this.#store
+      .listMemories({ owner, since: since || undefined, limit: 150, includeDormant: false })
+      .filter((memory) => !memory.supersededBy);
+    // One link call reads up to 25 memories in one portion.
+    const link = Math.ceil(fresh.length / 25);
+
+    // Two passes over the same pool, on purpose: one looks for patterns in
+    // the user, one in the work - neither prompt sees the other's angle.
+    const week = Date.now() - settings.insightWindowDays * 24 * 60 * 60 * 1000;
+    const reflect =
+      settings.insights > 0 &&
+      this.#store
+        .listMemories({ owner, since: week, limit: 80, includeDormant: false })
+        .filter((memory) => memory.kind !== 'insight').length >= 4
+        ? 2
+        : 0;
+
+    const revise = this.#skillSuspects(owner).length;
+    const practise = settings.skills > 0 && live.length >= 6 ? 1 : 0;
+
+    return { condense, resolve, link, reflect, revise, practise };
+  }
+
+  /**
+   * The conversations worth reading again tonight, oldest pending first.
+   *
+   * The scan reaches further back than one night on purpose: a machine that
+   * was off for a few days, or a bank whose last night failed halfway,
+   * should not silently drop what happened in between. The filter is the
+   * same one the deep read applies - at least two real user turns - so the
+   * demand number means "conversations that would actually be read".
+   */
+  #replayCandidates(owner: string): Session[] {
+    const budget = this.#config.memory.sleep.replaySessions;
+    if (budget <= 0 || owner !== ASSISTANT_MEMORY_OWNER) return [];
+    const since = this.#store.lastSleepAt(owner);
+    const candidates: Session[] = [];
+    for (const session of this.#store.sessionsActiveSince(since, 150)) {
+      const spoken = this.#store
+        .getMessages(session.id)
+        .filter((message) => message.role === 'user' && message.content.trim());
+      // Nothing was said, or barely: "thanks" followed by "you're welcome"
+      // holds nothing durable no matter how expensively it is read.
+      if (spoken.length < 2) continue;
+      candidates.push(session);
+      if (candidates.length >= budget) break;
+    }
+    return candidates;
+  }
+
+  /** Contradiction pairs neither side of which has been settled yet. */
+  #openContradictions(owner: string): { srcId: string; dstId: string }[] {
+    return this.#store
+      .listEdges(owner, 500)
+      .filter((edge) => edge.relation === 'contradicts')
+      .map((edge) => {
+        const a = this.#store.getMemory(edge.srcId);
+        const b = this.#store.getMemory(edge.dstId);
+        return { edge, a, b };
+      })
+      .filter(
+        (pair) =>
+          pair.a && pair.b &&
+          !pair.a.dormantAt && !pair.b.dormantAt &&
+          !pair.a.forgotten && !pair.b.forgotten,
+      )
+      .map((pair) => ({ srcId: pair.edge.srcId, dstId: pair.edge.dstId }));
+  }
+
+  /**
    * Read the day again.
    *
    * Every conversation is already extracted from once, right after each turn -
@@ -408,18 +551,16 @@ export class SleepRunner extends EventEmitter {
     deepModel: string | undefined,
     owner: string,
     runId: string,
+    sessions: Session[],
     signal: AbortSignal,
   ): Promise<{ read: number; learned: number; corrections: number; calls: number }> {
-    const budget = this.#config.memory.sleep.replaySessions;
     const idle = { read: 0, learned: 0, corrections: 0, calls: 0 };
     // Only the assistant's own bank. An agent learns from its assignments,
     // which its controller already extracts from, and there is no user in
-    // those transcripts to quote.
-    if (budget <= 0 || signal.aborted || owner !== ASSISTANT_MEMORY_OWNER) return idle;
-
-    const since = this.#store.lastSleepAt(owner);
-    const sessions = this.#store.sessionsActiveSince(since, 50);
-    if (!sessions.length) return idle;
+    // those transcripts to quote. The candidate list arrives pre-measured
+    // from `#replayCandidates`, which applied the same two-turn filter the
+    // budget was sized against.
+    if (signal.aborted || owner !== ASSISTANT_MEMORY_OWNER || !sessions.length) return idle;
 
     let read = 0;
     let learned = 0;
@@ -427,7 +568,7 @@ export class SleepRunner extends EventEmitter {
     let calls = 0;
 
     for (const session of sessions) {
-      if (signal.aborted || read >= budget) break;
+      if (signal.aborted) break;
 
       const messages = this.#store.getMessages(session.id).filter((message) => message.content.trim());
       const spoken = messages.filter((message) => message.role === 'user');
@@ -884,7 +1025,7 @@ export class SleepRunner extends EventEmitter {
   ): Promise<{ edges: number; conflicts: number; calls: number }> {
     const since = this.#store.lastSleepAt(owner);
     const fresh = this.#store
-      .listMemories({ owner, since: since || undefined, limit: 60, includeDormant: false })
+      .listMemories({ owner, since: since || undefined, limit: 150, includeDormant: false })
       .filter((memory) => !memory.supersededBy);
     if (fresh.length < 2) return { edges: 0, conflicts: 0, calls: 0 };
 
@@ -956,6 +1097,22 @@ export class SleepRunner extends EventEmitter {
         if (!existing) continue;
         this.#store.upsertEntity({ owner, name: existing.name, kind });
       }
+
+      // And so does the other half of a tidy graph: two names that mean one
+      // thing ("Rookery", "Rookery-Agent") become one node, links and all.
+      // A merge that would not hold - one side missing, both the same - is
+      // refused by the store and costs the night nothing.
+      const aliases = Array.isArray(parsed.aliases) ? parsed.aliases : [];
+      for (const entry of aliases.slice(0, 8)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const row = entry as Record<string, unknown>;
+        const from = typeof row.from === 'string' ? row.from.trim() : '';
+        const into = typeof row.into === 'string' ? row.into.trim() : '';
+        if (!from || !into || from === into) continue;
+        if (this.#store.mergeEntities(owner, from, into)) {
+          this.#log.info('Merged duplicate entities', { owner, from, into });
+        }
+      }
     }
 
     return { edges, conflicts, calls };
@@ -965,9 +1122,17 @@ export class SleepRunner extends EventEmitter {
 
   /**
    * The part that makes it a memory rather than a filing cabinet: notice
-   * something across the week that no single memory says. Strictly bounded -
-   * one call, at most a couple of sentences, and each one has to point at
-   * the evidence it came from or it is thrown away.
+   * something across the window that no single memory says. Strictly
+   * bounded - each call at most a couple of sentences, and each one has to
+   * point at the evidence it came from or it is thrown away.
+   *
+   * Two passes over the same pool, from two angles. The first looks for
+   * patterns in the user: habits, preferences, routines. The second looks
+   * for patterns in the work: what keeps recurring, what keeps costing
+   * time, what the projects share. One prompt that asks for both at once
+   * returns the loudest kind only; separately, each gets its own lens. The
+   * configured `insights` count caps the night's total, whichever angle
+   * produced them.
    */
   async #reflect(
     provider: Provider,
@@ -975,13 +1140,15 @@ export class SleepRunner extends EventEmitter {
     owner: string,
     runId: string,
     signal: AbortSignal,
+    budget: number,
   ): Promise<{ written: number; edges: number; calls: number }> {
     const wanted = this.#config.memory.sleep.insights;
-    if (wanted <= 0 || signal.aborted) return { written: 0, edges: 0, calls: 0 };
+    if (wanted <= 0 || budget <= 0 || signal.aborted) return { written: 0, edges: 0, calls: 0 };
 
-    const week = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const window = this.#config.memory.sleep.insightWindowDays;
+    const since = Date.now() - window * 24 * 60 * 60 * 1000;
     const recent = this.#store
-      .listMemories({ owner, since: week, limit: 40, includeDormant: false })
+      .listMemories({ owner, since, limit: 80, includeDormant: false })
       .filter((memory) => memory.kind !== 'insight');
     if (recent.length < 4) return { written: 0, edges: 0, calls: 0 };
 
@@ -993,60 +1160,78 @@ export class SleepRunner extends EventEmitter {
       ? '\n\nCOMMON TOPICS:\n' + entities.map((entity) => '- ' + entity.name).join('\n')
       : '';
 
-    const raw = await ask(
-      provider,
-      INSIGHT_PROMPT.replace('{{MAX}}', String(wanted)) +
-        '\n\nMEMORIES FROM RECENT DAYS:\n' + numbered + topics,
-      model,
-      signal,
-    );
-    const parsed = parseObject(raw);
-    const proposed = parsed && Array.isArray(parsed.insights) ? parsed.insights : [];
-
     let written = 0;
     let edges = 0;
-    for (const entry of proposed.slice(0, wanted)) {
-      if (!entry || typeof entry !== 'object') continue;
-      const row = entry as Record<string, unknown>;
-      const content = typeof row.content === 'string' ? row.content.trim() : '';
-      if (content.length < 12 || content.length > 400) continue;
-      const evidence = Array.isArray(row.evidence)
-        ? [...new Set(row.evidence.map((value) => Number(value)))]
-            .filter((value) => Number.isInteger(value) && value >= 1 && value <= recent.length)
-            .map((value) => recent[value - 1]!)
-        : [];
-      // An insight standing on fewer than two memories is a guess.
-      if (evidence.length < 2) continue;
+    let calls = 0;
 
-      const record = this.#store.upsertMemory({
-        kind: 'insight',
-        content,
-        tags: [...new Set(evidence.flatMap((memory) => memory.tags))].slice(0, 6),
-        importance: clamp01(typeof row.importance === 'number' ? row.importance : 0.75),
-        owner,
-        origin: 'sleep',
-        sleepRunId: runId,
-      });
-      for (const memory of evidence) {
-        for (const entity of this.#store.entitiesFor(memory.id)) {
-          this.#store.linkEntity(record.id, entity.id);
-        }
-        // The insight refines its evidence, so recall can walk from either end.
-        const edge = this.#store.addEdge({
+    // The two angles read the same pool, so the same sentence can come back
+    // twice - and an insight that is already on record is not knowledge
+    // gained. Both passes write against this set; whatever is in it, from
+    // earlier nights or earlier in this one, is skipped.
+    const onRecord = new Set(
+      this.#store
+        .listMemories({ owner, kinds: ['insight'], limit: 200, includeDormant: false })
+        .map((memory) => memory.content),
+    );
+
+    for (const angle of ['user', 'work'] as const) {
+      if (calls >= budget || written >= wanted || signal.aborted) break;
+      const raw = await ask(
+        provider,
+        (angle === 'user' ? INSIGHT_USER_PROMPT : INSIGHT_WORK_PROMPT).replace('{{MAX}}', String(wanted - written)) +
+          '\n\nMEMORIES FROM RECENT DAYS:\n' + numbered + topics,
+        model,
+        signal,
+      );
+      calls += 1;
+      const parsed = parseObject(raw);
+      const proposed = parsed && Array.isArray(parsed.insights) ? parsed.insights : [];
+
+      for (const entry of proposed.slice(0, wanted - written)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const row = entry as Record<string, unknown>;
+        const content = typeof row.content === 'string' ? row.content.trim() : '';
+        if (content.length < 12 || content.length > 400) continue;
+        if (onRecord.has(content)) continue;
+        const evidence = Array.isArray(row.evidence)
+          ? [...new Set(row.evidence.map((value) => Number(value)))]
+              .filter((value) => Number.isInteger(value) && value >= 1 && value <= recent.length)
+              .map((value) => recent[value - 1]!)
+          : [];
+        // An insight standing on fewer than two memories is a guess.
+        if (evidence.length < 2) continue;
+
+        const record = this.#store.upsertMemory({
+          kind: 'insight',
+          content,
+          tags: [...new Set(evidence.flatMap((memory) => memory.tags))].slice(0, 6),
+          importance: clamp01(typeof row.importance === 'number' ? row.importance : 0.75),
           owner,
-          srcId: record.id,
-          dstId: memory.id,
-          relation: 'refines',
-          weight: 0.8,
           origin: 'sleep',
-          runId,
+          sleepRunId: runId,
         });
-        if (edge) edges += 1;
+        onRecord.add(content);
+        for (const memory of evidence) {
+          for (const entity of this.#store.entitiesFor(memory.id)) {
+            this.#store.linkEntity(record.id, entity.id);
+          }
+          // The insight refines its evidence, so recall can walk from either end.
+          const edge = this.#store.addEdge({
+            owner,
+            srcId: record.id,
+            dstId: memory.id,
+            relation: 'refines',
+            weight: 0.8,
+            origin: 'sleep',
+            runId,
+          });
+          if (edge) edges += 1;
+        }
+        written += 1;
       }
-      written += 1;
     }
 
-    return { written, edges, calls: 1 };
+    return { written, edges, calls };
   }
 
   /* ------------------------------ phase 6 ------------------------------ */
@@ -1076,16 +1261,12 @@ export class SleepRunner extends EventEmitter {
    * Otherwise one dormant memory would drag the same skill in front of the
    * model every night for ever, at the cost of a call each time.
    */
-  async #revise(
-    provider: Provider,
-    model: string | undefined,
-    owner: string,
-    runId: string,
-    signal: AbortSignal,
-  ): Promise<{ written: number; calls: number }> {
-    const budget = this.#config.memory.sleep.skillRevisions;
-    if (budget <= 0 || signal.aborted) return { written: 0, calls: 0 };
-
+  /**
+   * Every skill of this bank that has a live reason to be looked at, worst
+   * first. Pure database and lexical work - no model - so the demand
+   * measurement can call it as often as it likes.
+   */
+  #skillSuspects(owner: string) {
     const store = new SkillStore(this.#config.skillsDir);
     const mine = store
       .for(owner === ASSISTANT_MEMORY_OWNER ? 'assistant' : 'agent')
@@ -1093,7 +1274,7 @@ export class SleepRunner extends EventEmitter {
       // night's to rewrite, so there is no point spending a model call
       // deciding that they should be - the store would refuse the write.
       .filter((skill) => skill.origin === 'agent' || skill.origin === 'sleep');
-    if (!mine.length) return { written: 0, calls: 0 };
+    if (!mine.length) return [];
 
     // Corrections the night's replay pulled out of the day's conversations.
     // Unlike the other two signals these do not arrive attached to a skill, so
@@ -1101,9 +1282,8 @@ export class SleepRunner extends EventEmitter {
     // the rest of this file uses, and enough to tell "always run the tests
     // first" from a remark about the mail client.
     const open = this.#store.openCorrections(owner, 20);
-    const consumed = new Set<string>();
 
-    const suspects = mine
+    return mine
       .map((skill) => {
         // Looking counts as clearing, so the window opens at whichever came
         // last: the file being written, or the night last reading it.
@@ -1124,8 +1304,24 @@ export class SleepRunner extends EventEmitter {
       // A failure is the louder signal: it is evidence the procedure was
       // actually followed and actually did not work.
       .filter((entry) => entry.changed.length > 0 || entry.failures.length > 0 || entry.corrections.length > 0)
-      .sort((a, b) => weigh(b) - weigh(a))
-      .slice(0, budget);
+      .sort((a, b) => weigh(b) - weigh(a));
+  }
+
+  async #revise(
+    provider: Provider,
+    model: string | undefined,
+    owner: string,
+    runId: string,
+    signal: AbortSignal,
+    budget: number,
+  ): Promise<{ written: number; calls: number }> {
+    if (budget <= 0 || signal.aborted) return { written: 0, calls: 0 };
+
+    const store = new SkillStore(this.#config.skillsDir);
+    const suspects = this.#skillSuspects(owner).slice(0, budget);
+    if (!suspects.length) return { written: 0, calls: 0 };
+
+    const consumed = new Set<string>();
 
     let written = 0;
     let calls = 0;
@@ -1259,9 +1455,10 @@ export class SleepRunner extends EventEmitter {
     owner: string,
     runId: string,
     signal: AbortSignal,
+    budget: number,
   ): Promise<{ written: number; calls: number }> {
     const wanted = this.#config.memory.sleep.skills;
-    if (wanted <= 0 || signal.aborted) return { written: 0, calls: 0 };
+    if (wanted <= 0 || budget <= 0 || signal.aborted) return { written: 0, calls: 0 };
 
     // What this bank holds, strongest first. Insights are deliberately in:
     // they are precisely the "this keeps happening" observations a procedure
@@ -1407,11 +1604,16 @@ Rules:
 - "weight" is your confidence between 0 and 1.
 - Also classify recognisable proper names as:
   person, project, tool, place, org or topic.
+- If two DIFFERENT names in the list clearly mean the same real thing
+  ("Rookery" and "Rookery-Agent", "TS" and "TypeScript"), list them under
+  "aliases": "from" is the variant, "into" the canonical name. Only when you
+  are sure they are the same thing; a wrong merge loses structure.
 
 Reply ONLY with JSON, no prose or code fence:
 {"edges":[{"from":1,"to":4,"relation":"refines","weight":0.8}],
- "entities":[{"name":"Rookery","kind":"project"}]}
-An empty result is {"edges":[],"entities":[]}`;
+ "entities":[{"name":"Rookery","kind":"project"}],
+ "aliases":[{"from":"Rookery-Agent","into":"Rookery"}]}
+An empty result is {"edges":[],"entities":[],"aliases":[]}`;
 
 const RESOLVE_PROMPT = `You are resolving a contradiction in a personal assistant's memory overnight.
 
@@ -1432,10 +1634,29 @@ Reply ONLY with JSON, no prose or code fence:
 {"decision":"both"}
 {"decision":"merge","content":"..."}`;
 
-const INSIGHT_PROMPT = `You are reflecting on a personal assistant's memory overnight.
+const INSIGHT_USER_PROMPT = `You are reflecting on a personal assistant's memory overnight.
 
-The memories below come from recent days. What stands out BEYOND the individual sentences?
-Look for a pattern, habit, common thread or connection that no single sentence states.
+The memories below come from recent days. What stands out BEYOND the individual sentences
+ABOUT THE USER - the person this memory belongs to? Look for a pattern, habit, routine,
+preference or common thread that no single sentence states.
+
+Rules:
+- At most {{MAX}} insights. None is the right answer when nothing stands out.
+- Every insight needs at least TWO sources: the numbers supporting it.
+- Never repeat an individual memory as an insight. An insight says something new.
+- One sentence, third person, in the same language as the source memories.
+- Do not invent or speculate. Only state what the evidence actually supports.
+
+Reply ONLY with JSON, no prose or code fence:
+{"insights":[{"content":"...","importance":0.8,"evidence":[1,4,7],"tags":["..."]}]}
+An empty result is {"insights":[]}`;
+
+const INSIGHT_WORK_PROMPT = `You are reflecting on a personal assistant's memory overnight.
+
+The memories below come from recent days. What stands out BEYOND the individual sentences
+ABOUT THE WORK - the projects, the tools, the way things get done? Look for what keeps
+recurring, what keeps costing time, what several efforts share, or what keeps going wrong
+the same way. The user has to be able to act on it.
 
 Rules:
 - At most {{MAX}} insights. None is the right answer when nothing stands out.
@@ -1672,6 +1893,119 @@ export function share(total: number, cycles: number, cycle: number, bias: 'early
     return Math.round((total * prefix) / sum);
   };
   return upTo(cycle) - upTo(cycle - 1);
+}
+
+/** How much work each phase says is waiting, in model calls. */
+export interface NightDemand {
+  /** Clusters that could be condensed. */
+  condense: number;
+  /** Contradictions that could be decided. */
+  resolve: number;
+  /** Portions of fresh memories waiting to be linked. */
+  link: number;
+  /** Insight passes over the window's pool. */
+  reflect: number;
+  /** Skills with a live reason to be reviewed. */
+  revise: number;
+  /** The one distillation call. */
+  practise: number;
+}
+
+/** What each phase is funded with for one night. */
+export type NightBudgets = NightDemand;
+
+/** Per-phase maximum, whatever the demand says. */
+export interface NightCeilings {
+  condense: number;
+  resolve: number;
+  link: number;
+  reflect: number;
+  revise: number;
+  practise: number;
+}
+
+/**
+ * Fund one night's work out of a fixed wallet.
+ *
+ * Every phase first asks for what it can actually use - demand, capped by
+ * its own ceiling. If all of that fits under `cap`, everyone is funded in
+ * full: a quiet week sleeps cheap because there is simply less to do. Only
+ * when the demand overflows the wallet does the night have to choose, and
+ * the rule is that the volume phases give way first. Condensing, deciding
+ * and linking scale with the day's load, so one call shaved off each loses
+ * the least; whatever they leave unfunded waits for tomorrow, which is
+ * exactly what tomorrow is for. The judgement phases - insight, skill
+ * repair, distillation - are a handful of calls and keep theirs until only
+ * they are left, because an insight or a repair that never happens is not
+ * deferred work, it is work that quietly never happens at all.
+ *
+ * The replay pass sits outside this wallet on purpose: its deep reads are
+ * bounded by their own ceiling (`replaySessions`) and its triage is the
+ * cheap model, and the replay has to run before the wallet can even be
+ * measured - what it harvests is part of the workload being measured.
+ */
+export function allocateNightBudget(
+  demand: NightDemand,
+  cap: number,
+  ceilings: NightCeilings,
+): NightBudgets {
+  const keys = ['condense', 'resolve', 'link', 'reflect', 'revise', 'practise'] as const;
+  const funded = new Map<string, number>();
+  for (const key of keys) {
+    funded.set(key, Math.max(0, Math.min(demand[key] ?? 0, ceilings[key] ?? Number.POSITIVE_INFINITY)));
+  }
+
+  const sumOf = (which: readonly string[]): number =>
+    which.reduce((total, key) => total + (funded.get(key) ?? 0), 0);
+
+  if (sumOf(keys) <= cap) return Object.fromEntries(funded) as unknown as NightBudgets;
+
+  const volume = ['condense', 'resolve', 'link'] as const;
+  const judgement = ['reflect', 'revise', 'practise'] as const;
+  const judgementSum = sumOf(judgement);
+
+  if (judgementSum >= cap) {
+    // A starved night: only the judgement phases fit at all, and even they
+    // have to share what is left.
+    for (const key of volume) funded.set(key, 0);
+    distribute(funded, judgement, cap);
+  } else {
+    distribute(funded, volume, cap - judgementSum);
+  }
+  return Object.fromEntries(funded) as unknown as NightBudgets;
+}
+
+/**
+ * Share `cap` calls among `keys`, in proportion to what each asked for.
+ * Floors first, then the rounding remainder one call at a time to whoever
+ * asked for the most - so the parts always sum to exactly `cap` and no
+ * phase is handed a fraction of a call. Never exceeds what was asked.
+ */
+function distribute(funded: Map<string, number>, keys: readonly string[], cap: number): void {
+  const asked = keys.map((key) => funded.get(key) ?? 0);
+  const askedSum = asked.reduce((total, want) => total + want, 0);
+  if (askedSum <= 0 || cap <= 0) {
+    for (const key of keys) funded.set(key, 0);
+    return;
+  }
+  const given = asked.map((want) => Math.floor((cap * want) / askedSum));
+  let left = cap - given.reduce((total, part) => total + part, 0);
+  const order = keys
+    .map((key, index) => ({ index, want: asked[index]! }))
+    .sort((a, b) => b.want - a.want);
+  while (left > 0) {
+    let moved = false;
+    for (const entry of order) {
+      if (left <= 0) break;
+      if (given[entry.index]! < asked[entry.index]!) {
+        given[entry.index]! += 1;
+        left -= 1;
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  keys.forEach((key, index) => funded.set(key, given[index]!));
 }
 
 /** Use explicit singular and plural forms. */

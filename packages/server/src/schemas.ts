@@ -231,6 +231,29 @@ export const patchCronJobSchema = z.object({
 
 /* --------------------------------- config --------------------------------- */
 
+const sleepConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    schedule: z.string().max(120),
+    scope: z.enum(['assistant', 'all']),
+    nightBudget: z.number().int().min(0).max(500),
+    maxMergeCalls: z.number().int().min(0).max(200),
+    maxResolveCalls: z.number().int().min(0).max(100),
+    maxLinkCalls: z.number().int().min(0).max(100),
+    dormantAfterDays: z.number().int().min(7).max(365),
+    minStrength: z.number().min(0).max(1),
+    insights: z.number().int().min(0).max(10),
+    insightWindowDays: z.number().int().min(1).max(90),
+    replaySessions: z.number().int().min(0).max(200),
+    skills: z.number().int().min(0).max(10),
+    skillRevisions: z.number().int().min(0).max(20),
+    cycles: z.number().int().min(1).max(5),
+    agentThreshold: z.number().int().min(1).max(500),
+    model: z.string().max(80),
+    insightModel: z.string().max(80),
+  })
+  .partial();
+
 const memoryConfigSchema = z
   .object({
     enabled: z.boolean(),
@@ -239,6 +262,7 @@ const memoryConfigSchema = z
     autoExtract: z.boolean(),
     workingWindow: z.number().int().min(0).max(200),
     contextBudget: z.number().int().min(200).max(200000),
+    sleep: sleepConfigSchema,
   })
   .partial();
 

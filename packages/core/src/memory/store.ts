@@ -833,6 +833,43 @@ export class Store {
       .run(owner);
   }
 
+  /**
+   * Fold one entity into another: two names that mean the same real thing
+   * become one node, links and all.
+   *
+   * Links the surviving entity already holds must go first - the pair table
+   * has no room for a second row for the same memory - and memories that
+   * were covered on both sides simply keep the one link. Everything runs in
+   * one transaction, so a half-merged entity can never exist; the mention
+   * recount afterwards is the only thing that can still lag, and it is
+   * rebuilt from scratch anyway. Returns false (and changes nothing) when
+   * either side is unknown or both names are the same entity; a merge that
+   * would not hold must not cost the caller anything.
+   */
+  mergeEntities(owner: string, fromName: string, intoName: string): boolean {
+    const from = this.findEntity(owner, fromName);
+    const into = from ? this.findEntity(owner, intoName) : null;
+    if (!from || !into || from.id === into.id) return false;
+    this.db.exec('BEGIN');
+    try {
+      this.db
+        .prepare(
+          `DELETE FROM memory_entity_links
+            WHERE entity_id = ?
+              AND memory_id IN (SELECT memory_id FROM memory_entity_links WHERE entity_id = ?)`,
+        )
+        .run(from.id, into.id);
+      this.db.prepare('UPDATE memory_entity_links SET entity_id = ? WHERE entity_id = ?').run(into.id, from.id);
+      this.db.prepare('DELETE FROM memory_entities WHERE id = ?').run(from.id);
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    this.db.exec('COMMIT');
+    this.recountEntities(owner);
+    return true;
+  }
+
   entitiesFor(memoryId: string): MemoryEntity[] {
     const rows = this.db
       .prepare(
