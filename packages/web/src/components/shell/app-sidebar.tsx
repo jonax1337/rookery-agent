@@ -2,7 +2,7 @@ import { FeatherIcon } from "@/components/icons";
 import type { ComponentProps, ReactNode } from 'react';
 import { NavLink, useLocation } from 'react-router';
 
-import { NAV_GROUPS, navItems, routeMeta, type NavGroup, type RouteMeta } from '@/lib/nav';
+import { NAV_GROUPS, navItems, type NavGroup, type RouteMeta } from '@/lib/nav';
 import { formatNumber } from '@/lib/stats';
 import { cn } from '@/lib/utils';
 import {
@@ -13,7 +13,7 @@ import {
 } from '@/providers/rookery-provider';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
-import { NavMain, type NavMainItem, type NavSubItem } from '@/components/shell/nav-main';
+import { NavMain, type NavMainItem } from '@/components/shell/nav-main';
 import { NavPrimary } from '@/components/shell/nav-primary';
 import { NavSecondary, type NavSecondaryItem } from '@/components/shell/nav-secondary';
 import { NavStatus } from '@/components/shell/nav-status';
@@ -126,13 +126,6 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
   };
 
   const buildItem = (meta: RouteMeta): NavMainItem => {
-    const subItems: NavSubItem[] =
-      meta.children?.flatMap((childPath) => {
-        const child = routeMeta(childPath);
-        if (!child) return [];
-        return [{ title: child.label, url: child.path, isActive: subActive(pathname, child, meta) }];
-      }) ?? [];
-
     const badge = badges[meta.path];
     return {
       title: meta.navLabel ?? meta.label,
@@ -140,7 +133,6 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
       icon: meta.icon ?? FeatherIcon,
       isActive: isActive(pathname, meta.path),
       ...(badge ? { badge: badge.node, ...(badge.label ? { badgeLabel: badge.label } : {}) } : {}),
-      ...(subItems.length > 0 ? { items: subItems } : {}),
     };
   };
 
@@ -271,13 +263,4 @@ function isActive(pathname: string, path: string): boolean {
     return pathname === '/chats' || pathname === '/' || pathname.startsWith('/c/');
   }
   return pathname === path || pathname.startsWith(path + '/');
-}
-
-/**
- * A sub-entry that *is* its section (`/memory` under "Gedächtnis") must match
- * exactly, or it would stay lit on every sibling tab.
- */
-function subActive(pathname: string, child: RouteMeta, parent: RouteMeta): boolean {
-  if (child.path === parent.path) return pathname === child.path;
-  return isActive(pathname, child.path);
 }

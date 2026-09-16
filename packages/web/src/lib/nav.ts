@@ -69,8 +69,6 @@ export interface RouteMeta {
   icon?: IconComponent;
   /** Set only on the entries that appear in the sidebar themselves. */
   group?: NavGroup;
-  /** Sub-entries of a sidebar section, in order, as patterns. */
-  children?: string[];
   /** Where a section head navigates to when the route itself only redirects. */
   redirect?: string;
   /**
@@ -120,14 +118,14 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/gateways/:id', label: 'Gateway', parent: '/gateways', hidden: true },
 
   /* --------------------------- firma & wissen ----------------------------- */
-  // Section links open their overview; each section has three child pages.
+  // Section links open their overview. The tabs live on the page itself
+  // (`OrgLayout`), not in the sidebar: one door per section is enough.
   {
     path: '/org',
     label: 'Overview',
     navLabel: 'Organization',
     icon: Building2Icon,
     group: 'knowledge',
-    children: ['/org/agents', '/org/teams', '/org/projects'],
   },
   { path: '/org/agents', label: 'Agents', parent: '/org' },
   { path: '/org/agents/new', label: 'Create agent', parent: '/org/agents', hidden: true },
@@ -146,7 +144,6 @@ export const ROUTE_META: RouteMeta[] = [
     navLabel: 'Memory',
     icon: BrainIcon,
     group: 'knowledge',
-    children: ['/memory/memories', '/memory/graph', '/memory/sleep'],
   },
   { path: '/memory/memories', label: 'Memories', parent: '/memory' },
   { path: '/memory/graph', label: 'Graph', parent: '/memory' },
@@ -177,11 +174,6 @@ export const ROUTE_META: RouteMeta[] = [
 ];
 
 const BY_PATH = new Map(ROUTE_META.map((meta) => [meta.path, meta]));
-
-/** The entry for an exact pattern, e.g. to resolve a `children` id. */
-export function routeMeta(path: string): RouteMeta | undefined {
-  return BY_PATH.get(path);
-}
 
 /** The sidebar entries of one group, in declaration order. */
 export function navItems(group: NavGroup): RouteMeta[] {
