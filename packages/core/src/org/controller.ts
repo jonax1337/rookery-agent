@@ -1371,6 +1371,10 @@ export class OrgController extends EventEmitter {
       to,
       cc,
       subject,
+      // A mail a scheduled run writes opens a report thread - it exists
+      // because a run produced it, no matter which box it came from. Replies
+      // inherit their thread anyway; only new threads land here.
+      kind: context.scheduled ? 'report' : undefined,
       body,
       inReplyTo,
       threadId: inReplyTo ? undefined : context.sourceMail?.threadId,
