@@ -434,6 +434,12 @@ export const clientFrameSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('assign'), id: z.string().min(1), payload: assignInputSchema }),
   z.object({ type: z.literal('run_task'), id: z.string().min(1), payload: z.object({ taskId: z.string().min(1) }) }),
   z.object({ type: z.literal('abort'), id: z.string().min(1) }),
+  // Opt-in per socket: the live log of a running assignment is a terminal
+  // feed, so its frames go only to the connections watching that run, never
+  // as a broadcast. Watching never opens a turn and is not abortable - the
+  // `unwatch` frame is the whole lifecycle.
+  z.object({ type: z.literal('watch'), assignmentId: z.string().min(1) }),
+  z.object({ type: z.literal('unwatch'), assignmentId: z.string().min(1) }),
   z.object({ type: z.literal('ping') }),
 ]);
 

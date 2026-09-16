@@ -18,6 +18,13 @@ export interface ServerContext {
   /** Every live websocket, used to broadcast background memory events. */
   readonly sockets: Set<WebSocket>;
   /**
+   * Live-log subscriptions, keyed by the socket that asked: the assignment
+   * ids it is watching. A socket's entries are dropped when it closes; the
+   * runs themselves are untouched by that (Workstream E.1 - watching a run
+   * never keeps it alive, and leaving never stops it).
+   */
+  readonly assignmentWatchers: Map<WebSocket, Set<string>>;
+  /**
    * Chat gateways attached to this server, Telegram today. The array itself
    * is created before the context is, and filled in afterwards - a gateway
    * needs the context to send anything, so the context cannot wait for it.

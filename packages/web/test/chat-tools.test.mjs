@@ -156,3 +156,142 @@ test('greeting prefers a trimmed honorific, falls back to user name, and preserv
   assert.equal(greeting(morning), 'Good morning.');
   assert.equal(greeting(new Date(2026, 8, 13, 2), { honorific: 'Sir' }), 'Still awake, Sir?');
 });
+
+
+test('parts keep arrival order, end events merge onto their start, and finish writes blocks', async () => {
+  let slots = [], index = 0, callbacks;
+  const react = {
+    useState(value) { const slot = index++; if (!(slot in slots)) slots[slot] = value;
+      return [slots[slot], (next) => { slots[slot] = typeof next === 'function' ? next(slots[slot]) : next; }]; },
+    useRef(value) { const slot = index++; return slots[slot] ??= { current: value }; },
+    useCallback(fn) { return fn; }, useMemo(fn) { return fn(); },
+  };
+  const { useChat } = await load('hooks/useChat.ts', { react });
+  const socket = { send(payload, cb) { callbacks = cb; return 'turn'; }, abort() {} };
+  const render = () => { index = 0; return useChat(socket, 'session'); };
+  let chat = render(); chat.send({ text: 'do it', provider: 'claude' });
+  for (const event of [
+    { type: 'text', delta: 'First ' },
+    { type: 'thinking', delta: 'hmm ' },
+    { type: 'thinking', delta: 'hah' },
+    { type: 'text', delta: 'segment' },
+    { type: 'tool', name: 'mcp__notes__search', id: 'a', status: 'start', detail: 'query' },
+    { type: 'tool', name: 'tool', id: 'a', status: 'end', result: 'found' },
+    { type: 'text', delta: 'After the tool' },
+  ]) callbacks.onEvent(event);
+  chat = render();
+  assert.deepEqual(chat.parts.map((part) => part.type), ['text', 'thinking', 'text', 'tool', 'text']);
+  assert.deepEqual(chat.parts.map((part) => part.text ?? part.call.name),
+    ['First ', 'hmm hah', 'segment', 'mcp__notes__search', 'After the tool']);
+  // The end event merged in place: start name and detail survive, result lands.
+  assert.deepEqual(chat.parts[3], {
+    type: 'tool',
+    call: { type: 'tool', name: 'mcp__notes__search', id: 'a', status: 'end', detail: 'query', result: 'found' },
+  });
+  callbacks.onDone('First segment\n\nAfter the tool');
+  chat = render();
+  const saved = chat.messages[1];
+  // Tools ran after the text, so the done text cannot reorder anything: the
+  // deltas stay the transcript, `content` carries the flat answer.
+  assert.equal(saved.blocks.length, 5);
+  assert.equal(saved.blocks.at(-1).text, 'After the tool');
+  assert.equal(saved.content, 'First segment\n\nAfter the tool');
+  assert.deepEqual(chat.parts, []);
+  // A pure text turn reconciles instead: one text block, no tools after it.
+  chat.send({ text: 'again', provider: 'claude' }); chat = render();
+  callbacks.onEvent({ type: 'text', delta: 'partial' });
+  callbacks.onDone('full answer');
+  chat = render();
+  assert.deepEqual(chat.messages.at(-1).blocks, [{ type: 'text', text: 'full answer' }]);
+  chat.reset();
+  assert.deepEqual(render().parts, []);
+});
+
+
+test('convertMessage renders blocks interleaved and keeps the flat fallback exactly as it was', async () => {
+  const react = { useMemo: (fn) => fn() };
+  const { useRookeryRuntime } = await load('runtime/useRookeryRuntime.ts', {
+    react, '@assistant-ui/react': { useExternalStoreRuntime: (args) => args,
+      WebSpeechDictationAdapter: class {}, WebSpeechSynthesisAdapter: class {} },
+  });
+  const runtime = useRookeryRuntime({
+    chat: {
+      messages: [{
+        id: 'm0', role: 'assistant', content: 'done text',
+        blocks: [
+          { type: 'text', text: 'First ' },
+          { type: 'thinking', text: 'pondering' },
+          // One merged block, as the folder state machine stores it - not a
+          // start and an end beside each other.
+          { type: 'tool', call: { type: 'tool', name: 'mcp__notes__search', id: 'a', status: 'end', detail: 'query', result: 'found' } },
+          { type: 'text', text: 'done text' },
+        ],
+      }],
+      busy: false,
+    },
+    sessions: { sessions: [], activeId: 'session' },
+  });
+  const message = runtime.convertMessage(runtime.messages[0]);
+  assert.deepEqual(message.content.map((part) => part.type), ['text', 'reasoning', 'tool-call', 'text']);
+  assert.equal(message.content[2].toolName, 'notes · search');
+  assert.equal(message.content[2].result, 'found');
+  assert.equal(message.metadata.custom.originalMarkdown, 'done text');
+  assert.equal(message.status.type, 'complete');
+  // No blocks: the old flat path, tools first, unchanged.
+  const fallback = runtime.convertMessage({
+    id: 'f', role: 'assistant', content: 'answer',
+    toolCalls: [
+      { type: 'tool', name: 'mcp__notes__search', id: 'a', status: 'start', detail: 'query' },
+      { type: 'tool', name: 'tool', id: 'a', status: 'end', result: 'found' },
+    ],
+  });
+  assert.deepEqual(fallback.content.map((part) => part.type), ['tool-call', 'text']);
+  assert.equal(fallback.content[0].toolName, 'notes · search');
+  // The running placeholder carries the live parts, sources only on the last
+  // text block, and no empty text part is pushed for a sources-only answer.
+  const streaming = runtime.convertMessage({
+    id: 's', role: 'assistant', content: '', running: true,
+    blocks: [{ type: 'tool', call: { type: 'tool', name: 'wait', status: 'start' } }],
+  });
+  assert.deepEqual(streaming.content.map((part) => part.type), ['tool-call']);
+  assert.equal(streaming.status.type, 'running');
+});
+
+
+test('mergeLogEntries merges snapshot and frames by seq: unique, sorted, overflow stays dropped', async () => {
+  const { mergeLogEntries } = await load('hooks/useAssignmentLog.ts', { react: {} });
+  const entry = (seq, delta) => ({ seq, event: { type: 'text', delta } });
+  const merged = mergeLogEntries(
+    [entry(1, 'a'), entry(3, 'c'), entry(5, 'e')],
+    [entry(4, 'd'), entry(5, 'e!'), entry(6, 'f')],
+  );
+  assert.deepEqual(merged.map((item) => item.seq), [1, 3, 4, 5, 6]);
+  // A frame the snapshot already covers does not overwrite it.
+  assert.equal(merged.find((item) => item.seq === 5).event.delta, 'e');
+  // A frame below the watermark that the snapshot lost to overflow stays
+  // dropped - re-inserting it would resurrect discarded content.
+  assert.deepEqual(mergeLogEntries([entry(3, 'c')], [entry(2, 'b'), entry(4, 'd')]).map((item) => item.seq), [3, 4]);
+  assert.deepEqual(mergeLogEntries([], [entry(9, 'i')]).map((item) => item.seq), [9]);
+  assert.deepEqual(mergeLogEntries([entry(2, 'b'), entry(1, 'a')], []).map((item) => item.seq), [1, 2]);
+});
+
+
+test('the TurnBlocks mirror ends a pass on reconcile, so passes and attempts stay separate blocks', async () => {
+  const { TurnBlocks } = await load('lib/blocks.ts', {});
+  const blocks = new TurnBlocks();
+  blocks.apply({ type: 'text', delta: 'first pass' });
+  blocks.reconcile('first pass (final)');
+  blocks.apply({ type: 'text', delta: 'second pass' });
+  // An empty reconcile is the provider-switch seam a live terminal folds:
+  // the dead attempt's partial text stands, the retry starts fresh.
+  blocks.reconcile('');
+  blocks.apply({ type: 'text', delta: 'the retry' });
+  assert.deepEqual(
+    blocks.blocks.map((block) => ({ type: block.type, text: block.text })),
+    [
+      { type: 'text', text: 'first pass (final)' },
+      { type: 'text', text: 'second pass' },
+      { type: 'text', text: 'the retry' },
+    ],
+  );
+});

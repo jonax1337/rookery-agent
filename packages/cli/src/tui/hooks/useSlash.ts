@@ -30,6 +30,7 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: '/org', description: 'who works here and what is running' },
   { name: '/agents', description: 'organization agents' },
   { name: '/assign', args: '<agent> <task>', description: 'give an agent an assignment' },
+  { name: '/watch', args: '[id]', description: 'watch a running assignment live' },
   // `/task` sits before `/tasks` so typing the shorter name completes to it:
   // the palette filters by prefix and Tab takes the first match.
   { name: '/task', args: '<title>', description: 'add a task to the board' },

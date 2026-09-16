@@ -32,7 +32,25 @@ export interface Message {
   createdAt: number;
   /** Token/cost accounting, when the provider reported it. */
   usage?: TurnUsage;
+  /**
+   * The turn as it actually happened: text, thinking and tool calls in the
+   * order they arrived. `content` and `toolCalls` stay the flat compatibility
+   * view (and the fallback for rows written before this existed); `blocks` is
+   * the ordered transcript, built by `TurnBlocks` during the turn.
+   */
+  blocks?: MessageBlock[];
 }
+
+/**
+ * One segment of a turn, in arrival order: assistant text, model reasoning,
+ * or a tool call. A tool block carries its whole event - the start event as
+ * it arrived, with `status: 'end'` and the (clipped) result merged in once
+ * the matching end event shows up.
+ */
+export type MessageBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'tool'; call: Extract<AgentEvent, { type: 'tool' }> };
 
 export interface TurnUsage {
   inputTokens?: number;
@@ -170,6 +188,33 @@ export type AgentEvent =
   | { type: 'quota'; quota: ProviderQuota }
   | { type: 'error'; message: string; fatal: boolean }
   | { type: 'done'; text: string; usage?: TurnUsage; providerSessionId?: string };
+
+/**
+ * One line of a running assignment's live log: the event as it arrived,
+ * with a sequence number that stays monotone over the whole run - including
+ * the reset a provider switch performs - so clients can order and merge a
+ * snapshot against later frames without ever assuming continuity.
+ */
+export interface AssignmentLogEntry {
+  seq: number;
+  event: AgentEvent;
+}
+
+/** Point-in-time read of a running assignment's live log. */
+export interface AssignmentLogSnapshot {
+  /** The buffered entries, in arrival order. */
+  events: AssignmentLogEntry[];
+  /** True once the oldest whole entries were dropped to stay under the cap. */
+  overflowed: boolean;
+  /** False when no run holds the buffer: unknown or finished id alike. */
+  active: boolean;
+}
+
+/** One live-log entry on its way to a watcher of the run it belongs to. */
+export interface AssignmentLogFrame {
+  assignmentId: string;
+  entry: AssignmentLogEntry;
+}
 
 /* ------------------------------------------------------------------ *
  * Memory

@@ -183,6 +183,7 @@ export class Store {
     agent?: string;
     usage?: TurnUsage;
     toolCalls?: Message['toolCalls'];
+    blocks?: Message['blocks'];
   }): Message {
     const message: Message = {
       id: randomUUID(),
@@ -194,13 +195,14 @@ export class Store {
       agent: input.agent,
       usage: input.usage,
       toolCalls: input.toolCalls,
+      blocks: input.blocks,
       createdAt: Date.now(),
     };
 
     this.db
       .prepare(
-        `INSERT INTO messages (id, session_id, role, content, provider, model, agent, usage, created_at, tool_calls)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages (id, session_id, role, content, provider, model, agent, usage, created_at, tool_calls, blocks)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         message.id,
@@ -213,6 +215,7 @@ export class Store {
         message.usage ? JSON.stringify(message.usage) : null,
         message.createdAt,
         message.toolCalls?.length ? JSON.stringify(message.toolCalls) : null,
+        message.blocks?.length ? JSON.stringify(message.blocks) : null,
       );
 
     this.db
@@ -1498,6 +1501,7 @@ function mapMessage(row: Row): Message {
     model: (row.model as string) ?? undefined,
     agent: (row.agent as string) ?? undefined,
     toolCalls: parseJsonColumn<Message['toolCalls']>(row.tool_calls),
+    blocks: parseJsonColumn<Message['blocks']>(row.blocks),
     usage: parseJsonColumn<TurnUsage>(row.usage),
     createdAt: Number(row.created_at),
   };

@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 export type Db = DatabaseSync;
 
@@ -544,6 +544,14 @@ function migrate(db: Db): void {
 
   if (!hasColumn(db, 'messages', 'tool_calls')) {
     db.exec('ALTER TABLE messages ADD COLUMN tool_calls TEXT');
+  }
+
+  // Schema 15 -> 16: the ordered transcript. `tool_calls` keeps the flat
+  // compatibility view, `blocks` stores text, thinking and tools interleaved
+  // in the order they actually arrived (see `TurnBlocks`). NULL on every row
+  // that predates this; readers fall back to `content` + `toolCalls`.
+  if (!hasColumn(db, 'messages', 'blocks')) {
+    db.exec('ALTER TABLE messages ADD COLUMN blocks TEXT');
   }
 
   // Schema 8 -> 9: a project remembers whether its own `.mcp.json` was approved.

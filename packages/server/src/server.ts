@@ -7,6 +7,7 @@ import {
   toView,
   type AgentEvent,
   type Assistant,
+  type AssignmentLogFrame,
   type MemoryLearnedEvent,
 } from '@rookery/core';
 import type { ServerContext } from './context.js';
@@ -66,6 +67,7 @@ export async function buildServer(
     config,
     log,
     sockets: new Set<WebSocket>(),
+    assignmentWatchers: new Map(),
     gateways,
   };
 
@@ -157,6 +159,21 @@ export async function buildServer(
   const onAssignment = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'assignment', event });
   };
+  // The live log is different: a terminal feed, delivered only to the sockets
+  // that sent `watch` for this particular run. Everything else would spray a
+  // full transcript at every open tab in the company.
+  const onAssignmentLog = (frame: AssignmentLogFrame): void => {
+    for (const [socket, ids] of context.assignmentWatchers) {
+      if (ids.has(frame.assignmentId)) {
+        sendFrame(socket, {
+          type: 'assignment-log',
+          assignmentId: frame.assignmentId,
+          seq: frame.entry.seq,
+          event: frame.entry.event,
+        });
+      }
+    }
+  };
   const onMessage = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'message', event });
   };
@@ -178,6 +195,7 @@ export async function buildServer(
     for (const socket of context.sockets) sendFrame(socket, { type: 'sleep', event });
   };
   assistant.on('assignment', onAssignment);
+  assistant.on('assignment-log', onAssignmentLog);
   assistant.on('message', onMessage);
   assistant.on('mail', onMail);
   assistant.on('changed', onChanged);
@@ -273,6 +291,7 @@ export async function buildServer(
     assistant.cron.stop();
     assistant.off('memory', onMemory);
     assistant.off('assignment', onAssignment);
+    assistant.off('assignment-log', onAssignmentLog);
     assistant.off('message', onMessage);
     assistant.off('mail', onMail);
     assistant.off('changed', onChanged);

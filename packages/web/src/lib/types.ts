@@ -26,6 +26,20 @@ export interface TurnUsage {
   contextWindow?: number;
 }
 
+/**
+ * One segment of an assistant answer in arrival order - the interleaved
+ * transcript the original Claude Code window shows.
+ *
+ * Mirror of `MessageBlock` in packages/core/src/types.ts: the web cannot
+ * import core (a Node package), so the JSON shape is copied and must stay
+ * wire-compatible. `content`/`toolCalls` remain the flat compatibility view
+ * written beside it; old rows without `blocks` fall back to it.
+ */
+export type MessageBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'tool'; call: Extract<AgentEvent, { type: 'tool' }> };
+
 export interface Message {
   id: string;
   sessionId: string;
@@ -33,6 +47,8 @@ export interface Message {
   content: string;
   /** Provider tool events retained with the answer, including interrupted calls. */
   toolCalls?: Extract<AgentEvent, { type: 'tool' }>[];
+  /** The ordered transcript, when the turn produced one. Old rows have none. */
+  blocks?: MessageBlock[];
   provider?: ProviderId;
   model?: string;
   agent?: string;
@@ -337,6 +353,25 @@ export interface AssignmentView {
   lastActivity?: { kind: 'tool' | 'status'; label: string; at: number };
   durationMs?: number;
   error?: string;
+}
+
+/**
+ * One line of a running assignment's live log, as `GET /api/org/assignments/:id/log`
+ * and the `assignment-log` frames carry it. `seq` stays monotone over the whole
+ * run - including the reset a provider switch performs - so a client can merge
+ * a snapshot against later frames without ever assuming continuity: a gap in
+ * seq means overflow, never wire loss.
+ */
+export interface AssignmentLogEntry {
+  seq: number;
+  event: AgentEvent;
+}
+
+/** What the log endpoint answers while the run holds its buffer. */
+export interface AssignmentLogSnapshot {
+  events: AssignmentLogEntry[];
+  /** True once the oldest whole entries were dropped to stay under the cap. */
+  overflowed: boolean;
 }
 
 export interface AgentMessage {
@@ -1246,6 +1281,10 @@ export type ClientFrame =
   | { type: 'assign'; id: string; payload: AssignPayload }
   | { type: 'run_task'; id: string; payload: RunTaskPayload }
   | { type: 'abort'; id: string }
+  /** Opt this socket into the live log of one running assignment. */
+  | { type: 'watch'; assignmentId: string }
+  /** Opt back out. Watching never affects the run itself. */
+  | { type: 'unwatch'; assignmentId: string }
   | { type: 'ping' };
 
 /** One structural change somewhere in the company. */
@@ -1267,6 +1306,12 @@ export type ServerFrame =
   | { type: 'cron'; event: AgentEvent }
   /** Broadcast: the memory is asleep, working, or done for the night. */
   | { type: 'sleep'; event: AgentEvent }
+  /**
+   * Watchers only: one live-log entry of a running assignment, in arrival
+   * order. `seq` is monotone over the whole run, so a client can merge these
+   * frames onto a REST snapshot without assuming continuity.
+   */
+  | { type: 'assignment-log'; assignmentId: string; seq: number; event: AgentEvent }
   | { type: 'changed'; change: OrgChange }
   | { type: 'pong' }
   | { type: 'error'; id?: string; message: string };

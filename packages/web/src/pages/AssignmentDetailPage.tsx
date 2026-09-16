@@ -35,6 +35,7 @@ import { StatCards, StatCardsSkeleton, type StatCardProps } from '@/components/b
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
+import { AssignmentTerminal } from '@/components/common/assignment-terminal';
 import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
 import { ProviderCell } from '@/components/common/provider-cell';
 import { ResultCard } from '@/components/common/result-card';
@@ -375,6 +376,12 @@ export function AssignmentDetailPage() {
           </TabsList>
 
           <TabsContent value="ergebnis" className="mt-4 flex flex-col gap-4">
+            {status === 'running' && id ? (
+              // The run as it happens, above the result it is heading for -
+              // and only while it runs, because the buffer it reads is
+              // live-only; afterwards the result below is all that remains.
+              <AssignmentTerminal assignmentId={id} status={status} />
+            ) : null}
             {result ? (
               <ResultCard
                 text={result}

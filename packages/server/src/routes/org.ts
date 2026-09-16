@@ -306,6 +306,25 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
   });
 
   /**
+   * The live log of a running assignment: the buffered entries plus the
+   * overflow flag, for a client that sent `watch` first and now merges the
+   * frames that follow onto this snapshot by seq. The buffer is deliberately
+   * discarded when the run ends - live-only, no DB growth - so an id without
+   * one answers from the durable row: 410 with the assignment's final status
+   * when it exists, 404 when it never did. Reading the snapshot before the
+   * row covers the race where the run finishes in between: the buffer is
+   * gone, and the store - not a half-read snapshot - gets the last word.
+   */
+  app.get('/api/org/assignments/:id/log', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const snapshot = context.assistant.snapshotAssignmentLog(request.params.id);
+    if (snapshot.active) return { events: snapshot.events, overflowed: snapshot.overflowed };
+    const assignment = store.getAssignment(request.params.id);
+    if (!assignment) return notFound(reply, 'No assignment ' + request.params.id);
+    reply.code(410);
+    return { error: 'Gone', message: 'The run is over; only its result remains.', status: assignment.status };
+  });
+
+  /**
    * A user rating for one assignment - a star plus an optional comment,
    * upserted (docs/concepts/agent-performance-management.md, phase 1). Saves
    * on a single click; there is no confirmation step to abandon.

@@ -8,7 +8,7 @@
  */
 
 import { EFFORT_LEVELS, providerQuota, recall, renderBoard, renderOrgOverview } from '@rookery/core';
-import type { Assistant, ScoredMemory } from '@rookery/core';
+import type { Assistant, Assignment, ScoredMemory } from '@rookery/core';
 import {
   ACTIVE_TASK_STATUSES,
   CliError,
@@ -30,6 +30,7 @@ import { EMPTY_MODEL_CATALOGUE, modelName } from '../ui/modelNames.js';
 import type { ModelCatalogue } from '../ui/modelNames.js';
 import { glyph, ui } from './theme.js';
 import { SLASH_COMMANDS } from './hooks/useSlash.js';
+import { historyEntries } from './history.js';
 import type { Entry, NoticeLine, SessionState } from './types.js';
 import type { TurnRequest } from './hooks/useTurn.js';
 
@@ -44,6 +45,8 @@ export interface SlashOutcome {
   clear?: boolean;
   /** Start a turn instead of just printing something. */
   run?: TurnRequest;
+  /** Open the live watch for a running assignment. */
+  watch?: { assignmentId: string };
 }
 
 export interface SlashContext {
@@ -118,7 +121,11 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       // The conversation decides who it is with, not the prompt you came from.
       const agent = found.agentId ? assistant.store.org.getAgent(found.agentId) : null;
       const counterpart = agent ? agent.slug : session.assistantName;
+      // The history speaks with the conversation's own voice, so the target
+      // counterpart has to be in place before the entries are built.
+      const target = { ...session, agentId: found.agentId, counterpart };
       return {
+        clear: true,
         patch: {
           sessionId: found.id,
           title: found.title,
@@ -128,10 +135,21 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
           agentTitle: agent?.title,
           counterpart,
         },
-        ...ok(
-          shortId(found.id) + '  ' + shorten(found.title, 50) + '  with ' + counterpart + '  ' +
-            relativeTime(found.updatedAt),
-        ),
+        entries: [
+          ...historyEntries(assistant.store.getMessages(found.id, 50), target, ctx.nextId),
+          {
+            kind: 'notice',
+            id: ctx.nextId(),
+            lines: [
+              {
+                text:
+                  glyph.ok + ' ' + shortId(found.id) + '  ' + shorten(found.title, 50) + '  with ' +
+                  counterpart + '  ' + relativeTime(found.updatedAt),
+                dim: true,
+              },
+            ],
+          },
+        ],
       };
     }
 
@@ -291,6 +309,34 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       };
     }
 
+    case 'watch': {
+      const organization = assistant.org.activeOrganization();
+      const running = assistant.store.org.listAssignments(organization.id, {
+        status: ['pending', 'running'],
+        limit: 50,
+      });
+      if (!argument) {
+        if (!running.length) return notice([{ text: 'No assignments running.', dim: true }]);
+        const agents = new Map(
+          assistant.store.org
+            .listAgents(organization.id, { includeArchived: true })
+            .map((agent) => [agent.id, agent]),
+        );
+        const lines: NoticeLine[] = running.map((assignment) => {
+          const slug = agents.get(assignment.agentId)?.slug ?? shortId(assignment.agentId);
+          return {
+            text: '  ' + shortId(assignment.id).padEnd(10) + shorten(slug, 15).padEnd(16) +
+              shorten(assignment.task, 52),
+            dim: true,
+          };
+        });
+        lines.push({ text: '/watch <id> follows one live', dim: true });
+        return notice(lines);
+      }
+      const found = resolveAssignment(running, argument);
+      return { watch: { assignmentId: found.id } };
+    }
+
     case 'tasks': {
       const organization = assistant.org.activeOrganization();
       const status = parseTaskStatuses(argument || undefined) ?? [...ACTIVE_TASK_STATUSES];
@@ -438,4 +484,21 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
     default:
       throw new CliError('Unknown command /' + command + '. Try /help.');
   }
+}
+
+/** Accept a full assignment id or any unambiguous prefix of one. */
+function resolveAssignment(running: Assignment[], idOrPrefix: string): Assignment {
+  const needle = idOrPrefix.trim().toLowerCase();
+  const matches = running.filter((assignment) => assignment.id.toLowerCase().startsWith(needle));
+
+  if (matches.length === 1) return matches[0] as Assignment;
+  if (matches.length === 0) {
+    throw new CliError(
+      'No running assignment matches "' + idOrPrefix + '". Try /watch with no argument.',
+    );
+  }
+  throw new CliError(
+    'Ambiguous assignment id "' + idOrPrefix + '": ' +
+      matches.map((assignment) => shortId(assignment.id)).join(', '),
+  );
 }

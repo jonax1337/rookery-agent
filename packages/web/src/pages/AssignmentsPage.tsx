@@ -57,6 +57,7 @@ import {
   type RookeryColumnDef,
 } from '@/components/blocks/data-table/table-features';
 import { useCancelAssignment } from '@/components/common/entity-actions';
+import { AssignmentTerminal } from '@/components/common/assignment-terminal';
 import { FormField, type FieldAria } from '@/components/forms/form-kit';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { MetaList } from '@/components/common/meta-list';
@@ -976,6 +977,15 @@ function RowDrawer({
         </div>
       }
     >
+      {row.status === 'running' ? (
+        // The run is happening now, one drawer away from the table: watch it
+        // live instead of waiting for the row to change. No status override -
+        // the terminal reads `org.live`, which keeps moving after the table's
+        // copy was taken. Live-only: the moment the run ends, the buffer is
+        // gone and this collapses to the facts below.
+        <AssignmentTerminal assignmentId={row.id} />
+      ) : null}
+
       <MetaList
         columns={1}
         items={[

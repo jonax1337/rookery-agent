@@ -21,18 +21,22 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { TurnBlocks } from '@rookery/core';
 import type { Assistant, AssignInput, ChatInput } from '@rookery/core';
 import type { AgentEvent, AssignmentView, ProviderQuota, TurnUsage } from '@rookery/core';
 import { glyph, ui } from '../theme.js';
 import { shorten } from '../../ui/render.js';
-import { groupActivities } from '../types.js';
+import { blockSegments, thinkingLines } from '../types.js';
 import type {
   Activity,
   AssignmentsState,
   AssignmentsSummary,
   Entry,
+  LiveBlock,
+  NoteActivity,
   SessionState,
   ToolActivity,
+  ToolTiming,
 } from '../types.js';
 
 /** How often live state is pushed into React, in milliseconds. */
@@ -48,10 +52,92 @@ export interface LiveTurn {
   text: string;
   /** Tool calls and side-channel notes, in the order they happened. */
   activities: Activity[];
+  /** The ordered transcript: text, thinking, tools and notes interleaved. */
+  blocks: LiveBlocks;
   assignments: AssignmentsState | null;
   /** Status-bar verb: 'thinking' or 'delegating'. */
   label: string;
   startedAt: number | null;
+}
+
+/**
+ * The ordered transcript of a running turn, on top of core's `TurnBlocks`.
+ *
+ * Core folds the text, thinking and tool events - including the start/end
+ * merge and the clips. What it cannot know about are this client's
+ * side-channel notes, so those are slotted in by arrival: a note remembers
+ * how many core blocks existed when it happened and is replayed right there,
+ * before whichever block arrives next.
+ */
+export class LiveBlocks {
+  readonly #acc = new TurnBlocks();
+  readonly #slots: NoteActivity[][] = [];
+  readonly #toolTimes: ToolTiming[] = [];
+
+  /** The transcript so far, core blocks with notes interleaved. Fresh array. */
+  get blocks(): LiveBlock[] {
+    const core = this.#acc.blocks;
+    const out: LiveBlock[] = [];
+    for (let index = 0; index < core.length; index += 1) {
+      for (const note of this.#slots[index] ?? []) out.push({ type: 'note', note });
+      out.push(core[index]!);
+    }
+    for (const note of this.#slots[core.length] ?? []) out.push({ type: 'note', note });
+    return out;
+  }
+
+  /** Wall-clock timing per tool block, in tool-block order. */
+  get toolTimes(): ToolTiming[] {
+    return this.#toolTimes;
+  }
+
+  /** Fold a side-channel note into the transcript where it happened. */
+  pushNote(note: NoteActivity): void {
+    const slot = this.#slots[this.#acc.blocks.length] ?? (this.#slots[this.#acc.blocks.length] = []);
+    slot.push(note);
+  }
+
+  /** Fold one streaming event into the core transcript. */
+  apply(event: AgentEvent): void {
+    if (event.type !== 'tool') {
+      this.#acc.apply(event);
+      return;
+    }
+
+    // Core appends a block per start (and per unmatched end) and replaces the
+    // merged block in place on a matched end, so the timing can be kept in
+    // step by watching which positions hold a block object that was not there
+    // before. The accumulator hands out its live array, so the "before" view
+    // has to be copied, not just referenced.
+    const before = [...this.#acc.blocks];
+    const seen = new Set(before);
+    this.#acc.apply(event);
+    const after = this.#acc.blocks;
+
+    if (after.length > before.length) {
+      this.#toolTimes.push({
+        startedAt: Date.now(),
+        // A completion whose start never arrived took no measurable time.
+        ...(event.status === 'end' ? { durationMs: 0 } : {}),
+      });
+      return;
+    }
+    for (let index = 0; index < after.length; index += 1) {
+      const block = after[index];
+      if (block?.type !== 'tool' || seen.has(block)) continue;
+      const ordinal = after.slice(0, index).filter((entry) => entry?.type === 'tool').length;
+      const timing = this.#toolTimes[ordinal];
+      if (timing && timing.durationMs === undefined) {
+        timing.durationMs = Date.now() - timing.startedAt;
+      }
+      return;
+    }
+  }
+
+  /** The provider's final text, offered as a correction of what the deltas added up to. */
+  reconcile(doneText: string): void {
+    this.#acc.reconcile(doneText);
+  }
 }
 
 export type TurnRequest =
@@ -86,6 +172,7 @@ const IDLE: LiveTurn = {
   busy: false,
   text: '',
   activities: [],
+  blocks: new LiveBlocks(),
   assignments: null,
   label: 'thinking',
   startedAt: null,
@@ -144,6 +231,7 @@ export function useTurn({
         ? { kind: 'note', id: 'a' + counter.current, icon, text, color }
         : { kind: 'note', id: 'a' + counter.current, icon, text };
       draft.current.activities = capped([...draft.current.activities, activity]);
+      draft.current.blocks.pushNote(activity);
       schedule();
     },
     [schedule],
@@ -164,6 +252,7 @@ export function useTurn({
         busy: true,
         text: '',
         activities: [],
+        blocks: new LiveBlocks(),
         assignments: null,
         label: request.kind === 'assign' ? 'delegating' : 'thinking',
         startedAt: Date.now(),
@@ -275,18 +364,22 @@ export function applyEvent(
     case 'text': {
       if (!event.delta) return;
       live.text += event.delta;
+      live.blocks.apply(event);
       return;
     }
 
     case 'thinking': {
-      if (!verbose) return;
-      const line = event.delta.split('\n').map((part) => part.trim()).filter(Boolean).pop();
-      if (line) pushActivity(glyph.thinking, shorten(line, 96));
+      // The transcript always carries thinking - it is what the turn actually
+      // looked like. Whether it is ever shown is a rendering decision: the
+      // live region, the scrollback and the history all dim it behind
+      // `verbose`, exactly where the notes used to be.
+      if (event.delta) live.blocks.apply(event);
       return;
     }
 
     case 'tool': {
       applyTool(live, event);
+      live.blocks.apply(event);
       return;
     }
 
@@ -349,6 +442,7 @@ export function applyEvent(
 
     case 'done': {
       if (event.text) live.text = event.text;
+      live.blocks.reconcile(event.text);
       return;
     }
 
@@ -453,12 +547,14 @@ function closeOpenTools(live: LiveTurn, aborted: boolean): void {
 /**
  * Everything a finished turn leaves in the scrollback, in order.
  *
- * Consecutive tool calls collapse into one `tools` entry. That is what turns a
- * ribbon of unrelated lines into a block a reader can take in at a glance -
- * and it is the only place the grouping can happen, because `<Static>` renders
- * each entry on its own and cannot see its neighbours.
+ * The entries are computed once, from the final blocks, by the same
+ * `blockSegments` walk the live region renders from - so what the reader saw
+ * streaming is what stays: text where the model spoke, tool groups where it
+ * worked, notes where something happened on the side. Speaker, duration and
+ * usage belong to the answer as a whole, so they land on the last assistant
+ * entry. `<Static>` is append-only: entries are never re-flowed afterwards.
  */
-function toEntries(
+export function toEntries(
   live: LiveTurn,
   session: SessionState,
   request: TurnRequest,
@@ -468,21 +564,85 @@ function toEntries(
   usage: TurnUsage | undefined,
 ): Entry[] {
   const entries: Entry[] = [];
+  // An assignment's output is the agent's report, not the assistant's voice;
+  // a direct chat is the agent speaking for itself.
+  const speaker =
+    request.kind === 'assign' ? request.agent : session.counterpart || session.assistantName;
+  let lastAssistant = -1;
 
-  for (const group of groupActivities(live.activities)) {
-    if (group.kind === 'tools') {
+  // A finished turn leaves no tool spinning: open calls close as done, or as
+  // failed when the user interrupted them.
+  const toolTimes = closeToolTimes(live.blocks.toolTimes);
+
+  for (const segment of blockSegments(live.blocks.blocks, {
+    toolTimes,
+    closed: aborted ? 'failed' : 'done',
+  })) {
+    if (segment.kind === 'tools') {
       counter.current += 1;
-      entries.push({ kind: 'tools', id: 'k' + counter.current, calls: group.calls });
+      entries.push({ kind: 'tools', id: 'k' + counter.current, calls: segment.calls });
       continue;
     }
-    const note = group.note;
+    if (segment.kind === 'note') {
+      entries.push({
+        kind: 'activity',
+        id: 'e' + segment.note.id,
+        icon: segment.note.icon,
+        text: segment.note.text,
+        ...(segment.note.color ? { color: segment.note.color } : {}),
+      });
+      continue;
+    }
+    if (segment.kind === 'thinking') {
+      if (!session.verbose) continue;
+      for (const line of thinkingLines(segment.text)) {
+        counter.current += 1;
+        entries.push({ kind: 'activity', id: 't' + counter.current, icon: glyph.thinking, text: line });
+      }
+      continue;
+    }
+
+    const text = segment.text.trim();
+    if (!text) continue;
+    counter.current += 1;
     entries.push({
-      kind: 'activity',
-      id: 'e' + note.id,
-      icon: note.icon,
-      text: note.text,
-      ...(note.color ? { color: note.color } : {}),
+      kind: 'assistant',
+      id: 'm' + counter.current,
+      text,
+      speaker,
+      provider: session.provider,
     });
+    lastAssistant = entries.length - 1;
+  }
+
+  if (lastAssistant >= 0) {
+    const entry = entries[lastAssistant];
+    if (entry?.kind === 'assistant') {
+      entries[lastAssistant] = {
+        ...entry,
+        durationMs,
+        ...(usage ? { usage } : {}),
+        ...(aborted ? { aborted: true } : {}),
+      };
+    }
+  } else {
+    // No text segment at all: either the provider only reported a final text
+    // (`done` without deltas - the accumulator never opened a block), or the
+    // turn was interrupted before anything arrived.
+    const text = live.text.trim();
+    if (text || aborted) {
+      counter.current += 1;
+      entries.push({
+        kind: 'assistant',
+        id: 'm' + counter.current,
+        speaker,
+        text: text || '(no output)',
+        provider: session.provider,
+        durationMs,
+        ...(usage ? { usage } : {}),
+        ...(aborted ? { aborted: true } : {}),
+      });
+    }
   }
 
   if (live.assignments && live.assignments.order.length) {
@@ -494,25 +654,17 @@ function toEntries(
     });
   }
 
-  const text = live.text.trim();
-  if (text || aborted) {
-    counter.current += 1;
-    entries.push({
-      kind: 'assistant',
-      id: 'm' + counter.current,
-      // An assignment's output is the agent's report, not the assistant's
-      // voice; a direct chat is the agent speaking for itself.
-      speaker:
-        request.kind === 'assign' ? request.agent : session.counterpart || session.assistantName,
-      text: text || '(no output)',
-      provider: session.provider,
-      durationMs,
-      ...(usage ? { usage } : {}),
-      ...(aborted ? { aborted: true } : {}),
-    });
-  }
-
   return entries;
+}
+
+/** Stamp a duration onto tool timings that never saw their end event. */
+function closeToolTimes(times: ToolTiming[]): ToolTiming[] {
+  const now = Date.now();
+  return times.map((timing) =>
+    timing.durationMs === undefined
+      ? { ...timing, durationMs: Math.max(0, now - timing.startedAt) }
+      : timing,
+  );
 }
 
 function summarise(state: AssignmentsState, durationMs: number): AssignmentsSummary {

@@ -21,8 +21,11 @@ import { InputBox } from '../dist/tui/components/InputBox.js';
 import { SlashPalette } from '../dist/tui/components/SlashPalette.js';
 import { Scrollback } from '../dist/tui/components/Scrollback.js';
 import { AssignmentsView } from '../dist/tui/components/AssignmentsView.js';
+import { WatchView } from '../dist/tui/components/WatchView.js';
 import { SLASH_COMMANDS, commandWord } from '../dist/tui/hooks/useSlash.js';
-import { applyEvent } from '../dist/tui/hooks/useTurn.js';
+import { applyEvent, LiveBlocks, toEntries } from '../dist/tui/hooks/useTurn.js';
+import { foldWatchEvent } from '../dist/tui/hooks/useWatch.js';
+import { historyEntries } from '../dist/tui/history.js';
 import { inkUiTheme } from '../dist/tui/inkTheme.js';
 import { cachedModelCatalogue, modelName, prettifyModelId } from '../dist/ui/modelNames.js';
 
@@ -221,6 +224,14 @@ if (SLASH_COMMANDS.some((command) => command.name === '/assign')) {
   console.log('  FAIL  the catalogue offers /assign   [missing]');
 }
 
+checks += 1;
+if (SLASH_COMMANDS.some((command) => command.name === '/watch')) {
+  console.log('  PASS  the catalogue offers /watch   [/watch]');
+} else {
+  failures += 1;
+  console.log('  FAIL  the catalogue offers /watch   [missing]');
+}
+
 /* ------------------------- assignments: event wiring -------------------- */
 
 const draft = {
@@ -228,6 +239,7 @@ const draft = {
     busy: true,
     text: '',
     activities: [],
+    blocks: new LiveBlocks(),
     assignments: null,
     label: 'thinking',
     startedAt: Date.now() - 21_000,
@@ -480,6 +492,234 @@ expect(scrollback, 'PLAN', 'assistant markdown heading');
 expect(scrollback, '1. add', 'ordered list');
 expect(scrollback, '3 assignments  ·  2 done  ·  1 failed  ·  31.8s', 'collapsed assignment summary');
 expect(scrollback, 'doc-writer', 'the summary names each agent');
+
+/* ------------------------ interleaved turn transcript -------------------- */
+
+const interleave = {
+  current: {
+    busy: true,
+    text: '',
+    activities: [],
+    blocks: new LiveBlocks(),
+    assignments: null,
+    label: 'thinking',
+    startedAt: Date.now() - 6_000,
+  },
+};
+
+// The hook pushes side-channel notes into both the activities and the
+// transcript; this mirrors it so the walk sees what the app would see.
+let interleaveNotes = 0;
+const interleaveNote = (icon, text, color) => {
+  interleaveNotes += 1;
+  const note = { kind: 'note', id: 'a' + interleaveNotes, icon, text, ...(color ? { color } : {}) };
+  interleave.current.activities.push(note);
+  interleave.current.blocks.pushNote(note);
+};
+
+applyEvent(interleave, { type: 'text', delta: 'Reading the plan first.\n\n' }, false, interleaveNote);
+applyEvent(interleave, { type: 'tool', name: 'Read', status: 'start', id: 't1', detail: 'docs/plan.md' }, false, interleaveNote);
+applyEvent(interleave, { type: 'tool', name: 'Read', status: 'end', id: 't1' }, false, interleaveNote);
+applyEvent(interleave, { type: 'status', label: 'provider switch', detail: 'claude -> codex' }, false, interleaveNote);
+applyEvent(interleave, { type: 'tool', name: 'Bash', status: 'start', id: 't2', detail: 'npm run build' }, false, interleaveNote);
+applyEvent(interleave, { type: 'tool', name: 'Bash', status: 'end', id: 't2', isError: true }, false, interleaveNote);
+applyEvent(interleave, { type: 'text', delta: 'Done, with a failure in the middle.' }, false, interleaveNote);
+
+const interleaveSession = {
+  sessionId: undefined,
+  title: 'Interleaving',
+  assistantName: 'jarvis',
+  counterpart: 'jarvis',
+  provider: 'claude',
+  model: undefined,
+  effort: undefined,
+  permission: 'write',
+  usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, costUsd: 0, turns: 0 },
+  voice: false,
+  verbose: false,
+};
+
+const turnEntries = toEntries(
+  interleave.current,
+  interleaveSession,
+  { kind: 'chat', text: 'go' },
+  6_000,
+  false,
+  { current: 0 },
+  { inputTokens: 1_200, outputTokens: 90, costUsd: 0.01 },
+);
+
+const interleaved = renderToString(
+  themed(h(Scrollback, { inline: true, entries: turnEntries })),
+  { columns: COLUMNS },
+);
+
+show('Scrollback - text, tools and notes interleaved', interleaved);
+expect(interleaved, 'Reading the plan first', 'text segment before the tool group');
+expect(interleaved, '⏺ Read docs/plan.md', 'finished tool call between the texts');
+expect(interleaved, '✗ Bash npm run build', 'failed tool call');
+expect(interleaved, 'provider switch · claude -> codex', 'side-channel note between the groups');
+expect(interleaved, 'Done, with a failure in the middle', 'text segment after the tool group');
+expect(interleaved, '↑1.2k ↓90', 'usage lands on the last assistant entry');
+
+const flat = strip(interleaved);
+const firstText = flat.indexOf('Reading the plan first');
+const readTool = flat.indexOf('⏺ Read docs/plan.md');
+const switchNote = flat.indexOf('provider switch');
+const lastText = flat.indexOf('Done, with a failure in the middle');
+check(firstText >= 0 && readTool > firstText, 'text precedes the tool group', firstText + ' < ' + readTool);
+check(readTool >= 0 && switchNote > readTool, 'the note follows the tool group', readTool + ' < ' + switchNote);
+check(switchNote >= 0 && lastText > switchNote, 'the trailing text keeps its arrival position', switchNote + ' < ' + lastText);
+check(
+  flat.split('JARVIS').length - 1 === 2,
+  'each text segment is its own assistant entry',
+  String(flat.split('JARVIS').length - 1),
+);
+
+/* -------------------------------- watch view ----------------------------- */
+
+const watchBlocks = [
+  { type: 'text', text: 'Surveying the REPL first.\n\n' },
+  { type: 'tool', call: { type: 'tool', name: 'Grep', status: 'end', id: 'w1', detail: 'readline' } },
+  { type: 'note', note: { kind: 'note', id: 'w2', icon: '‹', text: 'switching provider · quota' } },
+  { type: 'thinking', text: 'The cursor math must stay single-line.' },
+  { type: 'text', text: 'Halfway through.' },
+  { type: 'tool', call: { type: 'tool', name: 'Bash', status: 'start', id: 'w3', detail: 'npm test' } },
+];
+
+const watchFeed = {
+  state: {
+    blocks: watchBlocks,
+    toolTimes: [
+      { startedAt: Date.now() - 1_400, durationMs: 1_400 },
+      { startedAt: Date.now() - 700 },
+    ],
+    ended: false,
+    startedAt: Date.now() - 9_000,
+  },
+  frame: 5,
+  now: Date.now(),
+};
+
+const watchLive = renderToString(
+  themed(h(WatchView, { assignmentId: 'a1b2c3d4e5f6', feed: watchFeed, verbose: true })),
+  { columns: COLUMNS },
+);
+
+show('WatchView - a run in flight', watchLive);
+expect(watchLive, 'watching a1b2c3d4', 'the header names the watched assignment');
+expect(watchLive, 'Surveying the REPL first', 'text segment');
+expect(watchLive, 'Grep readline', 'tool call between the texts');
+expect(watchLive, 'switching provider', 'dim status note');
+expect(watchLive, 'The cursor math must stay single-line', 'dim thinking line in verbose');
+expect(watchLive, 'npm test', 'the call that is still running');
+expect(watchLive, 'Esc leaves', 'how to leave the watch');
+
+const watchPlain = strip(watchLive);
+check(
+  watchPlain.indexOf('Surveying the REPL first') < watchPlain.indexOf('Grep readline'),
+  'the watch keeps the arrival order',
+  'text < tool',
+);
+
+const watchDone = renderToString(
+  themed(
+    h(WatchView, {
+      assignmentId: 'a1b2c3d4e5f6',
+      feed: { state: { ...watchFeed.state, ended: true }, frame: 9, now: Date.now() },
+      verbose: false,
+    }),
+  ),
+  { columns: COLUMNS },
+);
+
+show('WatchView - the run has finished', watchDone);
+expect(watchDone, 'run finished', 'end status');
+expect(watchDone, 'Esc leaves', 'the exit hint stays');
+refute(watchDone, 'The cursor math', 'thinking stays hidden without verbose');
+
+const watchEmpty = renderToString(
+  themed(
+    h(WatchView, {
+      assignmentId: 'a1b2c3d4e5f6',
+      feed: { state: { blocks: [], toolTimes: [], ended: true, startedAt: Date.now() - 500 }, frame: 0, now: Date.now() },
+      verbose: false,
+    }),
+  ),
+  { columns: COLUMNS },
+);
+
+show('WatchView - nothing streamed', watchEmpty);
+expect(watchEmpty, 'no live output', 'the empty watch explains itself rather than sitting blank');
+
+/* --------------------- the watch fold's provider seam -------------------- */
+
+const seam = new LiveBlocks();
+let seamNotes = 0;
+const seamNote = () => 'sn' + (seamNotes += 1);
+foldWatchEvent(seam, { type: 'text', delta: 'attempt one speaks' }, seamNote);
+foldWatchEvent(seam, { type: 'error', message: 'usage limit reached', fatal: true }, seamNote);
+foldWatchEvent(
+  seam,
+  { type: 'status', label: 'provider', detail: 'claude hit its usage limit, continuing on codex' },
+  seamNote,
+);
+foldWatchEvent(seam, { type: 'text', delta: 'the retry answers' }, seamNote);
+const seamKinds = seam.blocks.map((block) => block.type);
+check(
+  JSON.stringify(seamKinds) === JSON.stringify(['text', 'note', 'note', 'text']),
+  'a provider switch ends the dead attempt with the notes between the two texts',
+  JSON.stringify(seamKinds),
+);
+const seamTexts = seam.blocks.filter((block) => block.type === 'text').map((block) => block.text);
+check(
+  JSON.stringify(seamTexts) === JSON.stringify(['attempt one speaks', 'the retry answers']),
+  'the retry never glues onto the attempt that died',
+  JSON.stringify(seamTexts),
+);
+
+/* ---------------------- rehydrated history rendering --------------------- */
+
+let historyIds = 0;
+const rehydrated = historyEntries(
+  [
+    {
+      // Pre-blocks row: the flat view kept a call's start beside its end.
+      role: 'assistant',
+      content: 'flat answer',
+      toolCalls: [
+        { type: 'tool', name: 'read', status: 'start', id: 't1', detail: 'notes.md' },
+        { type: 'tool', name: 'tool', status: 'end', id: 't1', result: 'contents', isError: false },
+      ],
+    },
+    {
+      // A blocks row whose turn was interrupted mid-call.
+      role: 'assistant',
+      content: 'kept its open call',
+      blocks: [
+        { type: 'text', text: 'kept its open call' },
+        { type: 'tool', call: { type: 'tool', name: 'read', status: 'start', id: 't2', detail: 'plan.md' } },
+      ],
+    },
+  ],
+  { verbose: false, assistantName: 'Rook', counterpart: 'Rook' },
+  () => 'h' + (historyIds += 1),
+);
+const flatTools = rehydrated.find((entry) => entry.kind === 'tools');
+check(
+  flatTools?.calls.length === 1 &&
+    flatTools.calls[0].name === 'read' &&
+    flatTools.calls[0].status === 'done' &&
+    flatTools.calls[0].id === 't1',
+  'a pre-blocks row renders each call once, merged and settled',
+  JSON.stringify(flatTools?.calls.map((call) => [call.id, call.name, call.status])),
+);
+const openTools = rehydrated.filter((entry) => entry.kind === 'tools')[1];
+check(
+  openTools?.calls.length === 1 && openTools.calls[0].status === 'done' && openTools.calls[0].name === 'read',
+  'a tool an interrupted turn left open rehydrates as done, not spinning',
+  JSON.stringify(openTools?.calls.map((call) => [call.name, call.status])),
+);
 
 /* ------------------------------ model names ----------------------------- */
 

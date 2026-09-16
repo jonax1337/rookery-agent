@@ -1,4 +1,4 @@
-import { XIcon } from "@/components/icons";
+import { TerminalIcon, XIcon } from "@/components/icons";
 import * as React from 'react';
 import { NavLink } from 'react-router';
 
@@ -40,6 +40,11 @@ export interface LiveRunListProps {
   assignments: readonly AssignmentView[];
   /** Given: every running row gets an "Abbrechen" action. */
   onCancel?: (id: string) => void;
+  /**
+   * Given: every running row gets a terminal button that opens the live log
+   * of that assignment - watching the run, never stopping it.
+   */
+  onWatch?: (id: string) => void;
   /** `plain` drops the card frame for a page that already has one. */
   variant?: 'card' | 'plain';
   title?: string;
@@ -76,6 +81,7 @@ function toTree(assignments: readonly AssignmentView[]): RunNode[] {
 export function LiveRunList({
   assignments,
   onCancel,
+  onWatch,
   variant = 'card',
   title = 'Assignments',
   className,
@@ -89,7 +95,7 @@ export function LiveRunList({
   const body = (
     <ItemGroup className="gap-2">
       {tree.map((node) => (
-        <RunRow key={node.assignment.id} node={node} onCancel={onCancel} />
+        <RunRow key={node.assignment.id} node={node} onCancel={onCancel} onWatch={onWatch} />
       ))}
     </ItemGroup>
   );
@@ -141,7 +147,15 @@ export function LiveRunList({
   );
 }
 
-function RunRow({ node, onCancel }: { node: RunNode; onCancel?: (id: string) => void }) {
+function RunRow({
+  node,
+  onCancel,
+  onWatch,
+}: {
+  node: RunNode;
+  onCancel?: (id: string) => void;
+  onWatch?: (id: string) => void;
+}) {
   const { assignment, children } = node;
   const meta = [
     assignment.provider ? PROVIDER_LABEL[assignment.provider] : null,
@@ -152,6 +166,8 @@ function RunRow({ node, onCancel }: { node: RunNode; onCancel?: (id: string) => 
   ].filter((entry): entry is string => entry !== null);
 
   const cancellable = assignment.status === 'running' || assignment.status === 'pending';
+  // Only a running run has something to watch; a pending one has not started.
+  const watchable = assignment.status === 'running' && onWatch !== undefined;
 
   return (
     <Item variant="outline" size="sm" className="items-start">
@@ -183,22 +199,40 @@ function RunRow({ node, onCancel }: { node: RunNode; onCancel?: (id: string) => 
         )}
       </ItemContent>
 
-      {cancellable && onCancel && (
+      {(watchable || (cancellable && onCancel)) && (
         <ItemActions>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Cancel assignment"
-                onClick={() => onCancel(assignment.id)}
-              >
-                <XIcon />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Cancel</TooltipContent>
-          </Tooltip>
+          {watchable && onWatch && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Watch assignment live"
+                  onClick={() => onWatch(assignment.id)}
+                >
+                  <TerminalIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Live zusehen</TooltipContent>
+            </Tooltip>
+          )}
+          {cancellable && onCancel && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Cancel assignment"
+                  onClick={() => onCancel(assignment.id)}
+                >
+                  <XIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Cancel</TooltipContent>
+            </Tooltip>
+          )}
         </ItemActions>
       )}
 
@@ -208,7 +242,7 @@ function RunRow({ node, onCancel }: { node: RunNode; onCancel?: (id: string) => 
         <ItemFooter className="mt-1 block border-l pl-3">
           <ItemGroup className="gap-2">
             {children.map((child) => (
-              <RunRow key={child.assignment.id} node={child} onCancel={onCancel} />
+              <RunRow key={child.assignment.id} node={child} onCancel={onCancel} onWatch={onWatch} />
             ))}
           </ItemGroup>
         </ItemFooter>

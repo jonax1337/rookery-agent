@@ -33,6 +33,9 @@ export type CronEvent = Extract<AgentEvent, { type: 'cron' }>;
 /** The `sleep` broadcast: the run as it stands, and which phase it just left. */
 export type SleepEvent = Extract<AgentEvent, { type: 'sleep' }>;
 
+/** One live-log entry of a running assignment this socket watches. */
+export type AssignmentLogFrame = Extract<ServerFrame, { type: 'assignment-log' }>;
+
 export interface TurnHandlers {
   onEvent(event: AgentEvent): void;
   onDone(text: string, usage?: TurnUsage): void;
@@ -63,6 +66,9 @@ export class RookerySocket {
   #changedListeners = new Set<(change: OrgChange) => void>();
   #sleepListeners = new Set<(event: SleepEvent) => void>();
   #quotaListeners = new Set<(quota: ProviderQuota) => void>();
+  #assignmentLogListeners = new Set<(frame: AssignmentLogFrame) => void>();
+  /** Assignments this socket should be watching, so a reconnect can re-arm them. */
+  #watchedAssignments = new Set<string>();
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #pingTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -141,6 +147,36 @@ export class RookerySocket {
     return () => this.#changedListeners.delete(listener);
   }
 
+  /**
+   * Live-log entries of the running assignments this socket watches. Only
+   * frames for ids this client sent `watchAssignment` for ever arrive, so the
+   * listener does not need to filter - but it gets the whole frame, id
+   * included, because one terminal component may serve several rows.
+   */
+  onAssignmentLog(listener: (frame: AssignmentLogFrame) => void): () => void {
+    this.#assignmentLogListeners.add(listener);
+    return () => this.#assignmentLogListeners.delete(listener);
+  }
+
+  /**
+   * Opt into the live log of one running assignment. Sent immediately when
+   * the socket is open; otherwise remembered and re-sent on the next `open`,
+   * so a watch started mid-reconnect is not silently lost.
+   */
+  watchAssignment(id: string): void {
+    this.#watchedAssignments.add(id);
+    this.#send({ type: 'watch', assignmentId: id });
+  }
+
+  /**
+   * Opt back out. Idempotent: a watcher going away ends nothing but the
+   * watching - the run itself keeps going (E.1).
+   */
+  unwatchAssignment(id: string): void {
+    this.#watchedAssignments.delete(id);
+    this.#send({ type: 'unwatch', assignmentId: id });
+  }
+
   connect(): void {
     if (this.#ws && (this.#status === 'open' || this.#status === 'connecting')) return;
     this.#closedByUs = false;
@@ -174,6 +210,9 @@ export class RookerySocket {
       this.#setStatus('open');
       this.#clearPing();
       this.#pingTimer = setInterval(() => this.#send({ type: 'ping' }), PING_INTERVAL_MS);
+      // The server's watcher sets died with the old socket: every live
+      // terminal re-arms its watch here, before any frames could be missed.
+      for (const id of this.#watchedAssignments) this.#send({ type: 'watch', assignmentId: id });
     };
 
     socket.onmessage = (message) => {
@@ -331,6 +370,11 @@ export class RookerySocket {
 
     if (frame.type === 'changed') {
       for (const listener of this.#changedListeners) listener(frame.change);
+      return;
+    }
+
+    if (frame.type === 'assignment-log') {
+      for (const listener of this.#assignmentLogListeners) listener(frame);
       return;
     }
 

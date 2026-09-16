@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import { TurnBlocks } from '../lib/blocks';
 import type { RookerySocket } from '../lib/socket';
 import type {
   ActivityItem,
@@ -9,6 +10,7 @@ import type {
   ChatPayload,
   MemoryRecord,
   Message,
+  MessageBlock,
   ProviderQuota,
   Task,
   TurnUsage,
@@ -37,6 +39,12 @@ export interface ChatState {
   streaming: string;
   thinking: string;
   toolCalls: NonNullable<Message['toolCalls']>;
+  /**
+   * The turn as an ordered transcript - text, thinking and tool calls in
+   * arrival order - beside the flat buckets above, which stay because the
+   * voice screen (and its test) hang on `chat.activity`/`toolCalls`.
+   */
+  parts: MessageBlock[];
   busy: boolean;
   activity: ActivityItem[];
   recalled: MemoryRecord[];
@@ -102,6 +110,11 @@ export function useChat(
   const bufferRef = useRef('');
   const toolCallsRef = useRef<NonNullable<Message['toolCalls']>>([]);
   const [toolCalls, setToolCalls] = useState<NonNullable<Message['toolCalls']>>([]);
+  // The ordered transcript of the running turn. Same folder the core runtime
+  // persists as `blocks`, so the placeholder below renders exactly what a
+  // reload will read back.
+  const partsRef = useRef(new TurnBlocks());
+  const [parts, setParts] = useState<MessageBlock[]>([]);
 
   const pushActivity = useCallback((item: Omit<ActivityItem, 'at'>) => {
     setActivity((current) => {
@@ -118,6 +131,12 @@ export function useChat(
     });
   }, []);
 
+  /** Folds one text/thinking/tool event into the ordered transcript. */
+  const foldPart = useCallback((event: AgentEvent) => {
+    partsRef.current.apply(event);
+    setParts([...partsRef.current.blocks]);
+  }, []);
+
   const handleEvent = useCallback(
     (event: AgentEvent) => {
       switch (event.type) {
@@ -128,15 +147,18 @@ export function useChat(
         case 'text':
           bufferRef.current += event.delta;
           setStreaming(bufferRef.current);
+          foldPart(event);
           break;
 
         case 'thinking':
           setThinking((current) => (current + event.delta).slice(-2000));
+          foldPart(event);
           break;
 
         case 'tool':
           toolCallsRef.current = [...toolCallsRef.current, event];
           setToolCalls(toolCallsRef.current);
+          foldPart(event);
           pushActivity({
             id: event.id ?? event.name + ':' + Date.now(),
             kind: 'tool',
@@ -221,7 +243,7 @@ export function useChat(
           break;
       }
     },
-    [pushActivity],
+    [foldPart, pushActivity],
   );
 
   const finish = useCallback(
@@ -232,6 +254,12 @@ export function useChat(
       finishedRef.current = true;
       const answer = text || bufferRef.current;
       const completedTools = toolCallsRef.current;
+      // The final text is a correction of what the deltas added up to, in the
+      // one case where nothing was interleaved - the same reconcile the core
+      // runtime applies before persisting, so the local row matches the
+      // stored one.
+      partsRef.current.reconcile(answer);
+      const completedBlocks = [...partsRef.current.blocks];
       if (answer || completedTools.length) {
         setMessages((current) => [
           ...current,
@@ -241,6 +269,7 @@ export function useChat(
             role: 'assistant',
             content: answer,
             toolCalls: completedTools,
+            ...(completedBlocks.length ? { blocks: completedBlocks } : {}),
             createdAt: Date.now(),
             ...(usage ? { usage } : {}),
           },
@@ -250,6 +279,8 @@ export function useChat(
       bufferRef.current = '';
       toolCallsRef.current = [];
       setToolCalls([]);
+      partsRef.current.clear();
+      setParts([]);
       turnRef.current = null;
       setStreaming('');
       setThinking('');
@@ -271,6 +302,8 @@ export function useChat(
     bufferRef.current = '';
     toolCallsRef.current = [];
     setToolCalls([]);
+    partsRef.current.clear();
+    setParts([]);
     setStreaming('');
     finishedRef.current = false;
     inFlight.current = true;
@@ -366,6 +399,8 @@ export function useChat(
     bufferRef.current = '';
     toolCallsRef.current = [];
     setToolCalls([]);
+    partsRef.current.clear();
+    setParts([]);
     turnRef.current = null;
     turnToken.current = null;
     // Abandoning the conversation settles its turn too, so neither a stray
@@ -389,6 +424,7 @@ export function useChat(
     streaming,
     thinking,
     toolCalls,
+    parts,
     busy,
     activity,
     recalled,

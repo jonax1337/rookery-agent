@@ -13,6 +13,7 @@ import type { ChatState } from '../hooks/useChat';
 import type {
   EffortLevel,
   Message,
+  MessageBlock,
   PermissionLevel,
   ProviderId,
   Session,
@@ -59,6 +60,8 @@ interface RookeryThreadMessage {
   content: string;
   thinking?: string;
   toolCalls?: Message['toolCalls'];
+  /** The ordered transcript, when the turn produced one. Old rows have none. */
+  blocks?: MessageBlock[];
   running?: boolean;
 }
 
@@ -70,6 +73,68 @@ function convertMessage(message: RookeryThreadMessage): ThreadMessageLike {
       id: message.id,
       role: 'user',
       content: [{ type: 'text', text: message.content }],
+    };
+  }
+
+  // The ordered transcript: text, thinking and tool calls interleaved the way
+  // they actually arrived, instead of every tool clumped in front of the
+  // text. Same part vocabulary as the fallback below; only the order differs,
+  // and only the last text block carries sources, because earlier ones are
+  // mid-turn prose the tools already answered to.
+  if (message.blocks?.length) {
+    const blocks = message.blocks;
+    let lastText = -1;
+    for (let i = blocks.length - 1; i >= 0; i -= 1) {
+      if (blocks[i]?.type === 'text') {
+        lastText = i;
+        break;
+      }
+    }
+
+    const content: Part[] = [];
+    const calls = new Map<string, Part>();
+    blocks.forEach((block, index) => {
+      if (block.type === 'thinking') {
+        if (block.text) content.push({ type: 'reasoning', text: block.text });
+        return;
+      }
+      if (block.type === 'text') {
+        if (index !== lastText) {
+          if (block.text) content.push({ type: 'text', text: block.text });
+          return;
+        }
+        const answer = message.running
+          ? { text: block.text, sources: [] }
+          : splitMessageSources(block.text);
+        if (answer.text || content.length === 0) {
+          content.push({ type: 'text', text: answer.text });
+        }
+        content.push(...answer.sources);
+        return;
+      }
+      const event = block.call;
+      const pending = event.status === 'end' && !event.id
+        ? [...calls.entries()].find(([, part]) => part.type === 'tool-call' && part.result === undefined && part.toolName === prettyToolName(event.name))?.[0]
+        : undefined;
+      const id = event.id ?? pending ?? `${event.name}:${calls.size}`;
+      const previous = calls.get(id);
+      const prior = previous?.type === 'tool-call' ? previous : undefined;
+      const part: Part = {
+        type: 'tool-call', toolCallId: id,
+        toolName: prior?.toolName ?? prettyToolName(event.name),
+        args: {}, argsText: event.detail ?? prior?.argsText ?? '',
+        ...(event.status === 'end' ? { result: event.result ?? 'Completed', isError: event.isError } : {}),
+      };
+      calls.set(id, part);
+      content.push(part);
+    });
+
+    return {
+      id: message.id,
+      role: 'assistant',
+      content,
+      metadata: { custom: { originalMarkdown: message.content } },
+      status: message.running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
     };
   }
 
@@ -133,6 +198,7 @@ export function useRookeryRuntime({
       role: message.role === 'user' ? 'user' : 'assistant',
       content: message.content,
       toolCalls: message.toolCalls,
+      blocks: message.blocks,
     }));
     if (chat.busy || chat.streaming) {
       base.push({
@@ -141,11 +207,14 @@ export function useRookeryRuntime({
         content: chat.streaming,
         thinking: chat.thinking,
         toolCalls: chat.toolCalls,
+        // The placeholder renders the same ordered transcript the finished
+        // message will carry - empty parts fall through to the flat path.
+        blocks: chat.parts.length ? chat.parts : undefined,
         running: true,
       });
     }
     return base;
-  }, [chat.messages, chat.streaming, chat.thinking, chat.toolCalls, chat.busy]);
+  }, [chat.messages, chat.streaming, chat.thinking, chat.toolCalls, chat.parts, chat.busy]);
 
   const threads = useMemo<ThreadData[]>(
     () =>

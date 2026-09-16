@@ -7,13 +7,16 @@
  */
 
 import type {
+  AgentEvent,
   AssignmentView,
   EffortLevel,
+  MessageBlock,
   PermissionLevel,
   ProviderId,
   ProviderQuota,
   TurnUsage,
 } from '@rookery/core';
+import { shorten } from '../ui/render.js';
 
 /** One coloured line inside a `notice` entry. */
 export interface NoticeLine {
@@ -94,6 +97,113 @@ export function groupActivities(activities: Activity[]): ActivityGroup[] {
   flush();
 
   return groups;
+}
+
+/** Wall-clock timing of one tool block, kept by the live accumulator. */
+export interface ToolTiming {
+  startedAt: number;
+  /** Set once the call ended; `0` for a completion whose start never arrived. */
+  durationMs?: number;
+}
+
+/** A side-channel note folded into the ordered transcript where it happened. */
+export interface NoteBlock {
+  type: 'note';
+  note: NoteActivity;
+}
+
+/** The ordered transcript of a turn: core message blocks plus local notes. */
+export type LiveBlock = MessageBlock | NoteBlock;
+
+/** One renderable stretch of the ordered transcript. */
+export type BlockSegment =
+  | { kind: 'tools'; id: string; calls: ToolCall[] }
+  | { kind: 'note'; note: NoteActivity }
+  | { kind: 'text'; text: string; streaming: boolean }
+  | { kind: 'thinking'; text: string };
+
+export interface BlockSegmentOptions {
+  /** Mark the trailing text block as streaming, for the blinking cursor. */
+  streaming?: boolean;
+  /** Timing per tool block, in tool-block order, when the caller tracks it. */
+  toolTimes?: ToolTiming[];
+  /** Final status for calls that are still open: a turn that ended leaves nothing spinning. */
+  closed?: 'done' | 'failed';
+}
+
+/**
+ * Walk the ordered transcript into renderable segments.
+ *
+ * This is the one walk both the live region and the committed scrollback
+ * render from, so a finished turn never visibly re-flows: consecutive tool
+ * blocks collapse into one `tools` segment exactly the way `groupActivities`
+ * collapses consecutive tool activities, and everything between them keeps
+ * its arrival order.
+ */
+export function blockSegments(blocks: LiveBlock[], options: BlockSegmentOptions = {}): BlockSegment[] {
+  const segments: BlockSegment[] = [];
+  let calls: ToolCall[] = [];
+  let toolIndex = 0;
+
+  const flush = (): void => {
+    if (!calls.length) return;
+    segments.push({ kind: 'tools', id: 'k' + segments.length, calls });
+    calls = [];
+  };
+
+  for (const block of blocks) {
+    if (block.type === 'tool') {
+      calls.push(toolCallView(block.call, toolIndex, options));
+      toolIndex += 1;
+      continue;
+    }
+    flush();
+    if (block.type === 'note') {
+      segments.push({ kind: 'note', note: block.note });
+      continue;
+    }
+    if (block.type === 'text') {
+      segments.push({ kind: 'text', text: block.text, streaming: false });
+      continue;
+    }
+    segments.push({ kind: 'thinking', text: block.text });
+  }
+  flush();
+
+  if (options.streaming) {
+    const tail = segments.at(-1);
+    if (tail?.kind === 'text') tail.streaming = true;
+  }
+  return segments;
+}
+
+/** One tool block as the row `ToolGroup` renders, timing grafted on when known. */
+function toolCallView(
+  call: Extract<AgentEvent, { type: 'tool' }>,
+  index: number,
+  options: BlockSegmentOptions,
+): ToolCall {
+  const timing = options.toolTimes?.[index];
+  return {
+    id: call.id ?? call.name + ':' + index,
+    name: call.name,
+    status: call.status === 'start' ? (options.closed ?? 'running') : call.isError ? 'failed' : 'done',
+    startedAt: timing?.startedAt ?? 0,
+    ...(timing?.durationMs !== undefined ? { durationMs: timing.durationMs } : {}),
+    ...(call.detail ? { detail: call.detail } : {}),
+  };
+}
+
+/**
+ * The trailing lines of a thinking block, for the dim verbose trace.
+ *
+ * A whole reasoning block is far too much wall to print; the tail is the part
+ * that says what the model is on about right now, the way the live notes
+ * always showed the newest line only.
+ */
+export function thinkingLines(text: string, max = 3): string[] {
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+  return lines.slice(-max).map((line) => shorten(line, 96));
 }
 
 /**

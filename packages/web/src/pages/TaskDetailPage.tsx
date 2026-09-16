@@ -50,6 +50,7 @@ import { DataTable } from '@/components/blocks/data-table/data-table';
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
+import { AssignmentTerminal } from '@/components/common/assignment-terminal';
 import { LiveRunList } from '@/components/common/live-run-list';
 import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
 import { ResultCard } from '@/components/common/result-card';
@@ -147,6 +148,9 @@ export function TaskDetailPage() {
   const [streamed, setStreamed] = useState<AssignmentView[]>([]);
   const [streamResult, setStreamResult] = useState('');
   const [streamError, setStreamError] = useState<string | null>(null);
+  // The live terminal of one of the open runs - mounted only while the run
+  // actually goes, because the log it reads is live-only by design.
+  const [watchId, setWatchId] = useState<string | null>(null);
 
   /* ------------------------------ the record ----------------------------- */
 
@@ -270,6 +274,9 @@ export function TaskDetailPage() {
   /** The live rows were rebuilt, not streamed - so their text is missing. */
   const rehydrated = streamed.length === 0 && liveViews.length > 0;
   const openRuns = liveViews.filter((view) => OPEN.has(view.status)).length;
+
+  // The watched run, for as long as it is actually open.
+  const watched = liveViews.find((entry) => entry.id === watchId && OPEN.has(entry.status));
 
   /* ------------------------------- actions ------------------------------- */
 
@@ -828,9 +835,16 @@ export function TaskDetailPage() {
                 <LiveRunList
                   assignments={liveViews}
                   onCancel={cancelRun}
+                  onWatch={setWatchId}
                   title={rehydrated ? 'Currently running' : 'This run'}
                 />
-                {rehydrated ? (
+                {watched ? (
+                  // The rehydrated-status caveat above does not apply here:
+                  // the terminal attaches to the server's own live buffer of
+                  // the still-running assignment, so the text is current.
+                  <AssignmentTerminal assignmentId={watched.id} status={watched.status} />
+                ) : null}
+                {rehydrated && !watched ? (
                   // Honest about the gap instead of showing an empty box: the
                   // text deltas of a stream are not persisted anywhere, so
                   // after a reload only the status of the run survives.

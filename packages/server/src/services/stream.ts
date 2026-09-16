@@ -93,6 +93,12 @@ export type ServerFrame =
   | { type: 'memory'; event: unknown }
   /** Broadcast: an assignment changed state somewhere in the company. */
   | { type: 'assignment'; event: AgentEvent }
+  /**
+   * To watchers only: one live-log entry of a running assignment, in arrival
+   * order. `seq` is monotone over the whole run, so a client can merge these
+   * frames onto a REST snapshot without assuming continuity.
+   */
+  | { type: 'assignment-log'; assignmentId: string; seq: number; event: AgentEvent }
   /** Broadcast: a message between agents or to the assistant was posted. */
   | { type: 'message'; event: AgentEvent }
   /** Broadcast: mail was sent - a new mail in someone's inbox or outbox. */

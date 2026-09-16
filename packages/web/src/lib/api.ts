@@ -14,6 +14,7 @@ import type {
   AgentReview,
   Assignment,
   AssignmentDetail,
+  AssignmentLogSnapshot,
   AssignmentStatus,
   CronJob,
   CronJobDetail,
@@ -592,6 +593,14 @@ export const api = {
     return request<Assignment[]>('/api/org/assignments' + (query ? '?' + query : ''));
   },
   assignment: (id: string) => request<AssignmentDetail>('/api/org/assignments/' + id),
+  /**
+   * The live log of a running assignment, buffered on the server only while
+   * the run lasts. Once it is over the endpoint rejects with `ApiError`
+   * `status === 410` (the run finished; only its result remains) or `404`
+   * (unknown id) - the terminal hook reads both as "finished".
+   */
+  assignmentLog: (id: string) =>
+    request<AssignmentLogSnapshot>('/api/org/assignments/' + id + '/log'),
   cancelAssignment: (id: string) =>
     request<{ ok: true }>('/api/org/assignments/' + id + '/cancel', { method: 'POST' }),
   reviewAssignment: (id: string, input: AssignmentReviewInput) =>

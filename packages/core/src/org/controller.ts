@@ -8,6 +8,9 @@ import type {
   AgentPerformance,
   AgentReview,
   Assignment,
+  AssignmentLogEntry,
+  AssignmentLogFrame,
+  AssignmentLogSnapshot,
   AssignmentStatus,
   AssignmentView,
   EffortLevel,
@@ -164,6 +167,90 @@ const RESULT_BUDGET = 24000;
  */
 const MAX_PROVIDER_ATTEMPTS = 2;
 
+/** How much of one assignment's live log is kept, in JSON bytes. */
+const ASSIGNMENT_LOG_BYTES = 256 * 1024;
+
+/**
+ * The live log of one running assignment: a ring buffer capped in bytes and
+ * the watchers following it. It exists only while the run does - once the
+ * assignment ends, watchers learn it from the `assignment` broadcast and the
+ * buffer goes away, so watching never grows anything on disk.
+ */
+class AssignmentLogBuffer {
+  /** Buffered entries in arrival order; the oldest go when the cap is hit. */
+  readonly entries: AssignmentLogEntry[] = [];
+  /** Set once whole entries were dropped to stay under the cap. */
+  overflowed = false;
+  readonly listeners = new Set<(entry: AssignmentLogEntry) => void>();
+  #seq = 0;
+  #bytes = 0;
+  #done = false;
+  readonly #waiters: (() => void)[] = [];
+
+  /** Append one event; returns the numbered entry the watchers receive. */
+  push(event: AgentEvent): AssignmentLogEntry {
+    const entry: AssignmentLogEntry = { seq: (this.#seq += 1), event };
+    this.entries.push(entry);
+    this.#bytes += byteSize(entry);
+    // Over the cap, whole entries go, oldest first - but never the one just
+    // pushed: a single huge line is better kept than silently dropped.
+    while (this.#bytes > ASSIGNMENT_LOG_BYTES && this.entries.length > 1) {
+      const dropped = this.entries.shift();
+      if (!dropped) break;
+      this.#bytes -= byteSize(dropped);
+      this.overflowed = true;
+    }
+    for (const listener of [...this.listeners]) listener(entry);
+    this.#wake();
+    return entry;
+  }
+
+  /**
+   * A provider switch starts the transcript over: the dead attempt's half
+   * output would only read as a broken restart. `seq` keeps counting, so a
+   * client ordering by it stays whole across the gap.
+   */
+  reset(): void {
+    this.entries.length = 0;
+    this.#bytes = 0;
+    this.overflowed = false;
+  }
+
+  /** The run is over: generators drain what is left and then end. */
+  end(): void {
+    this.#done = true;
+    this.#wake();
+  }
+
+  /** Replay the buffer, then follow it live until the run ends. */
+  async *stream(): AsyncGenerator<AssignmentLogEntry, void, unknown> {
+    let lastSeq = 0;
+    for (;;) {
+      // The cap shifts the oldest entries out from under any index, and a
+      // reset empties the list entirely - the cursor is the last seq
+      // yielded, never a position.
+      const next = this.entries.find((entry) => entry.seq > lastSeq);
+      if (next) {
+        lastSeq = next.seq;
+        yield next;
+        continue;
+      }
+      if (this.#done) return;
+      await new Promise<void>((resolve) => this.#waiters.push(resolve));
+    }
+  }
+
+  #wake(): void {
+    // splice, never length = 0 before the loop: both names point at the
+    // same array here, and emptying it first would leave nothing to iterate.
+    for (const waiter of this.#waiters.splice(0)) waiter();
+  }
+}
+
+function byteSize(entry: AssignmentLogEntry): number {
+  return Buffer.byteLength(JSON.stringify(entry));
+}
+
 export class OrgController extends EventEmitter {
   readonly #store: Store;
   readonly #registry: ProviderRegistry;
@@ -179,6 +266,8 @@ export class OrgController extends EventEmitter {
   #waiting: (() => void)[] = [];
   /** Cancel hooks of assignments that are queued or running, by assignment id. */
   readonly #active = new Map<string, (by: string) => void>();
+  /** Live logs of assignments that are queued or running, by assignment id. */
+  readonly #logs = new Map<string, AssignmentLogBuffer>();
   /** Abort controllers of tasks being run from the board, by task id. */
   readonly #activeTasks = new Map<string, AbortController>();
 
@@ -1255,6 +1344,24 @@ export class OrgController extends EventEmitter {
     this.emit(event.type, event);
   }
 
+  /**
+   * Append one event to a running assignment's live log: the buffer keeps
+   * it for later snapshots and generators, its listeners get it now, and the
+   * `assignment-log` event carries it to whoever fans frames out (the
+   * runtime, then the server's watching sockets).
+   */
+  #logPush(assignmentId: string, event: AgentEvent): void {
+    const buffer = this.#logs.get(assignmentId);
+    if (!buffer) return;
+    const frame: AssignmentLogFrame = { assignmentId, entry: buffer.push(event) };
+    this.emit('assignment-log', frame);
+  }
+
+  /** A provider switch starts the live transcript over; `seq` keeps counting. */
+  #logReset(assignmentId: string): void {
+    this.#logs.get(assignmentId)?.reset();
+  }
+
   /* ------------------------------ execution ------------------------------ */
 
   /**
@@ -1325,6 +1432,9 @@ export class OrgController extends EventEmitter {
       cancelledBy = by;
       controller.abort();
     });
+    // The live log lives from the moment the run is queued: watching a
+    // pending assignment is legal, it simply has nothing to show yet.
+    this.#logs.set(assignment.id, new AssignmentLogBuffer());
     const cancelled = (): boolean => cancelledBy !== null || Boolean(input.signal?.aborted);
 
     announce();
@@ -1471,6 +1581,7 @@ export class OrgController extends EventEmitter {
           text = '';
           let sinceProgress = 0;
           fatal = null;
+          this.#logReset(assignment.id);
 
           try {
             const mcp = await this.#bridge.spec(token);
@@ -1487,6 +1598,7 @@ export class OrgController extends EventEmitter {
               signal: controller.signal,
             })) {
               if (event.type === 'text') {
+                this.#logPush(assignment.id, event);
                 text += event.delta;
                 sinceProgress += event.delta.length;
                 if (sinceProgress >= PROGRESS_EVERY) {
@@ -1494,7 +1606,12 @@ export class OrgController extends EventEmitter {
                   org.updateAssignment(assignment.id, { chars: text.length });
                   announce({ chars: text.length, preview: shorten(tail(text, 160), 110) });
                 }
+              } else if (event.type === 'thinking') {
+                this.#logPush(assignment.id, event);
               } else if (event.type === 'tool') {
+                // The live log keeps the raw event: the `[slug]` prefix below
+                // is for the parent turn's stream, not this run's own log.
+                this.#logPush(assignment.id, event);
                 input.emit({ ...event, detail: '[' + agent.slug + '] ' + (event.detail ?? '') });
                 // A tool starting is the one moment worth telling everyone about,
                 // not just the turn that started this run - the same `announce`
@@ -1507,6 +1624,7 @@ export class OrgController extends EventEmitter {
               } else if (event.type === 'done') {
                 text = event.text || text;
               } else if (event.type === 'error' && event.fatal) {
+                this.#logPush(assignment.id, event);
                 fatal = event.message;
               }
             }
@@ -1531,7 +1649,13 @@ export class OrgController extends EventEmitter {
           rememberUsageFailure(pid);
           const alternate = await this.#registry.resolveUsable(preferred, { exclude: [...tried] });
           if (!alternate) break;
-          input.emit({ type: 'status', label: 'provider', detail: pid + ' hit its usage limit, continuing on ' + alternate });
+          const switchEvent: Extract<AgentEvent, { type: 'status' }> = {
+            type: 'status',
+            label: 'provider',
+            detail: pid + ' hit its usage limit, continuing on ' + alternate,
+          };
+          this.#logPush(assignment.id, switchEvent);
+          input.emit(switchEvent);
           announce({ lastActivity: { kind: 'status', label: 'provider', at: Date.now() } });
           usedProvider = alternate;
           tried.add(alternate);
@@ -1587,6 +1711,15 @@ export class OrgController extends EventEmitter {
       this.#log.warn('Assignment failed', { id: assignment.id, error: (error as Error).message });
       return fail((error as Error).message, started);
     } finally {
+      const log = this.#logs.get(assignment.id);
+      if (log) {
+        // The run is over: live watchers hear it from the `assignment`
+        // broadcast `finish()` already sent, generators end here, and the
+        // buffer itself is gone - after a run only the persisted result
+        // remains.
+        log.end();
+        this.#logs.delete(assignment.id);
+      }
       this.#active.delete(assignment.id);
       input.signal?.removeEventListener('abort', onAbort);
       this.#release();
@@ -1622,6 +1755,45 @@ export class OrgController extends EventEmitter {
       .listAssignments(orgId, { limit: 500 })
       .filter((entry) => entry.id.startsWith(ref));
     return matches.length === 1 ? (matches[0] ?? null) : null;
+  }
+
+  /* ------------------------------- live log ------------------------------- */
+
+  /**
+   * The live log of one assignment as it stands right now. An id that is
+   * queued or running reads back `active`; an unknown or finished one reads
+   * back an empty, inactive snapshot - after a run, only the persisted
+   * result exists.
+   */
+  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot {
+    const buffer = this.#logs.get(assignmentId);
+    if (!buffer) return { events: [], overflowed: false, active: false };
+    return { events: [...buffer.entries], overflowed: buffer.overflowed, active: true };
+  }
+
+  /**
+   * Follow one running assignment's live log; the returned unsub stops the
+   * listener and is a no-op for an id with no run behind it. Watching never
+   * affects the run - a watcher going away ends nothing but the watching.
+   */
+  watchAssignmentLog(assignmentId: string, listener: (entry: AssignmentLogEntry) => void): () => void {
+    const buffer = this.#logs.get(assignmentId);
+    if (!buffer) return () => undefined;
+    buffer.listeners.add(listener);
+    return () => {
+      buffer.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Replay a running assignment's buffered log, then follow it live; the
+   * generator ends when the run does (clients learn the outcome itself from
+   * the `assignment` broadcast).
+   */
+  async *assignmentLog(assignmentId: string): AsyncGenerator<AssignmentLogEntry, void, unknown> {
+    const buffer = this.#logs.get(assignmentId);
+    if (!buffer) return;
+    yield* buffer.stream();
   }
 
   /* ------------------------------- settings ------------------------------- */

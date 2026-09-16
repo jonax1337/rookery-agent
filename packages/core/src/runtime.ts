@@ -4,6 +4,9 @@ import type {
   EffortLevel,
   Agent,
   AgentEvent,
+  AssignmentLogEntry,
+  AssignmentLogFrame,
+  AssignmentLogSnapshot,
   CronJob,
   CronRun,
   Mail,
@@ -41,6 +44,7 @@ import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
 import { runCronScript } from './cron/script.js';
 import { EventQueue } from './util/queue.js';
+import { TurnBlocks } from './util/blocks.js';
 
 /**
  * The assistant runtime.
@@ -241,6 +245,10 @@ export class Assistant extends EventEmitter {
     // Anything an agent does is interesting to every client, not only the
     // turn that caused it: the org page shows activity live.
     this.org.on('assignment', (event: AgentEvent) => this.emit('assignment', event));
+    // Live transcript lines of a running assignment, for whoever opted into
+    // watching that run - the TUI's watch mode and the server's watching
+    // sockets, never a blanket fan-out.
+    this.org.on('assignment-log', (frame: AssignmentLogFrame) => this.emit('assignment-log', frame));
     this.org.on('message', (event: AgentEvent) => this.emit('message', event));
     this.org.on('mail', (event: AgentEvent) => this.emit('mail', event));
     this.org.on('task', (event: AgentEvent) => this.emit('task', event));
@@ -498,6 +506,10 @@ export class Assistant extends EventEmitter {
     const started = Date.now();
     let answer = '';
     const toolCalls: Extract<AgentEvent, { type: 'tool' }>[] = [];
+    // The same turn as an ordered transcript: text, thinking and tools in
+    // arrival order, kept beside the flat views. One instance spans every
+    // pass of every attempt; a provider fallback is the only reset.
+    const turnBlocks = new TurnBlocks();
     let providerSessionId = resumed ? session.providerSessionId : undefined;
     let usage: TurnUsage | undefined;
     let lastFatal: string | null = null;
@@ -608,6 +620,7 @@ export class Assistant extends EventEmitter {
             switch (event.type) {
               case 'tool':
                 toolCalls.push(event);
+                turnBlocks.apply(event);
                 // Also on the assistant's own emitter, not just this stream:
                 // a channel that is not the one that started the turn - the
                 // phone, watching a schedule run - has no other way to see
@@ -618,6 +631,13 @@ export class Assistant extends EventEmitter {
                 break;
               case 'text':
                 passText += event.delta;
+                turnBlocks.apply(event);
+                yield event;
+                break;
+              case 'thinking':
+                // Explicit only so the transcript folds it in; on the wire
+                // this is the same pass-through `default` already gave it.
+                turnBlocks.apply(event);
                 yield event;
                 break;
               case 'session':
@@ -626,6 +646,7 @@ export class Assistant extends EventEmitter {
               case 'done':
                 providerSessionId = event.providerSessionId ?? providerSessionId;
                 passText = event.text || passText;
+                turnBlocks.reconcile(event.text);
                 usage = mergeUsage(usage, event.usage);
                 break;
               case 'error':
@@ -696,6 +717,9 @@ export class Assistant extends EventEmitter {
       yield { type: 'status', label: 'provider', detail: pid + ' hit its usage limit, continuing on ' + alternate };
       usedProvider = alternate;
       tried.add(alternate);
+      // The dead attempt belongs to no transcript; the next one starts clean
+      // rather than appending to a half-told story.
+      turnBlocks.clear();
     }
 
     // The provider's numbers plus the wall-clock of the whole turn, so a
@@ -709,6 +733,7 @@ export class Assistant extends EventEmitter {
       model: usedModel,
       usage: turnUsage,
       toolCalls,
+      blocks: turnBlocks.blocks.length ? turnBlocks.blocks : undefined,
     });
     if (lastFatal !== null && !answer) return;
     this.store.updateSession(session.id, { provider: usedProvider, model: usedModel, providerSessionId });
@@ -792,6 +817,32 @@ export class Assistant extends EventEmitter {
         fatal: true,
       };
     }
+  }
+
+  /* ---------------------------- assignment log ---------------------------- */
+
+  /**
+   * The live log of a running assignment so far; an unknown or finished id
+   * reads as inactive and empty. Delegates to the org controller.
+   */
+  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot {
+    return this.org.snapshotAssignmentLog(assignmentId);
+  }
+
+  /**
+   * Follow one running assignment's live log; the returned unsub stops the
+   * listener. Delegates to the org controller.
+   */
+  watchAssignmentLog(assignmentId: string, listener: (entry: AssignmentLogEntry) => void): () => void {
+    return this.org.watchAssignmentLog(assignmentId, listener);
+  }
+
+  /**
+   * Replay a running assignment's buffered log, then follow it live until
+   * the run ends. Delegates to the org controller.
+   */
+  async *assignmentLog(assignmentId: string): AsyncGenerator<AssignmentLogEntry, void, unknown> {
+    yield* this.org.assignmentLog(assignmentId);
   }
 
   /* ------------------------------- tasks ---------------------------- */

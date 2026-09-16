@@ -38,6 +38,7 @@ import {
 } from '../ui/modelNames.js';
 import type { ModelCatalogue } from '../ui/modelNames.js';
 import { runSlashCommand } from './commands.js';
+import { historyEntries } from './history.js';
 import { Scrollback } from './components/Scrollback.js';
 import { AssistantMessage } from './components/Message.js';
 import { ActivityLine } from './components/ActivityLine.js';
@@ -46,13 +47,15 @@ import { InputBox } from './components/InputBox.js';
 import { SlashPalette } from './components/SlashPalette.js';
 import { StatusLine } from './components/StatusLine.js';
 import { AssignmentsView } from './components/AssignmentsView.js';
+import { WatchView } from './components/WatchView.js';
 import { inkUiTheme } from './inkTheme.js';
 import { useColumns } from './hooks/useColumns.js';
 import { useHistory } from './hooks/useHistory.js';
 import { useSlash } from './hooks/useSlash.js';
 import { useTurn } from './hooks/useTurn.js';
+import { useWatch } from './hooks/useWatch.js';
 import { glyph, ui } from './theme.js';
-import { EMPTY_USAGE, addUsage, groupActivities } from './types.js';
+import { EMPTY_USAGE, addUsage, blockSegments, thinkingLines } from './types.js';
 import type { BannerState, Entry, SessionState } from './types.js';
 
 export interface TuiOptions {
@@ -99,6 +102,7 @@ export function App({
   const [draft, setDraft] = useState('');
   const [cursor, setCursor] = useState(0);
   const [dismissed, setDismissed] = useState(false);
+  const [watch, setWatch] = useState<{ assignmentId: string } | null>(null);
   const [frame, setFrame] = useState(0);
   const [now, setNow] = useState(() => Date.now());
 
@@ -181,6 +185,10 @@ export function App({
   const turnRef = useRef(turn);
   turnRef.current = turn;
 
+  // The live watch of a running assignment. Mounted for the app's whole life,
+  // but it only consumes while a watch is actually open.
+  const watchFeed = useWatch(watch ? assistant : null, watch?.assignmentId ?? '');
+
   /* ------------------------------ ticker ------------------------------ */
 
   useEffect(() => {
@@ -228,6 +236,7 @@ export function App({
         }
         if (outcome.patch) setSession((current) => ({ ...current, ...outcome.patch }));
         if (outcome.entries) append(outcome.entries);
+        if (outcome.watch) setWatch(outcome.watch);
         if (outcome.run) {
           turnRef.current.start(outcome.run, { ...sessionRef.current, ...outcome.patch });
         }
@@ -284,6 +293,21 @@ export function App({
   /* ------------------------------ keymap ------------------------------ */
 
   useInput((input, key) => {
+    if (watch) {
+      // The watch owns the space below the scrollback: Esc and Ctrl+C leave
+      // only the watch, Ctrl+D still leaves the app, everything else is held
+      // back so typing cannot reach a prompt that is not on screen.
+      if (key.escape || (key.ctrl && input === 'c')) {
+        setWatch(null);
+        return;
+      }
+      if (key.ctrl && input === 'd') {
+        leave();
+        return;
+      }
+      return;
+    }
+
     if (key.ctrl && input === 'c') {
       // Interrupt, don't leave: a turn in flight, or a spoken reply that is
       // still playing, stops there and the prompt comes back.
@@ -426,9 +450,14 @@ export function App({
     );
   }, [paletteOpen, turn.busy]);
 
-  // The live region groups exactly the way the committed scrollback will, so
-  // a finished turn never visibly re-flows.
-  const groups = useMemo(() => groupActivities(turn.activities), [turn.activities]);
+  // The live region walks exactly the `blockSegments` the committed scrollback
+  // will be built from, so a finished turn never visibly re-flows. The
+  // accumulator hands out a fresh array per read, so this recomputes on every
+  // flush by design - the walk is cheap and the data is always current.
+  const segments = blockSegments(turn.blocks.blocks, {
+    streaming: turn.busy,
+    toolTimes: turn.blocks.toolTimes,
+  });
 
   // What the interface calls the model: its catalogue display name, with the
   // account's own default standing in when none is pinned.
@@ -440,39 +469,66 @@ export function App({
   const elapsedMs = turn.startedAt === null ? 0 : Math.max(0, now - turn.startedAt);
   const caretVisible = Math.floor(frame / (turn.busy ? 6 : 1)) % 2 === 0;
 
+  const watchElapsedMs = watch
+    ? Math.max(0, now - (watchFeed.state.startedAt || now))
+    : 0;
+
   return (
     <Box flexDirection="column" width="100%">
       <Scrollback key={generation} entries={entries} />
 
-      {/* The live region: only this repaints while a turn streams. */}
+      {watch ? (
+        /* While a watch is open it takes the place of both the live region
+         * and the input: the scrollback and the status line stay. */
+        <WatchView
+          assignmentId={watch.assignmentId}
+          feed={watchFeed}
+          verbose={session.verbose}
+        />
+      ) : (
+      /* The live region: only this repaints while a turn streams. */
       <Box flexDirection="column">
-        {groups.map((group) =>
-          group.kind === 'tools' ? (
-            <ToolGroup key={group.id} calls={group.calls} frame={frame} now={now} />
-          ) : (
-            <ActivityLine
-              key={group.note.id}
-              icon={group.note.icon}
-              text={group.note.text}
-              {...(group.note.color ? { color: group.note.color } : {})}
+        {segments.map((segment, index) => {
+          if (segment.kind === 'tools') {
+            return <ToolGroup key={'g' + index} calls={segment.calls} frame={frame} now={now} />;
+          }
+          if (segment.kind === 'note') {
+            return (
+              <ActivityLine
+                key={segment.note.id}
+                icon={segment.note.icon}
+                text={segment.note.text}
+                {...(segment.note.color ? { color: segment.note.color } : {})}
+              />
+            );
+          }
+          if (segment.kind === 'thinking') {
+            if (!session.verbose) return null;
+            return (
+              <Box key={'y' + index} flexDirection="column">
+                {thinkingLines(segment.text).map((line, at) => (
+                  <ActivityLine key={at} icon={glyph.thinking} text={line} />
+                ))}
+              </Box>
+            );
+          }
+          return (
+            <AssistantMessage
+              key={'m' + index}
+              text={segment.text}
+              speaker={session.counterpart || session.assistantName}
+              provider={session.provider}
+              streaming={segment.streaming}
+              cursorVisible={caretVisible}
             />
-          ),
-        )}
+          );
+        })}
 
         {turn.assignments ? (
           <AssignmentsView state={turn.assignments} frame={frame} now={now} />
         ) : null}
-
-        {turn.text ? (
-          <AssistantMessage
-            text={turn.text}
-            speaker={session.counterpart || session.assistantName}
-            provider={session.provider}
-            streaming
-            cursorVisible={caretVisible}
-          />
-        ) : null}
       </Box>
+      )}
 
       <Box marginTop={1} flexDirection="column">
         <StatusLine
@@ -489,22 +545,26 @@ export function App({
           title={session.title}
           {...(session.projectName ? { project: session.projectName } : {})}
           {...(session.sessionId ? { sessionId: session.sessionId } : {})}
-          busy={turn.busy}
-          elapsedMs={elapsedMs}
-          label={turn.label}
+          busy={Boolean(watch) || turn.busy}
+          elapsedMs={watch ? watchElapsedMs : elapsedMs}
+          label={watch ? 'watching' : turn.label}
           voice={session.voice}
           verbose={session.verbose}
           columns={columns}
         />
-        <InputBox
-          value={draft}
-          cursor={cursor}
-          busy={turn.busy}
-          placeholder="Ask anything, or / for commands"
-          hint={hint}
-          caretVisible={caretVisible}
-        />
-        {paletteOpen ? <SlashPalette matches={slash.matches} selected={slash.selected} /> : null}
+        {watch ? null : (
+          <>
+            <InputBox
+              value={draft}
+              cursor={cursor}
+              busy={turn.busy}
+              placeholder="Ask anything, or / for commands"
+              hint={hint}
+              caretVisible={caretVisible}
+            />
+            {paletteOpen ? <SlashPalette matches={slash.matches} selected={slash.selected} /> : null}
+          </>
+        )}
       </Box>
     </Box>
   );
@@ -620,13 +680,29 @@ export async function startTui(options: TuiOptions = {}): Promise<number> {
     { kind: 'banner', id: 'b1', banner: await bannerState(assistant, state, warnings, catalogue) },
   ];
 
+  // A resumed conversation starts with its scrollback, not with amnesia: the
+  // ordered blocks rebuild the turns the way they happened.
+  let initialEntries: Entry[] = banner;
+  if (state.sessionId) {
+    try {
+      let historySeq = 0;
+      const nextHistoryId = () => 'h' + (historySeq += 1);
+      initialEntries = [
+        ...banner,
+        ...historyEntries(assistant.store.getMessages(state.sessionId, 50), state, nextHistoryId),
+      ];
+    } catch (error) {
+      warnings.push((error as Error).message);
+    }
+  }
+
   const instance = render(
     <ThemeProvider theme={inkUiTheme}>
       <App
         assistant={assistant}
         config={config}
         initial={state}
-        initialEntries={banner}
+        initialEntries={initialEntries}
         catalogue={catalogue}
       />
     </ThemeProvider>,

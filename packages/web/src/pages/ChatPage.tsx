@@ -31,6 +31,7 @@ import { Thread, type ThreadComponents } from '@/components/assistant-ui/element
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, EmptyStateGreeting } from '@/components/assistant-ui/elements/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
+import { AssignmentTerminal } from '@/components/common/assignment-terminal';
 import { LiveRunList } from '@/components/common/live-run-list';
 import { RowMenuButton } from '@/components/common/row-menu-button';
 import { collectErrors, FormField } from '@/components/forms/form-kit';
@@ -101,6 +102,14 @@ export function ChatPage() {
   /* ------------------------------- actions ------------------------------- */
 
   const [renameOpen, setRenameOpen] = React.useState(false);
+
+  // The live terminal of one of this turn's runs. Kept only while the run is
+  // actually going: the log is live-only, so once the run ends there is
+  // nothing left to watch - the result arrives in the transcript.
+  const [watchId, setWatchId] = React.useState<string | null>(null);
+  const watched = chat.assignments.find(
+    (entry) => entry.id === watchId && (entry.status === 'running' || entry.status === 'pending'),
+  );
 
   const confirmReset = React.useCallback(async () => {
     if (!activeId) return;
@@ -317,8 +326,12 @@ export function ChatPage() {
             <LiveRunList
               assignments={chat.assignments}
               onCancel={(id) => void cancelAssignment(id)}
+              onWatch={setWatchId}
             />
           </Fade>
+          {watched ? (
+            <AssignmentTerminal assignmentId={watched.id} status={watched.status} className="mt-2" />
+          ) : null}
         </div>
       )}
 

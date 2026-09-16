@@ -245,6 +245,7 @@ export {
   type SkillSourceEntry,
 } from './skills/import.js';
 export { EventQueue, clip, shorten } from './util/queue.js';
+export { TurnBlocks } from './util/blocks.js';
 export * from './gateway/policy.js';
 
 export {

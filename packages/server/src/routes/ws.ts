@@ -75,6 +75,28 @@ export async function registerWebsocketRoutes(
             return;
           }
 
+          // Terminal windows, not turns: `watch` opts this socket into the
+          // live log of one running assignment, `unwatch` opts it back out.
+          // Neither touches the run itself - a watcher going away ends
+          // nothing but the watching (Workstream E.1).
+          case 'watch': {
+            let watched = context.assignmentWatchers.get(socket);
+            if (!watched) {
+              watched = new Set();
+              context.assignmentWatchers.set(socket, watched);
+            }
+            watched.add(frame.data.assignmentId);
+            return;
+          }
+
+          case 'unwatch': {
+            const watched = context.assignmentWatchers.get(socket);
+            if (!watched) return;
+            watched.delete(frame.data.assignmentId);
+            if (watched.size === 0) context.assignmentWatchers.delete(socket);
+            return;
+          }
+
           // A chat turn and a direct assignment differ only in which generator
           // they open: both carry the same event vocabulary and the same abort
           // contract, so an `abort` frame stops either one.
@@ -115,6 +137,8 @@ export async function registerWebsocketRoutes(
         // turn early - see the `case 'abort'` handler above.
         turns.clear();
         context.sockets.delete(socket);
+        // A terminal window closing stops the watching, never the run.
+        context.assignmentWatchers.delete(socket);
         context.log.debug('Websocket closed', { open: context.sockets.size });
       });
 
