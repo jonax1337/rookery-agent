@@ -1,7 +1,6 @@
 import type { ReactNode } from 'react';
 import { NavLink, useLocation } from 'react-router';
-import type { LucideIcon } from 'lucide-react';
-import { ChevronRightIcon } from '@/components/animate-ui/icons/chevron-right';
+
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
@@ -17,6 +16,8 @@ import {
   SidebarMenuSubItem,
   useSidebar,
 } from '@/components/ui/sidebar';
+import type { IconComponent } from "@/components/icons";import { ChevronRightIcon } from '@/components/icons';
+
 
 export interface NavSubItem {
   title: string;
@@ -27,7 +28,7 @@ export interface NavSubItem {
 export interface NavMainItem {
   title: string;
   url: string;
-  icon: LucideIcon;
+  icon: IconComponent;
   isActive?: boolean;
   /**
    * A count worth interrupting for - running tasks, open assignments. Only
@@ -93,7 +94,7 @@ export function NavMain({ label, items }: { label: string; items: NavMainItem[] 
                   <>
                     <CollapsibleTrigger asChild>
                       <SidebarMenuAction className="data-[state=open]:rotate-90">
-                        <ChevronRightIcon animateOnHover />
+                        <ChevronRightIcon />
                         {/* The block's bare "Toggle" would read as several
                             identical buttons in a row; the section name is right
                             here in the same iteration. */}

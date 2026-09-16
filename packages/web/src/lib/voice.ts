@@ -1,7 +1,13 @@
-import { AudioLinesIcon, CloudIcon, MonitorIcon, SparklesIcon } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+
+import {
+  AudioLinesIcon,
+  CloudCogIcon as CloudIcon,
+  MonitorCogIcon as MonitorIcon,
+  SparklesIcon,
+} from "@/components/icons";
 
 import type { TtsCatalogue, VoiceEngine } from './types';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * The speech engines and the two sliders that shape them, in one place.
@@ -20,7 +26,7 @@ export interface VoiceEngineMeta {
   id: VoiceEngine;
   label: string;
   description: string;
-  icon: LucideIcon;
+  icon: IconComponent;
   /** Which environment variable the server misses when the key is absent. */
   env?: string;
 }

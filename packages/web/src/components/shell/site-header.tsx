@@ -1,8 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router';
-import { ArrowLeftIcon } from '@/components/animate-ui/icons/arrow-left';
-import { PanelLeftIcon } from '@/components/animate-ui/icons/panel-left';
-import { SearchIcon } from '@/components/animate-ui/icons/search';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { useBreadcrumbs } from '@/lib/nav';
 import { useConfig, useConnection } from '@/providers/rookery-provider';
@@ -20,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { Separator } from '@/components/ui/separator';
 import { useSidebar } from '@/components/ui/sidebar';
+import { ArrowLeftIcon, PanelLeftCloseIcon as PanelLeftIcon, SearchIcon } from "@/components/icons";
 
 interface SiteHeaderProps {
   /** Opens the command palette the shell owns. */
@@ -96,7 +94,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
           onClick={toggleSidebar}
           aria-label="Toggle sidebar"
         >
-          <PanelLeftIcon animateOnHover />
+          <PanelLeftIcon />
         </Button>
         <Separator
           orientation="vertical"
@@ -105,7 +103,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
         {parent?.to ? (
           <Button variant="ghost" size="icon" className="size-8 shrink-0 sm:hidden" asChild>
             <Link to={parent.to} aria-label={'Back: ' + parent.label}>
-              <ArrowLeftIcon animateOnHover />
+              <ArrowLeftIcon />
             </Link>
           </Button>
         ) : null}
@@ -179,7 +177,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
             onClick={onSearch}
             className="hidden w-56 justify-start text-muted-foreground xl:flex"
           >
-            <SearchIcon animateOnHover />
+            <SearchIcon />
             Search …
             <KbdGroup className="ml-auto">
               <Kbd>Ctrl</Kbd>
@@ -194,7 +192,7 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
             aria-label="Search"
             className="xl:hidden"
           >
-            <SearchIcon animateOnHover />
+            <SearchIcon />
           </Button>
         </div>
       </div>

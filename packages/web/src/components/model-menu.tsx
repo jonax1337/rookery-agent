@@ -1,6 +1,8 @@
+import { LoaderCircleIcon, RefreshCwIcon } from "@/components/icons";
 import { useEffect, useRef, useState } from 'react';
-import { LoaderCircleIcon, RefreshCwIcon } from 'lucide-react';
+
 import { PROVIDER_BRAND, ProviderIcon } from '@/components/provider-icon';
+import { ControlMenuButton } from '@/components/common/control-menu-button';
 import { Button } from '@/components/ui/button';
 import { ModelSelectorRoot, ModelSelectorTrigger, ModelSelectorValue, ModelSelectorContent,
   ModelSelectorSearch, ModelSelectorList, ModelSelectorEmpty, ModelSelectorGroup,
@@ -59,10 +61,10 @@ export function ModelMenu({ provider, model, providers, effort, onEffortSelect, 
       }}
       effort={effort ?? 'auto'} onEffortChange={(value) => onEffortSelect(value === 'auto' ? undefined : value as EffortLevel)}
       onOpenChange={(open) => { if (open) void refresh(); }}>
-      <ModelSelectorTrigger variant="ghost" size="sm" disabled={disabled}
-        aria-label={'Model and effort: ' + label + ', ' + (effort ? EFFORT_LABEL[effort] : 'Auto')}
-        className="max-w-64 rounded-lg text-muted-foreground">
-        <ModelSelectorValue placeholder={label} />
+      <ModelSelectorTrigger asChild disabled={disabled}
+        aria-label={'Model and effort: ' + label + ', ' + (effort ? EFFORT_LABEL[effort] : 'Auto')}>
+        <ControlMenuButton label="Model" value={<ModelSelectorValue placeholder={label} />}
+          className="h-8 rounded-lg px-2" />
       </ModelSelectorTrigger>
       <ModelSelectorContent align="end" searchable className="w-80 max-w-[calc(100vw-2rem)]">
         <div className="flex h-10 items-center justify-between px-3">

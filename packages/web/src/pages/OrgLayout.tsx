@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
-import { Building2Icon, PencilIcon, PlusIcon } from 'lucide-react';
+
+import {
+  BriefcaseBusinessIcon as Building2Icon,
+  PenToolIcon as PencilIcon,
+  PlusIcon,
+  PlusIcon as Plus,
+} from "@/components/icons";
 import { toast } from 'sonner';
 import { z } from 'zod';
 
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
-import { Plus } from '@/components/animate-ui/icons/plus';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { RotatingText, RotatingTextContainer } from '@/components/animate-ui/primitives/texts/rotating';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
@@ -112,8 +117,11 @@ export function OrgLayout() {
         <>
           <Button size="sm" asChild>
             <NavLink to={(activeTab?.to ?? '/org/agents') + '/new'}>
-              <Plus animateOnView data-icon="inline-start" />
-              <RotatingTextContainer text={activeTab?.createLabel ?? 'Hire agent'}>
+              <Plus data-icon="inline-start" />
+              <RotatingTextContainer
+                text={activeTab?.createLabel ?? 'Hire agent'}
+                className="py-1"
+              >
                 <RotatingText />
               </RotatingTextContainer>
             </NavLink>

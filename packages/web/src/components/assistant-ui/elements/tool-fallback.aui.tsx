@@ -1,13 +1,14 @@
 "use client";
 
 import { memo, useCallback, useRef, useState } from "react";
+
 import {
-  AlertCircleIcon,
+  BadgeAlertIcon as AlertCircleIcon,
+  BanIcon as XCircleIcon,
   CheckIcon,
   ChevronDownIcon,
   LoaderIcon,
-  XCircleIcon,
-} from "lucide-react";
+} from "@/components/icons";
 import {
   toolApprovalAcceptsText,
   useScrollLock,

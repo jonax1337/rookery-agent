@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { MonitorXIcon, NetworkIcon } from 'lucide-react';
+
 
 import { api } from '@/lib/api';
 import type { Agent, OrgPerformanceEntry } from '@/lib/types';
@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/common/empty-state';
 import { Spinner } from '@/components/ui/spinner';
 import { useOrgState } from '@/providers/rookery-provider';
 
+import { EyeOffIcon as MonitorXIcon, GitGraphIcon as NetworkIcon } from "@/components/icons";
 /**
  * The organigram, as Mermaid.
  *

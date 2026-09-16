@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { useTheme } from 'next-themes';
-import { Monitor, Moon, Sun } from 'lucide-react';
+import { MonitorCogIcon as Monitor, MoonIcon as Moon, SunIcon as Sun } from "@/components/icons";
 import { type VariantProps } from 'class-variance-authority';
 
 import {

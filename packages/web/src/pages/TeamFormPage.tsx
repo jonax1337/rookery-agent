@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { UserMinusIcon } from 'lucide-react';
+
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -8,8 +8,6 @@ import { api, type TeamInput, type TeamPatch } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
 import type { Team } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
-import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
-import { UsersRoundIcon as AnimatedUsersRoundIcon } from '@/components/animate-ui/icons/users-round';
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { PageBody } from '@/components/blocks/page-body';
@@ -43,6 +41,12 @@ import {
   ItemTitle,
 } from '@/components/ui/item';
 import { Textarea } from '@/components/ui/textarea';
+import type { IconComponent } from "@/components/icons";
+import {
+  DeleteIcon as AnimatedTrash2Icon,
+  UserRoundCogIcon as UserMinusIcon,
+  UsersRoundIcon as AnimatedUsersRoundIcon,
+} from "@/components/icons";
 
 /**
  * A team: who is in it, what it is for, and who leads it.
@@ -91,15 +95,15 @@ function toInput(patch: TeamPatch): TeamInput {
  * The empty-state and menu icons as animate-ui twins: same paths and stroke
  * as the lucide originals, wiggling once when they enter the viewport (the
  * menu item, whenever the menu opens). `EmptyState` and the form header
- * menu take a `LucideIcon` and render it without props, so each animated
+ * menu take a `IconComponent` and render it without props, so each animated
  * icon sits in a forwardRef shell that carries its trigger along.
  */
 const EmptyUsersRoundIcon = forwardRef<SVGSVGElement>(function EmptyUsersRoundIcon() {
-  return <AnimatedUsersRoundIcon animateOnView />;
+  return <AnimatedUsersRoundIcon />;
 });
 
 const MenuTrash2Icon = forwardRef<SVGSVGElement>(function MenuTrash2Icon() {
-  return <AnimatedTrash2Icon animateOnView />;
+  return <AnimatedTrash2Icon />;
 });
 
 export function TeamFormPage() {

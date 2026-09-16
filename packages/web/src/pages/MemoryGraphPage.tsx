@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
-import { MonitorXIcon } from 'lucide-react';
+
 
 import { MEMORY_KIND_LABEL, RELATION_LABEL } from '@/lib/format';
 import { formatNumber } from '@/lib/stats';
@@ -11,8 +11,6 @@ import {
   useGraphPalette,
   type GraphHandle,
 } from '@/components/MemoryGraph3D';
-import { MaximizeIcon } from '@/components/animate-ui/icons/maximize';
-import { SquareArrowOutUpRightIcon } from '@/components/animate-ui/icons/square-arrow-out-up-right';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { EmptyState } from '@/components/common/empty-state';
@@ -23,6 +21,11 @@ import { Field, FieldLabel } from '@/components/ui/field';
 import { Item, ItemContent, ItemGroup, ItemMedia, ItemTitle } from '@/components/ui/item';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
+import {
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  EyeOffIcon as MonitorXIcon,
+  MaximizeIcon,
+} from "@/components/icons";
 
 /**
  * The shape of what is known.
@@ -98,11 +101,8 @@ export function MemoryGraphPage() {
               onClick={() => sceneRef.current?.fit()}
               disabled={unavailable || empty}
             >
-              {/* animateOnView, not animateOnHover: the button base carries
-                  `[&_svg]:pointer-events-none`, so a hover trigger never
-                  fires. `initialOnAnimateEnd` returns the corners to their
-                  rest pose once the pulse has played. */}
-              <MaximizeIcon data-icon="inline-start" animateOnView initialOnAnimateEnd />
+              {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+              <MaximizeIcon data-icon="inline-start" />
               Fit to view
             </Button>
           </div>
@@ -195,7 +195,7 @@ export function MemoryGraphPage() {
                   <span className="line-clamp-2 min-w-0 flex-1">{picked.content}</span>
                   <Button size="sm" asChild>
                     <Link to={'/memory?erinnerung=' + picked.id}>
-                      <SquareArrowOutUpRightIcon data-icon="inline-start" animateOnView initialOnAnimateEnd />
+                      <SquareArrowOutUpRightIcon data-icon="inline-start" />
                       Open
                     </Link>
                   </Button>

@@ -1,7 +1,7 @@
 import type * as React from 'react';
-import { ChevronDownIcon } from '@/components/animate-ui/icons/chevron-down';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { ChevronDownIcon } from '@/components/icons';
 
 /**
  * The pill that opens a turn control.
@@ -72,14 +72,9 @@ export function ControlMenuButton({
       {icon}
       <span className="max-w-36 truncate">{value ?? label}</span>
       {chevron && (
-        // animateOnView, not animateOnHover: the button base carries
-        // `[&_svg]:pointer-events-none`, so a hover trigger never fires.
-        // initialOnAnimateEnd returns the chevron to its resting position,
-        // since its animate state rests 4 units lower.
+        // Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span.
         <ChevronDownIcon
           className="size-3.5 opacity-60"
-          animateOnView
-          initialOnAnimateEnd
         />
       )}
     </Button>

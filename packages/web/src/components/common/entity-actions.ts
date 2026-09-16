@@ -1,5 +1,6 @@
+import { BanIcon, RotateCcwIcon } from "@/components/icons";
 import { useCallback } from 'react';
-import { BanIcon, RotateCcwIcon } from 'lucide-react';
+
 import { toast } from 'sonner';
 
 import { useConfirm, type ConfirmHandle } from '@/components/common/confirm-dialog';

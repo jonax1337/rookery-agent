@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink, useNavigate, useParams } from 'react-router';
+
 import {
+  BadgeAlertIcon as TriangleAlertIcon,
+  BoxIcon as PackageIcon,
   CheckIcon,
+  DeleteIcon as Trash2Icon,
   ExternalLinkIcon,
-  FolderIcon,
-  PackageIcon,
-  PlugIcon,
+  FolderOpenIcon as FolderIcon,
+  PlugZapIcon as PlugIcon,
   RotateCcwIcon,
-  Trash2Icon,
-  TriangleAlertIcon,
   UsersIcon,
   WrenchIcon,
-} from 'lucide-react';
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
@@ -27,6 +28,7 @@ import { FormField, FormFieldsSkeleton, useDraft } from '@/components/forms/form
 import { failureMessage, reportFailure } from '@/lib/errors';
 import { useOrgState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -399,9 +401,12 @@ export function ToolDetailPage() {
 
       {tool.missingEnv.length > 0 ? (
         <Fade delay={150}>
-          <p className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
-            Remains disabled until {tool.missingEnv.join(', ')} is provided.
-          </p>
+          <Alert variant="destructive">
+            <TriangleAlertIcon />
+            <AlertDescription>
+              Remains disabled until {tool.missingEnv.join(', ')} is provided.
+            </AlertDescription>
+          </Alert>
         </Fade>
       ) : null}
 
@@ -616,9 +621,13 @@ export function ToolDetailPage() {
       <Fade delay={300}>
         <p className="text-xs text-muted-foreground">
           All tools are available under{' '}
-          <NavLink to="/tools" className="underline underline-offset-2">
-            Tools
-          </NavLink>
+          <Button
+            asChild
+            variant="link"
+            className="h-auto gap-0 p-0 text-left align-baseline text-xs"
+          >
+            <NavLink to="/tools">Tools</NavLink>
+          </Button>
           .
         </p>
       </Fade>

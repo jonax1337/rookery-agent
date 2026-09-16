@@ -1,63 +1,64 @@
-import type { LucideProps } from 'lucide-react';
+import type { IconComponent } from "@/components/icons";
+
 import {
-  BadgeCheckIcon,
+  BadgeAlertIcon as TriangleAlertIcon,
+  BanIcon as OctagonXIcon,
   BellIcon,
-  BookOpenIcon,
+  BookTextIcon as BookOpenIcon,
   BotIcon,
-  CameraIcon,
-  ChartBarIcon,
+  ChartBarIncreasingIcon as ChartBarIcon,
+  ChartPieIcon as PieChartIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronLeftIcon,
+  ChevronLeftIcon as ChevronsLeftIcon,
   ChevronRightIcon,
-  ChevronsLeftIcon,
-  ChevronsRightIcon,
-  ChevronsUpDownIcon,
+  ChevronRightIcon as ChevronsRightIcon,
   ChevronUpIcon,
+  ChevronsUpDownIcon,
   CircleCheckIcon,
+  CircleCheckIcon as BadgeCheckIcon,
+  CircleDashedIcon as CircleIcon,
   CircleHelpIcon,
-  CirclePlusIcon,
-  CircleUserRoundIcon,
-  Columns3Icon,
-  CommandIcon,
+  CircleHelpIcon as InfoIcon,
+  CircleHelpIcon as LifeBuoyIcon,
   CreditCardIcon,
-  DatabaseIcon,
-  EllipsisVerticalIcon,
-  FileChartColumnIcon,
-  FileIcon,
+  DatabaseBackupIcon as DatabaseIcon,
+  DeleteIcon as Trash2Icon,
+  FileChartLineIcon as FileChartColumnIcon,
   FileTextIcon,
-  FolderIcon,
+  FileTextIcon as FileIcon,
+  FolderOpenIcon as FolderIcon,
   FrameIcon,
+  GalleryThumbnailsIcon as Columns3Icon,
+  GripHorizontalIcon as MoreHorizontalIcon,
   GripVerticalIcon,
-  InfoIcon,
-  LayoutDashboardIcon,
-  LifeBuoyIcon,
-  ListIcon,
-  Loader2Icon,
+  GripVerticalIcon as EllipsisVerticalIcon,
+  KeyboardIcon as CommandIcon,
+  LayoutGridIcon as LayoutDashboardIcon,
+  LinkIcon as ShareIcon,
+  LoaderCircleIcon as Loader2Icon,
   LoaderIcon,
-  LogOutIcon,
-  MailIcon,
-  MapIcon,
-  MoreHorizontalIcon,
-  OctagonXIcon,
-  PanelLeftIcon,
-  PieChartIcon,
+  LogoutIcon as LogOutIcon,
+  MailboxIcon as MailIcon,
+  MapPinIcon as MapIcon,
+  MenuIcon as ListIcon,
+  PanelLeftCloseIcon as PanelLeftIcon,
   PlusIcon,
+  PlusIcon as CirclePlusIcon,
   SearchIcon,
   SendIcon,
-  Settings2Icon,
-  ShareIcon,
+  SlidersHorizontalIcon as Settings2Icon,
   SparklesIcon,
+  SwitchCameraIcon as CameraIcon,
   TerminalIcon,
-  TerminalSquareIcon,
-  Trash2Icon,
+  TerminalIcon as TerminalSquareIcon,
   TrendingDownIcon,
   TrendingUpIcon,
-  TriangleAlertIcon,
+  UserIcon as CircleUserRoundIcon,
   UsersIcon,
   XIcon,
-  CircleIcon,
-} from 'lucide-react';
+} from "@/components/icons";
 
 /**
  * Icon resolver for the shadcn registry components.
@@ -68,7 +69,7 @@ import {
  * bundle only carries the ones actually referenced. Add a name here when a
  * freshly pulled block asks for an icon this map does not know yet.
  */
-const ICONS: Record<string, React.ComponentType<LucideProps>> = {
+const ICONS: Record<string, IconComponent> = {
   BadgeCheckIcon,
   BellIcon,
   BookOpenIcon,
@@ -127,8 +128,10 @@ const ICONS: Record<string, React.ComponentType<LucideProps>> = {
   XIcon,
 };
 
-interface IconPlaceholderProps extends LucideProps {
+interface IconPlaceholderProps {
   lucide: string;
+  className?: string;
+  size?: number;
   /* Accepted and ignored: the registry passes one name per icon library. */
   tabler?: string;
   hugeicons?: string;

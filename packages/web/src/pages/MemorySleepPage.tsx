@@ -1,5 +1,11 @@
 import { forwardRef, useCallback, useMemo, useState } from 'react';
-import { RotateCcwIcon, TriangleAlertIcon } from 'lucide-react';
+
+import {
+  BadgeAlertIcon as TriangleAlertIcon,
+  MoonIcon as AnimatedMoonIcon,
+  RotateCcwIcon,
+  SunIcon as AnimatedSunIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { reportFailure } from '@/lib/errors';
@@ -10,8 +16,6 @@ import { bucketByDay, daysAgo, formatDateTime, formatNumber } from '@/lib/stats'
 import type { SleepRun } from '@/lib/types';
 import { SLEEP_RUN_LIMIT } from '@/hooks/useMemories';
 import { useMemoryState } from '@/providers/rookery-provider';
-import { MoonIcon as AnimatedMoonIcon } from '@/components/animate-ui/icons/moon';
-import { SunIcon as AnimatedSunIcon } from '@/components/animate-ui/icons/sun';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import {
   RotatingText,
@@ -34,6 +38,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Spinner } from '@/components/ui/spinner';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * What the nights have done, and what the next one will do.
@@ -112,11 +117,11 @@ function reportText(run: SleepRun): string {
 
 /**
  * The empty-state moon as an animate-ui version. `EmptyState` takes a
- * `LucideIcon` and renders it without props, so the animated icon sits in a
+ * `IconComponent` and renders it without props, so the animated icon sits in a
  * forwardRef shell that carries its `animateOnView` trigger along.
  */
 const EmptyMoonIcon = forwardRef<SVGSVGElement>(function EmptyMoonIcon() {
-  return <AnimatedMoonIcon animateOnView />;
+  return <AnimatedMoonIcon />;
 });
 
 export function MemorySleepPage() {
@@ -351,7 +356,6 @@ export function MemorySleepPage() {
                 {/* size keeps the resting pose: the card title has no CSS
                     sizing for svgs, and lucide's default was 24. */}
                 <AnimatedMoonIcon
-                  animateOnHover
                   size={24}
                   className={running ? 'animate-pulse text-primary' : 'text-muted-foreground'}
                   aria-hidden="true"
@@ -360,13 +364,10 @@ export function MemorySleepPage() {
                 {running ? (
                   <>
                     {/* The one label here that changes on its own; RotatingText
-                        slides it over whenever the sleep phase flips. The
-                        container's default block padding is zeroed so the
-                        badge keeps its height. */}
+                        slides it over whenever the sleep phase flips. */}
                     <Badge variant="secondary">
                       <RotatingTextContainer
                         text={SLEEP_PHASE_LABEL[sleep.phase] ?? 'is running'}
-                        style={{ paddingBlock: 0 }}
                       >
                         <RotatingText />
                       </RotatingTextContainer>
@@ -391,9 +392,8 @@ export function MemorySleepPage() {
               <div className="flex flex-wrap items-center gap-2">
                 {running ? (
                   <Button variant="outline" onClick={() => void sleep.cancel()}>
-                    {/* animateOnView, not animateOnHover: the button base carries
-                        `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
-                    <AnimatedSunIcon data-icon="inline-start" animateOnView />
+                    {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+                    <AnimatedSunIcon data-icon="inline-start" />
                     Wake
                   </Button>
                 ) : (
@@ -401,7 +401,7 @@ export function MemorySleepPage() {
                     {sleep.busy ? (
                       <Spinner data-icon="inline-start" aria-hidden="true" />
                     ) : (
-                      <AnimatedMoonIcon data-icon="inline-start" animateOnView />
+                      <AnimatedMoonIcon data-icon="inline-start" />
                     )}
                     Run memory sleep now
                   </Button>

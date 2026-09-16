@@ -1,5 +1,6 @@
 "use client";
 
+import { BrainIcon, ChevronDownIcon } from "@/components/icons";
 import {
   createContext,
   useCallback,
@@ -10,7 +11,7 @@ import {
   useState,
 } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
-import { BrainIcon, ChevronDownIcon } from "lucide-react";
+
 import {
   Collapsible,
   CollapsibleContent,

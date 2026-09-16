@@ -1,6 +1,14 @@
 import { useRef, useState } from 'react';
 import type { RefObject } from 'react';
-import { CornerUpRightIcon, MailOpenIcon, MoreVerticalIcon, ReplyAllIcon, ReplyIcon, SendIcon } from 'lucide-react';
+
+import {
+  CornerUpLeftIcon as ReplyIcon,
+  CornerUpRightIcon,
+  GripVerticalIcon as MoreVerticalIcon,
+  MailCheckIcon as MailOpenIcon,
+  SendIcon,
+  UndoIcon as ReplyAllIcon,
+} from "@/components/icons";
 
 import type { Mail } from '@/lib/types';
 import { formatDateTime } from '@/lib/format';

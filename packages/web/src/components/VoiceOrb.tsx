@@ -332,7 +332,7 @@ export function VoiceOrb({ state, getLevel, dim = false, className }: VoiceOrbPr
       ref={canvasRef}
       aria-hidden="true"
       className={cn(
-        'block h-full w-full bg-[#03040a]',
+        'block h-full w-full bg-voice-stage',
         // No WebGL: a still gradient keeps the screen from going blank.
         'data-[fallback=true]:bg-[radial-gradient(circle_at_center,#1e64ff_0%,#0b1a3a_22%,#03040a_60%)]',
         className,

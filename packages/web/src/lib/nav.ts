@@ -1,12 +1,17 @@
 import { useMemo } from 'react';
 import { useLocation } from 'react-router';
-import { BrainIcon, Building2Icon, InboxIcon, WrenchIcon } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+
+import {
+  BrainIcon,
+  BriefcaseBusinessIcon as Building2Icon,
+  ConnectIcon,
+} from "@/components/icons";
 
 import {
   AssignmentsIcon,
   ConversationsIcon,
   GatewaysIcon,
+  InboxIcon,
   OverviewIcon,
   SchedulesIcon,
   SettingsIcon,
@@ -14,6 +19,7 @@ import {
   TasksIcon,
   VoiceIcon,
 } from '@/components/shell/nav-icons';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * The one place that knows what a route is called.
@@ -60,7 +66,7 @@ export interface RouteMeta {
   navLabel?: string;
   /** The route one level up, as a pattern. Drives the breadcrumb chain. */
   parent?: string;
-  icon?: LucideIcon;
+  icon?: IconComponent;
   /** Set only on the entries that appear in the sidebar themselves. */
   group?: NavGroup;
   /** Sub-entries of a sidebar section, in order, as patterns. */
@@ -146,7 +152,10 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/memory/graph', label: 'Graph', parent: '/memory' },
   { path: '/memory/sleep', label: 'Nights', parent: '/memory' },
 
-  { path: '/tools', label: 'Tools', icon: WrenchIcon, group: 'knowledge' },
+  // "MCP Tools" rather than "Tools": the page is the MCP catalogue (servers,
+  // tools, transports), and the connect plug says that better than the wrench
+  // - the wrench moved to Skills, where it always belonged.
+  { path: '/tools', label: 'MCP Tools', icon: ConnectIcon, group: 'knowledge' },
   { path: '/tools/new', label: 'Custom server', parent: '/tools', hidden: true },
   { path: '/tools/:id', label: 'Tool', parent: '/tools', hidden: true },
 

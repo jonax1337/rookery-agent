@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
-import { TerminalIcon } from '@/components/animate-ui/icons/terminal';
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { AUDIENCE_CHOICES } from '@/lib/tools';
@@ -29,6 +28,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
 import { Textarea } from '@/components/ui/textarea';
+import { TerminalIcon } from '@/components/icons';
 
 /**
  * A server of the user's own: any stdio MCP command.
@@ -140,7 +140,7 @@ export function ToolFormPage() {
               <FieldLabel htmlFor="tool-command">Command</FieldLabel>
               <InputGroup>
                 <InputGroupAddon align="inline-start">
-                  <TerminalIcon animateOnHover className="size-4" />
+                  <TerminalIcon className="size-4" />
                 </InputGroupAddon>
                 <InputGroupInput
                   id="tool-command"

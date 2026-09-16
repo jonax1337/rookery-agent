@@ -232,7 +232,7 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
                     variant="outline"
                     // A dependency whose task is not in the loaded board shows
                     // its id rather than a made-up name.
-                    className={label ? 'font-normal' : 'font-mono text-[11px] font-normal'}
+                    className={label ? 'font-normal' : 'font-mono text-2xs font-normal'}
                   >
                     {label ?? dependency}
                   </Badge>

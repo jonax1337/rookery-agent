@@ -1,16 +1,21 @@
 import * as React from 'react';
 import { NavLink, useNavigate, useSearchParams } from 'react-router';
+
 import {
   ArchiveIcon,
-  ArchiveRestoreIcon,
+  ArchiveIcon as ArchiveRestoreIcon,
   AudioLinesIcon,
-  MessagesSquareIcon,
-  PencilIcon,
+  DeleteIcon as AnimatedTrash2Icon,
+  DeleteIcon as Trash2Icon,
+  ExternalLinkIcon as AnimatedSquareArrowOutUpRightIcon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  MessageSquareIcon as MessagesSquareIcon,
+  PenToolIcon as PencilIcon,
+  PlusIcon as AnimatedPlusIcon,
   RotateCcwIcon,
-  SearchXIcon,
-  SquareArrowOutUpRightIcon,
-  Trash2Icon,
-} from 'lucide-react';
+  RotateCcwIcon as AnimatedRotateCcwIcon,
+  SearchIcon as SearchXIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { failureMessage, reportFailure } from '@/lib/errors';
@@ -55,10 +60,6 @@ import {
   SESSION_COLUMN_LABELS,
   SESSION_SORTING,
 } from '@/components/common/session-columns';
-import { PlusIcon as AnimatedPlusIcon } from '@/components/animate-ui/icons/plus';
-import { RotateCcwIcon as AnimatedRotateCcwIcon } from '@/components/animate-ui/icons/rotate-ccw';
-import { SquareArrowOutUpRightIcon as AnimatedSquareArrowOutUpRightIcon } from '@/components/animate-ui/icons/square-arrow-out-up-right';
-import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 
@@ -359,9 +360,8 @@ export function ConversationsPage() {
     actions: (
       <>
         <Button size="sm" onClick={newConversation}>
-          {/* animateOnView, not animateOnHover: the button base carries
-              `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
-          <AnimatedPlusIcon data-icon="inline-start" animateOnView />
+          {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+          <AnimatedPlusIcon data-icon="inline-start" />
           New conversation
         </Button>
         <DropdownMenu>
@@ -549,7 +549,7 @@ export function ConversationsPage() {
                 })
               }
             >
-              <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
+              <AnimatedTrash2Icon data-icon="inline-start" />
               Delete
             </Button>
           )}
@@ -707,15 +707,15 @@ function ConversationDrawer({
       footer={
         <div className="flex flex-wrap gap-2">
           <Button onClick={() => onOpen(session)}>
-            <AnimatedSquareArrowOutUpRightIcon data-icon="inline-start" animateOnView />
+            <AnimatedSquareArrowOutUpRightIcon data-icon="inline-start" />
             {session.kind === 'voice' ? 'Open transcript' : 'Open'}
           </Button>
           <Button variant="outline" onClick={() => onReset(session)}>
-            <AnimatedRotateCcwIcon data-icon="inline-start" animateOnView />
+            <AnimatedRotateCcwIcon data-icon="inline-start" />
             Reset
           </Button>
           <Button variant="ghost" className="text-destructive" onClick={() => onDelete(session)}>
-            <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
+            <AnimatedTrash2Icon data-icon="inline-start" />
             Delete
           </Button>
         </div>

@@ -1,7 +1,5 @@
-import { XIcon } from 'lucide-react';
-
+import { RemovableChip } from '@/components/common/removable-chip';
 import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
-import { cn } from '@/lib/utils';
 
 /**
  * A multi-value wrapper around `EntityCombobox`: a row of removable chips for
@@ -36,23 +34,11 @@ export function MultiEntityCombobox({
       {value.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {value.map((chosen) => (
-            <span
+            <RemovableChip
               key={chosen.value}
-              className={cn(
-                'inline-flex items-center gap-1 rounded-full bg-secondary py-1 pr-1 pl-2.5',
-                'text-xs font-medium text-secondary-foreground',
-              )}
-            >
-              {chosen.label}
-              <button
-                type="button"
-                onClick={() => remove(chosen.value)}
-                className="grid size-4 place-items-center rounded-full hover:bg-foreground/10"
-              >
-                <XIcon className="size-3" />
-                <span className="sr-only">Remove {chosen.label}</span>
-              </button>
-            </span>
+              label={chosen.label}
+              onRemove={() => remove(chosen.value)}
+            />
           ))}
         </div>
       )}

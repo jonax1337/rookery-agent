@@ -8,6 +8,7 @@ import {
   type UseIsInViewOptions,
 } from '@/hooks/use-is-in-view';
 import { getStrictContext } from '@/lib/get-strict-context';
+import { cn } from '@/lib/utils';
 
 type RotatingTextContextType = {
   currentText: string;
@@ -31,6 +32,7 @@ function RotatingTextContainer({
   y = -50,
   duration = 2000,
   delay = 0,
+  className,
   style,
   inView = false,
   inViewMargin = '0px',
@@ -74,11 +76,8 @@ function RotatingTextContainer({
     <RotatingTextProvider value={{ currentText, y, isInView }}>
       <div
         ref={localRef}
-        style={{
-          overflow: 'hidden',
-          paddingBlock: '0.25rem',
-          ...style,
-        }}
+        className={cn('overflow-hidden', className)}
+        style={style}
         {...props}
       />
     </RotatingTextProvider>

@@ -1,6 +1,6 @@
-import { forwardRef, useCallback, useEffect, useId, useMemo } from 'react';
+import { useCallback, useEffect, useId, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { ArchiveIcon, ArchiveRestoreIcon, type LucideProps } from 'lucide-react';
+import { ArchiveIcon, ArchiveIcon as ArchiveRestoreIcon, UsersRoundIcon } from "@/components/icons";
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -14,7 +14,6 @@ import {
 } from '@/lib/format';
 import type { Agent, ProviderId } from '@/lib/types';
 import { useConfig, useOrgState } from '@/providers/rookery-provider';
-import { UsersRoundIcon } from '@/components/animate-ui/icons/users-round';
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
@@ -56,18 +55,6 @@ import { Textarea } from '@/components/ui/textarea';
  * leaves it alone with `undefined`, which is exactly what the comboboxes
  * produce. That is why there are no `'__none__'` sentinels any more.
  */
-
-/**
- * `EmptyState` types its `icon` as a lucide component, so the animate-ui
- * variant needs this shim to carry the view trigger - without `animateOnView`
- * the animated icons render statically. Same glyph at the same 24 px, waving
- * once when the empty state appears.
- */
-const UsersRoundViewIcon = forwardRef<SVGSVGElement, LucideProps>(
-  function UsersRoundViewIcon(_props, _ref) {
-    return <UsersRoundIcon size={24} animateOnView />;
-  },
-);
 
 /** The provider picker needs the same "leave it to the settings" entry. */
 type ProviderChoice = typeof STANDARD_CHOICE | ProviderId;
@@ -338,7 +325,7 @@ export function AgentFormPage() {
             it did as a direct child of the rhythm container. */}
         <Fade className="flex flex-1 flex-col">
           <EmptyState
-            icon={UsersRoundViewIcon}
+            icon={UsersRoundIcon}
             title="This agent no longer exists"
             description="The agent was removed or never existed."
             actionLabel="View agents"

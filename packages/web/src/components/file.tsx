@@ -2,17 +2,19 @@
 
 import { memo, type FC } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
+
 import {
-  FileIcon,
-  FileTextIcon,
-  ImageIcon,
-  MusicIcon,
-  VideoIcon,
-  BracesIcon,
+  BinaryIcon as BracesIcon,
+  Disc3Icon as MusicIcon,
   DownloadIcon,
-} from "lucide-react";
+  FileTextIcon,
+  FileTextIcon as FileIcon,
+  GalleryThumbnailsIcon as ImageIcon,
+  SwitchCameraIcon as VideoIcon,
+} from "@/components/icons";
 import type { FileMessagePartComponent } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
+import type { IconComponent } from "@/components/icons";
 
 const fileVariants = cva(
   "aui-file-root inline-flex items-center gap-3 rounded-lg transition-colors",

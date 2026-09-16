@@ -1,12 +1,12 @@
+
 import {
   BanIcon,
+  BanIcon as CircleXIcon,
   CircleCheckIcon,
   CircleDashedIcon,
-  CircleDotIcon,
-  CircleXIcon,
+  CircleDashedIcon as CircleDotIcon,
   LoaderIcon,
-} from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+} from "@/components/icons";
 import { AnimatePresence, motion } from 'motion/react';
 import type { ReactNode } from 'react';
 import { Badge } from '@/components/ui/badge';
@@ -30,6 +30,7 @@ import type {
   TaskStatus,
 } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * One badge for every state this app knows.
@@ -70,12 +71,12 @@ export type StatusBadgeProps = StatusKindProps & {
 interface Resolved {
   label: string;
   variant: BadgeVariant;
-  icon: LucideIcon | null;
+  icon: IconComponent | null;
   /** Only the states that are genuinely in motion animate. */
   spin?: boolean;
 }
 
-const ASSIGNMENT_ICON: Record<AssignmentStatus, LucideIcon> = {
+const ASSIGNMENT_ICON: Record<AssignmentStatus, IconComponent> = {
   pending: CircleDashedIcon,
   running: LoaderIcon,
   done: CircleCheckIcon,
@@ -83,7 +84,7 @@ const ASSIGNMENT_ICON: Record<AssignmentStatus, LucideIcon> = {
   cancelled: BanIcon,
 };
 
-const TASK_ICON: Record<TaskStatus, LucideIcon> = {
+const TASK_ICON: Record<TaskStatus, IconComponent> = {
   open: CircleDashedIcon,
   planned: CircleDotIcon,
   running: LoaderIcon,
@@ -92,7 +93,7 @@ const TASK_ICON: Record<TaskStatus, LucideIcon> = {
   cancelled: BanIcon,
 };
 
-const CRON_RUN_ICON: Record<CronRunStatus, LucideIcon> = {
+const CRON_RUN_ICON: Record<CronRunStatus, IconComponent> = {
   running: LoaderIcon,
   done: CircleCheckIcon,
   failed: CircleXIcon,

@@ -1,5 +1,10 @@
 import * as React from 'react';
-import { ChevronDownIcon, Columns3Icon, InboxIcon } from 'lucide-react';
+
+import {
+  ChevronDownIcon,
+  DownloadIcon as InboxIcon,
+  GalleryThumbnailsIcon as Columns3Icon,
+} from "@/components/icons";
 import { FlexRender, useTable } from '@tanstack/react-table';
 import type {
   ColumnVisibilityState,

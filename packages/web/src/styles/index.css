@@ -56,6 +56,17 @@
   --color-status-ok: var(--chart-2);
   --color-status-warn: var(--chart-3);
   --color-status-error: var(--destructive);
+  /* The `/voice` stage is the one surface that is always dark, in both themes,
+     so its ground colour is a constant rather than a pair of theme variables. */
+  --color-voice-stage: #03040a;
+  /* Two steps the default scale does not have: timestamps smaller than `xs`
+     (text-2xs) and inline code a notch under body size (text-code). Line
+     heights follow the ratio style of the scale they extend - `2xs` sits on
+     the same 1rem as `xs`, `code` on the same 1.25rem as `sm`. */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: calc(1 / 0.6875);
+  --text-code: 0.8125rem;
+  --text-code--line-height: calc(1.25 / 0.8125);
 }
 
 :root {

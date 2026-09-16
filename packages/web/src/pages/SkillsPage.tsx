@@ -1,16 +1,17 @@
 import { useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
-import {
-  BookOpenIcon,
-  PencilIcon,
-  SquareArrowOutUpRightIcon,
-  Trash2Icon,
-} from 'lucide-react';
 
-import { DownloadIcon } from '@/components/animate-ui/icons/download';
-import { PlusIcon } from '@/components/animate-ui/icons/plus';
-import { RefreshCwIcon } from '@/components/animate-ui/icons/refresh-cw';
-import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
+import {
+  BookTextIcon as BookOpenIcon,
+  DeleteIcon as AnimatedTrash2Icon,
+  DeleteIcon as Trash2Icon,
+  DownloadIcon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  PenToolIcon as PencilIcon,
+  PlusIcon,
+  RefreshCwIcon,
+} from "@/components/icons";
+
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
@@ -117,9 +118,8 @@ export function SkillsPage() {
       <>
         <Button asChild size="sm">
           <NavLink to="/skills/new">
-            {/* animateOnView, not animateOnHover: the button base carries
-                `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
-            <PlusIcon data-icon="inline-start" animateOnView />
+            {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+            <PlusIcon data-icon="inline-start" />
             Create skill
           </NavLink>
         </Button>
@@ -130,7 +130,7 @@ export function SkillsPage() {
           <DropdownMenuContent align="end">
             <DropdownMenuItem asChild>
               <NavLink to="/skills/import">
-                <DownloadIcon animateOnView />
+                <DownloadIcon />
                 Import
               </NavLink>
             </DropdownMenuItem>
@@ -424,7 +424,7 @@ export function SkillsPage() {
                 })
               }
             >
-              <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
+              <AnimatedTrash2Icon data-icon="inline-start" />
               Delete
             </Button>
             );
@@ -441,7 +441,7 @@ export function SkillsPage() {
                   action={
                     <Button variant="outline" asChild>
                       <NavLink to="/skills/import">
-                        <DownloadIcon data-icon="inline-start" animateOnView />
+                        <DownloadIcon data-icon="inline-start" />
                         Import from GitHub
                       </NavLink>
                     </Button>
@@ -513,7 +513,7 @@ export function SkillsPage() {
             error={external.error ? <ServerOffline onRetry={() => void external.reload()} /> : undefined}
             actions={
               <Button size="sm" variant="outline" onClick={() => void external.rescan()}>
-                <RefreshCwIcon data-icon="inline-start" animateOnView />
+                <RefreshCwIcon data-icon="inline-start" />
                 Read again
               </Button>
             }

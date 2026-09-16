@@ -1,19 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
+
 import {
+  BadgeAlertIcon as TriangleAlertIcon,
   ChevronRightIcon,
-  MinusIcon,
-  SquareArrowOutUpRightIcon,
-  TrendingDownIcon,
-  TrendingUpIcon,
-  TriangleAlertIcon,
-} from 'lucide-react';
-import type { LucideIcon, LucideProps } from 'lucide-react';
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  UsersIcon,
+} from "@/components/icons";
 
 import { api } from '@/lib/api';
 import type { OrgPerformanceEntry } from '@/lib/types';
 import { usePageMeta } from '@/components/shell/page-meta';
-import { UsersIcon } from '@/components/animate-ui/icons/users';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
@@ -23,13 +20,16 @@ import { createRookeryColumnHelper } from '@/components/blocks/data-table/table-
 import { EmptyState, NoResults, ServerOffline } from '@/components/common/empty-state';
 import { RowMenuButton } from '@/components/common/row-menu-button';
 import { StatusBadge } from '@/components/common/status-badge';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { TrendIndicator } from '@/components/common/trend-indicator';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from '@/components/ui/item';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * "Personalabteilung": every agent's standing in one table, same shell as
@@ -55,22 +55,14 @@ const COLUMN_LABELS: Record<string, string> = {
 
 function TrendCell({ trend }: { trend: number | null }) {
   if (trend === null) return emptyCell('end');
-  const Icon = trend > 0.05 ? TrendingUpIcon : trend < -0.05 ? TrendingDownIcon : MinusIcon;
-  const tone =
-    trend > 0.05 ? 'text-emerald-600 dark:text-emerald-400' : trend < -0.05 ? 'text-destructive' : 'text-muted-foreground';
-  return (
-    <span className={'flex items-center justify-end gap-1 tabular-nums ' + tone}>
-      <Icon className="size-3.5" />
-      {(trend >= 0 ? '+' : '') + trend.toFixed(1)}
-    </span>
-  );
+  return <TrendIndicator trend={trend} size="sm" align="end" />;
 }
 
 /**
  * `EmptyState` expects a lucide component; this bridges to the animated
  * users icon so the empty table's symbol bounces in on view.
  */
-const UsersEmptyIcon = (() => <UsersIcon animateOnView size={24} />) as unknown as LucideIcon;
+const UsersEmptyIcon = (() => <UsersIcon size={24} />) as unknown as IconComponent;
 
 export function OrgHrPage() {
   usePageMeta({ title: 'HR' }, []);
@@ -183,38 +175,41 @@ export function OrgHrPage() {
       {proposals.length > 0 ? (
         <Fade>
           <div className="px-4 lg:px-6">
-            <Card className="border-destructive/40">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <TriangleAlertIcon className="size-4 text-destructive" />
-                  {proposals.length === 1 ? (
-                    'One replacement proposed'
-                  ) : (
-                    <span>
-                      <CountingNumber number={proposals.length} /> replacements proposed
-                    </span>
-                  )}
-                </CardTitle>
-                <CardDescription>
-                  Review the successor draft and approve or adjust it on the agent&apos;s own page.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-2">
+            {/* No alert role: this panel mounts after the fetch and holds a
+                link list - as a live region it would be announced
+                assertively in full on appearance. */}
+            <Alert variant="destructive" role="group">
+              <TriangleAlertIcon />
+              <AlertTitle>
+                {proposals.length === 1 ? (
+                  'One replacement proposed'
+                ) : (
+                  <span>
+                    <CountingNumber number={proposals.length} /> replacements proposed
+                  </span>
+                )}
+              </AlertTitle>
+              <AlertDescription>
+                Review the successor draft and approve or adjust it on the agent&apos;s own page.
+              </AlertDescription>
+              {/* The alert lays out icon and text as a two-column grid; the
+                  proposal rows span it in full width below the description. */}
+              <ItemGroup className="col-span-full mt-3">
                 {proposals.map((row) => (
-                  <NavLink
-                    key={row.agent.id}
-                    to={'/org/agents/' + row.agent.id}
-                    className="flex items-center justify-between gap-2 rounded-lg border p-3 text-sm hover:bg-accent"
-                  >
-                    <span>
-                      <span className="font-medium">{row.agent.name}</span>
-                      <span className="text-muted-foreground"> · {row.agent.title}</span>
-                    </span>
-                    <ChevronRightIcon className="size-4 text-muted-foreground" />
-                  </NavLink>
+                  <Item key={row.agent.id} asChild variant="outline" size="sm">
+                    <NavLink to={'/org/agents/' + row.agent.id}>
+                      <ItemContent>
+                        <ItemTitle>{row.agent.name}</ItemTitle>
+                        <ItemDescription>{row.agent.title}</ItemDescription>
+                      </ItemContent>
+                      <ItemActions>
+                        <ChevronRightIcon className="size-4" />
+                      </ItemActions>
+                    </NavLink>
+                  </Item>
                 ))}
-              </CardContent>
-            </Card>
+              </ItemGroup>
+            </Alert>
           </div>
         </Fade>
       ) : null}

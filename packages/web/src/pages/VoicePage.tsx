@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { MicIcon, MicOffIcon, SquareIcon, TriangleAlertIcon } from 'lucide-react';
+import {
+  AudioLinesIcon,
+  BadgeAlertIcon as TriangleAlertIcon,
+  BanIcon as SquareIcon,
+  MicIcon,
+  MicOffIcon,
+  RotateCcwIcon,
+  SettingsIcon,
+  XIcon,
+} from "@/components/icons";
 import { useNavigate, useSearchParams } from 'react-router';
 
 import { VoiceOrb, type OrbState } from '@/components/VoiceOrb';
-import { AudioLinesIcon } from '@/components/animate-ui/icons/audio-lines';
-import { RotateCcwIcon } from '@/components/animate-ui/icons/rotate-ccw';
-import { SettingsIcon } from '@/components/animate-ui/icons/settings';
-import { XIcon } from '@/components/animate-ui/icons/x';
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import {
@@ -483,7 +488,7 @@ export function VoicePage() {
           <div className="flex items-center gap-2 text-xs uppercase tracking-[0.28em] text-white/55">
             {/* The equaliser dances only under the pointer, not forever: the
                 orb is this screen's one steady motion. */}
-            <AudioLinesIcon className="size-4" animateOnHover />
+            <AudioLinesIcon className="size-4" />
             <span>{assistantName}</span>
             <span className="text-white/40" aria-hidden="true">
               ·
@@ -502,7 +507,7 @@ export function VoicePage() {
                 className="rounded-full text-white/60 hover:bg-white/10 hover:text-white"
                 onClick={exit}
               >
-                <XIcon animateOnView />
+                <XIcon />
               </Button>
             </TooltipTrigger>
             <TooltipContent side="left">
@@ -599,6 +604,7 @@ export function VoicePage() {
           className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 bg-gradient-to-t from-black/85 via-black/50 to-transparent p-5 pt-16 sm:p-7 sm:pt-16"
         >
           {warning ? (
+            // Amber by hand: the stage is a deliberate dark surface outside the theme tokens.
             <Badge variant="outline" className="gap-1.5 border-amber-400/40 bg-amber-500/15 text-amber-200">
               <TriangleAlertIcon className="size-3.5" />
               {warning}
@@ -663,13 +669,11 @@ export function VoicePage() {
               <ButtonGroupSeparator />
 
               <VoiceAction label="New conversation" onClick={newConversation}>
-                {/* animateOnView, not animateOnHover: the button base carries
-                    `[&_svg]:pointer-events-none`, a hover on the icon itself
-                    never fires. The full turn ends where the glyph began. */}
-                <RotateCcwIcon animateOnView animation="rotate" />
+                {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+                <RotateCcwIcon />
               </VoiceAction>
               <VoiceAction label="Voice and microphone" onClick={() => setSettingsOpen(true)}>
-                <SettingsIcon animateOnView animation="rotate" />
+                <SettingsIcon />
               </VoiceAction>
             </ButtonGroup>
           </div>
@@ -795,9 +799,8 @@ function VoiceToggle({
             )}
           >
             {/* The label flips between on and off; let it roll instead of
-                snapping. `paddingBlock: 0` keeps the badge at its own height -
-                the container's 0.25rem default would grow it. */}
-            <RotatingTextContainer text={on ? 'on' : 'off'} style={{ paddingBlock: 0 }}>
+                snapping. */}
+            <RotatingTextContainer text={on ? 'on' : 'off'}>
               <RotatingText />
             </RotatingTextContainer>
           </Badge>

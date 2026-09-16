@@ -1,7 +1,8 @@
-import { CircleCheckIcon, TriangleAlertIcon } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+
+import { BadgeAlertIcon as TriangleAlertIcon, CircleCheckIcon } from "@/components/icons";
 
 import type { GatewayStatus } from './types';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Shared vocabulary of the Gateway overview and its detail page - both draw
@@ -38,7 +39,7 @@ export function gatewayState(status: GatewayStatus): GatewayState {
 export interface GatewayStateLook extends GatewayState {
   variant: 'default' | 'outline' | 'destructive' | 'secondary';
   /** `null` for the resting states - "Aus" and "Eingerichtet" need no glyph. */
-  icon: LucideIcon | null;
+  icon: IconComponent | null;
   iconClassName?: string;
 }
 

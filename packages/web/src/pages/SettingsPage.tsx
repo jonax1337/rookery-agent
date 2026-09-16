@@ -1,21 +1,20 @@
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, Navigate, useNavigate, useParams } from 'react-router';
 import {
+  AudioLinesIcon,
+  BanIcon as SquareIcon,
   BrainIcon,
-  Building2Icon,
+  BriefcaseBusinessIcon as Building2Icon,
   ChevronDownIcon,
   ChevronUpIcon,
-  ImportIcon,
+  DownloadIcon as ImportIcon,
   PaletteIcon,
-  SquareIcon,
-} from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+  SlidersHorizontalIcon,
+  UserIcon as UserRoundIcon,
+  VolumeIcon as Volume2Icon,
+} from "@/components/icons";
 
 import { ThemeTogglerButton } from '@/components/animate-ui/components/buttons/theme-toggler';
-import { AudioLinesIcon } from '@/components/animate-ui/icons/audio-lines';
-import { SlidersHorizontalIcon } from '@/components/animate-ui/icons/sliders-horizontal';
-import { UserRoundIcon } from '@/components/animate-ui/icons/user-round';
-import { Volume2Icon } from '@/components/animate-ui/icons/volume-2';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { FormPage } from '@/components/blocks/form-page';
 import { PageBody } from '@/components/blocks/page-body';
@@ -104,6 +103,7 @@ import type {
 } from '@/lib/types';
 import { useConfig, useSpeechState } from '@/providers/rookery-provider';
 import { cn } from '@/lib/utils';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Everything the server-side config holds, as six addressable sections.
@@ -134,7 +134,7 @@ interface SectionMeta {
   label: string;
   /** One line under the card title. Says what the section decides. */
   description: string;
-  icon: LucideIcon;
+  icon: IconComponent;
 }
 
 /*
@@ -142,21 +142,21 @@ interface SectionMeta {
   ihre kleine Geste beim Hover der Navigation ab. Der Rest bleibt Lucide, weil
   die Bibliothek kein Gegenstueck hat (Migration, Memory, Organization,
   Appearance). Der forwardRef-Mantel ist noetig, weil `SectionMeta.icon` als
-  LucideIcon getypt ist und prop-los gerendert wird - derselbe Trick wie
+  IconComponent getypt ist und prop-los gerendert wird - derselbe Trick wie
   AnimatedPlugZapIcon im EmptyState.
 */
 const AnimatedUserRoundIcon = forwardRef<SVGSVGElement>(function AnimatedUserRoundIcon() {
-  return <UserRoundIcon animateOnHover />;
+  return <UserRoundIcon />;
 });
 
 const AnimatedSlidersHorizontalIcon = forwardRef<SVGSVGElement>(
   function AnimatedSlidersHorizontalIcon() {
-    return <SlidersHorizontalIcon animateOnHover />;
+    return <SlidersHorizontalIcon />;
   },
 );
 
 const AnimatedAudioLinesIcon = forwardRef<SVGSVGElement>(function AnimatedAudioLinesIcon() {
-  return <AudioLinesIcon animateOnHover />;
+  return <AudioLinesIcon />;
 });
 
 const SECTIONS = [
@@ -989,10 +989,10 @@ function ProviderProfilesSection({ providers }: { providers: readonly ProviderSt
   Der Fehlzustand "Sprachkatalog nicht erreichbar" zeigt den Lautsprecher als
   animate-ui-Icon: die Wellen ziehen einmal ab, wenn der Block in den
   Viewport kommt. Gleiche forwardRef-Kapsel wie bei den Abschnitts-Icons,
-  weil EmptyState sein Icon als LucideIcon ohne Props zeichnet.
+  weil EmptyState sein Icon als IconComponent ohne Props zeichnet.
 */
 const AnimatedVolume2Icon = forwardRef<SVGSVGElement>(function AnimatedVolume2Icon() {
-  return <Volume2Icon size={24} animateOnView />;
+  return <Volume2Icon size={24} />;
 });
 
 function VoiceSection({

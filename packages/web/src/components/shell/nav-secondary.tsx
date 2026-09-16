@@ -1,6 +1,5 @@
 import type { ComponentPropsWithoutRef, ReactNode } from 'react';
 import { NavLink } from 'react-router';
-import type { LucideIcon } from 'lucide-react';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import {
   SidebarGroup,
@@ -11,10 +10,11 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar';
+import type { IconComponent } from "@/components/icons";
 
 export interface NavSecondaryItem {
   title: string;
-  icon: LucideIcon;
+  icon: IconComponent;
   /** A destination, or nothing when the entry only runs `onClick`. */
   url?: string;
   onClick?: () => void;

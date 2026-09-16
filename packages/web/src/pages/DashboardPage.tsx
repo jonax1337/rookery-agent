@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
-import { ListTodoIcon, MessagesSquareIcon } from 'lucide-react';
+
 
 import { api } from '@/lib/api';
 import { PROVIDER_LABEL, shorten } from '@/lib/format';
@@ -25,10 +25,6 @@ import {
   useOrgState,
   useTasksState,
 } from '@/providers/rookery-provider';
-import { ActivityIcon } from '@/components/animate-ui/icons/activity';
-import { BotIcon } from '@/components/animate-ui/icons/bot';
-import { PlusIcon } from '@/components/animate-ui/icons/plus';
-import { SendIcon } from '@/components/animate-ui/icons/send';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { RollingText } from '@/components/animate-ui/primitives/texts/rolling';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
@@ -76,6 +72,15 @@ import {
 } from '@/components/ui/item';
 import { Progress } from '@/components/ui/progress';
 import { Skeleton } from '@/components/ui/skeleton';
+import type { IconComponent } from "@/components/icons";
+import {
+  ActivityIcon,
+  BotIcon,
+  ClipboardCheckIcon as ListTodoIcon,
+  MessageSquareIcon as MessagesSquareIcon,
+  PlusIcon,
+  SendIcon,
+} from "@/components/icons";
 
 /**
  * The one page that answers "what is going on" - and the reference
@@ -163,21 +168,21 @@ function sumSince(series: readonly StatsDay[], days: number, pick: (day: StatsDa
 
 /**
  * The empty states draw their icon in when it enters the view. `EmptyState`
- * takes its icon as a `LucideIcon`, which these `forwardRef` shells satisfy
+ * takes its icon as a `IconComponent`, which these `forwardRef` shells satisfy
  * for the animated equivalents - the explicit `size` keeps the 24px the
  * lucide default rests at (animate-ui would otherwise rest at 28 and grow
  * the media circle).
  */
 const AnimatedActivityIcon = forwardRef<SVGSVGElement>(function AnimatedActivityIcon() {
-  return <ActivityIcon animateOnView size={24} />;
+  return <ActivityIcon size={24} />;
 });
 
 const AnimatedBotIcon = forwardRef<SVGSVGElement>(function AnimatedBotIcon() {
-  return <BotIcon animateOnView size={24} />;
+  return <BotIcon size={24} />;
 });
 
 const AnimatedSendIcon = forwardRef<SVGSVGElement>(function AnimatedSendIcon() {
-  return <SendIcon animateOnView size={24} />;
+  return <SendIcon size={24} />;
 });
 
 export function DashboardPage() {
@@ -200,7 +205,7 @@ export function DashboardPage() {
       // and /tasks carries that action as its own primary.
       actions: (
         <Button size="sm" onClick={newConversation}>
-          <PlusIcon data-icon="inline-start" animateOnHover />
+          <PlusIcon data-icon="inline-start" />
           New conversation
         </Button>
       ),

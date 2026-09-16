@@ -1,5 +1,6 @@
 "use client";
 
+import { CheckIcon, ChevronDownIcon } from "@/components/icons";
 import {
   useCallback,
   useEffect,
@@ -11,14 +12,14 @@ import {
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from "react";
-import { cva, type VariantProps } from "class-variance-authority";
-import { CheckIcon, ChevronDownIcon } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
 import {
   Command,
   CommandEmpty,
@@ -237,38 +238,39 @@ function ModelSelectorRoot({
   );
 }
 
-export const modelSelectorTriggerVariants = cva(
-  "focus-visible:ring-ring/50 flex w-fit items-center justify-between gap-2 overflow-hidden rounded-md text-sm whitespace-nowrap transition-colors outline-none focus-visible:ring-1 disabled:cursor-not-allowed disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5",
-  {
-    variants: {
-      variant: {
-        outline:
-          "border-input hover:bg-accent hover:text-accent-foreground border bg-transparent",
-        ghost: "hover:bg-accent hover:text-accent-foreground",
-        muted: "bg-secondary text-secondary-foreground hover:bg-secondary/80",
-      },
-      size: {
-        default: "h-9 px-3 py-2",
-        sm: "h-8 px-2.5 py-1.5 text-xs",
-        lg: "h-10 px-4 py-2.5",
-      },
-    },
-    defaultVariants: {
-      variant: "outline",
-      size: "default",
-    },
-  },
-);
+/**
+ * The trigger is a plain ui `Button` under the popover, the same one every
+ * other pill in the composer row uses - so it shares their look and their
+ * click feedback instead of drawing its own. With `asChild` the consumer
+ * supplies that button itself (e.g. a `ControlMenuButton`, the pill the
+ * composer's other controls use); the selector then only wires the popover.
+ */
+export type ModelSelectorTriggerVariant = "outline" | "ghost" | "muted";
+
+/** Maps the selector's variant names onto `Button`'s, one for one. */
+const TRIGGER_BUTTON_VARIANT: Record<
+  ModelSelectorTriggerVariant,
+  ComponentPropsWithoutRef<typeof Button>["variant"]
+> = {
+  outline: "outline",
+  ghost: "ghost",
+  muted: "secondary",
+};
+
+export type ModelSelectorTriggerSize = "default" | "sm" | "lg";
 
 export type ModelSelectorTriggerProps = ComponentPropsWithoutRef<
   typeof PopoverTrigger
-> &
-  VariantProps<typeof modelSelectorTriggerVariants>;
+> & {
+  variant?: ModelSelectorTriggerVariant;
+  size?: ModelSelectorTriggerSize;
+};
 
 function ModelSelectorTrigger({
   className,
-  variant,
-  size,
+  variant = "outline",
+  size = "default",
+  asChild = false,
   children,
   onKeyDown,
   ...props
@@ -277,12 +279,9 @@ function ModelSelectorTrigger({
 
   return (
     <PopoverTrigger
-      data-slot="model-selector-trigger"
-      data-variant={variant ?? "outline"}
-      data-size={size ?? "default"}
+      asChild
       role="combobox"
       aria-haspopup="listbox"
-      className={cn(modelSelectorTriggerVariants({ variant, size }), className)}
       onKeyDown={(e) => {
         onKeyDown?.(e);
         if (e.defaultPrevented) return;
@@ -295,8 +294,21 @@ function ModelSelectorTrigger({
       }}
       {...props}
     >
-      {children ?? <ModelSelectorValue />}
-      <ChevronDownIcon className="size-4 opacity-50" />
+      {asChild ? (
+        children
+      ) : (
+        <Button
+          data-slot="model-selector-trigger"
+          data-variant={variant}
+          data-size={size}
+          variant={TRIGGER_BUTTON_VARIANT[variant]}
+          size={size}
+          className={cn("w-fit justify-between gap-2", className)}
+        >
+          {children ?? <ModelSelectorValue />}
+          <ChevronDownIcon className="size-4 opacity-50" />
+        </Button>
+      )}
     </PopoverTrigger>
   );
 }
@@ -671,8 +683,9 @@ function ModelSelectorEffort({
   );
 }
 
-export type ModelSelectorProps = Omit<ModelSelectorRootProps, "children"> &
-  VariantProps<typeof modelSelectorTriggerVariants> & {
+export type ModelSelectorProps = Omit<ModelSelectorRootProps, "children"> & {
+  variant?: ModelSelectorTriggerVariant;
+  size?: ModelSelectorTriggerSize;
     /** Render a search input above the model list. */
     searchable?: boolean;
     /** Alignment of the dropdown relative to the trigger. Use `"end"` when the

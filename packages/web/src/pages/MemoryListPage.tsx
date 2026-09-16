@@ -1,17 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
+
 import {
+  BookmarkIcon as AnimatedPinIcon,
+  BookmarkIcon as PinIcon,
+  BookmarkIcon as TagIcon,
+  BookmarkXIcon as AnimatedPinOffIcon,
+  BookmarkXIcon as PinOffIcon,
   BrainIcon,
+  DeleteIcon as AnimatedTrash2Icon,
+  DeleteIcon as Trash2Icon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
   MoonIcon,
-  PinIcon,
-  PinOffIcon,
+  MoonIcon as AnimatedMoonIcon,
   RotateCcwIcon,
-  SplineIcon,
-  SquareArrowOutUpRightIcon,
+  RotateCcwIcon as AnimatedRotateCcwIcon,
   SunIcon,
-  TagIcon,
-  Trash2Icon,
-} from 'lucide-react';
+  SunIcon as AnimatedSunIcon,
+  WaypointsIcon as SplineIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -32,16 +39,11 @@ import type {
   ScoredMemory,
 } from '@/lib/types';
 import { useMemoryState } from '@/providers/rookery-provider';
-import { MoonIcon as AnimatedMoonIcon } from '@/components/animate-ui/icons/moon';
-import { PinIcon as AnimatedPinIcon } from '@/components/animate-ui/icons/pin';
-import { PinOffIcon as AnimatedPinOffIcon } from '@/components/animate-ui/icons/pin-off';
-import { RotateCcwIcon as AnimatedRotateCcwIcon } from '@/components/animate-ui/icons/rotate-ccw';
-import { SunIcon as AnimatedSunIcon } from '@/components/animate-ui/icons/sun';
-import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { DataTable, type DataTableTab } from '@/components/blocks/data-table/data-table';
 import { DetailDrawer } from '@/components/blocks/detail-drawer';
+import { SectionHeading } from '@/components/blocks/section-heading';
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, NoResults, ServerOffline } from '@/components/common/empty-state';
 import {
@@ -570,9 +572,9 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
               }
             >
               {current.pinned ? (
-                <AnimatedPinOffIcon data-icon="inline-start" animateOnView />
+                <AnimatedPinOffIcon data-icon="inline-start" />
               ) : (
-                <AnimatedPinIcon data-icon="inline-start" animateOnView />
+                <AnimatedPinIcon data-icon="inline-start" />
               )}
               {current.pinned ? 'Unpin' : 'Pin'}
             </Button>
@@ -588,9 +590,9 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
               }
             >
               {current.dormantAt ? (
-                <AnimatedSunIcon data-icon="inline-start" animateOnView />
+                <AnimatedSunIcon data-icon="inline-start" />
               ) : (
-                <AnimatedMoonIcon data-icon="inline-start" animateOnView />
+                <AnimatedMoonIcon data-icon="inline-start" />
               )}
               {current.dormantAt ? 'Wake' : 'Put to sleep'}
             </Button>
@@ -600,7 +602,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 size="sm"
                 onClick={() => void onPatch(current.id, { forgotten: false }, 'Restored')}
               >
-                <AnimatedRotateCcwIcon data-icon="inline-start" animateOnView />
+                <AnimatedRotateCcwIcon data-icon="inline-start" />
                 Restore
               </Button>
             ) : (
@@ -610,7 +612,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                 onClick={() => void onForget(current)}
               >
-                <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
+                <AnimatedTrash2Icon data-icon="inline-start" />
                 Forget
               </Button>
             )}
@@ -678,12 +680,11 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
             leave the section out.
           */}
           {current.evidence ? (
-            <section className="flex flex-col gap-2">
-              <h3 className="text-sm font-medium">Said</h3>
+            <SectionHeading title="Said" size="sm" flush>
               <blockquote className="border-l-2 pl-3 text-sm italic text-muted-foreground">
                 {current.evidence}
               </blockquote>
-            </section>
+            </SectionHeading>
           ) : null}
 
           <MetaList
@@ -717,8 +718,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
             ]}
           />
 
-          <section className="flex flex-col gap-2">
-            <h3 className="text-sm font-medium">Topics</h3>
+          <SectionHeading title="Topics" size="sm" flush>
             {loading && !loaded ? (
               <Skeleton className="h-8 w-full" />
             ) : loaded?.entities.length ? (
@@ -745,10 +745,9 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 size="sm"
               />
             )}
-          </section>
+          </SectionHeading>
 
-          <section className="flex flex-col gap-2 pb-2">
-            <h3 className="text-sm font-medium">Connections</h3>
+          <SectionHeading title="Connections" size="sm" flush className="pb-2">
             {loading && !loaded ? (
               <Skeleton className="h-8 w-full" />
             ) : edges.length ? (
@@ -791,7 +790,7 @@ function MemoryDrawer({ id, fallback, onOpenChange, onJump, onPatch, onForget }:
                 size="sm"
               />
             )}
-          </section>
+          </SectionHeading>
         </>
       ) : null}
     </DetailDrawer>

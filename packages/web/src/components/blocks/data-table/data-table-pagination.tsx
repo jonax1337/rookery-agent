@@ -1,9 +1,10 @@
+
 import {
   ChevronLeftIcon,
+  ChevronLeftIcon as ChevronsLeftIcon,
   ChevronRightIcon,
-  ChevronsLeftIcon,
-  ChevronsRightIcon,
-} from 'lucide-react';
+  ChevronRightIcon as ChevronsRightIcon,
+} from "@/components/icons";
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';

@@ -44,17 +44,17 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  BanIcon as SquareIcon,
   CheckIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   CopyIcon,
   DownloadIcon,
+  GripHorizontalIcon as MoreHorizontalIcon,
   MicIcon,
-  MoreHorizontalIcon,
-  PencilIcon,
+  PenToolIcon as PencilIcon,
   RefreshCwIcon,
-  SquareIcon,
-} from "lucide-react";
+} from "@/components/icons";
 import {
   createContext,
   useContext,

@@ -1,18 +1,19 @@
 import { useCallback, useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
+
 import {
+  DeleteIcon as Trash2Icon,
   DownloadIcon,
   ExternalLinkIcon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  PlusIcon,
   RotateCcwIcon,
-  SquareArrowOutUpRightIcon,
-  Trash2Icon,
   WrenchIcon,
-} from 'lucide-react';
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
-import { PlusIcon } from '@/components/animate-ui/icons/plus';
 
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
@@ -85,11 +86,11 @@ export function ToolsPage() {
   const [result, setResult] = useState<PrepareResult | null>(null);
 
   usePageMeta({
-    breadcrumb: [{ label: 'Tools' }],
+    breadcrumb: [{ label: 'MCP Tools' }],
     actions: (
       <Button asChild size="sm">
         <NavLink to="/tools/new">
-          <PlusIcon data-icon="inline-start" animateOnHover />
+          <PlusIcon data-icon="inline-start" />
           Add custom server
         </NavLink>
       </Button>

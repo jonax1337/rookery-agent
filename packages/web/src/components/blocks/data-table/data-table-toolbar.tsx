@@ -1,5 +1,6 @@
+import { SearchIcon, XIcon } from "@/components/icons";
 import type { ReactNode } from 'react';
-import { SearchIcon, XIcon } from 'lucide-react';
+
 
 import { Button } from '@/components/ui/button';
 import {

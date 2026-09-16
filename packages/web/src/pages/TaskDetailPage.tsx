@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { NavLink, useParams } from 'react-router';
+
 import {
   BanIcon,
   CheckIcon,
-  FolderIcon,
+  ClipboardCheckIcon as ClipboardListAnimatedIcon,
+  ClipboardCheckIcon as ListTodoIcon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  FolderOpenIcon as FolderIcon,
   LinkIcon,
-  ListTodoIcon,
-  PencilIcon,
-  PencilLineIcon,
+  PenToolIcon as PencilIcon,
+  PenToolIcon as PencilLineIcon,
+  PlayIcon as PlayAnimatedIcon,
   SendIcon,
-  SquareArrowOutUpRightIcon,
-  UserRoundIcon,
-  WandSparklesIcon,
-} from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+  SendIcon as SendAnimatedIcon,
+  SparklesIcon as WandSparklesIcon,
+  UserIcon as UserRoundIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { ApiError, api } from '@/lib/api';
@@ -41,10 +44,6 @@ import {
   RotatingText,
   RotatingTextContainer,
 } from '@/components/animate-ui/primitives/texts/rotating';
-import { Play as PlayAnimatedIcon } from '@/components/animate-ui/icons/play';
-import { ClipboardList as ClipboardListAnimatedIcon } from '@/components/animate-ui/icons/clipboard-list';
-import { Send as SendAnimatedIcon } from '@/components/animate-ui/icons/send';
-
 import { PageBody } from '@/components/blocks/page-body';
 import { StatCards, StatCardsSkeleton, type StatCardProps } from '@/components/blocks/stat-cards';
 import { DataTable } from '@/components/blocks/data-table/data-table';
@@ -96,6 +95,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * One task: what it is, who does it, and the two things you can do to it -
@@ -399,15 +399,11 @@ export function TaskDetailPage() {
               <Spinner aria-label="Running" data-icon="inline-start" />
             ) : (
               <PlayAnimatedIcon
-                animateOnHover
                 size={16}
                 data-icon="inline-start"
               />
             )}
-            <RotatingTextContainer
-              text={isRunning ? 'Running…' : 'Run'}
-              style={{ paddingBlock: 0 }}
-            >
+            <RotatingTextContainer text={isRunning ? 'Running…' : 'Run'}>
               <RotatingText />
             </RotatingTextContainer>
           </Button>
@@ -420,10 +416,7 @@ export function TaskDetailPage() {
                 ) : (
                   <WandSparklesIcon data-icon="inline-start" />
                 )}
-                <RotatingTextContainer
-                  text={planning ? 'Planning…' : 'Plan'}
-                  style={{ paddingBlock: 0 }}
-                >
+                <RotatingTextContainer text={planning ? 'Planning…' : 'Plan'}>
                   <RotatingText />
                 </RotatingTextContainer>
               </Button>
@@ -455,10 +448,7 @@ export function TaskDetailPage() {
                   ) : (
                     <WandSparklesIcon data-icon="inline-start" />
                   )}
-                  <RotatingTextContainer
-                    text={planning ? 'Planning…' : 'Plan'}
-                    style={{ paddingBlock: 0 }}
-                  >
+                  <RotatingTextContainer text={planning ? 'Planning…' : 'Plan'}>
                     <RotatingText />
                   </RotatingTextContainer>
                 </Button>
@@ -562,7 +552,7 @@ export function TaskDetailPage() {
       <PageBody width="3xl">
         <Fade className="flex min-w-0 flex-1 flex-col">
           <EmptyState
-            icon={ClipboardListEmptyIcon as unknown as LucideIcon}
+            icon={ClipboardListEmptyIcon as unknown as IconComponent}
             title="This task does not exist"
             description="The entry was deleted, or the address is incorrect."
             actionLabel="View tasks"
@@ -584,7 +574,7 @@ export function TaskDetailPage() {
         ) : (
           <Fade className="flex min-w-0 flex-1 flex-col">
             <EmptyState
-              icon={ClipboardListEmptyIcon as unknown as LucideIcon}
+              icon={ClipboardListEmptyIcon as unknown as IconComponent}
               title="This task does not exist"
               description="The entry was deleted, or the address is incorrect."
               actionLabel="View tasks"
@@ -703,7 +693,7 @@ export function TaskDetailPage() {
                           <Badge
                             key={dependency}
                             variant="outline"
-                            className={label ? 'font-normal' : 'font-mono text-[11px] font-normal'}
+                            className={label ? 'font-normal' : 'font-mono text-2xs font-normal'}
                           >
                             {label ?? dependency}
                           </Badge>
@@ -878,7 +868,7 @@ export function TaskDetailPage() {
               rowLabel={ASSIGNMENT_ROW_LABEL}
               empty={
                 <EmptyState
-                  icon={SendEmptyIcon as unknown as LucideIcon}
+                  icon={SendEmptyIcon as unknown as IconComponent}
                   title="No runs yet"
                   description="Run sends the task to its assigned agents. Each run is then listed here."
                   actionLabel="Run"
@@ -896,7 +886,7 @@ export function TaskDetailPage() {
               <ResultCard text={result} description="What the run produced." />
             ) : (
               <EmptyState
-                icon={ClipboardListEmptyIcon as unknown as LucideIcon}
+                icon={ClipboardListEmptyIcon as unknown as IconComponent}
                 title="No result yet"
                 description="The response will appear here once the task has run."
                 actionLabel="Run"
@@ -914,18 +904,18 @@ export function TaskDetailPage() {
 /* ---------------------------------- parts --------------------------------- */
 
 /**
- * `EmptyState` types its `icon` as a `LucideIcon` and renders it without
+ * `EmptyState` types its `icon` as a `IconComponent` and renders it without
  * props, so the animate-ui icons ride along in these shells: same silhouette
  * and stroke as their lucide counterparts, drawing themselves once when the
  * state enters the viewport (the pattern of `AnimatedPlugZapIcon` in
  * `empty-state.tsx`).
  */
 function ClipboardListEmptyIcon() {
-  return <ClipboardListAnimatedIcon size={24} animateOnView />;
+  return <ClipboardListAnimatedIcon size={24} />;
 }
 
 function SendEmptyIcon() {
-  return <SendAnimatedIcon size={24} animateOnView />;
+  return <SendAnimatedIcon size={24} />;
 }
 
 /**

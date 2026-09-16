@@ -1,6 +1,5 @@
 import { useLocation, useNavigate } from 'react-router';
 
-import { CompassIcon as AnimatedCompassIcon } from '@/components/animate-ui/icons/compass';
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
 import { RollingText } from '@/components/animate-ui/primitives/texts/rolling';
 import { PageBody } from '@/components/blocks/page-body';
@@ -15,6 +14,7 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
+import { CompassIcon as AnimatedCompassIcon } from '@/components/icons';
 
 /**
  * A route nobody has.
@@ -51,7 +51,7 @@ export function NotFoundPage() {
         <Empty className="border">
           <EmptyHeader>
             <EmptyMedia variant="icon">
-              <AnimatedCompassIcon animateOnView />
+              <AnimatedCompassIcon />
             </EmptyMedia>
             <EmptyTitle>
               <RollingText text="This page does not exist" />

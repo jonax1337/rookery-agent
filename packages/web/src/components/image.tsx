@@ -10,20 +10,22 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { cva, type VariantProps } from "class-variance-authority";
+
 import {
+  BadgeAlertIcon as ShieldAlertIcon,
   CopyIcon,
   DownloadIcon,
-  ImageIcon,
-  ImageOffIcon,
-  Loader2Icon,
+  EyeOffIcon as ImageOffIcon,
+  GalleryThumbnailsIcon as ImageIcon,
+  LoaderCircleIcon as Loader2Icon,
   RefreshCwIcon,
-  ShieldAlertIcon,
   XIcon,
-} from "lucide-react";
+} from "@/components/icons";
 import type {
   ImageMessagePart,
   ImageMessagePartComponent,
 } from "@assistant-ui/react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const extensionForMimeType = (mimeType?: string): string => {
@@ -337,18 +339,20 @@ function ImageZoom({ src, alt = "Image preview", children }: ImageZoomProps) {
                 handleClose();
               }}
             />
-            <button
+            <Button
               ref={closeRef}
               type="button"
+              variant="ghost"
+              size="icon"
               aria-label="Close zoomed image"
               onClick={(e) => {
                 e.stopPropagation();
                 handleClose();
               }}
-              className="text-muted-foreground hover:text-foreground bg-background/80 absolute end-4 top-4 cursor-pointer rounded-md p-2"
+              className="bg-background/80 absolute end-4 top-4"
             >
               <XIcon className="size-5" />
-            </button>
+            </Button>
           </div>,
           document.body,
         )}
@@ -410,8 +414,10 @@ function RegenerateButton({
 }) {
   const [isRegenerating, setIsRegenerating] = useState(false);
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="icon-sm"
       onClick={async () => {
         setIsRegenerating(true);
         try {
@@ -424,12 +430,12 @@ function RegenerateButton({
       disabled={isRegenerating}
       data-slot="image-regenerate"
       aria-label="Regenerate image"
-      className="hover:bg-muted inline-flex size-7 items-center justify-center rounded disabled:opacity-50"
+      className="size-7 rounded"
     >
       <RefreshCwIcon
         className={cn("size-4", isRegenerating && "animate-spin")}
       />
-    </button>
+    </Button>
   );
 }
 
@@ -439,26 +445,30 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
       data-slot="image-actions"
       className={cn("flex items-center gap-1 p-1", className)}
     >
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="icon-sm"
         onClick={() => downloadImagePart(part)}
         data-slot="image-download"
         aria-label="Download image"
-        className="hover:bg-muted inline-flex size-7 items-center justify-center rounded"
+        className="size-7 rounded"
       >
         <DownloadIcon className="size-4" />
-      </button>
-      <button
+      </Button>
+      <Button
         type="button"
+        variant="ghost"
+        size="icon-sm"
         onClick={() => {
           copyImagePart(part).catch(() => {});
         }}
         data-slot="image-copy"
         aria-label="Copy image"
-        className="hover:bg-muted inline-flex size-7 items-center justify-center rounded"
+        className="size-7 rounded"
       >
         <CopyIcon className="size-4" />
-      </button>
+      </Button>
       {onRegenerate && <RegenerateButton onRegenerate={onRegenerate} />}
     </div>
   );

@@ -1,6 +1,4 @@
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
-import { CheckIcon } from '@/components/animate-ui/icons/check';
-import { CopyIcon } from '@/components/animate-ui/icons/copy';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import {
   RotatingText,
@@ -8,6 +6,7 @@ import {
 } from '@/components/animate-ui/primitives/texts/rotating';
 import { ResultMarkdown } from '@/components/result-markdown';
 import { Button } from '@/components/ui/button';
+import { CheckIcon, CopyIcon } from '@/components/icons';
 import {
   Card,
   CardAction,
@@ -45,14 +44,11 @@ export function ResultCard({
           <CardAction>
             <Button variant="outline" size="sm" onClick={() => copyToClipboard(text)}>
               {isCopied ? (
-                <CheckIcon className="size-4" animateOnView />
+                <CheckIcon className="size-4" />
               ) : (
-                <CopyIcon className="size-4" animateOnView />
+                <CopyIcon className="size-4" />
               )}
-              <RotatingTextContainer
-                text={isCopied ? 'Copied' : 'Copy'}
-                style={{ paddingBlock: 0 }}
-              >
+              <RotatingTextContainer text={isCopied ? 'Copied' : 'Copy'}>
                 <RotatingText />
               </RotatingTextContainer>
             </Button>

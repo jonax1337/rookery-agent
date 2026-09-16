@@ -1,10 +1,10 @@
 import { forwardRef, useCallback, useEffect, useId, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { FileTextIcon, Trash2Icon } from 'lucide-react';
+
+import { DeleteIcon as Trash2Icon, FileTextIcon, SparklesIcon as AnimatedSparklesIcon } from "@/components/icons";
 import { toast } from 'sonner';
 import { z } from 'zod';
 
-import { SparklesIcon as AnimatedSparklesIcon } from '@/components/animate-ui/icons/sparkles';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { AUDIENCE_CHOICES } from '@/lib/tools';
 import type { Skill, ToolServerAudience } from '@/lib/types';
@@ -33,6 +33,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Write a skill: a name, the one sentence that decides when it is opened, and
@@ -96,11 +97,11 @@ function draftOf(skill: Skill): SkillDraft {
 
 /**
  * The empty-state icon as an animate-ui version. `EmptyState` takes a
- * `LucideIcon` and renders it without props, so the animated icon sits in a
+ * `IconComponent` and renders it without props, so the animated icon sits in a
  * forwardRef shell that carries its `animateOnView` trigger along.
  */
 const EmptySparklesIcon = forwardRef<SVGSVGElement>(function EmptySparklesIcon() {
-  return <AnimatedSparklesIcon animateOnView />;
+  return <AnimatedSparklesIcon />;
 });
 
 export function SkillFormPage() {
@@ -273,7 +274,7 @@ export function SkillFormPage() {
                   <Textarea
                     id="skill-body"
                     rows={18}
-                    className="font-mono text-[13px]"
+                    className="font-mono text-code"
                     value={draft.body}
                     onChange={(event) => set({ body: event.target.value })}
                   />

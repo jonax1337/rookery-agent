@@ -1,6 +1,13 @@
 import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useParams } from 'react-router';
-import { BanIcon, ListTodoIcon, StarIcon, TriangleAlertIcon, UserRoundIcon } from 'lucide-react';
+import { StarIcon } from "lucide-react";
+import {
+  BadgeAlertIcon as TriangleAlertIcon,
+  BanIcon,
+  ClipboardCheckIcon as ListTodoIcon,
+  SendIcon,
+  UserIcon as UserRoundIcon,
+} from "@/components/icons";
 
 import { api, ApiError } from '@/lib/api';
 import {
@@ -17,7 +24,6 @@ import type { AgentReview, AssignmentDetail } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
 
-import { SendIcon } from '@/components/animate-ui/icons/send';
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
@@ -55,6 +61,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * One assignment: what was asked, who did it, what came back.
@@ -238,13 +245,9 @@ export function AssignmentDetailPage() {
     {
       label: 'Status',
       // The one label on the page that changes on its own (pending → running →
-      // done), so it gets the rotating treatment; the container's default
-      // padding would push the number line around, hence zeroed here.
+      // done), so it gets the rotating treatment.
       value: (
-        <RotatingTextContainer
-          text={ASSIGNMENT_STATUS_LABEL[status]}
-          style={{ paddingBlock: 0 }}
-        >
+        <RotatingTextContainer text={ASSIGNMENT_STATUS_LABEL[status]}>
           <RotatingText />
         </RotatingTextContainer>
       ),
@@ -445,12 +448,12 @@ export function AssignmentDetailPage() {
 /**
  * The empty states' send icon as the animate-ui one: same silhouette and
  * stroke, the paper plane flies once when the empty state enters the
- * viewport. `EmptyState` types its `icon` as a `LucideIcon` and renders it
+ * viewport. `EmptyState` types its `icon` as a `IconComponent` and renders it
  * without props, so the `animateOnView` trigger rides along in this shell -
  * the same pattern `ServerOffline` established for its plug.
  */
 const AnimatedSendIcon = forwardRef<SVGSVGElement>(function AnimatedSendIcon() {
-  return <SendIcon size={24} animateOnView />;
+  return <SendIcon size={24} />;
 });
 
 /**
@@ -509,14 +512,14 @@ function AssignmentReviewCard({
               key={star}
               type="button"
               disabled={saving}
-              className="text-muted-foreground hover:text-amber-400 disabled:opacity-60"
+              className="text-muted-foreground hover:text-status-warn disabled:opacity-60"
               onMouseEnter={() => setHover(star)}
               onMouseLeave={() => setHover(0)}
               onClick={() => void save(star)}
               aria-label={'Rate ' + star + (star === 1 ? ' star' : ' stars')}
             >
               <StarIcon
-                className={cn('size-5', (hover || value) >= star ? 'fill-amber-400 text-amber-400' : '')}
+                className={cn('size-5', (hover || value) >= star ? 'fill-status-warn text-status-warn' : '')}
               />
             </button>
           ))}

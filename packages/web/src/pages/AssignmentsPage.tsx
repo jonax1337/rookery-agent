@@ -1,11 +1,13 @@
 import * as React from 'react';
 import { NavLink, useNavigate } from 'react-router';
+
 import {
   BanIcon,
-  ListTodoIcon,
-  SquareArrowOutUpRightIcon,
-  UserRoundIcon,
-} from 'lucide-react';
+  ClipboardCheckIcon as ListTodoIcon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  SendIcon as AnimatedSendIcon,
+  UserIcon as UserRoundIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -32,7 +34,6 @@ import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-p
 import { useStatsTotals } from '@/hooks/useStatsTotals';
 import { usePageMeta } from '@/components/shell/page-meta';
 
-import { SendIcon as AnimatedSendIcon } from '@/components/animate-ui/icons/send';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { PageBody } from '@/components/blocks/page-body';
@@ -82,6 +83,7 @@ import {
 import { FieldGroup } from '@/components/ui/field';
 import { Spinner } from '@/components/ui/spinner';
 import { Textarea } from '@/components/ui/textarea';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Every single run an agent was ever asked to do.
@@ -249,7 +251,7 @@ export function buildAssignmentColumns({
             {row.original.agentName}
           </NavLink>
           {row.original.agentSlug ? (
-            <Badge variant="outline" className="font-mono text-[11px] font-normal">
+            <Badge variant="outline" className="font-mono text-2xs font-normal">
               {row.original.agentSlug}
             </Badge>
           ) : null}
@@ -439,11 +441,11 @@ const CHART_KEYS: ChartKey[] = ['done', 'failed', 'cancelled'];
 /**
  * The empty states swap their lucide send for the animate-ui one: same
  * silhouette and stroke, the paper plane flies once when the state enters
- * the viewport. `EmptyState` types its `icon` as a `LucideIcon` and renders
+ * the viewport. `EmptyState` types its `icon` as a `IconComponent` and renders
  * it without props, so the `animateOnView` trigger rides along in this shell.
  */
 const EmptySendIcon = React.forwardRef<SVGSVGElement>(function EmptySendIcon() {
-  return <AnimatedSendIcon size={24} animateOnView />;
+  return <AnimatedSendIcon size={24} />;
 });
 
 export function AssignmentsPage() {
@@ -713,9 +715,8 @@ export function AssignmentsPage() {
     breadcrumb: [{ label: 'Assignments' }],
     actions: (
       <Button size="sm" onClick={() => setAssignOpen(true)}>
-        {/* animateOnView, not animateOnHover: the button base carries
-            `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
-        <AnimatedSendIcon data-icon="inline-start" animateOnView />
+        {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+        <AnimatedSendIcon data-icon="inline-start" />
         Assign agent
       </Button>
     ),
@@ -1124,7 +1125,7 @@ function AssignDrawer({
       footer={
         <Button onClick={submit} disabled={busy}>
           {busy ? <Spinner aria-label="Starting" /> : (
-            <AnimatedSendIcon data-icon="inline-start" animateOnView />
+            <AnimatedSendIcon data-icon="inline-start" />
           )}
           Assign
         </Button>

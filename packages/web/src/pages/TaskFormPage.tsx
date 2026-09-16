@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { ListTodoIcon } from 'lucide-react';
+
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -37,9 +37,16 @@ import {
   FieldSet,
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
+import { ClipboardCheckIcon as ListTodoIcon } from "@/components/icons";
 /**
  * Create or edit a task.
  *
@@ -294,22 +301,28 @@ export function TaskFormPage() {
             {editing && task ? (
               <Field>
                 <FieldLabel htmlFor="task-status">Status</FieldLabel>
-                <NativeSelect
-                  id="task-status"
-                  className="w-full"
-                  value={draft.status ?? ''}
-                  disabled={draft.status === null}
-                  onChange={(event) => set({ status: event.target.value as SettableTaskStatus })}
+                <Select
+                  value={draft.status ?? undefined}
+                  onValueChange={(value) => set({ status: value as SettableTaskStatus })}
                 >
-                  {draft.status === null ? (
-                    <NativeSelectOption value="">{TASK_STATUS_LABEL[task.status]}</NativeSelectOption>
-                  ) : null}
-                  {SETTABLE_TASK_STATUS.map((status) => (
-                    <NativeSelectOption key={status} value={status}>
-                      {TASK_STATUS_LABEL[status]}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
+                  <SelectTrigger
+                    id="task-status"
+                    className="w-full"
+                    disabled={draft.status === null}
+                  >
+                    {/* A Radix item may not carry an empty-string value, so the
+                        runner-owned state travels as `undefined` - which is
+                        what makes SelectValue fall back to this placeholder. */}
+                    <SelectValue placeholder={TASK_STATUS_LABEL[task.status]} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SETTABLE_TASK_STATUS.map((status) => (
+                      <SelectItem key={status} value={status}>
+                        {TASK_STATUS_LABEL[status]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
                 <FieldDescription>
                   {draft.status === null
                     ? 'The run sets this status automatically; only Open, Done, and Cancelled can be selected manually.'

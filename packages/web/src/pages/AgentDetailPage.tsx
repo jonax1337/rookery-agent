@@ -1,27 +1,25 @@
 import { forwardRef, useCallback, useMemo, useState } from 'react';
 import { NavLink, useNavigate, useParams } from 'react-router';
+
 import {
   ArchiveIcon,
+  ArrowRightIcon,
+  BadgeAlertIcon as TriangleAlertIcon,
   BrainIcon,
-  Building2Icon,
+  BriefcaseBusinessIcon as Building2Icon,
+  ClipboardCheckIcon as ClipboardList,
   CpuIcon,
-  InboxIcon,
-  MailPlusIcon,
-  MinusIcon,
-  PencilIcon,
-  ShieldIcon,
-  TrendingDownIcon,
-  TrendingUpIcon,
-  TriangleAlertIcon,
+  DownloadIcon as InboxIcon,
+  MailCheckIcon as MailPlusIcon,
+  PenToolIcon as PencilIcon,
+  SendIcon,
+  ShieldCheckIcon as ShieldIcon,
+  UserIcon as UserRound,
   UsersIcon,
-} from 'lucide-react';
+  UsersIcon as Users,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
-import { ArrowRightIcon } from '@/components/animate-ui/icons/arrow-right';
-import { ClipboardList } from '@/components/animate-ui/icons/clipboard-list';
-import { SendIcon } from '@/components/animate-ui/icons/send';
-import { UserRound } from '@/components/animate-ui/icons/user-round';
-import { Users } from '@/components/animate-ui/icons/users';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 
@@ -42,6 +40,7 @@ import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
 import { ProviderCell } from '@/components/common/provider-cell';
 import { RowMenuButton } from '@/components/common/row-menu-button';
 import { StatusBadge } from '@/components/common/status-badge';
+import { TrendIndicator } from '@/components/common/trend-indicator';
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { useRecord } from '@/hooks/useRecord';
 import { ResultMarkdown } from '@/components/result-markdown';
@@ -86,6 +85,7 @@ import {
 import { average, formatNumber } from '@/lib/stats';
 import type { AgentAction, AgentDetail, Agent, Assignment, AssignmentView } from '@/lib/types';
 import { useConfig, useConnection, useOrgState } from '@/providers/rookery-provider';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * One member of staff: who they are, what they are working on, what they know.
@@ -269,9 +269,8 @@ export function AgentDetailPage() {
       actions: agent ? (
         <>
           <Button size="sm" onClick={() => setAssignOpen(true)} disabled={agent.archived}>
-            {/* animateOnView, not animateOnHover: the button base carries
-                `[&_svg]:pointer-events-none`, so a hover trigger never fires. */}
-            <SendIcon data-icon="inline-start" animateOnView />
+            {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+            <SendIcon data-icon="inline-start" />
             Create assignment
           </Button>
           <Button
@@ -532,7 +531,7 @@ export function AgentDetailPage() {
               className="flex items-center gap-1 text-sm text-muted-foreground hover:underline"
             >
               Replaced by {successor.name}
-              <ArrowRightIcon className="size-3.5" animateOnHover />
+              <ArrowRightIcon className="size-3.5" />
             </NavLink>
           ) : null}
         </div>
@@ -793,7 +792,7 @@ export function AgentDetailPage() {
           <Button onClick={assign} disabled={busy || !task.trim()}>
             {/* Same as the header button: the svg gets no pointer events,
                 so the trigger is the drawer opening, not a hover. */}
-            <SendIcon data-icon="inline-start" animateOnView />
+            <SendIcon data-icon="inline-start" />
             {busy ? 'Running…' : 'Start'}
           </Button>
         }
@@ -869,20 +868,20 @@ export function AgentDetailPage() {
 /**
  * The empty states' icons as the animate-ui ones: same silhouette and
  * stroke, each draws itself once when its empty state enters the viewport.
- * `EmptyState` types its `icon` as a `LucideIcon` and renders it without
+ * `EmptyState` types its `icon` as a `IconComponent` and renders it without
  * props, so the `animateOnView` trigger rides along in these shells - the
  * same pattern `ServerOffline` established for its plug.
  */
 const AnimatedUserRoundIcon = forwardRef<SVGSVGElement>(function AnimatedUserRoundIcon() {
-  return <UserRound size={24} animateOnView />;
+  return <UserRound size={24} />;
 });
 
 const AnimatedUsersIcon = forwardRef<SVGSVGElement>(function AnimatedUsersIcon() {
-  return <Users size={24} animateOnView />;
+  return <Users size={24} />;
 });
 
 const AnimatedClipboardListIcon = forwardRef<SVGSVGElement>(function AnimatedClipboardListIcon() {
-  return <ClipboardList size={24} animateOnView />;
+  return <ClipboardList size={24} />;
 });
 
 /**
@@ -892,8 +891,6 @@ const AnimatedClipboardListIcon = forwardRef<SVGSVGElement>(function AnimatedCli
  * agent for infrastructure (docs/concepts/agent-performance-management.md).
  */
 function PerformanceCard({ performance }: { performance: AgentDetail['performance'] }) {
-  const TrendIcon =
-    performance.trend === null ? null : performance.trend > 0.05 ? TrendingUpIcon : performance.trend < -0.05 ? TrendingDownIcon : MinusIcon;
   return (
     <Card>
       <CardHeader>
@@ -912,21 +909,7 @@ function PerformanceCard({ performance }: { performance: AgentDetail['performanc
             )}
           </span>
           <span className="text-sm text-muted-foreground">/ 5</span>
-          {TrendIcon ? (
-            <span
-              className={
-                'flex items-center gap-1 text-sm ' +
-                (performance.trend !== null && performance.trend > 0.05
-                  ? 'text-emerald-600 dark:text-emerald-400'
-                  : performance.trend !== null && performance.trend < -0.05
-                    ? 'text-destructive'
-                    : 'text-muted-foreground')
-              }
-            >
-              <TrendIcon className="size-4" />
-              {performance.trend !== null ? (performance.trend >= 0 ? '+' : '') + performance.trend.toFixed(1) : null}
-            </span>
-          ) : null}
+          <TrendIndicator trend={performance.trend} />
         </div>
         {performance.average === null ? (
           <p className="text-sm text-muted-foreground">Not enough reviewed assignments yet.</p>
@@ -1064,18 +1047,20 @@ function ReplacementProposalCard({
   };
 
   return (
-    <Card className="border-destructive/40">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <TriangleAlertIcon className="size-4 text-destructive" />
-          Replacement proposed
-        </CardTitle>
-        <CardDescription>
-          {agent.name} has been reconfigured and is still performing weakly. Review the successor draft below,
-          adjust anything, and approve to archive {agent.name} and hire the successor in their place.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
+    // No alert role here: the panel stays on the page and contains the draft
+    // form, so assertive live-region semantics would re-announce every
+    // keystroke; only the transient failure alert below keeps them.
+    <Alert variant="destructive" role="group">
+      <TriangleAlertIcon />
+      <AlertTitle>Replacement proposed</AlertTitle>
+      <AlertDescription>
+        {agent.name} has been reconfigured and is still performing weakly. Review the successor draft below,
+        adjust anything, and approve to archive {agent.name} and hire the successor in their place.
+      </AlertDescription>
+      {/* The alert's icon grid ends at the description; the draft form spans
+          it below and drops the destructive tint so the editable fields stay
+          neutral - only the framing is a warning, not the form itself. */}
+      <div className="col-span-full mt-3 flex flex-col gap-4 text-card-foreground">
         <div>
           <p className="text-xs font-medium text-muted-foreground">Why</p>
           <p className="text-sm whitespace-pre-wrap">
@@ -1121,8 +1106,8 @@ function ReplacementProposalCard({
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         ) : null}
-      </CardContent>
-      <CardContent className="pt-0">
+      </div>
+      <div className="col-span-full mt-4">
         <Button
           variant="destructive"
           disabled={busy || !name.trim() || !title.trim() || !instructions.trim()}
@@ -1131,8 +1116,8 @@ function ReplacementProposalCard({
           <ArchiveIcon data-icon="inline-start" />
           Archive {agent.name} and hire {name || 'successor'}
         </Button>
-      </CardContent>
-    </Card>
+      </div>
+    </Alert>
   );
 }
 

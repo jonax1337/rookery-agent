@@ -1,4 +1,11 @@
-import { InboxIcon, MailCheckIcon, PenSquareIcon, SearchIcon, SendIcon } from 'lucide-react';
+
+import {
+  DownloadIcon as InboxIcon,
+  MailCheckIcon,
+  SearchIcon,
+  SendIcon,
+  SquarePenIcon as PenSquareIcon,
+} from "@/components/icons";
 
 import type { Mail } from '@/lib/types';
 import { relativeTime } from '@/lib/format';

@@ -1,6 +1,7 @@
+import { FeatherIcon } from "@/components/icons";
 import type { ComponentProps, ReactNode } from 'react';
 import { NavLink, useLocation } from 'react-router';
-import { FeatherIcon } from 'lucide-react';
+
 import { NAV_GROUPS, navItems, routeMeta, type NavGroup, type RouteMeta } from '@/lib/nav';
 import { formatNumber } from '@/lib/stats';
 import { cn } from '@/lib/utils';
@@ -22,7 +23,6 @@ import {
   SidebarFooter,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar';
@@ -173,42 +173,53 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
         <Fade>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton size="lg" asChild>
-                <NavLink to="/dashboard" onClick={() => setOpenMobile(false)}>
-                  {/*
-                    The brand, not a stand-in for it. The rail collapses to icon
-                    width, so the mark carries the collapsed state and the
-                    wordmark the expanded one. Both are solid-colour artwork
-                    rather than themeable SVG, so each ships a light and a dark
-                    cut; the mark is decorative because the wordmark beside it
-                    already names the app.
+              {/*
+                A plain NavLink, not a SidebarMenuButton: the menu button
+                registers itself as a highlight item, and the rail's floating
+                hover background would plate itself behind the brand. A logo is
+                not navigation - the same reasoning that made the quick-create
+                row a plain Button. The classes carry the lg menu button's
+                geometry (the h-12 row, the icon square when collapsed), so
+                only the highlight registration is lost, not the layout.
+              */}
+              <NavLink
+                to="/dashboard"
+                onClick={() => setOpenMobile(false)}
+                className="flex h-12 w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden focus-visible:ring-2 group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-0!"
+              >
+                {/*
+                  The brand, not a stand-in for it. The rail collapses to icon
+                  width, so the mark carries the collapsed state and the
+                  wordmark the expanded one. Both are solid-colour artwork
+                  rather than themeable SVG, so each ships a light and a dark
+                  cut; the mark is decorative because the wordmark beside it
+                  already names the app.
 
-                    The assistant's name does not belong up here as well - it is
-                    on the avatar in the footer, and printing it twice made the
-                    header read as two labels for one thing.
-                  */}
-                  <img
-                    src="/mark.svg"
-                    alt="Rookery"
-                    className="hidden size-7 shrink-0 group-data-[collapsible=icon]:block dark:group-data-[collapsible=icon]:hidden"
-                  />
-                  <img
-                    src="/mark-light.svg"
-                    alt="Rookery"
-                    className="hidden size-7 shrink-0 dark:group-data-[collapsible=icon]:block"
-                  />
-                  <img
-                    src="/logo.svg"
-                    alt="Rookery"
-                    className="h-8 w-auto group-data-[collapsible=icon]:hidden dark:hidden"
-                  />
-                  <img
-                    src="/logo-light.svg"
-                    alt="Rookery"
-                    className="hidden h-8 w-auto group-data-[collapsible=icon]:hidden dark:block dark:group-data-[collapsible=icon]:hidden"
-                  />
-                </NavLink>
-              </SidebarMenuButton>
+                  The assistant's name does not belong up here as well - it is
+                  on the avatar in the footer, and printing it twice made the
+                  header read as two labels for one thing.
+                */}
+                <img
+                  src="/mark.svg"
+                  alt="Rookery"
+                  className="hidden size-7 shrink-0 group-data-[collapsible=icon]:block dark:group-data-[collapsible=icon]:hidden"
+                />
+                <img
+                  src="/mark-light.svg"
+                  alt="Rookery"
+                  className="hidden size-7 shrink-0 dark:group-data-[collapsible=icon]:block"
+                />
+                <img
+                  src="/logo.svg"
+                  alt="Rookery"
+                  className="h-8 w-auto group-data-[collapsible=icon]:hidden dark:hidden"
+                />
+                <img
+                  src="/logo-light.svg"
+                  alt="Rookery"
+                  className="hidden h-8 w-auto group-data-[collapsible=icon]:hidden dark:block dark:group-data-[collapsible=icon]:hidden"
+                />
+              </NavLink>
             </SidebarMenuItem>
           </SidebarMenu>
         </Fade>

@@ -7,9 +7,6 @@ import { formatDateTime } from '@/lib/stats';
 import type { ProviderQuota, ProviderStatus } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { useChatSession, useConfig, useConnection } from '@/providers/rookery-provider';
-import { EllipsisVerticalIcon } from '@/components/animate-ui/icons/ellipsis-vertical';
-import { RefreshCwIcon } from '@/components/animate-ui/icons/refresh-cw';
-import { SlidersHorizontalIcon } from '@/components/animate-ui/icons/sliders-horizontal';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import {
   RotatingText,
@@ -32,6 +29,11 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Progress } from '@/components/ui/progress';
+import {
+  GripVerticalIcon as EllipsisVerticalIcon,
+  RefreshCwIcon,
+  SlidersHorizontalIcon,
+} from "@/components/icons";
 import {
   SidebarMenu,
   SidebarMenuButton,
@@ -104,21 +106,19 @@ export function NavStatus() {
                 <span className="truncate font-medium">{assistantName}</span>
                 <span className={cn(
                   'mt-1 flex items-center gap-1.5 text-xs',
-                  status === 'online' && 'text-emerald-700 dark:text-emerald-400',
+                  status === 'online' && 'text-status-ok',
                   status === 'offline' && 'text-destructive',
-                  status === 'connecting' && 'text-amber-700 dark:text-amber-400',
+                  status === 'connecting' && 'text-status-warn',
                 )}>
                   <StatusDot status={status} />
                   {/* The one label here that changes on its own; RotatingText
-                      slides it over whenever the connection state flips. The
-                      container's default block padding is zeroed so the line
-                      keeps its height. */}
-                  <RotatingTextContainer text={statusLabel} style={{ paddingBlock: 0 }}>
+                      slides it over whenever the connection state flips. */}
+                  <RotatingTextContainer text={statusLabel}>
                     <RotatingText />
                   </RotatingTextContainer>
                 </span>
               </div>
-              <EllipsisVerticalIcon className="ml-auto size-4" animateOnHover />
+              <EllipsisVerticalIcon className="ml-auto size-4" />
             </SidebarMenuButton>
           </DropdownMenuTrigger>
 
@@ -165,18 +165,15 @@ export function NavStatus() {
 
             <DropdownMenuItem asChild>
               <NavLink to="/settings">
-                {/* animateOnView like Reconnect below: menu items carry
-                    `[&_svg]:pointer-events-none`, so hover never fires. */}
-                <SlidersHorizontalIcon animateOnView />
+                {/* Animates on hover of its wrapper span, like Reconnect below -
+                    `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+                <SlidersHorizontalIcon />
                 Settings
               </NavLink>
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={reconnect}>
-              {/* animateOnView, not animateOnHover: menu items carry
-                  `[&_svg]:pointer-events-none`, so a hover trigger never
-                  fires. `initialOnAnimateEnd` returns the arrows to their
-                  resting angle instead of parking them at the 45° end pose. */}
-              <RefreshCwIcon animateOnView initialOnAnimateEnd />
+              {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+              <RefreshCwIcon />
               Reconnect
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -258,7 +255,7 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
               </div>
               <Progress value={window.percent} />
               {window.resetsAt && (
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-2xs text-muted-foreground">
                   Resets {formatDateTime(window.resetsAt)}
                 </p>
               )}

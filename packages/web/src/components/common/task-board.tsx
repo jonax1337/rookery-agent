@@ -1,3 +1,4 @@
+import { GripVerticalIcon } from "@/components/icons";
 import { useEffect, useMemo, useState } from 'react';
 import {
   DndContext,
@@ -14,7 +15,7 @@ import {
 } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { GripVerticalIcon } from 'lucide-react';
+
 
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';

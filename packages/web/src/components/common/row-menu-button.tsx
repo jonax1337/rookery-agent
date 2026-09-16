@@ -1,12 +1,14 @@
 import * as React from 'react';
-import { EllipsisVerticalIcon } from 'lucide-react';
 
-import { EllipsisVertical } from '@/components/animate-ui/icons/ellipsis-vertical';
 
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 
+import {
+  GripVerticalIcon as EllipsisVertical,
+  GripVerticalIcon as EllipsisVerticalIcon,
+} from "@/components/icons";
 /**
  * The three-dot trigger, in the two places it actually belongs.
  *
@@ -62,7 +64,7 @@ export function RowMenuButton({
       {busy ? (
         <Spinner />
       ) : tone === 'header' ? (
-        <EllipsisVertical animateOnView className="size-4" />
+        <EllipsisVertical className="size-4" />
       ) : (
         <EllipsisVerticalIcon />
       )}

@@ -1,6 +1,5 @@
 import type * as React from 'react';
 import { NavLink } from 'react-router';
-import type { LucideIcon } from 'lucide-react';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import {
   Item,
@@ -12,6 +11,7 @@ import {
 } from '@/components/ui/item';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Key and value, the way the detail pages should have said it all along.
@@ -32,7 +32,7 @@ export interface MetaItem {
    * row entirely - that is how an optional field opts out.
    */
   value: React.ReactNode;
-  icon?: LucideIcon;
+  icon?: IconComponent;
   /** Turns the value into a link to a route. */
   to?: string;
   /** Ids, paths and cron expressions read better in the mono face. */

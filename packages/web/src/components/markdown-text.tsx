@@ -1,5 +1,6 @@
 "use client";
 
+import { CheckIcon, CopyIcon } from "@/components/icons";
 import "@assistant-ui/react-markdown/styles/dot.css";
 
 import {
@@ -11,7 +12,7 @@ import {
 import remarkGfm from "remark-gfm";
 import { type FC, memo, useMemo, useRef } from "react";
 import type { TextMessagePartProps } from "@assistant-ui/react";
-import { CheckIcon, CopyIcon } from "lucide-react";
+
 
 import { TooltipIconButton } from "@/components/tooltip-icon-button";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
@@ -245,7 +246,9 @@ const defaultComponents = memoizeMarkdownComponents({
   pre: ({ className, ...props }) => (
     <pre
       className={cn(
-        "aui-md-pre border-border/50 bg-muted/30 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 text-[13px] leading-relaxed",
+        // text-code pairs the 13px size with its own 20px line-height, so no
+        // extra leading-* here (it would only fight the token).
+        "aui-md-pre border-border/50 bg-muted/30 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 text-code",
         className,
       )}
       {...props}

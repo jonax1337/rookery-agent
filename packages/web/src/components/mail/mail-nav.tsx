@@ -1,5 +1,13 @@
 import type { ReactNode } from 'react';
-import { BotIcon, InboxIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, SendIcon, UserRoundIcon } from 'lucide-react';
+
+import {
+  BotIcon,
+  DownloadIcon as InboxIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
+  SendIcon,
+  UserIcon as UserRoundIcon,
+} from "@/components/icons";
 
 import type { Agent } from '@/lib/types';
 import { cn } from '@/lib/utils';

@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { CalendarClockIcon } from 'lucide-react';
+
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -15,8 +15,6 @@ import {
 } from '@/lib/format';
 import type { CronJob, CronPreview } from '@/lib/types';
 import { useCronState, useOrgState } from '@/providers/rookery-provider';
-import { ChevronDownIcon } from '@/components/animate-ui/icons/chevron-down';
-import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { PageBody } from '@/components/blocks/page-body';
 import { FormPage } from '@/components/blocks/form-page';
@@ -59,6 +57,11 @@ import { Item, ItemContent, ItemGroup, ItemTitle } from '@/components/ui/item';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  CalendarCheckIcon as CalendarClockIcon,
+  ChevronDownIcon,
+  DeleteIcon as AnimatedTrash2Icon,
+} from "@/components/icons";
 
 /**
  * A standing order: a prompt that fires on a cron expression.
@@ -184,7 +187,7 @@ function toInput(patch: CronJobPatch): CronJobInput {
 }
 
 const MenuTrash2Icon = forwardRef<SVGSVGElement>(function MenuTrash2Icon() {
-  return <AnimatedTrash2Icon animateOnView />;
+  return <AnimatedTrash2Icon />;
 });
 
 export function CronFormPage() {
@@ -455,7 +458,7 @@ export function CronFormPage() {
                     <DropdownMenuTrigger asChild>
                       <InputGroupButton>
                         Templates
-                        <ChevronDownIcon animateOnHover />
+                        <ChevronDownIcon />
                       </InputGroupButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="w-64">

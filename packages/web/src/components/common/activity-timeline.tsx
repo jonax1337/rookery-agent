@@ -1,14 +1,14 @@
+import { ActivityIcon, ActivityIcon as AnimatedActivityIcon, BrainIcon, SparklesIcon, UsersIcon, WrenchIcon } from "@/components/icons";
 import * as React from 'react';
-import { ActivityIcon, BrainIcon, SparklesIcon, UsersIcon, WrenchIcon } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from '@/components/ui/item';
-import { ActivityIcon as AnimatedActivityIcon } from '@/components/animate-ui/icons/activity';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { prettyToolName } from '@/hooks/useChat';
 import { relativeTime } from '@/lib/format';
 import type { ActivityItem, AssignmentView } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * One vertical feed for "what is happening right now" - the rendering half of
@@ -29,7 +29,7 @@ import { cn } from '@/lib/utils';
  * `ActivityItem[]` as the *rendering* contract is enough.
  */
 
-const ACTIVITY_ICON: Record<ActivityItem['kind'], LucideIcon> = {
+const ACTIVITY_ICON: Record<ActivityItem['kind'], IconComponent> = {
   tool: WrenchIcon,
   status: ActivityIcon,
   assignment: UsersIcon,
@@ -70,7 +70,7 @@ export function ActivityTimeline({
     rows.length === 0 ? (
       <Fade>
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <AnimatedActivityIcon animateOnView className="size-4" />
+          <AnimatedActivityIcon className="size-4" />
           {emptyLabel}
         </p>
       </Fade>

@@ -1,13 +1,14 @@
 import * as React from 'react';
 import { NavLink, useNavigate } from 'react-router';
+
 import {
   AudioLinesIcon,
-  MessagesSquareIcon,
-  PencilIcon,
+  BadgeAlertIcon as TriangleAlertIcon,
+  DeleteIcon as Trash2Icon,
+  MessageSquareIcon as MessagesSquareIcon,
+  PenToolIcon as PencilIcon,
   RotateCcwIcon,
-  Trash2Icon,
-  TriangleAlertIcon,
-} from 'lucide-react';
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { api, ApiError } from '@/lib/api';

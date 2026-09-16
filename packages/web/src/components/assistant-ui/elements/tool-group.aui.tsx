@@ -1,5 +1,6 @@
 "use client";
 
+import { ChevronDownIcon, LoaderIcon } from "@/components/icons";
 import {
   memo,
   useCallback,
@@ -8,7 +9,7 @@ import {
   type FC,
   type PropsWithChildren,
 } from "react";
-import { ChevronDownIcon, LoaderIcon } from "lucide-react";
+
 import { cva, type VariantProps } from "class-variance-authority";
 import { useScrollLock } from "@assistant-ui/react";
 import {

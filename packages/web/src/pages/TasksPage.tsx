@@ -1,13 +1,17 @@
 import { forwardRef, useCallback, useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
+
 import {
   BanIcon,
+  ClipboardCheckIcon as ClipboardListIcon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
   LayoutGridIcon,
-  PencilIcon,
+  MenuIcon as ListIcon,
+  PenToolIcon as PencilIcon,
   PlayIcon,
-  SquareArrowOutUpRightIcon,
-  WandSparklesIcon,
-} from 'lucide-react';
+  PlusIcon,
+  SparklesIcon as WandSparklesIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
@@ -24,9 +28,6 @@ import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-p
 import { useStatsTotals } from '@/hooks/useStatsTotals';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
-import { ClipboardListIcon } from '@/components/animate-ui/icons/clipboard-list';
-import { ListIcon } from '@/components/animate-ui/icons/list';
-import { PlusIcon } from '@/components/animate-ui/icons/plus';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { PageBody } from '@/components/blocks/page-body';
 import { cappedBadge, StatCards } from '@/components/blocks/stat-cards';
@@ -63,6 +64,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Everything the company has been asked to get done.
@@ -96,12 +98,12 @@ function startOfWeek(now = Date.now()): number {
 /**
  * The empty states swap their lucide clipboard for the animate-ui one: same
  * silhouette and stroke, the list lines draw themselves once when the state
- * enters the viewport. `EmptyState` types its `icon` as a `LucideIcon` and
+ * enters the viewport. `EmptyState` types its `icon` as a `IconComponent` and
  * renders it without props, so the `animateOnView` trigger rides along in
  * this shell (same pattern as the plug in `empty-state.tsx`).
  */
 const AnimatedClipboardListIcon = forwardRef<SVGSVGElement>(function AnimatedClipboardListIcon() {
-  return <ClipboardListIcon size={24} animateOnView />;
+  return <ClipboardListIcon size={24} />;
 });
 
 export function TasksPage() {
@@ -143,7 +145,7 @@ export function TasksPage() {
           }}
         >
           <ToggleGroupItem value="table" aria-label="Table view">
-            <ListIcon animateOnHover />
+            <ListIcon />
           </ToggleGroupItem>
           <ToggleGroupItem value="board" aria-label="Board view">
             <LayoutGridIcon />
@@ -151,7 +153,7 @@ export function TasksPage() {
         </ToggleGroup>
         <Button asChild size="sm">
           <NavLink to="/tasks/new">
-            <PlusIcon data-icon="inline-start" animateOnHover />
+            <PlusIcon data-icon="inline-start" />
             Create task
           </NavLink>
         </Button>

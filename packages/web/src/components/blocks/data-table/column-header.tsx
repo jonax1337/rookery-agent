@@ -1,10 +1,6 @@
-import {
-  ArrowDownIcon,
-  ArrowUpIcon,
-  ChevronsUpDownIcon,
-  EyeOffIcon,
-} from 'lucide-react';
 
+
+import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, EyeOffIcon } from "@/components/icons";
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,

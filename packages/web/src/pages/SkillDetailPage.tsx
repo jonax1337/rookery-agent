@@ -1,19 +1,20 @@
 import { useCallback, useState } from 'react';
 import { NavLink, useNavigate, useParams } from 'react-router';
-import {
-  BookOpenIcon,
-  ClockIcon,
-  FileIcon,
-  FilesIcon,
-  FolderIcon,
-  PackageIcon,
-  PencilIcon,
-  Trash2Icon,
-  UsersIcon,
-} from 'lucide-react';
 
-import { Check as CheckAnimatedIcon } from '@/components/animate-ui/icons/check';
-import { Copy as CopyAnimatedIcon } from '@/components/animate-ui/icons/copy';
+import {
+  BookTextIcon as BookOpenIcon,
+  BoxIcon as PackageIcon,
+  CheckIcon as CheckAnimatedIcon,
+  ClockIcon,
+  CopyIcon as CopyAnimatedIcon,
+  DeleteIcon as Trash2Icon,
+  FileStackIcon as FilesIcon,
+  FileTextIcon as FileIcon,
+  FolderOpenIcon as FolderIcon,
+  PenToolIcon as PencilIcon,
+  UsersIcon,
+} from "@/components/icons";
+
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 
@@ -195,9 +196,9 @@ export function SkillDetailPage() {
                     onClick={() => copyToClipboard(skill.path)}
                   >
                     {isCopied ? (
-                      <CheckAnimatedIcon animateOnView className="size-3" />
+                      <CheckAnimatedIcon className="size-3" />
                     ) : (
-                      <CopyAnimatedIcon animateOnView className="size-3" />
+                      <CopyAnimatedIcon className="size-3" />
                     )}
                   </InputGroupButton>
                 </span>

@@ -162,7 +162,13 @@ function Sidebar({
   dir,
   animateOnHover = true,
   containerClassName,
-  transition = { type: "spring", stiffness: 350, damping: 35 },
+  /*
+   * A touch snappier than animate-ui's stock spring (350/35): same damping
+   * ratio, higher natural frequency, so the box arrives sooner without
+   * gaining overshoot. Row-to-row hops should read as one motion, not a
+   * wander.
+   */
+  transition = { type: "spring", stiffness: 450, damping: 40 },
   ...props
 }: React.ComponentProps<"div"> & {
   side?: "left" | "right"

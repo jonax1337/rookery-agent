@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useId, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { FolderIcon, Trash2Icon } from 'lucide-react';
+
+import {
+  DeleteIcon as Trash2Icon,
+  FolderOpenIcon as FolderIcon,
+  PlugZapIcon as PlugZap,
+} from "@/components/icons";
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -8,7 +13,6 @@ import { api, type ProjectInput, type ProjectPatch } from '@/lib/api';
 import { failureMessage, reportFailure } from '@/lib/errors';
 import type { Project, ProjectMcpInfo } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
-import { PlugZap } from '@/components/animate-ui/icons/plug-zap';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { PageBody } from '@/components/blocks/page-body';
@@ -364,7 +368,7 @@ export function ProjectFormPage() {
                         {mcpBusy ? (
                           <Spinner aria-label="Working" data-icon="inline-start" />
                         ) : (
-                          <PlugZap animateOnView />
+                          <PlugZap />
                         )}
                         {mcp.status === 'trusted' ? 'Revoke' : 'Trust'}
                       </Button>

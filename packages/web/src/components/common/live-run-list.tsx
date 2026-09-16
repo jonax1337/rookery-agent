@@ -1,6 +1,7 @@
+import { XIcon } from "@/components/icons";
 import * as React from 'react';
 import { NavLink } from 'react-router';
-import { XIcon } from 'lucide-react';
+
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { StatusBadge } from '@/components/common/status-badge';

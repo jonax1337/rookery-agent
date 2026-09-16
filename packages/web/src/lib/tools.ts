@@ -1,7 +1,8 @@
-import { CircleCheckIcon, TriangleAlertIcon } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+
+import { BadgeAlertIcon as TriangleAlertIcon, CircleCheckIcon } from "@/components/icons";
 
 import type { ToolServer, ToolServerAudience } from './types';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Shared vocabulary of the Werkzeuge *and* the Skills pages.
@@ -85,7 +86,7 @@ export function toolStatus(tool: ToolServer): ToolStatus {
 export interface ToolStatusLook extends ToolStatus {
   variant: 'default' | 'outline' | 'destructive';
   /** `null` for the resting state - "Aus" needs no glyph to be understood. */
-  icon: LucideIcon | null;
+  icon: IconComponent | null;
   iconClassName?: string;
 }
 

@@ -1,7 +1,8 @@
 "use client";
 
+import { FileTextIcon } from "@/components/icons";
 import { memo, useState, type ComponentProps } from "react";
-import { FileTextIcon } from "lucide-react";
+
 import { cva, type VariantProps } from "class-variance-authority";
 import type { SourceMessagePartComponent } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";

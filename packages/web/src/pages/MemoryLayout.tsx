@@ -1,12 +1,11 @@
+import { BrainIcon, MoonIcon, PlusIcon, SunIcon } from "@/components/icons";
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useOutletContext } from 'react-router';
-import { BrainIcon, MoonIcon } from 'lucide-react';
+
 import { toast } from 'sonner';
 import { z } from 'zod';
 
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
-import { PlusIcon } from '@/components/animate-ui/icons/plus';
-import { SunIcon } from '@/components/animate-ui/icons/sun';
 import { RotatingText, RotatingTextContainer } from '@/components/animate-ui/primitives/texts/rotating';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 
@@ -165,7 +164,7 @@ export function MemoryLayout() {
       actions: (
         <>
           <Button size="sm" onClick={openRemember}>
-            <PlusIcon data-icon="inline-start" animateOnHover size={24} />
+            <PlusIcon data-icon="inline-start" size={24} />
             Save memory
           </Button>
           {running && (
@@ -307,13 +306,10 @@ export function MemoryLayout() {
               <ItemContent>
                 <ItemTitle className="flex flex-wrap items-center gap-2">
                   {/* The phase walks through the night; each step rolls the
-                      label rather than snapping it. `paddingBlock: 0` keeps
-                      the badge at its own height - the container's 0.25rem
-                      default would grow it. */}
+                      label rather than snapping it. */}
                   <Badge variant="secondary">
                     <RotatingTextContainer
                       text={SLEEP_PHASE_LABEL[sleep.phase] ?? 'is running'}
-                      style={{ paddingBlock: 0 }}
                     >
                       <RotatingText />
                     </RotatingTextContainer>
@@ -335,7 +331,7 @@ export function MemoryLayout() {
               </ItemContent>
               <ItemActions>
                 <Button size="sm" variant="outline" onClick={() => void sleep.cancel()}>
-                  <SunIcon data-icon="inline-start" animateOnHover size={24} />
+                  <SunIcon data-icon="inline-start" size={24} />
                   Wake
                 </Button>
               </ItemActions>

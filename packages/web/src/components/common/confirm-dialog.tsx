@@ -1,6 +1,5 @@
 import * as React from 'react';
-import { TriangleAlertIcon } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+
 import { toast } from 'sonner';
 import {
   AlertDialog,
@@ -15,7 +14,9 @@ import {
 } from '@/components/ui/alert-dialog';
 import { reportFailure } from '@/lib/errors';
 import { formatNumber } from '@/lib/stats';
+import type { IconComponent } from "@/components/icons";
 
+import { BadgeAlertIcon as TriangleAlertIcon } from "@/components/icons";
 /**
  * The question every irreversible action has to ask.
  *
@@ -55,7 +56,7 @@ export interface ConfirmOptions {
   /** Paints the affirmative button as destructive. Every deletion sets it. */
   destructive?: boolean;
   /** Shown in the dialog's media slot; falls back to a warning triangle. */
-  icon?: LucideIcon | null;
+  icon?: IconComponent | null;
 }
 
 export interface ConfirmDialogProps extends ConfirmOptions {
@@ -198,7 +199,7 @@ export interface BulkActionSpec<T> {
   /** The affirmative button. Usually the capitalised `verb`. */
   confirmLabel: string;
   cancelLabel?: string;
-  icon?: LucideIcon | null;
+  icon?: IconComponent | null;
   /** Defaults to `true`; a bulk action that is not destructive is rare. */
   destructive?: boolean;
   /** Runs for one row. Rejections are counted, not swallowed. */

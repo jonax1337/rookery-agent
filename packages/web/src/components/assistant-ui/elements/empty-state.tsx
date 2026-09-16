@@ -1,7 +1,8 @@
 "use client";
 
+import { ArrowUpIcon } from "@/components/icons";
 import type { ComponentProps } from "react";
-import { ArrowUpIcon } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 import { inkButton, paper } from "./surfaces";
 

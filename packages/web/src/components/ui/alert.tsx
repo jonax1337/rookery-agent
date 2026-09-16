@@ -18,15 +18,22 @@ const alertVariants = cva(
   }
 )
 
+/**
+ * `role` defaults to "alert" (an assertive live region) so transient error
+ * messages announce themselves. Panels that stay mounted and hold interactive
+ * content must override it (e.g. role="group"): live regions re-announce text
+ * mutations and must not contain focusable elements.
+ */
 function Alert({
   className,
   variant,
+  role = "alert",
   ...props
 }: React.ComponentProps<"div"> & VariantProps<typeof alertVariants>) {
   return (
     <div
       data-slot="alert"
-      role="alert"
+      role={role}
       className={cn(alertVariants({ variant }), className)}
       {...props}
     />

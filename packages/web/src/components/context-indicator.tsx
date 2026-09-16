@@ -41,14 +41,14 @@ export interface ContextUsage {
 function tone(percent: number | null): string {
   if (percent === null) return 'text-muted-foreground';
   if (percent >= 90) return 'text-destructive';
-  if (percent >= 70) return 'text-amber-600 dark:text-amber-400';
+  if (percent >= 70) return 'text-status-warn';
   return 'text-foreground';
 }
 
 /** The fill colour of a `Progress`, which paints its indicator `bg-primary`. */
 function barTone(percent: number): string {
   if (percent >= 90) return '*:data-[slot=progress-indicator]:bg-destructive';
-  if (percent >= 70) return '*:data-[slot=progress-indicator]:bg-amber-500';
+  if (percent >= 70) return '*:data-[slot=progress-indicator]:bg-status-warn';
   return '';
 }
 

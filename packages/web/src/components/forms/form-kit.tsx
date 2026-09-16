@@ -1,5 +1,4 @@
 import { useCallback, useRef, useState, type ReactNode } from 'react';
-import type { LucideIcon } from 'lucide-react';
 import type { z } from 'zod';
 
 import { FormActions, type FormActionsProps } from '@/components/blocks/form-page';
@@ -26,6 +25,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Slider } from '@/components/ui/slider';
 import { failureMessage } from '@/lib/errors';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * The few things all seven form pages need and none of them should own.
@@ -387,7 +387,7 @@ export function ChoiceField<T extends string>({
 
 export interface FormMenuAction {
   label: string;
-  icon?: LucideIcon;
+  icon?: IconComponent;
   onSelect(): void;
   /** Paints it red. Every deletion sets it, and asks with `useConfirm` first. */
   destructive?: boolean;

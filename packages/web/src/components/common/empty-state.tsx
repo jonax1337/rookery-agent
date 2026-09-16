@@ -1,8 +1,6 @@
 import * as React from 'react';
 import { NavLink } from 'react-router';
-import { SearchXIcon, ServerOffIcon } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
-import { PlugZapIcon } from '@/components/animate-ui/icons/plug-zap';
+
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,6 +12,12 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { cn } from '@/lib/utils';
+import type { IconComponent } from "@/components/icons";
+import {
+  PlugZapIcon,
+  SearchIcon as SearchXIcon,
+  ServerCrashIcon as ServerOffIcon,
+} from "@/components/icons";
 
 /**
  * The one way this app says "nothing here".
@@ -31,7 +35,7 @@ import { cn } from '@/lib/utils';
 
 export interface EmptyStateProps {
   /** Imported straight from `lucide-react`, never through `IconPlaceholder`. */
-  icon?: LucideIcon;
+  icon?: IconComponent;
   title: string;
   /** One sentence. Says why it is empty, not that it is empty. */
   description?: React.ReactNode;
@@ -112,11 +116,11 @@ export function EmptyState({
 /**
  * The reconnect empty state swaps its lucide plug for the animate-ui one:
  * same silhouette and stroke, the bolt pulses once when the state enters
- * the viewport. `EmptyState` types its `icon` as a `LucideIcon` and renders
+ * the viewport. `EmptyState` types its `icon` as a `IconComponent` and renders
  * it without props, so the `animateOnView` trigger rides along in this shell.
  */
 const AnimatedPlugZapIcon = React.forwardRef<SVGSVGElement>(function AnimatedPlugZapIcon() {
-  return <PlugZapIcon size={24} animateOnView />;
+  return <PlugZapIcon size={24} />;
 });
 
 /**

@@ -1,16 +1,18 @@
 import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useNavigate, useSearchParams } from 'react-router';
+
 import {
   ArchiveIcon,
-  Building2Icon,
+  BriefcaseBusinessIcon as Building2Icon,
   CpuIcon,
-  InboxIcon,
-  MailPlusIcon,
-  PencilIcon,
-  ShieldIcon,
-  SquareArrowOutUpRightIcon,
+  DownloadIcon as InboxIcon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  MailCheckIcon as MailPlusIcon,
+  PenToolIcon as PencilIcon,
+  ShieldCheckIcon as ShieldIcon,
+  UserIcon as UserRoundIcon,
   UsersIcon,
-} from 'lucide-react';
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -19,7 +21,6 @@ import { PERMISSION_LABEL, relativeTime, shorten } from '@/lib/format';
 import { formatDateTime, formatNumber } from '@/lib/stats';
 import type { Agent, Assignment, OrgPerformanceEntry, PermissionLevel } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
-import { UserRoundIcon } from '@/components/animate-ui/icons/user-round';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
@@ -30,6 +31,7 @@ import {
 } from '@/components/blocks/data-table/table-columns';
 import { createRookeryColumnHelper } from '@/components/blocks/data-table/table-features';
 import { DetailDrawer, DetailDrawerTrigger } from '@/components/blocks/detail-drawer';
+import { SectionHeading } from '@/components/blocks/section-heading';
 import { useBulkAction, useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, NoResults, ServerOffline } from '@/components/common/empty-state';
 import { FilterCombobox } from '@/components/common/filter-combobox';
@@ -56,6 +58,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { ItemGroup } from '@/components/ui/item';
 import { Skeleton } from '@/components/ui/skeleton';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Everyone who works here, as one table.
@@ -100,11 +103,11 @@ const PERMISSIONS: readonly PermissionLevel[] = ['chat', 'read', 'write', 'full'
 /**
  * The "no agents hired yet" state swaps its lucide silhouette for the
  * animate-ui one: same stroke, the head nods once when the state scrolls
- * into view. `EmptyState` types its `icon` as a `LucideIcon` and renders it
+ * into view. `EmptyState` types its `icon` as a `IconComponent` and renders it
  * without props, so the `animateOnView` trigger rides along in this shell.
  */
 const AnimatedUserRoundIcon = forwardRef<SVGSVGElement>(function AnimatedUserRoundIcon() {
-  return <UserRoundIcon size={24} animateOnView />;
+  return <UserRoundIcon size={24} />;
 });
 
 export function OrgAgentsPage() {
@@ -480,16 +483,16 @@ export function OrgAgentsPage() {
           <div className="px-4 lg:px-6">
             <p className="text-xs text-muted-foreground">
               Filtered from <CountingNumber number={org.agents.length} /> active agents.{' '}
-              <button
-                type="button"
-                className="underline underline-offset-2"
+              <Button
+                variant="link"
+                className="h-auto gap-0 p-0 text-left align-baseline"
                 onClick={() => {
                   setTeam(null);
                   setPermission(null);
                 }}
               >
                 Clear filter
-              </button>
+              </Button>
             </p>
           </div>
         </Fade>
@@ -570,8 +573,7 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
     >
       {agent ? (
         <>
-          <div>
-            <h3 className="mb-2 text-sm font-medium">Instructions</h3>
+          <SectionHeading title="Instructions" size="sm" level="h3" flush>
             {instructions === '' ? (
               <EmptyState
                 icon={PencilIcon}
@@ -599,7 +601,7 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
                 </Accordion>
               </>
             )}
-          </div>
+          </SectionHeading>
 
           <MetaList
             columns={1}
@@ -638,8 +640,7 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
             ]}
           />
 
-          <div>
-            <h3 className="mb-2 text-sm font-medium">Recent assignments</h3>
+          <SectionHeading title="Recent assignments" size="sm" level="h3" flush>
             {failed ? (
               <ServerOffline size="sm" />
             ) : recent === null ? (
@@ -671,7 +672,7 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
                 ))}
               </ItemGroup>
             )}
-          </div>
+          </SectionHeading>
         </>
       ) : null}
     </DetailDrawer>

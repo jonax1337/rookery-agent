@@ -6,13 +6,14 @@ import {
   type FC,
   isValidElement,
 } from "react";
+
 import {
-  XIcon,
+  BadgeAlertIcon as AlertCircleIcon,
+  FileTextIcon as FileText,
+  LoaderCircleIcon as Loader2Icon,
   PlusIcon,
-  FileText,
-  Loader2Icon,
-  AlertCircleIcon,
-} from "lucide-react";
+  XIcon,
+} from "@/components/icons";
 import {
   AttachmentPrimitive,
   ComposerPrimitive,
@@ -221,7 +222,7 @@ const AttachmentRemove: FC = () => {
     <AttachmentPrimitive.Remove asChild>
       <TooltipIconButton
         tooltip="Remove file"
-        className="aui-attachment-tile-remove absolute end-1 top-1 size-5 rounded-full bg-black/50! text-white after:absolute after:-inset-1.5 hover:bg-black/70! hover:text-white! active:scale-[0.96] motion-reduce:transition-none"
+        className="aui-attachment-tile-remove absolute end-1 top-1 size-5 rounded-full bg-black/50! text-white after:absolute after:-inset-1.5 hover:bg-black/70! hover:text-white! motion-reduce:transition-none"
         side="top"
       >
         <XIcon className="aui-attachment-remove-icon size-3 stroke-[2.5]" />
@@ -258,7 +259,7 @@ export const ComposerAddAttachment: FC = () => {
         side="bottom"
         variant="ghost"
         size="icon"
-        className="aui-composer-add-attachment text-muted-foreground hover:text-foreground hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30 size-7 rounded-full active:scale-[0.96] motion-reduce:transition-none"
+        className="aui-composer-add-attachment text-muted-foreground hover:text-foreground hover:bg-muted-foreground/15 dark:border-muted-foreground/15 dark:hover:bg-muted-foreground/30 size-7 rounded-full motion-reduce:transition-none"
         aria-label="Attach file"
       >
         <PlusIcon className="aui-attachment-add-icon size-4" />

@@ -70,8 +70,9 @@ function Button({
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}
-      whileTap={{ scale: 0.95 }}
-      whileHover={{ scale: 1.05 }}
+      // One click feel for every button: a small dip, nothing on hover -
+      // colour changes carry hover, a 1.05 scale-up made whole forms flinch.
+      whileTap={{ scale: 0.97 }}
       {...(props as HTMLMotionProps<"button">)}
     />
   )

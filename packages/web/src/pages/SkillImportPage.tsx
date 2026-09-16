@@ -1,18 +1,19 @@
 import { forwardRef, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
+
 import {
   DownloadIcon,
-  FolderSearchIcon,
+  DownloadIcon as AnimatedDownloadIcon,
+  FolderCogIcon as FolderSearchIcon,
   GitBranchIcon,
+  SearchIcon as AnimatedSearchIcon,
   SparklesIcon,
-} from 'lucide-react';
+  SparklesIcon as AnimatedSparklesIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
-import { DownloadIcon as AnimatedDownloadIcon } from '@/components/animate-ui/icons/download';
-import { SearchIcon as AnimatedSearchIcon } from '@/components/animate-ui/icons/search';
-import { SparklesIcon as AnimatedSparklesIcon } from '@/components/animate-ui/icons/sparkles';
 
 import { PageBody } from '@/components/blocks/page-body';
 import { EmptyState, NoResults } from '@/components/common/empty-state';
@@ -39,6 +40,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { useSkills } from '@/hooks/useSkills';
 import { reportFailure } from '@/lib/errors';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Pulling a skill folder off GitHub - the public shelf, or any owner/repo/path.
@@ -69,11 +71,11 @@ function guessName(source: string): string {
 /**
  * The collection-error empty state gets the animate-ui sparkles instead of the
  * lucide one: same silhouette and stroke, blinking in once when the state
- * enters the viewport. `EmptyState` types its `icon` as a `LucideIcon` and
+ * enters the viewport. `EmptyState` types its `icon` as a `IconComponent` and
  * renders it without props, so the trigger rides along in this shell.
  */
 const EmptySparklesIcon = forwardRef<SVGSVGElement>(function EmptySparklesIcon() {
-  return <AnimatedSparklesIcon size={24} animateOnView />;
+  return <AnimatedSparklesIcon size={24} />;
 });
 
 export function SkillImportPage() {
@@ -175,7 +177,7 @@ export function SkillImportPage() {
                 ) : (
                   /* size-3.5 keeps the rest-pose size: the xs button sizes only
                      direct svg children, and the animated icon sits in a span. */
-                  <AnimatedDownloadIcon data-icon="inline-start" animateOnHover className="size-3.5" />
+                  <AnimatedDownloadIcon data-icon="inline-start" className="size-3.5" />
                 )}
                 Import
               </InputGroupButton>
@@ -260,7 +262,7 @@ export function SkillImportPage() {
                 <InputGroupAddon align="inline-start">
                   {/* size-4 mirrors the addon's own svg sizing, which only
                      reaches direct svg children. */}
-                  <AnimatedSearchIcon animateOnHover className="size-4" />
+                  <AnimatedSearchIcon className="size-4" />
                 </InputGroupAddon>
                 <InputGroupInput
                   value={filter}

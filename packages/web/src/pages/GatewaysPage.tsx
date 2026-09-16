@@ -1,9 +1,7 @@
 import { useMemo } from 'react';
 import { NavLink, useNavigate } from 'react-router';
-import { SquareArrowOutUpRightIcon } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 
-import { RadioTower } from '@/components/animate-ui/icons/radio-tower';
+
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
@@ -24,6 +22,11 @@ import { useGateways } from '@/hooks/useGateways';
 import { gatewayStateLook } from '@/lib/gateways';
 import { formatNumber } from '@/lib/stats';
 import type { GatewayStatus } from '@/lib/types';
+import type { IconComponent } from "@/components/icons";
+import {
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  RadioTowerIcon as RadioTower,
+} from "@/components/icons";
 
 /**
  * Every chat gateway, as one table.
@@ -48,9 +51,9 @@ const COLUMN_LABELS: Record<string, string> = {
  * The empty-state icon as its animate-ui twin: same 24px silhouette and
  * stroke as the lucide original, but the arcs blink once when the empty
  * state enters the viewport. Needs this shim because `EmptyState` types its
- * `icon` as `LucideIcon` and renders it without any props.
+ * `icon` as `IconComponent` and renders it without any props.
  */
-const RadioTowerAnimated = (() => <RadioTower size={24} animateOnView />) as unknown as LucideIcon;
+const RadioTowerAnimated = (() => <RadioTower size={24} />) as unknown as IconComponent;
 
 export function GatewaysPage() {
   const navigate = useNavigate();

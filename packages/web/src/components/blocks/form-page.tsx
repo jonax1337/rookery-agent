@@ -2,13 +2,13 @@ import type { FormEvent, ReactNode } from 'react';
 import { useId } from 'react';
 import { useNavigate } from 'react-router';
 
-import { LoaderCircle } from '@/components/animate-ui/icons/loader-circle';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { FieldGroup } from '@/components/ui/field';
 import { cn } from '@/lib/utils';
+import { LoaderCircleIcon as LoaderCircle } from '@/components/icons';
 
 /**
  * The frame every form page sits in: one `Card` holding a `FieldGroup` of
@@ -99,7 +99,7 @@ export function FormActions({
           {cancelLabel}
         </Button>
         <Button type="submit" form={form} disabled={submitDisabled || submitting}>
-          {submitting ? <LoaderCircle animate aria-label="Saving" role="status" className="size-4" /> : null}
+          {submitting ? <LoaderCircle aria-label="Saving" role="status" className="size-4" /> : null}
           {submitLabel}
         </Button>
       </div>

@@ -1,5 +1,10 @@
-import { CalendarClockIcon, MailIcon, MessageSquareIcon, MicIcon } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+
+import {
+  CalendarCheckIcon as CalendarClockIcon,
+  MailboxIcon as MailIcon,
+  MessageSquareIcon,
+  MicIcon,
+} from "@/components/icons";
 
 import type {
   AssignmentStatus,
@@ -16,6 +21,7 @@ import type {
   TaskPriority,
   TaskStatus,
 } from './types';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * The canonical timestamp format, `11. Sep. 2026, 14:03`.
@@ -318,7 +324,7 @@ export const SESSION_KIND_LABEL: Record<SessionKind, string> = {
   schedule: 'Schedule',
 };
 
-export const SESSION_KIND_ICON: Record<SessionKind, LucideIcon> = {
+export const SESSION_KIND_ICON: Record<SessionKind, IconComponent> = {
   chat: MessageSquareIcon,
   voice: MicIcon,
   mail: MailIcon,

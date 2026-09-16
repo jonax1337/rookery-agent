@@ -1,16 +1,16 @@
 import * as React from 'react';
 import { useNavigate } from 'react-router';
+
 import {
-  Building2Icon,
-  FolderIcon,
-  ListTodoIcon,
+  BriefcaseBusinessIcon as Building2Icon,
+  ClipboardCheckIcon as ListTodoIcon,
+  FolderOpenIcon as FolderIcon,
   MessageSquareIcon,
+  SearchIcon,
   SendIcon,
   UsersIcon,
-} from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+} from "@/components/icons";
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
-import { SearchIcon } from '@/components/animate-ui/icons/search';
 import {
   Command,
   CommandDialog,
@@ -32,6 +32,7 @@ import type {
   Task,
   Team,
 } from '@/lib/types';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * Strg/Cmd+K, and everything in the company is one keystroke away.
@@ -49,7 +50,7 @@ import type {
 export interface CommandAction {
   id: string;
   label: string;
-  icon?: LucideIcon;
+  icon?: IconComponent;
   /** Extra words that should find this entry, e.g. an English synonym. */
   keywords?: string[];
   /** Printed right-aligned, e.g. "⌘N". */
@@ -167,7 +168,7 @@ export function CommandPalette({
           <CommandEmpty>
             <Fade>
               <div className="flex flex-col items-center gap-2">
-                <SearchIcon className="size-6 text-muted-foreground" animateOnView />
+                <SearchIcon className="size-6 text-muted-foreground" />
                 Nothing found.
               </div>
             </Fade>

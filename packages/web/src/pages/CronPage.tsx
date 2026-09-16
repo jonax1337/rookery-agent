@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router';
+
 import {
-  CalendarClockIcon,
-  ClockAlertIcon,
+  AlarmClockIcon as ClockAlertIcon,
+  CalendarCheckIcon as CalendarClockIcon,
+  DeleteIcon as Trash2Icon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
   HistoryIcon,
-  PencilIcon,
+  PenToolIcon as PencilIcon,
   PlayIcon,
-  SquareArrowOutUpRightIcon,
-  Trash2Icon,
-} from 'lucide-react';
+  PlusIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -19,7 +21,6 @@ import { CRON_JOB_KIND_LABEL, formatDateTime, formatDuration } from '@/lib/forma
 import { daysAgo, formatNumber } from '@/lib/stats';
 import type { CronJob, CronRun } from '@/lib/types';
 import { useCronState, useOrgState } from '@/providers/rookery-provider';
-import { PlusIcon } from '@/components/animate-ui/icons/plus';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import {
@@ -81,7 +82,7 @@ export function CronPage() {
     actions: (
       <Button size="sm" asChild>
         <NavLink to="/cron/new">
-          <PlusIcon data-icon="inline-start" animateOnHover />
+          <PlusIcon data-icon="inline-start" />
           Create schedule
         </NavLink>
       </Button>
@@ -610,13 +611,11 @@ function statusLabel(job: CronJob): string {
 /**
  * The stat-card sentence that flips with live data: the number rolls its
  * digits (`SlidingNumber`), the headline rolls its words when the socket
- * turns the state around. `paddingBlock: 0` holds back the container's
- * built-in breathing room, which would otherwise grow the card footer in
- * the resting pose next to the cards with a plain-string headline.
+ * turns the state around.
  */
 function RotatingHeadline({ text }: { text: string }) {
   return (
-    <RotatingTextContainer text={text} style={{ paddingBlock: 0 }}>
+    <RotatingTextContainer text={text}>
       <RotatingText />
     </RotatingTextContainer>
   );

@@ -1,16 +1,18 @@
 import { useCallback, useMemo, useState } from 'react';
 import { NavLink } from 'react-router';
+
 import {
   ArchiveIcon,
   CheckIcon,
   CopyIcon,
-  FolderIcon,
+  DeleteIcon as AnimatedTrash2Icon,
+  DeleteIcon as Trash2Icon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
   FolderOpenIcon,
-  MessagesSquareIcon,
-  PencilIcon,
-  SquareArrowOutUpRightIcon,
-  Trash2Icon,
-} from 'lucide-react';
+  FolderOpenIcon as FolderIcon,
+  MessageSquareIcon as MessagesSquareIcon,
+  PenToolIcon as PencilIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -21,7 +23,6 @@ import type { Project, Session } from '@/lib/types';
 import { useAllSessions } from '@/hooks/useAllSessions';
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useConnection, useOrgState } from '@/providers/rookery-provider';
-import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
@@ -33,6 +34,7 @@ import {
 } from '@/components/blocks/data-table/table-columns';
 import { createRookeryColumnHelper } from '@/components/blocks/data-table/table-features';
 import { DetailDrawer, DetailDrawerTrigger } from '@/components/blocks/detail-drawer';
+import { SectionHeading } from '@/components/blocks/section-heading';
 import { useBulkAction, useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, NoResults, ServerOffline } from '@/components/common/empty-state';
 import { MetaList } from '@/components/common/meta-list';
@@ -311,7 +313,7 @@ export function OrgProjectsPage() {
                 })
               }
             >
-              <AnimatedTrash2Icon data-icon="inline-start" animateOnHover />
+              <AnimatedTrash2Icon data-icon="inline-start" />
               Delete
             </Button>
           )}
@@ -438,8 +440,7 @@ function ProjectDrawer({ project, sessions, capped, limit, onOpenChange }: Proje
             ]}
           />
 
-          <div>
-            <h3 className="mb-2 text-sm font-medium">Last discussed</h3>
+          <SectionHeading title="Last discussed" size="sm" level="h3" flush>
             {recent.length === 0 ? (
               <EmptyState
                 icon={MessagesSquareIcon}
@@ -468,7 +469,7 @@ function ProjectDrawer({ project, sessions, capped, limit, onOpenChange }: Proje
                 ))}
               </ItemGroup>
             )}
-          </div>
+          </SectionHeading>
         </>
       ) : null}
     </DetailDrawer>

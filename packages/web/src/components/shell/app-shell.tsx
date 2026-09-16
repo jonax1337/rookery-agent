@@ -1,6 +1,7 @@
+import { MessageSquarePlusIcon, MoonIcon, SunIcon } from "@/components/icons";
 import { useMemo, useState } from 'react';
 import { Outlet } from 'react-router';
-import { MessageSquarePlusIcon, MoonIcon, SunIcon } from 'lucide-react';
+
 import { useTheme } from 'next-themes';
 import {
   useAllSessionsState,

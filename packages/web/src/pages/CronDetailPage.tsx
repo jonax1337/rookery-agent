@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { NavLink, useNavigate, useParams } from 'react-router';
+
 import {
-  Building2Icon,
-  CalendarClockIcon,
+  BriefcaseBusinessIcon as Building2Icon,
+  CalendarCheckIcon as CalendarClockIcon,
+  DeleteIcon as Trash2Icon,
   HistoryIcon,
-  KeyRoundIcon,
-  MessagesSquareIcon,
-  PencilIcon,
-  ShieldIcon,
-  Trash2Icon,
-  UserRoundIcon,
-} from 'lucide-react';
+  KeyIcon as KeyRoundIcon,
+  MessageSquareIcon as MessagesSquareIcon,
+  PenToolIcon as PencilIcon,
+  PlayIcon as AnimatedPlayIcon,
+  ShieldCheckIcon as ShieldIcon,
+  UserIcon as UserRoundIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
-import { PlayIcon as AnimatedPlayIcon } from '@/components/animate-ui/icons/play';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { RotatingText, RotatingTextContainer } from '@/components/animate-ui/primitives/texts/rotating';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
@@ -184,9 +185,8 @@ export function CronDetailPage() {
             {running ? (
               <Spinner aria-label="Running" data-icon="inline-start" />
             ) : (
-              // animateOnView, not animateOnHover: the button base carries
-              // `[&_svg]:pointer-events-none`, so a hover trigger never fires.
-              <AnimatedPlayIcon data-icon="inline-start" animateOnView />
+              // Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span.
+              <AnimatedPlayIcon data-icon="inline-start" />
             )}
             Run now
           </Button>
@@ -410,10 +410,9 @@ export function CronDetailPage() {
             {
               label: 'Latest status',
               // The label flips with every finished run; RotatingText rolls
-              // it instead of snapping it. `paddingBlock: 0` keeps the
-              // card's rhythm - the container's 0.25rem default would grow it.
+              // it instead of snapping it.
               value: (
-                <RotatingTextContainer text={latestStatus} style={{ paddingBlock: 0 }}>
+                <RotatingTextContainer text={latestStatus}>
                   <RotatingText />
                 </RotatingTextContainer>
               ),

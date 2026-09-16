@@ -1,12 +1,16 @@
 import { forwardRef, useCallback, useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
+
 import {
-  PencilIcon,
-  SquareArrowOutUpRightIcon,
-  Trash2Icon,
-  UserRoundIcon,
+  DeleteIcon as AnimatedTrash2Icon,
+  DeleteIcon as Trash2Icon,
+  ExternalLinkIcon as SquareArrowOutUpRightIcon,
+  PenToolIcon as PencilIcon,
+  UserIcon as AnimatedUserRoundIcon,
+  UserIcon as UserRoundIcon,
   UsersIcon,
-} from 'lucide-react';
+  UsersIcon as AnimatedUsersIcon,
+} from "@/components/icons";
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -15,9 +19,6 @@ import { PERMISSION_LABEL } from '@/lib/format';
 import { formatDateTime, formatNumber } from '@/lib/stats';
 import type { Agent, Team } from '@/lib/types';
 import { useOrgState } from '@/providers/rookery-provider';
-import { Trash2Icon as AnimatedTrash2Icon } from '@/components/animate-ui/icons/trash-2';
-import { UserRoundIcon as AnimatedUserRoundIcon } from '@/components/animate-ui/icons/user-round';
-import { UsersIcon as AnimatedUsersIcon } from '@/components/animate-ui/icons/users';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 import { DataTable } from '@/components/blocks/data-table/data-table';
@@ -29,6 +30,7 @@ import {
 } from '@/components/blocks/data-table/table-columns';
 import { createRookeryColumnHelper } from '@/components/blocks/data-table/table-features';
 import { DetailDrawer, DetailDrawerTrigger } from '@/components/blocks/detail-drawer';
+import { SectionHeading } from '@/components/blocks/section-heading';
 import { useBulkAction, useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, NoResults, ServerOffline } from '@/components/common/empty-state';
 import { MetaList } from '@/components/common/meta-list';
@@ -43,6 +45,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { ItemGroup } from '@/components/ui/item';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * The teams, and how full they are.
@@ -70,15 +73,15 @@ const COLUMN_LABELS: Record<string, string> = {
 
 /**
  * The empty-state icons as animate-ui versions. `EmptyState` takes a
- * `LucideIcon` and renders it without props, so each animated icon sits in a
+ * `IconComponent` and renders it without props, so each animated icon sits in a
  * forwardRef shell that carries its `animateOnView` trigger along.
  */
 const EmptyUsersIcon = forwardRef<SVGSVGElement>(function EmptyUsersIcon() {
-  return <AnimatedUsersIcon animateOnView />;
+  return <AnimatedUsersIcon />;
 });
 
 const EmptyUserRoundIcon = forwardRef<SVGSVGElement>(function EmptyUserRoundIcon() {
-  return <AnimatedUserRoundIcon animateOnView />;
+  return <AnimatedUserRoundIcon />;
 });
 
 export function OrgTeamsPage() {
@@ -305,7 +308,7 @@ export function OrgTeamsPage() {
                 });
               }}
             >
-              <AnimatedTrash2Icon data-icon="inline-start" animateOnView />
+              <AnimatedTrash2Icon data-icon="inline-start" />
               Disband
             </Button>
           )}
@@ -389,8 +392,7 @@ function TeamDrawer({ team, members, leadName, onOpenChange }: TeamDrawerProps) 
           </Fade>
 
           <Fade delay={50}>
-            <div>
-              <h3 className="mb-2 text-sm font-medium">Who works here</h3>
+            <SectionHeading title="Who works here" size="sm" level="h3" flush>
               {members.length === 0 ? (
                 <EmptyState
                   icon={EmptyUserRoundIcon}
@@ -418,7 +420,7 @@ function TeamDrawer({ team, members, leadName, onOpenChange }: TeamDrawerProps) 
                   ))}
                 </ItemGroup>
               )}
-            </div>
+            </SectionHeading>
           </Fade>
         </>
       ) : null}

@@ -49,7 +49,7 @@ export function AssistantMigration() {
         Choose individual files and jobs after previewing. Selected destination files are backed up; source files stay in place.
         Scheduled jobs arrive paused for your review. Chat databases, credentials, gateway settings and general tool installations are not imported.
       </FieldDescription>
-      <p className="text-sm"><Link className="underline underline-offset-4" to="/settings/identity">Start fresh: set up a new assistant</Link></p>
+      <p className="text-sm"><Button asChild variant="link" className="h-auto gap-0 p-0 text-left align-baseline"><Link to="/settings/identity">Start fresh: set up a new assistant</Link></Button></p>
       <Field>
         <FieldLabel htmlFor="migration-source">Migrate from</FieldLabel>
         <Select value={source} disabled={busy} onValueChange={(value) => { setSource(value as MigrationSource); invalidate(); }}>
@@ -102,10 +102,10 @@ export function AssistantMigration() {
       {result ? (
         <div role="status" className="space-y-2 text-sm">
           <p>Imported {result.files.length} {result.files.length === 1 ? 'file' : 'files'}.{result.files.some(file => /\.md$/i.test(file)) ? ' Your profile applies to the next message.' : ''}</p>
-          {result.jobs?.length ? <p>Imported {result.jobs.length} scheduled {result.jobs.length === 1 ? 'job' : 'jobs'}, paused for review. Review in <Link className="underline underline-offset-4" to="/cron">Schedules</Link> before enabling.</p> : null}
+          {result.jobs?.length ? <p>Imported {result.jobs.length} scheduled {result.jobs.length === 1 ? 'job' : 'jobs'}, paused for review. Review in <Button asChild variant="link" className="h-auto gap-0 p-0 text-left align-baseline"><Link to="/cron">Schedules</Link></Button> before enabling.</p> : null}
           {result.backupPath ? <p className="break-all">Backup: {result.backupPath}</p> : null}
           {result.warnings.map((warning, index) => <p key={index} className="text-muted-foreground">{warning}</p>)}
-          <p><Link className="underline underline-offset-4" to="/settings/identity">Review your profile and set its display name</Link></p>
+          <p><Button asChild variant="link" className="h-auto gap-0 p-0 text-left align-baseline"><Link to="/settings/identity">Review your profile and set its display name</Link></Button></p>
         </div>
       ) : null}
       {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}

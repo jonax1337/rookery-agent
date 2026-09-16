@@ -1,15 +1,15 @@
+import { PlusIcon, RadioTowerIcon, SendIcon } from "@/components/icons";
 import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink, useParams } from 'react-router';
-import { PlusIcon, XIcon } from 'lucide-react';
+
 import { toast } from 'sonner';
 
-import { RadioTowerIcon } from '@/components/animate-ui/icons/radio-tower';
-import { SendIcon } from '@/components/animate-ui/icons/send';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { FormPage } from '@/components/blocks/form-page';
 import { PageBody } from '@/components/blocks/page-body';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { MetaList } from '@/components/common/meta-list';
+import { RemovableChip } from '@/components/common/removable-chip';
 import { FormFieldsSkeleton } from '@/components/forms/form-kit';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
@@ -51,6 +51,7 @@ import type {
   TranscribeEngine,
 } from '@/lib/types';
 import { useConfig } from '@/providers/rookery-provider';
+import type { IconComponent } from "@/components/icons";
 
 /**
  * The Telegram gateway's own settings.
@@ -120,11 +121,11 @@ const TOKEN_SOURCE_LABEL: Record<GatewayStatus['tokenSource'], string> = {
 
 /**
  * The empty-state icon as an animate-ui version. `EmptyState` takes a
- * `LucideIcon` and renders it without props, so the animated icon sits in a
+ * `IconComponent` and renders it without props, so the animated icon sits in a
  * forwardRef shell that carries its `animateOnView` trigger along.
  */
 const EmptyRadioTowerIcon = forwardRef<SVGSVGElement>(function EmptyRadioTowerIcon() {
-  return <RadioTowerIcon animateOnView />;
+  return <RadioTowerIcon />;
 });
 
 export function GatewayDetailPage() {
@@ -259,7 +260,7 @@ export function GatewayDetailPage() {
             {testing ? (
               <Spinner aria-label="Sending" />
             ) : (
-              <SendIcon data-icon="inline-start" animateOnHover size={24} />
+              <SendIcon data-icon="inline-start" size={24} />
             )}
             Send test message
           </Button>
@@ -352,14 +353,11 @@ export function GatewayDetailPage() {
             <CardTitle>Status</CardTitle>
             <CardDescription>
               Save the bot token below to apply it without restarting. It is stored in <code>~/.rookery/config.json</code>, but is never returned to this page. It only reports <em>whether</em> a token is set. Create a bot with{' '}
-              <a
-                href="https://t.me/BotFather"
-                target="_blank"
-                rel="noreferrer"
-                className="underline underline-offset-2"
-              >
-                @BotFather
-              </a>
+              <Button asChild variant="link" className="h-auto gap-0 p-0 text-left align-baseline">
+                <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">
+                  @BotFather
+                </a>
+              </Button>
               .
             </CardDescription>
           </CardHeader>
@@ -439,13 +437,14 @@ export function GatewayDetailPage() {
                     {gateway.configured ? (
                       <>
                         {' '}
-                        <button
+                        <Button
                           type="button"
-                          className="underline underline-offset-2 hover:text-destructive"
+                          variant="link"
+                          className="h-auto gap-0 p-0 text-left align-baseline hover:text-destructive"
                           onClick={() => set({ token: null })}
                         >
                           Remove token
-                        </button>
+                        </Button>
                         {draft.token === null ? ' — removed when you save.' : null}
                       </>
                     ) : null}
@@ -602,17 +601,13 @@ export function GatewayDetailPage() {
               {draft.allowedUserIds.length > 0 ? (
                 <div className="flex flex-wrap gap-2">
                   {draft.allowedUserIds.map((value) => (
-                    <Badge key={value} variant="secondary" className="gap-1 font-mono tabular-nums">
-                      {value}
-                      <button
-                        type="button"
-                        aria-label={'Remove ' + value}
-                        className="rounded-full hover:text-destructive"
-                        onClick={() => removeAllowedId(value)}
-                      >
-                        <XIcon data-icon="inline-end" />
-                      </button>
-                    </Badge>
+                    <RemovableChip
+                      key={value}
+                      label={value}
+                      removeLabel={'Remove ' + value}
+                      onRemove={() => removeAllowedId(value)}
+                      className="font-mono tabular-nums"
+                    />
                   ))}
                 </div>
               ) : null}
@@ -856,9 +851,13 @@ export function GatewayDetailPage() {
       <Fade delay={150}>
         <p className="text-xs text-muted-foreground">
           View all gateways under{' '}
-          <NavLink to="/gateways" className="underline underline-offset-2">
-            Gateways
-          </NavLink>
+          <Button
+            asChild
+            variant="link"
+            className="h-auto gap-0 p-0 text-left align-baseline text-xs"
+          >
+            <NavLink to="/gateways">Gateways</NavLink>
+          </Button>
           .
         </p>
       </Fade>
