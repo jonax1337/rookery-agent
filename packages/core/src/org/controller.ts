@@ -15,6 +15,7 @@ import type {
   AssignmentView,
   EffortLevel,
   Mail,
+  MailThreadKind,
   MailWho,
   MemoryKind,
   NotifyEvent,
@@ -106,8 +107,12 @@ export interface ToolContext {
   depth: number;
   emit: (event: AgentEvent) => void;
   signal?: AbortSignal;
-  /** Set when the running assignment itself came from mail; carries the auto-trigger loop guard. */
-  sourceMail?: { id: string; threadId: string; depth: number };
+  /**
+   * Set when the running assignment itself came from mail; carries the
+   * auto-trigger loop guard, and everything `run()` needs to mail the result
+   * back to the sender as a reply in the same thread.
+   */
+  sourceMail?: SourceMailRef;
   /**
    * Set when the caller is a scheduled run rather than a person's
    * conversation. Automated runs work, but they write nothing back: no
@@ -116,6 +121,20 @@ export interface ToolContext {
    * storage.
    */
   scheduled?: boolean;
+}
+
+/**
+ * The mail that started a run: who wrote it, which thread it lives in, how
+ * deep the run already is. The depth is the loop guard; the rest is what the
+ * finished run's reply is built from.
+ */
+export interface SourceMailRef {
+  id: string;
+  threadId: string;
+  depth: number;
+  fromKind: RequesterKind;
+  fromAgentId?: string;
+  subject: string;
 }
 
 export interface RunAssignmentInput {
@@ -136,7 +155,7 @@ export interface RunAssignmentInput {
    * Set when this assignment was started by mailing the agent's To line.
    * On success, `run()` mails the result back to the sender as a reply.
    */
-  sourceMail?: { id: string; threadId: string; depth: number; fromKind: RequesterKind; fromAgentId?: string; subject: string };
+  sourceMail?: SourceMailRef;
 }
 
 export interface OrgControllerOptions {
@@ -1201,6 +1220,8 @@ export class OrgController extends EventEmitter {
     depth: number;
     parentAssignmentId?: string;
     projectId?: string;
+    /** What thread this mail opens; only 'assignment' changes delivery. */
+    kind?: MailThreadKind;
     /**
      * This mail is a finished run's own reply. It is delivered, but it wakes
      * nobody: an answer is not new work, and letting one start a run is what
@@ -1222,10 +1243,14 @@ export class OrgController extends EventEmitter {
       inReplyTo: params.inReplyTo,
       depth: params.depth,
       assignmentId: params.parentAssignmentId,
+      kind: params.kind,
     });
     this.#announce({ type: 'mail', mail }, params.emit);
 
-    if (!params.autoReply && params.depth < this.#config.org.maxDelegationDepth) {
+    // An assignment thread already has its work: sendTaskMail starts the run
+    // itself, over the task, and the To-trigger here would start a second,
+    // untracked one beside it.
+    if (!params.autoReply && params.kind !== 'assignment' && params.depth < this.#config.org.maxDelegationDepth) {
       const senderLabel = this.#mailWhoLabel(params.from);
       for (const target of params.to) {
         if (target.kind === 'assistant' && this.#runAssistantMail) {
@@ -1389,6 +1414,109 @@ export class OrgController extends EventEmitter {
       projectId: input.projectId,
       emit: input.emit ?? (() => undefined),
     });
+  }
+
+  /**
+   * A work order as mail: one agent on the To line, one task on the board,
+   * one thread tying them together. The mail opens an `assignment` thread -
+   * delivered, but not auto-triggered, because the run happens here over the
+   * task, which is what keeps assignment, board and mail the same story.
+   * The agent's finished run replies into the thread; marking the task done
+   * posts a status note into it (see `notifyTaskStatus`).
+   */
+  async sendTaskMail(input: {
+    orgId: string;
+    to: string;
+    cc?: string[];
+    subject: string;
+    body: string;
+    projectId?: string;
+    emit?: (event: AgentEvent) => void;
+  }): Promise<{ mail: Mail; task: Task }> {
+    const target = this.#resolveMailTarget(input.orgId, input.to);
+    if (!target || target.kind !== 'agent' || !target.id) throw new Error('An assignment needs exactly one agent on the To line.');
+
+    const task = this.#store.org.createTask({
+      orgId: input.orgId,
+      title: input.subject.trim() || '(no subject)',
+      description: input.body,
+      assigneeId: target.id,
+      createdBy: 'user',
+      projectId: input.projectId,
+    });
+    this.#announceTask(task, input.emit ?? (() => undefined));
+
+    const mail = await this.#deliverMail({
+      orgId: input.orgId,
+      from: { kind: 'user' },
+      to: [target],
+      cc: (input.cc ?? [])
+        .map((token) => this.#resolveMailTarget(input.orgId, token))
+        .filter((who): who is MailWho => who !== null),
+      subject: input.subject,
+      body: input.body,
+      depth: 0,
+      kind: 'assignment',
+      projectId: input.projectId,
+      emit: input.emit ?? (() => undefined),
+    });
+    this.#store.org.linkMailThreadTask(input.orgId, mail.threadId, task.id);
+
+    // The run goes over the task, so the board keeps the assignment and the
+    // task's own trail. sourceMail is what makes the finished run mail its
+    // result back into this thread. Fire-and-forget like every delivery
+    // trigger: the mail exists, the answer arrives when it arrives.
+    void this.runTask(
+      {
+        orgId: input.orgId,
+        audience: 'assistant',
+        depth: -1,
+        projectId: input.projectId,
+        emit: () => undefined,
+        sourceMail: { id: mail.id, threadId: mail.threadId, depth: 0, fromKind: 'user', subject: mail.subject },
+      },
+      this.#store.org.getTask(task.id) ?? task,
+    ).catch((error: unknown) => {
+      this.#log.warn('Task run for assignment mail failed', { task: task.id, error: String(error) });
+    });
+
+    return { mail, task };
+  }
+
+  /**
+   * A task's status change, told to its thread: a system note from the
+   * assistant as a reply, so the mail trail shows not just the work order
+   * and the result but also how the work ended. Never throws, and never
+   * wakes anyone - `autoReply` delivers without triggering.
+   */
+  async notifyTaskStatus(task: Task, status: 'done' | 'cancelled'): Promise<void> {
+    const orgId = task.orgId;
+    const thread = this.#store.org.getMailThreadForTask(orgId, task.id);
+    if (!thread) return;
+    const latest = this.#store.org.thread(orgId, thread.threadId, { limit: 50 }).at(-1);
+    if (!latest) return;
+    try {
+      await this.#deliverMail({
+        orgId,
+        from: { kind: 'assistant' },
+        to: [{ kind: 'user' }],
+        // Everyone the conversation already has stays on it; the status note
+        // is bookkeeping, but bookkeeping the assignee should see.
+        cc: this.#replyCc(latest, { kind: 'assistant' }, { kind: 'user' }),
+        subject: latest.subject.startsWith('Re: ') ? latest.subject : 'Re: ' + latest.subject,
+        body:
+          status === 'done'
+            ? 'The task "' + task.title + '" was marked as done.'
+            : 'The task "' + task.title + '" was cancelled.',
+        inReplyTo: latest.id,
+        threadId: thread.threadId,
+        depth: latest.depth + 1,
+        autoReply: true,
+        emit: () => undefined,
+      });
+    } catch (error: unknown) {
+      this.#log.warn('Task status mail failed', { task: task.id, error: String(error) });
+    }
   }
 
   /** Emit into the turn that caused an event, and to everyone listening on the controller. */
@@ -1569,9 +1697,7 @@ export class OrgController extends EventEmitter {
         emit: input.emit,
         signal: controller.signal,
         scheduled: input.scheduled,
-        sourceMail: input.sourceMail
-          ? { id: input.sourceMail.id, threadId: input.sourceMail.threadId, depth: input.sourceMail.depth }
-          : undefined,
+        sourceMail: input.sourceMail,
       });
 
       let text = '';
@@ -1756,6 +1882,9 @@ export class OrgController extends EventEmitter {
           inReplyTo: sourceMail.id,
           threadId: sourceMail.threadId,
           depth: sourceMail.depth + 1,
+          // The reply carries the run that produced it; the thread's task, if
+          // it has one, is one `task_assignments` hop away from here.
+          parentAssignmentId: assignment.id,
           projectId: project?.id,
           autoReply: true,
           emit: input.emit,
@@ -2157,9 +2286,14 @@ export class OrgController extends EventEmitter {
     }
 
     const waves = buildTaskWaves(children.filter((c) => c.status !== 'done'));
+    // A task that arrived as mail must not let every subtask's leaf answer
+    // the thread in turn - three subtasks would mail three replies. The
+    // waves run without the mail context; the parent speaks for the split
+    // once, below, with the combined result.
+    const waveContext: ToolContext = { ...context, sourceMail: undefined };
     for (const wave of waves) {
-      if (context.signal?.aborted) break;
-      await Promise.all(wave.map((child) => this.#runSubtask(context, child)));
+      if (waveContext.signal?.aborted) break;
+      await Promise.all(wave.map((child) => this.#runSubtask(waveContext, child)));
     }
 
     const all = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
@@ -2171,12 +2305,42 @@ export class OrgController extends EventEmitter {
         return head + '\n' + (c.result ?? (c.error ? 'FAILED: ' + c.error : 'no output'));
       })
       .join('\n\n');
-    if (context.signal?.aborted) return finish('cancelled', { result: combined });
-    if (failed.length === all.length) return finish('failed', { error: 'Every subtask failed.', result: combined });
-    return finish('done', {
-      result: combined,
-      error: failed.length ? failed.length + ' of ' + all.length + ' subtasks failed.' : undefined,
-    });
+    const outcome =
+      context.signal?.aborted
+        ? { status: 'cancelled' as const, result: combined }
+        : failed.length === all.length
+          ? { status: 'failed' as const, error: 'Every subtask failed.', result: combined }
+          : {
+              status: 'done' as const,
+              result: combined,
+              error: failed.length ? failed.length + ' of ' + all.length + ' subtasks failed.' : undefined,
+            };
+    const done = finish(outcome.status, { result: outcome.result, error: outcome.error });
+    // The one answer the mailed split makes: the parent's combined report,
+    // through the same auto-reply path a leaf would have used.
+    if (context.sourceMail && outcome.status === 'done') {
+      const sourceMail = context.sourceMail;
+      const replier: MailWho = { kind: 'assistant' };
+      const sender: MailWho = { kind: sourceMail.fromKind, id: sourceMail.fromAgentId };
+      if (!this.#answeredDuringTurn(context.orgId, replier, sender, started)) {
+        void this.#deliverMail({
+          orgId: context.orgId,
+          from: replier,
+          to: [sender],
+          cc: this.#replyCc(this.#store.org.getMail(sourceMail.id), replier, sender),
+          subject: 'Re: ' + sourceMail.subject,
+          body: combined,
+          inReplyTo: sourceMail.id,
+          threadId: sourceMail.threadId,
+          depth: sourceMail.depth + 1,
+          autoReply: true,
+          emit: context.emit,
+        }).catch((error: unknown) => {
+          this.#log.warn('Task completion mail failed', { task: task.id, error: String(error) });
+        });
+      }
+    }
+    return done;
   }
 
   /** One subtask inside a wave: mark it, run its leaf, record the outcome. */
@@ -2239,6 +2403,9 @@ export class OrgController extends EventEmitter {
       depth: context.depth + 1,
       emit: context.emit,
       signal: context.signal,
+      // A task that arrived as mail answers in its thread: the leaf's run
+      // mails its result back to the sender, the way a To-line run does.
+      sourceMail: context.sourceMail,
     });
     this.#store.org.linkTaskAssignment(task.id, assignment.id);
     return { status: assignment.status, result: assignment.result, error: assignment.error, assignmentId: assignment.id };

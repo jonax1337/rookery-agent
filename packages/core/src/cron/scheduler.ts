@@ -379,7 +379,9 @@ export class CronScheduler extends EventEmitter {
         : 'Failed at ' + when + ' (' + describeCron(job.schedule) + '): ' + (outcome.error ?? 'unknown error');
     try {
       const from: MailWho = job.kind === 'agent' && job.agentId ? { kind: 'agent', id: job.agentId } : { kind: 'assistant' };
-      const mail = this.#store.org.sendMail({ orgId: job.orgId, from, to: [{ kind: 'user' }], subject, body });
+      // A schedule's outcome is a report even when the assistant sends it -
+      // the agent-default in the store would file it as chat.
+      const mail = this.#store.org.sendMail({ orgId: job.orgId, from, to: [{ kind: 'user' }], subject, body, kind: 'report' });
       this.emit('mail', { type: 'mail', mail } satisfies AgentEvent);
     } catch (error) {
       this.#log.warn('Could not post schedule outcome to mail', { error: (error as Error).message });

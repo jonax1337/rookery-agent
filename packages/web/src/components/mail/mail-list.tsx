@@ -1,13 +1,15 @@
 
 import {
+  ArchiveIcon,
   DownloadIcon as InboxIcon,
+  FileStackIcon,
   MailCheckIcon,
   SearchIcon,
   SendIcon,
   SquarePenIcon as PenSquareIcon,
 } from "@/components/icons";
 
-import type { Mail } from '@/lib/types';
+import type { Mail, MailFolder } from '@/lib/types';
 import { relativeTime } from '@/lib/format';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
@@ -27,9 +29,27 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
  * the flat table rows this pane used to draw. Reading one is `MailDisplay`'s
  * job; this only ever selects one.
  *
- * Which folder is open is no longer decided here: Inbox and Outbox moved to
- * the rail, where a mail program puts its folders.
+ * Which folder is open is no longer decided here: the fixed folders live in
+ * the rail, where a mail program puts them.
  */
+
+/** The folder names as the pane's heading spells them. */
+const FOLDER_LABELS: Record<MailFolder, string> = {
+  inbox: 'Inbox',
+  tasks: 'Tasks',
+  reports: 'Reports',
+  outbox: 'Outbox',
+  archiv: 'Archive',
+};
+
+/** The empty-state icon per folder, mirroring the rail's. */
+const FOLDER_ICONS: Record<MailFolder, typeof InboxIcon> = {
+  inbox: InboxIcon,
+  tasks: FileStackIcon,
+  reports: MailCheckIcon,
+  outbox: SendIcon,
+  archiv: ArchiveIcon,
+};
 
 /** The body on one line, for the row's snippet. */
 function snippet(body: string): string {
@@ -37,7 +57,7 @@ function snippet(body: string): string {
 }
 
 interface MailListEmptyProps {
-  box: 'inbox' | 'outbox';
+  folder: MailFolder;
   /** Whose mailbox stands empty, for the sentence that explains it. */
   title: string;
   interactive: boolean;
@@ -59,7 +79,7 @@ interface MailListEmptyProps {
  * out, so only they offer a button.
  */
 function MailListEmpty({
-  box,
+  folder,
   title,
   interactive,
   search,
@@ -69,6 +89,7 @@ function MailListEmpty({
   showsUnread,
 }: MailListEmptyProps) {
   const owner = interactive ? 'You' : title;
+  const Icon = FOLDER_ICONS[folder];
 
   if (search.trim()) {
     return <NoResults query={search.trim()} onReset={() => onSearch('')} size="sm" />;
@@ -88,18 +109,19 @@ function MailListEmpty({
     );
   }
 
+  const sent = folder === 'outbox';
   return (
     <EmptyState
-      icon={box === 'inbox' ? InboxIcon : SendIcon}
-      title={box === 'inbox' ? 'Inbox is empty' : 'Outbox is empty'}
+      icon={Icon}
+      title={FOLDER_LABELS[folder] + ' is empty'}
       description={
-        box === 'inbox'
+        sent
           ? interactive
-            ? 'Nobody has written to you yet. Mail an agent and their reply lands here.'
-            : owner + ' has not received any mail yet.'
-          : interactive
             ? 'You have not sent any mail yet.'
             : owner + ' has not sent any mail yet.'
+          : interactive
+            ? 'Nobody has written to you yet. Mail an agent and their reply lands here.'
+            : owner + ' has not received any mail yet.'
       }
       variant="plain"
       size="sm"
@@ -113,7 +135,7 @@ interface MailListProps {
   onSelect(id: string): void;
   /** Whose mail this is, beside the folder heading. */
   title: string;
-  box: 'inbox' | 'outbox';
+  folder: MailFolder;
   filter: 'all' | 'unread';
   onFilterChange(filter: 'all' | 'unread'): void;
   /** Only the "You" mailbox composes and shows unread state. */
@@ -135,7 +157,7 @@ export function MailList({
   selectedId,
   onSelect,
   title,
-  box,
+  folder,
   filter,
   onFilterChange,
   interactive,
@@ -149,12 +171,12 @@ export function MailList({
 }: MailListProps) {
   // Read state belongs to the mailbox owner, and only the owner's own mailbox
   // is ever open for writing - so unread is a thing the inbox of "You" has.
-  const showsUnread = interactive && box === 'inbox';
+  const showsUnread = interactive && folder === 'inbox';
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <div className="flex h-[52px] shrink-0 items-center gap-2 px-4">
-        <h1 className="shrink-0 text-xl font-bold">{box === 'inbox' ? 'Inbox' : 'Outbox'}</h1>
+        <h1 className="shrink-0 text-xl font-bold">{FOLDER_LABELS[folder]}</h1>
         <span className="min-w-0 truncate text-xs text-muted-foreground">{title}</span>
         {!interactive && (
           <Badge variant="outline" className="shrink-0 text-muted-foreground">
@@ -199,7 +221,7 @@ export function MailList({
           // broken layout rather than as an answer.
           <div className="flex h-full items-center justify-center px-4 pb-10">
             <MailListEmpty
-              box={box}
+              folder={folder}
               title={title}
               interactive={interactive}
               search={search}

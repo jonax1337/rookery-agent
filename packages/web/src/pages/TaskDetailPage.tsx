@@ -9,6 +9,7 @@ import {
   ExternalLinkIcon as SquareArrowOutUpRightIcon,
   FolderOpenIcon as FolderIcon,
   LinkIcon,
+  MailboxIcon,
   PenToolIcon as PencilIcon,
   PenToolIcon as PencilLineIcon,
   PlayIcon as PlayAnimatedIcon,
@@ -709,6 +710,18 @@ export function TaskDetailPage() {
                     </span>
                   ),
               },
+              // The thread the task was born in - the other end of the chain
+              // Mail-Chip → Task → Assignment → Reply, one click back.
+              ...(detail?.thread
+                ? [
+                    {
+                      label: 'Mailbox',
+                      value: 'Open thread',
+                      icon: MailboxIcon,
+                      to: '/inbox?mailbox=user&thread=' + detail.thread.threadId,
+                    },
+                  ]
+                : []),
             ]}
           />
         </div>

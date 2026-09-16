@@ -1,7 +1,9 @@
 import { useRef, useState } from 'react';
 import type { RefObject } from 'react';
+import { NavLink } from 'react-router';
 
 import {
+  ArchiveIcon,
   CornerUpLeftIcon as ReplyIcon,
   CornerUpRightIcon,
   GripVerticalIcon as MoreVerticalIcon,
@@ -30,11 +32,15 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 /**
  * The reading pane: an action bar, one mail in full, and a reply box.
  *
- * The action bar is shadcn's, minus the buttons we would have had to fake.
- * Archive, junk, trash and snooze are not in it because they are not in the
- * data model - a mail here has recipients and a read mark, and that is all.
- * What is left is what the company can actually do: answer the sender, answer
- * everyone, pass a mail on, and put one back on the unread pile.
+ * The action bar is shadcn's, with one archive of our own: the thread is the
+ * unit that gets filed away, because what a thread *is* is what the folders
+ * route on. What is left of shadcn's bar is what the company can actually
+ * do: answer the sender, answer everyone, pass a mail on, and put one back on
+ * the unread pile.
+ *
+ * When the mail's thread is an assignment with a task on the board, a chip
+ * under the subject links to it - mail and board are two views of the same
+ * work, and this is the hop between them.
  *
  * Reply keeps the inline box this pane always had - it is the fast path and
  * needs no dialog, so the bar's Reply button only puts the cursor in it. Reply
@@ -125,6 +131,8 @@ interface MailDisplayProps {
   canReplyAll: boolean;
   /** Puts the open mail back on the unread pile. Absent when it is already unread. */
   onMarkUnread?: (() => void) | undefined;
+  /** Files the whole thread away. Absent when there is nothing to do. */
+  onArchiveThread?: (() => void) | undefined;
   sending: boolean;
 }
 
@@ -141,6 +149,7 @@ export function MailDisplay({
   onForward,
   canReplyAll,
   onMarkUnread,
+  onArchiveThread,
   sending,
 }: MailDisplayProps) {
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
@@ -208,6 +217,13 @@ export function MailDisplay({
                   <DropdownMenuItem disabled={!onMarkUnread} onSelect={() => onMarkUnread?.()}>
                     Mark as unread
                   </DropdownMenuItem>
+                  <DropdownMenuItem
+                    disabled={!onArchiveThread || mail?.threadArchivedAt != null}
+                    onSelect={() => onArchiveThread?.()}
+                  >
+                    <ArchiveIcon />
+                    Archive thread
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -239,6 +255,16 @@ export function MailDisplay({
                 )}
               </div>
               <div className="line-clamp-1 text-xs">{mail.subject || '(No subject)'}</div>
+              {mail.taskId && (
+                <div className="flex min-w-0">
+                  <NavLink
+                    to={'/tasks/' + mail.taskId}
+                    className="min-w-0 max-w-full truncate rounded-full border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  >
+                    {mail.taskTitle || 'Task on the board'}
+                  </NavLink>
+                </div>
+              )}
               <div className="line-clamp-1 text-xs text-muted-foreground">{toLine(mail)}</div>
               {cc && <div className="line-clamp-1 text-xs text-muted-foreground">{cc}</div>}
             </div>

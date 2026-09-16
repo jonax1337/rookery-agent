@@ -1,9 +1,10 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { AssignmentStatus, MailWho, TaskStatus } from '@rookery/core';
+import type { AssignmentStatus, MailFolder, MailWho, TaskStatus } from '@rookery/core';
 import { fingerprintMcpFile, projectMcpStatus, readProjectMcpFile } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import {
   agentSchema,
+  archiveMailThreadSchema,
   assignInputSchema,
   assignmentReviewSchema,
   formatIssues,
@@ -409,6 +410,9 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
       children: store.listTasks(task.orgId, { parentId: task.id }),
       assignee: task.assigneeId ? store.getAgent(task.assigneeId) : null,
       assignment: task.assignmentId ? store.getAssignment(task.assignmentId) : null,
+      // The mail thread the task was born in, when it arrived as an
+      // assignment mail - the board side of the traceable chain.
+      thread: store.getMailThreadForTask(task.orgId, task.id),
     };
   });
 
@@ -443,6 +447,11 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     });
     const updated = store.getTask(task.id);
     if (updated) context.assistant.emit('task', { type: 'task', task: updated });
+    // An assignment thread is told how its work ended - the note rides along
+    // after the patch succeeded and must never fail the patch itself.
+    if (updated && (patch.status === 'done' || patch.status === 'cancelled')) {
+      await context.assistant.org.notifyTaskStatus(updated, patch.status).catch(() => undefined);
+    }
     return updated;
   });
 
@@ -480,13 +489,28 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
 
   app.get(
     '/api/org/mail',
-    async (request: FastifyRequest<{ Querystring: { mailbox?: string; box?: string; limit?: string } }>, reply: FastifyReply) => {
+    async (
+      request: FastifyRequest<{ Querystring: { mailbox?: string; box?: string; folder?: string; thread?: string; limit?: string } }>,
+      reply: FastifyReply,
+    ) => {
       const token = request.query.mailbox ?? 'user';
       const who = resolveMailbox(token);
       if (!who) return notFound(reply, 'No agent ' + token);
-      const box = request.query.box === 'outbox' ? 'outbox' : 'inbox';
       const orgId = context.assistant.org.activeOrganization().id;
-      return store.mailbox(orgId, who, box, { limit: clampLimit(request.query.limit, 100, 500) });
+      // `thread` asks for one conversation, oldest first, in whoever's view -
+      // a deep link from the board lands on the whole thread, not one mail.
+      if (request.query.thread) {
+        return store.thread(orgId, request.query.thread, { who, limit: 100 });
+      }
+      const box = request.query.box === 'outbox' || request.query.folder === 'outbox' ? 'outbox' : 'inbox';
+      if (box === 'outbox') {
+        return store.mailbox(orgId, who, 'outbox', { limit: clampLimit(request.query.limit, 100, 500) });
+      }
+      const folder = (request.query.folder ?? 'inbox') as MailFolder;
+      if (!['inbox', 'tasks', 'reports', 'archiv'].includes(folder)) {
+        return badRequest(reply, 'No folder ' + request.query.folder);
+      }
+      return store.mailbox(orgId, who, 'inbox', { folder, limit: clampLimit(request.query.limit, 100, 500) });
     },
   );
 
@@ -496,6 +520,13 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     try {
       // The controller's own broadcast (forwarded through the assistant's
       // `mail` event) reaches every socket; nothing to emit here.
+      if (input.mode === 'task') {
+        const to = input.to.length === 1 ? input.to[0] : undefined;
+        if (!to) return badRequest(reply, 'An assignment goes to exactly one agent.');
+        const sent = await context.assistant.org.sendTaskMail({ orgId, to, cc: input.cc, subject: input.subject, body: input.body });
+        reply.code(201);
+        return sent;
+      }
       const mail = await context.assistant.org.sendUserMail({ orgId, ...input });
       reply.code(201);
       return mail;
@@ -512,6 +543,15 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     const input = parseOrThrow(markMailReadSchema, request.body ?? {});
     if (input.read === false) store.markMailUnread(input.ids);
     else store.markMailRead(input.ids);
+    return { ok: true };
+  });
+
+  /** Moves a whole thread into the archive folder; `archived: false` takes it back out. */
+  app.post('/api/org/mail/archive', async (request: FastifyRequest, reply: FastifyReply) => {
+    const input = parseOrThrow(archiveMailThreadSchema, request.body ?? {});
+    const orgId = context.assistant.org.activeOrganization().id;
+    if (!store.getMailThread(orgId, input.threadId)) return notFound(reply, 'No mail thread ' + input.threadId);
+    store.archiveMailThread(orgId, input.threadId, input.archived !== false);
     return { ok: true };
   });
 }

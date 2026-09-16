@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 export type Db = DatabaseSync;
 
@@ -664,10 +664,62 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE memories ADD COLUMN archived_at INTEGER');
   }
 
+  // Schema 16 -> 17: one protocol row per mail thread. `kind` is what the
+  // thread *is* - a chat, a work assignment, a run's report - and every mail
+  // in the thread inherits it, so replies cannot drift a conversation from
+  // one folder into another. `task_id` is the board side of the coupling: an
+  // assignment thread names the task it created, which is what makes a task
+  // traceable back through its mail. No FK on task_id, same reason
+  // mail.assignment_id has none - the referenced row may be cleaned up
+  // independently, and the mail trail should survive it.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mail_threads (
+      thread_id   TEXT PRIMARY KEY,
+      org_id      TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      kind        TEXT NOT NULL DEFAULT 'chat',
+      task_id     TEXT,
+      archived_at INTEGER,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_mail_threads_org
+      ON mail_threads(org_id, kind, archived_at);
+    CREATE INDEX IF NOT EXISTS idx_mail_threads_task
+      ON mail_threads(task_id);
+  `);
+
+  backfillMailThreads(db);
+
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',
     String(SCHEMA_VERSION),
   );
+}
+
+/**
+ * One thread row for every thread that already exists as mail, guarded by a
+ * `meta` flag like the other one-time backfills. Threads whose mail ever
+ * carried an `assignment_id` read as reports - the run answered inside them;
+ * everything else is a chat. No historical thread was created as an
+ * assignment (that concept arrives with this schema), so `task_id` starts
+ * NULL everywhere.
+ */
+function backfillMailThreads(db: Db): void {
+  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_threads_v1'").get() as
+    | { value: string }
+    | undefined;
+  if (done) return;
+
+  db.prepare(
+    `INSERT OR IGNORE INTO mail_threads (thread_id, org_id, kind, task_id, archived_at, created_at)
+     SELECT m.thread_id, m.org_id,
+            CASE WHEN SUM(CASE WHEN m.assignment_id IS NOT NULL THEN 1 ELSE 0 END) > 0
+                 THEN 'report' ELSE 'chat' END,
+            NULL, NULL, MIN(m.created_at)
+     FROM mail m
+     GROUP BY m.thread_id`,
+  ).run();
+
+  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_threads_v1', '1')").run();
 }
 
 /**

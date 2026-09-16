@@ -402,6 +402,30 @@ export interface MailRecipient {
   readAt?: number;
 }
 
+/**
+ * What a mail thread *is*, decided once when the thread is created and
+ * inherited by every reply - the protocol layer that routes mail into the
+ * fixed folders: `assignment` threads are work orders, `report` threads are
+ * run results, `chat` is everything else.
+ */
+export type MailThreadKind = 'chat' | 'assignment' | 'report';
+
+/** The thread row behind one `threadId`, as the server joins it in. */
+export interface MailThread {
+  threadId: string;
+  orgId: string;
+  kind: MailThreadKind;
+  taskId?: string;
+  archivedAt?: number;
+  createdAt: number;
+}
+
+/**
+ * The fixed inbox folders, the same for every mailbox. `outbox` is not one
+ * of them - what you sent is routed by sender, not by what the thread is.
+ */
+export type MailFolder = 'inbox' | 'tasks' | 'reports' | 'archiv' | 'outbox';
+
 export interface Mail {
   id: string;
   orgId: string;
@@ -419,6 +443,13 @@ export interface Mail {
   assignmentId?: string;
   createdAt: number;
   recipients: MailRecipient[];
+  /** The thread's kind, joined in from the server's thread table. */
+  threadKind?: MailThreadKind;
+  /** Set when the thread is an assignment with a task on the board. */
+  taskId?: string;
+  taskTitle?: string;
+  /** Set when the whole thread has been archived. */
+  threadArchivedAt?: number;
 }
 
 /* ----------------------------------- tasks ---------------------------------- */
@@ -487,6 +518,8 @@ export interface TaskDetail {
   children: Task[];
   assignee: Agent | null;
   assignment: Assignment | null;
+  /** The mail thread the task was born in, when it arrived as an assignment mail. */
+  thread: MailThread | null;
 }
 
 /** POST /api/org/tasks/:id/plan */

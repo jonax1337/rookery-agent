@@ -699,6 +699,32 @@ export interface MailWho {
   id?: string;
 }
 
+/**
+ * What a mail thread *is*, decided once when the thread is created and
+ * inherited by every reply. `chat` is plain conversation; `assignment` is a
+ * work order that created a task; `report` is a thread a run started (self
+ * reports, cron results, an agent writing first). The kind is what routes a
+ * thread into the fixed inbox folders.
+ */
+export type MailThreadKind = 'chat' | 'assignment' | 'report';
+
+/**
+ * The fixed inbox folders, the same for every mailbox. `outbox` is not one of
+ * them - what you sent is routed by sender, not by what the thread is.
+ */
+export type MailFolder = 'inbox' | 'tasks' | 'reports' | 'archiv';
+
+/** The protocol row behind one `threadId` - see `mail_threads` in memory/db.ts. */
+export interface MailThread {
+  threadId: string;
+  orgId: string;
+  kind: MailThreadKind;
+  /** The task an assignment thread created; what makes the work traceable. */
+  taskId?: string;
+  archivedAt?: number;
+  createdAt: number;
+}
+
 export interface Mail {
   id: string;
   orgId: string;
@@ -716,6 +742,13 @@ export interface Mail {
   assignmentId?: string;
   createdAt: number;
   recipients: MailRecipient[];
+  /** The thread's kind, joined in from `mail_threads`. */
+  threadKind?: MailThreadKind;
+  /** Set when the thread is an assignment with a task on the board. */
+  taskId?: string;
+  taskTitle?: string;
+  /** Set when the whole thread has been archived. */
+  threadArchivedAt?: number;
 }
 
 export interface MailRecipient {

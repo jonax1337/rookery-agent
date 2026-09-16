@@ -190,6 +190,8 @@ export const sendMailSchema = z.object({
   subject: z.string().min(1, 'subject must not be empty'),
   body: z.string().min(1, 'body must not be empty'),
   inReplyTo: z.string().min(1).optional(),
+  /** `'task'` turns the mail into a work order: one agent, one task, one thread. */
+  mode: z.enum(['mail', 'task']).optional(),
 });
 
 /** POST /api/org/mail/read */
@@ -197,6 +199,13 @@ export const markMailReadSchema = z.object({
   ids: z.array(z.string()).min(1, 'ids must not be empty'),
   /** `false` puts the rows back to unread - the reading pane's "Mark as unread". */
   read: z.boolean().optional(),
+});
+
+/** POST /api/org/mail/archive - moves (or restores) a whole thread. */
+export const archiveMailThreadSchema = z.object({
+  threadId: z.string().min(1),
+  /** `false` is the way back out of the archive folder. */
+  archived: z.boolean().optional(),
 });
 
 /* -------------------------------- schedules -------------------------------- */

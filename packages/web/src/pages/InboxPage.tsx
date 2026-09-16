@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
 import { formatDateTime } from '@/lib/format';
-import type { Mail, MailRecipient, RequesterKind } from '@/lib/types';
+import type { Mail, MailFolder, MailRecipient, RequesterKind } from '@/lib/types';
 import { useConfig, useConnection, useMailState, useOrgState } from '@/providers/rookery-provider';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { usePageMeta } from '@/components/shell/page-meta';
@@ -67,9 +67,13 @@ export function InboxPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const mailboxId = searchParams.get('mailbox') ?? 'user';
   const composeAgentId = searchParams.get('compose');
+  const threadParam = searchParams.get('thread');
   const interactive = mailboxId === 'user';
 
-  const [box, setBox] = useState<'inbox' | 'outbox'>('inbox');
+  // The folder is the rail's one choice; `box` (in/out) falls out of it,
+  // because only the outbox is routed by direction rather than by kind.
+  const [folder, setFolder] = useState<MailFolder>('inbox');
+  const box: 'inbox' | 'outbox' = folder === 'outbox' ? 'outbox' : 'inbox';
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [mails, setMails] = useState<Mail[] | null>(null);
@@ -81,6 +85,7 @@ export function InboxPage() {
   const [inboxUnread, setInboxUnread] = useState<number | null>(null);
 
   const [composeOpen, setComposeOpen] = useState(false);
+  const [composeMode, setComposeMode] = useState<'mail' | 'task'>('mail');
   const [composeTo, setComposeTo] = useState<EntityOption[]>([]);
   const [composeCc, setComposeCc] = useState<EntityOption[]>([]);
   const [subject, setSubject] = useState('');
@@ -283,7 +288,7 @@ export function InboxPage() {
   const load = useCallback(async (): Promise<void> => {
     const seq = ++loadSeq.current;
     try {
-      const list = await api.mail(mailboxId, box, 200);
+      const list = await api.mail(mailboxId, folder, 200);
       if (seq !== loadSeq.current) return;
       setMails(list);
       setOffline(false);
@@ -291,7 +296,7 @@ export function InboxPage() {
       if (seq !== loadSeq.current) return;
       setOffline(true);
     }
-  }, [mailboxId, box]);
+  }, [mailboxId, folder]);
 
   useEffect(() => {
     setMails(null);
@@ -317,14 +322,14 @@ export function InboxPage() {
   // mailboxes that are not the user's - and it survives a look in the outbox.
   useEffect(() => setInboxUnread(null), [mailboxId]);
   useEffect(() => {
-    if (box !== 'inbox' || mails === null) return;
+    if (folder !== 'inbox' || mails === null) return;
     setInboxUnread(mails.filter(isUnread).length);
-  }, [box, mails, isUnread]);
+  }, [folder, mails, isUnread]);
 
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     let list = mails ?? [];
-    if (interactive && box === 'inbox' && filter === 'unread') list = list.filter(isUnread);
+    if (interactive && folder === 'inbox' && filter === 'unread') list = list.filter(isUnread);
     if (!query) return list;
     return list.filter(
       (mail) =>
@@ -332,7 +337,7 @@ export function InboxPage() {
         mail.body.toLowerCase().includes(query) ||
         senderLabel(mail).toLowerCase().includes(query),
     );
-  }, [mails, search, senderLabel, interactive, box, filter, isUnread]);
+  }, [mails, search, senderLabel, interactive, folder, filter, isUnread]);
 
   useEffect(() => {
     if (selectedId && !filtered.some((mail) => mail.id === selectedId)) setSelectedId(null);
@@ -354,7 +359,7 @@ export function InboxPage() {
         },
         { replace: true },
       );
-      setBox('inbox');
+      setFolder('inbox');
       setFilter('all');
     },
     [setSearchParams],
@@ -377,20 +382,33 @@ export function InboxPage() {
     );
   }, []);
 
-  const select = useCallback(
-    (id: string): void => {
-      setSelectedId(id);
-      if (!interactive || box !== 'inbox') return;
-      const mail = mails?.find((entry) => entry.id === id);
-      const own = mail ? ownRecipient(mail) : undefined;
-      if (!mail || !own || own.readAt != null) return;
+  /**
+   * Marks the mailbox owner's own row read - on click, and on a deep-linked
+   * open. Every thread folder counts as reading; the outbox is the one place
+   * that does not - it is routed by sender, so the read mark there is not
+   * the reader's own.
+   */
+  const markOpenedRead = useCallback(
+    (mail: Mail): void => {
+      if (!interactive || box === 'outbox') return;
+      const own = ownRecipient(mail);
+      if (!own || own.readAt != null) return;
       patchReadAt(mail.id, own.id, Date.now());
       void api
         .markMailRead([own.id])
         .then(() => void mailBadge.refresh())
         .catch(() => undefined);
     },
-    [interactive, box, mails, ownRecipient, mailBadge, patchReadAt],
+    [interactive, box, ownRecipient, mailBadge, patchReadAt],
+  );
+
+  const select = useCallback(
+    (id: string): void => {
+      setSelectedId(id);
+      const mail = mails?.find((entry) => entry.id === id);
+      if (mail) markOpenedRead(mail);
+    },
+    [mails, markOpenedRead],
   );
 
   /** The open mail's own row, when it is read and so can be put back. */
@@ -409,7 +427,23 @@ export function InboxPage() {
       .catch((caught: unknown) => reportFailure('Mark as unread', caught));
   }, [selected, unreadableRow, mailBadge, patchReadAt]);
 
+  /**
+   * Files the open mail's whole thread away - every mail of it leaves the
+   * live folders at once, because the folder routing is per thread. The list
+   * drops them optimistically; the archive call is the one that decides.
+   */
+  const archiveThread = useCallback((): void => {
+    if (!selected) return;
+    const threadId = selected.threadId;
+    setMails((current) => current?.filter((entry) => entry.threadId !== threadId) ?? null);
+    void api
+      .archiveMailThread(threadId)
+      .then(() => toast('Thread archived'))
+      .catch((caught: unknown) => reportFailure('Archivieren', caught));
+  }, [selected]);
+
   const resetCompose = (): void => {
+    setComposeMode('mail');
     setComposeTo([]);
     setComposeCc([]);
     setSubject('');
@@ -471,17 +505,19 @@ export function InboxPage() {
     const trimmedSubject = subject.trim();
     const trimmedBody = body.trim();
     if (!trimmedBody || composeTo.length === 0 || sending) return;
+    const isTask = composeMode === 'task';
     setSending(true);
     try {
       await api.sendMail({
         to: composeTo.map((option) => option.value),
-        ...(composeCc.length > 0 ? { cc: composeCc.map((option) => option.value) } : {}),
+        ...(composeCc.length > 0 && !isTask ? { cc: composeCc.map((option) => option.value) } : {}),
         subject: trimmedSubject || '(No subject)',
         body: trimmedBody,
+        ...(isTask ? { mode: 'task' as const } : {}),
       });
       resetCompose();
       setComposeOpen(false);
-      toast('Mail sent');
+      toast(isTask ? 'Task created' : 'Mail sent');
       void load();
     } catch (caught) {
       reportFailure('Send', caught);
@@ -528,6 +564,44 @@ export function InboxPage() {
     );
   }, [composeAgentId, org, setSearchParams]);
 
+  // `?thread=<id>` opens one conversation, from TaskDetailPage. When the
+  // folder holds none of its mail - a task thread lives in the Tasks folder,
+  // not in whatever folder is open - the thread is fetched and spliced in
+  // ahead of the list, or the deep link would land on an empty reading pane.
+  useEffect(() => {
+    if (!threadParam || mails === null) return;
+    const inList = mails.filter((entry) => entry.threadId === threadParam);
+    if (inList.length > 0) {
+      setSelectedId(inList[0]?.id ?? null);
+      const opened = inList[0];
+      if (opened) markOpenedRead(opened);
+    } else {
+      void api
+        .mailThread(threadParam, mailboxId)
+        .then((threadMails) => {
+          const newest = threadMails.at(-1);
+          if (!newest) return;
+          setMails((current) => {
+            if (!current) return current;
+            const known = new Set(current.map((entry) => entry.id));
+            const fresh = threadMails.filter((entry) => !known.has(entry.id));
+            return [...fresh, ...current];
+          });
+          setSelectedId(newest.id);
+          markOpenedRead(newest);
+        })
+        .catch(() => undefined);
+    }
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete('thread');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [threadParam, mails, mailboxId, setSearchParams, markOpenedRead]);
+
   /* --------------------------------- render -------------------------------- */
 
   if (mails === null) {
@@ -566,8 +640,8 @@ export function InboxPage() {
           mailboxLabel={mailboxLabel(mailboxId)}
           mailboxRole={mailboxRole(mailboxId)}
           onSelect={selectMailbox}
-          box={box}
-          onBoxChange={setBox}
+          folder={folder}
+          onFolderChange={setFolder}
           unread={inboxUnread}
           collapsed={navCollapsed}
           onCollapsedChange={setNavCollapsed}
@@ -589,7 +663,7 @@ export function InboxPage() {
                 selectedId={selectedId}
                 onSelect={select}
                 title={mailboxLabel(mailboxId)}
-                box={box}
+                folder={folder}
                 filter={filter}
                 onFilterChange={setFilter}
                 interactive={interactive}
@@ -620,6 +694,7 @@ export function InboxPage() {
                 onForward={forward}
                 canReplyAll={replyAllReach !== null && replyAllReach.to.length + replyAllReach.cc.length > 1}
                 onMarkUnread={unreadableRow ? markUnread : undefined}
+                onArchiveThread={interactive ? archiveThread : undefined}
                 sending={sending}
               />
             </Fade>
@@ -639,6 +714,28 @@ export function InboxPage() {
             <DialogTitle>New mail</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-3">
+            <div className="flex gap-1">
+              <Button
+                type="button"
+                size="sm"
+                variant={composeMode === 'mail' ? 'default' : 'outline'}
+                onClick={() => setComposeMode('mail')}
+              >
+                Message
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={composeMode === 'task' ? 'default' : 'outline'}
+                onClick={() => {
+                  setComposeMode('task');
+                  setComposeCc([]);
+                }}
+                aria-pressed={composeMode === 'task'}
+              >
+                Task
+              </Button>
+            </div>
             <Field>
               <FieldLabel>To</FieldLabel>
               <MultiEntityCombobox
@@ -648,15 +745,22 @@ export function InboxPage() {
                 placeholder="Add recipient…"
               />
             </Field>
-            <Field>
-              <FieldLabel>Cc</FieldLabel>
-              <MultiEntityCombobox
-                options={recipientOptions}
-                value={composeCc}
-                onChange={setComposeCc}
-                placeholder="Add Cc…"
-              />
-            </Field>
+            {composeMode === 'mail' ? (
+              <Field>
+                <FieldLabel>Cc</FieldLabel>
+                <MultiEntityCombobox
+                  options={recipientOptions}
+                  value={composeCc}
+                  onChange={setComposeCc}
+                  placeholder="Add Cc…"
+                />
+              </Field>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                A task goes to exactly one agent in To — it creates a task on the board, and the agent's answer lands
+                in this thread as a report.
+              </p>
+            )}
             <Field>
               <FieldLabel>Subject</FieldLabel>
               <Input value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="Subject" />
@@ -675,7 +779,15 @@ export function InboxPage() {
             </Field>
           </div>
           <DialogFooter>
-            <Button onClick={() => void submitCompose()} disabled={sending || !body.trim() || composeTo.length === 0}>
+            <Button
+              onClick={() => void submitCompose()}
+              disabled={
+                sending ||
+                !body.trim() ||
+                composeTo.length === 0 ||
+                (composeMode === 'task' && (composeTo.length !== 1 || composeTo[0]?.value === 'assistant'))
+              }
+            >
               Send
             </Button>
           </DialogFooter>

@@ -25,6 +25,7 @@ import type {
   GatewayStatus,
   GatewayTestResult,
   Mail,
+  MailFolder,
   MemoryEntity,
   MemoryGraph,
   MemoryKind,
@@ -656,11 +657,16 @@ export const api = {
   markMessagesRead: (ids: string[]) =>
     request<{ ok: true }>('/api/org/messages/read', { method: 'POST', ...json({ ids }) }),
 
-  /** `mailbox` is an agent id, `"user"` or `"assistant"`. */
-  mail: (mailbox: string, box: 'inbox' | 'outbox', limit = 100) =>
-    request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&box=' + box + '&limit=' + limit),
-  sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string }) =>
-    request<Mail>('/api/org/mail', { method: 'POST', ...json(input) }),
+  /** `mailbox` is an agent id, `"user"` or `"assistant"`; `folder` slices the inbox. */
+  mail: (mailbox: string, folder: MailFolder, limit = 100) =>
+    request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&folder=' + folder + '&limit=' + limit),
+  /** One whole conversation, oldest first - the board's deep link into mail. */
+  mailThread: (threadId: string, mailbox = 'user') =>
+    request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&thread=' + encodeURIComponent(threadId)),
+  archiveMailThread: (threadId: string, archived = true) =>
+    request<{ ok: true }>('/api/org/mail/archive', { method: 'POST', ...json({ threadId, archived }) }),
+  sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string; mode?: 'mail' | 'task' }) =>
+    request<Mail | { mail: Mail; task: Task }>('/api/org/mail', { method: 'POST', ...json(input) }),
   /**
    * Marks a batch of mailbox rows read; the mailbox page calls this once per
    * load. `read: false` is the reading pane's "Mark as unread".

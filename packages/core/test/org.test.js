@@ -383,6 +383,204 @@ test('a turn that answers mail with send_mail does not also deliver its closing 
   assistant.close();
 });
 
+test('a thread keeps the kind it opened with, and replies inherit it', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const chat = store.org.sendMail({ orgId: org.id, from: { kind: 'user' }, to: [{ kind: 'assistant' }], subject: 'hello', body: 'hello' });
+  const report = store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'agent', id: mara.id },
+    to: [{ kind: 'user' }],
+    subject: 'status',
+    body: 'status',
+  });
+  assert.equal(store.org.getMailThread(org.id, chat.threadId).kind, 'chat', 'a user mail opens a chat');
+  assert.equal(store.org.getMailThread(org.id, report.threadId).kind, 'report', "an agent's mail opens a report");
+
+  store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'user' },
+    to: [{ kind: 'agent', id: mara.id }],
+    subject: 'Re: status',
+    body: 'nice',
+    inReplyTo: report.id,
+    threadId: report.threadId,
+  });
+  assert.equal(store.org.getMailThread(org.id, report.threadId).kind, 'report', "the reply inherits the thread's kind");
+  assert.equal(store.org.getMail(chat.id).threadKind, 'chat');
+  assert.equal(store.org.getMail(report.id).threadKind, 'report');
+  assistant.close();
+});
+
+test('a task mail becomes one task, one run, and one answer in the Aufgaben folder', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const { mail, task } = await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: mara.slug,
+    subject: 'Ship the thing',
+    body: 'Please ship it.',
+  });
+  assert.equal(task.title, 'Ship the thing');
+  assert.equal(task.assigneeId, mara.id);
+  assert.equal(task.createdBy, 'user');
+  await sleep(150);
+
+  const thread = store.org.getMailThreadForTask(org.id, task.id);
+  assert.ok(thread, 'the task is linked to the thread it was born in');
+  assert.equal(thread.threadId, mail.threadId);
+  assert.equal(thread.kind, 'assignment');
+
+  assert.equal(
+    store.org.listAssignments(org.id, { agentId: mara.id }).length,
+    1,
+    'exactly one run - the To trigger must not fire beside the task run',
+  );
+
+  const reply = store.org
+    .mailbox(org.id, { kind: 'user' }, 'inbox', { folder: 'tasks' })
+    .find((entry) => entry.fromKind === 'agent');
+  assert.ok(reply, "the run's answer landed in the thread");
+  assert.equal(reply.threadId, mail.threadId);
+  assert.equal(store.org.getMail(reply.id).taskId, task.id);
+  assert.equal(store.org.getMail(reply.id).taskTitle, task.title);
+
+  assert.ok(
+    store.org.mailbox(org.id, { kind: 'agent', id: mara.id }, 'inbox', { folder: 'tasks' }).some((entry) => entry.id === mail.id),
+    "the work order lands in the agent's Aufgaben folder",
+  );
+  // The plain inbox is the superset - everything unarchived - so the work
+  // order shows there too; Aufgaben is the slice, not a partition.
+  assert.ok(
+    store.org.mailbox(org.id, { kind: 'agent', id: mara.id }, 'inbox', { folder: 'inbox' }).some((entry) => entry.id === mail.id),
+    'and stays visible in the plain inbox, which is everything unarchived',
+  );
+  assistant.close();
+});
+
+test('folders route reports, and archiving moves a thread whole', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const who = { kind: 'user' };
+
+  const report = store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'agent', id: mara.id },
+    to: [{ kind: 'user' }],
+    subject: 'Weekly report',
+    body: 'numbers',
+  });
+  store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'user' },
+    to: [{ kind: 'agent', id: mara.id }],
+    subject: 'Re: Weekly report',
+    body: 'thanks',
+    inReplyTo: report.id,
+    threadId: report.threadId,
+  });
+
+  assert.ok(
+    store.org.mailbox(org.id, who, 'inbox', { folder: 'reports' }).some((entry) => entry.id === report.id),
+    'an agent thread lands under Berichte',
+  );
+  assert.ok(
+    !store.org.mailbox(org.id, who, 'inbox', { folder: 'tasks' }).some((entry) => entry.id === report.id),
+    'and nowhere else',
+  );
+
+  store.org.archiveMailThread(org.id, report.threadId, true);
+  assert.ok(
+    !store.org.mailbox(org.id, who, 'inbox', { folder: 'reports' }).some((entry) => entry.id === report.id),
+    'archiving empties the live folder',
+  );
+  assert.equal(
+    store.org.mailbox(org.id, who, 'inbox', { folder: 'archiv' }).length,
+    1,
+    'the report moved - the reply, addressed to Mara, was never in this inbox',
+  );
+  assert.equal(store.org.unreadMailFor(org.id, who).length, 0, 'archived mail never counts as waiting');
+  assistant.close();
+});
+
+test('marking a task done tells its thread, and wakes nobody', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const { task } = await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: mara.slug,
+    subject: 'Fix the gate',
+    body: 'Please fix it.',
+  });
+  await sleep(150);
+  const runsBefore = store.org.listAssignments(org.id, { agentId: mara.id }).length;
+
+  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'done');
+
+  const thread = store.org.getMailThreadForTask(org.id, task.id);
+  const note = store.org.thread(org.id, thread.threadId).at(-1);
+  assert.equal(note.fromKind, 'assistant', 'the status note is a system mail');
+  assert.match(note.body, /marked as done/);
+  assert.equal(
+    store.org.listAssignments(org.id, { agentId: mara.id }).length,
+    runsBefore,
+    'a status note starts nothing',
+  );
+  assistant.close();
+});
+
+test('a mailed task that splits answers once, with the combined result', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const noah = hire(assistant, { name: 'Noah' });
+
+  const parent = store.org.createTask({ orgId: org.id, title: 'Big thing', description: 'Split me.', createdBy: 'user' });
+  store.org.createTask({ orgId: org.id, title: 'Part one', parentId: parent.id, assigneeId: mara.id, createdBy: 'user' });
+  store.org.createTask({ orgId: org.id, title: 'Part two', parentId: parent.id, assigneeId: noah.id, createdBy: 'user' });
+  const mail = store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'user' },
+    to: [{ kind: 'agent', id: mara.id }],
+    subject: 'Big thing',
+    body: 'Split me.',
+    kind: 'assignment',
+  });
+  store.org.linkMailThreadTask(org.id, mail.threadId, parent.id);
+
+  await assistant.org.runTask(
+    {
+      orgId: org.id,
+      audience: 'assistant',
+      depth: -1,
+      emit() {},
+      sourceMail: { id: mail.id, threadId: mail.threadId, depth: 0, fromKind: 'user', subject: mail.subject },
+    },
+    store.org.getTask(parent.id),
+  );
+  await sleep(250);
+
+  const answers = store.org
+    .mailbox(org.id, { kind: 'user' }, 'inbox', { folder: 'tasks' })
+    .filter((entry) => entry.fromKind === 'assistant');
+  assert.equal(answers.length, 1, 'one combined answer, not one per subtask');
+  assert.match(answers[0].body, /Part one/);
+  assert.match(answers[0].body, /Part two/);
+  assistant.close();
+});
+
 test('the assistant can hire and structure the company through tools', async () => {
   const fake = createFakeProvider();
   // Two providers, as in a real run: an agent can be pinned to any id the

@@ -9,7 +9,10 @@ import type {
   Assignment,
   AssignmentStatus,
   Mail,
+  MailFolder,
   MailRecipient,
+  MailThread,
+  MailThreadKind,
   MailWho,
   Organization,
   PermissionLevel,
@@ -565,6 +568,8 @@ export class OrgStore {
     inReplyTo?: string;
     depth?: number;
     assignmentId?: string;
+    /** The kind of thread this mail opens; a reply inherits its thread's row. */
+    kind?: MailThreadKind;
   }): Mail {
     const now = Date.now();
     const id = randomUUID();
@@ -589,6 +594,18 @@ export class OrgStore {
         now,
       );
 
+    // One protocol row per thread, and `OR IGNORE` is the whole inheritance
+    // rule: only the thread's first mail writes the row, every reply falls
+    // through to it. A mail an agent sends opens a report - it exists because
+    // a run or a scheduling produced it - unless a caller knows better.
+    const kind = input.kind ?? (input.from.kind === 'agent' ? 'report' : 'chat');
+    this.#db
+      .prepare(
+        `INSERT OR IGNORE INTO mail_threads (thread_id, org_id, kind, task_id, archived_at, created_at)
+         VALUES (?, ?, ?, NULL, NULL, ?)`,
+      )
+      .run(threadId, input.orgId, kind, now);
+
     const insertRecipient = this.#db.prepare(
       `INSERT INTO mail_recipients (id, mail_id, recipient_kind, recipient_id, box, read_at)
        VALUES (?, ?, ?, ?, ?, NULL)`,
@@ -604,6 +621,13 @@ export class OrgStore {
       return recipient;
     });
 
+    // The thread's own row, not the computed default: a reply landed in a
+    // thread whose kind was decided by its first mail, and that is the truth
+    // the caller should see.
+    const threadRow = this.#db
+      .prepare('SELECT kind, task_id, archived_at, created_at FROM mail_threads WHERE thread_id = ?')
+      .get(threadId) as Row | undefined;
+
     return {
       id,
       orgId: input.orgId,
@@ -617,22 +641,69 @@ export class OrgStore {
       assignmentId: input.assignmentId,
       createdAt: now,
       recipients,
+      threadKind: (threadRow?.kind as MailThreadKind | undefined) ?? 'chat',
+      threadArchivedAt: optionalScore(threadRow?.archived_at),
     };
   }
 
-  /** One mail with its recipients, or null. */
+  /** One mail with its recipients and its thread's protocol row, or null. */
   getMail(id: string): Mail | null {
-    const row = this.#db.prepare('SELECT * FROM mail WHERE id = ?').get(id) as Row | undefined;
+    const row = this.#db
+      .prepare(
+        `SELECT m.*, mt.kind AS thread_kind, mt.archived_at AS thread_archived_at, mt.task_id AS thread_task_id, t.title AS thread_task_title
+         FROM mail m
+         LEFT JOIN mail_threads mt ON mt.thread_id = m.thread_id
+         LEFT JOIN tasks t ON t.id = mt.task_id
+         WHERE m.id = ?`,
+      )
+      .get(id) as Row | undefined;
     if (!row) return null;
     const recipients = this.#db.prepare('SELECT * FROM mail_recipients WHERE mail_id = ?').all(id) as Row[];
     return mapMail(row, recipients.map(mapMailRecipient));
   }
 
+  /** The protocol row behind a thread, or null. */
+  getMailThread(orgId: string, threadId: string): MailThread | null {
+    const row = this.#db
+      .prepare('SELECT * FROM mail_threads WHERE org_id = ? AND thread_id = ?')
+      .get(orgId, threadId) as Row | undefined;
+    return row ? mapMailThread(row) : null;
+  }
+
+  /** The mail thread an assignment thread opened for `taskId`, or null. */
+  getMailThreadForTask(orgId: string, taskId: string): MailThread | null {
+    const row = this.#db
+      .prepare('SELECT * FROM mail_threads WHERE org_id = ? AND task_id = ? ORDER BY created_at DESC')
+      .get(orgId, taskId) as Row | undefined;
+    return row ? mapMailThread(row) : null;
+  }
+
+  /** Names the task an assignment thread created - the traceable side of the coupling. */
+  linkMailThreadTask(orgId: string, threadId: string, taskId: string): void {
+    this.#db
+      .prepare('UPDATE mail_threads SET task_id = ? WHERE org_id = ? AND thread_id = ?')
+      .run(taskId, orgId, threadId);
+  }
+
+  /** Archives (or restores) a whole thread; archived mail leaves the live folders. */
+  archiveMailThread(orgId: string, threadId: string, archived: boolean): void {
+    this.#db
+      .prepare('UPDATE mail_threads SET archived_at = ? WHERE org_id = ? AND thread_id = ?')
+      .run(archived ? Date.now() : null, orgId, threadId);
+  }
+
   /**
    * A mailbox as one of the company sees it: `inbox` is everything addressed
-   * to `who` via To or Cc; `outbox` is everything `who` sent. Newest first.
+   * to `who` via To or Cc, sliced by `folder` - the fixed structure, where
+   * `archiv` is the only folder a person puts things into by hand; `outbox`
+   * is everything `who` sent, unsliced. Newest first.
    */
-  mailbox(orgId: string, who: MailWho, box: 'inbox' | 'outbox', opts: { unreadOnly?: boolean; limit?: number } = {}): Mail[] {
+  mailbox(
+    orgId: string,
+    who: MailWho,
+    box: 'inbox' | 'outbox',
+    opts: { unreadOnly?: boolean; limit?: number; folder?: MailFolder } = {},
+  ): Mail[] {
     const limit = opts.limit ?? 50;
     const agentId = who.id ?? null;
     let ids: string[];
@@ -647,19 +718,34 @@ export class OrgStore {
               .all(orgId, who.kind, limit)
       ).map((row) => (row as { id: string }).id);
     } else {
+      // Which slice of the inbox: kind is what the thread *is*, decided once
+      // when it opened and inherited by every reply.
+      const folder = opts.folder ?? 'inbox';
+      const clause =
+        folder === 'tasks'
+          ? "mt.kind = 'assignment' AND mt.archived_at IS NULL"
+          : folder === 'reports'
+            ? "mt.kind = 'report' AND mt.archived_at IS NULL"
+            : folder === 'archiv'
+              ? 'mt.archived_at IS NOT NULL'
+              : 'mt.archived_at IS NULL';
       ids = (
         who.kind === 'agent'
           ? this.#db
               .prepare(
                 `SELECT m.id FROM mail m JOIN mail_recipients r ON r.mail_id = m.id
+                  JOIN mail_threads mt ON mt.thread_id = m.thread_id
                   WHERE m.org_id = ? AND r.recipient_kind = ? AND r.recipient_id = ? AND (? = 0 OR r.read_at IS NULL)
+                  AND ${clause}
                   ORDER BY m.created_at DESC LIMIT ?`,
               )
               .all(orgId, who.kind, agentId, opts.unreadOnly ? 1 : 0, limit)
           : this.#db
               .prepare(
                 `SELECT m.id FROM mail m JOIN mail_recipients r ON r.mail_id = m.id
+                  JOIN mail_threads mt ON mt.thread_id = m.thread_id
                   WHERE m.org_id = ? AND r.recipient_kind = ? AND (? = 0 OR r.read_at IS NULL)
+                  AND ${clause}
                   ORDER BY m.created_at DESC LIMIT ?`,
               )
               .all(orgId, who.kind, opts.unreadOnly ? 1 : 0, limit)
@@ -1524,6 +1610,21 @@ function mapMail(row: Row, recipients: MailRecipient[]): Mail {
     assignmentId: optional(row.assignment_id),
     createdAt: Number(row.created_at),
     recipients,
+    threadKind: (optional(row.thread_kind) as MailThreadKind | undefined) ?? 'chat',
+    threadArchivedAt: optionalScore(row.thread_archived_at),
+    taskId: optional(row.thread_task_id),
+    taskTitle: optional(row.thread_task_title),
+  };
+}
+
+function mapMailThread(row: Row): MailThread {
+  return {
+    threadId: row.thread_id as string,
+    orgId: row.org_id as string,
+    kind: (row.kind as MailThreadKind | undefined) ?? 'chat',
+    taskId: optional(row.task_id),
+    archivedAt: optionalScore(row.archived_at),
+    createdAt: Number(row.created_at),
   };
 }
 
