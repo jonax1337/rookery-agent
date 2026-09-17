@@ -944,7 +944,7 @@ export class Assistant extends EventEmitter {
    * The live log of a running assignment so far; an unknown or finished id
    * reads as inactive and empty. Delegates to the org controller.
    */
-  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot {
+  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot | null {
     return this.org.snapshotAssignmentLog(assignmentId);
   }
 

@@ -89,12 +89,16 @@ export function useAssignmentLog(
         snapshotRef.current = snapshot.events;
         setOverflowed(snapshot.overflowed);
         setEntries(mergeLogEntries(snapshot.events, framesRef.current));
+        // A journal snapshot answers after the run's end and after a server
+        // restart; `active` false says nothing more is coming, and the
+        // transcript stands as finished rather than waiting forever.
+        if (!snapshot.active) setGone(true);
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
         if (caught instanceof ApiError && (caught.status === 410 || caught.status === 404)) {
-          // 410: the run is over, the buffer went with it. 404: the id never
-          // existed. Either way the live log is gone for good.
+          // 410: a run from before the journal, whose buffer went with it.
+          // 404: the id never existed. Either way the live log is gone.
           setGone(true);
           return;
         }

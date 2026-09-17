@@ -1761,13 +1761,16 @@ export class OrgController extends EventEmitter {
    * Append one event to a running assignment's live log: the buffer keeps
    * it for later snapshots and generators, its listeners get it now, and the
    * `assignment-log` event carries it to whoever fans frames out (the
-   * runtime, then the server's watching sockets).
+   * runtime, then the server's watching sockets). The journal gets it too,
+   * in the same breath and unconditionally - it has no byte cap to respect,
+   * because it is the record rather than the wire.
    */
   #logPush(assignmentId: string, event: AgentEvent): void {
     const buffer = this.#logs.get(assignmentId);
     if (!buffer) return;
     const frame: AssignmentLogFrame = { assignmentId, entry: buffer.push(event) };
     this.emit('assignment-log', frame);
+    this.#store.turns.append(assignmentId, event as unknown as Record<string, unknown>);
   }
 
   /** A provider switch starts the live transcript over; `seq` keeps counting. */
@@ -1846,8 +1849,12 @@ export class OrgController extends EventEmitter {
       controller.abort();
     });
     // The live log lives from the moment the run is queued: watching a
-    // pending assignment is legal, it simply has nothing to show yet.
+    // pending assignment is legal, it simply has nothing to show yet. Its
+    // journal opens here too, under the assignment's own id - the buffer is
+    // the transport's convenience, the journal is the record, and one without
+    // the other is exactly the half that does not survive a reload.
     this.#logs.set(assignment.id, new AssignmentLogBuffer());
+    this.#store.turns.beginAssignment(assignment.id, input.sessionId, Date.now());
     const cancelled = (): boolean => cancelledBy !== null || Boolean(input.signal?.aborted);
 
     announce();
@@ -2136,11 +2143,12 @@ export class OrgController extends EventEmitter {
       if (log) {
         // The run is over: live watchers hear it from the `assignment`
         // broadcast `finish()` already sent, generators end here, and the
-        // buffer itself is gone - after a run only the persisted result
-        // remains.
+        // buffer itself is gone. The journal stays - after a run, its
+        // transcript remains readable instead of only the result.
         log.end();
         this.#logs.delete(assignment.id);
       }
+      this.#store.turns.settle(assignment.id, 'done', Date.now());
       this.#active.delete(assignment.id);
       input.signal?.removeEventListener('abort', onAbort);
       this.#release();
@@ -2181,14 +2189,25 @@ export class OrgController extends EventEmitter {
   /* ------------------------------- live log ------------------------------- */
 
   /**
-   * The live log of one assignment as it stands right now. An id that is
-   * queued or running reads back `active`; an unknown or finished one reads
-   * back an empty, inactive snapshot - after a run, only the persisted
-   * result exists.
+   * The live log of one assignment as it stands right now.
+   *
+   * The journal answers first: it holds every event of the run, uncut by any
+   * byte cap, and it outlives the run - a reload after the end, or after the
+   * whole server went down mid-run, still reads what stood. `active` says
+   * whether more is coming. Only a run from before the journal existed falls
+   * back to the in-memory buffer, which is live-only by design; an id nobody
+   * knows reads back null and the caller says so.
    */
-  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot {
+  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot | null {
+    const turn = this.#store.turns.ofAssignment(assignmentId);
+    if (turn) {
+      const events = this.#store.turns
+        .events(assignmentId)
+        .map((entry) => entry as unknown as AssignmentLogEntry);
+      return { events, overflowed: false, active: turn.status === 'running' };
+    }
     const buffer = this.#logs.get(assignmentId);
-    if (!buffer) return { events: [], overflowed: false, active: false };
+    if (!buffer) return null;
     return { events: [...buffer.entries], overflowed: buffer.overflowed, active: true };
   }
 

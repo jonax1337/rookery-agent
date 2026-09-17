@@ -52,6 +52,38 @@ export class TurnJournal {
   }
 
   /**
+   * Open the journal of an assignment run. The assignment id is the turn id:
+   * every source of runs - the board, a drawer, a delegation, a schedule -
+   * knows it from creation, so nothing has to be latched from a later event.
+   * A run may also belong to a conversation; then both keys find it.
+   */
+  beginAssignment(assignmentId: string, sessionId: string | undefined, startedAt: number): void {
+    this.#db
+      .prepare(
+        'INSERT INTO turns (id, session_id, assignment_id, kind, status, started_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(assignmentId, sessionId ?? null, assignmentId, 'assign', 'running', startedAt);
+  }
+
+  /** The journal turn of one assignment, whatever its status - or null. */
+  ofAssignment(assignmentId: string): JournalTurn | null {
+    const row = this.#db
+      .prepare('SELECT * FROM turns WHERE assignment_id = ? ORDER BY started_at DESC LIMIT 1')
+      .get(assignmentId) as
+      | { id: string; session_id: string | null; kind: string; status: string; started_at: number; ended_at: number | null }
+      | undefined;
+    if (!row) return null;
+    return {
+      id: row.id,
+      sessionId: row.session_id ?? '',
+      kind: row.kind,
+      status: row.status as JournalTurn['status'],
+      startedAt: row.started_at,
+      ...(row.ended_at !== null ? { endedAt: row.ended_at } : {}),
+    };
+  }
+
+  /**
    * Write one event, in yield order, and hand back its sequence number. The
    * caller is the turn wrapper in the runtime - the one place every yielded
    * event passes through - so journal order and live order are the same

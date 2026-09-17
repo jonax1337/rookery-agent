@@ -377,6 +377,8 @@ export interface AssignmentLogSnapshot {
   events: AssignmentLogEntry[];
   /** True once the oldest whole entries were dropped to stay under the cap. */
   overflowed: boolean;
+  /** Whether more is coming: a journalled run answers after its end too. */
+  active: boolean;
 }
 
 export interface AgentMessage {

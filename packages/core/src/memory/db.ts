@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 export type Db = DatabaseSync;
 
@@ -719,10 +719,13 @@ function migrate(db: Db): void {
   // yields is a row the moment it is yielded, so any client - a reloaded
   // tab, another browser, whoever opens the conversation next - can rebuild
   // the turn exactly as it stood, and the live stream just continues on top.
+  // Schema 20 widens the key: an assignment run has no conversation, so a
+  // turn is owned by a session, an assignment, or both.
   db.exec(`
     CREATE TABLE IF NOT EXISTS turns (
       id         TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+      assignment_id TEXT,
       kind       TEXT NOT NULL DEFAULT 'chat',
       status     TEXT NOT NULL DEFAULT 'running',
       started_at INTEGER NOT NULL,
@@ -737,6 +740,49 @@ function migrate(db: Db): void {
       PRIMARY KEY (turn_id, seq)
     );
   `);
+
+  // Schema 19 -> 20: the session column loses its NOT NULL. A rebuild rather
+  // than two ALTERs, because SQLite cannot drop a constraint in place. Both
+  // tables move: a plain rename would leave `turn_events` pointing at the
+  // discarded name, so it is recreated beside its parent, rows first - the
+  // journal is the record, and none of it is dropped.
+  const turnsShape = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'",
+  ).get() as { sql: string } | undefined;
+  if (turnsShape && !turnsShape.sql.includes('assignment_id')) {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec(`
+      ALTER TABLE turns RENAME TO turns_v19;
+      ALTER TABLE turn_events RENAME TO turn_events_v19;
+      DROP INDEX IF EXISTS idx_turns_session;
+      CREATE TABLE turns (
+        id         TEXT PRIMARY KEY,
+        session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+        assignment_id TEXT,
+        kind       TEXT NOT NULL DEFAULT 'chat',
+        status     TEXT NOT NULL DEFAULT 'running',
+        started_at INTEGER NOT NULL,
+        ended_at   INTEGER
+      );
+      CREATE TABLE turn_events (
+        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+        seq     INTEGER NOT NULL,
+        json    TEXT NOT NULL,
+        PRIMARY KEY (turn_id, seq)
+      );
+      INSERT INTO turns (id, session_id, assignment_id, kind, status, started_at, ended_at)
+        SELECT id, session_id, NULL, kind, status, started_at, ended_at FROM turns_v19;
+      INSERT INTO turn_events (turn_id, seq, json)
+        SELECT turn_id, seq, json FROM turn_events_v19;
+      DROP TABLE turn_events_v19;
+      DROP TABLE turns_v19;
+      CREATE INDEX idx_turns_session ON turns(session_id, started_at);
+      CREATE INDEX idx_turns_assignment ON turns(assignment_id, started_at);
+    `);
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+  // For fresh installs and rebuilt ones alike: the assignment key's index.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_turns_assignment ON turns(assignment_id, started_at);');
 
   // Whatever still claims to be running was orphaned by the process that
   // wrote it: this database is single-writer and just opened, so nobody is

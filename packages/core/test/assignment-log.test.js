@@ -165,14 +165,16 @@ test('a running assignment exposes an ordered live log that watchers follow and 
     'the generator output stays ordered by seq',
   );
 
+  const after = assistant.snapshotAssignmentLog(assignmentId);
+  assert.equal(after.active, false, 'the run is over');
   assert.deepEqual(
-    assistant.snapshotAssignmentLog(assignmentId),
-    { events: [], overflowed: false, active: false },
-    'the log is gone once the run ended; only the persisted result remains',
+    after.events.map((entry) => entry.event.type),
+    ['text', 'thinking', 'tool', 'text', 'tool'],
+    'the journal keeps the whole transcript after the end; the result is not all that remains',
   );
 });
 
-test('the live log drops its oldest whole entries above 256 KB and says so', async () => {
+test('a bulky run keeps its whole transcript: the journal has no cap', async () => {
   const fake = createFake('claude');
   let release;
   const gate = new Promise((resolve) => {
@@ -194,8 +196,7 @@ test('the live log drops its oldest whole entries above 256 KB and says so', asy
   })();
 
   // 32 pushes happen before the gate: one small, thirty bulky, one small.
-  // Overflow may already have eaten the front, so the marker is the newest
-  // entry, never a count.
+  // The marker is the newest entry; the count is checked against the journal.
   const assignmentId = await waitForRunningLog(
     assistant,
     store,
@@ -206,17 +207,14 @@ test('the live log drops its oldest whole entries above 256 KB and says so', asy
   const snapshot = assistant.snapshotAssignmentLog(assignmentId);
 
   assert.equal(snapshot.active, true);
-  assert.equal(snapshot.overflowed, true, 'the buffer says its beginning was dropped');
-  assert.ok(!snapshot.events.some((entry) => entry.event.delta === 'first line'), 'the oldest entry is gone');
+  assert.equal(snapshot.overflowed, false, 'the record does not cut its own beginning');
+  assert.equal(snapshot.events[0].event.delta, 'first line', 'the oldest entry is still there');
   assert.equal(snapshot.events.at(-1).event.delta, 'last line', 'the newest entry is there');
-  assert.equal(snapshot.events.at(-1).seq, 32, 'seq counted every push, dropped or not');
-  assert.ok(snapshot.events[0].seq > 1, 'the front of the buffer moved past the dropped entries');
+  assert.equal(snapshot.events.at(-1).seq, 32, 'seq counted every push');
   assert.ok(
     snapshot.events.every((entry, index) => index === 0 || entry.seq > snapshot.events[index - 1].seq),
-    'what survives stays ordered',
+    'the whole run stays ordered',
   );
-  const bytes = snapshot.events.reduce((sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry)), 0);
-  assert.ok(bytes <= LOG_CAP_BYTES, 'the retained entries fit the cap (got ' + bytes + ' bytes)');
 
   release();
   await run;

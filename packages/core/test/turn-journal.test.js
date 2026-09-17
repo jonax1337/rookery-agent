@@ -107,6 +107,39 @@ test('a half-consumed turn reads back as running, with what it reached so far', 
   await stream.return(); // the consumer walks away; the turn ends its loop
 });
 
+test('an assignment run journalled under its own id outlives the run', async () => {
+  const store = new Store(':memory:');
+  const assistant = createAssistant(store);
+  const org = assistant.org.activeOrganization();
+  store.org.createAgent({ orgId: org.id, name: 'Mara', instructions: 'Do the work.', title: 'Engineer' });
+
+  const events = [];
+  for await (const event of assistant.assign({ agent: 'mara', task: 'summarise the repo' })) {
+    events.push(event);
+  }
+  const opened = events.find((event) => event.type === 'assignment');
+  assert.ok(opened, 'the run announced itself');
+
+  const turn = store.turns.ofAssignment(opened.assignment.id);
+  assert.ok(turn, 'the journal knows the run by its assignment id');
+  assert.equal(turn.status, 'done', 'an orderly end settles the journal');
+  assert.equal(turn.kind, 'assign');
+
+  const snapshot = assistant.org.snapshotAssignmentLog(opened.assignment.id);
+  assert.ok(snapshot, 'the snapshot answers after the end');
+  assert.equal(snapshot.active, false, 'nothing more is coming');
+  const text = snapshot.events
+    .filter((entry) => entry.event.type === 'text')
+    .map((entry) => entry.event.delta)
+    .join('');
+  assert.equal(text, 'Working on it.', 'the transcript stands, uncut by any cap');
+  assert.deepEqual(
+    snapshot.events.map((entry) => entry.seq),
+    snapshot.events.map((entry, index) => index + 1),
+    'numbered once each, in order',
+  );
+});
+
 test('a restart marks the orphan interrupted, and it stops being news once the conversation moves on', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rookery-journal-db-'));
   const path = join(dir, 'rookery.db');
