@@ -544,11 +544,20 @@ export class Store {
     }));
   }
 
-  /** Soft delete, so a wrong memory can be audited rather than vanishing. */
+  /**
+   * Soft delete, so a wrong memory can be audited rather than vanishing.
+   *
+   * Frames quote the memories they froze verbatim, so forgetting one must
+   * reach them too (R17): never keep a wording longer than the memory it
+   * came from. The drop is owner-level because a frame is a snapshot of
+   * many rows and cannot be edited piecemeal.
+   */
   forgetMemory(id: string): void {
+    const row = this.db.prepare('SELECT owner FROM memories WHERE id = ?').get(id) as Row | undefined;
     this.db
       .prepare('UPDATE memories SET forgotten = 1, updated_at = ? WHERE id = ?')
       .run(Date.now(), id);
+    if (row) this.dropDreamFramesForOwner(row.owner as string);
   }
 
   /**
