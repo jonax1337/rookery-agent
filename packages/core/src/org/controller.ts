@@ -21,6 +21,7 @@ import type {
   NotifyEvent,
   Organization,
   PermissionLevel,
+  ImapListenerConfig,
   Project,
   ProviderId,
   RequesterKind,
@@ -906,7 +907,13 @@ export class OrgController extends EventEmitter {
       case 'update_schedule':
       case 'delete_schedule':
       case 'run_schedule':
+      case 'set_webhook':
         return this.#schedules(context, name, args);
+
+      case 'list_listeners':
+      case 'set_listener':
+      case 'remove_listener':
+        return this.#listeners(context, name, args);
 
       default:
         return fail('Unknown tool ' + name + '.');
@@ -931,9 +938,16 @@ export class OrgController extends EventEmitter {
       return { text: renderSchedules(cron.list(context.orgId), snapshot) };
     }
 
+    // "event" takes a schedule off the clock, and then it needs no expression
+    // at all; anything else keeps the old rule that one is required.
+    const triggerMode = text('triggerMode').toLowerCase() === 'event' ? 'event' : text('triggerMode') ? 'schedule' : undefined;
+    const cooldownMs =
+      args.cooldownSeconds === undefined ? undefined : clampNumber(args.cooldownSeconds, 0, 86_400, 60) * 1000;
+
     if (name === 'create_schedule') {
-      if (!text('name') || !text('schedule') || !text('prompt')) {
-        return fail('A schedule needs a name, a cron expression and a prompt.');
+      if (!text('name') || !text('prompt')) return fail('A schedule needs a name and a prompt.');
+      if (!text('schedule') && triggerMode !== 'event') {
+        return fail('A schedule needs a cron expression, or triggerMode "event" to take it off the clock.');
       }
       const agent = text('agent') ? this.#store.org.findAgent(context.orgId, text('agent')) : null;
       if (text('agent') && !agent) return fail('No agent "' + text('agent') + '".');
@@ -949,6 +963,8 @@ export class OrgController extends EventEmitter {
           orgId: context.orgId,
           name: text('name'),
           schedule: text('schedule'),
+          triggerMode,
+          eventCooldownMs: cooldownMs,
           prompt: text('prompt'),
           kind: agent ? 'agent' : 'assistant',
           agentId: agent?.id,
@@ -958,7 +974,8 @@ export class OrgController extends EventEmitter {
           enabled: flag('enabled'),
           createdBy: 'assistant',
         });
-        return { text: 'Schedule created: ' + describeCron(job.schedule) + '.\n' + line(job) };
+        const when = job.schedule ? describeCron(job.schedule) : 'on events only, no timetable';
+        return { text: 'Schedule created: ' + when + '.\n' + line(job) };
       } catch (error) {
         return fail((error as Error).message);
       }
@@ -971,6 +988,23 @@ export class OrgController extends EventEmitter {
     // The memory page owns it.
     if (job.kind === 'sleep') {
       return fail('"' + job.name + '" is the memory\'s own nightly run, not a schedule of yours. It is managed on the memory page.');
+    }
+
+    if (name === 'set_webhook') {
+      if (text('action').toLowerCase() === 'remove') {
+        cron.disableWebhook(job.id);
+        return { text: 'The webhook for "' + job.name + '" is gone; the URL opens nothing now.' };
+      }
+      const rotated = Boolean(job.webhookToken);
+      const updated = cron.enableWebhook(job.id);
+      const url = 'http://' + this.#config.host + ':' + this.#config.port + '/hooks/' + updated.webhookToken;
+      return {
+        text:
+          (rotated ? 'Rotated the webhook for "' : 'Webhook for "') + job.name +
+          '": ' + url + '\n' +
+          (rotated ? 'The previous URL stopped working just now. ' : '') +
+          'Anything that can send an HTTP POST to it starts this schedule.',
+      };
     }
 
     if (name === 'delete_schedule') {
@@ -1006,6 +1040,8 @@ export class OrgController extends EventEmitter {
         patch.projectId = project.id;
       }
     }
+    if (triggerMode) patch.triggerMode = triggerMode;
+    if (cooldownMs !== undefined) patch.eventCooldownMs = cooldownMs;
     if (flag('enabled') !== undefined) patch.enabled = flag('enabled');
     if (flag('once') !== undefined) patch.once = flag('once');
     if (!Object.keys(patch).length) return fail('Nothing to change; pass at least one field.');
@@ -1015,6 +1051,93 @@ export class OrgController extends EventEmitter {
     } catch (error) {
       return fail((error as Error).message);
     }
+  }
+
+  /* ------------------------------- listeners ------------------------------ */
+
+  /**
+   * The watched mailboxes.
+   *
+   * A listener is settings, not a row: it lives in `~/.rookery/config.json`
+   * beside everything else, and the connection itself belongs to the server.
+   * Core does not reach into it - it writes the config and says so, and the
+   * registry follows on the `changed` event. Same split as everywhere: the
+   * decision here, the socket there.
+   */
+  #listeners(context: ToolContext, name: string, args: Record<string, unknown>): ToolCallResult {
+    const text = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string).trim() : '');
+    const flag = (key: string): boolean | undefined => (typeof args[key] === 'boolean' ? (args[key] as boolean) : undefined);
+    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
+    if (context.audience !== 'assistant') return fail('Only the assistant can change listeners.');
+    const entries = this.#config.listeners.imap;
+    const jobName = (jobId: string): string => this.#cron?.get(jobId)?.name ?? '(no schedule)';
+
+    if (name === 'list_listeners') {
+      if (!entries.length) return { text: 'No mailbox is being watched.' };
+      return {
+        text: entries
+          .map(
+            (entry) =>
+              '- ' + entry.id + ': ' + entry.user + ' / ' + entry.mailbox + ' on ' + entry.host + ':' + entry.port +
+              ', fires "' + jobName(entry.jobId) + '", ' + (entry.enabled ? 'on' : 'off') +
+              ', password ' + (entry.password ? 'set' : 'missing'),
+          )
+          .join('\n'),
+      };
+    }
+
+    const id = text('id');
+    if (!id) return fail('Name the listener.');
+    // It ends up in `imap:<id>` on every run this mailbox causes, so it has to
+    // stay a plain word.
+    if (!/^[A-Za-z0-9._-]+$/.test(id)) return fail('A listener id is letters, digits, dot, dash or underscore.');
+    const existing = entries.find((entry) => entry.id === id) ?? null;
+
+    if (name === 'remove_listener') {
+      if (!existing) return fail('No listener "' + id + '".');
+      this.#writeListeners(entries.filter((entry) => entry.id !== id));
+      return { text: 'Stopped watching "' + id + '" and forgot its settings, the password included.' };
+    }
+
+    const wantedJob = text('schedule') ? this.#cron?.find(context.orgId, text('schedule')) ?? null : null;
+    if (text('schedule') && !wantedJob) {
+      return fail('No schedule "' + text('schedule') + '". list_schedules shows the names.');
+    }
+    const merged: ImapListenerConfig = {
+      id,
+      enabled: flag('enabled') ?? existing?.enabled ?? false,
+      host: text('host') || existing?.host || '',
+      port: args.port === undefined ? existing?.port ?? 993 : clampNumber(args.port, 1, 65535, 993),
+      secure: flag('secure') ?? existing?.secure ?? true,
+      user: text('user') || existing?.user || '',
+      password: text('password') || existing?.password || '',
+      mailbox: text('mailbox') || existing?.mailbox || 'INBOX',
+      jobId: wantedJob?.id ?? existing?.jobId ?? '',
+    };
+    const missing: string[] = [];
+    if (!merged.host) missing.push('a server');
+    if (!merged.user) missing.push('a user');
+    if (!merged.jobId) missing.push('a schedule to fire');
+    if (missing.length) return fail('This mailbox still needs ' + missing.join(', ') + '.');
+    // Switched on without a password it would only produce a rejected login
+    // and a stopped listener, which reads like a bug rather than a blank field.
+    if (merged.enabled && !merged.password) return fail('Set the password before switching "' + id + '" on.');
+
+    this.#writeListeners(existing ? entries.map((entry) => (entry.id === id ? merged : entry)) : [...entries, merged]);
+    // The password is never repeated back, not even to the person who just
+    // said it: a tool result is transcript too, and one copy is enough.
+    return {
+      text:
+        (existing ? 'Updated mailbox "' : 'Now watching "') + id + '": ' + merged.user + ' / ' + merged.mailbox +
+        ' on ' + merged.host + ':' + merged.port + ', firing "' + jobName(merged.jobId) + '", ' +
+        (merged.enabled ? 'on.' : 'off - switch it on once the details are right.'),
+    };
+  }
+
+  /** Write the list back; the server's registry follows on the event. */
+  #writeListeners(imap: ImapListenerConfig[]): void {
+    applyConfig(this.#config, { listeners: { imap } });
+    this.emit('changed', { kind: 'listeners', id: 'listeners' });
   }
 
   async #assign(

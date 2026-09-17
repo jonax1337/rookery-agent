@@ -596,14 +596,27 @@ export const ORG_TOOLS: ToolDefinition[] = [
       type: 'object',
       properties: {
         name: str('Short name, e.g. "Morgenbriefing".'),
-        schedule: str('Five-field cron expression or alias.'),
+        schedule: str('Five-field cron expression or alias. Leave empty only when triggerMode is "event".'),
         prompt: str('What to do on each run, self-contained.'),
+        triggerMode: str(
+          '"schedule" (default) puts it on the clock; "event" means no clock at all - it waits for ' +
+            'a webhook call or a watched mailbox. An expression AND an event source together is the ' +
+            'useful third case: the event is the fast path, the expression the backstop for the ' +
+            'event that never arrived. Optional.',
+        ),
+        cooldownSeconds: {
+          type: 'number',
+          description:
+            'How long it rests after a run before an event may start the next one, 0 to 86400. ' +
+            'Events arriving during the rest are not lost - they collapse into one run at the end ' +
+            'of it. Default 60. Optional.',
+        },
         agent: str('Agent slug or name to run it as an assignment. Omit to run it yourself.'),
         project: str('Project name or id the run belongs to. Optional.'),
         once: { type: 'boolean', description: 'Fire once, then switch the schedule off. Default false.' },
         enabled: { type: 'boolean', description: 'Default true.' },
       },
-      required: ['name', 'schedule', 'prompt'],
+      required: ['name', 'prompt'],
       additionalProperties: false,
     },
     audience: ASSISTANT_ONLY,
@@ -620,6 +633,11 @@ export const ORG_TOOLS: ToolDefinition[] = [
         name: str('Optional.'),
         schedule: str('New cron expression. Optional.'),
         prompt: str('Optional.'),
+        triggerMode: str('"schedule" to put it on the clock, "event" to take it off. Optional.'),
+        cooldownSeconds: {
+          type: 'number',
+          description: 'Rest between event runs, 0 to 86400. Optional.',
+        },
         agent: str('Agent slug or name, or "assistant" to run it yourself. Optional.'),
         project: str('Project name or id, or "none". Optional.'),
         enabled: { type: 'boolean', description: 'Optional.' },
@@ -715,6 +733,70 @@ export const ORG_TOOLS: ToolDefinition[] = [
       additionalProperties: false,
     },
     audience: BOTH,
+  },
+  {
+    name: 'list_listeners',
+    description:
+      'The mailboxes Rookery watches, and the schedule each one fires. A listener holds one IMAP ' +
+      'connection open and starts its schedule the moment mail arrives, which is what a schedule ' +
+      'that polls every few minutes is for. Passwords are never shown, only whether one is set.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    audience: ASSISTANT_ONLY,
+  },
+  {
+    name: 'set_listener',
+    description:
+      'Add a watched mailbox, or change one by id. Only the fields given change; a new one needs ' +
+      'host, user, password, mailbox and the schedule it fires, and stays off until enabled=true ' +
+      'so the details can be checked first. Tell the user plainly that a password they type here ' +
+      'stays in this conversation, and offer the Listeners settings page as the alternative - the ' +
+      'password is stored either way, this is only about the transcript.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: str('Short name for the mailbox, e.g. "work". Runs record it as imap:<id>.'),
+        schedule: str('The schedule this mailbox fires: id, prefix, or exact name.'),
+        host: str('IMAP server, e.g. imap.fastmail.com.'),
+        port: { type: 'number', description: 'Default 993. Optional.' },
+        secure: { type: 'boolean', description: 'TLS from the first byte (993). Default true.' },
+        user: str('Mailbox user, usually the address.'),
+        password: str('Mailbox password, or an app password where the provider wants one.'),
+        mailbox: str('Which mailbox to watch. Default INBOX.'),
+        enabled: { type: 'boolean', description: 'Default false when creating.' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
+  },
+  {
+    name: 'remove_listener',
+    description: 'Stop watching a mailbox and forget its settings, the stored password included.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: str('The listener id.') },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
+  },
+  {
+    name: 'set_webhook',
+    description:
+      'Give a schedule a URL that starts it, or take the URL away. Creating one again rotates it, ' +
+      'and the previous URL stops working that second. Whoever holds the URL can start that one ' +
+      'schedule and nothing else. Say it out loud only when the user asked for it: once said, it ' +
+      'is in this conversation for good, and rotating is the way back.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: str('Schedule id, prefix, or exact name.'),
+        action: str('"create" to issue or rotate it, "remove" to take it away. Default create.'),
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
   },
   {
     name: 'get_settings',

@@ -202,6 +202,14 @@ export async function buildServer(
   };
   const onChanged = (change: { kind: string; id: string }): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'changed', change });
+    // The assistant can add a mailbox through its own tools, and what it
+    // writes is settings until something opens the connection. PATCH
+    // /api/config does this for the page; this does it for the conversation.
+    if (change.kind === 'listeners') {
+      void context.listeners.refresh().catch((error: Error) => {
+        log.warn('Listeners did not follow a change made through a tool', { error: error.message });
+      });
+    }
   };
   const onTask = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'task', event });
