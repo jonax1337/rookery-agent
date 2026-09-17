@@ -105,7 +105,7 @@ export function AssignmentTerminal({ assignmentId, status: statusProp, className
 
   return (
     <Fade asChild>
-      <Card className={cn('py-3', className)} aria-label="Live terminal of this assignment">
+      <Card className={cn('py-3', className)} aria-label="Live terminal of this run">
         <CardHeader className="flex flex-wrap items-center gap-2 border-b px-3!">
           <CardTitle className="text-sm">Live</CardTitle>
           {!log.finished ? <RunningBadge count={1} /> : null}

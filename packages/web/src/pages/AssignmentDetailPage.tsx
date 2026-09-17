@@ -163,12 +163,12 @@ export function AssignmentDetailPage() {
 
   /* -------------------------------- header ------------------------------- */
 
-  const title = assignment ? shorten(assignment.task, 60) : 'Assignment';
+  const title = assignment ? shorten(assignment.title, 60) : 'Run';
 
   usePageMeta(
     {
       ...(assignment ? { title } : {}),
-      breadcrumb: [{ label: 'Assignments', to: '/assignments' }, { label: title }],
+      breadcrumb: [{ label: 'Runs', to: '/assignments' }, { label: title }],
       actions: assignment ? (
         <>
           {open ? (
@@ -230,9 +230,9 @@ export function AssignmentDetailPage() {
         ) : (
           <EmptyState
             icon={AnimatedSendIcon}
-            title="This assignment does not exist"
+            title="This run does not exist"
             description="The entry was deleted, or the address is incorrect."
-            actionLabel="View assignments"
+            actionLabel="View all runs"
             actionTo="/assignments"
           />
         )}
@@ -286,15 +286,15 @@ export function AssignmentDetailPage() {
       // the separator is passed through to keep the resting digits identical.
       value: chars > 0 ? <SlidingNumber number={chars} thousandSeparator="," /> : '–',
       headline: chars > 0 ? 'Response length' : 'Nothing written yet',
-      // Not a hedge but the plain truth: the assignment row carries `chars`
+      // Not a hedge but the plain truth: the run's row carries `chars`
       // and nothing else - no tokens, no cost (see serverGaps).
       footnote: 'The server counts characters, not tokens',
     },
     {
       label: 'Delegated',
       value: <CountingNumber number={children.length} />,
-      headline: children.length === 0 ? 'Completed without delegation' : 'Subassignments delegated to other agents',
-      footnote: 'Directly from this assignment',
+      headline: children.length === 0 ? 'Completed without delegation' : 'Handed on to other agents',
+      footnote: 'Directly from this run',
     },
   ];
 
@@ -318,8 +318,13 @@ export function AssignmentDetailPage() {
         </div>
       </Fade>
 
+      {/* The name leads, the brief stands underneath it: a name replaces the
+          prompt in a list, never in the file (concept 7.2). */}
       <Blur delay={50}>
-        <p className="text-base leading-snug whitespace-pre-wrap">{assignment.task}</p>
+        <div className="flex flex-col gap-2">
+          <h1 className="text-lg leading-snug font-semibold">{assignment.title}</h1>
+          <p className="text-sm leading-snug whitespace-pre-wrap text-muted-foreground">{assignment.task}</p>
+        </div>
       </Blur>
 
       <Fade delay={100}>
@@ -423,7 +428,7 @@ export function AssignmentDetailPage() {
             <TabsContent value="fehler" className="mt-4">
               <Alert variant="destructive">
                 <TriangleAlertIcon />
-                <AlertTitle>The assignment failed</AlertTitle>
+                <AlertTitle>The run failed</AlertTitle>
                 <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
               </Alert>
             </TabsContent>
@@ -437,7 +442,7 @@ export function AssignmentDetailPage() {
               columns={childColumns}
               getRowId={(row) => row.id}
               searchable
-              searchPlaceholder="Assignments durchsuchen"
+              searchPlaceholder="Search runs"
               searchText={(row) => row.task}
               initialSorting={ASSIGNMENT_SORTING}
               paginate={false}
@@ -446,7 +451,7 @@ export function AssignmentDetailPage() {
               empty={
                 <EmptyState
                   icon={AnimatedSendIcon}
-                  title="This assignment was not delegated"
+                  title="Nothing was handed on from this run"
                   description="An agent can delegate parts of the work to others; this agent completed everything directly."
                   variant="plain"
                   size="sm"

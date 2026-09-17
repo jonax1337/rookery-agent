@@ -582,7 +582,7 @@ export function TasksPage() {
                 <EmptyState
                   icon={AnimatedClipboardListIcon}
                   title="No tasks yet"
-                  description="Larger goals start here before they are planned and run as assignments. The assistant can add tasks too."
+                  description="Larger goals start here before they are planned and run. The assistant can add tasks too."
                   actionLabel="Create task"
                   actionTo="/tasks/new"
                   variant="plain"

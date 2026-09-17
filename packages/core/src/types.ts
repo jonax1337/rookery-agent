@@ -961,6 +961,14 @@ export interface Assignment {
   parentId?: string;
   requesterKind: RequesterKind;
   requesterAgentId?: string;
+  /**
+   * What this run is called - three to eight words, never the brief itself.
+   * A run that belongs to a task carries that task's name (decision E17);
+   * one that does not is named by whoever started it. Required here and
+   * nullable in the column: a row written before the name existed is named
+   * from its own first line when it is read, and never written back.
+   */
+  title: string;
   task: string;
   status: AssignmentStatus;
   result?: string;
@@ -983,6 +991,8 @@ export interface AssignmentView {
   agentId: string;
   agentSlug: string;
   agentName: string;
+  /** The run's name, for lists; `task` stays the full brief underneath it. */
+  title: string;
   task: string;
   status: AssignmentStatus;
   projectId?: string;

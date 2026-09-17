@@ -190,8 +190,6 @@ export const sendMailSchema = z.object({
   subject: z.string().min(1, 'subject must not be empty'),
   body: z.string().min(1, 'body must not be empty'),
   inReplyTo: z.string().min(1).optional(),
-  /** `'task'` turns the mail into a work order: one agent, one task, one thread. */
-  mode: z.enum(['mail', 'task']).optional(),
 });
 
 /** POST /api/org/mail/read */

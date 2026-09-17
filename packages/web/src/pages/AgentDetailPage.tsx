@@ -323,13 +323,13 @@ export function AgentDetailPage() {
     const column = createRookeryColumnHelper<Assignment>();
     return column.columns([
       column.accessor('task', {
-        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Assignment" />,
+        header: ({ column: head }) => <DataTableColumnHeader column={head} title="Run" />,
         cell: ({ row }) => (
           <NavLink
             to={'/assignments/' + row.original.id}
             className="font-medium hover:underline"
           >
-            {shorten(row.original.task, 90)}
+            {shorten(row.original.title, 90)}
           </NavLink>
         ),
         enableHiding: false,
@@ -465,7 +465,7 @@ export function AgentDetailPage() {
 
   const cards: StatCardProps[] = [
     {
-      label: 'Assignments',
+      label: 'Runs',
       value: <CountingNumber number={assignments.length} />,
       ...cappedBadge(assignmentsCapped),
       headline: assignments.length === 0 ? 'Nothing assigned yet' : 'Last run erteilte Assignments',
@@ -625,7 +625,7 @@ export function AgentDetailPage() {
                   <StatusBadge kind="assignment" status={runningAssignment.status} />
                 </CardTitle>
                 <span className="text-xs text-muted-foreground">
-                  {shorten(runningAssignment.task, 80)}
+                  {shorten(runningAssignment.title, 80)}
                 </span>
               </CardHeader>
               <CardContent className="px-3!">
@@ -644,7 +644,7 @@ export function AgentDetailPage() {
       <Fade delay={250} className="px-4 lg:px-6">
         <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
           <TabsList>
-            <TabsTrigger value="assignments">Assignments</TabsTrigger>
+            <TabsTrigger value="assignments">Runs</TabsTrigger>
             <TabsTrigger value="reports">Direct reports</TabsTrigger>
             <TabsTrigger value="memories">Memory</TabsTrigger>
             <TabsTrigger value="instructions">Instructions</TabsTrigger>
@@ -657,7 +657,7 @@ export function AgentDetailPage() {
               data={assignments}
               columns={assignmentColumns}
               searchable
-              searchPlaceholder="Assignments durchsuchen"
+              searchPlaceholder="Search runs"
               searchText={(row) => row.task}
               initialSorting={[{ id: 'createdAt', desc: true }]}
               groupTime={(row) => row.createdAt}
@@ -674,9 +674,9 @@ export function AgentDetailPage() {
               empty={
                 <EmptyState
                   icon={InboxIcon}
-                  title={'No assignments for ' + agent.name}
-                  description="Assignments run in a separate process, independently of the conversation."
-                  actionLabel="Create assignment"
+                  title={'Nothing has run for ' + agent.name + ' yet'}
+                  description="Work runs in a separate process, independently of the conversation."
+                  actionLabel="Hand over a task"
                   onAction={() => setAssignOpen(true)}
                   variant="plain"
                   size="sm"
@@ -730,7 +730,7 @@ export function AgentDetailPage() {
                   description={
                     agent.name + ' learns from its own assignments, not from this conversation.'
                   }
-                  actionLabel="Create assignment"
+                  actionLabel="Hand over a task"
                   onAction={() => setAssignOpen(true)}
                   variant="plain"
                   size="sm"
@@ -752,7 +752,7 @@ export function AgentDetailPage() {
                   <EmptyState
                     icon={PencilIcon}
                     title="No instructions provided"
-                    description="Without custom instructions, the agent works only from the assignment text."
+                    description="Without custom instructions, the agent works only from the brief."
                     actionLabel="Edit"
                     actionTo={'/org/agents/' + agent.id + '/edit'}
                     variant="plain"
@@ -799,7 +799,7 @@ export function AgentDetailPage() {
       >
         <FieldGroup>
           <Field>
-            <FieldLabel htmlFor="assign-task">Assignment</FieldLabel>
+            <FieldLabel htmlFor="assign-task">Task</FieldLabel>
             <Textarea
               id="assign-task"
               rows={5}
@@ -842,7 +842,7 @@ export function AgentDetailPage() {
         {error ? (
           <Alert variant="destructive">
             <TriangleAlertIcon />
-            <AlertTitle>The assignment failed</AlertTitle>
+            <AlertTitle>The run failed</AlertTitle>
             <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
           </Alert>
         ) : null}
@@ -912,7 +912,7 @@ function PerformanceCard({ performance }: { performance: AgentDetail['performanc
           <TrendIndicator trend={performance.trend} />
         </div>
         {performance.average === null ? (
-          <p className="text-sm text-muted-foreground">Not enough reviewed assignments yet.</p>
+          <p className="text-sm text-muted-foreground">Not enough reviewed runs yet.</p>
         ) : null}
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">Failure rate (last 20)</span>

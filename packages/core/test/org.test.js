@@ -233,7 +233,7 @@ test('an assign tool call from inside a turn runs the agent and streams its assi
   }
   const done = events.find((event) => event.type === 'done');
   assert.match(done.text, /DELEGATED: Report from Mara \(mara\)/);
-  assert.match(done.text, /OUTPUT\(write the parser\)/);
+  assert.match(done.text, /OUTPUT\(TASK: write the parser/);
   assert.match(done.text, /Report from Ben \(ben\)/);
   const views = events.filter((event) => event.type === 'assignment').map((event) => event.assignment);
   assert.ok(views.some((view) => view.agentSlug === 'mara' && view.status === 'done'));
@@ -242,7 +242,7 @@ test('an assign tool call from inside a turn runs the agent and streams its assi
   const stored = store.org.listAssignments(mara.orgId);
   assert.equal(stored.length, 2);
   assert.ok(stored.every((a) => a.status === 'done' && a.requesterKind === 'assistant'));
-  const agentRun = fake.runs.find((run) => run.prompt === 'write the parser');
+  const agentRun = fake.runs.find((run) => run.prompt.startsWith('TASK: write the parser'));
   assert.match(agentRun.systemPrompt, /You are Mara, Engineer/);
   assert.ok(agentRun.mcp.env.ROOKERY_BRIDGE_TOKEN !== fake.runs[0].mcp.env.ROOKERY_BRIDGE_TOKEN);
   assistant.close();
@@ -911,7 +911,7 @@ test('the assistant can cancel, browse history, edit projects, keep memory and c
   const running = store.org.listAssignments(org.id, { status: ['running', 'pending'] })[0];
   assert.ok(running, 'the assignment is in flight');
   const cancelled = await assistant.org.handle(ctx, 'cancel_assignment', { id: running.id.slice(0, 8) });
-  assert.match(cancelled.text, /Cancelling/);
+  assert.match(cancelled.text, /Calling off/);
   await pending;
   assert.equal(store.org.getAssignment(running.id).status, 'cancelled');
   const again = await assistant.org.handle(ctx, 'cancel_assignment', { id: running.id });
@@ -940,7 +940,7 @@ test('the assistant can cancel, browse history, edit projects, keep memory and c
   assert.equal(store.listMemories().length, 0);
 
   const settings = await assistant.org.handle(ctx, 'update_settings', { maxConcurrentAssignments: 2, defaultEffort: 'high', assignmentTimeoutMinutes: 5 });
-  assert.match(settings.text, /Parallel assignments: 2/);
+  assert.match(settings.text, /Parallel runs: 2/);
   assert.equal(assistant.config.org.maxConcurrentAssignments, 2);
   assert.equal(assistant.config.defaultEffort, 'high');
   assert.equal(assistant.config.org.assignmentTimeoutMs, 5 * 60 * 1000);
@@ -1125,5 +1125,139 @@ test('chat retains completed and interrupted tool events on the persisted answer
   assert.equal(messages.length, 2);
   assert.deepEqual(messages[1].toolCalls, calls);
   assert.equal(messages[1].content, '');
+  assistant.close();
+});
+
+/* --------------------------- one entrance, one shape --------------------------- */
+
+/**
+ * Every way into the company leaves the same rows behind: a task, the mail
+ * thread it is negotiated in, a run, and the link between task and run
+ * (concept 1.1). What differs is who started it, never what is left over.
+ */
+async function assertOneShape(store, orgId, taskId, label) {
+  const task = store.org.getTask(taskId);
+  assert.ok(task, label + ': a task exists');
+  const thread = store.org.getMailThreadForTask(orgId, taskId);
+  assert.ok(thread, label + ': the task has a mail thread');
+  assert.equal(thread.kind, 'assignment', label + ': and that thread is a task thread');
+  assert.ok(task.assignmentId, label + ': the task points at its current run');
+  const run = store.org.getAssignment(task.assignmentId);
+  assert.ok(run, label + ': the run exists');
+  assert.equal(store.org.getTaskIdForAssignment(run.id), taskId, label + ': the run is linked to the task');
+  assert.equal(store.org.taskRunNumber(run.id), 1, label + ': and it is the first run of it');
+  return { task, run };
+}
+
+test('all four ways in leave the same rows: a task, its thread, a run and the link', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+
+  // 1. Compose with exactly one agent on To - no mode, no switch.
+  const composed = await assistant.org.sendUserMail({
+    orgId: org.id,
+    to: [mara.slug],
+    subject: 'Ship the parser',
+    body: 'Please ship the parser.',
+  });
+  assert.ok(composed.task, 'one agent on To opens a task');
+  await sleep(200);
+  const mailBorn = await assertOneShape(store, org.id, composed.task.id, 'mail');
+  assert.equal(mailBorn.task.title, 'Ship the parser', 'the subject is the name');
+  assert.equal(mailBorn.run.title, 'Ship the parser', 'and the run inherits it');
+
+  // 2. The assistant hands work over with assign.
+  const assigned = await assistant.org.handle(ctx, 'assign', {
+    agent: mara.slug,
+    title: 'Rewrite the token cache',
+    task: 'Rewrite the token cache and keep the public API.',
+  });
+  assert.equal(assigned.isError, undefined);
+  const assignTask = store.org
+    .listAllTasks(org.id)
+    .find((entry) => entry.title === 'Rewrite the token cache');
+  const fromAssign = await assertOneShape(store, org.id, assignTask.id, 'assign');
+  assert.equal(fromAssign.run.title, 'Rewrite the token cache');
+
+  // 3. create_task followed by run_task.
+  const created = await assistant.org.handle(ctx, 'create_task', {
+    title: 'Document the cache',
+    description: 'Write down how the token cache behaves.',
+    assignee: mara.slug,
+  });
+  assert.equal(created.isError, undefined);
+  const boardTask = store.org.listAllTasks(org.id).find((entry) => entry.title === 'Document the cache');
+  await assistant.org.handle(ctx, 'run_task', { id: boardTask.id });
+  const fromBoard = await assertOneShape(store, org.id, boardTask.id, 'board');
+  assert.equal(fromBoard.run.title, 'Document the cache');
+
+  // 4. A conversation is the exception that proves the rule: several people
+  //    on To wake the agents among them and leave no card at all (E3).
+  const before = store.org.listAllTasks(org.id).length;
+  const conversation = await assistant.org.sendUserMail({
+    orgId: org.id,
+    to: [mara.slug, 'assistant'],
+    subject: 'What do you two think',
+    body: 'Two of you, one question.',
+  });
+  await sleep(200);
+  assert.equal(conversation.task, undefined, 'two on To is a conversation');
+  assert.equal(store.org.getMailThread(org.id, conversation.mail.threadId).kind, 'chat');
+  assert.equal(store.org.listAllTasks(org.id).length, before, 'and it creates no card');
+  assistant.close();
+});
+
+test('assign inside a task hangs the new task under it instead of beside it', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const lead = hire(assistant, { name: 'Lead' });
+  hire(assistant, { name: 'Junior', managerId: lead.id });
+
+  const { task } = await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: lead.slug,
+    subject: 'Build the importer',
+    body: 'ASSIGN:junior|write the row parser',
+  });
+  await sleep(400);
+
+  const children = store.org.listTasks(org.id, { parentId: task.id });
+  assert.equal(children.length, 1, 'what the lead handed on is a child of its own task');
+  assert.equal(children[0].title, 'write the row parser');
+  assert.ok(children[0].assigneeId, 'and it has the junior on it');
+  assistant.close();
+});
+
+test('a name is one short line and never the brief itself', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+
+  const brief =
+    '# Fix the flaky upload test\n\nThe upload test fails about one run in three. Find out why, ' +
+    'fix it, and say what was actually wrong rather than retrying it until it passes. ' +
+    'Everything below the first line is detail nobody wants in a list.';
+  // No title from the caller: the fallback is the first line, stripped of its
+  // heading marker and clamped - never the whole brief.
+  await assistant.org.handle(ctx, 'assign', { agent: mara.slug, task: brief, title: '' });
+  await sleep(200);
+
+  const run = store.org.listAssignments(org.id, { agentId: mara.id })[0];
+  assert.equal(run.title, 'Fix the flaky upload test');
+  assert.ok(!run.title.includes('\n'), 'a name is one line');
+  assert.ok(run.title.length <= 60, 'and a short one');
+  assert.notEqual(run.title, run.task, 'a name is not the brief');
+
+  const overview = await assistant.org.handle(ctx, 'list_assignments', { agent: mara.slug });
+  for (const line of overview.text.split('\n')) {
+    assert.ok(line.length <= 160, 'no line of the history carries a whole brief');
+    assert.ok(!line.includes('nobody wants in a list'), 'the brief stays out of the list');
+  }
   assistant.close();
 });

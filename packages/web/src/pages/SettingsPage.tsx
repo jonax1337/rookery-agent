@@ -1538,7 +1538,7 @@ function OrgSection({
       <FieldSet>
         <NumberField
           id="set-concurrency"
-          label="Concurrent assignments"
+          label="Concurrent runs"
           value={draft.org.maxConcurrentAssignments}
           min={1}
           max={16}

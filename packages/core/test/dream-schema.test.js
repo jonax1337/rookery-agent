@@ -20,9 +20,9 @@ function tempPath(t) {
   return join(root, 'state.db');
 }
 
-test('schema 21 is what a fresh database writes into meta', () => {
+test('schema 22 is what a fresh database writes into meta', () => {
   const db = openDatabase(':memory:');
-  assert.equal(SCHEMA_VERSION, 21);
+  assert.equal(SCHEMA_VERSION, 22);
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
   assert.equal(row.value, String(SCHEMA_VERSION));
   db.close();

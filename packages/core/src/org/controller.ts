@@ -45,7 +45,7 @@ import { byScoreThenId, coreProfile, recall } from '../memory/recall.js';
 import { extractMemories, smallModelFor } from '../memory/extractor.js';
 import { admitCandidates, linkEntities } from '../memory/gate.js';
 import type { SleepRunner } from '../memory/sleep.js';
-import { clip, shorten, tail } from '../util/queue.js';
+import { clip, shorten, tail, titleFromBrief } from '../util/queue.js';
 import type { BridgeServer, ToolCallResult, ToolHandler } from './bridge.js';
 import { buildAgentPrompt, renderBoard, renderMail, renderOrgOverview, renderSchedules, type OrgSnapshot } from './prompts.js';
 import {
@@ -113,6 +113,13 @@ export interface ToolContext {
   projectId?: string;
   /** The assignment whose process is calling, for delegation chains. */
   parentAssignmentId?: string;
+  /**
+   * The task this context is working on, set by `#runTaskLeaf`. It is what
+   * makes a delegation chain a tree on the board: work handed on from inside
+   * a task becomes a child of that task rather than a card of its own
+   * (decision E9).
+   */
+  taskId?: string;
   /** Depth of the caller; the assistant is -1, its direct assignments are 0. */
   depth: number;
   emit: (event: AgentEvent) => void;
@@ -163,7 +170,15 @@ export interface SourceMailRef {
 export interface RunAssignmentInput {
   orgId: string;
   agent: Agent;
+  /**
+   * What this run is called in lists. A run that carries out a task takes
+   * that task's name (decision E17); everything else is named by whoever
+   * started it, and only as a last resort by the brief's own first line.
+   */
+  title: string;
   task: string;
+  /** The task being carried out, when there is one; reaches the run's tools. */
+  taskId?: string;
   projectId?: string;
   sessionId?: string;
   parentId?: string;
@@ -422,21 +437,27 @@ export class OrgController extends EventEmitter {
 
     switch (name) {
       case 'org_overview':
-        return { text: renderOrgOverview(this.snapshot(context.orgId)) };
+        return { text: renderOrgOverview(this.snapshot(context.orgId), this.#store.org) };
 
       case 'assign':
-        return this.#assign(context, text('agent'), text('task'), text('project'), args.wait !== false);
+        return this.#assign(context, text('agent'), text('title'), text('task'), text('project'), args.wait !== false);
 
       case 'assignment_status': {
         const assignment = this.findAssignment(context.orgId, text('id'));
-        if (!assignment) return fail('No assignment with that id.');
-        return { text: describeAssignment(assignment, this.#store.org.getAgent(assignment.agentId)) };
+        if (!assignment) return fail('No run with that id.');
+        return {
+          text: describeAssignment(
+            assignment,
+            this.#store.org.getAgent(assignment.agentId),
+            this.#store.org.taskRunNumber(assignment.id),
+          ),
+        };
       }
 
       case 'review_assignment': {
         if (context.audience !== 'assistant') return fail('Only the assistant records reviews.');
         const assignment = this.findAssignment(context.orgId, text('id'));
-        if (!assignment) return fail('No assignment with that id.');
+        if (!assignment) return fail('No run with that id.');
         const overall = clampNumber(args.overall, 1, 5, 3);
         const review = this.#store.org.upsertReview({
           orgId: context.orgId,
@@ -459,13 +480,13 @@ export class OrgController extends EventEmitter {
       }
 
       case 'cancel_assignment': {
-        if (context.audience !== 'assistant') return fail('Only the assistant can cancel assignments.');
+        if (context.audience !== 'assistant') return fail('Only the assistant can call off a running task.');
         const assignment = this.findAssignment(context.orgId, text('id'));
-        if (!assignment) return fail('No assignment with that id.');
+        if (!assignment) return fail('No run with that id.');
         if (!this.cancel(assignment.id, 'the assistant')) {
-          return fail('Assignment ' + assignment.id.slice(0, 8) + ' is not running; it is ' + assignment.status + '.');
+          return fail('Run ' + assignment.id.slice(0, 8) + ' is not running; it is ' + assignment.status + '.');
         }
-        return { text: 'Cancelling assignment ' + assignment.id.slice(0, 8) + '. It ends as cancelled within a moment.' };
+        return { text: 'Calling off run ' + assignment.id.slice(0, 8) + '. It ends as cancelled within a moment.' };
       }
 
       case 'list_assignments': {
@@ -484,7 +505,7 @@ export class OrgController extends EventEmitter {
           })
           .filter((entry) => !project || entry.projectId === project.id)
           .slice(0, limit);
-        if (!rows.length) return { text: 'No assignments match.' };
+        if (!rows.length) return { text: 'No runs match.' };
         const byId = new Map(
           this.#store.org.listAgents(context.orgId, { includeArchived: true }).map((entry) => [entry.id, entry]),
         );
@@ -494,8 +515,13 @@ export class OrgController extends EventEmitter {
               const who = byId.get(entry.agentId)?.slug ?? '?';
               const when = new Date(entry.createdAt).toISOString().slice(0, 16).replace('T', ' ');
               const took = entry.durationMs ? ' ' + Math.round(entry.durationMs / 1000) + 's' : '';
+              // The name, never the brief: three runs of the same errand open
+              // with the same twenty words, and a list of those tells nobody
+              // which is which (concept 7.1).
+              const run = this.#store.org.taskRunNumber(entry.id);
               return '- ' + entry.id.slice(0, 8) + ' ' + when + ' ' + entry.status + took + ' ' + who + ': ' +
-                shorten(entry.task, 100) + (entry.error ? ' [' + shorten(entry.error, 60) + ']' : '');
+                shorten(entry.title, 100) + (run && run > 1 ? ' (run ' + run + ')' : '') +
+                (entry.error ? ' [' + shorten(entry.error, 60) + ']' : '');
             })
             .join('\n'),
         };
@@ -824,7 +850,7 @@ export class OrgController extends EventEmitter {
           text:
             'Status: ' + status + '.\n' +
             renderProjectMcpServers(file.servers) +
-            (status === 'trusted' ? '' : '\nUse trust_project_mcp to approve before these start for an assignment.'),
+            (status === 'trusted' ? '' : '\nUse trust_project_mcp to approve before these start for a run.'),
         };
       }
 
@@ -837,7 +863,7 @@ export class OrgController extends EventEmitter {
         if (decision === 'revoke') {
           this.#store.org.updateProject(project.id, { mcpTrust: null });
           this.emit('changed', { kind: 'project', id: project.id });
-          return { text: 'Revoked trust for "' + project.name + '"; its MCP servers no longer start for assignments.' };
+          return { text: 'Revoked trust for "' + project.name + '"; its MCP servers no longer start for its runs.' };
         }
         if (!project.path) return fail('Project "' + project.name + '" has no directory.');
         const file = readProjectMcpFile(project.path);
@@ -849,7 +875,7 @@ export class OrgController extends EventEmitter {
         return {
           text:
             'Trusted "' + project.name + '": ' + file.servers.length +
-            ' MCP server(s) start for its assignments from now on.',
+            ' MCP server(s) start for its runs from now on.',
         };
       }
 
@@ -995,6 +1021,10 @@ export class OrgController extends EventEmitter {
           createdByAgentId: context.agentId,
         });
         this.#announceTask(task, context.emit);
+        // A task with an owner gets its thread now rather than at its first
+        // run: the work order is the mail, and the owner should be able to
+        // ask about it before anybody presses start.
+        await this.#ensureTaskThread(task, context.emit);
         return { text: 'Task ' + task.id.slice(0, 8) + ' "' + task.title + '" is on the board.' };
       }
 
@@ -1265,6 +1295,7 @@ export class OrgController extends EventEmitter {
   async #assign(
     context: ToolContext,
     agentRef: string,
+    titleRaw: string,
     task: string,
     projectRef: string,
     wait = true,
@@ -1287,7 +1318,7 @@ export class OrgController extends EventEmitter {
         // A self-assignment only makes sense detached: waiting on it would
         // just be the same process blocking on itself for no reason, and in
         // a chat turn there is no coding tool to do the work with anyway.
-        if (wait) return fail('A self-assignment has to run in the background - call assign with wait=false.');
+        if (wait) return fail('Taking work on yourself has to run in the background - call assign with wait=false.');
       } else if (agent.managerId !== context.agentId) {
         const reports = this.#store.org.listAgents(context.orgId, { managerId: context.agentId }).map((r) => r.slug);
         return fail(
@@ -1309,73 +1340,101 @@ export class OrgController extends EventEmitter {
       projectId = project.id;
     }
 
-    const runInput = {
+    // Handing work to somebody puts it on the board like every other way in
+    // (decision E9). This was the fourth entrance, and the only one that left
+    // a run nobody could find on a card. Inside a task, the new one becomes a
+    // child of it, so a delegation chain reads as a tree.
+    const title = titleRaw.trim() || titleFromBrief(task);
+    const board = this.#store.org.createTask({
       orgId: context.orgId,
-      agent,
-      task,
+      parentId: context.taskId,
+      title,
+      description: task,
       projectId,
-      sessionId: context.sessionId,
-      parentId: context.parentAssignmentId,
-      requesterKind: context.audience === 'agent' ? 'agent' : 'assistant',
-      requesterAgentId: context.agentId,
-      depth,
-    } as const;
+      assigneeId: agent.id,
+      createdBy: context.audience === 'agent' ? 'agent' : 'assistant',
+      createdByAgentId: context.agentId,
+    });
+    this.#announceTask(board, context.emit);
+    const shortId = board.id.slice(0, 8);
+
+    // The new task is its own errand: the mail that started the caller's run
+    // must not be answered by this one as well, and the note that continued
+    // the caller's thread is not part of this brief.
+    const runContext: ToolContext = {
+      ...context,
+      projectId,
+      taskId: board.id,
+      sourceMail: undefined,
+      taskNote: undefined,
+      emit: wait ? context.emit : (): void => undefined,
+      signal: wait ? context.signal : undefined,
+    };
 
     if (!wait) {
       // Detached: the turn ends while the agent works. Its progress reaches
-      // every socket through the org-level assignment events; the turn's own
-      // stream and abort signal must not be tied to it.
+      // every socket through the org-level run events; the turn's own stream
+      // and abort signal must not be tied to it.
       const isSelf = agent.id === context.agentId;
-      const started = this.run({ ...runInput, emit: () => undefined });
-      started
-        .then((assignment) => {
+      this.runTask(runContext, board)
+        .then((finished) => {
           if (!isSelf) return undefined;
           // A self-assignment has nobody else waiting on assignment_status,
           // so it reports for itself the same way mail-triggered work does:
           // a mail addressed to the user.
           const body =
-            assignment.status === 'done'
-              ? clip(assignment.result ?? '', RESULT_BUDGET)
-              : 'Could not finish: ' + (assignment.error ?? assignment.status) + '.';
+            finished.status === 'done'
+              ? clip(finished.result ?? '', RESULT_BUDGET)
+              : 'Could not finish: ' + (finished.error ?? finished.status) + '.';
           return this.#deliverMail({
             orgId: context.orgId,
             from: { kind: 'agent', id: agent.id },
             to: [{ kind: 'user' }],
             cc: [],
-            subject: 'Re: background task',
+            subject: 'Re: ' + title,
             body,
             depth: 0,
             emit: () => undefined,
           });
         })
         .catch((error: unknown) => {
-          this.#log.warn('Detached assignment failed', { agent: agent.slug, error: String(error) });
+          this.#log.warn('Detached task failed', { agent: agent.slug, error: String(error) });
         });
       return {
         text: isSelf
-          ? 'Started in the background - I will follow up in this chat once it is done.'
-          : 'Handed to ' + agent.name + ' (' + agent.slug + '). The assignment runs in the background; ' +
-            'assignment_status reports on it, and the user is told when it finishes.',
+          ? 'Started in the background as task ' + shortId + ' "' + title +
+            '" - I will follow up in this chat once it is done.'
+          : 'Handed to ' + agent.name + ' (' + agent.slug + ') as task ' + shortId + ' "' + title +
+            '". It runs in the background and is on the board; the user is told when it finishes.',
       };
     }
 
-    const assignment = await this.run({
-      ...runInput,
-      emit: context.emit,
-      signal: context.signal,
-    });
+    const finished = await this.runTask(runContext, board);
+    const duration =
+      finished.startedAt && finished.finishedAt
+        ? ', ' + Math.round((finished.finishedAt - finished.startedAt) / 1000) + ' s'
+        : '';
 
-    if (assignment.status !== 'done') {
+    if (finished.status === 'blocked') {
+      // Not a failure: the agent asked whoever wanted the work a question,
+      // and the card stays open until it is answered.
+      return {
+        text:
+          agent.name + ' (' + agent.slug + ') has a question about task ' + shortId + ' "' + title +
+          '"; it is waiting in the mail thread.' +
+          (finished.result ? '\n\n' + clip(finished.result, RESULT_BUDGET) : ''),
+      };
+    }
+    if (finished.status !== 'done') {
       return fail(
-        'Assignment ' + assignment.id.slice(0, 8) + ' to ' + agent.slug + ' ' + assignment.status +
-          (assignment.error ? ': ' + assignment.error : '.'),
+        'Task ' + shortId + ' "' + title + '" with ' + agent.slug + ' ' + finished.status +
+          (finished.error ? ': ' + finished.error : '.'),
       );
     }
     return {
       text:
-        'Report from ' + agent.name + ' (' + agent.slug + '), assignment ' + assignment.id.slice(0, 8) +
-        ', ' + Math.round((assignment.durationMs ?? 0) / 1000) + ' s:\n\n' +
-        clip(assignment.result ?? '', RESULT_BUDGET),
+        'Report from ' + agent.name + ' (' + agent.slug + ') on task ' + shortId + ' "' + title + '"' +
+        duration + ':\n\n' + clip(finished.result ?? '', RESULT_BUDGET),
     };
   }
 
@@ -1563,6 +1622,9 @@ export class OrgController extends EventEmitter {
         this.run({
           orgId: params.orgId,
           agent,
+          // A human wrote the subject line; that is already a name, and the
+          // same one the thread runs under (concept 7.2, source two).
+          title: mail.subject.trim() || titleFromBrief(params.body),
           task:
             'Handle mail ' + mail.id + ' from ' + senderLabel + '.\nSubject: ' + mail.subject + '\n\n' + params.body,
           projectId: params.projectId,
@@ -1634,6 +1696,48 @@ export class OrgController extends EventEmitter {
     });
   }
 
+  /**
+   * A task and the thread it is negotiated in are one thing (concept section
+   * 2), so a task that was not born as mail gets its work order written now:
+   * one mail from whoever asked for it to whoever does it, opening the
+   * thread the card is linked to.
+   *
+   * It delivers without triggering anything. An `assignment` thread is
+   * dispatched by its task, and at this moment the thread carries no task id
+   * yet - the link is made one line below - so `#continueTask` finds nothing
+   * and returns. Whoever created the task starts the run.
+   *
+   * A task nobody is assigned to gets no thread yet: there would be no
+   * second party to address, and it gets one as soon as it has an owner.
+   */
+  async #ensureTaskThread(task: Task, emit: (event: AgentEvent) => void): Promise<void> {
+    if (this.#store.org.getMailThreadForTask(task.orgId, task.id)) return;
+    if (!task.assigneeId || !this.#store.org.getAgent(task.assigneeId)) return;
+    const from: MailWho =
+      task.createdBy === 'user'
+        ? { kind: 'user' }
+        : task.createdBy === 'agent' && task.createdByAgentId
+          ? { kind: 'agent', id: task.createdByAgentId }
+          : { kind: 'assistant' };
+    try {
+      const mail = await this.#deliverMail({
+        orgId: task.orgId,
+        from,
+        to: [{ kind: 'agent', id: task.assigneeId }],
+        cc: [],
+        subject: task.title,
+        body: task.description,
+        depth: 0,
+        kind: 'assignment',
+        projectId: task.projectId,
+        emit,
+      });
+      this.#store.org.linkMailThreadTask(task.orgId, mail.threadId, task.id);
+    } catch (error: unknown) {
+      this.#log.warn('Task thread could not be opened', { task: task.id, error: String(error) });
+    }
+  }
+
   async #sendMail(
     context: ToolContext,
     toRaw: string,
@@ -1700,9 +1804,19 @@ export class OrgController extends EventEmitter {
   }
 
   /**
-   * The user sends mail to anyone, no permission circle applied - for a
-   * future `POST /api/org/mail` route to call directly, the way
-   * `POST /api/org/messages` bypassed the tool-context path before it.
+   * The user sends mail to anyone, no permission circle applied - the one
+   * entrance behind `POST /api/org/mail`.
+   *
+   * What comes of it is read off the address line, never off a switch the
+   * user has to remember afterwards (decisions E2 and E3): exactly one agent
+   * on To is a work order and opens a task, Cc whoever you like. The
+   * assistant on To, the user on To, or several people on To is a
+   * conversation - the agents among them are woken exactly as before, and no
+   * card is created, because splitting work is `plan_task`'s job and not the
+   * address line's.
+   *
+   * A reply opens nothing either way: the thread it lands in decided long ago
+   * what it is, and a task thread carries its own task on (decision E5).
    */
   async sendUserMail(input: {
     orgId: string;
@@ -1713,16 +1827,29 @@ export class OrgController extends EventEmitter {
     inReplyTo?: string;
     projectId?: string;
     emit?: (event: AgentEvent) => void;
-  }): Promise<Mail> {
+  }): Promise<{ mail: Mail; task?: Task }> {
     const resolve = (token: string): MailWho => {
       const target = this.#resolveMailTarget(input.orgId, token);
       if (!target) throw new Error('No agent "' + token + '".');
       return target;
     };
-    return this.#deliverMail({
+    const to = input.to.map(resolve);
+    const soleRecipient = input.to.length === 1 ? input.to[0] : undefined;
+    if (!input.inReplyTo && soleRecipient !== undefined && to.length === 1 && to[0]?.kind === 'agent') {
+      return this.sendTaskMail({
+        orgId: input.orgId,
+        to: soleRecipient,
+        cc: input.cc,
+        subject: input.subject,
+        body: input.body,
+        projectId: input.projectId,
+        emit: input.emit,
+      });
+    }
+    const mail = await this.#deliverMail({
       orgId: input.orgId,
       from: { kind: 'user' },
-      to: input.to.map(resolve),
+      to,
       cc: (input.cc ?? []).map(resolve),
       subject: input.subject,
       body: input.body,
@@ -1731,6 +1858,7 @@ export class OrgController extends EventEmitter {
       projectId: input.projectId,
       emit: input.emit ?? (() => undefined),
     });
+    return { mail };
   }
 
   /**
@@ -1751,7 +1879,7 @@ export class OrgController extends EventEmitter {
     emit?: (event: AgentEvent) => void;
   }): Promise<{ mail: Mail; task: Task }> {
     const target = this.#resolveMailTarget(input.orgId, input.to);
-    if (!target || target.kind !== 'agent' || !target.id) throw new Error('An assignment needs exactly one agent on the To line.');
+    if (!target || target.kind !== 'agent' || !target.id) throw new Error('A work order needs exactly one agent on the To line.');
 
     const task = this.#store.org.createTask({
       orgId: input.orgId,
@@ -1885,6 +2013,7 @@ export class OrgController extends EventEmitter {
     let assignment = org.createAssignment({
       orgId: input.orgId,
       agentId: agent.id,
+      title: input.title,
       task: input.task,
       projectId: project?.id,
       sessionId: input.sessionId,
@@ -2025,6 +2154,9 @@ export class OrgController extends EventEmitter {
         sessionId: input.sessionId,
         projectId: project?.id,
         parentAssignmentId: assignment.id,
+        // What this run is carrying out, so anything it hands on lands under
+        // the same card instead of starting a second one (decision E9).
+        taskId: input.taskId,
         depth: input.depth,
         emit: input.emit,
         signal: controller.signal,
@@ -2620,6 +2752,11 @@ export class OrgController extends EventEmitter {
       children = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
     }
 
+    // Every task is negotiated in a thread, whichever way it got here: one
+    // that was not born as mail has its work order written before it runs,
+    // so its result, its questions and its ending all have somewhere to go.
+    await this.#ensureTaskThread(reload(), context.emit);
+
     const started = Date.now();
     org.updateTask(task.id, { status: 'running', startedAt: started, error: null });
     this.#announceTask(reload(), context.emit);
@@ -2766,6 +2903,10 @@ export class OrgController extends EventEmitter {
     const assignment = await this.run({
       orgId: context.orgId,
       agent,
+      // The run is the task, so it goes by the task's name; which run of it
+      // this is comes from the chain, not from a second title (decision E17).
+      title: task.title,
+      taskId: task.id,
       task: prior + 'TASK: ' + task.title + '\n\n' + task.description + note,
       projectId: task.projectId ?? context.projectId,
       sessionId: context.sessionId,
@@ -3129,6 +3270,7 @@ export function toView(assignment: Assignment, agent: Agent, extra: Partial<Assi
     agentId: agent.id,
     agentSlug: agent.slug,
     agentName: agent.name,
+    title: assignment.title,
     task: assignment.task,
     status: assignment.status,
     projectId: assignment.projectId,
@@ -3142,12 +3284,17 @@ export function toView(assignment: Assignment, agent: Agent, extra: Partial<Assi
   };
 }
 
-export function describeAssignment(assignment: Assignment, agent: Agent | null): string {
+/**
+ * One run's record. The name leads and the brief stands underneath it: a
+ * name replaces the prompt in a list, never in the file (concept 7.2).
+ */
+export function describeAssignment(assignment: Assignment, agent: Agent | null, runNumber?: number | null): string {
   const lines = [
-    'Assignment ' + assignment.id,
+    assignment.title + (runNumber && runNumber > 1 ? ' — run ' + runNumber : ''),
+    'Run ' + assignment.id,
     'Agent: ' + (agent ? agent.name + ' (' + agent.slug + ')' : assignment.agentId),
     'Status: ' + assignment.status,
-    'Task: ' + clip(assignment.task, 400),
+    'Brief: ' + clip(assignment.task, 400),
   ];
   if (assignment.durationMs !== undefined) lines.push('Duration: ' + Math.round(assignment.durationMs / 1000) + ' s');
   if (assignment.error) lines.push('Error: ' + assignment.error);
@@ -3222,9 +3369,9 @@ export function describeSettings(config: RookeryConfig): string {
     'Default provider: ' + config.defaultProvider,
     'Default model: ' + (config.defaultModel || 'provider default'),
     'Default effort: ' + (config.defaultEffort ?? 'provider default'),
-    'Parallel assignments: ' + config.org.maxConcurrentAssignments,
+    'Parallel runs: ' + config.org.maxConcurrentAssignments,
     'Delegation depth: ' + config.org.maxDelegationDepth,
-    'Assignment timeout: ' + Math.round(config.org.assignmentTimeoutMs / 60000) + ' min',
+    'Run timeout: ' + Math.round(config.org.assignmentTimeoutMs / 60000) + ' min',
   ].join('\n');
 }
 

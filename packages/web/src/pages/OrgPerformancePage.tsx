@@ -239,7 +239,7 @@ export function OrgPerformancePage() {
             <EmptyState
               icon={UsersEmptyIcon}
               title="No agents yet"
-              description="Hire an agent to see their performance here once they have completed a few assignments."
+              description="Hire an agent to see their performance here once they have finished a few runs."
               actionLabel="Hire agent"
               actionTo="/org/agents/new"
               variant="plain"

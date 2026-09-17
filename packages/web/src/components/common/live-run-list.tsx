@@ -83,7 +83,7 @@ export function LiveRunList({
   onCancel,
   onWatch,
   variant = 'card',
-  title = 'Assignments',
+  title = 'Runs',
   className,
 }: LiveRunListProps) {
   const tree = React.useMemo(() => toTree(assignments), [assignments]);
@@ -109,7 +109,7 @@ export function LiveRunList({
 
   return (
     <Fade asChild>
-      <Card className={cn('py-3', className)} aria-label="Assignments for this turn">
+      <Card className={cn('py-3', className)} aria-label="Runs for this turn">
         <CardHeader className="flex flex-wrap items-center gap-2 border-b px-3!">
           <CardTitle className="text-sm">{title}</CardTitle>
           <Badge variant="secondary" className="tabular-nums">
@@ -117,7 +117,7 @@ export function LiveRunList({
                 single flex item: the badge's own gap must not widen the space. */}
             <span>
               <SlidingNumber number={assignments.length} fromNumber={0} />{' '}
-              {assignments.length === 1 ? 'assignment' : 'assignments'}
+              {assignments.length === 1 ? 'run' : 'runs'}
             </span>
           </Badge>
 
@@ -182,7 +182,7 @@ function RunRow({
           <StatusBadge kind="assignment" status={assignment.status} />
         </ItemTitle>
 
-        <ItemDescription className="line-clamp-1">{assignment.task}</ItemDescription>
+        <ItemDescription className="line-clamp-1">{assignment.title}</ItemDescription>
 
         {meta.length > 0 && (
           <span className="text-xs tabular-nums text-muted-foreground">{meta.join(' · ')}</span>
@@ -208,7 +208,7 @@ function RunRow({
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  aria-label="Watch assignment live"
+                  aria-label="Watch this run live"
                   onClick={() => onWatch(assignment.id)}
                 >
                   <TerminalIcon />
@@ -224,7 +224,7 @@ function RunRow({
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  aria-label="Cancel assignment"
+                  aria-label="Stop this run"
                   onClick={() => onCancel(assignment.id)}
                 >
                   <XIcon />

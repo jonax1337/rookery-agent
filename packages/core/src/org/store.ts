@@ -26,6 +26,7 @@ import type {
   Team,
 } from '../types.js';
 import type { Db } from '../memory/db.js';
+import { titleFromBrief } from '../util/queue.js';
 
 type Row = Record<string, unknown>;
 
@@ -345,6 +346,8 @@ export class OrgStore {
   createAssignment(input: {
     orgId: string;
     agentId: string;
+    /** What the run is called. Falls back to the brief's first line. */
+    title?: string;
     task: string;
     projectId?: string;
     sessionId?: string;
@@ -363,6 +366,7 @@ export class OrgStore {
       parentId: blank(input.parentId),
       requesterKind: input.requesterKind,
       requesterAgentId: blank(input.requesterAgentId),
+      title: input.title?.trim() || titleFromBrief(input.task),
       task: input.task.trim(),
       status: 'pending',
       chars: 0,
@@ -373,8 +377,8 @@ export class OrgStore {
       .prepare(
         `INSERT INTO assignments
            (id, org_id, agent_id, project_id, session_id, parent_id, requester_kind, requester_agent_id,
-            task, status, chars, depth, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
+            title, task, status, chars, depth, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
       )
       .run(
         assignment.id,
@@ -385,6 +389,7 @@ export class OrgStore {
         assignment.parentId ?? null,
         assignment.requesterKind,
         assignment.requesterAgentId ?? null,
+        assignment.title,
         assignment.task,
         assignment.depth,
         now,
@@ -997,6 +1002,27 @@ export class OrgStore {
     this.updateTask(taskId, { assignmentId });
   }
 
+  /**
+   * Which run of its task this one is, counting from one, or null when it
+   * belongs to no task. A run inherits its task's name (decision E17), so
+   * the chain is the only thing that tells two of them apart in a list -
+   * "Run 2" rather than a second, invented title for the same piece of work.
+   */
+  taskRunNumber(assignmentId: string): number | null {
+    const row = this.#db
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM task_assignments earlier
+                  WHERE earlier.task_id = link.task_id
+                    AND (earlier.created_at < link.created_at
+                         OR (earlier.created_at = link.created_at AND earlier.assignment_id <= link.assignment_id))
+                ) AS position
+           FROM task_assignments link
+          WHERE link.assignment_id = ?`,
+      )
+      .get(assignmentId) as { position: number } | undefined;
+    return row ? Number(row.position) : null;
+  }
+
   /** The task an assignment belongs to, even one a later rerun's assignment_id overwrote. */
   getTaskIdForAssignment(assignmentId: string): string | null {
     const row = this.#db
@@ -1535,6 +1561,10 @@ function mapAssignment(row: Row): Assignment {
     parentId: optional(row.parent_id),
     requesterKind: row.requester_kind as RequesterKind,
     requesterAgentId: optional(row.requester_agent_id),
+    // Rows from before the column existed are named when they are read and
+    // never written back: the derivation is cheap, and a backfill would put
+    // a guess in the place a real name belongs (decision E15).
+    title: optional(row.title) ?? titleFromBrief(row.task as string),
     task: row.task as string,
     status: row.status as AssignmentStatus,
     result: optional(row.result),

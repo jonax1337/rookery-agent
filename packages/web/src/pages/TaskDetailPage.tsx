@@ -887,7 +887,7 @@ export function TaskDetailPage() {
               columns={runColumns}
               getRowId={(row) => row.id}
               searchable
-              searchPlaceholder="Search assignments"
+              searchPlaceholder="Search runs"
               searchText={(row) => row.task}
               initialSorting={ASSIGNMENT_SORTING}
               paginate={false}
@@ -989,6 +989,7 @@ function viewOf(assignment: Assignment, agent?: Agent): AssignmentView {
     agentId: assignment.agentId,
     agentSlug: agent?.slug ?? assignment.agentId,
     agentName: agent?.name ?? 'Agent',
+    title: assignment.title,
     task: assignment.task,
     status: assignment.status,
     depth: assignment.depth,

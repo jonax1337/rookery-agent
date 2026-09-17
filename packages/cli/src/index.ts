@@ -215,7 +215,7 @@ program
 
 const org = program
   .command('org')
-  .description('the company: agents, teams, projects, assignments and messages');
+  .description('the company: agents, teams, projects, runs and messages');
 
 org
   .command('overview', { isDefault: true })
@@ -302,7 +302,7 @@ projects
   .command('add')
   .description('create a project')
   .argument('<name>', 'project name')
-  .option('--path <dir>', 'directory assignments for this project run in')
+  .option('--path <dir>', 'directory work on this project runs in')
   .option('--description <text>', 'what the project is')
   .action(async (name: string, options: Record<string, unknown>) => {
     await run(() =>
@@ -315,7 +315,7 @@ projects
 
 org
   .command('assignments')
-  .description('recent assignments')
+  .description('recent runs')
   .option('-n, --limit <n>', 'how many to show', '20')
   .option('--json', 'machine-readable output', false)
   .action(async (options: Record<string, unknown>) => {
@@ -329,8 +329,8 @@ org
 
 org
   .command('assignment')
-  .description('one assignment in full, report included')
-  .argument('<id>', 'assignment id or unambiguous prefix')
+  .description('one run in full, report included')
+  .argument('<id>', 'run id or unambiguous prefix')
   .action(async (id: string) => {
     await run(() => orgAssignmentCommand(id));
   });
@@ -356,10 +356,10 @@ program
   .description('hand one agent one task and print the report it writes')
   .argument('<agent>', 'agent slug, name or id')
   .argument('<task...>', 'what the agent should do')
-  .option('--project <name>', 'project the assignment runs in')
-  .option('-s, --session <id>', 'attach the assignment to a session')
+  .option('--project <name>', 'project the work runs in')
+  .option('-s, --session <id>', 'attach the run to a session')
   .option('--json', 'emit raw AgentEvent JSON lines', false)
-  .option('-v, --verbose', 'show thinking traces and assignment progress', false)
+  .option('-v, --verbose', 'show thinking traces and run progress', false)
   .action(async (agent: string, taskParts: string[], options: Record<string, unknown>) => {
     await run(() =>
       assignCommand(agent, taskParts, {
@@ -443,7 +443,7 @@ tasks
   .description('run the task and print what the agents produced')
   .argument('<id>', 'task id or unambiguous prefix')
   .option('--json', 'emit raw AgentEvent JSON lines', false)
-  .option('-v, --verbose', 'show thinking traces and assignment progress', false)
+  .option('-v, --verbose', 'show thinking traces and run progress', false)
   .action(async (id: string, options: Record<string, unknown>) => {
     await run(() =>
       taskRunCommand(id, { json: Boolean(options.json), verbose: Boolean(options.verbose) }),

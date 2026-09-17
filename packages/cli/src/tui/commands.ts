@@ -292,7 +292,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
           dim: true,
         };
       });
-      lines.push({ text: '/assign <agent> <task> gives an agent an assignment', dim: true });
+      lines.push({ text: '/assign <agent> <task> hands an agent a task', dim: true });
       return notice(lines);
     }
 
@@ -316,7 +316,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
         limit: 50,
       });
       if (!argument) {
-        if (!running.length) return notice([{ text: 'No assignments running.', dim: true }]);
+        if (!running.length) return notice([{ text: 'Nothing is running.', dim: true }]);
         const agents = new Map(
           assistant.store.org
             .listAgents(organization.id, { includeArchived: true })
@@ -494,11 +494,11 @@ function resolveAssignment(running: Assignment[], idOrPrefix: string): Assignmen
   if (matches.length === 1) return matches[0] as Assignment;
   if (matches.length === 0) {
     throw new CliError(
-      'No running assignment matches "' + idOrPrefix + '". Try /watch with no argument.',
+      'No running task matches "' + idOrPrefix + '". Try /watch with no argument.',
     );
   }
   throw new CliError(
-    'Ambiguous assignment id "' + idOrPrefix + '": ' +
+    'Ambiguous run id "' + idOrPrefix + '": ' +
       matches.map((assignment) => shortId(assignment.id)).join(', '),
   );
 }

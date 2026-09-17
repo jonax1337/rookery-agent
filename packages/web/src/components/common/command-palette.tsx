@@ -273,15 +273,15 @@ export function CommandPalette({
           {liveAssignments.length > 0 && (
             <Fade delay={250}>
               <CommandSeparator />
-              <CommandGroup heading="Assignments">
+              <CommandGroup heading="Runs">
                 {liveAssignments.map((assignment) => (
                   <CommandItem
                     key={assignment.id}
-                    value={'auftrag ' + assignment.agentName + ' ' + assignment.task + ' ' + assignment.id}
+                    value={'run ' + assignment.agentName + ' ' + assignment.title + ' ' + assignment.id}
                     onSelect={() => go('/assignments/' + assignment.id)}
                   >
                     <SendIcon />
-                    <span className="truncate">{assignment.task}</span>
+                    <span className="truncate">{assignment.title}</span>
                     <CommandShortcut>{assignment.agentName}</CommandShortcut>
                   </CommandItem>
                 ))}

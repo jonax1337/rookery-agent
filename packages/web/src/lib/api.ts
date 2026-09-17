@@ -707,8 +707,13 @@ export const api = {
     request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&thread=' + encodeURIComponent(threadId)),
   archiveMailThread: (threadId: string, archived = true) =>
     request<{ ok: true }>('/api/org/mail/archive', { method: 'POST', ...json({ threadId, archived }) }),
-  sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string; mode?: 'mail' | 'task' }) =>
-    request<Mail | { mail: Mail; task: Task }>('/api/org/mail', { method: 'POST', ...json(input) }),
+  /**
+   * There is no mode to pass: exactly one agent on To opens a task, anything
+   * else is a conversation, and the answer carries the task when one was
+   * created so the page can link straight to it.
+   */
+  sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string }) =>
+    request<{ mail: Mail; task?: Task }>('/api/org/mail', { method: 'POST', ...json(input) }),
   /**
    * Marks a batch of mailbox rows read; the mailbox page calls this once per
    * load. `read: false` is the reading pane's "Mark as unread".

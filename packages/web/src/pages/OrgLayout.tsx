@@ -202,7 +202,7 @@ export function OrgLayout() {
       to: '/org/projects',
     },
     {
-      label: 'Running assignments',
+      label: 'Running now',
       value: <CountingNumber number={running} />,
       ...(running > 0 ? { badge: <RunningBadge count={running} /> } : {}),
       headline:

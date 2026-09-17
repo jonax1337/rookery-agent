@@ -24,7 +24,7 @@ import { clip, shorten } from '../util/queue.js';
  *
  * Two kinds of prompt come out of here. The assistant's turn gets a block
  * describing the company it runs and how to use its tools; it is appended to
- * the ordinary identity prompt. An agent's assignment gets a complete system
+ * the ordinary identity prompt. An agent's run gets a complete system
  * prompt of its own, pointedly not built on the assistant's identity: an
  * agent is a member of staff, and its notes must never read like the
  * assistant speaking to the user.
@@ -36,7 +36,7 @@ export interface OrgSnapshot {
   teams: Team[];
   agents: Agent[];
   projects: Project[];
-  /** Assignments currently pending or running. */
+  /** Runs currently pending or running. */
   active: Assignment[];
 }
 
@@ -48,8 +48,13 @@ const THREAD_TAIL_CHARS = 4000;
 const agentById = (snapshot: OrgSnapshot): Map<string, Agent> =>
   new Map(snapshot.agents.map((agent) => [agent.id, agent]));
 
-/** The org chart as plain text, shared by the overview tool and the prompts. */
-export function renderOrgOverview(snapshot: OrgSnapshot): string {
+/**
+ * The org chart as plain text, shared by the overview tool and the prompts.
+ *
+ * `org` is optional and only buys the run numbers: without it a running piece
+ * of work still has its name, which is the part that makes the list readable.
+ */
+export function renderOrgOverview(snapshot: OrgSnapshot, org?: OrgStore): string {
   const byId = agentById(snapshot);
   const teamName = new Map(snapshot.teams.map((team) => [team.id, team.name]));
   const lines: string[] = [];
@@ -94,10 +99,17 @@ export function renderOrgOverview(snapshot: OrgSnapshot): string {
 
   if (snapshot.active.length) {
     lines.push('');
-    lines.push('Running assignments:');
+    lines.push('Running now:');
     for (const assignment of snapshot.active) {
       const agent = byId.get(assignment.agentId);
-      lines.push('- ' + assignment.id.slice(0, 8) + ' ' + (agent?.slug ?? '?') + ': ' + clip(assignment.task, 120));
+      // The name, not the first 120 characters of the brief: three errands
+      // for the same agent open with the same twenty words, and a list of
+      // those tells nobody which is which (concept 7.1).
+      const run = org?.taskRunNumber(assignment.id) ?? null;
+      lines.push(
+        '- ' + assignment.id.slice(0, 8) + ' ' + (agent?.slug ?? '?') + ': ' + shorten(assignment.title, 120) +
+          (run && run > 1 ? ' (run ' + run + ')' : ''),
+      );
     }
   }
 
@@ -156,22 +168,27 @@ export function assistantOrgBlock(
   sections.push(
     [
       'As the personal assistant described in your saved profile, you run a small company of AI agents on their behalf.',
-      'The agents are permanent staff with roles and their own memory; every assignment you give',
+      'The agents are permanent staff with roles and their own memory; every task you hand',
       'one runs as a separate process in the background, in the project directory when the project',
-      'has one. The rookery tools are yours: `assign` hands a task to one agent and returns the',
-      'report (several `assign` calls in one message run in parallel); `create_task`, `plan_task`',
+      'has one. The rookery tools are yours: `assign` hands a task to one agent, puts it on the',
+      'board and returns the report (several `assign` calls in one message run in parallel);',
+      '`create_task`, `plan_task`',
       'and `run_task` put bigger work on the board, decide who does it or how to split it, and',
       'execute it; `hire_agent`, `update_agent`, `create_team`, `update_team`, `create_project` and',
       '`update_project` shape the company when the user asks or when a job clearly needs a role',
       'nobody holds. `list_assignments` is the history of what ran; `cancel_assignment` stops a',
-      'stuck or unwanted one, and `update_task` with status "cancelled" stops a running task.',
+      'stuck or unwanted run, and `update_task` with status "cancelled" stops a running task.',
+      'Everything that gets worked on is a task: it has a card on the board and the mail thread it',
+      'is discussed in, and those are two sides of one thing rather than two places to look.',
+      'Name every task you create: three to eight words, no full stop, a noun phrase or an',
+      'imperative, in the language of the brief - never the brief itself pasted into the title.',
       'A task whose run ended with a question to whoever asked for it is set to "blocked" by itself',
       'and waits there; the next mail in its thread carries it on, and you may set that status by hand.',
       '`remember`, `forget` and `search_memory` are your long-term memory of the user;',
       '`get_settings` and `update_settings` are the defaults and limits you work under.',
       '`create_schedule`, `list_schedules`, `update_schedule`, `delete_schedule` and `run_schedule`',
       'are your schedules (cron jobs): standing orders that fire on a timetable without anyone',
-      'asking - a turn of your own in a fresh conversation, or an assignment to an agent - with the',
+      'asking - a turn of your own in a fresh conversation, or a task for an agent - with the',
       'outcome posted to your inbox. Use them whenever the user wants something regularly ("every',
       'morning at 8", "on Fridays") or at a later time ("tomorrow at 15:00", once).',
       'Turn what they say into a cron expression yourself and confirm the time in words.',
@@ -180,9 +197,6 @@ export function assistantOrgBlock(
       'job. In that case end the turn with exactly [SILENT] instead of a report, or the user gets the',
       'same thing twice: the mail the job exists to send, and a second mail just saying it ran.',
       'Nothing here needs permission from anyone: you own the company and its machinery.',
-      'Two words to keep apart when you talk to the user: an assignment is',
-      'one agent running one brief, with a result; a task is an item on the',
-      'board that gets planned and then executed as one or more assignments.',
       'Delegate real work - code, research, analysis, long writing - instead of doing it here;',
       'you have no project files in this conversation.',
       'Most turns are not work at all. Small talk, questions about the user, their day or their',
@@ -197,9 +211,10 @@ export function assistantOrgBlock(
     [
       'Company mail is how everyone here talks to everyone else, and how you reach the user when no',
       'conversation is running. `send_mail` writes to an agent, to "user", or to several at once;',
-      '`read_mail` and `read_mail_thread` are your side of it. Mail with an agent on To starts a real',
-      'run of that agent and its report comes back to you as a reply - that is delegation you do not',
-      'have to wait for, where `assign` is delegation you do. Cc only delivers.',
+      '`read_mail` and `read_mail_thread` are your side of it. Mail with an agent on To hands them the',
+      'work and its report comes back to you as a reply; Cc only delivers. Use `assign` when you need',
+      'the result inside this turn, and mail when you do not have to wait for it - the same task',
+      'either way, on the same board.',
       'Write to the user by mail when you are the one starting it: a finished piece of work, a report',
       'they asked for, a decision only they can make. Answering a mail that arrived for you works the',
       'other way round - the answer is what you write in that turn, it goes back as the reply on its',
@@ -212,7 +227,7 @@ export function assistantOrgBlock(
     ].join(' '),
   );
 
-  sections.push(renderOrgOverview(snapshot));
+  sections.push(renderOrgOverview(snapshot, store?.org));
 
   if (store) {
     const flags = renderPerformanceFlags(snapshot, store.org);
@@ -223,7 +238,7 @@ export function assistantOrgBlock(
     sections.push(
       'Active project for this conversation: ' + activeProject.name +
         (activeProject.path ? ' at ' + activeProject.path : ' (no directory)') +
-        '. Assignments default to it.',
+        '. Work you hand out defaults to it.',
     );
   }
 
@@ -277,9 +292,9 @@ export interface AgentPromptInput {
   memories: ScoredMemory[];
   mail: Mail[];
   assignmentId: string;
-  /** Who gave the assignment, for the prompt's sense of the chain of command. */
+  /** Who asked for the work, for the prompt's sense of the chain of command. */
   requestedBy: string;
-  /** Set when this assignment came from mail: its subject, for the reply paragraph below. */
+  /** Set when this run came from mail: its subject, for the reply paragraph below. */
   sourceMailSubject?: string;
   /** That mail's id and thread, so the prompt can point at the history instead of carrying it. */
   sourceMailId?: string;
@@ -301,7 +316,7 @@ export interface AgentPromptInput {
   handoverFrom?: { predecessorName: string; text: string };
 }
 
-/** The complete system prompt for one agent running one assignment. */
+/** The complete system prompt for one agent carrying out one task. */
 export function buildAgentPrompt(input: AgentPromptInput): string {
   const { agent, snapshot, config } = input;
   const byId = agentById(snapshot);
@@ -322,7 +337,7 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
         ? 'Your direct reports: ' + reports.map((entry) => entry.slug + ' (' + entry.title + ')').join(', ') +
           '. You may hand them parts of your work with the assign tool.'
         : 'You have no reports; do the work yourself.',
-      'This assignment (' + input.assignmentId.slice(0, 8) + ') was given to you by ' + input.requestedBy + '.',
+      'This task (' + input.assignmentId.slice(0, 8) + ') was given to you by ' + input.requestedBy + '.',
     ]
       .filter(Boolean)
       .join(' '),
@@ -401,7 +416,7 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
       sections.push(renderMail(recent, snapshot, 'The last of those, at length:', THREAD_TAIL_CHARS));
     }
     sections.push(
-      'This assignment arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '". ' +
+      'This task arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '". ' +
         "Write your result as the reply's body, not a chat answer or a report - it goes back to them " +
         'automatically, and everyone who was Cc on their mail stays Cc on yours. Do not send_mail the ' +
         'same answer to them on top of it; send_mail is for bringing in somebody who was not on the thread.',
@@ -416,18 +431,18 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
       'closed door is the first attempt, not the answer: read what the error actually says, change',
       'the approach rather than the parameter, and try a genuinely different route before you report',
       'that something cannot be done. When you do report it, say what you tried and what would',
-      'unblock it. Stop short of anything irreversible or consequential the assignment did not ask',
+      'unblock it. Stop short of anything irreversible or consequential the task did not ask',
       'for, and never claim a result you have not seen.',
     ].join(' '),
   );
 
   sections.push(
     [
-      'Work the assignment and nothing else. Your output is a report to whoever assigned it,',
+      'Work the task and nothing else. Your output is a report to whoever asked for it,',
       'not a chat with the user: lead with the result, then what you changed or found, then open',
-      'questions. No preamble, no restating the task. Separate what you verified from what you',
-      'assume. Anything that belongs to somebody other than whoever assigned this goes by mail, as',
-      'described above, not into the report. Write in the language the assignment is written in.',
+      'questions. No preamble, no restating the brief. Separate what you verified from what you',
+      'assume. Anything that belongs to somebody other than whoever asked for this goes by mail, as',
+      'described above, not into the report. Write in the language the task is written in.',
     ].join(' '),
   );
 

@@ -206,7 +206,7 @@ export function AssignmentsSummaryView({
 /* -------------------------------- helpers ------------------------------ */
 
 function count(total: number): string {
-  return total + (total === 1 ? ' assignment' : ' assignments');
+  return total + (total === 1 ? ' run' : ' runs');
 }
 
 /**

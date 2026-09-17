@@ -174,7 +174,7 @@ export async function taskShowCommand(ref: string, options: TaskShowOptions = {}
         relativeTime(task.updatedAt) + theme.dim('  created ' + relativeTime(task.createdAt)),
       ) + '\n',
     );
-    if (task.assignmentId) out.write(keyValue('assignment', shortId(task.assignmentId)) + '\n');
+    if (task.assignmentId) out.write(keyValue('run', shortId(task.assignmentId)) + '\n');
 
     if (task.description && task.description !== task.title) {
       out.write('\n' + task.description.trimEnd() + '\n');

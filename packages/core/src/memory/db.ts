@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 export type Db = DatabaseSync;
 
@@ -624,6 +624,13 @@ function migrate(db: Db): void {
   // durable record that survives a rerun clobbering that pointer.
   if (!hasColumn(db, 'tasks', 'sort_order')) {
     db.exec('ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // Schema 21 -> 22: a run gets a name of its own. Nullable on purpose - a
+  // row written before the name existed keeps reading, and the store names
+  // it from its own first line rather than writing a guess back over it.
+  if (!hasColumn(db, 'assignments', 'title')) {
+    db.exec('ALTER TABLE assignments ADD COLUMN title TEXT');
   }
 
   db.exec(`

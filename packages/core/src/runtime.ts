@@ -49,7 +49,7 @@ import { matchSkills, renderSkillMatches } from './skills/suggest.js';
 import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
 import { runCronScript } from './cron/script.js';
-import { EventQueue } from './util/queue.js';
+import { EventQueue, titleFromBrief } from './util/queue.js';
 import { TurnBlocks } from './util/blocks.js';
 
 /**
@@ -222,6 +222,12 @@ export interface RunTaskInput {
 export interface AssignInput {
   /** Agent id, slug or name. */
   agent: string;
+  /**
+   * What the run is called in lists. A schedule passes its own name, which
+   * is right for a job that means the same thing every night; anything else
+   * falls back to the brief's first line (concept 7.2).
+   */
+  title?: string;
   task: string;
   projectId?: string;
   sessionId?: string;
@@ -974,6 +980,7 @@ export class Assistant extends EventEmitter {
       .run({
         orgId: organization.id,
         agent,
+        title: input.title?.trim() || titleFromBrief(task),
         task,
         projectId: input.projectId,
         sessionId: input.sessionId,
@@ -993,7 +1000,7 @@ export class Assistant extends EventEmitter {
     } else {
       yield {
         type: 'error',
-        message: 'Assignment ' + assignment.status + (assignment.error ? ': ' + assignment.error : '.'),
+        message: 'The run ' + assignment.status + (assignment.error ? ': ' + assignment.error : '.'),
         fatal: true,
       };
     }
@@ -1115,7 +1122,16 @@ export class Assistant extends EventEmitter {
       let error: string | undefined;
       // `scheduled` keeps the run from learning: the assignment's words are
       // the job's own prompt, and no memory should grow out of them.
-      for await (const event of this.assign({ agent: agent.id, task: job.prompt, projectId: job.projectId, signal, scheduled: true })) {
+      for await (const event of this.assign({
+        agent: agent.id,
+        // A recurring job is called the same thing every night, and that is
+        // right: the schedule's name is the third source of a run's name.
+        title: job.name,
+        task: job.prompt,
+        projectId: job.projectId,
+        signal,
+        scheduled: true,
+      })) {
         if (event.type === 'assignment' && !assignmentId) assignmentId = event.assignment.id;
         else if (event.type === 'done') text = event.text;
         else if (event.type === 'error' && event.fatal) error = event.message;

@@ -326,6 +326,8 @@ export interface Assignment {
   parentId?: string;
   requesterKind: RequesterKind;
   requesterAgentId?: string;
+  /** What this run is called; a run of a task carries that task's name. */
+  title: string;
   task: string;
   status: AssignmentStatus;
   result?: string;
@@ -346,6 +348,8 @@ export interface AssignmentView {
   agentId: string;
   agentSlug: string;
   agentName: string;
+  /** The run's name, for lists; `task` stays the full brief underneath it. */
+  title: string;
   task: string;
   status: AssignmentStatus;
   projectId?: string;

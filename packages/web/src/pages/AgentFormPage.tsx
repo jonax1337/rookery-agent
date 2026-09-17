@@ -209,7 +209,7 @@ export function AgentFormPage() {
         value: status.id as ProviderChoice,
         label: PROVIDER_LABEL[status.id] ?? status.displayName,
         icon: <ProviderIcon provider={status.id} label={status.displayName} className="size-4 text-muted-foreground" />,
-        ...(!status.available ? { description: 'Not installed. Assignments for this agent will fail.' } : {}),
+        ...(!status.available ? { description: 'Not installed. Work for this agent will fail.' } : {}),
       })),
     ],
     [config, providers],
@@ -361,7 +361,7 @@ export function AgentFormPage() {
         description={
           <Blur>
             {editing
-              ? 'Role, instructions, and Memory persist; every assignment still starts a fresh process.'
+              ? 'Role, instructions, and Memory persist; every run still starts a fresh process.'
               : 'An agent is a permanent team member: role, instructions, and personal Memory persist.'}
           </Blur>
         }

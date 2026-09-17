@@ -99,6 +99,7 @@ export function useOrg(socket: RookerySocket): OrgState {
         agentId: assignment.agentId,
         agentSlug: agent?.slug ?? assignment.agentId,
         agentName: agent?.name ?? 'Agent',
+        title: assignment.title,
         task: assignment.task,
         status: assignment.status,
         projectId: assignment.projectId,

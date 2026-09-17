@@ -524,16 +524,13 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     try {
       // The controller's own broadcast (forwarded through the assistant's
       // `mail` event) reaches every socket; nothing to emit here.
-      if (input.mode === 'task') {
-        const to = input.to.length === 1 ? input.to[0] : undefined;
-        if (!to) return badRequest(reply, 'An assignment goes to exactly one agent.');
-        const sent = await context.assistant.org.sendTaskMail({ orgId, to, cc: input.cc, subject: input.subject, body: input.body });
-        reply.code(201);
-        return sent;
-      }
-      const mail = await context.assistant.org.sendUserMail({ orgId, ...input });
+      //
+      // What the mail becomes is read off its address line, not off a mode
+      // the caller picks (decision E2): the answer carries the task when one
+      // agent on To opened one, so the page can link straight to the card.
+      const sent = await context.assistant.org.sendUserMail({ orgId, ...input });
       reply.code(201);
-      return mail;
+      return sent;
     } catch (error) {
       return badRequest(reply, (error as Error).message);
     }
