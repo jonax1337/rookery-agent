@@ -29,6 +29,8 @@ export class CronStore {
   /* ---------------------------------- jobs ---------------------------------- */
 
   createJob(input: {
+    /** Fixed id for a job that must stay findable (e.g. the board watcher); random otherwise. */
+    id?: string;
     orgId: string;
     name: string;
     schedule: string;
@@ -51,7 +53,7 @@ export class CronStore {
   }): CronJob {
     const now = Date.now();
     const job: CronJob = {
-      id: randomUUID(),
+      id: input.id ?? randomUUID(),
       orgId: input.orgId,
       name: input.name.trim() || 'Untitled schedule',
       schedule: input.schedule.trim(),
