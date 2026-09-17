@@ -894,17 +894,28 @@ export class OrgStore {
     return row ? mapTask(row) : null;
   }
 
-  /** Board view: top-level tasks by default, or the subtasks of one parent. */
+  /**
+   * Board view: top-level tasks by default, or the subtasks of one parent.
+   * `anyLevel` drops the nesting question altogether - a search for every
+   * blocked task has to find the ones that hang under a parent too.
+   */
   listTasks(
     orgId: string,
-    options: { parentId?: string | null; status?: TaskStatus[]; assigneeId?: string; limit?: number } = {},
+    options: {
+      parentId?: string | null;
+      anyLevel?: boolean;
+      status?: TaskStatus[];
+      assigneeId?: string;
+      limit?: number;
+    } = {},
   ): Task[] {
     const clauses = ['org_id = ?'];
     const values: unknown[] = [orgId];
-    if (options.parentId === null || options.parentId === undefined) clauses.push('parent_id IS NULL');
-    else {
+    if (options.parentId !== null && options.parentId !== undefined) {
       clauses.push('parent_id = ?');
       values.push(options.parentId);
+    } else if (!options.anyLevel) {
+      clauses.push('parent_id IS NULL');
     }
     if (options.status?.length) {
       clauses.push('status IN (' + options.status.map(() => '?').join(', ') + ')');

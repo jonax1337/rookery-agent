@@ -1032,7 +1032,14 @@ export class OrgController extends EventEmitter {
 
       case 'list_tasks': {
         const wanted = text('status').split(',').map((v) => v.trim()).filter(Boolean) as TaskStatus[];
-        const tasks = this.#store.org.listTasks(context.orgId, { status: wanted.length ? wanted : undefined });
+        // Without a filter this is the board, and the board is its top row.
+        // With one it is a search, and delegated work sits under a parent
+        // (decision E9) - a blocked subtask under a finished parent is
+        // exactly what the board watcher is woken for.
+        const tasks = this.#store.org.listTasks(
+          context.orgId,
+          wanted.length ? { status: wanted, anyLevel: true } : {},
+        );
         return { text: renderBoard(tasks, this.snapshot(context.orgId), this.#store.org) };
       }
 
@@ -1572,14 +1579,25 @@ export class OrgController extends EventEmitter {
     // Reading the parameter instead let a reply into a task thread - where
     // no caller passes a kind - start a second run beside the task, on no
     // board and on no card.
+    let triggerTo = params.to;
     if (!params.autoReply && mail.threadKind === 'assignment') {
       this.#continueTask(mail, params.from, params.depth);
-      return mail;
+      // Who this thread belongs to has now been dealt with by the task. A
+      // colleague on To who neither does this task nor asked for it is being
+      // asked for something new, and still gets the run the agent prompt
+      // promises them - delegation by mail is how work moves sideways here,
+      // and a mail an agent writes from inside a task lands in this thread
+      // whether it is about the task or not (`#sendMail` inherits it).
+      const thread = this.#store.org.getMailThread(params.orgId, mail.threadId);
+      const task = thread?.taskId ? this.#store.org.getTask(thread.taskId) : null;
+      if (!task) return mail;
+      triggerTo = params.to.filter((target) => !partyToTask(task, target));
+      if (!triggerTo.length) return mail;
     }
 
     if (!params.autoReply && params.depth < this.#config.org.maxDelegationDepth) {
       const senderLabel = this.#mailWhoLabel(params.from);
-      for (const target of params.to) {
+      for (const target of triggerTo) {
         if (target.kind === 'assistant' && this.#runAssistantMail) {
           // Where the turn's own answer stops being the reply: if the
           // assistant wrote to the sender itself while thinking, that mail
@@ -1941,18 +1959,33 @@ export class OrgController extends EventEmitter {
    * question; both are the message, and a note repeating them is the same
    * news twice. What the thread never hears on its own is a run that failed
    * or was called off, and that is what the note is for.
+   *
+   * `since` is when this ending began - a run passes its own start, so only
+   * that run's mail can speak for it. A change made by hand has no run and
+   * passes nothing: it happens now, the thread has said nothing about it,
+   * and the note always goes out. Judging every ending against the first
+   * run's start left a task cancelled by hand hours later silent, because
+   * the old result reply still counted as news about it.
    */
-  async notifyTaskStatus(task: Task, status: 'done' | 'failed' | 'cancelled' | 'blocked'): Promise<void> {
+  async notifyTaskStatus(
+    task: Task,
+    status: 'done' | 'failed' | 'cancelled' | 'blocked',
+    since: number = Date.now(),
+  ): Promise<void> {
     const orgId = task.orgId;
     const thread = this.#store.org.getMailThreadForTask(orgId, task.id);
     if (!thread) return;
     const mails = this.#store.org.thread(orgId, thread.threadId, { limit: 50 });
     const latest = mails.at(-1);
     if (!latest) return;
-    // Anyone but the person who asked: their own mail is the work order, and
-    // only an answer to it counts as the thread having been told.
-    const since = task.startedAt ?? task.createdAt;
-    if (mails.some((entry) => entry.createdAt >= since && entry.fromKind !== 'user')) return;
+    // Anyone but the person who asked: their own mail is the work order or a
+    // follow-up to it, never an answer. Asking "not the user" instead
+    // silenced every task nobody mailed in - `#ensureTaskThread` writes that
+    // work order from the assistant or a lead, one millisecond before the
+    // run starts, so a delegated task that failed said nothing at all.
+    const asked = (entry: Mail): boolean =>
+      entry.fromKind === task.createdBy && (task.createdBy !== 'agent' || entry.fromAgentId === task.createdByAgentId);
+    if (mails.some((entry) => entry.createdAt >= since && !asked(entry))) return;
     try {
       await this.#deliverMail({
         orgId,
@@ -2771,7 +2804,7 @@ export class OrgController extends EventEmitter {
       const done = reload();
       this.#announceTask(done, context.emit);
       if (status !== 'open' && status !== 'planned' && status !== 'running') {
-        void this.notifyTaskStatus(done, status);
+        void this.notifyTaskStatus(done, status, started);
       }
       return done;
     };
@@ -3391,6 +3424,19 @@ function statusNote(task: Task, status: 'done' | 'failed' | 'cancelled' | 'block
   if (status === 'cancelled') return name + ' was cancelled.';
   if (status === 'blocked') return name + ' is waiting for an answer.';
   return name + ' failed' + (task.error ? ': ' + task.error : '.');
+}
+
+/**
+ * Whether a recipient is a party to a task: the agent who does it, or
+ * whoever asked for it. Their mail in the task's thread is the negotiation
+ * of the task itself and is dispatched by the task (`#continueTask`).
+ * Anybody else on the To line is being asked for something new and keeps the
+ * run the mail trigger has always given them.
+ */
+function partyToTask(task: Task, who: MailWho): boolean {
+  if (who.kind === 'agent' && who.id && who.id === task.assigneeId) return true;
+  if (who.kind !== task.createdBy) return false;
+  return who.kind !== 'agent' || who.id === task.createdByAgentId;
 }
 
 /**

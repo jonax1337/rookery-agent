@@ -530,18 +530,41 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
 export function renderBoard(tasks: Task[], snapshot: OrgSnapshot, store: OrgStore): string {
   if (!tasks.length) return 'The board is empty.';
   const byId = agentById(snapshot);
+  // A status filter searches the whole board, subtasks included, so a task
+  // that is on the list in its own right must not turn up a second time
+  // under its parent.
+  const listed = new Set(tasks.map((task) => task.id));
   const lines: string[] = [];
   for (const task of tasks) {
     const assignee = task.assigneeId ? (byId.get(task.assigneeId)?.slug ?? '?') : 'unassigned';
     lines.push(
       '- [' + task.id.slice(0, 8) + '] ' + task.status.toUpperCase() + ' ' + task.priority + ' — ' + task.title +
-        ' (' + assignee + ')' + (task.planNote ? ' · ' + shorten(task.planNote, 80) : ''),
+        ' (' + assignee + ')' + (task.planNote ? ' · ' + shorten(task.planNote, 80) : '') + waitingOn(task, store),
     );
     for (const child of store.listTasks(task.orgId, { parentId: task.id })) {
-      if (child.status === 'cancelled') continue;
+      if (child.status === 'cancelled' || listed.has(child.id)) continue;
       const who = child.assigneeId ? (byId.get(child.assigneeId)?.slug ?? '?') : 'unassigned';
-      lines.push('    - [' + child.id.slice(0, 8) + '] ' + child.status + ' — ' + child.title + ' (' + who + ')');
+      lines.push(
+        '    - [' + child.id.slice(0, 8) + '] ' + child.status + ' — ' + child.title + ' (' + who + ')' +
+          waitingOn(child, store),
+      );
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * What a waiting task waits for: how long it has stood there and the subject
+ * of the last mail in its thread (concept section 9). The board is all the
+ * watcher gets to read, and "BLOCKED normal — Fix the gate (mara)" says
+ * neither what was asked nor for how long.
+ */
+function waitingOn(task: Task, store: OrgStore): string {
+  if (task.status !== 'blocked') return '';
+  const thread = store.getMailThreadForTask(task.orgId, task.id);
+  const last = thread ? store.thread(task.orgId, thread.threadId, { limit: 1 }).at(-1) : null;
+  const waited = Math.max(0, Date.now() - (task.updatedAt || task.createdAt));
+  const hours = Math.floor(waited / 3_600_000);
+  const span = hours >= 24 ? Math.floor(hours / 24) + 'd' : hours >= 1 ? hours + 'h' : Math.floor(waited / 60_000) + 'm';
+  return ' · waiting ' + span + (last ? ' on "' + shorten(last.subject, 60) + '"' : '');
 }

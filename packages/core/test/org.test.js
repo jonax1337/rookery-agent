@@ -714,6 +714,167 @@ test('a mailed task that splits answers once, with the combined result', async (
   assistant.close();
 });
 
+test('a colleague on To inside a task thread still gets a run of their own', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const noah = hire(assistant, { name: 'Noah', managerId: mara.id });
+
+  // Mara writes to Noah while working the task. The mail answers nothing, so
+  // it inherits the task's own thread - and the task must not swallow it:
+  // whoever is on To and is neither doing this task nor asked for it is
+  // being asked for something new.
+  const { task } = await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: mara.slug,
+    subject: 'Build the importer',
+    body: 'MAILBACK:noah|Can you check the index?',
+  });
+  await sleep(500);
+
+  const asked = store.org.listAssignments(org.id, { agentId: noah.id });
+  assert.equal(asked.length, 1, 'the colleague on To was woken');
+  assert.match(asked[0].task, /Can you check the index\?/, 'and briefed with what was asked');
+  assert.equal(
+    store.org.listAssignments(org.id, { agentId: mara.id }).length,
+    1,
+    'while the task itself ran exactly once',
+  );
+  assert.equal(store.org.getTask(task.id).status, 'done');
+  assistant.close();
+});
+
+test('a task cancelled by hand after it ran still tells its thread', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const { task } = await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: mara.slug,
+    subject: 'Ship the thing',
+    body: 'Please ship it.',
+  });
+  await sleep(250);
+  assert.equal(store.org.getTask(task.id).status, 'done', 'the run answered the thread');
+
+  // Hours later, by hand. The old answer belongs to the run that is over; it
+  // says nothing about this ending, so this ending gets its own note.
+  store.org.updateTask(task.id, { status: 'cancelled' });
+  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'cancelled');
+
+  const thread = store.org.getMailThreadForTask(org.id, task.id);
+  const mails = store.org.thread(org.id, thread.threadId);
+  assert.equal(mails.length, 3, 'the work order, the answer, and the note about the cancellation');
+  assert.equal(mails.at(-1).fromKind, 'assistant');
+  assert.match(mails.at(-1).body, /was cancelled/);
+  assistant.close();
+});
+
+test('a task the assistant handed out tells its thread when it fails', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  // Nobody mailed this one in: the work order is written by the assistant,
+  // and a run starts a handful of statements later - the same millisecond as
+  // often as not. The window this ending is judged against therefore opens
+  // on the work order itself, which is exactly what must not count as the
+  // thread having heard how the work ended.
+  const task = store.org.createTask({
+    orgId: org.id,
+    title: 'Rewrite the token cache',
+    description: 'Make it expire properly.',
+    assigneeId: mara.id,
+    createdBy: 'assistant',
+  });
+  const order = store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'assistant' },
+    to: [{ kind: 'agent', id: mara.id }],
+    subject: task.title,
+    body: task.description,
+    kind: 'assignment',
+  });
+  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
+  store.org.updateTask(task.id, { status: 'failed', error: 'boom' });
+
+  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'failed', order.createdAt);
+
+  const mails = store.org.thread(org.id, order.threadId);
+  assert.equal(mails.length, 2, 'the work order and the note about the failure');
+  assert.equal(mails.at(-1).fromKind, 'assistant');
+  assert.match(mails.at(-1).body, /failed/);
+  assistant.close();
+});
+
+test('the board says what a blocked task waits for', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+
+  const task = store.org.createTask({
+    orgId: org.id,
+    title: 'Fix the gate',
+    description: 'Please fix it.',
+    assigneeId: mara.id,
+    createdBy: 'user',
+  });
+  const question = store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'agent', id: mara.id },
+    to: [{ kind: 'user' }],
+    subject: 'Which delimiter do these files use?',
+    body: 'Tab or semicolon?',
+    kind: 'assignment',
+  });
+  store.org.linkMailThreadTask(org.id, question.threadId, task.id);
+  store.org.updateTask(task.id, { status: 'blocked' });
+
+  const board = await assistant.org.handle(ctx, 'list_tasks', { status: '' });
+  assert.match(board.text, /BLOCKED/);
+  assert.match(board.text, /waiting \d+[mhd]/, 'how long it has stood there');
+  assert.match(board.text, /Which delimiter do these files use\?/, 'and what it is waiting on');
+  assistant.close();
+});
+
+test('a status filter finds a blocked subtask under a finished parent, and lists it once', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+
+  const make = (title, patch, parentId) => {
+    const task = store.org.createTask({
+      orgId: org.id,
+      title,
+      description: title + '.',
+      assigneeId: mara.id,
+      createdBy: 'assistant',
+      parentId,
+    });
+    store.org.updateTask(task.id, patch);
+    return task;
+  };
+  const finished = make('Ship the importer', { status: 'done' });
+  make('Write the row parser', { status: 'blocked' }, finished.id);
+  const waiting = make('Move the index', { status: 'blocked' });
+  make('Rebuild the shards', { status: 'blocked' }, waiting.id);
+
+  const board = await assistant.org.handle(ctx, 'list_tasks', { status: 'blocked' });
+  const count = (title) => board.text.split('\n').filter((line) => line.includes(title)).length;
+  assert.equal(count('Write the row parser'), 1, 'a blocked subtask under a finished parent is findable');
+  assert.equal(count('Rebuild the shards'), 1, 'and a blocked subtask under a blocked parent is listed once, not twice');
+  assert.equal(count('Ship the importer'), 0, 'the finished parent is not on a list of blocked work');
+  assistant.close();
+});
+
 test('the assistant can hire and structure the company through tools', async () => {
   const fake = createFakeProvider();
   // Two providers, as in a real run: an agent can be pinned to any id the
