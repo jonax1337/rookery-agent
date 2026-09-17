@@ -249,12 +249,13 @@ rookery memory stats
 
 The server creates a normal `sleep` schedule, defaulting to **03:30 in the server's local time**. It can be disabled or run manually. The server must be running for schedules to execute.
 
-A night opens by going back over the day, then runs cycles of light sleep (strength bookkeeping and dormancy), deep sleep (merging and resolving contradictions), and dream sleep (connections and insights). Defaults are two cycles and Sonnet for merging, insights and skill work; limits and models are configurable under `memory.sleep`.
+A night opens by going back over the day, measures the retrieval policy without a model, then runs cycles of light sleep (strength bookkeeping and dormancy), deep sleep (merging and resolving contradictions), and dream sleep (connections and insights). Defaults are two cycles and Sonnet for merging, insights and skill work; limits and models are configurable under `memory.sleep`.
 
 ```mermaid
 flowchart TD
   A(["Night starts"]) --> B["Replay — once, before the cycles<br/>sort the day's conversations cheaply,<br/>read the promising ones in full"]
-  B --> C["Light sleep<br/>weak and unused memories fall asleep"]
+  B --> B2["Dream probe — once, no model<br/>score candidate retrieval policies<br/>against the recorded frames"]
+  B2 --> C["Light sleep<br/>weak and unused memories fall asleep"]
   C --> D["Deep sleep<br/>merge what repeats, settle contradictions"]
   D --> E["Dream sleep<br/>connect memories across distance"]
   E --> F{"Last cycle?"}
@@ -266,6 +267,10 @@ flowchart TD
 ```
 
 **Replay** exists because the per-turn extractor sees one exchange at a time through a small model, so whatever only becomes visible across a whole conversation is out of its reach. At night the transcripts are read again without that constraint. Cost is contained by sorting first: a cheap pass sees only the user's turns, heavily clipped, and answers whether anything durable is likely to be there; only what survives is read in full. A conversation with fewer than two user turns costs no model call at all. The evidence rule is not relaxed — the night must quote the user exactly as the day does. `memory.sleep.replaySessions` caps the deep reads per night (twelve by default).
+
+**The dream probe** answers a question nothing in Rookery could answer before: is the retrieval that feeds every turn any good? During the day a sampled quarter of assistant turns records a *frame* — not the path retrieval took, but the widest set of rows the declared parameter box could reach, together with the profile rows, entity neighbourhood and character budget that decide what actually reaches the prompt. At night those frames are replayed against a fixed grid of candidate weightings. Because every row and score in a frame was already fetched, scoring a candidate costs no model call and no query — only arithmetic. What is measured is the rendered memory block the model reads, not the list retrieval returns, because profile rows and the character budget sit between the two.
+
+Stage one **measures only**. It writes no policy version, promotes nothing, and changes no behaviour: `memory.dream.enabled` and `memory.dream.record` both default to `false`, so nothing is recorded or scored until you switch them on. Turning them on costs storage (roughly 40–90 KB per framed turn, swept after `frameRetainDays`) and a little turn latency, both capped by a budget gate that stops framing rather than exceed it. The estimator is deliberately reported as a *lower bound*: a memory only ever earns a relevance label through a channel that required the incumbent policy to surface it first, so a candidate that retrieves something genuinely better scores it as zero. Promotion, candidate writing and the label sources that would close that gap belong to later stages and are described in [the dreaming design document](docs/concepts/dream-and-recursive-self-improvement.md).
 
 **Skill work** runs last, and repair before invention: a stale procedure misleads whoever opens it next, which is worse than one that was never written. Three signals mark a skill for revision — a correction the replay found in the day's conversations, a source memory that was superseded, retired or edited, and a run that had the skill open and then failed, with its error text. Looking at a signal consumes it, so one dormant memory cannot present the same skill night after night.
 
@@ -427,7 +432,7 @@ Build before tests that import `dist` output. The web build includes its own Typ
 
 ## Design documents
 
-[`docs/concepts`](docs/concepts) contains design history and proposals, some partly implemented. They may retain their original German text; current behavior is determined by code. Topics: [agent performance](docs/concepts/agent-performance-management.md), [memory and sleep](docs/concepts/memory-graph-and-sleep.md), [evidence-backed memory and self-written skills](docs/concepts/confirmed-memory-and-self-written-skills.md), [project-scoped skills and MCP](docs/concepts/project-scoped-skills-and-mcp.md), and [Telegram](docs/concepts/telegram-channel.md).
+[`docs/concepts`](docs/concepts) contains design history and proposals, some partly implemented. They may retain their original German text; current behavior is determined by code. Topics: [agent performance](docs/concepts/agent-performance-management.md), [memory and sleep](docs/concepts/memory-graph-and-sleep.md), [evidence-backed memory and self-written skills](docs/concepts/confirmed-memory-and-self-written-skills.md), [project-scoped skills and MCP](docs/concepts/project-scoped-skills-and-mcp.md), [Telegram](docs/concepts/telegram-channel.md), and [dreaming and recursive self-improvement](docs/concepts/dream-and-recursive-self-improvement.md).
 
 ## License
 
