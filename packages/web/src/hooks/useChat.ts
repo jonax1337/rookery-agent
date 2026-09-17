@@ -469,6 +469,16 @@ export function useChat(
    */
   const attach = useCallback<ChatState['attach']>(
     async (id) => {
+      // Arming comes before the busy guard, deliberately: the effect that
+      // calls this re-runs whenever its inputs change identity, and its
+      // cleanup has just disarmed the socket again. A turn already on screen
+      // needs no rebuild, but the conversation must never stop being armed -
+      // a reconnect after a silent disarm would lose the live tail for good.
+      socket.attachConversation(id, (frame) => {
+        // The busy guard inside `rejoin` keeps a re-arm of the conversation
+        // from rebuilding what is already on screen.
+        if (frame.id) void rejoin();
+      });
       if (inFlight.current) return;
 
       const readRunning = async (): Promise<{
@@ -527,12 +537,6 @@ export function useChat(
           cursor,
         );
       };
-
-      socket.attachConversation(id, (frame) => {
-        // The busy guard inside `rejoin` keeps a re-arm of the conversation
-        // from rebuilding what is already on screen.
-        if (frame.id) void rejoin();
-      });
 
       const body = await readRunning();
       if (body?.turn) await rejoin(body);

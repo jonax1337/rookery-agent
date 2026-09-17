@@ -133,6 +133,46 @@ test('a socket that attaches to nothing running is told so, plainly', async () =
   assert.deepEqual(socket.frames, [{ type: 'attached', id: null, seq: 0 }]);
 });
 
+test('a turn that names its session one event in is found and replayed from the journal', async () => {
+  // The first turn of a new conversation starts before its session exists;
+  // the session event closes that gap one event in.
+  const journal = [];
+  const hub = new TurnHub(log, { events: (id) => journal.filter((row) => row.turnId === id) });
+  const script = scriptedTurn();
+  hub.start({ id: 't9', controller: new AbortController(), events: script.events, socket: fakeSocket() });
+
+  const opened = { type: 'session', sessionId: 's9' };
+  journal.push({ turnId: 't9', seq: 1, event: opened });
+  script.emit(opened);
+  const said = { type: 'text', delta: 'named' };
+  journal.push({ turnId: 't9', seq: 2, event: said });
+  script.emit(said);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const reloader = fakeSocket();
+  hub.attach('s9', reloader);
+  const replayed = reloader.frames.filter((frame) => frame.type === 'event');
+  assert.deepEqual(
+    replayed.map((frame) => [frame.seq, frame.event.type]),
+    [
+      [1, 'session'],
+      [2, 'text'],
+    ],
+    'the journal closed the handover, from the database',
+  );
+
+  // And the live tail continues after the replayed stretch.
+  const more = { type: 'text', delta: 'more' };
+  journal.push({ turnId: 't9', seq: 3, event: more });
+  script.emit(more);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(
+    reloader.frames.filter((frame) => frame.type === 'event').map((frame) => frame.seq),
+    [1, 2, 3],
+  );
+  script.end();
+});
+
 test('a leaving socket ends nothing; an abort from any connection stops the turn', async () => {
   const hub = new TurnHub(log);
   const script = scriptedTurn();

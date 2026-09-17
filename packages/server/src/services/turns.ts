@@ -33,9 +33,12 @@ export class TurnHub {
   /** Reverse index, so a closing socket leaves every turn in one sweep. */
   readonly #subscriptions = new Map<WebSocket, Set<RunningTurn>>();
   readonly #log: Logger;
+  /** The journal, read on attach so the handover to live is gapless. */
+  readonly #journal: { events(turnId: string): { seq: number; event: unknown }[] } | null;
 
-  constructor(log: Logger) {
+  constructor(log: Logger, journal?: { events(turnId: string): { seq: number; event: unknown }[] }) {
     this.#log = log;
+    this.#journal = journal ?? null;
   }
 
   has(id: string): boolean {
@@ -73,6 +76,13 @@ export class TurnHub {
     void (async () => {
       try {
         for await (const event of input.events) {
+          // The first turn of a new conversation starts before its session
+          // exists - the client cannot name what it is about to create. The
+          // session event closes that gap one event in, and an `attach` that
+          // arrives a moment later (a reload, a second tab) finds the turn.
+          if (event.type === 'session' && !turn.sessionId && event.sessionId) {
+            turn.sessionId = event.sessionId;
+          }
           turn.seq += 1;
           for (const socket of turn.subscribers) {
             sendFrame(socket, { type: 'event', id: turn.id, seq: turn.seq, event });
@@ -91,9 +101,14 @@ export class TurnHub {
 
   /**
    * Point a socket at whatever runs in this conversation. The reply says
-   * which turn that is and where its journal stands, so the client can line
-   * its REST replay up with the frames that follow. No turn, no frames - and
-   * an explicit `null`, so the client never has to guess silence.
+   * which turn that is and where its journal stands, and everything the
+   * journal holds up to that position is sent right after - read from the
+   * database, not from any buffer, in the same synchronous step as the
+   * subscription, so no event can slip between "replayed" and "live". A
+   * client that already rebuilt over REST drops the overlap by sequence
+   * number; a client that comes in dry gets the whole turn. No turn, no
+   * frames - and an explicit `null`, so the client never has to guess
+   * silence.
    */
   attach(sessionId: string, socket: WebSocket): void {
     const turn = [...this.#turns.values()].find((entry) => entry.sessionId === sessionId);
@@ -103,6 +118,14 @@ export class TurnHub {
     }
     this.#remember(socket, turn);
     sendFrame(socket, { type: 'attached', id: turn.id, seq: turn.seq });
+    if (!this.#journal) return;
+    for (const row of this.#journal.events(turn.id)) {
+      // Only what has already been fanned out. Events journalled but not yet
+      // sent are still in the pump and arrive live - replaying them here too
+      // would say everything twice.
+      if (row.seq > turn.seq) break;
+      sendFrame(socket, { type: 'event', id: turn.id, seq: row.seq, event: row.event as AgentEvent });
+    }
   }
 
   /** Stop a turn, from any connection - including one that only re-joined it. */

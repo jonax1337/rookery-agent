@@ -82,7 +82,7 @@ export async function buildServer(
     log,
     sockets: new Set<WebSocket>(),
     assignmentWatchers: new Map(),
-    turns: new TurnHub(log),
+    turns: new TurnHub(log, { events: (id) => assistant.store.turns.events(id) }),
     gateways,
     // Replaced on the next line. A listener fires a schedule through the
     // context, so it cannot be built before the context it fires through.
