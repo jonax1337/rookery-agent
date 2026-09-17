@@ -75,7 +75,7 @@ aufgegeben wird — der Commit ist vor Phase 1, auch wenn das Paket es baut.
 1. Der `fetchFrame`/`scoreFrame`-Schnitt **ohne Verhaltensaenderung** an `recall`.
 2. Die vier Gleichstandsbrecher plus alle In-JS-Sortierungen.
 3. `entitiesForMany` und der partitionierte Nachbarabruf.
-4. `resolvePolicy` als einzige Wahrheit ueber die `recall`-Parameter.
+4. `resolvePolicy` als einzige Wahrheit ueber die `recall`-Parameter - geliefert fuer den Assistentenpfad (AP9); der Agentenaufruf in `org/controller.ts` bleibt in Stufe 1 bewusst roh, ihn umzuleiten waere bei abweichendem `memory.graph` eine Verhaltensaenderung (R15).
 5. Schema 19: `dream_traces`, `dream_frames`, `memory_touches`, `dream_labels` (leer, ohne Schreiber) und drei `sleep_runs`-Zaehler.
 6. Der gesampelte Rekorder in einer `SAVEPOINT`-Transaktion, nur `site='turn'`, nur Assistenten-Owner.
 7. Das Blockmass aus Konzept 5.2 mit auf 1 normierten Gewichten.

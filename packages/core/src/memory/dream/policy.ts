@@ -6,12 +6,17 @@ import { WEIGHTS } from '../recall.js';
 /**
  * The one truth about the recall parameters (dream stage 1, concept 9.3).
  *
- * Today two effective policies exist for one function: the assistant path
- * hands `hopEntity`/`hopEdge` from `config.memory.graph` into `recall`, the
- * agent path does not and silently runs on the literals in recall.ts. The
- * values happen to be equal, so nobody noticed - until a promotion changes
- * the config and one path keeps running on the factory setting. Every caller
- * now resolves through here, and both paths get the same answer.
+ * Before this function existed, two effective policies lived in one code
+ * base: the assistant path hands `hopEntity`/`hopEdge` from
+ * `config.memory.graph` into `recall`, the agent path does not and silently
+ * runs on the literals in recall.ts. The values happen to be equal, so
+ * nobody noticed - until a promotion changes the config and one path keeps
+ * running on the factory setting. Stage 1 wires the assistant path through
+ * here (runtime.ts, AP9); the agent call in org/controller.ts deliberately
+ * keeps its raw config read, because rerouting it would change behaviour
+ * whenever `memory.graph` deviates - outside the two declared exceptions of
+ * the stage (R15). So today this is one truth for the assistant, not yet
+ * for both: the agent path joins when a stage is allowed to move it.
  *
  * Stage 1 has no promoted version, so the weights are always the incumbent
  * literals from recall.ts with origin 'default'. The one classification the
