@@ -432,6 +432,10 @@ export function CronDetailPage() {
   // The listeners are config, not part of the detail payload - and the config
   // is live in the provider, so this stays right when a mailbox is added.
   const listeners = (config?.listeners.imap ?? []).filter((entry) => entry.jobId === job.id);
+  // A job on the clock can still have a webhook or a mailbox pointing at it.
+  // Hiding what fires it just because it also has a timetable is how somebody
+  // ends up hunting for the mailbox they attached last week.
+  const firedByEvents = Boolean(job.webhookToken) || listeners.length > 0;
   const hookUrl = job.webhookToken ? window.location.origin + '/hooks/' + job.webhookToken : '';
 
   // The label this card flips to whenever a run finishes.
@@ -554,7 +558,7 @@ export function CronDetailPage() {
             </CardContent>
           </Card>
 
-          {eventOnly ? (
+          {eventOnly || firedByEvents ? (
             <Card>
               <CardHeader>
                 <CardTitle>What can fire this</CardTitle>
@@ -594,7 +598,8 @@ export function CronDetailPage() {
                 )}
               </CardContent>
             </Card>
-          ) : (
+          ) : null}
+          {!eventOnly ? (
           <Card>
             <CardHeader>
               <CardTitle>Upcoming runs</CardTitle>
@@ -627,7 +632,7 @@ export function CronDetailPage() {
               )}
             </CardContent>
           </Card>
-          )}
+          ) : null}
         </div>
       </Fade>
 

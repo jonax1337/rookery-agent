@@ -1081,8 +1081,12 @@ export interface ListenerStatus {
   jobId: string;
   /** The schedule's name, when it still exists. */
   jobName?: string;
-  /** Stopped for something that will not pass on its own - wrong credentials, a missing mailbox. */
-  blocked?: boolean;
+  /**
+   * Stopped for something that will not pass on its own - wrong credentials, a
+   * missing mailbox. A sentence to show, not a flag: only changed settings
+   * start it again, so the reason is the whole point.
+   */
+  blocked?: string;
   lastError?: string;
   /** When the connection last saw something happen. */
   lastEventAt?: number;
