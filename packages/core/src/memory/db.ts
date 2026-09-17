@@ -989,4 +989,10 @@ function migrateAgentMessagesToMail(db: Db): void {
 /** Rebuild the FTS index. Used by the CLI after a bulk import. */
 export function reindex(db: Db): void {
   db.exec("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')");
+  // A rebuild replaces the corpus that every recorded frame was scored
+  // against, so the dream must treat all frames from before this moment as
+  // invalidated instead of rediscovering the drift night after night.
+  db.prepare(
+    "INSERT OR REPLACE INTO meta(key, value) VALUES ('dream.corpus_invalidated_at', ?)",
+  ).run(String(Date.now()));
 }

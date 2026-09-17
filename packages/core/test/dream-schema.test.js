@@ -111,3 +111,13 @@ test('opening the same file twice does not throw', (t) => {
     second.close();
   });
 });
+
+test('reindex marks the corpus as invalidated', () => {
+  const db = openDatabase(':memory:');
+  const before = db.prepare("SELECT value FROM meta WHERE key = 'dream.corpus_invalidated_at'").get();
+  assert.equal(before, undefined);
+  reindex(db);
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'dream.corpus_invalidated_at'").get();
+  assert.ok(Number(row.value) > 0, 'the invalidation stamp should carry a timestamp');
+  db.close();
+});
