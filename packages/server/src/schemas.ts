@@ -278,6 +278,38 @@ const sleepConfigSchema = z
   })
   .partial();
 
+/**
+ * The dream block of the memory config. Every field is clamped to the range
+ * its reader assumes. This schema only guards the HTTP PATCH: `rookery
+ * config set` bypasses Zod entirely, so each reader clamps again at read
+ * time rather than trusting that a value was validated when written.
+ *
+ * `promote` is not here on purpose - it has no reader in stage 1 (R16).
+ */
+const dreamConfigSchema = z
+  .object({
+    enabled: z.boolean(),
+    record: z.boolean(),
+    // A share of sessions; never above "every session".
+    frameRate: z.number().min(0).max(1),
+    // The policy space's limit span is 4..16; a frame outside it is not
+    // replayable for the span it declares.
+    limitMax: z.number().int().min(4).max(16),
+    // The night's grid is prescribed as 8..12 fixed placements.
+    gridSize: z.number().int().min(8).max(12),
+    // A cost weight above 1 would let the cost term outweigh every hit.
+    costWeight: z.number().min(0).max(1),
+    // Relative document-frequency tolerance: generous, but finite.
+    corpusTolerance: z.number().min(0).max(5),
+    maxFrameBytes: z.number().int().min(1000).max(2_000_000),
+    // Zero is legitimate: it switches the model-free evaluation off.
+    maxEvalMs: z.number().int().min(0).max(600_000),
+    frameRetainDays: z.number().int().min(1).max(3650),
+    retainDays: z.number().int().min(7).max(3650),
+    maxCallsPerNight: z.number().int().min(0).max(100),
+  })
+  .partial();
+
 const memoryConfigSchema = z
   .object({
     enabled: z.boolean(),
@@ -286,6 +318,10 @@ const memoryConfigSchema = z
     autoExtract: z.boolean(),
     workingWindow: z.number().int().min(0).max(200),
     contextBudget: z.number().int().min(200).max(200000),
+    // Load-bearing line: without it, zod strips the branch and every
+    // memory.dream PATCH is silently answered with 200 - the same way
+    // memory.gate and memory.graph are not settable over HTTP today.
+    dream: dreamConfigSchema,
     sleep: sleepConfigSchema,
   })
   .partial();

@@ -446,6 +446,22 @@ export interface SleepRun {
   conflictCount: number;
   /** Contradictions actually decided, the loser filed away. */
   resolvedCount: number;
+  /**
+   * Dream traces the night's probe looked at. Optional on purpose: the only
+   * places that build a complete `SleepRun` are written from AP7 / Schema 19
+   * on, and a required field would break the wave-1 typecheck before then.
+   */
+  dreamTracesSeen?: number;
+  /**
+   * Dream frames the night's grid probe scored. In stage 1 this carries the
+   * grid placements, not candidates. Set from AP7 / Schema 19 on.
+   */
+  dreamFramesScored?: number;
+  /**
+   * Model-written dream candidates. Reserved for Phase 3 and 0 until then,
+   * so the counter cannot quietly change meaning. Set from AP7 / Schema 19 on.
+   */
+  dreamCandidates?: number;
   /** Small-model calls spent. Capped by config. */
   modelCalls: number;
   /** Two or three sentences a person can read. */
@@ -453,6 +469,356 @@ export interface SleepRun {
   error?: string;
   /** Set when the run was rolled back. */
   undoneAt?: number;
+}
+
+/* ------------------------------------------------------------------ *
+ * Dream
+ * ------------------------------------------------------------------ */
+
+/**
+ * The dream: recall decisions are recorded and replayed so the night can
+ * measure the retrieval policy instead of guessing at it. See
+ * docs/concepts/dream-and-recursive-self-improvement.md.
+ *
+ * Stage 1 records and measures, nothing else: no model call, no candidate
+ * writer, no promotion. The types below are the shared vocabulary every
+ * later package builds against, so they live here rather than in a `dream/`
+ * module that two wave-2 packages would have to serialise on.
+ */
+
+/** Where a recall call came from. Stage 1 scores only `turn` (concept 3.5). */
+export type DreamSite = 'turn' | 'extract' | 'tool' | 'inspect';
+
+/**
+ * Which post-processing chain a frame belongs to. The assistant path groups
+ * by entity and drops contradicted memories; the agent path does neither.
+ * Scoring one with the other's chain would score a prompt that never
+ * existed (concept 3.6).
+ */
+export type DreamPipeline = 'assistant' | 'agent';
+
+/** What kind of run opened a trace. */
+export type DreamTraceKind = 'turn' | 'assignment' | 'night';
+
+/**
+ * How a recall call degraded. Three worlds, not two: "rows came, but all
+ * fell below the threshold" is a legitimate miss that must be scored, never
+ * inferred from an empty result (concept 3.4).
+ */
+export type DreamDegraded = 'no-tokens' | 'fts-threw';
+
+/**
+ * Where a policy value came from: the factory default, the user's config,
+ * or a dream promotion.
+ */
+export type PolicyOrigin = 'default' | 'user' | 'dream';
+
+/** The four recall scoring terms. `scoreFrame` normalises them to sum 1. */
+export interface RecallWeights {
+  relevance: number;
+  importance: number;
+  recency: number;
+  usage: number;
+}
+
+/** Field-by-field provenance of a resolved policy (concept 9.3). */
+export interface RecallPolicyOrigin {
+  limit: PolicyOrigin;
+  threshold: PolicyOrigin;
+  hopEntity: PolicyOrigin;
+  hopEdge: PolicyOrigin;
+  relevance: PolicyOrigin;
+  importance: PolicyOrigin;
+  recency: PolicyOrigin;
+  usage: PolicyOrigin;
+}
+
+/**
+ * The declared parameter space a frame is closed under.
+ *
+ * A replay is honest exactly when the recorded surface is closed under this
+ * box: every value `scoreFrame` may vary appears here as an interval, so a
+ * replay can never need a row that was not fetched. `kinds` and
+ * `minImportance` are SQL filters rather than scoring terms - widening them
+ * admits rows that were never fetched - so they ride as literals
+ * (concept 3.4).
+ */
+export interface RecallBox {
+  /**
+   * Upper bound for `limit`. With a trace open, the hop-1 frontier is
+   * `max(limit, limitMax) * 4` rows, so one frame recorded at this corner
+   * stays replayable for every `limit` below it.
+   */
+  limitMax: number;
+  /** Weight interval per scoring term. */
+  w: {
+    relevance: [number, number];
+    importance: [number, number];
+    recency: [number, number];
+    usage: [number, number];
+  };
+  threshold: [number, number];
+  hopEntity: [number, number];
+  hopEdge: [number, number];
+  /** Kind filter, as the live call received it. */
+  kinds: MemoryKind[];
+  /** Importance floor, as the live call received it. */
+  minImportance: number;
+}
+
+/**
+ * One realisation of the recall parameters, inside the box.
+ *
+ * `resolvePolicy` (memory/dream/policy.ts) is the single truth for these
+ * numbers: today two effective policies exist for one function, because the
+ * agent path never passes the hop weights. A config value that deviates
+ * from the factory default is classified `user`, so a later promotion
+ * cannot silently override what the user set (concept 9.3).
+ */
+export interface RecallPolicy {
+  limit: number;
+  threshold: number;
+  w: RecallWeights;
+  hopEntity: number;
+  hopEdge: number;
+  kinds: MemoryKind[];
+  minImportance: number;
+  /** Where each value came from. `default` while nothing is promoted. */
+  origin: RecallPolicyOrigin;
+}
+
+/** The query as it arrived, with everything derived from it at record time. */
+export interface FrameQuery {
+  /**
+   * The user's literal question. Frames are verbatim storage: this text
+   * never outlives the memory and the session it came from (R17).
+   */
+  text: string;
+  /** The safe FTS5 MATCH expression built from the text (`toMatchQuery`). */
+  matchQuery: string;
+  /** The tokens the tag boost compared against (`tokenize`). */
+  tokens: string[];
+}
+
+/** One hop-1 row: identity plus the frozen bm25 relevance SQL returned. */
+export interface FrameHop1Row {
+  id: string;
+  relevance: number;
+}
+
+/** An entity attached to a reachable memory, as the frame froze it. */
+export interface FrameEntityRef {
+  entityId: string;
+  name: string;
+  mentions: number;
+}
+
+/**
+ * An edge the second hop could follow: `refines`/`caused_by`, collected
+ * from the possible seeds rather than the realised ones.
+ */
+export interface FrameEdgeRef {
+  id: string;
+  srcId: string;
+  dstId: string;
+  relation: MemoryRelation;
+  weight: number;
+}
+
+/**
+ * A frozen copy of one memory row, taken when the frame was recorded. Every
+ * column the score reads is fixed here: reading `access_count` or
+ * `importance` live at replay time replays a world that never existed
+ * (concept 3.7 c).
+ */
+export type MemoryRecordSnapshot = MemoryRecord;
+
+/**
+ * The document-frequency fingerprint of one night, over the tokens of that
+ * night's frames (R10). bm25 is frozen in the frame and can never be
+ * revalidated, so the corpus is the only observable that correlates with a
+ * frame going stale. The fingerprint is computed once per night into `meta`
+ * and each frame carries only its id; the stamp is up to 24 hours younger
+ * than the frames it certifies, which is approximate and reported as such.
+ */
+export interface FrameCorpus {
+  /** Identifies the `meta` row; stamped onto each frame as `corpusStampId`. */
+  id: string;
+  owner: string;
+  /** When the fingerprint was computed, epoch milliseconds. */
+  at: number;
+  /** Document frequency per frame token at that moment. */
+  df: Record<string, number>;
+}
+
+/**
+ * Why a frame was not scored. A box violation firing is a recorder error,
+ * not a measurement; the rest are real abstentions (concept 5.4).
+ * `corpus-invalidated` is for frames older than a `reindex` or bulk import
+ * that moved the corpus stamp discontinuously, and is counted apart from
+ * `corpus-drifted`.
+ */
+export type AbstainReason =
+  | 'limit-out-of-box'
+  | 'seeds-capped'
+  | 'degraded-turn'
+  | 'frame-missing'
+  | 'corpus-drifted'
+  | 'corpus-invalidated'
+  | 'budget-changed'
+  | 'no-reachable-label'
+  | 'no-labelled-move'
+  | 'pipeline-mismatch'
+  | 'no-label-source'
+  | 'unfinished';
+
+/** What `scoreFrame` answers: a ranking, or an abstention with its reason. */
+export type ScoreResult =
+  | { ok: true; ranked: ScoredMemory[] }
+  | { ok: false; reason: AbstainReason };
+
+/**
+ * A recorded recall decision: the permissive corner of the declared box,
+ * not the path that was taken. Everything a replay needs, frozen.
+ *
+ * The reachable set R is `hop1` plus `profile` plus every `entityNeighbours`
+ * list plus every edge destination; `entities` covers all of R, because
+ * `groupByEntity` reads entities for every delivered memory, not just the
+ * seeds (concept 3.4).
+ */
+export interface RecallFrame {
+  v: 1;
+  site: DreamSite;
+  pipeline: DreamPipeline;
+  owner: string;
+  box: RecallBox;
+  query: FrameQuery;
+  /**
+   * The clock the recency term was computed with. A replay that recomputes
+   * it makes all rows decay together and shrinks exactly the spread a
+   * candidate could have moved (concept 3.7 b).
+   */
+  now: number;
+  corpusStampId: string;
+  /**
+   * The normaliser of the relevance term AFTER the `Math.max(..., 1)`
+   * clamp. Renormalising without the clamp inflates queries with a low
+   * bm25 by a plausible-looking factor (concept 3.7 g).
+   */
+  maxRelevanceClamped: number;
+  /**
+   * Budget and subject the block was rendered with. A drift against the
+   * live config abstains with `budget-changed`, because the cost term's
+   * denominator moved (concept 5.4).
+   */
+  budgetChars: number;
+  subject: string;
+  /** One store of frozen rows; everything else references them by id. */
+  records: Record<string, MemoryRecordSnapshot>;
+  /** The hop-1 frontier in SQL order. */
+  hop1: FrameHop1Row[];
+  /**
+   * Superset of the true second-hop seeds, from interval arithmetic over
+   * the box. An error in the bound degrades to an abstention, never to a
+   * plausible wrong number.
+   */
+  possibleSeeds: string[];
+  /** Entities per reachable memory id. */
+  entities: Record<string, FrameEntityRef[]>;
+  /**
+   * Neighbour ids per entity, recorded WITHOUT `exclude`, `8 +
+   * |possibleSeeds|` rows each. Superseded rows are included on purpose:
+   * the SQL limit bites before `offer` filters them.
+   */
+  entityNeighbours: Record<string, string[]>;
+  edges: FrameEdgeRef[];
+  /** Contradiction pairs over the reachable set, for a store-free `dropContradicted`. */
+  contradicts: { srcId: string; dstId: string }[];
+  /**
+   * The core profile at the box's most permissive corner. A profile
+   * recorded at a realised `limit` is not closed over `limit`, so
+   * `mergeProfile` slices this list per candidate instead.
+   */
+  profile: { id: string; reason: string }[];
+  /** Three worlds, not two - see `DreamDegraded`. */
+  degraded: DreamDegraded | null;
+}
+
+/** What a framed turn reports when it opens a trace (`Store.beginTrace`). */
+export interface DreamTraceInput {
+  /** Groups the calls of one turn; labels attach here (R19). */
+  turnId: string;
+  owner: string;
+  kind: DreamTraceKind;
+  site: DreamSite;
+  pipeline: DreamPipeline;
+  sessionId?: string;
+  sessionKind?: SessionKind;
+  assignmentId?: string;
+  sleepRunId?: string;
+  /** Position of the turn in its session. */
+  turnIndex?: number;
+  /** The policy set in effect per slot, as `resolvePolicy` returned it. */
+  policySet: Record<string, RecallPolicy>;
+  /**
+   * Whether the session fell into the sample - drawn per session, never
+   * per trace, so consecutive turns cannot split across both sides.
+   */
+  framed?: boolean;
+  holdout?: boolean;
+  /** Marks the frozen audit set (R3); its reader arrives with Phase 3. */
+  audit?: boolean;
+}
+
+/** What a framed turn reports when it closes its trace (`Store.finishTrace`). */
+export interface DreamTracePatch {
+  /** How the recall call degraded, once known. Explicit `null` is a legitimate value. */
+  degraded?: DreamDegraded | null;
+}
+
+/**
+ * One recorded recall invocation. A turn groups several calls under one
+ * `turnId` (R19): the assistant's turn calls `recall` twice, plus
+ * `coreProfile` and the write gate.
+ */
+export interface DreamTrace {
+  id: string;
+  turnId: string;
+  owner: string;
+  kind: DreamTraceKind;
+  site: DreamSite;
+  pipeline: DreamPipeline;
+  sessionId?: string;
+  sessionKind?: SessionKind;
+  assignmentId?: string;
+  sleepRunId?: string;
+  turnIndex: number;
+  policySet: Record<string, RecallPolicy>;
+  framed: boolean;
+  holdout: boolean;
+  /** Frozen audit set (R3): the column exists in stage 1, its reader arrives with Phase 3. */
+  audit: boolean;
+  degraded: DreamDegraded | null;
+  startedAt: number;
+  finishedAt?: number;
+  createdAt: number;
+}
+
+/** A stored frame, as the night's read path (`Store.framesFor`) hands it over. */
+export interface DreamFrame {
+  traceId: string;
+  /** Which slot the frame closed over. Stage 1 has exactly one: `recall`. */
+  slot: string;
+  frameV: number;
+  /** Denormalised for the deletion paths, so `payload` is never read for them (R17). */
+  owner: string;
+  sessionId?: string;
+  box: RecallBox;
+  corpusStampId: string;
+  payload: RecallFrame;
+  /** Serialised size; `saveFrame` rejects frames above `dream.maxFrameBytes`. */
+  bytes: number;
+  createdAt: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1210,6 +1576,12 @@ export interface MemoryConfig {
   gate: MemoryGateConfig;
   /** The second hop: how far recall reaches past a literal match. */
   graph: MemoryGraphConfig;
+  /**
+   * The dream: recording and replaying recall so the night can measure the
+   * retrieval policy. Stage 1 ships the capability switched off - it
+   * records and measures, and promotes nothing.
+   */
+  dream: DreamConfig;
   /** The nightly clean-up. */
   sleep: SleepConfig;
 }
@@ -1232,6 +1604,39 @@ export interface MemoryGraphConfig {
   hopEdge: number;
   /** Hard cap on nodes handed to the graph view. */
   maxNodes: number;
+}
+
+/**
+ * The dream's own settings, beside `memory.sleep`. Every key names its
+ * reader - the key table sits above the `dream:` block in config.ts - and a
+ * key without a reader does not ship. That is why there is no `promote`
+ * here: in stage 1, nothing would read it (R16).
+ */
+export interface DreamConfig {
+  /** The whole dream. Off means: no recorder, no night probe. */
+  enabled: boolean;
+  /** Only the recorder. Separate, so it can be switched off without losing the night. */
+  record: boolean;
+  /** Share of sessions that get framed at all. Drawn per session, never per trace. */
+  frameRate: number;
+  /** The most permissive corner: up to which `limit` a frame stays replayable. */
+  limitMax: number;
+  /** The grid: fixed placements the night scores against the incumbent. */
+  gridSize: number;
+  /** Weight of the cost term in the block measure. */
+  costWeight: number;
+  /** Relative change in the frame tokens' document frequency at which a trace abstains. */
+  corpusTolerance: number;
+  /** Hard ceiling on frame size in bytes; above it, nothing is framed. */
+  maxFrameBytes: number;
+  /** Wall-clock ceiling for the model-free night evaluation, in milliseconds. */
+  maxEvalMs: number;
+  /** Retention for frames (large, kept only for replay). */
+  frameRetainDays: number;
+  /** Retention for traces and touches (small, they carry the calibration). */
+  retainDays: number;
+  /** Run-global ceiling over all owners. Zero model calls in stage 1; the ceiling stands anyway. */
+  maxCallsPerNight: number;
 }
 
 export interface SleepConfig {
