@@ -193,6 +193,55 @@ export function useChat(
   const partsRef = useRef(new TurnBlocks());
   const [parts, setParts] = useState<MessageBlock[]>([]);
 
+  /**
+   * The streamed state is painted at most once per frame.
+   *
+   * A provider sends one event per token, and rendering each of them on its
+   * own made a turn cost quadratic work: every delta re-rendered the whole
+   * answer so far, so a long one fell further and further behind the stream
+   * and arrived in jerks - while a reload, which renders the finished text
+   * once, looked perfectly smooth. Every event is still applied in arrival
+   * order and none is dropped; only the paint is coalesced, which is all a
+   * reader can see anyway.
+   */
+  const thinkingRef = useRef('');
+  const frameRef = useRef<number | null>(null);
+
+  const paint = useCallback(() => {
+    frameRef.current = null;
+    setStreaming(bufferRef.current);
+    setThinking(thinkingRef.current);
+    setParts([...partsRef.current.blocks]);
+  }, []);
+
+  /** Drop a frame owed to a turn that is being settled or replaced. */
+  const cancelPaint = useCallback(() => {
+    if (frameRef.current === null) return;
+    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+  }, []);
+
+  /**
+   * Ask for a paint on the next frame; repeated calls within one frame are
+   * free. Where there are no frames - a test harness, a server render -
+   * there is nothing to coalesce either, so the paint happens at once and
+   * the hook behaves exactly as it did before.
+   */
+  const schedulePaint = useCallback(() => {
+    if (frameRef.current !== null) return;
+    if (typeof requestAnimationFrame !== 'function') {
+      paint();
+      return;
+    }
+    frameRef.current = requestAnimationFrame(paint);
+  }, [paint]);
+
+  /** Paint now and drop a pending frame: for the rare structural events. */
+  const paintNow = useCallback(() => {
+    cancelPaint();
+    paint();
+  }, [paint]);
+
   const pushActivity = useCallback((item: Omit<ActivityItem, 'at'>) => {
     setActivity((current) => {
       // A tool's 'end' closes the matching 'start' rather than adding a row.
@@ -208,11 +257,17 @@ export function useChat(
     });
   }, []);
 
-  /** Folds one text/thinking/tool event into the ordered transcript. */
-  const foldPart = useCallback((event: AgentEvent) => {
-    partsRef.current.apply(event);
-    setParts([...partsRef.current.blocks]);
-  }, []);
+  /**
+   * Folds one text/thinking/tool event into the ordered transcript. The fold
+   * happens per event, in order; the paint it asks for is coalesced.
+   */
+  const foldPart = useCallback(
+    (event: AgentEvent) => {
+      partsRef.current.apply(event);
+      schedulePaint();
+    },
+    [schedulePaint],
+  );
 
   const handleEvent = useCallback(
     (event: AgentEvent) => {
@@ -223,19 +278,21 @@ export function useChat(
 
         case 'text':
           bufferRef.current += event.delta;
-          setStreaming(bufferRef.current);
           foldPart(event);
           break;
 
         case 'thinking':
-          setThinking((current) => (current + event.delta).slice(-2000));
+          thinkingRef.current = (thinkingRef.current + event.delta).slice(-2000);
           foldPart(event);
           break;
 
         case 'tool':
           toolCallsRef.current = [...toolCallsRef.current, event];
           setToolCalls(toolCallsRef.current);
-          foldPart(event);
+          // A tool call is structural and rare: it shows up at once rather
+          // than waiting for the next frame behind a wall of deltas.
+          partsRef.current.apply(event);
+          paintNow();
           pushActivity({
             id: event.id ?? event.name + ':' + Date.now(),
             kind: 'tool',
@@ -369,7 +426,11 @@ export function useChat(
         ]);
         onSpoken?.(answer);
       }
+      // The turn is over, so a frame still owed to it would paint the state
+      // this settle is about to clear - and paint it after the clearing.
+      cancelPaint();
       bufferRef.current = '';
+      thinkingRef.current = '';
       toolCallsRef.current = [];
       setToolCalls([]);
       partsRef.current.clear();
@@ -392,12 +453,17 @@ export function useChat(
     setAssignments([]);
     setAgentMessages([]);
     setTasks([]);
+    // Same reason as in `finish`: a frame owed to the turn being replaced
+    // would paint its leftovers over the one starting here.
+    cancelPaint();
     bufferRef.current = '';
+    thinkingRef.current = '';
     toolCallsRef.current = [];
     setToolCalls([]);
     partsRef.current.clear();
     setParts([]);
     setStreaming('');
+    setThinking('');
     finishedRef.current = false;
     inFlight.current = true;
     setBusy(true);
@@ -616,7 +682,9 @@ export function useChat(
     // socket entry, so its frames cannot follow the user into whichever
     // conversation replaces this one.
     if (turnRef.current) socket.abort(turnRef.current);
+    cancelPaint();
     bufferRef.current = '';
+    thinkingRef.current = '';
     toolCallsRef.current = [];
     setToolCalls([]);
     partsRef.current.clear();
