@@ -15,7 +15,7 @@ import {
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import { CRON_TRIGGER_LABEL, cronRunReport } from '@/lib/cron';
+import { cronRunReport, cronRunTrigger } from '@/lib/cron';
 import { reportFailure } from '@/lib/errors';
 import { CRON_JOB_KIND_LABEL, formatDateTime, formatDuration } from '@/lib/format';
 import { daysAgo, formatNumber } from '@/lib/stats';
@@ -259,21 +259,29 @@ export function CronPage() {
         jobColumn.accessor('schedule', {
           id: 'schedule',
           header: ({ column }) => <DataTableColumnHeader column={column} title="Expression" />,
-          cell: ({ row }) => (
-            <Badge variant="secondary" className="font-mono font-normal">
-              {row.original.schedule}
-            </Badge>
-          ),
+          // An event-only job may carry no expression at all, and where it
+          // does the expression is not what fires it.
+          cell: ({ row }) =>
+            row.original.triggerMode === 'event' ? (
+              <Badge variant="outline" className="font-normal">
+                Event
+              </Badge>
+            ) : (
+              <Badge variant="secondary" className="font-mono font-normal">
+                {row.original.schedule}
+              </Badge>
+            ),
         }),
         jobColumn.accessor((job) => job.nextRunAt ?? null, {
           id: 'nextRunAt',
           header: ({ column }) => <DataTableColumnHeader column={column} title="Next run" />,
-          cell: ({ row }) =>
-            row.original.enabled ? (
-              <span className="tabular-nums">{formatDateTime(row.original.nextRunAt)}</span>
-            ) : (
-              <span className="text-muted-foreground">Paused</span>
-            ),
+          cell: ({ row }) => {
+            if (!row.original.enabled) return <span className="text-muted-foreground">Paused</span>;
+            if (row.original.triggerMode === 'event') {
+              return <span className="text-muted-foreground">On event</span>;
+            }
+            return <span className="tabular-nums">{formatDateTime(row.original.nextRunAt)}</span>;
+          },
         }),
         jobColumn.accessor((job) => statusLabel(job), {
           id: 'lastStatus',
@@ -389,7 +397,9 @@ export function CronPage() {
             <span className="tabular-nums">{formatDateTime(row.original.startedAt)}</span>
           ),
         }),
-        runColumn.accessor((run) => CRON_TRIGGER_LABEL[run.trigger], {
+        // Naming the source is the whole difference between "an event ran
+        // this" and a row that looks like every clock run above it.
+        runColumn.accessor((run) => cronRunTrigger(run), {
           id: 'trigger',
           header: ({ column }) => <DataTableColumnHeader column={column} title="Trigger" />,
           cell: ({ getValue }) => (
@@ -547,7 +557,7 @@ export function CronPage() {
         title={report ? (cron.jobById(report.jobId)?.name ?? 'Run') : 'Run'}
         description={
           report
-            ? formatDateTime(report.startedAt) + ' · ' + CRON_TRIGGER_LABEL[report.trigger]
+            ? formatDateTime(report.startedAt) + ' · ' + cronRunTrigger(report)
             : undefined
         }
       >

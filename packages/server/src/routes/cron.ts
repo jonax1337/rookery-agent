@@ -97,7 +97,9 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
       agent: job.agentId ? store.org.getAgent(job.agentId) : null,
       project: job.projectId ? store.org.getProject(job.projectId) : null,
       session: job.sessionId ? store.getSession(job.sessionId) : null,
-      next: job.enabled ? upcomingCronRuns(job.schedule, 5).map((date) => date.getTime()) : [],
+      // A job off the clock has no upcoming times, and asking for them would
+      // mean parsing an expression it does not have.
+      next: job.enabled && job.schedule ? upcomingCronRuns(job.schedule, 5).map((date) => date.getTime()) : [],
       description: describeCron(job.schedule),
     };
   });
@@ -133,5 +135,26 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
     void cron.runNow(job.id).catch((error: Error) => context.log.warn('Manual schedule run failed', { error: error.message }));
     reply.code(202);
     return { ok: true };
+  });
+
+  /**
+   * Give this schedule a webhook, or rotate the one it has.
+   *
+   * The secret comes back on the job because the page that asked is the only
+   * place it is ever shown, and there is nowhere else to look it up later.
+   * Calling this again mints a new one and the previous URL stops working: a
+   * rotation and a first issue are the same act.
+   */
+  app.post<IdParams>('/api/cron/:id/webhook', options, async (request, reply) => {
+    const job = cron.get(request.params.id);
+    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
+    return { job: cron.enableWebhook(job.id) };
+  });
+
+  /** Take the webhook away. Whoever holds the URL holds nothing from here on. */
+  app.delete<IdParams>('/api/cron/:id/webhook', options, async (request, reply) => {
+    const job = cron.get(request.params.id);
+    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
+    return { job: cron.disableWebhook(job.id) };
   });
 }

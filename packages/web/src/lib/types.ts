@@ -538,15 +538,31 @@ export interface TaskPlanResult {
  */
 export type CronJobKind = 'assistant' | 'agent' | 'sleep' | 'script';
 export type CronRunStatus = 'running' | 'done' | 'failed';
-export type CronTrigger = 'schedule' | 'manual';
+export type CronTrigger = 'schedule' | 'manual' | 'event';
+
+/**
+ * Whether the clock fires this job at all. `event` means it has no timetable
+ * and `schedule` may be empty; an event can fire either mode, so a job on the
+ * clock keeps its expression as a backstop.
+ */
+export type CronTriggerMode = 'schedule' | 'event';
 
 /** A standing order: a prompt that fires on a cron expression while the server runs. */
 export interface CronJob {
   id: string;
   orgId: string;
   name: string;
-  /** Five-field cron expression, local time. */
+  /** Five-field cron expression, local time. Empty for an event-only job. */
   schedule: string;
+  triggerMode: CronTriggerMode;
+  /**
+   * The per-job webhook secret. Unlike every other secret in this app it does
+   * reach the browser: the URL is useless to anyone who cannot already read
+   * this page, and there is nowhere else to copy it from.
+   */
+  webhookToken?: string;
+  /** The rest after a run; events arriving inside it collapse into one run. */
+  eventCooldownMs?: number;
   kind: CronJobKind;
   script?: { path: string; runtime: 'python' | 'node' | 'bash' | 'powershell'; noAgent?: boolean };
   remainingRuns?: number;
@@ -573,6 +589,8 @@ export interface CronRun {
   jobId: string;
   orgId: string;
   trigger: CronTrigger;
+  /** What raised the event, e.g. `webhook` or `imap:work`. Only for `event`. */
+  source?: string;
   status: CronRunStatus;
   startedAt: number;
   finishedAt?: number;
@@ -1016,6 +1034,62 @@ export interface GatewayTestResult {
   recipient: number;
 }
 
+/* ------------------------------- listeners ------------------------------- */
+
+/** What kind of connection a listener holds open. Only IMAP for now. */
+export type ListenerKind = 'imap';
+
+export interface ListenersConfig {
+  imap: ImapListenerConfig[];
+}
+
+/**
+ * One watched mailbox. IMAP has no webhook; what it has is IDLE, a connection
+ * the server keeps open and speaks into the moment mail arrives - which is why
+ * a listener costs one socket instead of a model call every few minutes.
+ */
+export interface ImapListenerConfig {
+  /** Stable name, chosen by whoever adds it; runs record it as `imap:<id>`. */
+  id: string;
+  enabled: boolean;
+  host: string;
+  port: number;
+  /** TLS from the first byte, the usual 993. Off means STARTTLS on 143. */
+  secure: boolean;
+  user: string;
+  /**
+   * Write-only, like `TelegramGatewayConfig.token`: `GET /api/config` always
+   * answers with an empty string. On a PATCH a value sets it, `null` clears
+   * it, and the empty string an untouched form sends back keeps the stored
+   * one.
+   */
+  password: string | null;
+  mailbox: string;
+  /** The schedule this mailbox fires. */
+  jobId: string;
+}
+
+/** `GET /api/listeners` - one entry per configured listener, with its live state. */
+export interface ListenerStatus {
+  id: string;
+  kind: ListenerKind;
+  label: string;
+  /** A password is set - never the password itself. */
+  configured: boolean;
+  enabled: boolean;
+  running: boolean;
+  jobId: string;
+  /** The schedule's name, when it still exists. */
+  jobName?: string;
+  /** Stopped for something that will not pass on its own - wrong credentials, a missing mailbox. */
+  blocked?: boolean;
+  lastError?: string;
+  /** When the connection last saw something happen. */
+  lastEventAt?: number;
+  /** When that last turned into a run. */
+  lastFiredAt?: number;
+}
+
 /** Routing around a provider whose quota is running out, as the server exposes it. */
 export interface ProviderFallbackConfig {
   enabled: boolean;
@@ -1049,6 +1123,7 @@ export interface PublicConfig {
   memory: MemoryConfig;
   org: OrgConfig;
   gateways: GatewaysConfig;
+  listeners: ListenersConfig;
   router?: RouterConfig;
   providerFallback?: ProviderFallbackConfig;
 }

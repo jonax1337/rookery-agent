@@ -21,9 +21,11 @@ import type {
   CronJobKind,
   CronOverview,
   CronPreview,
+  CronTriggerMode,
   GatewayId,
   GatewayStatus,
   GatewayTestResult,
+  ListenerStatus,
   Mail,
   MailFolder,
   MemoryEntity,
@@ -258,6 +260,8 @@ export interface CronJobInput {
   permission?: PermissionLevel;
   enabled?: boolean;
   once?: boolean;
+  triggerMode?: CronTriggerMode;
+  eventCooldownMs?: number;
 }
 
 export interface CronJobPatch {
@@ -270,6 +274,8 @@ export interface CronJobPatch {
   permission?: Nullable<PermissionLevel>;
   enabled?: boolean;
   once?: boolean;
+  triggerMode?: CronTriggerMode;
+  eventCooldownMs?: number;
 }
 
 export const api = {
@@ -345,6 +351,16 @@ export const api = {
    */
   testGateway: (id: GatewayId) =>
     request<GatewayTestResult>('/api/gateways/' + id + '/test', { method: 'POST' }),
+
+  /* -------------------------------- listeners ------------------------------- */
+
+  /**
+   * The listeners and what each connection is doing right now. The mailboxes
+   * themselves are edited through `PATCH /api/config` like every other
+   * section; this call is status only and never carries a password.
+   */
+  getListeners: () =>
+    request<{ listeners: ListenerStatus[] }>('/api/listeners').then((body) => body.listeners),
 
   /* --------------------------------- skills -------------------------------- */
 
@@ -649,6 +665,14 @@ export const api = {
   deleteCronJob: (id: string) => request<{ ok: true }>('/api/cron/' + id, { method: 'DELETE' }),
   /** Fires the job now; the run's progress arrives over the socket. */
   runCronJob: (id: string) => request<{ ok: true }>('/api/cron/' + id + '/run', { method: 'POST' }),
+  /**
+   * Mints the job's webhook secret, or replaces the one it has - there is no
+   * separate rotate call, because minting a new secret is what rotating is.
+   */
+  enableCronWebhook: (id: string) =>
+    request<{ job: CronJob }>('/api/cron/' + id + '/webhook', { method: 'POST' }).then((body) => body.job),
+  disableCronWebhook: (id: string) =>
+    request<{ ok: true }>('/api/cron/' + id + '/webhook', { method: 'DELETE' }),
 
   messages: (limit = 100) => request<AgentMessage[]>('/api/org/messages?limit=' + limit),
   postMessage: (input: { toAgentId?: string; content: string }) =>

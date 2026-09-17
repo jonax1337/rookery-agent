@@ -1,4 +1,4 @@
-import type { CronRun, CronRunStatus, CronTrigger } from './types';
+import type { CronRun, CronRunStatus, CronTrigger, CronTriggerMode } from './types';
 
 /** Labels and presets for the schedule pages. */
 
@@ -27,7 +27,49 @@ export const CRON_RUN_STATUS_VARIANT: Record<CronRunStatus, 'default' | 'seconda
 export const CRON_TRIGGER_LABEL: Record<CronTrigger, string> = {
   schedule: 'scheduled',
   manual: 'manual',
+  event: 'event',
 };
+
+/**
+ * What fired a run, in one line.
+ *
+ * An event run without its source reads exactly like a clock run, which is
+ * the one thing a run history must not do once both exist - so the source
+ * comes along wherever the trigger is printed.
+ */
+export function cronRunTrigger(run: CronRun): string {
+  const label = CRON_TRIGGER_LABEL[run.trigger];
+  return run.trigger === 'event' && run.source ? label + ' · ' + run.source : label;
+}
+
+/**
+ * The trigger-mode radio cards. Typed structurally rather than as
+ * `ChoiceOption<…>` for the same reason `PERMISSION_CHOICES` is: the shape
+ * matches, and `lib/` has no business importing from `components/`.
+ */
+export const CRON_TRIGGER_MODE_CHOICES: {
+  value: CronTriggerMode;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: 'schedule',
+    label: 'On a timetable',
+    description: 'The clock fires it. An event can still fire it in between.',
+  },
+  {
+    value: 'event',
+    label: 'Only on an event',
+    description: 'No timetable: it runs when a webhook is called or a listener sees something.',
+  },
+];
+
+/**
+ * The rest after an event-driven run, when the job names none of its own.
+ * Mirrors `DEFAULT_EVENT_COOLDOWN_MS` in core - the form shows it as the
+ * value a new schedule starts with.
+ */
+export const DEFAULT_EVENT_COOLDOWN_MS = 60_000;
 
 /** Common timetables, so nobody has to know cron syntax for the usual cases. */
 export const CRON_PRESETS: { label: string; schedule: string }[] = [

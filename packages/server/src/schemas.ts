@@ -213,10 +213,23 @@ export const archiveMailThreadSchema = z.object({
 export const cronKindSchema = z.enum(['assistant', 'agent', 'script']);
 
 /** POST /api/cron */
+/** Whether the clock fires a schedule, or only an event does. */
+const cronTriggerModeSchema = z.enum(['schedule', 'event']);
+/**
+ * Up to a day of rest between event runs. Zero means every event that a run
+ * in flight does not already cover starts one.
+ */
+const eventCooldownSchema = z.number().int().min(0).max(24 * 60 * 60 * 1000);
+
 export const cronJobSchema = z.object({
   name: z.string().min(1, 'name must not be empty').max(120),
-  schedule: z.string().min(1, 'schedule must not be empty').max(120),
+  // An event-only schedule has no expression, so emptiness is not decided
+  // here: `CronScheduler.create` knows which modes need one and says so in
+  // its own words, which this route already turns into a 400.
+  schedule: z.string().max(120),
   prompt: z.string().min(1, 'prompt must not be empty').max(20_000),
+  triggerMode: cronTriggerModeSchema.optional(),
+  eventCooldownMs: eventCooldownSchema.optional(),
   kind: cronKindSchema.optional(),
   agentId: z.string().min(1).optional(),
   projectId: z.string().min(1).optional(),
@@ -228,8 +241,10 @@ export const cronJobSchema = z.object({
 /** PATCH /api/cron/:id */
 export const patchCronJobSchema = z.object({
   name: z.string().min(1).max(120).optional(),
-  schedule: z.string().min(1).max(120).optional(),
+  schedule: z.string().max(120).optional(),
   prompt: z.string().max(20_000).optional(),
+  triggerMode: cronTriggerModeSchema.optional(),
+  eventCooldownMs: eventCooldownSchema.nullable().optional(),
   kind: cronKindSchema.optional(),
   agentId: nullableText,
   projectId: nullableText,
@@ -373,6 +388,40 @@ const gatewaysConfigSchema = z
   .partial();
 
 /**
+ * One watched mailbox. Every field except the password is required, because
+ * the array is sent whole and replaces what was stored - a half-described
+ * listener would otherwise overwrite a complete one.
+ *
+ * `password` follows the write-only rule of every other secret here: absent
+ * or empty leaves the stored one alone, `null` clears it.
+ *
+ * `id` is restricted because it is quoted back on every run this listener
+ * fires, as `imap:<id>`.
+ */
+const imapListenerSchema = z.object({
+  id: z
+    .string()
+    .trim()
+    .min(1)
+    .max(60)
+    .regex(/^[A-Za-z0-9._-]+$/, 'letters, digits, dot, dash or underscore'),
+  enabled: z.boolean(),
+  host: z.string().trim().min(1).max(255),
+  port: z.number().int().min(1).max(65535),
+  secure: z.boolean(),
+  user: z.string().trim().min(1).max(320),
+  password: z.string().max(400).nullable().optional(),
+  mailbox: z.string().trim().min(1).max(200),
+  jobId: z.string().trim().min(1).max(60),
+});
+
+const listenersConfigSchema = z
+  .object({
+    imap: z.array(imapListenerSchema).max(20),
+  })
+  .partial();
+
+/**
  * PATCH /api/providers/profiles/:id. `authToken` is write-only, same rule as
  * the Telegram bot token: empty/absent leaves a stored key alone, `null`
  * clears it. The id itself is the route param, not part of the body.
@@ -410,6 +459,7 @@ export const patchConfigSchema = z
     voice: voiceConfigSchema,
     org: orgConfigSchema,
     gateways: gatewaysConfigSchema,
+    listeners: listenersConfigSchema,
     router: z.object({ enabled: z.boolean(), port: z.number().int().min(1).max(65535) }).partial(),
     providerFallback: z
       .object({

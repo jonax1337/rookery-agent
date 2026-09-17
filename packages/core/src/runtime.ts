@@ -983,7 +983,8 @@ export class Assistant extends EventEmitter {
     }
     const when = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
     const prompt =
-      'Automatic run of schedule “' + job.name + '” (' + describeCron(job.schedule) + '), ' + when + '. ' +
+      'Automatic run of schedule “' + job.name + '” (' +
+      (job.schedule ? describeCron(job.schedule) : 'fired by an event') + '), ' + when + '. ' +
       'Nobody is following live: carry out the assignment now and finish with a short report ' +
       'for the user to read later. If carrying it out already delivers the result to the user by ' +
       'itself (for example you send_mail them the thing this job exists to send), that mail is the ' +

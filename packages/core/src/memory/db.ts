@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 export type Db = DatabaseSync;
 
@@ -541,6 +541,32 @@ function migrate(db: Db): void {
   if (!hasColumn(db, 'cron_jobs', 'remaining_runs')) {
     db.exec('ALTER TABLE cron_jobs ADD COLUMN remaining_runs INTEGER');
   }
+
+  // Schema 17 -> 18: a schedule can also be fired by something that happened -
+  // a webhook call or a heartbeat listener - instead of only by the clock.
+  // `trigger_mode` decides whether the clock fires it at all; an event may
+  // fire either kind, so a clock-backed job keeps its expression as the
+  // backstop for events that never arrived. The webhook secret is its own
+  // credential per job: handing one out never hands out the server's token,
+  // and revoking one never touches another job.
+  if (!hasColumn(db, 'cron_jobs', 'trigger_mode')) {
+    db.exec("ALTER TABLE cron_jobs ADD COLUMN trigger_mode TEXT NOT NULL DEFAULT 'schedule'");
+  }
+  if (!hasColumn(db, 'cron_jobs', 'webhook_token')) {
+    db.exec('ALTER TABLE cron_jobs ADD COLUMN webhook_token TEXT');
+  }
+  if (!hasColumn(db, 'cron_jobs', 'event_cooldown_ms')) {
+    db.exec('ALTER TABLE cron_jobs ADD COLUMN event_cooldown_ms INTEGER');
+  }
+  if (!hasColumn(db, 'cron_runs', 'source')) {
+    db.exec('ALTER TABLE cron_runs ADD COLUMN source TEXT');
+  }
+  // One secret, one job. Partial, so the many jobs without a webhook do not
+  // all collide on NULL.
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cron_jobs_webhook
+      ON cron_jobs(webhook_token) WHERE webhook_token IS NOT NULL;
+  `);
 
   if (!hasColumn(db, 'messages', 'tool_calls')) {
     db.exec('ALTER TABLE messages ADD COLUMN tool_calls TEXT');

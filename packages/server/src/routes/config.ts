@@ -20,11 +20,25 @@ import { parseOrThrow, patchConfigSchema } from '../schemas.js';
  * hours. So: empty means "leave it alone" and is dropped from the patch,
  * `null` means "clear it" and becomes the empty string the config stores.
  */
-function normaliseSecrets(patch: Record<string, unknown>): void {
+function normaliseSecrets(patch: Record<string, unknown>, config: RookeryConfig): void {
   const telegram = (patch.gateways as { telegram?: { token?: string | null } } | undefined)?.telegram;
-  if (!telegram || !('token' in telegram)) return;
-  if (telegram.token === null) telegram.token = '';
-  else if (!telegram.token) delete telegram.token;
+  if (telegram && 'token' in telegram) {
+    if (telegram.token === null) telegram.token = '';
+    else if (!telegram.token) delete telegram.token;
+  }
+
+  // Listeners are a list, and a list in a patch replaces the stored one whole
+  // rather than merging into it. "Leave it alone" therefore cannot be done by
+  // dropping the field the way it is above - there would be nothing left for
+  // it to merge with. The stored password is copied in by id instead: the same
+  // promise, kept a different way.
+  const listeners = patch.listeners as { imap?: { id?: string; password?: string | null }[] } | undefined;
+  if (!listeners?.imap) return;
+  const stored = new Map(config.listeners.imap.map((entry) => [entry.id, entry.password]));
+  for (const entry of listeners.imap) {
+    if (entry.password === null) entry.password = '';
+    else if (!entry.password) entry.password = stored.get(entry.id ?? '') ?? '';
+  }
 }
 
 export async function registerConfigRoutes(
@@ -35,7 +49,7 @@ export async function registerConfigRoutes(
 
   app.patch('/api/config', async (request: FastifyRequest) => {
     const patch = parseOrThrow(patchConfigSchema, request.body ?? {});
-    normaliseSecrets(patch);
+    normaliseSecrets(patch, context.config);
     // applyConfig deep-merges into the file, so a partial `memory`/`voice`
     // object is exactly what it wants; the cast only bridges Zod's
     // deep-partial shape. It updates the config in place, and the server and
@@ -67,6 +81,18 @@ export async function registerConfigRoutes(
           }),
         ),
       );
+    }
+
+    // Same story for the listeners: switching a mailbox on in the UI has to
+    // open the connection now, not at the next restart, and a mailbox that
+    // refuses to connect reports that in its own status rather than failing
+    // the save the user just made.
+    if (patch.listeners) {
+      await context.listeners.refresh().catch((error: unknown) => {
+        context.log.warn('Listeners did not follow the config change', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     }
 
     context.log.info('Config updated', { keys: Object.keys(patch) });

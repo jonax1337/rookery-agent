@@ -6,6 +6,7 @@ import type {
   CronRun,
   CronRunStatus,
   CronTrigger,
+  CronTriggerMode,
   PermissionLevel,
   RequesterKind,
 } from '../types.js';
@@ -31,6 +32,9 @@ export class CronStore {
     orgId: string;
     name: string;
     schedule: string;
+    triggerMode?: CronTriggerMode;
+    webhookToken?: string;
+    eventCooldownMs?: number;
     kind: CronJobKind;
     script?: CronScript;
     remainingRuns?: number;
@@ -51,6 +55,9 @@ export class CronStore {
       orgId: input.orgId,
       name: input.name.trim() || 'Untitled schedule',
       schedule: input.schedule.trim(),
+      triggerMode: input.triggerMode ?? 'schedule',
+      webhookToken: blank(input.webhookToken),
+      eventCooldownMs: input.eventCooldownMs,
       kind: input.kind,
       script: input.script,
       remainingRuns: input.remainingRuns,
@@ -71,8 +78,9 @@ export class CronStore {
       .prepare(
         `INSERT INTO cron_jobs
            (id, org_id, name, schedule, kind, prompt, agent_id, project_id, session_id, permission, enabled, once,
-            created_by, created_at, updated_at, next_run_at, run_count, script_json, remaining_runs)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+            created_by, created_at, updated_at, next_run_at, run_count, script_json, remaining_runs,
+            trigger_mode, webhook_token, event_cooldown_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
       )
       .run(
         job.id,
@@ -93,8 +101,26 @@ export class CronStore {
         job.nextRunAt ?? null,
         job.script ? JSON.stringify(job.script) : null,
         job.remainingRuns ?? null,
+        job.triggerMode,
+        job.webhookToken ?? null,
+        job.eventCooldownMs ?? null,
       );
     return job;
+  }
+
+  /**
+   * The one job a webhook secret opens, or null.
+   *
+   * A blank secret never matches: the column is NULL for every job without a
+   * webhook, and an empty string would otherwise equal an empty request.
+   */
+  findJobByWebhookToken(token: string): CronJob | null {
+    const wanted = token.trim();
+    if (!wanted) return null;
+    const row = this.#db
+      .prepare('SELECT * FROM cron_jobs WHERE webhook_token = ?')
+      .get(wanted) as Row | undefined;
+    return row ? mapJob(row) : null;
   }
 
   getJob(id: string): CronJob | null {
@@ -141,6 +167,9 @@ export class CronStore {
     patch: {
       name?: string;
       schedule?: string;
+      triggerMode?: CronTriggerMode;
+      webhookToken?: string | null;
+      eventCooldownMs?: number | null;
       kind?: CronJobKind;
       script?: CronScript | null;
       remainingRuns?: number | null;
@@ -165,6 +194,9 @@ export class CronStore {
       {
         name: patch.name?.trim(),
         schedule: patch.schedule?.trim(),
+        trigger_mode: patch.triggerMode,
+        webhook_token: patch.webhookToken,
+        event_cooldown_ms: patch.eventCooldownMs,
         kind: patch.kind,
         script_json: patch.script === undefined ? undefined : patch.script === null ? null : JSON.stringify(patch.script),
         remaining_runs: patch.remainingRuns,
@@ -191,7 +223,7 @@ export class CronStore {
 
   /* ---------------------------------- runs ---------------------------------- */
 
-  createRun(input: { jobId: string; orgId: string; trigger: CronTrigger; sessionId?: string }): CronRun {
+  createRun(input: { jobId: string; orgId: string; trigger: CronTrigger; sessionId?: string; source?: string }): CronRun {
     const run: CronRun = {
       id: randomUUID(),
       jobId: input.jobId,
@@ -200,13 +232,14 @@ export class CronStore {
       status: 'running',
       startedAt: Date.now(),
       sessionId: blank(input.sessionId),
+      source: blank(input.source),
     };
     this.#db
       .prepare(
-        `INSERT INTO cron_runs (id, job_id, org_id, trigger, status, started_at, session_id)
-         VALUES (?, ?, ?, ?, 'running', ?, ?)`,
+        `INSERT INTO cron_runs (id, job_id, org_id, trigger, status, started_at, session_id, source)
+         VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`,
       )
-      .run(run.id, run.jobId, run.orgId, run.trigger, run.startedAt, run.sessionId ?? null);
+      .run(run.id, run.jobId, run.orgId, run.trigger, run.startedAt, run.sessionId ?? null, run.source ?? null);
     return run;
   }
 
@@ -306,6 +339,9 @@ function mapJob(row: Row): CronJob {
     orgId: row.org_id as string,
     name: row.name as string,
     schedule: row.schedule as string,
+    triggerMode: (optional(row.trigger_mode) as CronTriggerMode | undefined) ?? 'schedule',
+    webhookToken: optional(row.webhook_token),
+    eventCooldownMs: optionalNumber(row.event_cooldown_ms),
     kind: (row.kind as CronJobKind) ?? 'assistant',
     script: row.script_json ? JSON.parse(String(row.script_json)) as CronScript : undefined,
     remainingRuns: optionalNumber(row.remaining_runs),
@@ -341,5 +377,6 @@ function mapRun(row: Row): CronRun {
     error: optional(row.error),
     sessionId: optional(row.session_id),
     assignmentId: optional(row.assignment_id),
+    source: optional(row.source),
   };
 }

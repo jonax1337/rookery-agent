@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 
 import { api, type CronJobInput, type CronJobPatch } from '@/lib/api';
-import { CRON_PRESETS } from '@/lib/cron';
+import { CRON_PRESETS, CRON_TRIGGER_MODE_CHOICES, DEFAULT_EVENT_COOLDOWN_MS } from '@/lib/cron';
 import { reportFailure } from '@/lib/errors';
 import {
   PERMISSION_CHOICES,
@@ -13,7 +13,7 @@ import {
   formatDateTime,
   type PermissionChoice,
 } from '@/lib/format';
-import type { CronJob, CronPreview } from '@/lib/types';
+import type { CronJob, CronPreview, CronTriggerMode } from '@/lib/types';
 import { useCronState, useOrgState } from '@/providers/rookery-provider';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { PageBody } from '@/components/blocks/page-body';
@@ -52,7 +52,13 @@ import {
   FieldTitle,
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from '@/components/ui/input-group';
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+  InputGroupText,
+} from '@/components/ui/input-group';
 import { Item, ItemContent, ItemGroup, ItemTitle } from '@/components/ui/item';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
@@ -88,6 +94,9 @@ interface CronDraft {
   name: string;
   schedule: string;
   prompt: string;
+  triggerMode: CronTriggerMode;
+  /** The rest after an event-driven run, in milliseconds. */
+  cooldownMs: number;
   runner: RunnerChoice;
   agentId: string | null;
   projectId: string | null;
@@ -100,6 +109,8 @@ const EMPTY: CronDraft = {
   name: '',
   schedule: CRON_PRESETS[0]?.schedule ?? '0 8 * * *',
   prompt: '',
+  triggerMode: 'schedule',
+  cooldownMs: DEFAULT_EVENT_COOLDOWN_MS,
   runner: 'assistant',
   agentId: null,
   projectId: null,
@@ -111,12 +122,22 @@ const EMPTY: CronDraft = {
 const schema = z
   .object({
     name: z.string().trim().min(1, 'A name is required.'),
-    schedule: z.string().trim().min(1, 'An expression is required.'),
+    schedule: z.string().trim(),
     prompt: z.string().trim(),
+    triggerMode: z.enum(['schedule', 'event']),
     runner: z.enum(['assistant', 'agent', 'script']),
     agentId: z.string().nullable(),
   })
   .superRefine((value, context) => {
+    // An event-only schedule has no timetable, so the expression stops being
+    // something the form may insist on.
+    if (value.triggerMode === 'schedule' && !value.schedule) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['schedule'],
+        message: 'An expression is required.',
+      });
+    }
     if (value.runner !== 'script' && !value.prompt) context.addIssue({ code: z.ZodIssueCode.custom, path: ['prompt'], message: 'The run needs instructions.' });
     if (value.runner === 'agent' && !value.agentId) {
       context.addIssue({
@@ -145,6 +166,8 @@ function draftOf(job: CronJob): CronDraft {
     name: job.name,
     schedule: job.schedule,
     prompt: job.prompt,
+    triggerMode: job.triggerMode,
+    cooldownMs: job.eventCooldownMs ?? DEFAULT_EVENT_COOLDOWN_MS,
     runner: job.kind === 'script' ? 'script' : job.kind === 'agent' ? 'agent' : 'assistant',
     agentId: job.agentId ?? null,
     projectId: job.projectId ?? null,
@@ -162,8 +185,12 @@ function draftOf(job: CronJob): CronDraft {
 function buildPatch(draft: CronDraft): CronJobPatch {
   return {
     name: draft.name.trim(),
+    // An event-only schedule keeps whatever expression was typed before the
+    // mode was switched - it is the backstop the moment the clock is back on.
     schedule: draft.schedule.trim(),
     prompt: draft.prompt.trim(),
+    triggerMode: draft.triggerMode,
+    eventCooldownMs: draft.cooldownMs,
     ...(draft.runner === 'script' ? { kind: 'script' as const } : {}),
     agentId: draft.runner === 'agent' ? draft.agentId : null,
     projectId: draft.projectId,
@@ -178,6 +205,8 @@ function toInput(patch: CronJobPatch): CronJobInput {
     name: patch.name ?? '',
     schedule: patch.schedule ?? '',
     prompt: patch.prompt ?? '',
+    ...(patch.triggerMode ? { triggerMode: patch.triggerMode } : {}),
+    ...(patch.eventCooldownMs !== undefined ? { eventCooldownMs: patch.eventCooldownMs } : {}),
     ...(patch.agentId ? { agentId: patch.agentId } : {}),
     ...(patch.projectId ? { projectId: patch.projectId } : {}),
     ...(patch.permission ? { permission: patch.permission } : {}),
@@ -189,6 +218,72 @@ function toInput(patch: CronJobPatch): CronJobInput {
 const MenuTrash2Icon = forwardRef<SVGSVGElement>(function MenuTrash2Icon() {
   return <AnimatedTrash2Icon />;
 });
+
+/** A day; past that the rest is longer than any timetable this form can write. */
+const MAX_COOLDOWN_SECONDS = 86_400;
+
+/**
+ * How long a schedule rests after an event fired it.
+ *
+ * Stored in milliseconds because that is what the scheduler counts in, typed
+ * in seconds because that is what a person means. The typed text stays local
+ * until it parses, so clearing the field to type a new number cannot put
+ * `NaN` into the draft.
+ */
+function CooldownField({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange(milliseconds: number): void;
+}) {
+  const [raw, setRaw] = useState<string | null>(null);
+  const shown = raw ?? String(Math.round(value / 1000));
+  const parsed = Number(shown);
+  const invalid =
+    shown.trim() === '' ||
+    !Number.isInteger(parsed) ||
+    parsed < 0 ||
+    parsed > MAX_COOLDOWN_SECONDS;
+
+  return (
+    <Field data-invalid={invalid || undefined}>
+      <FieldLabel htmlFor="cron-cooldown">Rest after an event</FieldLabel>
+      <InputGroup>
+        <InputGroupInput
+          id="cron-cooldown"
+          inputMode="numeric"
+          value={shown}
+          aria-invalid={invalid || undefined}
+          onChange={(event) => {
+            const next = event.target.value;
+            setRaw(next);
+            const seconds = Number(next);
+            if (
+              next.trim() !== '' &&
+              Number.isInteger(seconds) &&
+              seconds >= 0 &&
+              seconds <= MAX_COOLDOWN_SECONDS
+            ) {
+              onChange(seconds * 1000);
+            }
+          }}
+          onBlur={() => setRaw(null)}
+        />
+        <InputGroupAddon align="inline-end">
+          <InputGroupText>seconds</InputGroupText>
+        </InputGroupAddon>
+      </InputGroup>
+      <FieldDescription>
+        Events arriving during the rest are not lost: they collapse into one run once it is over.
+        Zero runs on every event.
+      </FieldDescription>
+      <FieldError>
+        {invalid ? 'Enter a whole number of seconds between 0 and ' + MAX_COOLDOWN_SECONDS + '.' : null}
+      </FieldError>
+    </Field>
+  );
+}
 
 export function CronFormPage() {
   const { id } = useParams<{ id: string }>();
@@ -216,7 +311,9 @@ export function CronFormPage() {
   // not, and the answer for a half-typed expression is noise either way.
   useEffect(() => {
     const wanted = draft.schedule.trim();
-    if (!wanted) {
+    // Nothing to preview without a clock, and nothing that may block the save
+    // either: an event-only schedule is allowed to carry a stale expression.
+    if (!wanted || draft.triggerMode === 'event') {
       setPreview(null);
       setChecking(false);
       return;
@@ -240,7 +337,7 @@ export function CronFormPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [draft.schedule]);
+  }, [draft.schedule, draft.triggerMode]);
 
   const invalidSchedule = preview !== null && !preview.ok;
 
@@ -377,6 +474,30 @@ export function CronFormPage() {
 
   /* -------------------------------- Preview ------------------------------ */
 
+  const eventCard = (
+    <Fade delay={200}>
+      <Card>
+        <CardHeader>
+          <CardTitle>Fired by events</CardTitle>
+          <CardDescription>
+            Nothing runs until something asks for it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm text-muted-foreground">
+          <p>
+            Save the schedule, then create its webhook URL on the schedule page. Anything that can
+            send an HTTP request - another service, a script, a machine on your network - can fire
+            it with that URL.
+          </p>
+          <p>
+            A mailbox can fire it too: add an IMAP listener under Settings and point it at this
+            schedule.
+          </p>
+        </CardContent>
+      </Card>
+    </Fade>
+  );
+
   const previewCard = (
     <Fade delay={200}>
       <Card>
@@ -429,7 +550,7 @@ export function CronFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        aside={previewCard}
+        aside={draft.triggerMode === 'event' ? eventCard : previewCard}
       >
         {/*
           The Legende steht hier und nicht als Kartenkopf: ohne sie begann die
@@ -440,8 +561,22 @@ export function CronFormPage() {
           <FieldSet>
             <FieldLegend>Schedule</FieldLegend>
             <FieldDescription>
-              Times use the time zone of the computer running the server.
+              {draft.triggerMode === 'schedule'
+                ? 'Times use the time zone of the computer running the server.'
+                : 'This schedule has no timetable. It waits for a webhook call or a listener.'}
             </FieldDescription>
+
+            <Field>
+              <FieldLabel htmlFor="cron-trigger-schedule">What fires it</FieldLabel>
+              <ChoiceField
+                id="cron-trigger"
+                options={CRON_TRIGGER_MODE_CHOICES}
+                value={draft.triggerMode}
+                onChange={(triggerMode) => set({ triggerMode })}
+              />
+            </Field>
+
+            {draft.triggerMode === 'schedule' ? (
             <Field>
               <FieldLabel htmlFor="cron-schedule">Expression</FieldLabel>
               <InputGroup>
@@ -482,6 +617,12 @@ export function CronFormPage() {
               </FieldDescription>
               <FieldError>{errors.schedule}</FieldError>
             </Field>
+            ) : null}
+
+            <CooldownField
+              value={draft.cooldownMs}
+              onChange={(cooldownMs) => set({ cooldownMs })}
+            />
 
             <Field orientation="horizontal">
               <FieldContent>

@@ -29,12 +29,24 @@ import { registerCronRoutes } from './routes/cron.js';
 import { registerTtsRoutes } from './routes/tts.js';
 import { registerToolRoutes } from './routes/tools.js';
 import { registerGatewayRoutes } from './routes/gateways.js';
+import { registerHookRoutes } from './routes/hooks.js';
+import { registerListenerRoutes } from './routes/listeners.js';
 import { registerWebsocketRoutes } from './routes/ws.js';
+import { createListenerRegistry } from './listeners/registry.js';
 import { createTelegramGateway, type GatewayHandle } from './gateways/telegram.js';
 import { attachGatewayPush } from './gateways/push.js';
 
 /** How often to prove each socket is still there. */
 const HEARTBEAT_MS = 30_000;
+
+/**
+ * A webhook carries its secret in the path, and a 500 is precisely the moment
+ * that path would otherwise be copied into a log file that outlives the
+ * request. Nothing else in the URL space is secret, so one pattern is enough.
+ */
+function redactUrl(url: string | undefined): string | undefined {
+  return url?.replace(/^\/hooks\/[^/?#]+/, '/hooks/***');
+}
 
 export interface BuildServerOptions {
   /** Silence Fastify's own request logging - handy in tests. */
@@ -69,7 +81,11 @@ export async function buildServer(
     sockets: new Set<WebSocket>(),
     assignmentWatchers: new Map(),
     gateways,
+    // Replaced on the next line. A listener fires a schedule through the
+    // context, so it cannot be built before the context it fires through.
+    listeners: undefined as never,
   };
+  context.listeners = createListenerRegistry(context);
 
   const app = Fastify({
     logger: false,
@@ -87,7 +103,7 @@ export async function buildServer(
           ? error.statusCode
           : 500;
     if (status >= 500) {
-      log.error('Request failed', { url: request.raw.url, error: error.message });
+      log.error('Request failed', { url: redactUrl(request.raw.url), error: error.message });
     }
     reply.code(status).send({
       error: status === 400 ? 'Bad Request' : (error.name || 'Error'),
@@ -138,6 +154,10 @@ export async function buildServer(
   await registerTtsRoutes(app, context);
   await registerToolRoutes(app, context);
   await registerGatewayRoutes(app, context);
+  await registerListenerRoutes(app, context);
+  // Deliberately outside /api, where the shared bearer token is not demanded
+  // on top of the job's own secret. See routes/hooks.ts for the whole argument.
+  await registerHookRoutes(app, context);
   await registerWebsocketRoutes(app, context);
 
   // Registered last so the static SPA fallback never shadows an API route.
@@ -246,6 +266,15 @@ export async function buildServer(
   // is a reason to run without it, never a reason the server itself refuses
   // to start. `start()` is therefore not awaited here - its own status()
   // reports what happened, for the gateways page to show.
+  // Listeners are the other half of the clock: connections held open so a
+  // schedule hears about something instead of asking every few minutes. Not
+  // awaited, for the same reason the gateway below is not - a mailbox that is
+  // unreachable right now is a reason to run without it, never a reason the
+  // server refuses to start.
+  void context.listeners.start().catch((error: Error) => {
+    log.warn('Listeners could not start', { error: error.message });
+  });
+
   const telegramGateway = createTelegramGateway(context);
   gateways.push(telegramGateway);
   void telegramGateway.start().catch((error: Error) => {
@@ -304,6 +333,13 @@ export async function buildServer(
       await telegramGateway.stop();
     } catch (error) {
       log.warn('Telegram gateway did not stop cleanly', { error: (error as Error).message });
+    }
+    // An open IMAP connection is a live socket, not an unref'd timer: without
+    // this the process would stay up long after the server was told to close.
+    try {
+      await context.listeners.stop();
+    } catch (error) {
+      log.warn('Listeners did not stop cleanly', { error: (error as Error).message });
     }
     for (const socket of context.sockets) {
       try {

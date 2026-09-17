@@ -8,6 +8,7 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   DownloadIcon as ImportIcon,
+  MailboxIcon,
   PaletteIcon,
   SlidersHorizontalIcon,
   UserIcon as UserRoundIcon,
@@ -76,8 +77,10 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
+import { useListeners } from '@/hooks/useListeners';
 import { useVoiceOutput } from '@/hooks/useVoiceOutput';
 import { api } from '@/lib/api';
+import { listenerStateLook } from '@/lib/listeners';
 import {
   EFFORT_HINT,
   EFFORT_LABEL,
@@ -85,11 +88,14 @@ import {
   PERMISSION_HINT,
   PERMISSION_LABEL,
   PROVIDER_LABEL,
+  timeAgo,
 } from '@/lib/format';
 import { formatPercent } from '@/lib/stats';
 import { VOICE_ENGINES, VOICE_PITCH, VOICE_RATE, missingVoiceEnv } from '@/lib/voice';
 import type {
   EffortLevel,
+  ImapListenerConfig,
+  ListenerStatus,
   MemoryConfig,
   OrgConfig,
   PermissionLevel,
@@ -101,7 +107,7 @@ import type {
   TtsVoice,
   VoiceConfig,
 } from '@/lib/types';
-import { useConfig, useSpeechState } from '@/providers/rookery-provider';
+import { useConfig, useCronState, useSpeechState } from '@/providers/rookery-provider';
 import { cn } from '@/lib/utils';
 import type { IconComponent } from "@/components/icons";
 
@@ -197,6 +203,12 @@ const SECTIONS = [
     icon: Building2Icon,
   },
   {
+    slug: 'listeners',
+    label: 'Listeners',
+    description: 'Mailboxes Rookery watches, and the schedule each one fires.',
+    icon: MailboxIcon,
+  },
+  {
     slug: 'appearance',
     label: 'Appearance',
     description: 'Display and detail preferences for this browser only.',
@@ -287,6 +299,13 @@ export function SettingsPage() {
   const setOrg = useCallback(
     (patch: Partial<OrgConfig>) =>
       update((currentDraft) => ({ ...currentDraft, org: { ...currentDraft.org, ...patch } })),
+    [update],
+  );
+  // The whole list, every time: `listeners.imap` is an array, and a deep merge
+  // cannot express "this one is gone".
+  const setListeners = useCallback(
+    (imap: ImapListenerConfig[]) =>
+      update((currentDraft) => ({ ...currentDraft, listeners: { imap } })),
     [update],
   );
 
@@ -470,6 +489,9 @@ export function SettingsPage() {
                 <MemorySection draft={draft} setMemory={setMemory} />
               ) : null}
               {current.slug === 'org' ? <OrgSection draft={draft} setOrg={setOrg} /> : null}
+              {current.slug === 'listeners' ? (
+                <ListenersSection draft={draft} setListeners={setListeners} />
+              ) : null}
               {current.slug === 'appearance' ? <ViewSection /> : null}
             </>
           )}
@@ -1551,6 +1573,298 @@ function OrgSection({
         </Field>
       </FieldSet>
     </Fade>
+  );
+}
+
+/* -------------------------------- listeners ------------------------------- */
+
+/** What a new mailbox starts as: implicit TLS on 993, and off until it is finished. */
+const NEW_LISTENER: ImapListenerConfig = {
+  id: '',
+  enabled: false,
+  host: '',
+  port: 993,
+  secure: true,
+  user: '',
+  password: '',
+  mailbox: 'INBOX',
+  jobId: '',
+};
+
+/**
+ * The mailboxes Rookery keeps a connection to.
+ *
+ * A listener is the cheap half of an event-driven schedule: instead of a job
+ * that polls a mailbox every few minutes and pays for a model call each time,
+ * the server holds one connection open and fires the schedule the moment mail
+ * arrives. The mailboxes themselves are part of the config draft like every
+ * other section on this page, so the header's "Save" writes them; only the
+ * state beside each row comes from `GET /api/listeners`.
+ */
+function ListenersSection({
+  draft,
+  setListeners,
+}: {
+  draft: PublicConfig;
+  setListeners(imap: ImapListenerConfig[]): void;
+}) {
+  const { listeners: live, refresh } = useListeners();
+  const cron = useCronState();
+
+  const entries = draft.listeners?.imap ?? [];
+
+  const jobOptions = useMemo<EntityOption[]>(
+    () =>
+      cron.jobs
+        .filter((job) => job.kind !== 'sleep')
+        .map((job) => ({
+          value: job.id,
+          label: job.name,
+          hint: job.triggerMode === 'event' ? 'event' : job.schedule,
+        })),
+    [cron.jobs],
+  );
+
+  return (
+    <Fade>
+      <FieldSet>
+        <FieldLegend variant="label">Mailboxes</FieldLegend>
+        <FieldDescription>
+          One connection stays open per mailbox, and the chosen schedule runs when mail arrives.
+          Nothing is polled, and a mailbox that stays empty costs nothing.
+        </FieldDescription>
+
+        {entries.length === 0 ? (
+          <FieldDescription>No mailbox is being watched.</FieldDescription>
+        ) : null}
+
+        {entries.map((entry, index) => (
+          <ListenerRow
+            key={index}
+            entry={entry}
+            index={index}
+            status={live.find((candidate) => candidate.id === entry.id)}
+            jobOptions={jobOptions}
+            onChange={(change) =>
+              setListeners(
+                entries.map((current, position) =>
+                  position === index ? { ...current, ...change } : current,
+                ),
+              )
+            }
+            onRemove={() => setListeners(entries.filter((_, position) => position !== index))}
+          />
+        ))}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setListeners([...entries, { ...NEW_LISTENER }])}
+          >
+            Add mailbox
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => void refresh()}>
+            Refresh status
+          </Button>
+        </div>
+      </FieldSet>
+    </Fade>
+  );
+}
+
+/**
+ * One mailbox.
+ *
+ * The password is write-only, exactly like the Telegram token: the browser
+ * never receives it, an empty field on save keeps whatever is stored, and
+ * clearing it is its own deliberate act rather than something an empty field
+ * could do by accident.
+ */
+function ListenerRow({
+  entry,
+  index,
+  status,
+  jobOptions,
+  onChange,
+  onRemove,
+}: {
+  entry: ImapListenerConfig;
+  index: number;
+  status: ListenerStatus | undefined;
+  jobOptions: readonly EntityOption[];
+  onChange(change: Partial<ImapListenerConfig>): void;
+  onRemove(): void;
+}) {
+  // The typed port lives here until it parses, so clearing the field to type
+  // a new one cannot put `NaN` or a stray `0` in the draft.
+  const [rawPort, setRawPort] = useState<string | null>(null);
+  const shownPort = rawPort ?? String(entry.port);
+  const parsedPort = Number(shownPort);
+  const invalidPort =
+    shownPort.trim() === '' ||
+    !Number.isInteger(parsedPort) ||
+    parsedPort < 1 ||
+    parsedPort > 65535;
+
+  const look = status ? listenerStateLook(status) : null;
+  const clearing = entry.password === null;
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <FieldTitle className="flex-1">{entry.id || 'New mailbox'}</FieldTitle>
+        {look ? (
+          <Badge variant={look.variant} className="gap-1">
+            {look.icon ? <look.icon className={look.iconClassName} aria-hidden="true" /> : null}
+            {look.label}
+          </Badge>
+        ) : (
+          <Badge variant="outline">Not saved yet</Badge>
+        )}
+        <Switch
+          checked={entry.enabled}
+          aria-label={entry.enabled ? 'Stop watching this mailbox' : 'Watch this mailbox'}
+          onCheckedChange={(on) => onChange({ enabled: on })}
+        />
+      </div>
+
+      {status?.lastError ? (
+        <FieldDescription className="text-destructive">{status.lastError}</FieldDescription>
+      ) : null}
+      {status?.lastEventAt ? (
+        <FieldDescription>
+          {'Last event ' + timeAgo(status.lastEventAt)}
+          {status.lastFiredAt ? ' · last run ' + timeAgo(status.lastFiredAt) : ''}
+        </FieldDescription>
+      ) : null}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field>
+          <FieldLabel htmlFor={'listener-id-' + index}>Name</FieldLabel>
+          <Input
+            id={'listener-id-' + index}
+            value={entry.id}
+            placeholder="work"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => onChange({ id: event.target.value })}
+          />
+          <FieldDescription>{'Runs record it as imap:' + (entry.id || 'name') + '.'}</FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel htmlFor={'listener-job-' + index}>Schedule</FieldLabel>
+          <EntityCombobox
+            id={'listener-job-' + index}
+            options={jobOptions}
+            value={entry.jobId || null}
+            onChange={(jobId) => onChange({ jobId: jobId ?? '' })}
+            placeholder="Select schedule"
+            emptyLabel="No schedule found"
+          />
+          <FieldDescription>What runs when this mailbox reports mail.</FieldDescription>
+        </Field>
+
+        <Field>
+          <FieldLabel htmlFor={'listener-host-' + index}>Server</FieldLabel>
+          <Input
+            id={'listener-host-' + index}
+            value={entry.host}
+            placeholder="imap.example.com"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => onChange({ host: event.target.value })}
+          />
+        </Field>
+
+        <Field data-invalid={invalidPort || undefined}>
+          <FieldLabel htmlFor={'listener-port-' + index}>Port</FieldLabel>
+          <Input
+            id={'listener-port-' + index}
+            inputMode="numeric"
+            value={shownPort}
+            aria-invalid={invalidPort || undefined}
+            onChange={(event) => {
+              const next = event.target.value;
+              setRawPort(next);
+              const port = Number(next);
+              if (next.trim() !== '' && Number.isInteger(port) && port >= 1 && port <= 65535) {
+                onChange({ port });
+              }
+            }}
+            onBlur={() => setRawPort(null)}
+          />
+          <FieldError>{invalidPort ? 'Enter a port between 1 and 65535.' : null}</FieldError>
+        </Field>
+
+        <Field>
+          <FieldLabel htmlFor={'listener-user-' + index}>User</FieldLabel>
+          <Input
+            id={'listener-user-' + index}
+            value={entry.user}
+            placeholder="name@example.com"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => onChange({ user: event.target.value })}
+          />
+        </Field>
+
+        <Field>
+          <FieldLabel htmlFor={'listener-mailbox-' + index}>Mailbox</FieldLabel>
+          <Input
+            id={'listener-mailbox-' + index}
+            value={entry.mailbox}
+            placeholder="INBOX"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => onChange({ mailbox: event.target.value })}
+          />
+        </Field>
+      </div>
+
+      <Field>
+        <FieldLabel htmlFor={'listener-password-' + index}>Password</FieldLabel>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            id={'listener-password-' + index}
+            className="min-w-0 flex-1"
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            disabled={clearing}
+            value={entry.password ?? ''}
+            placeholder={
+              clearing
+                ? 'Will be removed when you save'
+                : status?.configured
+                  ? 'Saved — leave empty to keep it'
+                  : 'Mailbox password'
+            }
+            onChange={(event) => onChange({ password: event.target.value })}
+          />
+          {clearing ? (
+            <Button type="button" variant="ghost" size="sm" onClick={() => onChange({ password: '' })}>
+              Keep it
+            </Button>
+          ) : status?.configured ? (
+            <Button type="button" variant="ghost" size="sm" onClick={() => onChange({ password: null })}>
+              Clear
+            </Button>
+          ) : null}
+        </div>
+        <FieldDescription>
+          The password stays on the server and is never sent back to this page.
+        </FieldDescription>
+      </Field>
+
+      <div>
+        <Button type="button" variant="ghost" size="sm" onClick={onRemove}>
+          Remove mailbox
+        </Button>
+      </div>
+    </div>
   );
 }
 

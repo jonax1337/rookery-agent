@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
-import type { Assistant, GatewaysConfig, Logger, RookeryConfig } from '@rookery/core';
+import type { Assistant, GatewaysConfig, ListenersConfig, Logger, RookeryConfig } from '@rookery/core';
 import type { WebSocket } from '@fastify/websocket';
 import type { GatewayHandle } from './gateways/telegram.js';
+import type { ListenerRegistry } from './listeners/registry.js';
 
 /**
  * Everything a route needs, handed down explicitly instead of through Fastify
@@ -30,6 +31,16 @@ export interface ServerContext {
    * needs the context to send anything, so the context cannot wait for it.
    */
   readonly gateways: GatewayHandle[];
+  /**
+   * Connections held open so a schedule can react instead of poll.
+   *
+   * The one field that is not readonly, and for the same reason `gateways` is
+   * an array filled in afterwards: a listener needs the context to fire a
+   * schedule, so it cannot exist before the context does. `buildServer`
+   * assigns it on the line after the context is built, and nothing reads it
+   * before then.
+   */
+  listeners: ListenerRegistry;
 }
 
 /** Package version, read once from our own package.json. */
@@ -48,6 +59,11 @@ function readVersion(): string {
 /** Every gateway block with its secrets blanked, structure otherwise intact. */
 function redactGateways(gateways: GatewaysConfig): GatewaysConfig {
   return { ...gateways, telegram: { ...gateways.telegram, token: '' } };
+}
+
+/** The same for listeners: every mailbox password blanked, the rest intact. */
+function redactListeners(listeners: ListenersConfig): ListenersConfig {
+  return { ...listeners, imap: listeners.imap.map((entry) => ({ ...entry, password: '' })) };
 }
 
 /** The subset of the config that is safe to hand to a browser. Never a token. */
@@ -79,5 +95,10 @@ export function publicConfig(config: RookeryConfig): Record<string, unknown> {
     // GET /api/gateways answers. A PATCH that leaves the field empty keeps
     // the stored token, which is what makes handing out an empty one safe.
     gateways: redactGateways(config.gateways),
+    // Same rule, same reason: the page edits these, so it needs their shape,
+    // and a blank password on the way back is what makes "leave it empty to
+    // keep it" safe to offer. Whether one is actually set, and whether the
+    // connection is up, is what GET /api/listeners answers.
+    listeners: redactListeners(config.listeners),
   };
 }

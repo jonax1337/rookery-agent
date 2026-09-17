@@ -4,12 +4,17 @@ import { NavLink, useNavigate, useParams } from 'react-router';
 import {
   BriefcaseBusinessIcon as Building2Icon,
   CalendarCheckIcon as CalendarClockIcon,
+  CheckIcon,
+  CopyIcon,
   DeleteIcon as Trash2Icon,
   HistoryIcon,
   KeyIcon as KeyRoundIcon,
+  LinkIcon,
+  MailboxIcon,
   MessageSquareIcon as MessagesSquareIcon,
   PenToolIcon as PencilIcon,
   PlayIcon as AnimatedPlayIcon,
+  RadioTowerIcon,
   ShieldCheckIcon as ShieldIcon,
   UserIcon as UserRoundIcon,
 } from "@/components/icons";
@@ -20,7 +25,12 @@ import { RotatingText, RotatingTextContainer } from '@/components/animate-ui/pri
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 
 import { api } from '@/lib/api';
-import { CRON_RUN_STATUS_LABEL, CRON_TRIGGER_LABEL, cronRunReport } from '@/lib/cron';
+import {
+  CRON_RUN_STATUS_LABEL,
+  DEFAULT_EVENT_COOLDOWN_MS,
+  cronRunReport,
+  cronRunTrigger,
+} from '@/lib/cron';
 import {
   CRON_JOB_KIND_LABEL,
   PERMISSION_LABEL,
@@ -31,7 +41,8 @@ import {
 } from '@/lib/format';
 import { average, formatNumber } from '@/lib/stats';
 import type { CronJobDetail, CronRun } from '@/lib/types';
-import { useCronState } from '@/providers/rookery-provider';
+import { useConfig, useCronState } from '@/providers/rookery-provider';
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { PageBody } from '@/components/blocks/page-body';
 import { StatCards } from '@/components/blocks/stat-cards';
@@ -82,6 +93,7 @@ export function CronDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const cron = useCronState();
+  const { config } = useConfig();
   const { confirm, dialog } = useConfirm();
 
   const [busy, setBusy] = useState(false);
@@ -163,6 +175,57 @@ export function CronDetailPage() {
     }
   }, [confirm, id, job, navigate]);
 
+  /* -------------------------------- webhook ------------------------------- */
+
+  // Minting and rotating are the same call: a rotation is a new secret in the
+  // place of the old one, and there is nothing else to ask the server for.
+  const mintWebhook = useCallback(
+    async (rotating: boolean): Promise<void> => {
+      if (!id) return;
+      if (rotating) {
+        const ok = await confirm({
+          title: 'Rotate the webhook URL?',
+          description:
+            'The current URL stops working immediately. Anything still calling it has to be given the new one.',
+          confirmLabel: 'Rotate',
+        });
+        if (!ok) return;
+      }
+      setBusy(true);
+      try {
+        await api.enableCronWebhook(id);
+        await reload();
+        toast(rotating ? 'Webhook URL rotated' : 'Webhook URL created');
+      } catch (caught) {
+        reportFailure('Webhook', caught);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [confirm, id, reload],
+  );
+
+  const removeWebhook = useCallback(async (): Promise<void> => {
+    if (!id) return;
+    const ok = await confirm({
+      title: 'Remove the webhook URL?',
+      description: 'The URL stops working. Events can no longer start this schedule through it.',
+      confirmLabel: 'Remove',
+      destructive: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.disableCronWebhook(id);
+      await reload();
+      toast('Webhook URL removed');
+    } catch (caught) {
+      reportFailure('Webhook', caught);
+    } finally {
+      setBusy(false);
+    }
+  }, [confirm, id, reload]);
+
   // `sleep` is the system's own schedule: `ensureSleepSchedule` recreates it
   // and the memory settings own its timetable, so editing and deleting are off.
   const managed = job?.kind === 'sleep';
@@ -243,7 +306,9 @@ export function CronDetailPage() {
             <span className="tabular-nums">{formatDateTime(row.original.startedAt)}</span>
           ),
         }),
-        column.accessor((run) => CRON_TRIGGER_LABEL[run.trigger], {
+        // The source rides along with the word: an event run without the thing
+        // that raised it reads exactly like a clock run.
+        column.accessor((run) => cronRunTrigger(run), {
           id: 'trigger',
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Trigger" />,
           cell: ({ getValue }) => (
@@ -353,7 +418,21 @@ export function CronDetailPage() {
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
   const meanDuration = durations.length ? formatDuration(Math.round(average(durations))) : '';
 
-  const upcoming = job.enabled ? next : [];
+  // An event-only job has no timetable, so `next` is empty anyway - but the
+  // card around it has to say something other than "no upcoming run".
+  const eventOnly = job.triggerMode === 'event';
+  const upcoming = job.enabled && !eventOnly ? next : [];
+
+  const cooldownSeconds = Math.round((job.eventCooldownMs ?? DEFAULT_EVENT_COOLDOWN_MS) / 1000);
+  const cooldownText =
+    cooldownSeconds === 0
+      ? 'Every event starts a run'
+      : 'Rests ' + cooldownSeconds + ' s after a run, then fires once for everything that arrived';
+
+  // The listeners are config, not part of the detail payload - and the config
+  // is live in the provider, so this stays right when a mailbox is added.
+  const listeners = (config?.listeners.imap ?? []).filter((entry) => entry.jobId === job.id);
+  const hookUrl = job.webhookToken ? window.location.origin + '/hooks/' + job.webhookToken : '';
 
   // The label this card flips to whenever a run finishes.
   const latestStatus = running
@@ -419,12 +498,19 @@ export function CronDetailPage() {
               headline: job.lastRunAt ? timeAgo(job.lastRunAt) : 'No runs',
               footnote: job.lastError ? job.lastError : undefined,
             },
-            {
-              label: 'Next run',
-              value: job.enabled ? formatDateTime(job.nextRunAt) : 'Disabled',
-              headline: job.enabled ? description : 'Paused',
-              footnote: job.schedule,
-            },
+            eventOnly
+              ? {
+                  label: 'Next run',
+                  value: job.enabled ? 'On event' : 'Disabled',
+                  headline: job.enabled ? 'No timetable - it waits' : 'Paused',
+                  footnote: cooldownText,
+                }
+              : {
+                  label: 'Next run',
+                  value: job.enabled ? formatDateTime(job.nextRunAt) : 'Disabled',
+                  headline: job.enabled ? description : 'Paused',
+                  footnote: job.schedule,
+                },
             {
               label: 'Average duration',
               value: meanDuration || '–',
@@ -445,7 +531,9 @@ export function CronDetailPage() {
               <CardDescription>
                 {managed
                   ? 'This system schedule uses the memory.sleep settings in your Rookery config.json.'
-                  : 'What runs at the scheduled time.'}
+                  : job.triggerMode === 'event'
+                    ? 'What runs when something fires this.'
+                    : 'What runs at the scheduled time.'}
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -466,6 +554,47 @@ export function CronDetailPage() {
             </CardContent>
           </Card>
 
+          {eventOnly ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>What can fire this</CardTitle>
+                <CardDescription>{cooldownText}.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {job.webhookToken || listeners.length > 0 ? (
+                  <ItemGroup className="gap-2">
+                    {job.webhookToken ? (
+                      <Item variant="muted" size="sm">
+                        <ItemMedia variant="icon">
+                          <LinkIcon className="text-muted-foreground" />
+                        </ItemMedia>
+                        <ItemContent>
+                          <ItemTitle className="font-normal">Webhook URL</ItemTitle>
+                        </ItemContent>
+                      </Item>
+                    ) : null}
+                    {listeners.map((listener) => (
+                      <Item key={listener.id} variant="muted" size="sm">
+                        <ItemMedia variant="icon">
+                          <MailboxIcon className="text-muted-foreground" />
+                        </ItemMedia>
+                        <ItemContent>
+                          <ItemTitle className="font-normal">
+                            {listener.mailbox + ' · ' + listener.user}
+                          </ItemTitle>
+                        </ItemContent>
+                      </Item>
+                    ))}
+                  </ItemGroup>
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Nothing can fire this schedule yet. Create a webhook URL below, or point an IMAP
+                    listener at it in Settings.
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          ) : (
           <Card>
             <CardHeader>
               <CardTitle>Upcoming runs</CardTitle>
@@ -498,6 +627,7 @@ export function CronDetailPage() {
               )}
             </CardContent>
           </Card>
+          )}
         </div>
       </Fade>
 
@@ -529,12 +659,30 @@ export function CronDetailPage() {
                 value: REQUESTER_LABEL[job.createdBy],
                 icon: KeyRoundIcon,
               },
+              {
+                label: 'Fired by',
+                value: eventOnly ? 'Events only' : 'Timetable and events',
+                icon: RadioTowerIcon,
+              },
             ]}
           />
         </div>
       </Fade>
 
-      <Fade delay={(sectionBase + 3) * 50}>
+      {managed ? null : (
+        <Fade delay={(sectionBase + 3) * 50}>
+          <div className="px-4 lg:px-6">
+            <WebhookCard
+              url={hookUrl}
+              busy={busy}
+              onMint={() => void mintWebhook(Boolean(job.webhookToken))}
+              onRemove={() => void removeWebhook()}
+            />
+          </div>
+        </Fade>
+      )}
+
+      <Fade delay={(sectionBase + 4) * 50}>
         <DataTable
           data={runs}
           columns={columns}
@@ -569,7 +717,7 @@ export function CronDetailPage() {
         title={job.name}
         description={
           report
-            ? formatDateTime(report.startedAt) + ' · ' + CRON_TRIGGER_LABEL[report.trigger]
+            ? formatDateTime(report.startedAt) + ' · ' + cronRunTrigger(report)
             : undefined
         }
         footer={
@@ -600,6 +748,76 @@ export function CronDetailPage() {
         ) : null}
       </DetailDrawer>
     </PageBody>
+  );
+}
+
+/**
+ * The one URL that starts this schedule from outside.
+ *
+ * The token is shown in full rather than once at creation: the URL is what
+ * has to be pasted into whatever will call it, and the page it sits on is
+ * already behind the server's own token. Rotating replaces it; removing it
+ * closes the door again.
+ */
+function WebhookCard({
+  url,
+  busy,
+  onMint,
+  onRemove,
+}: {
+  url: string;
+  busy: boolean;
+  onMint(): void;
+  onRemove(): void;
+}) {
+  const { isCopied, copyToClipboard } = useCopyToClipboard();
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Webhook</CardTitle>
+        <CardDescription>
+          A URL that starts this schedule. Anything that can send an HTTP POST can fire it.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {url ? (
+          <>
+            <div className="flex min-w-0 items-center gap-2 rounded-md border px-3 py-2">
+              <span className="min-w-0 flex-1 truncate font-mono text-xs" title={url}>
+                {url}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="shrink-0 text-muted-foreground"
+                aria-label="Copy webhook URL"
+                onClick={() => copyToClipboard(url)}
+              >
+                {isCopied ? <CheckIcon /> : <CopyIcon />}
+              </Button>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Anyone holding this URL can start this schedule. Treat it like a password, and rotate
+              it if it has been somewhere it should not have been.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button type="button" variant="outline" size="sm" disabled={busy} onClick={onMint}>
+                Rotate URL
+              </Button>
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={onRemove}>
+                Remove
+              </Button>
+            </div>
+          </>
+        ) : (
+          <Button type="button" size="sm" disabled={busy} onClick={onMint}>
+            <LinkIcon data-icon="inline-start" />
+            Create webhook URL
+          </Button>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

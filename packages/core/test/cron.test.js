@@ -477,3 +477,329 @@ test('cron: a self-run schedule answering [SILENT] stays out of the inbox', asyn
   );
   assistant.close();
 });
+
+/* -------------------------------- events --------------------------------- */
+
+/**
+ * A schedule can also be fired by something that happened: a webhook call, or
+ * a listener that saw a mail arrive. Nothing below waits on the wall clock -
+ * the cooldowns are tens of milliseconds and the long runs are gated by hand,
+ * so the whole section costs well under a second.
+ */
+
+async function waitFor(predicate, what) {
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await sleep(5);
+  }
+  assert.fail('Timed out waiting for ' + what + '.');
+}
+
+test('cron: an event fires a run that records the trigger and what caused it', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const orgId = assistant.org.activeOrganization().id;
+  const job = assistant.cron.create({
+    orgId,
+    name: 'Mail watcher',
+    schedule: '',
+    triggerMode: 'event',
+    prompt: 'Read the new mail.',
+    createdBy: 'user',
+  });
+
+  const outcome = await assistant.cron.runEvent(job.id, 'imap:work');
+  assert.equal(outcome.status, 'started');
+  // The answer names the run as booked, not as finished. Whoever offered the
+  // event is told "this is happening" and let go; making a webhook sender wait
+  // out a model run is how one event turns into several retries.
+  assert.equal(outcome.run.status, 'running');
+  assert.equal(outcome.run.trigger, 'event');
+  assert.equal(outcome.run.source, 'imap:work');
+
+  await waitFor(() => assistant.cron.runs(job.id)[0]?.status === 'done', 'the event run finishing');
+  assert.equal(fake.runs.length, 1);
+
+  const recorded = assistant.cron.runs(job.id);
+  assert.equal(recorded.length, 1);
+  assert.match(recorded[0].result, /^OUTPUT\(/);
+  assert.equal(recorded[0].trigger, 'event');
+  assert.equal(recorded[0].source, 'imap:work', 'the source is on the run row, not only in the caller\'s reply');
+
+  const after = assistant.cron.get(job.id);
+  assert.equal(after.runCount, 1);
+  assert.equal(after.lastStatus, 'done');
+  assert.equal(after.nextRunAt, undefined, 'an event run does not put an event job on the clock');
+
+  const inbox = store.org.mailbox(orgId, { kind: 'user' }, 'inbox', { unreadOnly: true });
+  assert.equal(inbox.length, 1);
+  assert.match(inbox[0].subject, /Schedule "Mail watcher" completed/);
+  assert.match(inbox[0].body, /fired by imap:work/, 'the note says why it ran, not which expression it does not have');
+  assistant.close();
+});
+
+test('cron: a switched-off schedule ignores events, whoever still holds its webhook', async () => {
+  const fake = createFakeProvider();
+  const { assistant } = createAssistant(fake);
+  const orgId = assistant.org.activeOrganization().id;
+  const job = assistant.cron.create({
+    orgId,
+    name: 'Retired hook',
+    schedule: '',
+    triggerMode: 'event',
+    prompt: 'Do the thing.',
+    enabled: false,
+    createdBy: 'user',
+  });
+  const token = assistant.cron.enableWebhook(job.id).webhookToken;
+  assert.equal(assistant.cron.findByWebhookToken(token)?.id, job.id, 'the secret still resolves - the switch is what stops the job');
+
+  const ignored = await assistant.cron.runEvent(job.id, 'webhook');
+  assert.equal(ignored.status, 'ignored');
+  assert.match(ignored.reason, /switched off/);
+  assert.equal(assistant.cron.runs(job.id).length, 0, 'a URL handed out weeks ago cannot wake a job the user switched off');
+  assert.equal(fake.runs.length, 0);
+
+  const unknown = await assistant.cron.runEvent('no-such-schedule', 'webhook');
+  assert.equal(unknown.status, 'ignored');
+  assert.equal(fake.runs.length, 0);
+
+  // Switched back on, the very same event is answered.
+  assistant.cron.update(job.id, { enabled: true });
+  assert.equal((await assistant.cron.runEvent(job.id, 'webhook')).status, 'started');
+  assert.equal(assistant.cron.runs(job.id).length, 1);
+  assistant.close();
+});
+
+test('cron: events arriving during a run collapse into exactly one further run', async (t) => {
+  const fake = createFakeProvider();
+  const { assistant } = createAssistant(fake);
+  const orgId = assistant.org.activeOrganization().id;
+  const job = assistant.cron.create({
+    orgId,
+    name: 'Busy mailbox',
+    schedule: '',
+    triggerMode: 'event',
+    eventCooldownMs: 0,
+    prompt: 'Look at the mailbox.',
+    createdBy: 'user',
+  });
+
+  // Hold every run open until this test lets it go, so the overlap is ours to
+  // choose instead of the machine's.
+  const gates = [];
+  fake.provider.run = async function* () {
+    await new Promise((resolve) => gates.push(resolve));
+    yield { type: 'done', text: 'released' };
+  };
+  t.after(() => {
+    for (const release of gates) release();
+  });
+
+  const first = assistant.cron.runEvent(job.id, 'imap:work');
+  await waitFor(() => gates.length === 1, 'the first event run starting');
+  for (const source of ['webhook', 'imap:work', 'imap:private']) {
+    assert.deepEqual(await assistant.cron.runEvent(job.id, source), { status: 'coalesced' });
+  }
+  assert.equal(assistant.cron.runs(job.id).length, 1, 'nothing starts beside a run already in flight');
+
+  gates[0]();
+  const started = await first;
+  assert.equal(started.status, 'started');
+  assert.equal(started.run.trigger, 'event');
+  assert.equal(started.run.source, 'imap:work');
+
+  await waitFor(() => gates.length === 2, 'the run the coalesced events earned');
+  gates[1]();
+  await waitFor(
+    () => assistant.cron.runs(job.id).length === 2 && assistant.cron.runs(job.id).every((run) => run.status !== 'running'),
+    'the second run finishing',
+  );
+  // A regression that queued each event separately would show up late, so give
+  // it room to before counting.
+  await sleep(50);
+
+  const runs = assistant.cron.runs(job.id);
+  assert.equal(runs.length, 2, 'three events during one run are one more run, not three');
+  assert.equal(gates.length, 2, 'the provider was asked exactly twice');
+  const drained = runs.find((run) => run.id !== started.run.id);
+  assert.equal(drained.trigger, 'event');
+  assert.equal(drained.source, 'imap:private', 'the newest reason is the one the run carries');
+  assert.equal(drained.status, 'done');
+  assistant.close();
+});
+
+test('cron: an event inside the cooldown waits out the rest instead of being dropped', async () => {
+  const fake = createFakeProvider();
+  const { assistant } = createAssistant(fake);
+  const orgId = assistant.org.activeOrganization().id;
+  const job = assistant.cron.create({
+    orgId,
+    name: 'Chatty mailbox',
+    schedule: '',
+    triggerMode: 'event',
+    eventCooldownMs: 300,
+    prompt: 'Look once.',
+    createdBy: 'user',
+  });
+
+  const immediate = await assistant.cron.runEvent(job.id, 'imap:work');
+  assert.equal(immediate.status, 'started', 'a rested job runs at once');
+  // Let that run finish first, so what answers the next event is the rest it
+  // earned and not the plain guard against two runs at once.
+  await waitFor(() => assistant.cron.runs(job.id)[0]?.status === 'done', 'the first event run finishing');
+
+  const queued = await assistant.cron.runEvent(job.id, 'webhook');
+  assert.equal(queued.status, 'queued');
+  assert.ok(queued.waitMs > 0 && queued.waitMs <= 300, 'the wait is what is left of the rest, not a fresh cooldown');
+  const alsoQueued = await assistant.cron.runEvent(job.id, 'imap:private');
+  assert.equal(alsoQueued.status, 'queued');
+  assert.equal(assistant.cron.runs(job.id).length, 1, 'nothing runs while the job rests');
+
+  await waitFor(() => assistant.cron.runs(job.id).length === 2, 'the run the waiting events earned');
+  await waitFor(() => assistant.cron.runs(job.id).every((run) => run.status !== 'running'), 'that run finishing');
+  await sleep(60);
+
+  const runs = assistant.cron.runs(job.id);
+  assert.equal(runs.length, 2, 'two events inside one rest become one run');
+  assert.equal(runs[0].trigger, 'event');
+  assert.equal(runs[0].source, 'imap:private');
+  assert.equal(runs[0].status, 'done');
+  assert.ok(runs[0].startedAt - runs[1].startedAt >= 200, 'the run waited for the rest rather than following straight on');
+  assistant.close();
+});
+
+test('cron: an event-only schedule needs no expression and is never fired by the clock', async () => {
+  const fake = createFakeProvider();
+  const { assistant } = createAssistant(fake);
+  const orgId = assistant.org.activeOrganization().id;
+  const watcher = assistant.cron.create({
+    orgId,
+    name: 'Clockless watcher',
+    schedule: '',
+    triggerMode: 'event',
+    prompt: 'Read the new mail.',
+    createdBy: 'user',
+  });
+  assert.equal(watcher.schedule, '');
+  assert.equal(watcher.triggerMode, 'event');
+  assert.equal(watcher.enabled, true, 'waiting for events is not the same as switched off');
+  assert.equal(watcher.nextRunAt, undefined, 'no clock, no next run');
+  assert.equal(assistant.cron.get(watcher.id).nextRunAt, undefined);
+
+  await assistant.cron.tick(Date.now() + 365 * 24 * 60 * 60 * 1000);
+  assert.equal(assistant.cron.runs(watcher.id).length, 0, 'a year of clock still fires nothing');
+  assert.equal(fake.runs.length, 0);
+
+  // Only an event job may go without one; putting a job on the clock without
+  // an expression is still the mistake it always was.
+  assert.throws(
+    () => assistant.cron.create({ orgId, name: 'No expression', schedule: '', prompt: 'x', createdBy: 'user' }),
+    CronSyntaxError,
+  );
+  assert.throws(() => assistant.cron.update(watcher.id, { triggerMode: 'schedule' }), CronSyntaxError);
+  assert.equal(assistant.cron.get(watcher.id).triggerMode, 'event', 'the rejected change left the job alone');
+
+  const onTheClock = assistant.cron.update(watcher.id, { triggerMode: 'schedule', schedule: '0 8 * * *' });
+  assert.ok(onTheClock.nextRunAt > Date.now(), 'going on the clock books a next run');
+  const backToEvents = assistant.cron.update(watcher.id, { triggerMode: 'event' });
+  assert.equal(backToEvents.nextRunAt, undefined, 'going back off the clock clears it rather than leaving it ticking');
+  assert.equal(backToEvents.schedule, '0 8 * * *', 'the expression is kept for the day it goes back on the clock');
+  assistant.close();
+});
+
+test('cron: a webhook secret opens one schedule, and rotating it closes the old URL', () => {
+  const { assistant } = createAssistant(createFakeProvider());
+  const orgId = assistant.org.activeOrganization().id;
+  const make = (name) =>
+    assistant.cron.create({ orgId, name, schedule: '', triggerMode: 'event', prompt: 'Report.', createdBy: 'user' });
+  const job = make('Deploy hook');
+  const other = make('Build hook');
+  assert.equal(job.webhookToken, undefined, 'a schedule has no secret until one is asked for');
+  assert.equal(assistant.cron.findByWebhookToken(''), null, 'a blank secret opens nothing');
+  assert.equal(assistant.cron.findByWebhookToken('   '), null);
+  assert.equal(assistant.cron.findByWebhookToken('not-a-token'), null);
+
+  const first = assistant.cron.enableWebhook(job.id);
+  assert.ok(first.webhookToken);
+  assert.equal(assistant.cron.get(job.id).webhookToken, first.webhookToken, 'the secret is stored, not only returned');
+  assert.equal(assistant.cron.findByWebhookToken(first.webhookToken)?.id, job.id);
+
+  const neighbour = assistant.cron.enableWebhook(other.id);
+  assert.notEqual(neighbour.webhookToken, first.webhookToken, 'every schedule gets a secret of its own');
+  assert.equal(assistant.cron.findByWebhookToken(neighbour.webhookToken)?.id, other.id);
+
+  const rotated = assistant.cron.enableWebhook(job.id);
+  assert.notEqual(rotated.webhookToken, first.webhookToken);
+  assert.equal(assistant.cron.findByWebhookToken(first.webhookToken), null, 'the old URL is dead the moment it is rotated');
+  assert.equal(assistant.cron.findByWebhookToken(rotated.webhookToken)?.id, job.id);
+
+  const cleared = assistant.cron.disableWebhook(job.id);
+  assert.equal(cleared.webhookToken, undefined);
+  assert.equal(assistant.cron.get(job.id).webhookToken, undefined);
+  assert.equal(assistant.cron.findByWebhookToken(rotated.webhookToken), null, 'a taken-away hook answers nothing');
+  assert.equal(assistant.cron.findByWebhookToken(neighbour.webhookToken)?.id, other.id, 'taking one hook away leaves the others alone');
+  assistant.close();
+});
+
+test('cron: an event fires a clock-backed schedule without costing it its next run', async () => {
+  const { assistant, store } = createAssistant(createFakeProvider());
+  const orgId = assistant.org.activeOrganization().id;
+  const job = assistant.cron.create({
+    orgId,
+    name: 'Nightly with a shortcut',
+    schedule: '0 3 * * *',
+    prompt: 'Check the builds.',
+    createdBy: 'user',
+  });
+  assert.equal(job.triggerMode, 'schedule');
+  assert.ok(job.nextRunAt > Date.now());
+
+  const outcome = await assistant.cron.runEvent(job.id, 'webhook');
+  assert.equal(outcome.status, 'started');
+  assert.equal(outcome.run.trigger, 'event');
+  assert.equal(outcome.run.source, 'webhook');
+  // The clock may not fire while that run is still in flight - one run per job
+  // holds for events too - so let it finish before asking the clock for one.
+  await waitFor(() => assistant.cron.runs(job.id)[0]?.status === 'done', 'the event run finishing');
+
+  const after = assistant.cron.get(job.id);
+  assert.equal(after.triggerMode, 'schedule', 'an event does not take a job off the clock');
+  assert.equal(after.schedule, '0 3 * * *');
+  assert.ok(after.nextRunAt > Date.now(), 'the clock backstop survives an event run');
+
+  // And the backstop still works: the clock catches the events that never come.
+  store.cron.updateJob(job.id, { nextRunAt: Date.now() - 1000 }, false);
+  await assistant.cron.tick();
+  const runs = assistant.cron.runs(job.id);
+  assert.equal(runs.length, 2);
+  const byClock = runs.find((run) => run.trigger === 'schedule');
+  assert.equal(byClock.status, 'done');
+  assert.equal(byClock.source, undefined, 'a clock run has no source to name');
+  assert.ok(assistant.cron.get(job.id).nextRunAt > Date.now(), 'and it books the one after that');
+  assistant.close();
+});
+
+test('cron: a schedule without an expression does not stop the clock from starting', async () => {
+  const { assistant } = createAssistant(createFakeProvider());
+  const orgId = assistant.org.activeOrganization().id;
+  assistant.cron.create({
+    orgId,
+    name: 'Clockless watcher',
+    schedule: '',
+    triggerMode: 'event',
+    prompt: 'Read the new mail.',
+    createdBy: 'user',
+  });
+
+  // start() works out a next run for every enabled job it finds, and a job off
+  // the clock has no expression to work one out from. Getting this wrong did
+  // not fail the one job - it threw out of start() and took the whole server
+  // down on the next boot, which is why it is worth a test of its own.
+  assert.doesNotThrow(() => assistant.cron.start());
+  assert.equal(assistant.cron.started, true);
+  assert.equal(assistant.cron.get(assistant.cron.list(orgId)[0].id).nextRunAt, undefined);
+  assistant.cron.stop();
+  assistant.close();
+});

@@ -820,8 +820,18 @@ export interface CronScript {
   noAgent?: boolean;
 }
 export type CronRunStatus = 'running' | 'done' | 'failed';
-/** Whether the clock started a run or somebody pressed "run now". */
-export type CronTrigger = 'schedule' | 'manual';
+/** What started a run: the clock, a person pressing "run now", or something that happened. */
+export type CronTrigger = 'schedule' | 'manual' | 'event';
+
+/**
+ * Whether the clock fires a schedule at all.
+ *
+ * `schedule` is the original behaviour, and an event may fire such a job on
+ * top - the clock is then the backstop for events that never arrived.
+ * `event` means there is no clock: the job waits for a webhook call or a
+ * heartbeat listener, and its `schedule` expression may be empty.
+ */
+export type CronTriggerMode = 'schedule' | 'event';
 
 /**
  * A standing order: a prompt that runs on a cron schedule while the server
@@ -832,8 +842,22 @@ export interface CronJob {
   id: string;
   orgId: string;
   name: string;
-  /** Five-field cron expression, normalised. */
+  /** Five-field cron expression, normalised; empty when only events fire this job. */
   schedule: string;
+  /** Whether the clock fires this job, or only an event does. */
+  triggerMode: CronTriggerMode;
+  /**
+   * The secret an outside caller puts in the webhook URL to fire this job.
+   * Unset while no webhook exists; one job, one secret, revocable on its own
+   * without touching the server's shared token.
+   */
+  webhookToken?: string;
+  /**
+   * Shortest gap between two runs before an event may start another. An
+   * event that arrives inside the gap is not dropped - it waits for the gap
+   * to pass and then fires once, however many arrived meanwhile.
+   */
+  eventCooldownMs?: number;
   kind: CronJobKind;
   script?: CronScript;
   /** Remaining attempts for a finite schedule; omitted means unlimited. */
@@ -877,7 +901,29 @@ export interface CronRun {
   sessionId?: string;
   /** The assignment that ran, for the `agent` kind. */
   assignmentId?: string;
+  /**
+   * What fired an `event` run, in words a person reads: `webhook` for a call
+   * that came in over HTTP, or a listener's id such as `imap:work`. Unset for
+   * the clock and for "run now", whose trigger already says everything.
+   */
+  source?: string;
 }
+
+/**
+ * What came of offering an event to a schedule.
+ *
+ * An event is never silently dropped: it either starts a run, joins the run
+ * already under way, or waits for the cooldown to pass and fires once for all
+ * the events that arrived meanwhile.
+ */
+export type CronEventOutcome =
+  | { status: 'started'; run: CronRun }
+  /** A run was already under way; one more follows when it finishes. */
+  | { status: 'coalesced' }
+  /** Inside the cooldown; it fires in `waitMs`. */
+  | { status: 'queued'; waitMs: number }
+  /** Nothing will happen, and why: unknown, switched off, or out of runs. */
+  | { status: 'ignored'; reason: string };
 
 /* ------------------------------------------------------------------ *
  * Aggregate statistics
@@ -1109,6 +1155,8 @@ export interface RookeryConfig {
   voice: VoiceConfig;
   org: OrgConfig;
   gateways: GatewaysConfig;
+  /** Connections held open so a schedule can react instead of poll. */
+  listeners: ListenersConfig;
   /** The MCP hub: which servers run for whom. */
   tools: ToolsConfig;
   /** What is taken over from the Claude Code installed here. */
@@ -1356,6 +1404,59 @@ export interface OrgConfig {
   autoReview: boolean;
   /** Explicitly chosen company; the newest one otherwise. */
   activeOrganizationId?: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * Listeners
+ * ------------------------------------------------------------------ */
+
+/**
+ * What a listener watches. Only mailboxes so far.
+ *
+ * A listener is the other half of an event-driven schedule: it holds one
+ * connection open, waits for something to happen, and fires a schedule when
+ * it does. Where a gateway carries a conversation, a listener carries a
+ * single fact - "something changed" - and the schedule decides what that is
+ * worth.
+ */
+export type ListenerKind = 'imap';
+
+export interface ListenersConfig {
+  /** Mailboxes watched over IMAP, one entry per account. */
+  imap: ImapListenerConfig[];
+}
+
+/**
+ * One watched mailbox.
+ *
+ * IMAP has no webhook and never will; what it has is IDLE, a connection the
+ * server holds open and speaks into the moment mail arrives. That is why this
+ * is a listener rather than a schedule: the waiting costs one socket, not one
+ * model call every few minutes.
+ */
+export interface ImapListenerConfig {
+  /** Stable name, chosen by whoever adds it; runs record it as `imap:<id>`. */
+  id: string;
+  /** Off by default: this holds a password and opens a connection. */
+  enabled: boolean;
+  host: string;
+  port: number;
+  /** TLS from the first byte, the usual 993. Off means STARTTLS on 143. */
+  secure: boolean;
+  user: string;
+  /**
+   * The mailbox password. It lives here for the same reason the bot token
+   * does (see `TelegramGatewayConfig.token`): local user state a person must
+   * be able to set from the page that exists to set it.
+   *
+   * It must never reach a browser. `publicConfig` blanks it on the way out,
+   * and a listener's status reports only whether one is present.
+   */
+  password: string;
+  /** Which mailbox to watch. */
+  mailbox: string;
+  /** The schedule this listener fires when something arrives. */
+  jobId: string;
 }
 
 /** Which chat gateway a config section belongs to. Only Telegram for now. */

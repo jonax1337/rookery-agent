@@ -127,6 +127,12 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     lazyCoding: true,
     autoReview: true,
   },
+  // Nothing is watched until somebody adds a mailbox on the settings page: a
+  // listener holds a credential and an open socket, which is not something a
+  // fresh install should do on its own.
+  listeners: {
+    imap: [],
+  },
   gateways: {
     telegram: {
       enabled: false,
