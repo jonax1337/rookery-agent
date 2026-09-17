@@ -1493,6 +1493,12 @@ export type ClientFrame =
    * frame opens no stream and gets no per-request reply.
    */
   | { type: 'answer'; id: string; selected: number[]; text?: string }
+  /**
+   * Rejoin a conversation: this socket wants the live tail of whatever turn
+   * runs there. The replay of what already happened came over REST, from the
+   * journal; the `attached` reply lines the two up.
+   */
+  | { type: 'attach'; sessionId: string }
   | { type: 'ping' };
 
 /** One structural change somewhere in the company. */
@@ -1502,7 +1508,17 @@ export interface OrgChange {
 }
 
 export type ServerFrame =
-  | { type: 'event'; id: string; event: AgentEvent }
+  /**
+   * One event of a turn. `seq` is the journal position: a client that
+   * rebuilt the turn over REST applies only frames above where its replay
+   * ended, so replay and live neither duplicate nor drop an event.
+   */
+  | { type: 'event'; id: string; seq?: number; event: AgentEvent }
+  /**
+   * Reply to `attach`: the turn running in that session - whose live events
+   * this socket now receives - or `null` when none is.
+   */
+  | { type: 'attached'; id: string | null; seq: number }
   | { type: 'memory'; event: { sessionId: string; stored: MemoryRecord[] } }
   | { type: 'assignment'; event: AgentEvent }
   | { type: 'message'; event: AgentEvent }

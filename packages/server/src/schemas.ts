@@ -547,6 +547,11 @@ export const clientFrameSchema = z.discriminatedUnion('type', [
     selected: z.array(z.number().int().min(0).max(63)).max(64).default([]),
     text: z.string().max(4000).optional(),
   }),
+  // Rejoin a conversation: whatever turn is running in this session, this
+  // socket wants its live tail from here on. The replay of what already
+  // happened comes over REST from the journal - this frame is only the
+  // subscription, and the `attached` reply says which turn (if any) answered.
+  z.object({ type: z.literal('attach'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('ping') }),
 ]);
 

@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 export type Db = DatabaseSync;
 
@@ -714,6 +714,38 @@ function migrate(db: Db): void {
   `);
 
   backfillMailThreads(db);
+
+  // Schema 19: the running-turn journal. Every event a conversation turn
+  // yields is a row the moment it is yielded, so any client - a reloaded
+  // tab, another browser, whoever opens the conversation next - can rebuild
+  // the turn exactly as it stood, and the live stream just continues on top.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS turns (
+      id         TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      kind       TEXT NOT NULL DEFAULT 'chat',
+      status     TEXT NOT NULL DEFAULT 'running',
+      started_at INTEGER NOT NULL,
+      ended_at   INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_turns_session
+      ON turns(session_id, started_at);
+    CREATE TABLE IF NOT EXISTS turn_events (
+      turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+      seq     INTEGER NOT NULL,
+      json    TEXT NOT NULL,
+      PRIMARY KEY (turn_id, seq)
+    );
+  `);
+
+  // Whatever still claims to be running was orphaned by the process that
+  // wrote it: this database is single-writer and just opened, so nobody is
+  // producing those turns any more. Marked here rather than in the journal
+  // because every open is the startup for exactly one writer. The events
+  // stay: they are the only record of an answer that never finished.
+  db.prepare(
+    "UPDATE turns SET status = 'interrupted', ended_at = ? WHERE status = 'running'",
+  ).run(Date.now());
 
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',

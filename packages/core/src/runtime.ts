@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type {
   EffortLevel,
@@ -132,6 +133,13 @@ export interface ChatInput {
   agentId?: string;
   /** Spoken turn: the reply is shaped to be read aloud. */
   voice?: boolean;
+  /**
+   * The id this turn is journalled under. A transport that has its own id for
+   * the turn - the websocket frame id - passes it through, so a client that
+   * rejoins after a reload can stop the very turn it re-joined; every other
+   * caller gets a fresh id and never sees the journal at all.
+   */
+  turnId?: string;
   /**
    * Set by callers that start this chat without a person in front of it - a
    * schedule pinned to an existing conversation - so unattended-only rules
@@ -445,8 +453,41 @@ export class Assistant extends EventEmitter {
 
   /* ------------------------------- chat ----------------------------- */
 
-  /** One conversational turn, streamed. Assignments the turn starts ride the same stream. */
+  /**
+   * One conversational turn, streamed - and journalled while it runs.
+   *
+   * The wrapper is the single place every yielded event passes through, which
+   * is what makes the journal faithful: whatever a live client saw, in the
+   * order it saw it, numbered once each. A client that arrives late - a
+   * reloaded tab, another browser - reads the same events back and continues
+   * from the same numbers, so rejoining can neither duplicate nor drop.
+   *
+   * `#chatTurn` does the work and opens the journal once its session is
+   * resolved; events yielded before that (a rejected empty prompt, say) are
+   * ephemeral by nature and stay unjournalled.
+   */
   async *chat(input: ChatInput): AsyncGenerator<AgentEvent, void, unknown> {
+    const turnId = input.turnId ?? randomUUID();
+    const journal = { begun: false };
+    try {
+      for await (const event of this.#chatTurn(input, turnId, journal)) {
+        if (journal.begun) this.store.turns.append(turnId, event as unknown as Record<string, unknown>);
+        yield event;
+      }
+      if (journal.begun) this.store.turns.settle(turnId, 'done', Date.now());
+    } catch (error) {
+      // The turn died mid-flight. Whatever reached the journal is the only
+      // record of it - it stays, marked, rather than vanishing whole.
+      if (journal.begun) this.store.turns.settle(turnId, 'interrupted', Date.now());
+      throw error;
+    }
+  }
+
+  async *#chatTurn(
+    input: ChatInput,
+    turnId: string,
+    journal: { begun: boolean },
+  ): AsyncGenerator<AgentEvent, void, unknown> {
     const prompt = input.text.trim();
     if (!prompt) {
       yield { type: 'error', message: 'Nothing to send.', fatal: true };
@@ -454,6 +495,8 @@ export class Assistant extends EventEmitter {
     }
 
     const session = this.#resolveSession(input);
+    this.store.turns.begin(turnId, session.id, 'chat', Date.now());
+    journal.begun = true;
     // Chat is exclusively the assistant's own conversation; a stale
     // `agentId` on an old session is never read here any more.
     const owner = ASSISTANT_MEMORY_OWNER;

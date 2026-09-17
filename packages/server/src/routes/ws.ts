@@ -4,20 +4,22 @@ import type { ServerContext } from '../context.js';
 import { isAuthorized, requireSameOrigin } from '../auth.js';
 import { clientFrameSchema, formatIssues } from '../schemas.js';
 import { buildAnswer, isOpenQuestion } from './questions.js';
-import { pipeToSocket, sendFrame } from '../services/stream.js';
+import { sendFrame } from '../services/stream.js';
 
 /**
  * The primary transport.
  *
- * A connection may run several turns at once, each identified by the client's
- * own `id`; that id is what an `abort` frame refers to and what every event
- * frame carries back, so a UI with two panes never mixes streams. The
- * AbortController map is per connection and is emptied when a turn settles, so
- * a long-lived socket does not accumulate dead controllers.
+ * Turns live in the hub, not in this connection: every generator is drained
+ * server-side and its events fan out to whichever sockets are watching that
+ * conversation, so a reload - or a second tab, or a phone - reads the journal
+ * over REST, attaches, and the stream simply continues. A connection that
+ * drops takes nothing with it but its subscriptions (Workstream E.1); a
+ * deliberate `abort` frame, from any connection including one that re-joined,
+ * is the one way a turn ends early.
  *
  * The one frame that is not scoped to a turn is `answer`: a question belongs
  * to the person, not to the connection that provoked it, so its id is looked
- * up in the assistant's question registry rather than in `turns`.
+ * up in the assistant's question registry rather than in the hub.
  */
 export async function registerWebsocketRoutes(
   app: FastifyInstance,
@@ -41,7 +43,7 @@ export async function registerWebsocketRoutes(
       },
     },
     (socket: WebSocket, request: FastifyRequest) => {
-      const turns = new Map<string, AbortController>();
+      const hub = context.turns;
       context.sockets.add(socket);
       context.log.debug('Websocket connected', { ip: request.ip, open: context.sockets.size });
 
@@ -66,17 +68,13 @@ export async function registerWebsocketRoutes(
             return;
 
           case 'abort': {
-            const controller = turns.get(frame.data.id);
-            if (!controller) {
+            if (!hub.abort(frame.data.id)) {
               sendFrame(socket, {
                 type: 'error',
                 id: frame.data.id,
                 message: 'No running turn with that id.',
               });
-              return;
             }
-            controller.abort();
-            turns.delete(frame.data.id);
             return;
           }
 
@@ -103,7 +101,7 @@ export async function registerWebsocketRoutes(
           }
 
           // An answer to a question the assistant asked. Deliberately not
-          // looked up in `turns`: the id is the question's, and the turn
+          // looked up in the hub: the id is the question's, and the turn
           // blocked on it may have been started on another connection, in
           // another window or on the phone. Any connection may answer any
           // open question - the person is one person.
@@ -130,30 +128,43 @@ export async function registerWebsocketRoutes(
             return;
           }
 
-          // A chat turn and a direct assignment differ only in which generator
-          // they open: both carry the same event vocabulary and the same abort
-          // contract, so an `abort` frame stops either one.
+          // Rejoin: whatever runs in this conversation, this socket wants
+          // its live tail. The journal replay came over REST before this;
+          // the `attached` reply lines the two up by sequence number.
+          case 'attach':
+            hub.attach(frame.data.sessionId, socket);
+            return;
+
+          // A chat turn and a direct assignment differ only in which
+          // generator they open: both carry the same event vocabulary and
+          // the same abort contract, and both go through the hub now, so
+          // either can be re-joined from anywhere it can be seen.
           case 'chat':
           case 'assign':
           case 'run_task': {
             const { id } = frame.data;
-            if (turns.has(id)) {
+            if (hub.has(id)) {
               sendFrame(socket, { type: 'error', id, message: 'That id is already running.' });
               return;
             }
             const controller = new AbortController();
-            turns.set(id, controller);
+            const sessionId =
+              frame.data.type === 'run_task' ? undefined : frame.data.payload.sessionId;
 
             const events =
               frame.data.type === 'chat'
-                ? context.assistant.chat({ ...frame.data.payload, signal: controller.signal })
+                ? // The frame id doubles as the journal id: a client that
+                  // re-joined the turn can stop the very turn it re-joined.
+                  context.assistant.chat({
+                    ...frame.data.payload,
+                    signal: controller.signal,
+                    turnId: id,
+                  })
                 : frame.data.type === 'assign'
                   ? context.assistant.assign({ ...frame.data.payload, signal: controller.signal })
                   : context.assistant.runTask({ taskId: frame.data.payload.taskId, signal: controller.signal });
 
-            void pipeToSocket(events, socket, id).finally(() => {
-              turns.delete(id);
-            });
+            hub.start({ id, ...(sessionId ? { sessionId } : {}), controller, events });
             return;
           }
         }
@@ -161,14 +172,12 @@ export async function registerWebsocketRoutes(
 
       socket.on('close', () => {
         // Tab-close/connection-drop must not cancel in-flight work (Workstream
-        // E.1): forget the local bookkeeping so it can be garbage collected,
-        // but leave every turn's own AbortController alone. Its generator
-        // keeps running to completion server-side, its result lands in the
-        // DB as usual, and completion still reaches every other open
-        // connection through the org-wide broadcast. A deliberate `abort`
-        // frame sent *while still connected* is the only thing that stops a
-        // turn early - see the `case 'abort'` handler above.
-        turns.clear();
+        // E.1): the subscriptions go, the turns stay. Their generators keep
+        // running to completion in the hub, results land in the DB as usual,
+        // and the journal keeps answering anyone who looks. A deliberate
+        // `abort` frame sent *while still connected* is the only thing that
+        // stops a turn early - see the `case 'abort'` handler above.
+        hub.detach(socket);
         context.sockets.delete(socket);
         // A terminal window closing stops the watching, never the run.
         context.assignmentWatchers.delete(socket);

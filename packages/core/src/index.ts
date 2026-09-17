@@ -216,6 +216,11 @@ export {
   type QuestionRequest,
 } from './org/questions.js';
 export {
+  TurnJournal,
+  type JournalEntry,
+  type JournalTurn,
+} from './turns/journal.js';
+export {
   BUILTIN_SKILLS,
   builtinSkill,
   builtinSkills,

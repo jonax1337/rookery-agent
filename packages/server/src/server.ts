@@ -14,6 +14,7 @@ import type { ServerContext } from './context.js';
 import { createAuthHook, createSameOriginHook } from './auth.js';
 import { BadRequestError } from './schemas.js';
 import { sendFrame } from './services/stream.js';
+import { TurnHub } from './services/turns.js';
 import { registerStatic } from './static.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerStatsRoutes } from './routes/stats.js';
@@ -81,6 +82,7 @@ export async function buildServer(
     log,
     sockets: new Set<WebSocket>(),
     assignmentWatchers: new Map(),
+    turns: new TurnHub(log),
     gateways,
     // Replaced on the next line. A listener fires a schedule through the
     // context, so it cannot be built before the context it fires through.

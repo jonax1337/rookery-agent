@@ -129,6 +129,12 @@ export interface ChatState {
    * so the card can stay and say so instead of vanishing into nothing.
    */
   answerQuestion(id: string, reply: QuestionReply): Promise<void>;
+  /**
+   * Rejoin this conversation's running turn after a reload - or to watch it
+   * from a second tab: rebuild the journal's events into the live state,
+   * then continue the stream from where the replay ended.
+   */
+  attach(sessionId: string): Promise<void>;
   abort(): void;
   setMessages(messages: Message[]): void;
   reset(): void;
@@ -379,7 +385,7 @@ export function useChat(
   );
 
   /** Everything a fresh turn resets, whether it is a chat or an assignment. */
-  const beginTurn = useCallback((prompt: string) => {
+  const resetTurnState = useCallback(() => {
     setError(null);
     setActivity([]);
     setRecalled([]);
@@ -397,18 +403,26 @@ export function useChat(
     setBusy(true);
     const token = {};
     turnToken.current = token;
-    setMessages((current) => [
-      ...current,
-      {
-        id: nextId(),
-        sessionId: '',
-        role: 'user' as const,
-        content: prompt,
-        createdAt: Date.now(),
-      },
-    ]);
     return token;
   }, []);
+
+  const beginTurn = useCallback(
+    (prompt: string) => {
+      const token = resetTurnState();
+      setMessages((current) => [
+        ...current,
+        {
+          id: nextId(),
+          sessionId: '',
+          role: 'user' as const,
+          content: prompt,
+          createdAt: Date.now(),
+        },
+      ]);
+      return token;
+    },
+    [resetTurnState],
+  );
 
   const send = useCallback<ChatState['send']>(
     (payload, options) => {
@@ -440,6 +454,90 @@ export function useChat(
       );
     },
     [beginTurn, finish, handleEvent, sessionId, socket],
+  );
+
+  /**
+   * Rejoin whatever turn is running in this conversation.
+   *
+   * A reload - or a second tab opening the conversation - starts here: the
+   * journal's events come back over REST and run through the same reduction
+   * the live stream feeds, so the rebuilt screen is the screen before the
+   * reload, streaming text and old tool calls included. The socket attach
+   * that follows continues from the journal's numbering, and whatever began
+   * after the fetch - on another screen, say - is joined the same way when
+   * its `attached` reply arrives.
+   */
+  const attach = useCallback<ChatState['attach']>(
+    async (id) => {
+      if (inFlight.current) return;
+
+      const readRunning = async (): Promise<{
+        turn: { id: string; status: string } | null;
+        events: { seq: number; event: AgentEvent }[];
+      } | null> => {
+        try {
+          const response = await fetch('/api/sessions/' + encodeURIComponent(id) + '/running');
+          if (!response.ok) return null;
+          return (await response.json()) as {
+            turn: { id: string; status: string } | null;
+            events: { seq: number; event: AgentEvent }[];
+          };
+        } catch {
+          return null;
+        }
+      };
+
+      const rejoin = async (prefetched?: Awaited<ReturnType<typeof readRunning>>): Promise<void> => {
+        if (inFlight.current) return;
+        const body = prefetched ?? (await readRunning());
+        if (!body?.turn) return;
+
+        const token = resetTurnState();
+        for (const entry of body.events) {
+          if (turnToken.current !== token) return;
+          handleEvent(entry.event);
+        }
+        // A turn interrupted by a server restart has no live tail and will
+        // never say done: what the journal holds is the whole answer, so it
+        // settles here and now with the text it had reached.
+        if (body.turn.status === 'interrupted') {
+          finish('');
+          return;
+        }
+
+        const cursor = body.events.at(-1)?.seq ?? 0;
+        turnRef.current = body.turn.id;
+        socket.adopt(
+          body.turn.id,
+          {
+            onEvent: (event) => {
+              if (turnToken.current !== token) return;
+              handleEvent(event);
+            },
+            onDone: (answer, usage) => {
+              if (turnToken.current !== token) return;
+              finish(answer, undefined, usage);
+            },
+            onError: (message) => {
+              if (turnToken.current !== token) return;
+              setError(message);
+              finish('');
+            },
+          },
+          cursor,
+        );
+      };
+
+      socket.attachConversation(id, (frame) => {
+        // The busy guard inside `rejoin` keeps a re-arm of the conversation
+        // from rebuilding what is already on screen.
+        if (frame.id) void rejoin();
+      });
+
+      const body = await readRunning();
+      if (body?.turn) await rejoin(body);
+    },
+    [finish, handleEvent, resetTurnState, socket],
   );
 
   const sendAssign = useCallback<ChatState['sendAssign']>(
@@ -557,6 +655,7 @@ export function useChat(
     error,
     send,
     sendAssign,
+    attach,
     openQuestion,
     closeQuestion,
     answerQuestion,

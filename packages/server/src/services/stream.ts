@@ -89,7 +89,19 @@ export async function pipeToSse(
 
 /** Server -> client websocket frames. */
 export type ServerFrame =
-  | { type: 'event'; id: string; event: AgentEvent }
+  /**
+   * One event of a turn, `id` being the turn's. `seq` is the journal
+   * position of that event: a client that rebuilt the turn from the journal
+   * over REST applies only frames numbered above where its replay ended, so
+   * the handover from replay to live can neither duplicate nor drop.
+   */
+  | { type: 'event'; id: string; seq?: number; event: AgentEvent }
+  /**
+   * Reply to `attach`: the turn running in that session - whose live events
+   * this socket now receives - or `null` when none is, with the journal
+   * position the turn has already reached.
+   */
+  | { type: 'attached'; id: string | null; seq: number }
   | { type: 'memory'; event: unknown }
   /** Broadcast: an assignment changed state somewhere in the company. */
   | { type: 'assignment'; event: AgentEvent }
@@ -127,27 +139,4 @@ const OPEN = 1;
 export function sendFrame(socket: WebSocket, frame: ServerFrame): void {
   if (socket.readyState !== OPEN) return;
   socket.send(JSON.stringify(frame));
-}
-
-/**
- * Pump a turn down one websocket, tagging every frame with the request id.
- *
- * The generator is always drained to completion, even after the socket has
- * closed (Workstream E.1: a closed tab must not cut a run short).
- * `sendFrame` already no-ops once the socket is no longer OPEN, but the
- * underlying `assistant.chat`/`assign`/`runTask` call still needs to run to
- * the end so its result is written to the DB and broadcast normally.
- */
-export async function pipeToSocket(
-  events: AsyncGenerator<AgentEvent, void, unknown>,
-  socket: WebSocket,
-  id: string,
-): Promise<void> {
-  try {
-    for await (const event of events) {
-      sendFrame(socket, { type: 'event', id, event });
-    }
-  } catch (error) {
-    sendFrame(socket, { type: 'error', id, message: (error as Error).message });
-  }
 }

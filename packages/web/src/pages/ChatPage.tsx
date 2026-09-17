@@ -241,6 +241,21 @@ export function ChatPage() {
     };
   }, [closeQuestion, openQuestion, socket]);
 
+  /* ------------------------------- rejoining ------------------------------- */
+
+  // Whatever turn is already running in this conversation keeps running, and
+  // a reload - or opening it in a second tab - joins it rather than staring
+  // at an idle screen next to background work: the journal rebuilds what
+  // already happened, the socket attach continues the stream from there. The
+  // socket re-arms the attach itself on reconnect; leaving the conversation
+  // stops the following, never the turn.
+  const attach = chat.attach;
+  React.useEffect(() => {
+    if (!activeId) return;
+    void attach(activeId);
+    return () => socket.detachConversation(activeId);
+  }, [activeId, attach, socket]);
+
   /* -------------------------------- meta --------------------------------- */
 
   // Without an open conversation there is nothing to rename, reset or delete,

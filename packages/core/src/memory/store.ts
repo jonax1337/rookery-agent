@@ -26,6 +26,7 @@ import {
 import { openDatabase, type Db } from './db.js';
 import { OrgStore } from '../org/store.js';
 import { CronStore } from '../cron/store.js';
+import { TurnJournal } from '../turns/journal.js';
 
 type Row = Record<string, unknown>;
 
@@ -36,11 +37,14 @@ export class Store {
   readonly org: OrgStore;
   /** Schedules and their runs. */
   readonly cron: CronStore;
+  /** The running-turn journal: every event of a conversation turn, as it happens. */
+  readonly turns: TurnJournal;
 
   constructor(pathOrDb: string | Db) {
     this.db = typeof pathOrDb === 'string' ? openDatabase(pathOrDb) : pathOrDb;
     this.org = new OrgStore(this.db);
     this.cron = new CronStore(this.db);
+    this.turns = new TurnJournal(this.db);
   }
 
   close(): void {

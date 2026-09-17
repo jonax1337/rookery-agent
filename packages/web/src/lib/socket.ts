@@ -50,7 +50,17 @@ export interface TurnHandlers {
 
 interface PendingTurn extends TurnHandlers {
   id: string;
+  /**
+   * How far into the turn this client already is, in journal positions. A
+   * locally started turn begins at 0 and counts everything; a re-joined turn
+   * begins where its REST replay ended, so the first live frames - which may
+   * overlap what the journal already gave - are dropped rather than doubled.
+   */
+  cursor: number;
 }
+
+/** What an `attached` frame says: which turn answered, and where it stands. */
+export type AttachedFrame = Extract<ServerFrame, { type: 'attached' }>;
 
 const MAX_BACKOFF_MS = 15000;
 const PING_INTERVAL_MS = 25000;
@@ -62,6 +72,10 @@ export class RookerySocket {
   #attempt = 0;
   #closedByUs = false;
   #pending = new Map<string, PendingTurn>();
+  /** Conversations this socket wants the running turn of, re-armed on reconnect. */
+  #attachedConversations = new Set<string>();
+  /** The latest `attachConversation` handler; one page attaches one conversation. */
+  #onAttached: ((frame: AttachedFrame) => void) | null = null;
   #statusListeners = new Set<(status: SocketStatus) => void>();
   #memoryListeners = new Set<(event: { sessionId: string; stored: MemoryRecord[] }) => void>();
   #assignmentListeners = new Set<(assignment: AssignmentView) => void>();
@@ -241,6 +255,9 @@ export class RookerySocket {
       // The server's watcher sets died with the old socket: every live
       // terminal re-arms its watch here, before any frames could be missed.
       for (const id of this.#watchedAssignments) this.#send({ type: 'watch', assignmentId: id });
+      // Same for the conversations being followed: the turn kept running
+      // while the connection was down, and its journal has the part missed.
+      for (const sessionId of this.#attachedConversations) this.#send({ type: 'attach', sessionId });
     };
 
     socket.onmessage = (message) => {
@@ -315,7 +332,7 @@ export class RookerySocket {
     handlers: TurnHandlers,
   ): string {
     const id = crypto.randomUUID();
-    this.#pending.set(id, { id, ...handlers });
+    this.#pending.set(id, { id, cursor: 0, ...handlers });
 
     const delivered = this.#send({ ...frame, id } as ClientFrame);
     if (!delivered) {
@@ -325,9 +342,39 @@ export class RookerySocket {
     return id;
   }
 
+  /**
+   * Register handlers for a turn this client did not start - the one the
+   * journal replayed over REST. Its live frames arrive with the same id;
+   * `cursor` is how far the replay already went, and everything numbered up
+   * to it is dropped on arrival rather than applied twice.
+   */
+  adopt(id: string, handlers: TurnHandlers, cursor: number): void {
+    this.#pending.set(id, { id, cursor, ...handlers });
+  }
+
   abort(id: string): void {
     this.#send({ type: 'abort', id });
     this.#pending.delete(id);
+  }
+
+  /**
+   * Point this socket at a conversation: whichever turn runs there, its live
+   * frames come to this client from now on. Re-armed on every reconnect, like
+   * the assignment watches. The handler hears each `attached` reply, so a
+   * turn that started after the REST replay - on another screen, say - can
+   * still be fetched and joined; one page attaches one conversation, which is
+   * why the latest handler wins.
+   */
+  attachConversation(sessionId: string, onAttached?: (frame: AttachedFrame) => void): void {
+    this.#attachedConversations.add(sessionId);
+    if (onAttached) this.#onAttached = onAttached;
+    this.#send({ type: 'attach', sessionId });
+  }
+
+  /** Stop asking after a conversation. Its turns keep running, unseen here. */
+  detachConversation(sessionId: string): void {
+    this.#attachedConversations.delete(sessionId);
+    this.#onAttached = null;
   }
 
   /**
@@ -450,6 +497,11 @@ export class RookerySocket {
       return;
     }
 
+    if (frame.type === 'attached') {
+      this.#onAttached?.(frame);
+      return;
+    }
+
     if (frame.type === 'event') {
       // Quota is about the account, not the turn, so it is handed on even
       // when the turn itself is no longer ours to render (a reload mid-turn,
@@ -461,6 +513,13 @@ export class RookerySocket {
 
       const turn = this.#pending.get(frame.id);
       if (!turn) return;
+      // The journal position this frame carries is the guard of the handover:
+      // a re-joined turn has already applied everything up to its cursor, so
+      // an overlap frame is dropped instead of splicing duplicated text in.
+      if (typeof frame.seq === 'number') {
+        if (frame.seq <= turn.cursor) return;
+        turn.cursor = frame.seq;
+      }
       turn.onEvent(frame.event);
 
       if (frame.event.type === 'done') {

@@ -3,6 +3,7 @@ import type { Assistant, GatewaysConfig, ListenersConfig, Logger, RookeryConfig 
 import type { WebSocket } from '@fastify/websocket';
 import type { GatewayHandle } from './gateways/telegram.js';
 import type { ListenerRegistry } from './listeners/registry.js';
+import type { TurnHub } from './services/turns.js';
 
 /**
  * Everything a route needs, handed down explicitly instead of through Fastify
@@ -25,6 +26,12 @@ export interface ServerContext {
    * never keeps it alive, and leaving never stops it).
    */
   readonly assignmentWatchers: Map<WebSocket, Set<string>>;
+  /**
+   * The turns in flight, drained server-side and fanned out to whichever
+   * sockets attached to their conversation. Routing only - the journal in
+   * core is the record, this is the live tail on top of it.
+   */
+  readonly turns: TurnHub;
   /**
    * Chat gateways attached to this server, Telegram today. The array itself
    * is created before the context is, and filled in afterwards - a gateway

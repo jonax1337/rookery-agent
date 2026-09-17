@@ -10,12 +10,12 @@ export { bearerToken, createAuthHook, isAuthorized, queryToken } from './auth.js
 export { registerStatic, webDistPath } from './static.js';
 export {
   openSse,
-  pipeToSocket,
   pipeToSse,
   sendFrame,
   type ServerFrame,
   type SseStream,
 } from './services/stream.js';
+export { TurnHub } from './services/turns.js';
 export {
   BadRequestError,
   chatInputSchema,
