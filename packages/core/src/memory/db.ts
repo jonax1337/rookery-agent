@@ -30,6 +30,14 @@ export function openDatabase(path: string): Db {
   // nightly sweep, so a contended write should wait briefly instead of
   // failing the request outright.
   db.exec('PRAGMA busy_timeout = 5000');
+  try {
+    assertSchemaNotNewer(db);
+  } catch (error) {
+    // Refused, not broken: release the handle synchronously so the file is
+    // not locked until garbage collection catches up with it.
+    db.close();
+    throw error;
+  }
   migrate(db);
   return db;
 }
@@ -37,6 +45,33 @@ export function openDatabase(path: string): Db {
 function hasColumn(db: Db, table: string, column: string): boolean {
   const rows = db.prepare('PRAGMA table_info(' + table + ')').all() as { name: string }[];
   return rows.some((row) => row.name === column);
+}
+
+
+/**
+ * A file that a newer build has ever opened must not quietly continue under
+ * this one. `schema_version` is written on every open but nothing ever read
+ * it back, so an older build would keep writing `memories` rows beside dream
+ * frames recorded against a schema it does not know. Read-only on purpose:
+ * this guard never migrates and never writes, it only refuses.
+ */
+function assertSchemaNotNewer(db: Db): void {
+  const meta = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+  ).get() as { name: string } | undefined;
+  // A fresh file has no meta table yet; migrate() creates it below.
+  if (!meta) return;
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get() as
+    | { value: string }
+    | undefined;
+  if (!row) return;
+  const version = Number(row.value);
+  if (Number.isFinite(version) && version > SCHEMA_VERSION) {
+    throw new Error(
+      `Database schema ${version} is newer than this build supports (${SCHEMA_VERSION}). ` +
+        'Update Rookery instead of opening the file with an older build.',
+    );
+  }
 }
 
 function migrate(db: Db): void {
