@@ -570,6 +570,9 @@ export class Store {
     const result = this.db
       .prepare('UPDATE memories SET archived_at = ? WHERE owner = ? AND archived_at IS NULL')
       .run(Date.now(), owner) as { changes: number };
+    // The whole bank leaves recall, so its frames are verbatim text without
+    // a corpus left to replay against (R17).
+    this.dropDreamFramesForOwner(owner);
     return Number(result.changes ?? 0);
   }
 
