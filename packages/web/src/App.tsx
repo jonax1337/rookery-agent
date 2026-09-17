@@ -19,8 +19,8 @@ import { MemoryListPage } from './pages/MemoryListPage';
 import { MemorySleepPage } from './pages/MemorySleepPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { OrgAgentsPage } from './pages/OrgAgentsPage';
-import { OrgChartPage } from './pages/OrgChartPage';
-import { OrgHrPage } from './pages/OrgHrPage';
+import { OrgHierarchyPage } from './pages/OrgHierarchyPage';
+import { OrgPerformancePage } from './pages/OrgPerformancePage';
 import { OrgLayout } from './pages/OrgLayout';
 import { OrgProjectsPage } from './pages/OrgProjectsPage';
 import { OrgTeamsPage } from './pages/OrgTeamsPage';
@@ -95,8 +95,8 @@ export default function App() {
           <Route path="agents" element={<OrgAgentsPage />} />
           <Route path="teams" element={<OrgTeamsPage />} />
           <Route path="projects" element={<OrgProjectsPage />} />
-          <Route path="chart" element={<OrgChartPage />} />
-          <Route path="hr" element={<OrgHrPage />} />
+          <Route path="hierarchy" element={<OrgHierarchyPage />} />
+          <Route path="performance" element={<OrgPerformancePage />} />
         </Route>
         {/* Siblings, not children: these bring their own header and would sit
             crookedly inside the tab frame. */}

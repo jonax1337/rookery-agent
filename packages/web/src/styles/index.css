@@ -253,11 +253,11 @@
 }
 
 /*
-  The org chart (OrgChartPage) is Mermaid, which - like the WebGL graph above -
+  The hierarchy diagram (OrgHierarchyPage) is Mermaid, which - like the WebGL graph above -
   cannot read the app's oklch tokens, so it gets the same treatment: literal
   hex read back with `getComputedStyle` off this class, redefined under `.dark`.
 */
-.org-chart-stage {
+.org-hierarchy-stage {
   --chart-line: #d8dbe0;
   --chart-text: #171a1d;
   --chart-muted: #6b7280;
@@ -268,7 +268,7 @@
   --chart-stage-critical: #dc2626;
 }
 
-.dark .org-chart-stage {
+.dark .org-hierarchy-stage {
   --chart-line: #3a4049;
   --chart-text: #f2f0ea;
   --chart-muted: #8aa0b4;

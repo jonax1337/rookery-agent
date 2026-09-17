@@ -720,7 +720,7 @@ export interface AgentAction {
   createdAt: number;
 }
 
-/** One row of GET /api/org/performance - the company-wide "HR" view. */
+/** One row of GET /api/org/performance - the company-wide Performance view. */
 export interface OrgPerformanceEntry {
   agent: { id: string; name: string; slug: string; title: string };
   performance: AgentPerformance;

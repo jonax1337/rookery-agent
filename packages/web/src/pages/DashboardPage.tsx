@@ -332,7 +332,7 @@ export function DashboardPage() {
             ? 'In a team'
             : 'In ' + formatNumber(teams) + ' teams',
       footnote: 'Excluding archived agents',
-      to: flagged > 0 ? '/org/hr' : '/org/agents',
+      to: flagged > 0 ? '/org/performance' : '/org/agents',
     },
     {
       label: 'Open tasks',

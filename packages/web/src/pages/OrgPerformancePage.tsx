@@ -32,7 +32,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import type { IconComponent } from "@/components/icons";
 
 /**
- * "Personalabteilung": every agent's standing in one table, same shell as
+ * Performance: every agent's standing in one table, same shell as
  * `/org/agents` and `/org/teams` (`DataTable` + `createRookeryColumnHelper`)
  * rather than a one-off list - a bespoke table here would have meant search,
  * sorting and the column picker work everywhere else in the app except this
@@ -64,8 +64,8 @@ function TrendCell({ trend }: { trend: number | null }) {
  */
 const UsersEmptyIcon = (() => <UsersIcon size={24} />) as unknown as IconComponent;
 
-export function OrgHrPage() {
-  usePageMeta({ title: 'HR' }, []);
+export function OrgPerformancePage() {
+  usePageMeta({ title: 'Performance' }, []);
   const navigate = useNavigate();
 
   const [entries, setEntries] = useState<OrgPerformanceEntry[] | null>(null);
@@ -219,7 +219,7 @@ export function OrgHrPage() {
           data={rows}
           columns={columns}
           getRowId={(row) => row.agent.id}
-          idPrefix="hr"
+          idPrefix="performance"
           onRowClick={(row) => void navigate('/org/agents/' + row.agent.id)}
           rowClickIgnoreColumns={['name', 'actions']}
           searchable

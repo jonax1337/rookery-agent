@@ -253,7 +253,7 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
   });
 
   /**
-   * The company-wide performance view - the "HR" page's one call. Archived
+   * The company-wide performance view - the Performance page's one call. Archived
    * agents are excluded: there is nothing left to develop once an agent has
    * been replaced, and its personnel record stays reachable from its own
    * (archived) page instead.
