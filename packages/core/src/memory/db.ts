@@ -23,6 +23,13 @@ export function openDatabase(path: string): Db {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA synchronous = NORMAL');
+
+  // The CLI opens the same file in its own process, so there are really two
+  // writers. Until now that was harmless because the codebase had exactly two
+  // short transactions; the dream adds one bracket per recorded turn plus a
+  // nightly sweep, so a contended write should wait briefly instead of
+  // failing the request outright.
+  db.exec('PRAGMA busy_timeout = 5000');
   migrate(db);
   return db;
 }
