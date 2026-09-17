@@ -39,7 +39,7 @@ import { remapModel } from '../providers/provider-catalog.js';
 import { isUsageLimitError, providerBlocked, rememberUsageFailure } from '../providers/quota.js';
 import type { Store } from '../memory/store.js';
 import type { OrgStore } from './store.js';
-import { coreProfile, recall } from '../memory/recall.js';
+import { byScoreThenId, coreProfile, recall } from '../memory/recall.js';
 import { extractMemories, smallModelFor } from '../memory/extractor.js';
 import { admitCandidates, linkEntities } from '../memory/gate.js';
 import type { SleepRunner } from '../memory/sleep.js';
@@ -2464,7 +2464,10 @@ export class OrgController extends EventEmitter {
     const profile = coreProfile(this.#store, { owner: agentId, limit: 3 });
     const byId = new Map(profile.map((memory) => [memory.id, memory]));
     for (const memory of matched) byId.set(memory.id, memory);
-    return [...byId.values()].sort((a, b) => b.score - a.score);
+    // Total order on ties (R11): score descending, then id ascending - the
+    // same rule every other in-JS sort of scored memories follows, so a tie
+    // no longer falls to the Map's insertion order.
+    return [...byId.values()].sort(byScoreThenId);
   }
 
   /** Let an agent keep what it learned, in its own memory bank. */
