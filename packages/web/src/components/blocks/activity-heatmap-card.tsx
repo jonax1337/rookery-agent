@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import * as HeatGraph from 'heat-graph';
 
@@ -31,7 +31,10 @@ import { cn } from '@/lib/utils';
  * - The intensity is `messages` per day. Sessions and assignments move by
  *   ones and twos; a grid whose busiest day is "3" shades like an empty one.
  *   Message volume is the one count that tells a quiet Tuesday from a loud
- *   one, and the tooltip still reads out all three.
+ *   one. Tokens are not a second mode to switch to - a toggle for one more
+ *   number is a control to learn for a figure the tooltip already says, so
+ *   they just ride along in it (and in the screen-reader table) whenever
+ *   `tokensAvailable` says the database actually has usage figures.
  * - The window is exactly the series the page already fetched - no second
  *   request. The package snaps the start back to a Monday, so the first
  *   column can reach a few days before the window; those cells carry no
@@ -40,20 +43,25 @@ import { cn } from '@/lib/utils';
  * - Levels use the package default (`autoLevels(5)`): each day is scaled
  *   against the busiest day of the window, the way GitHub does it. Absolute
  *   thresholds would need a calibration this data does not argue for.
- * - The cells are perfect squares, the way GitHub's and ChatGPT's are: the
- *   grid keeps its natural width - fifty-three week columns at a fixed cell
- *   edge - and is centred in the card. A screen too narrow for a whole year
- *   scrolls instead of stretching, because a wide flat cell reads as a bar,
- *   not as a day.
+ * - The grid stretches to the card's full width, the way a dashboard tile
+ *   should, while the cells stay perfect squares. CSS alone can't do both:
+ *   `1fr` columns plus `aspect-ratio` looked square, but a fixed-px `gap`
+ *   eats a different share of the 53 week-columns than of the 7 day-rows,
+ *   so the cells quietly drifted into rectangles. Instead the grid's
+ *   available width is measured (`ResizeObserver`) and the square cell edge
+ *   is computed from it in JS, so both dimensions use the exact same px
+ *   value. Below `MIN_CELL` the grid stops shrinking and the card scrolls
+ *   instead, because a wide flat cell reads as a bar, not as a day.
  * - The graph is `aria-hidden`, and the card carries its own screen-reader
  *   table under it - the same per-day numbers, so the calendar never has to
  *   be parsed by ear to be known.
  */
 
-/** Cell edge in px - every cell is a square of this size. */
+/** Fallback cell edge in px, used only until the grid's width is measured. */
 const CELL = 24;
+/** Cells never shrink below this edge; narrower windows scroll instead. */
+const MIN_CELL = 10;
 const GAP = 3;
-const STEP = CELL + GAP;
 
 /**
  * The weekday gutter the labels live in. The month labels sit on the same
@@ -73,10 +81,16 @@ const HEAT_COLORS = [
 export interface ActivityHeatmapCardProps {
   /** The gap-filled day series (`fillDayGaps` over `GET /api/stats`). */
   data: readonly StatsDay[];
+  /**
+   * Whether any message in the window actually carried usage data
+   * (`StatsSnapshot.tokensAvailable`). Without it the tooltip's token line
+   * would claim zero where the truth is "unknown", so it stays off instead.
+   */
+  tokensAvailable?: boolean;
   className?: string;
 }
 
-export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProps) {
+export function ActivityHeatmapCard({ data, tokensAvailable = false, className }: ActivityHeatmapCardProps) {
   // Per-day numbers for the tooltip. The package hands out only the cell's
   // own count, so the rest of the day is looked up here, keyed the way the
   // series is keyed.
@@ -84,6 +98,12 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
     () => new Map(data.map((day) => [day.day, day])),
     [data],
   );
+
+  // The width actually available to the grid (the flex row minus the fixed
+  // weekday gutter). Measured rather than assumed, because it is what makes
+  // the cell edge computed below exact instead of a CSS approximation.
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [gridWidth, setGridWidth] = useState(0);
 
   // Week columns the grid will draw: the package snaps the window start back
   // to Monday before laying out, so the lead days of the first week count.
@@ -94,6 +114,32 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
     const lead = (start.getDay() + 6) % 7; // days since Monday, the chosen week start
     return Math.ceil((lead + data.length) / 7);
   }, [data]);
+
+  // Keyed on `weeks` rather than run-once: with an empty `data` prop (before
+  // the page's fetch resolves) the component below returns `null` and the
+  // grid div never mounts, so a mount-only effect would measure nothing and
+  // never get another chance once real data brings the div into existence.
+  useLayoutEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    setGridWidth(el.getBoundingClientRect().width);
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setGridWidth(entry.contentRect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [weeks]);
+
+  // The square cell edge that makes the grid fill exactly `gridWidth`: the
+  // same px value drives both `gridTemplateColumns` (weeks) and
+  // `gridTemplateRows` (7), so the gap can eat a different share of each
+  // without the cells stopping being squares.
+  const cellSize = useMemo(() => {
+    if (weeks === 0 || gridWidth === 0) return CELL;
+    const raw = (gridWidth - (weeks - 1) * GAP) / weeks;
+    return Math.max(MIN_CELL, raw);
+  }, [weeks, gridWidth]);
+  const step = cellSize + GAP;
 
   const total = useMemo(
     () => data.reduce((sum, day) => sum + day.messages, 0),
@@ -135,12 +181,11 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
           >
             <div className="flex flex-col gap-1.5 px-2 sm:px-6">
               {/*
-                The calendar keeps its natural width and is centred, the way
-                GitHub's is: a whole year of squares is a fixed-size object,
-                not something to pour into whatever width the card has. A
-                screen too narrow for it scrolls - centred with `mx-auto`
-                rather than flex centring, so a scroll never clips the left
-                edge off.
+                The calendar fills the card's width - the cell edge is
+                computed from the measured grid width above, not assumed.
+                Below `MIN_CELL` the grid stops shrinking and this wrapper's
+                `overflow-x-auto` scrolls instead, so a whole year is never
+                squeezed into flat, unsquare cells.
               */}
               <div className="overflow-x-auto w-full">
                 <div className="w-full">
@@ -161,7 +206,7 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
                         <span
                           key={`${label.month}-${label.column}`}
                           className="absolute top-0 text-[10px] leading-4 font-medium text-muted-foreground"
-                          style={{ left: label.column * STEP }}
+                          style={{ left: label.column * step }}
                         >
                           {HeatGraph.MONTH_SHORT[label.month] ?? ''}
                         </span>
@@ -179,7 +224,7 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
                       className="grid shrink-0 justify-items-end"
                       style={{
                         width: DAY_GUTTER,
-                        gridTemplateRows: `repeat(7, ${CELL}px)`,
+                        gridTemplateRows: `repeat(7, ${cellSize}px)`,
                         rowGap: GAP,
                       }}
                     >
@@ -196,18 +241,17 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
                         }
                       </HeatGraph.DayLabels>
                     </div>
-                    <HeatGraph.Grid
-                      style={{
-                        gridTemplateColumns: `repeat(${weeks}, 1fr)`,
-                        gridTemplateRows: `repeat(7, 1fr)`,
-                        gap: GAP,
-                        flex: 1,
-                        minWidth: 0,
-                        aspectRatio: `${weeks} / 7`,
-                      }}
-                    >
-                      {() => <HeatGraph.Cell className="rounded-[2px]" />}
-                    </HeatGraph.Grid>
+                    <div ref={gridRef} className="min-w-0 flex-1">
+                      <HeatGraph.Grid
+                        style={{
+                          gridTemplateColumns: `repeat(${weeks}, ${cellSize}px)`,
+                          gridTemplateRows: `repeat(7, ${cellSize}px)`,
+                          gap: GAP,
+                        }}
+                      >
+                        {() => <HeatGraph.Cell className="rounded-[2px]" />}
+                      </HeatGraph.Grid>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -244,6 +288,9 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
                 const messages = entry?.messages ?? 0;
                 const sessions = entry?.sessions ?? 0;
                 const assignments = entry?.assignments ?? 0;
+                const inputTokens = entry?.inputTokens ?? 0;
+                const outputTokens = entry?.outputTokens ?? 0;
+                const tokens = inputTokens + outputTokens;
                 return (
                   <div className="flex flex-col gap-0.5">
                     <div className="text-xs font-medium">{formatDate(cell.date)}</div>
@@ -252,6 +299,14 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
                         ? `${formatNumber(messages)} messages · ${formatNumber(sessions)} conversations · ${formatNumber(assignments)} assignments`
                         : 'No activity'}
                     </div>
+                    {tokensAvailable ? (
+                      <div className="text-[11px] text-muted-foreground">
+                        {formatNumber(tokens)} tokens
+                        {tokens > 0
+                          ? ` (${formatNumber(inputTokens)} in · ${formatNumber(outputTokens)} out)`
+                          : ''}
+                      </div>
+                    ) : null}
                   </div>
                 );
               }}
@@ -270,6 +325,12 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
                 <th scope="col">Messages</th>
                 <th scope="col">Conversations</th>
                 <th scope="col">Assignments</th>
+                {tokensAvailable ? (
+                  <>
+                    <th scope="col">Input tokens</th>
+                    <th scope="col">Output tokens</th>
+                  </>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -279,6 +340,12 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
                   <td>{formatNumber(day.messages)}</td>
                   <td>{formatNumber(day.sessions)}</td>
                   <td>{formatNumber(day.assignments)}</td>
+                  {tokensAvailable ? (
+                    <>
+                      <td>{formatNumber(day.inputTokens)}</td>
+                      <td>{formatNumber(day.outputTokens)}</td>
+                    </>
+                  ) : null}
                 </tr>
               ))}
             </tbody>

@@ -558,7 +558,7 @@ export function DashboardPage() {
       */}
       <Fade delay={50}>
         <div className="px-4 lg:px-6">
-          <ActivityHeatmapCard data={chartData} />
+          <ActivityHeatmapCard data={chartData} tokensAvailable={stats?.tokensAvailable ?? false} />
         </div>
       </Fade>
 
