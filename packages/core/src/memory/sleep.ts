@@ -338,6 +338,14 @@ export class SleepRunner extends EventEmitter {
             ' ' + dreamProbe.invalidated + ' of ' + dreamProbe.frames +
             ' dream frames unusable since the import/reindex at ' + since + '.';
         }
+        if (dreamProbe.poolTruncated) {
+          // The pool walks the oldest frames first, so above the cap it is
+          // the NEWEST frames that fall out of the measurement - a smaller
+          // pool must be reported, not passed off as the whole one.
+          dreamReportSuffix +=
+            ' The dream probe read the ' + dreamProbe.frames + ' oldest of ' +
+            dreamProbe.framesTotal + ' stored dream frames.';
+        }
         // R18: the probe is model-free, and the run-global ceiling is what
         // certifies it. A probe that ever exceeds it has stopped being the
         // stage-1 probe, and the night should say so rather than shrug.
@@ -353,6 +361,8 @@ export class SleepRunner extends EventEmitter {
           owner,
           tracesSeen: dreamProbe.tracesSeen,
           frames: dreamProbe.frames,
+          framesTotal: dreamProbe.framesTotal,
+          poolTruncated: dreamProbe.poolTruncated,
           framesScored: dreamProbe.framesScored,
           evalMs: dreamProbe.evalMs,
           modelCalls: dreamProbe.modelCalls,

@@ -1828,6 +1828,19 @@ export class Store {
   }
 
   /**
+   * How many stored frames one owner has, regardless of any pool limit.
+   * `framesFor` walks a capped pool oldest first, so the probe reports this
+   * count beside the pool it actually read - a measurement over half the
+   * frames must be visible as one, not pass silently.
+   */
+  dreamFrameCount(owner: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM dream_frames WHERE owner = ?')
+      .get(owner) as { n: number };
+    return Number(row.n ?? 0);
+  }
+
+  /**
    * Delete frames older than `before`, in batches that each own their
    * transaction. With foreign keys on, deleting a trace cascades its
    * frames and touches inside the same statement, and an unbounded sweep

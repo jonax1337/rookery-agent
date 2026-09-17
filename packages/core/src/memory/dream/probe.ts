@@ -53,7 +53,11 @@ import type { FrameScoringPolicy } from './score.js';
  * of dream/measure.ts.
  */
 
-/** How many stored frames one night walks, oldest first (the store default). */
+/**
+ * How many stored frames one night walks, oldest first (the store default).
+ * Above the limit the newest frames fall out of the pool - reported through
+ * `framesTotal`/`poolTruncated`, never hidden inside a smaller count.
+ */
 const FRAME_POOL_LIMIT = 500;
 /**
  * Inner sub-cap of `dream.maxEvalMs`: the processing of a single frame is cut
@@ -574,6 +578,15 @@ export interface ProbeReport {
   tracesSeen: number;
   /** Stored frames in the pool (one per trace and slot in stage 1). */
   frames: number;
+  /**
+   * All stored frames of the owner, pool limit aside. The pool walks the
+   * oldest `FRAME_POOL_LIMIT` frames first, so above the limit the NEWEST
+   * frames fall out of the measurement and the freshness sensor - reported
+   * here so a shrunken pool never passes silently.
+   */
+  framesTotal: number;
+  /** True when the pool cap dropped frames (`framesTotal > frames`). */
+  poolTruncated: boolean;
   /** Grid scorings completed - the `sleep_runs.dream_frames_scored` counter. */
   framesScored: number;
   placements: GridPlacementReport[];
@@ -601,6 +614,8 @@ function emptyProbeReport(): ProbeReport {
   return {
     tracesSeen: 0,
     frames: 0,
+    framesTotal: 0,
+    poolTruncated: false,
     framesScored: 0,
     placements: [],
     abstainReasons: emptyReasons(),
@@ -669,9 +684,14 @@ export function runGridProbe(
     // Frames this very night wrote are not measuring material - a night
     // never scores its own writes (in stage 1 it writes none, but the
     // exclusion is the reason the run id is a parameter at all).
-    const entries = store
-      .framesFor(owner, { limit: FRAME_POOL_LIMIT })
-      .filter((entry) => entry.trace.sleepRunId !== runId);
+    const pool = store.framesFor(owner, { limit: FRAME_POOL_LIMIT });
+    // Before anything that could throw: the pool cut must be visible even
+    // in a run that errors later. `framesFor` walks oldest first, so a pool
+    // at the limit has dropped the newest frames - the measurement covers
+    // fewer frames than exist, and the report says so instead of hiding it.
+    state.framesTotal = store.dreamFrameCount(owner);
+    state.poolTruncated = state.framesTotal > pool.length;
+    const entries = pool.filter((entry) => entry.trace.sleepRunId !== runId);
     state.frames = entries.length;
     state.tracesSeen = new Set(entries.map((entry) => entry.trace.id)).size;
 

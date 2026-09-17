@@ -358,6 +358,8 @@ test('a full probe writes nothing to the bank and counts every reason (R6)', () 
     assert.equal(report.error, null);
     assert.equal(report.frames, 2);
     assert.equal(report.tracesSeen, 2);
+    assert.equal(report.framesTotal, 2, 'a small pool is the whole store');
+    assert.equal(report.poolTruncated, false);
     assert.ok(report.framesScored > 0, 'grid scorings happened');
     assert.ok(report.placements.length >= 8 && report.placements.length <= 12);
     // Stage 1 supplies no gain, and the report says so instead of inventing
@@ -378,6 +380,44 @@ test('a full probe writes nothing to the bank and counts every reason (R6)', () 
     // And the one meta write there is, is the nightly corpus stamp (R10) -
     // pinned so a second write path cannot slip in unnoticed.
     assert.ok(stampCount(store) <= stampsBefore + 1, 'at most one corpus stamp row per probe run');
+  });
+});
+
+test('a pool above the cap reports the truncation instead of hiding it', () => {
+  withFrozenClock(() => {
+    const store = makeStore();
+    const config = makeConfig({ enabled: true });
+    seedBank(store);
+    // One real recorded frame - the payload every pool row reuses, so the
+    // probe walks valid frames - plus 500 raw rows backdated below it.
+    const { frame } = recordFrame(store, config, 'What does the harbor manifest list?', { sessionId: 'session-new' });
+    const payload = JSON.stringify(frame);
+    const insertTrace = store.db.prepare(
+      `INSERT INTO dream_traces
+         (id, turn_id, owner, kind, site, pipeline, policy_set, started_at, created_at, finished_at)
+       VALUES (?, ?, ?, 'turn', 'turn', 'assistant', '{}', ?, ?, ?)`,
+    );
+    const insertFrame = store.db.prepare(
+      `INSERT INTO dream_frames
+         (trace_id, slot, frame_v, owner, session_id, box, corpus_stamp_id, payload, bytes, created_at)
+       VALUES (?, 'recall', 1, ?, NULL, ?, '', ?, ?, ?)`,
+    );
+    for (let index = 0; index < 500; index += 1) {
+      const id = 'trace-pool-' + index;
+      insertTrace.run(id, 'turn-pool-' + index, ASSISTANT_MEMORY_OWNER, 1000 + index, 1000 + index, 2000 + index);
+      insertFrame.run(id, ASSISTANT_MEMORY_OWNER, JSON.stringify(frame.box), payload, Buffer.byteLength(payload), 1000 + index);
+    }
+    assert.equal(count(store, 'dream_frames'), 501);
+
+    const report = runGridProbe(store, config, ASSISTANT_MEMORY_OWNER, 'run-pool', new AbortController().signal);
+
+    // The pool walks the oldest 500 frames, so the newest one - the real
+    // recorded frame - falls out. That must be a number on the report, not
+    // a smaller `frames` that reads as the whole store.
+    assert.equal(report.error, null);
+    assert.equal(report.frames, 500, 'the pool is capped at the limit');
+    assert.equal(report.framesTotal, 501);
+    assert.equal(report.poolTruncated, true);
   });
 });
 
