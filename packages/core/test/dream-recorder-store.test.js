@@ -271,7 +271,11 @@ test('the frame sweep removes only what is older than the cut', () => {
     .run(oldTrace.id, ASSISTANT_MEMORY_OWNER);
   assert.equal(count(store, 'dream_frames'), 2);
 
-  const swept = store.sweepDreamFrames(Date.now());
+  // The cut sits a minute in the past, not at a freshly read Date.now():
+  // saveFrame stamps created_at = Date.now(), and a clock tick of >= 1 ms
+  // between the two reads would count the fresh frame as older than the cut
+  // and sweep it too - a flake, not a finding.
+  const swept = store.sweepDreamFrames(Date.now() - 60_000);
 
   assert.equal(swept, 1);
   assert.equal(count(store, 'dream_frames'), 1, 'the fresh frame stays');
