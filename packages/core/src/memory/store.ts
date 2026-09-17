@@ -2,7 +2,16 @@ import { randomUUID } from 'node:crypto';
 import {
   ASSISTANT_MEMORY_OWNER,
   type CronTrigger,
+  type DreamDegraded,
+  type DreamFrame,
+  type DreamPipeline,
+  type DreamSite,
+  type DreamTrace,
+  type DreamTraceInput,
+  type DreamTraceKind,
+  type DreamTracePatch,
   type EntityKind,
+  type FrameCorpus,
   type MemoryEdge,
   type MemoryEntity,
   type MemoryGraph,
@@ -13,6 +22,9 @@ import {
   type MemoryRelation,
   type Message,
   type ProviderId,
+  type RecallBox,
+  type RecallFrame,
+  type RecallPolicy,
   type Role,
   type Session,
   type SessionKind,
@@ -29,6 +41,20 @@ import { CronStore } from '../cron/store.js';
 import { TurnJournal } from '../turns/journal.js';
 
 type Row = Record<string, unknown>;
+
+/** meta key prefix under which one corpus fingerprint per night is stored. */
+const CORPUS_STAMP_PREFIX = 'dream.corpus_stamp.';
+/** meta key prefix holding which stamp id is current for an owner. */
+const CORPUS_CURRENT_PREFIX = 'dream.corpus_current.';
+/**
+ * The shipped `dream.maxFrameBytes`. The Store holds no config, so the caller
+ * reads the key (key table in the build plan, E21: clamped where it is read)
+ * and passes it to `saveFrame`; this default is what a caller gets that does
+ * not carry the config with it.
+ */
+const DEFAULT_MAX_FRAME_BYTES = 120_000;
+/** How many rows one sweep batch deletes before it commits and continues. */
+const SWEEP_BATCH = 500;
 
 /** All persistence for sessions, transcripts, long-term memories, the organisation and schedules. */
 export class Store {
@@ -522,11 +548,20 @@ export class Store {
     }));
   }
 
-  /** Soft delete, so a wrong memory can be audited rather than vanishing. */
+  /**
+   * Soft delete, so a wrong memory can be audited rather than vanishing.
+   *
+   * Frames quote the memories they froze verbatim, so forgetting one must
+   * reach them too (R17): never keep a wording longer than the memory it
+   * came from. The drop is owner-level because a frame is a snapshot of
+   * many rows and cannot be edited piecemeal.
+   */
   forgetMemory(id: string): void {
+    const row = this.db.prepare('SELECT owner FROM memories WHERE id = ?').get(id) as Row | undefined;
     this.db
       .prepare('UPDATE memories SET forgotten = 1, updated_at = ? WHERE id = ?')
       .run(Date.now(), id);
+    if (row) this.dropDreamFramesForOwner(row.owner as string);
   }
 
   /**
@@ -539,19 +574,32 @@ export class Store {
     const result = this.db
       .prepare('UPDATE memories SET archived_at = ? WHERE owner = ? AND archived_at IS NULL')
       .run(Date.now(), owner) as { changes: number };
+    // The whole bank leaves recall, so its frames are verbatim text without
+    // a corpus left to replay against (R17).
+    this.dropDreamFramesForOwner(owner);
     return Number(result.changes ?? 0);
   }
 
   deleteMemory(id: string): void {
+    // The owner is read before the row goes, so the frame drop afterwards
+    // still knows whose bank the deleted memory belonged to (R17).
+    const row = this.db.prepare('SELECT owner FROM memories WHERE id = ?').get(id) as Row | undefined;
     this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+    if (row) this.dropDreamFramesForOwner(row.owner as string);
   }
 
   /**
    * Record that a memory was actually used. This is the only path that
    * raises `usefulness`, and it is damped so a single busy day cannot make
    * a memory permanent.
+   *
+   * With `ctx` the same call appends one `memory_touches` row per id as
+   * well: the counters it raises are monotone and carry no history, so the
+   * append-only record is the only place a later night could ever
+   * recompute them from (R4). Without `ctx` nothing extra is written - an
+   * unrecorded turn costs exactly what it costs today.
    */
-  touchMemories(ids: string[]): void {
+  touchMemories(ids: string[], ctx?: { traceId: string; owner: string; policyId?: string }): void {
     if (!ids.length) return;
     const now = Date.now();
     const statement = this.db.prepare(
@@ -562,6 +610,7 @@ export class Store {
         WHERE id = ?`,
     );
     for (const id of ids) statement.run(now, id);
+    if (ctx) this.recordTouches(ctx.traceId, ctx.owner, ids, ctx.policyId);
   }
 
   memoryStats(owner = ASSISTANT_MEMORY_OWNER): {
@@ -874,43 +923,114 @@ export class Store {
     return true;
   }
 
+  /**
+   * Entities of one memory, most-mentioned first. `e.id` breaks ties in
+   * `mentions`: `groupByEntity` in recall.ts keeps the first of the equal
+   * minima, so which entity that is must never depend on SQLite's internal
+   * row order.
+   */
   entitiesFor(memoryId: string): MemoryEntity[] {
     const rows = this.db
       .prepare(
         `SELECT e.* FROM memory_entities e
            JOIN memory_entity_links l ON l.entity_id = e.id
           WHERE l.memory_id = ?
-          ORDER BY e.mentions DESC`,
+          ORDER BY e.mentions DESC, e.id`,
       )
       .all(memoryId) as Row[];
     return rows.map(mapEntity);
   }
 
   /**
+   * Entities of many memories, in one query instead of one per memory. The
+   * dream recorder needs the entities of every row a frame can reach, and a
+   * per-memory call would turn one frame into dozens of statements. Per
+   * memory the order matches `entitiesFor` (mentions DESC, id ASC); a memory
+   * with no entities maps to an empty list rather than to a missing key.
+   */
+  entitiesForMany(memoryIds: string[]): Map<string, MemoryEntity[]> {
+    const grouped = new Map<string, MemoryEntity[]>();
+    const ids = [...new Set(memoryIds)];
+    for (const id of ids) grouped.set(id, []);
+    if (!ids.length) return grouped;
+    const rows = this.db
+      .prepare(
+        `SELECT l.memory_id, e.* FROM memory_entities e
+           JOIN memory_entity_links l ON l.entity_id = e.id
+          WHERE l.memory_id IN (` + ids.map(() => '?').join(', ') + `)
+          ORDER BY l.memory_id, e.mentions DESC, e.id`,
+      )
+      .all(...(ids as never[])) as Row[];
+    for (const row of rows) grouped.get(row.memory_id as string)?.push(mapEntity(row));
+    return grouped;
+  }
+
+  /**
    * Live memories linked to any of these entities, excluding the ones given.
    * `owner` keeps the result inside one bank: the link table has no owner
    * column, so without the filter a cross-owner link would read across banks.
+   *
+   * The filter lets `superseded_by` through while it drops archived rows, and
+   * that asymmetry is deliberate: `offer` in recall.ts drops superseded rows
+   * only after the LIMIT has bitten, so a caller that replays this query must
+   * see them too. This is not the gate's form - `similarMemories` there
+   * filters neither column.
+   *
+   * With `perEntity: true` the limit applies per entity instead of over the
+   * union, which is the shape the live second hop uses (one call per entity,
+   * limit 8); a single LIMIT over a bundled IN (...) call would keep the
+   * union's top N instead. In that mode a memory linked to several of the
+   * queried entities comes back once per entity, on a row carrying
+   * `hopEntityId` - that duplication is wanted, the recorder buckets the rows
+   * by entity, so do not "repair" it away with DISTINCT.
    */
   memoriesForEntities(
     entityIds: string[],
-    options: { owner?: string; exclude?: string[]; limit?: number } = {},
-  ): MemoryRecord[] {
+    options: { owner?: string; exclude?: string[]; limit?: number; perEntity?: boolean } = {},
+  ): (MemoryRecord & { hopEntityId?: string })[] {
     if (!entityIds.length) return [];
     const exclude = options.exclude ?? [];
-    const sql =
-      `SELECT DISTINCT m.* FROM memories m
-         JOIN memory_entity_links l ON l.memory_id = m.id
-        WHERE l.entity_id IN (` + entityIds.map(() => '?').join(', ') + `)
-          AND m.forgotten = 0 AND m.dormant_at IS NULL AND m.archived_at IS NULL` +
+    const where =
+      ' WHERE l.entity_id IN (' + entityIds.map(() => '?').join(', ') + ')' +
+      ' AND m.forgotten = 0 AND m.dormant_at IS NULL AND m.archived_at IS NULL' +
       (options.owner ? ' AND m.owner = ?' : '') +
-      (exclude.length ? ' AND m.id NOT IN (' + exclude.map(() => '?').join(', ') + ')' : '') +
-      ' ORDER BY m.importance DESC LIMIT ?';
-    const rows = this.db
-      .prepare(sql)
-      .all(
-        ...([...entityIds, ...(options.owner ? [options.owner] : []), ...exclude, options.limit ?? 40] as never[]),
-      ) as Row[];
-    return rows.map(mapMemory);
+      (exclude.length ? ' AND m.id NOT IN (' + exclude.map(() => '?').join(', ') + ')' : '');
+    const values: unknown[] = [
+      ...entityIds,
+      ...(options.owner ? [options.owner] : []),
+      ...exclude,
+      options.limit ?? 40,
+    ];
+
+    // `m.id` breaks ties in importance: which row a LIMIT keeps when two
+    // importances are equal must not depend on SQLite's internal order.
+    const rows = options.perEntity
+      ? (this.db
+          .prepare(
+            `SELECT * FROM (
+               SELECT m.*, l.entity_id AS hop_entity_id,
+                      ROW_NUMBER() OVER (PARTITION BY l.entity_id
+                                         ORDER BY m.importance DESC, m.id) AS rn
+                 FROM memories m
+                 JOIN memory_entity_links l ON l.memory_id = m.id` + where + `
+             ) WHERE rn <= ? ORDER BY hop_entity_id, rn`,
+          )
+          .all(...(values as never[])) as Row[])
+      : (this.db
+          .prepare(
+            `SELECT DISTINCT m.* FROM memories m
+               JOIN memory_entity_links l ON l.memory_id = m.id` + where +
+              ' ORDER BY m.importance DESC, m.id LIMIT ?',
+          )
+          .all(...(values as never[])) as Row[]);
+
+    // mapMemory builds a fresh object from named columns, so the partition
+    // key is re-attached instead of riding through the row.
+    return rows.map((row) =>
+      row.hop_entity_id === undefined
+        ? mapMemory(row)
+        : { ...mapMemory(row), hopEntityId: row.hop_entity_id as string },
+    );
   }
 
   /* ------------------------------ edges ------------------------------ */
@@ -1333,6 +1453,9 @@ export class Store {
       skillRevisedCount: 0,
       conflictCount: 0,
       resolvedCount: 0,
+      dreamTracesSeen: 0,
+      dreamFramesScored: 0,
+      dreamCandidates: 0,
       modelCalls: 0,
     };
     this.db
@@ -1360,6 +1483,9 @@ export class Store {
       skillRevisedCount: 'skill_revised_count',
       conflictCount: 'conflict_count',
       resolvedCount: 'resolved_count',
+      dreamTracesSeen: 'dream_traces_seen',
+      dreamFramesScored: 'dream_frames_scored',
+      dreamCandidates: 'dream_candidates',
       modelCalls: 'model_calls',
       report: 'report',
       error: 'error',
@@ -1423,8 +1549,11 @@ export class Store {
 
   /**
    * Take back one night, in a single transaction: the memories the run wrote
-   * are deleted, everything it put to sleep wakes up, and its edges go. This
-   * is what makes an unattended nightly process acceptable at all.
+   * are deleted, everything it put to sleep wakes up, and its edges go. The
+   * frames go with them - they quote the deleted rows verbatim, and the drop
+   * is the same owner-level mechanics the other memory delete paths use
+   * (R17). This is what makes an unattended nightly process acceptable at
+   * all.
    */
   undoSleepRun(id: string): { woken: number; removed: number; edges: number } | null {
     const run = this.getSleepRun(id);
@@ -1473,6 +1602,11 @@ export class Store {
           .run(row.id as string);
         counts.woken += 1;
       }
+      // Frames quote the rows this run wrote verbatim, and undo deletes those
+      // rows outright, so they must fall inside the same transaction, before
+      // the rows they freeze go - the owner-level drop the four wired delete
+      // paths use, never a piecemeal payload edit (R17).
+      this.dropDreamFramesForOwner(run.owner);
       for (const row of written) {
         this.db.prepare('DELETE FROM memories WHERE id = ?').run(row.id as string);
         counts.removed += 1;
@@ -1489,6 +1623,390 @@ export class Store {
     }
     this.recountEntities(run.owner);
     return counts;
+  }
+
+  /* ------------------------------ dream ------------------------------ */
+
+  /**
+   * Every write of one framed turn runs inside this bracket: trace, frame
+   * and touches are one transaction, or none of them are.
+   *
+   * A SAVEPOINT rather than a hand-rolled BEGIN (R9): the store runs its
+   * own transactions over raw `exec`, and a bare nested BEGIN throws
+   * exactly when the recorder happens to run inside one of them. A
+   * savepoint nests by construction, so no "am I inside" flag is needed -
+   * that flag is the thing that silently rots the next time someone adds
+   * a transactional procedure. A throw inside the bracket rolls the whole
+   * turn back and propagates, so the caller still sees the recorder error.
+   */
+  recordDreamTurn(write: () => void): void {
+    this.db.exec('SAVEPOINT dream_rec');
+    try {
+      write();
+      this.db.exec('RELEASE dream_rec');
+    } catch (error) {
+      this.db.exec('ROLLBACK TO dream_rec');
+      this.db.exec('RELEASE dream_rec');
+      throw error;
+    }
+  }
+
+  /** Open one trace per recall call; the turn groups them under `turnId` (R19). */
+  beginTrace(input: DreamTraceInput): DreamTrace {
+    const now = Date.now();
+    const trace: DreamTrace = {
+      id: randomUUID(),
+      turnId: input.turnId,
+      owner: input.owner,
+      kind: input.kind,
+      site: input.site,
+      pipeline: input.pipeline,
+      sessionId: input.sessionId,
+      sessionKind: input.sessionKind,
+      assignmentId: input.assignmentId,
+      sleepRunId: input.sleepRunId,
+      turnIndex: input.turnIndex ?? 0,
+      policySet: input.policySet,
+      framed: input.framed ?? false,
+      holdout: input.holdout ?? false,
+      audit: input.audit ?? false,
+      degraded: null,
+      startedAt: now,
+      createdAt: now,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO dream_traces
+           (id, turn_id, owner, kind, site, pipeline, session_id, session_kind, assignment_id,
+            sleep_run_id, turn_index, policy_set, framed, holdout, audit, started_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        trace.id,
+        trace.turnId,
+        trace.owner,
+        trace.kind,
+        trace.site,
+        trace.pipeline,
+        trace.sessionId ?? null,
+        trace.sessionKind ?? null,
+        trace.assignmentId ?? null,
+        trace.sleepRunId ?? null,
+        trace.turnIndex,
+        JSON.stringify(trace.policySet),
+        trace.framed ? 1 : 0,
+        trace.holdout ? 1 : 0,
+        trace.audit ? 1 : 0,
+        trace.startedAt,
+        trace.createdAt,
+      );
+    return trace;
+  }
+
+  /**
+   * Close a trace. `degraded` is the one closable fact, and an explicit
+   * `null` is a real value ("the call did not degrade"), never a default:
+   * "rows came but all fell below the threshold" is a legitimate miss that
+   * must stay scoreable.
+   */
+  finishTrace(id: string, patch: DreamTracePatch): void {
+    this.db
+      .prepare('UPDATE dream_traces SET degraded = ?, finished_at = ? WHERE id = ?')
+      .run(patch.degraded ?? null, Date.now(), id);
+  }
+
+  /**
+   * Traces still open from a previous process are closed on startup, after
+   * the pattern of `failStaleSleepRuns` - deliberately without an owner or
+   * PID filter, and with the same reservation. The reason reaches the
+   * caller's log line rather than the row: `dream_traces` carries no error
+   * column on purpose, because the "unfinished" abstention is derived from
+   * `finished_at` itself at scoring time. Returns how many traces closed.
+   */
+  failStaleTraces(reason: string): number {
+    // Kept for signature parity with the sibling stale-failers; see above.
+    void reason;
+    const result = this.db
+      .prepare('UPDATE dream_traces SET finished_at = ? WHERE finished_at IS NULL')
+      .run(Date.now()) as { changes: number };
+    return Number(result.changes ?? 0);
+  }
+
+  /** Traces without `finished_at`: what a restart owes its closing pass to. */
+  openTraces(): DreamTrace[] {
+    const rows = this.db
+      .prepare('SELECT * FROM dream_traces WHERE finished_at IS NULL ORDER BY started_at ASC, id')
+      .all() as Row[];
+    return rows.map(mapDreamTrace);
+  }
+
+  /**
+   * Persist one frame for one slot of a trace. Serialise first, measure
+   * second: the cap guards stored bytes, so it is the serialised payload
+   * that is measured, and a frame over the cap is refused with `false`
+   * rather than thrown at the turn - the trace is closed without a frame
+   * and the night simply never scores that turn.
+   *
+   * The Store holds no config, so the caller reads `dream.maxFrameBytes`
+   * (key table, E21: clamped where it is read) and passes it; the default
+   * here is the shipped value. A payload that cannot be serialised at all
+   * is a recorder error and propagates - the bracket around the turn
+   * takes care of the half-written state.
+   */
+  saveFrame(traceId: string, slot: string, frame: RecallFrame, options: { maxFrameBytes?: number } = {}): boolean {
+    const payload = JSON.stringify(frame);
+    const bytes = Buffer.byteLength(payload, 'utf8');
+    if (bytes > (options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES)) return false;
+    // The session is read from the trace: the frame itself does not carry
+    // it, and the delete paths need it as a column (R17). A missing trace
+    // fails the insert on the foreign key, which is the correct outcome -
+    // a frame cannot exist without its trace.
+    const trace = this.db
+      .prepare('SELECT session_id FROM dream_traces WHERE id = ?')
+      .get(traceId) as { session_id: string | null } | undefined;
+    this.db
+      .prepare(
+        `INSERT INTO dream_frames
+           (trace_id, slot, frame_v, owner, session_id, box, corpus_stamp_id, payload, bytes, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        traceId,
+        slot,
+        frame.v,
+        frame.owner,
+        trace?.session_id ?? null,
+        JSON.stringify(frame.box),
+        frame.corpusStampId,
+        payload,
+        bytes,
+        Date.now(),
+      );
+    return true;
+  }
+
+  /**
+   * Append one touch row per memory id. Deliberately append-only (R4):
+   * two touches of the same (trace, memory) are two rows, because the
+   * record exists to make the historyless counters reconstructable, not
+   * to dedupe them.
+   */
+  recordTouches(traceId: string, owner: string, ids: string[], policyId?: string): void {
+    if (!ids.length) return;
+    const now = Date.now();
+    // The turn id rides along from the trace, so labels can attach at the
+    // turn without a second lookup (R19).
+    const insert = this.db.prepare(
+      `INSERT INTO memory_touches (id, owner, memory_id, turn_id, trace_id, policy_id, at)
+       VALUES (?, ?, ?, (SELECT turn_id FROM dream_traces WHERE id = ?), ?, ?, ?)`,
+    );
+    for (const memoryId of ids) {
+      insert.run(randomUUID(), owner, memoryId, traceId, traceId, policyId ?? null, now);
+    }
+  }
+
+  /**
+   * The night's read path: stored frames of one owner with their traces.
+   * Oldest first with (trace, slot) as the tiebreaker, so the probe walks
+   * a deterministic order; `since` selects on the frame's own creation.
+   */
+  framesFor(
+    owner: string,
+    options: { since?: number; limit?: number } = {},
+  ): { trace: DreamTrace; frame: DreamFrame }[] {
+    const sql =
+      `SELECT t.*, f.trace_id AS f_trace_id, f.owner AS f_owner, f.session_id AS f_session_id,
+              f.slot AS f_slot, f.frame_v AS f_frame_v, f.box AS f_box,
+              f.corpus_stamp_id AS f_corpus_stamp_id, f.payload AS f_payload,
+              f.bytes AS f_bytes, f.created_at AS f_created_at
+         FROM dream_frames f
+         JOIN dream_traces t ON t.id = f.trace_id
+        WHERE f.owner = ?` +
+      (options.since ? ' AND f.created_at >= ?' : '') +
+      ' ORDER BY f.created_at ASC, f.trace_id, f.slot LIMIT ?';
+    const values: unknown[] = [owner];
+    if (options.since) values.push(options.since);
+    values.push(options.limit ?? 500);
+    const rows = this.db.prepare(sql).all(...(values as never[])) as Row[];
+    return rows.map((row) => ({ trace: mapDreamTrace(row), frame: mapDreamFrame(row) }));
+  }
+
+  /**
+   * How many stored frames one owner has, regardless of any pool limit.
+   * `framesFor` walks a capped pool oldest first, so the probe reports this
+   * count beside the pool it actually read - a measurement over half the
+   * frames must be visible as one, not pass silently.
+   */
+  dreamFrameCount(owner: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM dream_frames WHERE owner = ?')
+      .get(owner) as { n: number };
+    return Number(row.n ?? 0);
+  }
+
+  /**
+   * Delete frames older than `before`, in batches that each own their
+   * transaction. With foreign keys on, deleting a trace cascades its
+   * frames and touches inside the same statement, and an unbounded sweep
+   * would be one long exclusive write lock on the only connection. The
+   * WAL is truncated afterwards so a nightly sweep actually returns space
+   * to the filesystem instead of growing the file forever. Night-side by
+   * design: the per-batch BEGIN must never run inside another
+   * transaction.
+   */
+  sweepDreamFrames(before: number): number {
+    // Row values pick the exact (trace, slot) pairs: the table's key is a
+    // pair, and deleting by trace_id alone would be wrong the day a second
+    // slot arrives.
+    const statement = this.db.prepare(
+      `DELETE FROM dream_frames WHERE (trace_id, slot) IN
+         (SELECT trace_id, slot FROM dream_frames WHERE created_at < ? LIMIT ${SWEEP_BATCH})`,
+    );
+    let swept = 0;
+    for (;;) {
+      this.db.exec('BEGIN');
+      let changes: number;
+      try {
+        changes = Number((statement.run(before) as { changes: number }).changes ?? 0);
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+      this.db.exec('COMMIT');
+      swept += changes;
+      if (changes < SWEEP_BATCH) break;
+    }
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    return swept;
+  }
+
+  /**
+   * Delete traces older than `before` (their frames and touches cascade),
+   * batched like `sweepDreamFrames` and for the same reasons.
+   */
+  sweepDreamTraces(before: number): number {
+    const statement = this.db.prepare(
+      `DELETE FROM dream_traces WHERE id IN
+         (SELECT id FROM dream_traces WHERE created_at < ? LIMIT ${SWEEP_BATCH})`,
+    );
+    let swept = 0;
+    for (;;) {
+      this.db.exec('BEGIN');
+      let changes: number;
+      try {
+        changes = Number((statement.run(before) as { changes: number }).changes ?? 0);
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+      this.db.exec('COMMIT');
+      swept += changes;
+      if (changes < SWEEP_BATCH) break;
+    }
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    return swept;
+  }
+
+  /**
+   * The delete paths of R17: a frame is a verbatim store, so it may never
+   * outlive the memories or the session it came from. Owner and session
+   * sit on the frame as their own columns precisely so these paths never
+   * have to read the payload. `Assistant.deleteSession` calls the session
+   * variant; the three memory-retiring methods call the owner one.
+   */
+  dropDreamFramesForOwner(owner: string): number {
+    const result = this.db
+      .prepare('DELETE FROM dream_frames WHERE owner = ?')
+      .run(owner) as { changes: number };
+    return Number(result.changes ?? 0);
+  }
+
+  /** See `dropDreamFramesForOwner`. */
+  dropDreamFramesForSession(sessionId: string): number {
+    const result = this.db
+      .prepare('DELETE FROM dream_frames WHERE session_id = ?')
+      .run(sessionId) as { changes: number };
+    return Number(result.changes ?? 0);
+  }
+
+  /**
+   * The document-frequency fingerprint of the corpus, over exactly the
+   * tokens the frames of one night use (R10). bm25 is frozen in the frame
+   * and can never be revalidated, so the corpus is the only observable
+   * that correlates with a frame going stale - and the vocabulary scan
+   * walks the whole index, which is why this runs once per night in the
+   * probe and never inside a turn. The result is cached in `meta` under
+   * its own id; turns stamp only that id onto their frames.
+   */
+  corpusFingerprint(owner: string, tokens: string[]): FrameCorpus {
+    const distinct = [...new Set(tokens)].sort();
+    const df: Record<string, number> = {};
+    if (distinct.length) {
+      const rows = this.db
+        .prepare('SELECT term, doc FROM memories_fts_v WHERE term IN (' + distinct.map(() => '?').join(', ') + ')')
+        .all(...(distinct as never[])) as { term: string; doc: number }[];
+      for (const row of rows) df[row.term] = Number(row.doc);
+    }
+    // A token the index has never seen still belongs in the fingerprint:
+    // df 0 then and df > 0 today is the largest relative move there is.
+    for (const term of distinct) if (df[term] === undefined) df[term] = 0;
+
+    const corpus: FrameCorpus = { id: randomUUID(), owner, at: Date.now(), df };
+    this.setMeta(CORPUS_STAMP_PREFIX + corpus.id, JSON.stringify(corpus));
+    this.setMeta(CORPUS_CURRENT_PREFIX + owner, corpus.id);
+    this.pruneCorpusStamps(owner, corpus.id);
+    return corpus;
+  }
+
+  /**
+   * Retention for the stamp rows: one is written per night and nothing ever
+   * removed them, so `meta` grew a full df map per night without bound. A
+   * stamp is only ever read through a frame's `corpus_stamp_id` or the
+   * current pointer, so a stamp of this owner that no frame cites and that
+   * is not the fresh one is dead the moment the pointer moves. Corrupt rows
+   * are left alone - a row nothing can parse certifies nothing either way,
+   * and this method never throws into the night.
+   */
+  pruneCorpusStamps(owner: string, keepId: string): void {
+    const rows = this.db
+      .prepare('SELECT key, value FROM meta WHERE key LIKE ?')
+      .all(CORPUS_STAMP_PREFIX + '%') as Row[];
+    if (rows.length <= 1) return;
+    const cited = new Set(
+      (this.db
+        .prepare('SELECT DISTINCT corpus_stamp_id AS id FROM dream_frames WHERE corpus_stamp_id IS NOT NULL')
+        .all() as { id: string }[]).map((row) => row.id),
+    );
+    const drop = this.db.prepare('DELETE FROM meta WHERE key = ?');
+    for (const row of rows) {
+      const id = (row.key as string).slice(CORPUS_STAMP_PREFIX.length);
+      if (id === keepId || cited.has(id)) continue;
+      try {
+        if ((JSON.parse(row.value as string) as FrameCorpus).owner !== owner) continue;
+      } catch {
+        continue;
+      }
+      drop.run(row.key as string);
+    }
+  }
+
+  /**
+   * The stamp a turn should carry: the newest fingerprint of this owner.
+   * A meta read and nothing more - computing here would drag the
+   * vocabulary scan into the turn. Null until the first night has stamped
+   * one, and null for a corrupted row rather than a throw: a stamp that
+   * cannot be read simply does not certify anything.
+   */
+  currentCorpusStamp(owner: string): FrameCorpus | null {
+    const id = this.getMeta(CORPUS_CURRENT_PREFIX + owner);
+    if (!id) return null;
+    const stored = this.getMeta(CORPUS_STAMP_PREFIX + id);
+    if (!stored) return null;
+    try {
+      return JSON.parse(stored) as FrameCorpus;
+    } catch {
+      return null;
+    }
   }
 
   /* ------------------------------- meta ------------------------------- */
@@ -1620,10 +2138,59 @@ export function mapSleepRun(row: Row): SleepRun {
     skillRevisedCount: Number(row.skill_revised_count ?? 0),
     conflictCount: Number(row.conflict_count ?? 0),
     resolvedCount: Number(row.resolved_count ?? 0),
+    dreamTracesSeen: Number(row.dream_traces_seen ?? 0),
+    dreamFramesScored: Number(row.dream_frames_scored ?? 0),
+    dreamCandidates: Number(row.dream_candidates ?? 0),
     modelCalls: Number(row.model_calls ?? 0),
     report: (row.report as string) ?? undefined,
     error: (row.error as string) ?? undefined,
     undoneAt: row.undone_at ? Number(row.undone_at) : undefined,
+  };
+}
+
+function mapDreamTrace(row: Row): DreamTrace {
+  return {
+    id: row.id as string,
+    turnId: row.turn_id as string,
+    owner: row.owner as string,
+    kind: row.kind as DreamTraceKind,
+    site: row.site as DreamSite,
+    pipeline: row.pipeline as DreamPipeline,
+    sessionId: (row.session_id as string) ?? undefined,
+    sessionKind: (row.session_kind as SessionKind | null) ?? undefined,
+    assignmentId: (row.assignment_id as string) ?? undefined,
+    sleepRunId: (row.sleep_run_id as string) ?? undefined,
+    turnIndex: Number(row.turn_index ?? 0),
+    policySet: parseJsonColumn<Record<string, RecallPolicy>>(row.policy_set) ?? {},
+    framed: Number(row.framed ?? 0) === 1,
+    holdout: Number(row.holdout ?? 0) === 1,
+    audit: Number(row.audit ?? 0) === 1,
+    degraded: (row.degraded as DreamDegraded | null) ?? null,
+    startedAt: Number(row.started_at),
+    finishedAt: row.finished_at ? Number(row.finished_at) : undefined,
+    createdAt: Number(row.created_at),
+  };
+}
+
+/**
+ * Reads the `f_`-prefixed columns of the `framesFor` join. `box` and
+ * `payload` are parsed directly rather than through `parseJsonColumn`:
+ * both are NOT NULL columns only this store's own writer fills, so a row
+ * that does not parse is corruption the night should hear about, not a
+ * field that silently reads as absent.
+ */
+function mapDreamFrame(row: Row): DreamFrame {
+  return {
+    traceId: row.f_trace_id as string,
+    slot: row.f_slot as string,
+    frameV: Number(row.f_frame_v),
+    owner: row.f_owner as string,
+    sessionId: (row.f_session_id as string | null) ?? undefined,
+    box: JSON.parse(row.f_box as string) as RecallBox,
+    corpusStampId: row.f_corpus_stamp_id as string,
+    payload: JSON.parse(row.f_payload as string) as RecallFrame,
+    bytes: Number(row.f_bytes),
+    createdAt: Number(row.f_created_at),
   };
 }
 

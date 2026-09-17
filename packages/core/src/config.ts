@@ -56,6 +56,74 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       hopEdge: 0.6,
       maxNodes: 300,
     },
+    // The dream (stage 1): frames and traces for recall, so the night can
+    // measure the retrieval policy instead of guessing at it. Key table
+    // (R16) - every key names its reader, and no key without a reader
+    // ships. `dream.promote` is deliberately absent: in stage 1 nothing
+    // would read it.
+    //
+    //   enabled          runtime.ts (recorder call site), sleep.ts (night probe)
+    //   record           runtime.ts (recorder call site)
+    //   frameRate        runtime.ts, session-level hash
+    //   limitMax         memory/dream/frame.ts (fetchFrame frontier: max(limit, limitMax) * 4)
+    //   gridSize         memory/dream/probe.ts (grid construction)
+    //   costWeight       memory/dream/measure.ts (score = nDCG - lambda * chars)
+    //   corpusTolerance  memory/dream/probe.ts (abstain reason 'corpus-drifted')
+    //   maxFrameBytes    store.ts (saveFrame rejects above it)
+    //   maxEvalMs        memory/dream/probe.ts (wall clock)
+    //   frameRetainDays  store.ts (sweepDreamFrames)
+    //   retainDays       store.ts (sweepDreamTraces)
+    //   maxCallsPerNight sleep.ts (run-global cap over all owners)
+    //
+    // `rookery config set` bypasses Zod entirely, so these values are
+    // clamped where they are read, never trusted because they were written.
+    dream: {
+      // Off until the stage-1 budget gate has measured what a frame costs:
+      // this ships the capability, not the operation.
+      enabled: false,
+      // The recorder has its own switch, so recording can be switched off
+      // to relieve turn latency without losing the night's probe.
+      record: false,
+      // A quarter of the sessions, drawn per session and never per trace:
+      // consecutive turns of one session share topic, bank cutout and
+      // entity neighbourhood, so per-trace sampling would split
+      // near-duplicates across both sides of every comparison.
+      frameRate: 0.25,
+      // The policy space's limit span tops out at 16. One frame recorded
+      // at this corner stays replayable for every limit from 4 up; the
+      // frontier it pays for is four times this number of rows.
+      limitMax: 16,
+      // Ten fixed placements: weights at the box edges, threshold in three
+      // steps, hop weights in two - the grid the night scores against the
+      // incumbent, within the 8..12 the stage prescribes.
+      gridSize: 10,
+      // Five percent of the character budget as the price of a
+      // worse-ranked block: enough to matter, too little to trade a hit
+      // for.
+      costWeight: 0.05,
+      // A quarter of relative document-frequency movement over the frame
+      // tokens, beyond which a trace abstains as corpus-drifted.
+      corpusTolerance: 0.25,
+      // 120 KB: the upper end of the expected 40-90 KB frame size, with
+      // headroom. Above it nothing is framed at all - a frame is not
+      // allowed to grow until it fits.
+      maxFrameBytes: 120_000,
+      // Twenty seconds of wall clock for the model-free night evaluation,
+      // counted and reported like modelCalls: zero model calls is not zero
+      // cost, and the probe shares the one synchronous connection the
+      // server uses.
+      maxEvalMs: 20_000,
+      // Frames are large and exist only for replay; six weeks covers the
+      // calibration window without paying storage for stale verbatim text.
+      frameRetainDays: 45,
+      // Traces and touches are small and carry the calibration; a year
+      // keeps every later promotion's justification reconstructable.
+      retainDays: 365,
+      // Zero in stage 1: the probe makes no model calls. The ceiling is
+      // wired now anyway, run-global over all owners, so Phase 3 does not
+      // have to retrofit the cap.
+      maxCallsPerNight: 0,
+    },
     sleep: {
       enabled: true,
       // Half past three: late enough that nobody is working, early enough

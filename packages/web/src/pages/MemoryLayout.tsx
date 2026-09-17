@@ -103,8 +103,13 @@ const GROWTH_SERIES: TrendSeries[] = [
   { key: 'sleep', label: ORIGIN_LABEL.sleep, color: 'var(--chart-3)' },
 ];
 
-/** The stages of a night, in order - the row's progress bar walks them. */
-const SLEEP_PHASES = ['started', 'light', 'deep', 'rem', 'finished'] as const;
+/**
+ * The stages of a night, in order - the row's progress bar walks them. `replay`
+ * runs once before the cycles and has to be listed here like every other
+ * `SleepStage` from `types.ts`: `phaseProgress` maps an unknown phase to zero,
+ * so a missing stage makes the bar jump back to the start mid-run.
+ */
+const SLEEP_PHASES = ['started', 'replay', 'light', 'deep', 'rem', 'finished'] as const;
 
 const TABS = [
   { to: '/memory', label: 'Overview', end: true },

@@ -273,11 +273,17 @@ export async function buildServer(
   for (const run of staleSleepRuns) {
     assistant.emit('sleep', { type: 'sleep', run } satisfies AgentEvent);
   }
-  if (staleAssignments.length || staleTasks.length || staleSleepRuns.length) {
+  // Dream traces left open by the same crash get the same closing pass: a
+  // trace without `finished_at` is the 'unfinished' abstention at scoring
+  // time, so the restart closes what the dead process owed. No event rides
+  // along - no client shows a trace - which is why this one is just counted.
+  const staleDreamTraces = assistant.store.failStaleTraces(RESTART_REASON);
+  if (staleAssignments.length || staleTasks.length || staleSleepRuns.length || staleDreamTraces) {
     log.warn('Failed stale rows left running by a previous process', {
       assignments: staleAssignments.length,
       tasks: staleTasks.length,
       sleepRuns: staleSleepRuns.length,
+      dreamTraces: staleDreamTraces,
     });
   }
 

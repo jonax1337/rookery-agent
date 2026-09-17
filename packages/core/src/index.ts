@@ -23,6 +23,57 @@ export {
   toMatchQuery,
   type RecallOptions,
 } from './memory/recall.js';
+// The dream split of recall (stage 1, AP6): the frame records the permissive
+// corner of the declared box, the scorer replays any point inside it, and the
+// resolver is the one truth about the recall parameters. No barrel under
+// memory/dream/ - three packages meet here, so each module exports itself.
+export {
+  boxFromOptions,
+  fetchFrame,
+  isPointBox,
+  SEEDS_CAP,
+  type FetchFrameOptions,
+} from './memory/dream/frame.js';
+export {
+  dropContradictedFromFrame,
+  groupFromFrame,
+  mergeProfile,
+  pipelineAgent,
+  pipelineAssistant,
+  renderFromFrame,
+  scoreFrame,
+  type FrameScoringPolicy,
+  type PipelineResult,
+} from './memory/dream/score.js';
+export { resolvePolicy } from './memory/dream/policy.js';
+// The block measure (stage 1, AP8): scores what the model read, not what
+// recall returned, against a caller-supplied gain.
+export {
+  deltaIsLabelBacked,
+  isScalarMultiple,
+  measure,
+  normaliseWeights,
+  type DeltaPosition,
+  type GainFunction,
+  type MeasureResult,
+} from './memory/dream/measure.js';
+// The night's grid probe (stage 1, AP10): fixed placements against the
+// incumbent over the stored frames, the freshness sensor against the live
+// bank, the corpus fingerprint once per night. Appended after the measure
+// block, never reordered - three packages meet in this file.
+export {
+  bootstrapCi,
+  buildGrid,
+  corpusDrifted,
+  freshnessCheck,
+  runGridProbe,
+  type FreshnessEntry,
+  type FreshnessOptions,
+  type FreshnessReport,
+  type GridPlacementReport,
+  type ProbeOptions,
+  type ProbeReport,
+} from './memory/dream/probe.js';
 // The write gate and the night shift: what may enter the bank at all, and
 // what happens to it once nobody is asking anything.
 export {
