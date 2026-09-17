@@ -284,7 +284,7 @@ Dormant memories remain in the database and can be woken. Sleep does not retire 
 | Team | Group of agents with a purpose and optional lead |
 | Project | Work context with an optional directory for assignments |
 | Assignment | One agent run with progress, report, status, and duration |
-| Task | Board entry planned and executed as one or more assignments |
+| Task | One piece of work: the board entry and the mail thread it is negotiated in, carried out by one or more assignments |
 | Message | Communication between agents, managers, and the assistant |
 
 A persistent agent is a stored role, not a permanently running provider process. Assignments launch fresh CLI processes. Delegation follows reporting relationships and is bounded by depth and concurrency limits. Defaults are four concurrent assignments, depth three, and a 45-minute timeout per assignment.

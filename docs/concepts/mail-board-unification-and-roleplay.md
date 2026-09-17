@@ -1,6 +1,8 @@
 # Der Thread ist der Vorgang: Mail, Board und Rollenspiel zusammengefuehrt
 
-Stand: 2026-09-17. **Konzept, nicht umgesetzt.**
+Stand: 2026-09-18. **Umgesetzt, alle fuenf Phasen** — siehe "Stand der
+Umsetzung" gleich unten. Der Rest des Dokuments ist der Entwurf, aus dem
+gebaut wurde; weicht er vom Code ab, gilt der Code.
 
 Die Organisationsstruktur funktioniert einzeln und scheitert im Zusammenspiel.
 Ein Auftrag an einen Agenten entsteht heute auf vier Wegen, und jeder Weg
@@ -32,6 +34,83 @@ in Abschnitt 5 laeuft vollstaendig auf dieser Maschinerie),
 Nachfolger eine eigene Identitaet bekommt — Abschnitt 6.4 hier schliesst daran
 an), `telegram-channel.md` (der Weg, auf dem eine Mail an den Nutzer wirklich
 einen Menschen erreicht).
+
+---
+
+## Stand der Umsetzung
+
+Stand 2026-09-18, Branch `feat/mail-board-unification`, `SCHEMA_VERSION` 23
+mit genau zwei neuen Spalten (`assignments.title`, `agents.voice`). Alle fuenf
+Phasen aus Abschnitt 11 sind gebaut.
+
+**Phase 1 — Reparatur (gebaut).** Der To-Trigger liest `mail.threadKind` statt
+`params.kind` (3.2). Eine Mail in einem Task-Thread laeuft ueber
+`#continueTask` und haengt per `linkTaskAssignment` am selben Task, statt einen
+board-losen Lauf daneben zu starten (3.3); nur wer auf To steht und weder
+diesen Task bearbeitet noch ihn in Auftrag gegeben hat, bekommt weiterhin
+einen eigenen Lauf — Delegation per Mail bleibt damit moeglich. `blocked` setzt
+der Controller aus `#answeredDuringTurn(..., 'to')`, nie das Modell (4).
+`notifyTaskStatus` sitzt im `finish()` von `#runTask` (4.1) und beurteilt den
+Abschluss, nicht den Lauf: es bekommt mit, ab wann gezaehlt wird, und die
+Arbeitsanweisung dessen, der den Task bestellt hat, zaehlt nie als Antwort. So
+schreibt auch ein Stunden spaeter von Hand abgebrochener Task noch seine
+Notiz, und ein delegierter Task, der `failed` endet, schweigt nicht mehr —
+Befund 1.4.
+
+**Phase 2 — Ein Eingang und echte Namen (gebaut).** `mode` ist aus Schema und
+Route verschwunden; was eine Mail wird, steht in der Adresszeile (3.1), und
+die Compose-Maske sagt es unter der To-Zeile an. `assign` legt einen echten
+Task an, unter `ToolContext.taskId` als Kind seines Auftrags, und fuehrt ihn
+ueber `runTask` aus (E9) — der vierte Eingang aus Befund 1.1 ist zu. `title`
+ist Pflichtparameter von `assign` und `create_task`, ein Lauf erbt den Namen
+seines Tasks, `taskRunNumber` liefert "run N" (7.2).
+
+**Phase 3 — Der Waechter (gebaut).** Eine sichtbare, idempotent geseedete
+`cron_jobs`-Zeile `board-watch:<orgId>`, die eine Nutzeraenderung ueberlebt,
+per `runEvent` aus den `task`-Ereignissen bei `failed` und `blocked` feuerbar,
+mit der Uhr als Rueckfallebene; `[SILENT]` wird als Trailing-Token erkannt
+(5). Dazu das, was der Waechter zum Hinsehen braucht: `list_tasks` findet mit
+Statusfilter auch Unteraufgaben — seit E9 haengt delegierte Arbeit unter einem
+Elternteil — und `renderBoard` nennt bei einem wartenden Task, wie lange er
+schon wartet und das Betreff der letzten Mail seines Threads (9).
+
+**Phase 4 — Rollenspiel (gebaut).** `voice` als Spalte, Typ, Formularfeld und
+`hire_agent`-Parameter (6.2); die beiden Register in `buildAgentPrompt`
+schliessen einander aus und haengen an `org.roleplay` (6.3, 10);
+Kollegenstimmen als eigener, eng gefasster Abschnitt (6.4). Das Wort
+"assignment" steht in keinem Prompt mehr, nur noch in Tool- und Typnamen (2).
+
+**Phase 5 — Vorschauen, Live-Output und Terminal (gebaut).** Ein einziger
+Markdown-Renderer mit kompaktem Preset und ohne eigenes Vorschau-Feld, die
+rohen `whitespace-pre-wrap`-Bloecke sind weg (7.3). `AgentDetailPage` hat
+weder "Live now" noch `LiveRunList`, dafuer die verlinkte "works on"-Zeile
+(7.4). `AssignmentTerminal` ist ein Terminal (7.5). Das Board hat eine
+`blocked`-Spalte mit der letzten Mail, das Task-Detail den Thread.
+
+**Die offenen Fragen aus Abschnitt 13 sind entschieden** und so gebaut:
+
+- **F1 — Mail waehrend eines Laufes:** nur zustellen. Ein laufender Lauf wird
+  nie abgebrochen.
+- **F2 — Gespraechs-Threads mit mehreren Agenten auf To:** wecken diese
+  Agenten weiter wie heute. Keine Aenderung, keine Karten.
+- **F3 — Verfallsfrist fuer `blocked`:** keine. Der Waechter schliesst einen
+  wartenden Task nie selbst; er darf nachfassen, entscheiden muss ein Mensch.
+- **F4 — Thread fuer einen fortgesetzten Lauf:** die letzten zwei Mails im
+  Volltext, dazu der bestehende Betreff-Index.
+- **F5 — Wer schreibt die Stimme:** Jarvis bei `hire_agent`, der Nutzer kann
+  im Formular ueberschreiben. Eine leere Stimme bleibt still neutral, ohne
+  Mahnung.
+- **F6 — `org.roleplay`:** global, nicht je Agent.
+- **F7 — Kopf oder Schwanz:** es bleiben zwei Vorschauarten. Eine Beschreibung
+  zeigt ihren Kopf, eine laufende Ausgabe ihren Schwanz ueber das bestehende
+  `AssignmentView.preview`. Kein neues Feld.
+- **F8 — Altbestand ohne Titel:** beim Lesen aus der ersten Zeile gefuellt und
+  nie zurueckgeschrieben.
+
+**Was offen bleibt.** Aus den fuenf Phasen steht nichts aus. Offen sind allein
+die beiden Stellen, an denen F2 und F3 bewusst nichts geaendert haben: ein
+Gespraech weckt Agenten ohne Karte, und ein wartender Task steht, bis jemand
+antwortet.
 
 ---
 
@@ -838,6 +917,9 @@ der wartenden `blocked` Tasks. Wirksam in Abschnitt 7.4.
 ---
 
 ## 13. Offene Fragen
+
+*(Alle acht sind inzwischen entschieden; die Antworten stehen oben unter
+"Stand der Umsetzung". Hier bleibt stehen, wie die Frage gestellt war.)*
 
 **F1 — Mail, die eintrifft, waehrend ein Task laeuft.** Abschnitt 3.3
 schlaegt "nur zustellen" vor, weil der laufende Prozess seinen Prompt schon
