@@ -56,6 +56,23 @@ export {
   type GainFunction,
   type MeasureResult,
 } from './memory/dream/measure.js';
+// The night's grid probe (stage 1, AP10): fixed placements against the
+// incumbent over the stored frames, the freshness sensor against the live
+// bank, the corpus fingerprint once per night. Appended after the measure
+// block, never reordered - three packages meet in this file.
+export {
+  bootstrapCi,
+  buildGrid,
+  corpusDrifted,
+  freshnessCheck,
+  runGridProbe,
+  type FreshnessEntry,
+  type FreshnessOptions,
+  type FreshnessReport,
+  type GridPlacementReport,
+  type ProbeOptions,
+  type ProbeReport,
+} from './memory/dream/probe.js';
 // The write gate and the night shift: what may enter the bank at all, and
 // what happens to it once nobody is asking anything.
 export {

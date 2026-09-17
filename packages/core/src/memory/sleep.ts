@@ -21,6 +21,7 @@ import { entitySlug, type Store } from './store.js';
 import { parseCandidates, smallModelFor } from './extractor.js';
 import { admitCandidates, confirmedBy, linkEntities, normalizeTokens, similarity } from './gate.js';
 import { MEMORY_KINDS, recall } from './recall.js';
+import { runGridProbe } from './dream/probe.js';
 import { SkillStore, skillSlug } from '../skills/store.js';
 
 /**
@@ -219,9 +220,21 @@ export class SleepRunner extends EventEmitter {
       skillRevisedCount: 0,
       conflictCount: 0,
       resolvedCount: 0,
+      // The dream counters (fifth of the six places in step): initialised
+      // here or `counters.dreamFramesScored` is a type error before anything
+      // ever increments it. `dreamCandidates` stays 0 in stage 1 - its writer
+      // is the Phase 3 candidate counter, and the column must not quietly
+      // change meaning before then.
+      dreamTracesSeen: 0,
+      dreamFramesScored: 0,
+      dreamCandidates: 0,
       modelCalls: 0,
     };
     let error: string | undefined;
+    // The one dream line the stored report carries beyond describeSleep:
+    // the import/reindex invalidation notice, whose numbers live only in the
+    // probe result (concept 3.3).
+    let dreamReportSuffix = '';
 
     try {
       const providerId = await this.#resolveProvider(input.provider);
@@ -274,8 +287,12 @@ export class SleepRunner extends EventEmitter {
       // bank, surfaces contradictions and pulls corrections out of the day's
       // words, and that is precisely the work the later phases exist to do;
       // a budget measured before the read funds the night for a quieter day
-      // than the one it just had. Everything is database arithmetic, so
-      // measuring costs nothing.
+      // than the one it just had. The arithmetic is database-only, but it is
+      // not free: #demand clusters the living bank pair by pair, and the
+      // dream probe below reads and scores every stored frame. Both carry
+      // their own ceilings (#demand's phase budgets, the probe's
+      // dream.maxEvalMs), so "measures itself" means "costs up to a declared
+      // bound", never "costs nothing".
       if (provider) {
         const demand = this.#demand(owner, this.#store.liveMemories(owner));
         budgets = allocateNightBudget(
@@ -291,6 +308,57 @@ export class SleepRunner extends EventEmitter {
           },
         );
         this.#log.info('Night measured', { owner, demand, budgets });
+      }
+
+      /* ---- the dream: the model-free measurement of the retrieval policy. ----
+         ---- Wedged here on purpose: BEFORE the cycle loop (R7), so that    ----
+         ---- the freshness side sees the bank the day left rather than the  ----
+         ---- supersessions #condense is about to write, and ABOVE the       ----
+         ---- provider guard inside the loop (R8), so it also runs in a      ----
+         ---- night without a provider - the one night where it is the only  ----
+         ---- thing that could run at all. Stage 1 probes the assistant's    ----
+         ---- bank only (R18); agent frames would be cost without a night    ----
+         ---- that ever scores them.                                        ---- */
+      const dreamSettings = this.#config.memory.dream;
+      const dreamProbe =
+        dreamSettings.enabled && owner === ASSISTANT_MEMORY_OWNER
+          ? runGridProbe(this.#store, this.#config, owner, run.id, controller.signal)
+          : null;
+      if (dreamProbe) {
+        counters.dreamTracesSeen = dreamProbe.tracesSeen;
+        counters.dreamFramesScored = dreamProbe.framesScored;
+        if (dreamProbe.invalidated > 0) {
+          // Concept 3.3: frames older than a reindex or bulk import are
+          // declared invalid outright, and the night report says so instead
+          // of letting every following night guess at it as corpus drift.
+          const since = dreamProbe.invalidatedAt
+            ? new Date(dreamProbe.invalidatedAt).toISOString()
+            : 'an unknown import';
+          dreamReportSuffix =
+            ' ' + dreamProbe.invalidated + ' of ' + dreamProbe.frames +
+            ' dream frames unusable since the import/reindex at ' + since + '.';
+        }
+        // R18: the probe is model-free, and the run-global ceiling is what
+        // certifies it. A probe that ever exceeds it has stopped being the
+        // stage-1 probe, and the night should say so rather than shrug.
+        const ceiling = Math.max(0, Math.round(dreamSettings.maxCallsPerNight));
+        if (dreamProbe.modelCalls > ceiling) {
+          this.#log.warn('Dream probe exceeded dream.maxCallsPerNight', {
+            owner,
+            calls: dreamProbe.modelCalls,
+            ceiling,
+          });
+        }
+        this.#log.info('Dream probe measured', {
+          owner,
+          tracesSeen: dreamProbe.tracesSeen,
+          frames: dreamProbe.frames,
+          framesScored: dreamProbe.framesScored,
+          evalMs: dreamProbe.evalMs,
+          modelCalls: dreamProbe.modelCalls,
+          deadlineHit: dreamProbe.deadlineHit,
+          error: dreamProbe.error ?? undefined,
+        });
       }
 
       for (let cycle = 1; cycle <= cycles; cycle += 1) {
@@ -403,6 +471,17 @@ export class SleepRunner extends EventEmitter {
       }
 
       this.#store.recountEntities(owner);
+
+      /* ---- the dream's two retention clocks (concept 8.7): frames go ----
+         ---- after frameRetainDays, traces and touches after retainDays,  ----
+         ---- in batches that each own their transaction so the one         ----
+         ---- connection is never locked for long. Hygiene, not measurement: ----
+         ---- this runs with the dream switched off too, because a verbatim  ----
+         ---- store must not outlive its retention window just because      ----
+         ---- measuring was turned off (R17).                               ---- */
+      const endedAt = Date.now();
+      this.#store.sweepDreamFrames(endedAt - clampDays(dreamSettings.frameRetainDays) * 24 * 60 * 60 * 1000);
+      this.#store.sweepDreamTraces(endedAt - clampDays(dreamSettings.retainDays) * 24 * 60 * 60 * 1000);
     } catch (cause) {
       error = (cause as Error).message;
       this.#log.warn('Sleep phase failed', { owner, error });
@@ -417,7 +496,7 @@ export class SleepRunner extends EventEmitter {
         status: error ? 'failed' : 'done',
         finishedAt: finished,
         durationMs: finished - run.startedAt,
-        report: describeSleep(counters),
+        report: describeSleep(counters) + dreamReportSuffix,
         error,
       }) ?? run;
 
@@ -438,12 +517,14 @@ export class SleepRunner extends EventEmitter {
   /**
    * How much work the night actually has, per phase, in model calls.
    *
-   * Everything here is database arithmetic - a night that measures itself
-   * costs nothing to measure. The numbers are ceilings on what each phase
-   * may ask for, not promises: a phase that finds less work than its budget
-   * simply stops early, exactly as before. The replay pass is measured
-   * separately (`#replayCandidates`), because it runs before this and
-   * changes what there is to measure.
+   * Everything here is database arithmetic, but arithmetic is not free: the
+   * condense demand clusters the living bank pair by pair, and the dream
+   * probe that follows the wallet reads and scores every stored frame under
+   * its own wall clock (`dream.maxEvalMs`). The numbers are ceilings on what
+   * each phase may ask for, not promises: a phase that finds less work than
+   * its budget simply stops early, exactly as before. The replay pass is
+   * measured separately (`#replayCandidates`), because it runs before this
+   * and changes what there is to measure.
    */
   #demand(owner: string, live: MemoryRecord[]): NightDemand {
     const settings = this.#config.memory.sleep;
@@ -1844,6 +1925,13 @@ export function describeSleep(counters: {
   resolvedCount?: number;
   skillCount?: number;
   skillRevisedCount?: number;
+  /**
+   * The dream counters (sixth of the six places in step); optional so
+   * callers that predate them keep compiling.
+   */
+  dreamTracesSeen?: number;
+  dreamFramesScored?: number;
+  dreamCandidates?: number;
 }): string {
   const parts: string[] = [counters.readCount + ' memories read'];
   if (counters.replayedCount) {
@@ -1870,6 +1958,13 @@ export function describeSleep(counters: {
   }
   if (counters.skillCount) {
     parts.push(plural(counters.skillCount, 'skill', 'skills') + ' written');
+  }
+  // The dream's own line: grid placements scored, the counter the probe
+  // owns in stage 1 (its writer is the paired measure call, and the frame
+  // rows it could not score appear in the log and the report suffix, not
+  // here - a night that abstained everything still did the work).
+  if (counters.dreamFramesScored) {
+    parts.push(plural(counters.dreamFramesScored, 'dream placement', 'dream placements') + ' scored');
   }
   return parts.length === 1 ? parts[0] + ', nothing to do.' : parts.join(', ') + '.';
 }
@@ -1949,7 +2044,15 @@ export function allocateNightBudget(
   cap: number,
   ceilings: NightCeilings,
 ): NightBudgets {
-  const keys = ['condense', 'resolve', 'link', 'reflect', 'revise', 'practise'] as const;
+  const volume = ['condense', 'resolve', 'link'] as const;
+  const judgement = ['reflect', 'revise', 'practise'] as const;
+  // Derived, never re-listed (R20): a key present in a hand-written tuple
+  // but in neither sub-list kept its uncapped allocation while the volume
+  // phases were squeezed, and a demand key missing from the tuple never
+  // reached `funded` at all - `budgets.x` read undefined, the phase guard
+  // let it through and the phase ran unbudgeted. With the tuple derived
+  // from the two lists, neither failure mode can be written.
+  const keys = [...volume, ...judgement] as const;
   const funded = new Map<string, number>();
   for (const key of keys) {
     funded.set(key, Math.max(0, Math.min(demand[key] ?? 0, ceilings[key] ?? Number.POSITIVE_INFINITY)));
@@ -1960,8 +2063,6 @@ export function allocateNightBudget(
 
   if (sumOf(keys) <= cap) return Object.fromEntries(funded) as unknown as NightBudgets;
 
-  const volume = ['condense', 'resolve', 'link'] as const;
-  const judgement = ['reflect', 'revise', 'practise'] as const;
   const judgementSum = sumOf(judgement);
 
   if (judgementSum >= cap) {
@@ -2021,6 +2122,18 @@ function chunk<T>(items: T[], size: number): T[][] {
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0));
+}
+
+/**
+ * A retention span in days, clamped for a config that bypassed the patch
+ * schema (E21): `rookery config set` writes anything, so the night clamps
+ * what it reads rather than trusting what was written. A hundred years is
+ * the ceiling - beyond that the caller means "never sweep", and a negative
+ * span would instead sweep everything, every night.
+ */
+function clampDays(value: number): number {
+  const days = Number.isFinite(value) ? Math.round(value) : 0;
+  return Math.min(36_500, Math.max(0, days));
 }
 
 /**
