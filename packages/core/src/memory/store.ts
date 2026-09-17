@@ -870,43 +870,114 @@ export class Store {
     return true;
   }
 
+  /**
+   * Entities of one memory, most-mentioned first. `e.id` breaks ties in
+   * `mentions`: `groupByEntity` in recall.ts keeps the first of the equal
+   * minima, so which entity that is must never depend on SQLite's internal
+   * row order.
+   */
   entitiesFor(memoryId: string): MemoryEntity[] {
     const rows = this.db
       .prepare(
         `SELECT e.* FROM memory_entities e
            JOIN memory_entity_links l ON l.entity_id = e.id
           WHERE l.memory_id = ?
-          ORDER BY e.mentions DESC`,
+          ORDER BY e.mentions DESC, e.id`,
       )
       .all(memoryId) as Row[];
     return rows.map(mapEntity);
   }
 
   /**
+   * Entities of many memories, in one query instead of one per memory. The
+   * dream recorder needs the entities of every row a frame can reach, and a
+   * per-memory call would turn one frame into dozens of statements. Per
+   * memory the order matches `entitiesFor` (mentions DESC, id ASC); a memory
+   * with no entities maps to an empty list rather than to a missing key.
+   */
+  entitiesForMany(memoryIds: string[]): Map<string, MemoryEntity[]> {
+    const grouped = new Map<string, MemoryEntity[]>();
+    const ids = [...new Set(memoryIds)];
+    for (const id of ids) grouped.set(id, []);
+    if (!ids.length) return grouped;
+    const rows = this.db
+      .prepare(
+        `SELECT l.memory_id, e.* FROM memory_entities e
+           JOIN memory_entity_links l ON l.entity_id = e.id
+          WHERE l.memory_id IN (` + ids.map(() => '?').join(', ') + `)
+          ORDER BY l.memory_id, e.mentions DESC, e.id`,
+      )
+      .all(...(ids as never[])) as Row[];
+    for (const row of rows) grouped.get(row.memory_id as string)?.push(mapEntity(row));
+    return grouped;
+  }
+
+  /**
    * Live memories linked to any of these entities, excluding the ones given.
    * `owner` keeps the result inside one bank: the link table has no owner
    * column, so without the filter a cross-owner link would read across banks.
+   *
+   * The filter lets `superseded_by` through while it drops archived rows, and
+   * that asymmetry is deliberate: `offer` in recall.ts drops superseded rows
+   * only after the LIMIT has bitten, so a caller that replays this query must
+   * see them too. This is not the gate's form - `similarMemories` there
+   * filters neither column.
+   *
+   * With `perEntity: true` the limit applies per entity instead of over the
+   * union, which is the shape the live second hop uses (one call per entity,
+   * limit 8); a single LIMIT over a bundled IN (...) call would keep the
+   * union's top N instead. In that mode a memory linked to several of the
+   * queried entities comes back once per entity, on a row carrying
+   * `hopEntityId` - that duplication is wanted, the recorder buckets the rows
+   * by entity, so do not "repair" it away with DISTINCT.
    */
   memoriesForEntities(
     entityIds: string[],
-    options: { owner?: string; exclude?: string[]; limit?: number } = {},
-  ): MemoryRecord[] {
+    options: { owner?: string; exclude?: string[]; limit?: number; perEntity?: boolean } = {},
+  ): (MemoryRecord & { hopEntityId?: string })[] {
     if (!entityIds.length) return [];
     const exclude = options.exclude ?? [];
-    const sql =
-      `SELECT DISTINCT m.* FROM memories m
-         JOIN memory_entity_links l ON l.memory_id = m.id
-        WHERE l.entity_id IN (` + entityIds.map(() => '?').join(', ') + `)
-          AND m.forgotten = 0 AND m.dormant_at IS NULL AND m.archived_at IS NULL` +
+    const where =
+      ' WHERE l.entity_id IN (' + entityIds.map(() => '?').join(', ') + ')' +
+      ' AND m.forgotten = 0 AND m.dormant_at IS NULL AND m.archived_at IS NULL' +
       (options.owner ? ' AND m.owner = ?' : '') +
-      (exclude.length ? ' AND m.id NOT IN (' + exclude.map(() => '?').join(', ') + ')' : '') +
-      ' ORDER BY m.importance DESC LIMIT ?';
-    const rows = this.db
-      .prepare(sql)
-      .all(
-        ...([...entityIds, ...(options.owner ? [options.owner] : []), ...exclude, options.limit ?? 40] as never[]),
-      ) as Row[];
-    return rows.map(mapMemory);
+      (exclude.length ? ' AND m.id NOT IN (' + exclude.map(() => '?').join(', ') + ')' : '');
+    const values: unknown[] = [
+      ...entityIds,
+      ...(options.owner ? [options.owner] : []),
+      ...exclude,
+      options.limit ?? 40,
+    ];
+
+    // `m.id` breaks ties in importance: which row a LIMIT keeps when two
+    // importances are equal must not depend on SQLite's internal order.
+    const rows = options.perEntity
+      ? (this.db
+          .prepare(
+            `SELECT * FROM (
+               SELECT m.*, l.entity_id AS hop_entity_id,
+                      ROW_NUMBER() OVER (PARTITION BY l.entity_id
+                                         ORDER BY m.importance DESC, m.id) AS rn
+                 FROM memories m
+                 JOIN memory_entity_links l ON l.memory_id = m.id` + where + `
+             ) WHERE rn <= ? ORDER BY hop_entity_id, rn`,
+          )
+          .all(...(values as never[])) as Row[])
+      : (this.db
+          .prepare(
+            `SELECT DISTINCT m.* FROM memories m
+               JOIN memory_entity_links l ON l.memory_id = m.id` + where +
+              ' ORDER BY m.importance DESC, m.id LIMIT ?',
+          )
+          .all(...(values as never[])) as Row[]);
+
+    // mapMemory builds a fresh object from named columns, so the partition
+    // key is re-attached instead of riding through the row.
+    return rows.map((row) =>
+      row.hop_entity_id === undefined
+        ? mapMemory(row)
+        : { ...mapMemory(row), hopEntityId: row.hop_entity_id as string },
+    );
   }
 
   /* ------------------------------ edges ------------------------------ */
