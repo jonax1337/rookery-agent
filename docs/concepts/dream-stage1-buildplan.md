@@ -1,6 +1,12 @@
 # Traum — Bauplan Stufe 1
 
-Stand: 2026-09-17. **Bauplan, nicht Konzept.** Das Konzept ist
+Stand: 2026-09-17. **Erledigt - alle elf Arbeitspakete sind gebaut und in `main`**
+(Merge `2a90243`). Dieses Dokument bleibt als Begruendung und als Muster fuer die
+Bauplaene der Phasen 2 und 3 stehen. Abweichung gegenueber dem Text unten: die
+Schemanummer ist beim Zusammenfuehren von 19 auf **21** gewandert, weil `main`
+unterdessen 19 und 20 belegt hatte.
+
+**Bauplan, nicht Konzept.** Das Konzept ist
 `docs/concepts/dream-and-recursive-self-improvement.md` (Fassung 2); dieses
 Dokument uebersetzt genau die **erste Ausbaustufe** desselben in
 Arbeitspakete, die mehrere Agenten parallel abarbeiten koennen, ohne

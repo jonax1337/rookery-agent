@@ -1,6 +1,35 @@
 # Traum und rekursive Selbstverbesserung
 
-Stand: 2026-09-17. **Konzept, Stufe 1 in Umsetzung.**
+Stand: 2026-09-17. **Phase 1 ist gebaut und in `main`** (Merge `2a90243`, Schema 21).
+Phase 2 bis 6 stehen aus.
+
+## Stand der Umsetzung - hier anknuepfen
+
+**Gebaut (Phase 1, das Messfundament).** `packages/core/src/memory/dream/` mit `frame.ts` (der
+`fetchFrame`/`scoreFrame`-Schnitt, Rahmen an der permissivsten Ecke der Box), `score.ts`, `policy.ts`
+(`resolvePolicy`), `measure.ts` (das Blockmass), `probe.ts` (die Gitterprobe). Rekorder an der
+Aufrufstelle in `runtime.ts`, Persistenz in `memory/store.ts`, Tabellen in `memory/db.ts` (Schema 21).
+Die Probe laeuft in `memory/sleep.ts` vor der Zyklusschleife und ueber dem Provider-Waechter.
+Dazu vier vorgezogene Fremdarbeiten, die Rookery ohnehin fehlten: die vier Gleichstandsbrecher im
+Abruf, `PRAGMA busy_timeout`, die Abwaertsbremse gegen neuere Datenbanken, und `replay` in
+`SLEEP_PHASES`.
+
+**Nicht gebaut, und zwar mit Absicht.** Es gibt keinen Schreiber fuer `dream_labels` (die Tabelle ist
+leer angelegt), keine Tabelle `policy_versions`, keinen Kandidatenschreiber und kein Befoerderungstor.
+**Rookery verbessert sich also noch nicht selbst.** `memory.dream.enabled` und `memory.dream.record`
+stehen beide auf `false`.
+
+**Was das heute bedeutet.** Schaltet man die Probe ein, rechnet sie - aber jede Spur enthaelt sich mit
+`no-reachable-label`, weil ohne Etiketten `IDCG = 0` ist. Das Geruest steht, der Massstab fehlt.
+
+**Der naechste Schritt ist Phase 2 (§11), und sie ist der eigentliche Test.** Dort entsteht die
+Abbildung von den Quellen auf `gain(m)` (§5). Bevor Phase 3 gebaut wird, verlangt dieses Dokument die
+Pruefung an einigen Dutzend handbeurteilten Turns, ob die Etiketten ungefaehr das treffen, was ein
+Mensch relevant nennen wuerde. Faellt das durch, ist der Weg zu stoppen und nicht zu umgehen - siehe
+"Was dieses Dokument nicht beweisen kann".
+
+Ein Bauplan existiert nur fuer Phase 1 (`dream-stage1-buildplan.md`, erledigt). Phase 2 und 3 brauchen
+einen eigenen, nach demselben Muster: Arbeitspakete mit disjunkten Dateimengen, Wellen, Gate je Welle.
 
 Diese Fassung aendert nicht das Ziel von Fassung 1, sondern die **Beweislast**. Fassung 1 behauptete,
 `recall` sei exakt replaybar, weil es eine reine Funktion sei. Das ist eine Eigenschaft des Codes.
