@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 export type Db = DatabaseSync;
 
@@ -23,7 +23,6 @@ export function openDatabase(path: string): Db {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA synchronous = NORMAL');
-
   // The CLI opens the same file in its own process, so there are really two
   // writers. Until now that was harmless because the codebase had exactly two
   // short transactions; the dream adds one bracket per recorded turn plus a
@@ -46,7 +45,6 @@ function hasColumn(db: Db, table: string, column: string): boolean {
   const rows = db.prepare('PRAGMA table_info(' + table + ')').all() as { name: string }[];
   return rows.some((row) => row.name === column);
 }
-
 
 /**
  * A file that a newer build has ever opened must not quietly continue under
@@ -281,6 +279,23 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE sleep_runs ADD COLUMN learned_count INTEGER NOT NULL DEFAULT 0');
   }
 
+  // Schema 18 -> 19: dream bookkeeping on the run - traces the nightly probe
+  // looked at.
+  if (!hasColumn(db, 'sleep_runs', 'dream_traces_seen')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_traces_seen INTEGER NOT NULL DEFAULT 0');
+  }
+  // Schema 18 -> 19: grid placements the nightly probe scored.
+  if (!hasColumn(db, 'sleep_runs', 'dream_frames_scored')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_frames_scored INTEGER NOT NULL DEFAULT 0');
+  }
+  // Schema 18 -> 19: model-written candidates. Its writer arrives with
+  // Phase 3; Stage 1 leaves it at 0 rather than borrowing the column for
+  // something else in between. There is deliberately no dream_promoted -
+  // nothing is promoted in Stage 1, so that counter would have no writer.
+  if (!hasColumn(db, 'sleep_runs', 'dream_candidates')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_candidates INTEGER NOT NULL DEFAULT 0');
+  }
+
   /* ------------------------------ corrections ------------------------------
      A correction is the strongest signal the system gets. When the user says
      "no, not like that", something written down is wrong - and until now
@@ -360,6 +375,90 @@ function migrate(db: Db): void {
       ON skill_versions(sleep_run_id, created_at);
   `);
 
+  /* -------------------------------- dream ---------------------------------
+     docs/concepts/dream-and-recursive-self-improvement.md. A trace is one
+     recall call - several calls share a turn_id - and a frame is the record
+     that makes a turn replayable: everything a candidate policy could have
+     needed, frozen at the permissive-most corner of the declared parameter
+     box. Frames are a verbatim store (the literal query, full memory
+     snapshots), which is why they carry owner and session columns of their
+     own: the delete paths must reach them without parsing the payload.
+
+     `dream_labels` is created as an empty table. Its writers arrive with
+     Phase 2; creating the shape now keeps that stage free of another schema
+     bump. `memory_touches` is append-only bookkeeping, never a label source:
+     the monotone access/usefulness counters cannot be reconstructed later if
+     the record is not kept from the start. */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS dream_traces (
+      id            TEXT PRIMARY KEY,
+      turn_id       TEXT NOT NULL,              -- groups the calls of one turn
+      owner         TEXT NOT NULL,
+      kind          TEXT NOT NULL,              -- turn | assignment | night
+      site          TEXT NOT NULL,              -- turn | extract | tool | inspect
+      pipeline      TEXT NOT NULL,              -- assistant | agent
+      session_id    TEXT,
+      session_kind  TEXT,                       -- chat | voice | mail | schedule
+      assignment_id TEXT,
+      sleep_run_id  TEXT,
+      turn_index    INTEGER NOT NULL DEFAULT 0,
+      policy_set    TEXT NOT NULL,              -- JSON: effective parameter set per slot
+      framed        INTEGER NOT NULL DEFAULT 0,
+      holdout       INTEGER NOT NULL DEFAULT 0,
+      audit         INTEGER NOT NULL DEFAULT 0, -- the frozen audit set
+      degraded      TEXT,                       -- NULL | no-tokens | fts-threw
+      started_at    INTEGER NOT NULL,
+      finished_at   INTEGER,
+      created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_dream_traces_owner   ON dream_traces(owner, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_dream_traces_session ON dream_traces(session_id, turn_index);
+    CREATE INDEX IF NOT EXISTS idx_dream_traces_turn    ON dream_traces(turn_id);
+    CREATE INDEX IF NOT EXISTS idx_dream_traces_open    ON dream_traces(finished_at);
+
+    CREATE TABLE IF NOT EXISTS dream_frames (
+      trace_id        TEXT NOT NULL REFERENCES dream_traces(id) ON DELETE CASCADE,
+      slot            TEXT NOT NULL,            -- recall
+      frame_v         INTEGER NOT NULL,
+      owner           TEXT NOT NULL,            -- for the delete paths, without reading the payload
+      session_id      TEXT,                     -- ditto
+      box             TEXT NOT NULL,            -- JSON
+      corpus_stamp_id TEXT NOT NULL,            -- points at the night's document-frequency stamp in meta
+      payload         TEXT NOT NULL,            -- JSON: the whole frame
+      bytes           INTEGER NOT NULL,
+      created_at      INTEGER NOT NULL,
+      PRIMARY KEY (trace_id, slot)
+    );
+    CREATE INDEX IF NOT EXISTS idx_dream_frames_age   ON dream_frames(created_at);
+    CREATE INDEX IF NOT EXISTS idx_dream_frames_owner ON dream_frames(owner, session_id);
+
+    CREATE TABLE IF NOT EXISTS dream_labels (
+      turn_id    TEXT NOT NULL,
+      target     TEXT NOT NULL,                 -- memory id, or '*' for a per-trace weight
+      source     TEXT NOT NULL,                 -- correction | review | merge | user
+      relevance  REAL NOT NULL,                 -- 1 = shown relevant, 0 = shown irrelevant
+      scope      TEXT NOT NULL,                 -- turn | session
+      evidence   TEXT,
+      dead_at    INTEGER,                       -- target removed later; the row stays
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (turn_id, target, source)
+    );
+    CREATE INDEX IF NOT EXISTS idx_dream_labels_target ON dream_labels(target);
+
+    CREATE TABLE IF NOT EXISTS memory_touches (
+      id        TEXT PRIMARY KEY,
+      owner     TEXT NOT NULL,
+      memory_id TEXT NOT NULL,
+      turn_id   TEXT,
+      trace_id  TEXT REFERENCES dream_traces(id) ON DELETE CASCADE,
+      policy_id TEXT,                           -- policy_versions.id, NULL until Phase 3
+      at        INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_touches_memory ON memory_touches(memory_id, at);
+    CREATE INDEX IF NOT EXISTS idx_memory_touches_owner  ON memory_touches(owner, at);
+    CREATE INDEX IF NOT EXISTS idx_memory_touches_trace  ON memory_touches(trace_id);
+  `);
+
   // FTS index over memory content plus tags, kept in sync by triggers.
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
@@ -386,6 +485,13 @@ function migrate(db: Db): void {
       INSERT INTO memories_fts(rowid, content, tags)
         VALUES (new.rowid, new.content, new.tags);
     END;
+
+    -- The dream's corpus watch reads the document frequency of a frame's
+    -- tokens from here, once per night - never inside a turn, because the
+    -- vocabulary scan walks the whole index. It lives beside the index it
+    -- reads so the two cannot drift apart.
+    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts_v
+      USING fts5vocab(memories_fts, 'row');
   `);
 
   // The organisation: durable agents, their structure, and what they did.
