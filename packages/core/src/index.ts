@@ -23,6 +23,28 @@ export {
   toMatchQuery,
   type RecallOptions,
 } from './memory/recall.js';
+// The dream split of recall (stage 1, AP6): the frame records the permissive
+// corner of the declared box, the scorer replays any point inside it, and the
+// resolver is the one truth about the recall parameters. No barrel under
+// memory/dream/ - three packages meet here, so each module exports itself.
+export {
+  boxFromOptions,
+  fetchFrame,
+  SEEDS_CAP,
+  type FetchFrameOptions,
+} from './memory/dream/frame.js';
+export {
+  dropContradictedFromFrame,
+  groupFromFrame,
+  mergeProfile,
+  pipelineAgent,
+  pipelineAssistant,
+  renderFromFrame,
+  scoreFrame,
+  type FrameScoringPolicy,
+  type PipelineResult,
+} from './memory/dream/score.js';
+export { resolvePolicy } from './memory/dream/policy.js';
 // The write gate and the night shift: what may enter the bank at all, and
 // what happens to it once nobody is asking anything.
 export {

@@ -3,10 +3,16 @@ import {
   type MemoryEntity,
   type MemoryKind,
   type MemoryQuery,
-  type MemoryRecord,
+  type RecallBox,
   type ScoredMemory,
 } from '../types.js';
 import { mapMemory, type Store } from './store.js';
+// The dream split: recall is touch(scoreFrame(fetchFrame(...))), so this
+// module and memory/dream/ import each other. Every cross-reference sits
+// inside a function body, never at module-initialisation time, which is what
+// keeps that cycle safe under ESM.
+import { boxFromOptions, fetchFrame } from './dream/frame.js';
+import { scoreFrame } from './dream/score.js';
 
 /**
  * Memory recall.
@@ -25,7 +31,7 @@ import { mapMemory, type Store } from './store.js';
  * and the assistant never recalls an agent's working notes.
  */
 
-const WEIGHTS = { relevance: 0.55, importance: 0.2, recency: 0.15, usage: 0.1 };
+export const WEIGHTS = { relevance: 0.55, importance: 0.2, recency: 0.15, usage: 0.1 };
 const RECENCY_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
@@ -39,7 +45,7 @@ const RECALL_CEILING = 1.1;
  * direct hit (R13); before this, a near-ceiling direct hit could push the
  * literal-scored profile rows out of the head of the block.
  */
-const PROFILE_LEAD = RECALL_CEILING;
+export const PROFILE_LEAD = RECALL_CEILING;
 
 /**
  * Total order for every in-JS sort of scored memories: score descending,
@@ -50,7 +56,7 @@ export const byScoreThenId = (a: ScoredMemory, b: ScoredMemory): number =>
   b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /** Exponential recency decay over the half-life above, mirroring `recall`'s. */
-function recencyOf(updatedAt: number, now: number): number {
+export function recencyOf(updatedAt: number, now: number): number {
   return Math.pow(0.5, (now - updatedAt) / RECENCY_HALF_LIFE_MS);
 }
 
@@ -99,158 +105,39 @@ export interface RecallOptions extends MemoryQuery {
   hopEntity?: number;
   /** Score a memory inherits through a `refines` or `caused_by` edge. */
   hopEdge?: number;
+  /**
+   * Recorder context for `memory_touches` (dream stage 1): forwarded to
+   * `Store.touchMemories(ids, ctx)` unchanged. Without it the touch path is
+   * byte-identical to what it has always been - the recorder at the call
+   * site (AP9) fills it in, never anything inside the dream modules.
+   */
+  touchContext?: { traceId: string; owner: string; policyId?: string };
 }
 
 /**
  * Find the memories worth putting in front of the model for this turn.
  * Returns an empty array for an unsearchable query rather than dumping
  * everything, so a greeting does not drag in the whole memory bank.
+ *
+ * The dream split (stage 1): `fetchFrame` records the decision, `scoreFrame`
+ * replays it, and this function is the composition plus the one write the
+ * recall path has ever had. The frame is built over the realised point - the
+ * box below collapses `max(limit, limitMax)` to `limit`, so an untraced turn
+ * sees exactly the `limit * 4` frontier and the `limit * 4` rows it has
+ * always seen. Only a caller with an open trace (the recorder, AP9) hands
+ * `fetchFrame` a wider box, because only a traced turn gets replayed.
  */
 export function recall(store: Store, options: RecallOptions): ScoredMemory[] {
-  const limit = options.limit ?? 8;
-  const threshold = options.threshold ?? 0.12;
-  const owner = options.owner ?? ASSISTANT_MEMORY_OWNER;
-  const match = toMatchQuery(options.text);
-  if (!match) return [];
-
-  const kinds = options.kinds ?? [];
-  const kindFilter = kinds.length ? ' AND m.kind IN (' + kinds.map(() => '?').join(', ') + ')' : '';
-
-  // bm25() returns a negative number where lower is better; negate it so the
-  // scale runs the same direction as every other signal.
-  const sql =
-    `SELECT m.*, -bm25(memories_fts, 1.0, 0.5) AS relevance
-       FROM memories_fts
-       JOIN memories m ON m.rowid = memories_fts.rowid
-      WHERE memories_fts MATCH ?
-        AND m.owner = ?
-        AND m.forgotten = 0
-        AND m.dormant_at IS NULL
-        AND m.superseded_by IS NULL
-        AND m.archived_at IS NULL
-        AND m.importance >= ?` +
-    kindFilter +
-    ` ORDER BY relevance DESC, m.id LIMIT ?`;
-
-  let rows: Record<string, unknown>[];
-  try {
-    rows = store.db
-      .prepare(sql)
-      .all(match, owner, options.minImportance ?? 0, ...kinds, limit * 4) as Record<string, unknown>[];
-  } catch {
-    // A malformed MATCH should degrade to "no memories", never break the turn.
-    return [];
-  }
-
-  const now = Date.now();
-  const maxRelevance = Math.max(...rows.map((row) => Number(row.relevance) || 0), 1);
-  const queryTokens = new Set(tokenize(options.text));
-
-  const scored: ScoredMemory[] = rows.map((row) => {
-    const record = mapMemory(row);
-    const relevance = (Number(row.relevance) || 0) / maxRelevance;
-    const recency = Math.pow(0.5, (now - record.updatedAt) / RECENCY_HALF_LIFE_MS);
-    const usage = Math.min(1, Math.log2(record.accessCount + 1) / 5);
-    // A memory whose tag the user just said is almost certainly on topic.
-    const tagHit = record.tags.some((tag) => queryTokens.has(tag.toLowerCase())) ? 0.1 : 0;
-
-    const score =
-      WEIGHTS.relevance * relevance +
-      WEIGHTS.importance * record.importance +
-      WEIGHTS.recency * recency +
-      WEIGHTS.usage * usage +
-      tagHit;
-
-    return {
-      ...record,
-      score,
-      hop: 'direct' as const,
-      reason: describe(relevance, record.importance, recency, tagHit > 0),
-    };
-  });
-
-  const direct = scored.filter((memory) => memory.score >= threshold).sort(byScoreThenId);
-
-  // The second hop: what the question could not say in words. Only the best
-  // few direct hits get to pull neighbours in, so a vague question does not
-  // drag the whole bank along behind it.
-  const expanded =
-    options.expand === false ? [] : expand(store, owner, direct.slice(0, 3), options);
-
-  const byId = new Map<string, ScoredMemory>();
-  for (const memory of [...direct, ...expanded]) {
-    const existing = byId.get(memory.id);
-    // Maximum, never a sum: reaching the same memory two ways is one memory.
-    if (!existing || memory.score > existing.score) byId.set(memory.id, memory);
-  }
-
-  const top = [...byId.values()].sort(byScoreThenId).slice(0, limit);
+  const box: RecallBox = boxFromOptions(options);
+  const frame = fetchFrame(store, { ...options, box, site: 'turn', pipeline: 'assistant' });
+  const result = scoreFrame(frame, options);
+  if (!result.ok) return [];
+  const top = result.ranked;
 
   if (options.touch !== false && top.length) {
-    store.touchMemories(top.map((memory) => memory.id));
+    store.touchMemories(top.map((memory) => memory.id), options.touchContext);
   }
   return top;
-}
-
-/**
- * Pull in what the direct hits are connected to.
- *
- * This is what closes the gap lexical search cannot: "which language do I
- * prefer?" shares no word with "works mainly with TypeScript", but both hang
- * off the entity `typescript`. Common entities are damped - one that half the
- * bank mentions says nothing about this question in particular.
- */
-function expand(
-  store: Store,
-  owner: string,
-  seeds: ScoredMemory[],
-  options: RecallOptions,
-): ScoredMemory[] {
-  if (!seeds.length) return [];
-  const hopEntity = options.hopEntity ?? 0.45;
-  const hopEdge = options.hopEdge ?? 0.6;
-  const seedIds = seeds.map((memory) => memory.id);
-  const out = new Map<string, ScoredMemory>();
-
-  const offer = (record: MemoryRecord, score: number, hop: 'entity' | 'edge', reason: string): void => {
-    if (seedIds.includes(record.id)) return;
-    // One bank only. The link table has no owner column, so a stray
-    // cross-owner link must not turn the second hop into a cross-owner read.
-    if (record.owner !== owner) return;
-    if (record.forgotten || record.dormantAt || record.supersededBy || record.archivedAt) return;
-    const existing = out.get(record.id);
-    if (existing && existing.score >= score) return;
-    out.set(record.id, { ...record, score, hop, reason });
-  };
-
-  for (const seed of seeds) {
-    const entities = store.entitiesFor(seed.id);
-    for (const entity of entities) {
-      if (entity.mentions <= 1) continue;
-      const damping = Math.min(1, 3 / Math.max(1, entity.mentions));
-      const inherited = hopEntity * seed.score * damping;
-      if (inherited < (options.threshold ?? 0.12) * 0.5) continue;
-      for (const record of store.memoriesForEntities([entity.id], { owner, exclude: seedIds, limit: 8 })) {
-        offer(record, inherited * (0.6 + 0.4 * record.importance), 'entity', 'connected through ' + entity.name);
-      }
-    }
-  }
-
-  const edges = store.edgesFrom(seedIds, ['refines', 'caused_by']);
-  for (const edge of edges) {
-    const seed = seeds.find((memory) => memory.id === edge.srcId);
-    if (!seed) continue;
-    const record = store.getMemory(edge.dstId);
-    if (!record || record.owner !== owner) continue;
-    offer(
-      record,
-      hopEdge * seed.score * edge.weight,
-      'edge',
-      edge.relation === 'refines' ? 'refines a match' : 'explains a match',
-    );
-  }
-
-  return [...out.values()].sort(byScoreThenId);
 }
 
 /**
@@ -331,7 +218,7 @@ export function coreProfile(
   });
 }
 
-function describe(relevance: number, importance: number, recency: number, taggedHit: boolean): string {
+export function describe(relevance: number, importance: number, recency: number, taggedHit: boolean): string {
   const parts: string[] = [];
   if (relevance > 0.6) parts.push('strong text match');
   else if (relevance > 0.25) parts.push('text match');
