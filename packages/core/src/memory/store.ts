@@ -1937,7 +1937,40 @@ export class Store {
     const corpus: FrameCorpus = { id: randomUUID(), owner, at: Date.now(), df };
     this.setMeta(CORPUS_STAMP_PREFIX + corpus.id, JSON.stringify(corpus));
     this.setMeta(CORPUS_CURRENT_PREFIX + owner, corpus.id);
+    this.pruneCorpusStamps(owner, corpus.id);
     return corpus;
+  }
+
+  /**
+   * Retention for the stamp rows: one is written per night and nothing ever
+   * removed them, so `meta` grew a full df map per night without bound. A
+   * stamp is only ever read through a frame's `corpus_stamp_id` or the
+   * current pointer, so a stamp of this owner that no frame cites and that
+   * is not the fresh one is dead the moment the pointer moves. Corrupt rows
+   * are left alone - a row nothing can parse certifies nothing either way,
+   * and this method never throws into the night.
+   */
+  pruneCorpusStamps(owner: string, keepId: string): void {
+    const rows = this.db
+      .prepare('SELECT key, value FROM meta WHERE key LIKE ?')
+      .all(CORPUS_STAMP_PREFIX + '%') as Row[];
+    if (rows.length <= 1) return;
+    const cited = new Set(
+      (this.db
+        .prepare('SELECT DISTINCT corpus_stamp_id AS id FROM dream_frames WHERE corpus_stamp_id IS NOT NULL')
+        .all() as { id: string }[]).map((row) => row.id),
+    );
+    const drop = this.db.prepare('DELETE FROM meta WHERE key = ?');
+    for (const row of rows) {
+      const id = (row.key as string).slice(CORPUS_STAMP_PREFIX.length);
+      if (id === keepId || cited.has(id)) continue;
+      try {
+        if ((JSON.parse(row.value as string) as FrameCorpus).owner !== owner) continue;
+      } catch {
+        continue;
+      }
+      drop.run(row.key as string);
+    }
   }
 
   /**

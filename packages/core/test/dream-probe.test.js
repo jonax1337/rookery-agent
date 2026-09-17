@@ -180,6 +180,11 @@ function count(store, table) {
   return store.db.prepare('SELECT COUNT(*) AS n FROM ' + table).get().n;
 }
 
+/** Rows of the one meta write the probe is allowed (the nightly stamp, R10). */
+function stampCount(store) {
+  return store.db.prepare("SELECT COUNT(*) AS n FROM meta WHERE key LIKE 'dream.corpus_stamp.%'").get().n;
+}
+
 /** A provider that answers the night's prompts from a scripted table. */
 function scriptedProvider(replies = {}) {
   return {
@@ -346,6 +351,7 @@ test('a full probe writes nothing to the bank and counts every reason (R6)', () 
     recordFrame(store, config, 'What does the harbor manifest list?', { sessionId: 'session-one' });
     recordFrame(store, config, 'harbor ledger question', { sessionId: 'session-two' });
     const before = bankCounters(store);
+    const stampsBefore = stampCount(store);
 
     const report = runGridProbe(store, config, ASSISTANT_MEMORY_OWNER, 'run-r6', new AbortController().signal);
 
@@ -369,6 +375,9 @@ test('a full probe writes nothing to the bank and counts every reason (R6)', () 
     // The R6 contract itself: `touch: false` is not a flag anywhere in the
     // probe - `fetchFrame` has no touch path at all - and this is the proof.
     assert.deepEqual(bankCounters(store), before);
+    // And the one meta write there is, is the nightly corpus stamp (R10) -
+    // pinned so a second write path cannot slip in unnoticed.
+    assert.ok(stampCount(store) <= stampsBefore + 1, 'at most one corpus stamp row per probe run');
   });
 });
 

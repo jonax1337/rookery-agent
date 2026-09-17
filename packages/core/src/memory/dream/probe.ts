@@ -625,8 +625,9 @@ function expectedBudgetChars(config: RookeryConfig): number {
  * Run the night's model-free evaluation: load the stored frames, score the
  * declared grid against each frame's own incumbent, aggregate paired per
  * trace, bootstrap over sessions, and run the freshness sensor over what
- * passed the pre-checks. Nothing is promoted, nothing is written, nothing is
- * thrown - the result is numbers plus their certificates.
+ * passed the pre-checks. Nothing is promoted, nothing but the nightly corpus
+ * stamp is written (`corpusFingerprint`, the one meta write R10 prescribes),
+ * nothing is thrown - the result is numbers plus their certificates.
  *
  * The pre-checks fire in a fixed order, and the order is the contract: an
  * unfinished trace first, then `corpus-invalidated` (older than a reindex or

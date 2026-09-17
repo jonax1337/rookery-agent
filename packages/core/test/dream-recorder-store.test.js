@@ -330,6 +330,33 @@ test('the corpus fingerprint reads document frequencies and caches itself in met
   store.close();
 });
 
+test('a superseded corpus stamp is pruned unless a frame still cites it', () => {
+  const store = makeStore();
+  store.upsertMemory({ kind: 'fact', content: 'The deploy pipeline fails when tests flake.' });
+  const stamps = () =>
+    store.db.prepare("SELECT COUNT(*) AS n FROM meta WHERE key LIKE 'dream.corpus_stamp.%'").get().n;
+
+  // Night one stamps; a frame recorded under that stamp cites it.
+  const first = store.corpusFingerprint(ASSISTANT_MEMORY_OWNER, ['deploy']);
+  const trace = store.beginTrace(traceInput());
+  assert.equal(store.saveFrame(trace.id, 'recall', framePayload({ corpusStampId: first.id })), true);
+
+  // Night two moves the pointer: the cited stamp survives, ...
+  const second = store.corpusFingerprint(ASSISTANT_MEMORY_OWNER, ['deploy', 'pipeline']);
+  assert.notEqual(second.id, first.id);
+  assert.ok(store.getMeta('dream.corpus_stamp.' + first.id), 'the cited stamp stays readable');
+  assert.ok(store.getMeta('dream.corpus_stamp.' + second.id));
+
+  // ... and once nothing cites a stamp any more, the next move takes it -
+  // meta must not grow a full df map per night without bound.
+  const third = store.corpusFingerprint(ASSISTANT_MEMORY_OWNER, ['deploy']);
+  assert.equal(store.getMeta('dream.corpus_stamp.' + second.id), null, 'the uncited stamp is pruned');
+  assert.ok(store.getMeta('dream.corpus_stamp.' + first.id), 'the cited stamp still stays');
+  assert.equal(stamps(), 2);
+  assert.equal(store.currentCorpusStamp(ASSISTANT_MEMORY_OWNER).id, third.id);
+  store.close();
+});
+
 test('framesFor hands frames back with their traces', () => {
   const store = makeStore();
   const trace = store.beginTrace(traceInput());
