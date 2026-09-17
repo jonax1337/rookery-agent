@@ -51,7 +51,7 @@ import { cn } from '@/lib/utils';
  */
 
 /** Cell edge in px - every cell is a square of this size. */
-const CELL = 12;
+const CELL = 24;
 const GAP = 3;
 const STEP = CELL + GAP;
 
@@ -124,7 +124,7 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
         </Fade>
       </CardHeader>
       <Fade asChild delay={100}>
-        <CardContent className="px-2 sm:px-6">
+        <CardContent className="px-0">
           <HeatGraph.Root
             data={data.map((day) => ({ date: day.day, count: day.messages }))}
             start={data[0]?.day}
@@ -133,7 +133,7 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
             colorScale={HEAT_COLORS}
             aria-hidden="true"
           >
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5 px-2 sm:px-6">
               {/*
                 The calendar keeps its natural width and is centred, the way
                 GitHub's is: a whole year of squares is a fixed-size object,
@@ -168,7 +168,7 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
                       )}
                     </HeatGraph.MonthLabels>
                   </div>
-                  <div className="flex items-center justify-center gap-2 w-full">
+                  <div className="flex items-center gap-2 w-full">
                     {/*
                       Weekday initials in the gutter, every other row - Monday,
                       Wednesday, Friday, like the graph this layout imitates.
@@ -198,9 +198,12 @@ export function ActivityHeatmapCard({ data, className }: ActivityHeatmapCardProp
                     </div>
                     <HeatGraph.Grid
                       style={{
-                        gridTemplateColumns: `repeat(${weeks}, ${CELL}px)`,
-                        gridTemplateRows: `repeat(7, ${CELL}px)`,
+                        gridTemplateColumns: `repeat(${weeks}, 1fr)`,
+                        gridTemplateRows: `repeat(7, 1fr)`,
                         gap: GAP,
+                        flex: 1,
+                        minWidth: 0,
+                        aspectRatio: `${weeks} / 7`,
                       }}
                     >
                       {() => <HeatGraph.Cell className="rounded-[2px]" />}
