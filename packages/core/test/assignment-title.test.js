@@ -57,7 +57,7 @@ test('a run written before schema 22 reads back with a name derived from its bri
   const after = new Store(path);
   const stamp = after.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
   assert.equal(stamp.value, String(SCHEMA_VERSION), 'the file is stamped with this build');
-  assert.equal(SCHEMA_VERSION, 22);
+  assert.equal(SCHEMA_VERSION, 23);
 
   const read = after.org.getAssignment(run.id);
   assert.equal(read.title, 'Ship the parser', 'the old row is named from its first line');

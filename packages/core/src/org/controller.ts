@@ -940,6 +940,7 @@ export class OrgController extends EventEmitter {
               slug: text('slug') || undefined,
               title: text('title'),
               instructions: text('instructions'),
+              voice: text('voice') || undefined,
               handover: text('handover') || undefined,
             },
             this.#asProvider(text('provider')) ?? replaces.provider,
@@ -960,6 +961,7 @@ export class OrgController extends EventEmitter {
           name: text('name'),
           title: text('title'),
           instructions: text('instructions'),
+          voice: text('voice') || undefined,
           teamId: team?.id,
           managerId: manager?.id,
           provider: this.#asProvider(text('provider')),
@@ -3166,7 +3168,7 @@ export class OrgController extends EventEmitter {
   async replaceAgent(
     orgId: string,
     predecessorId: string,
-    successor: { name: string; slug?: string; title: string; instructions: string; handover?: string },
+    successor: { name: string; slug?: string; title: string; instructions: string; voice?: string; handover?: string },
     providerId?: ProviderId,
   ): Promise<Agent> {
     const predecessor = this.#store.org.getAgent(predecessorId);
@@ -3201,6 +3203,9 @@ export class OrgController extends EventEmitter {
       name: successor.name,
       title: successor.title,
       instructions: successor.instructions,
+      // Decision E4 (agent-performance-management.md): a successor is a new
+      // identity, never a copy - the voice is never inherited either.
+      voice: successor.voice,
       teamId: predecessor.teamId,
       managerId: predecessor.managerId,
       provider: predecessor.provider,

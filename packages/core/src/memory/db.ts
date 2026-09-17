@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 export type Db = DatabaseSync;
 
@@ -631,6 +631,15 @@ function migrate(db: Db): void {
   // it from its own first line rather than writing a guess back over it.
   if (!hasColumn(db, 'assignments', 'title')) {
     db.exec('ALTER TABLE assignments ADD COLUMN title TEXT');
+  }
+
+  // Schema 22 -> 23: an agent's mail gets a register of its own - two to
+  // four sentences on HOW this person writes, colouring the output without
+  // ever steering the work (that stays `instructions`). Nullable: a row
+  // hired before this column existed reads back with a null voice and stays
+  // silently neutral (decision E11, F5).
+  if (!hasColumn(db, 'agents', 'voice')) {
+    db.exec('ALTER TABLE agents ADD COLUMN voice TEXT');
   }
 
   db.exec(`

@@ -1571,6 +1571,20 @@ function OrgSection({
             onCheckedChange={(on) => setOrg({ lazyCoding: on })}
           />
         </Field>
+
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="set-roleplay">Roleplay in mail</FieldLabel>
+            <FieldDescription>
+              A run that started from an email answers as a letter to a colleague, in that agent's own voice, instead of a plain report. Off restores the report for every run.
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="set-roleplay"
+            checked={draft.org.roleplay}
+            onCheckedChange={(on) => setOrg({ roleplay: on })}
+          />
+        </Field>
       </FieldSet>
     </Fade>
   );

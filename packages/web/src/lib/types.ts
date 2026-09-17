@@ -303,6 +303,8 @@ export interface Agent {
   name: string;
   title: string;
   instructions: string;
+  /** Two to four sentences on HOW this person writes. Never steers the work; only colours mail. */
+  voice?: string;
   teamId?: string;
   managerId?: string;
   provider?: ProviderId;
@@ -963,6 +965,8 @@ export interface OrgConfig {
   assignmentTimeoutMs: number;
   /** Agents get the Ponytail ruleset in their system prompt. */
   lazyCoding: boolean;
+  /** On, a mail-born run answers as a letter in the agent's own voice instead of a report. */
+  roleplay: boolean;
   activeOrganizationId?: string;
 }
 

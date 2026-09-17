@@ -1261,3 +1261,80 @@ test('a name is one short line and never the brief itself', async () => {
   }
   assistant.close();
 });
+
+/* ------------------------------- roleplay ------------------------------- */
+
+test('a mail-born run is told to answer as a letter, result first, in its own voice', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, {
+    name: 'Mara',
+    voice: 'Warm and precise; short sentences, never hedges.',
+  });
+
+  await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: mara.slug,
+    subject: 'Ship the thing',
+    body: 'Please ship it.',
+  });
+  await sleep(150);
+
+  const run = fake.runs.find((entry) => entry.prompt.startsWith('TASK: Ship the thing'));
+  assert.ok(run, 'the mail-born run happened');
+  assert.match(run.systemPrompt, /a short salutation, one sentence of context/);
+  assert.match(run.systemPrompt, /The result stands in the first paragraph/);
+  assert.match(run.systemPrompt, /in your own voice: Warm and precise; short sentences, never hedges\./);
+  assert.doesNotMatch(
+    run.systemPrompt,
+    /lead with the result, then what you changed or found/,
+    'the report register is replaced, not doubled up alongside the letter one',
+  );
+  assert.equal(store.org.getAssignment(store.org.listAssignments(org.id, { agentId: mara.id })[0].id).status, 'done');
+  assistant.close();
+});
+
+test('an assign-born run keeps the plain report register, no letter', async () => {
+  const fake = createFakeProvider();
+  const { assistant } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, {
+    name: 'Mara',
+    voice: 'Warm and precise; short sentences, never hedges.',
+  });
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+
+  await assistant.org.handle(ctx, 'assign', { agent: mara.slug, task: 'Write the parser', title: 'Write the parser' });
+  await sleep(200);
+
+  const run = fake.runs.find((entry) => entry.prompt.startsWith('TASK: Write the parser'));
+  assert.ok(run, 'the assign-born run happened');
+  assert.match(run.systemPrompt, /lead with the result, then what you changed or found/);
+  assert.doesNotMatch(run.systemPrompt, /a short salutation, one sentence of context/);
+  assistant.close();
+});
+
+test('org.roleplay off restores the plain report register even for a mail-born run', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake, { org: { autoReview: false, roleplay: false } });
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, {
+    name: 'Mara',
+    voice: 'Warm and precise; short sentences, never hedges.',
+  });
+
+  await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: mara.slug,
+    subject: 'Ship the thing',
+    body: 'Please ship it.',
+  });
+  await sleep(150);
+
+  const run = fake.runs.find((entry) => entry.prompt.startsWith('TASK: Ship the thing'));
+  assert.ok(run, 'the mail-born run happened');
+  assert.match(run.systemPrompt, /lead with the result, then what you changed or found/);
+  assert.doesNotMatch(run.systemPrompt, /a short salutation, one sentence of context/);
+  assistant.close();
+});

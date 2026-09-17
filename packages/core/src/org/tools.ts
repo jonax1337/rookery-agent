@@ -365,6 +365,13 @@ export const ORG_TOOLS: ToolDefinition[] = [
         name: str('Display name, e.g. "Mara". With replaces set, must differ from the outgoing agent\'s name.'),
         title: str('Job title, e.g. "Backend Engineer".'),
         instructions: str('Standing instructions for the role, two to six sentences.'),
+        voice: str(
+          'Two to four sentences on HOW this person writes - never what they can do, which stays in ' +
+            "instructions. When the user described a voice, use it; when they said nothing, invent one " +
+            'yourself that fits the role rather than leaving it out. With replaces set, write a new voice ' +
+            "- a successor's is never the outgoing agent's. Omit only when the user explicitly wants a " +
+            'plain, colourless agent.',
+        ),
         slug: str('Short handle, lowercase with dashes. Derived from the name when omitted.'),
         team: str('Team name or id. Optional. Ignored when replaces is set (inherited instead).'),
         manager: str('Manager agent slug. Omit for an agent reporting to you directly. Ignored when replaces is set.'),

@@ -194,6 +194,7 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     assignmentTimeoutMs: 45 * 60 * 1000,
     lazyCoding: true,
     autoReview: true,
+    roleplay: true,
   },
   // Nothing is watched until somebody adds a mailbox on the settings page: a
   // listener holds a credential and an open socket, which is not something a

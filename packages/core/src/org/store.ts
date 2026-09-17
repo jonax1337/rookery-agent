@@ -202,6 +202,7 @@ export class OrgStore {
     name: string;
     title: string;
     instructions: string;
+    voice?: string;
     teamId?: string;
     managerId?: string;
     provider?: ProviderId;
@@ -216,6 +217,7 @@ export class OrgStore {
       name: input.name.trim() || 'Unnamed',
       title: input.title.trim() || 'Staff member',
       instructions: input.instructions.trim(),
+      voice: blank(input.voice),
       teamId: blank(input.teamId),
       managerId: blank(input.managerId),
       provider: input.provider,
@@ -228,9 +230,9 @@ export class OrgStore {
     this.#db
       .prepare(
         `INSERT INTO agents
-           (id, org_id, slug, name, title, instructions, team_id, manager_id, provider, model, permission,
+           (id, org_id, slug, name, title, instructions, voice, team_id, manager_id, provider, model, permission,
             created_at, updated_at, archived)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       )
       .run(
         agent.id,
@@ -239,6 +241,7 @@ export class OrgStore {
         agent.name,
         agent.title,
         agent.instructions,
+        agent.voice ?? null,
         agent.teamId ?? null,
         agent.managerId ?? null,
         agent.provider ?? null,
@@ -299,6 +302,7 @@ export class OrgStore {
       name?: string;
       title?: string;
       instructions?: string;
+      voice?: string | null;
       teamId?: string | null;
       managerId?: string | null;
       provider?: ProviderId | null;
@@ -314,6 +318,7 @@ export class OrgStore {
       name: patch.name?.trim(),
       title: patch.title?.trim(),
       instructions: patch.instructions?.trim(),
+      voice: patch.voice === undefined ? undefined : patch.voice === null ? null : patch.voice.trim() || null,
       team_id: patch.teamId,
       manager_id: patch.managerId,
       provider: patch.provider,
@@ -1540,6 +1545,7 @@ function mapAgent(row: Row): Agent {
     name: row.name as string,
     title: row.title as string,
     instructions: row.instructions as string,
+    voice: optional(row.voice),
     teamId: optional(row.team_id),
     managerId: optional(row.manager_id),
     provider: optional(row.provider) as ProviderId | undefined,

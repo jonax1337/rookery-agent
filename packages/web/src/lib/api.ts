@@ -164,6 +164,7 @@ export interface ReplaceAgentInput {
   slug?: string;
   title: string;
   instructions: string;
+  voice?: string;
   handover?: string;
 }
 
@@ -206,6 +207,7 @@ export interface AgentInput {
   name: string;
   title: string;
   instructions: string;
+  voice?: string;
   slug?: string;
   teamId?: string;
   managerId?: string;
@@ -218,6 +220,7 @@ export interface AgentPatch {
   name?: string;
   title?: string;
   instructions?: string;
+  voice?: Nullable<string>;
   slug?: string;
   teamId?: Nullable<string>;
   managerId?: Nullable<string>;

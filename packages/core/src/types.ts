@@ -934,6 +934,13 @@ export interface Agent {
   title: string;
   /** The role's standing instructions. Never mixed into the assistant's voice. */
   instructions: string;
+  /**
+   * Two to four sentences on HOW this person writes - never what they can
+   * do, which is what `instructions` is for. Nullable and usually empty:
+   * an unset voice colours nothing, exactly today's behaviour (decision
+   * E11, F5). Set at `hire_agent`, editable on the agent's own form.
+   */
+  voice?: string;
   teamId?: string;
   /** Direct manager. Unset: reports to the assistant. */
   managerId?: string;
@@ -1967,6 +1974,13 @@ export interface OrgConfig {
    * with no model call at all.
    */
   autoReview: boolean;
+  /**
+   * On, a mail-born run writes its result as a letter in the agent's own
+   * voice instead of a report (decision E10, section 6.3). Off restores
+   * today's report register everywhere, unconditionally. Global, not
+   * per-agent (decision E6/F6): the tone is a property of the company.
+   */
+  roleplay: boolean;
   /** Explicitly chosen company; the newest one otherwise. */
   activeOrganizationId?: string;
 }

@@ -49,6 +49,28 @@ const agentById = (snapshot: OrgSnapshot): Map<string, Agent> =>
   new Map(snapshot.agents.map((agent) => [agent.id, agent]));
 
 /**
+ * Voices of one agent's own team and manager only - never the whole company
+ * (decision E13, section 6.4): a company of twenty would otherwise carry
+ * nineteen irrelevant voice descriptions into every single run. An agent
+ * with no voice set contributes no line here at all; that is the silent,
+ * neutral default (F5), not something worth naming as absent.
+ */
+function renderColleagueVoices(agent: Agent, snapshot: OrgSnapshot): string {
+  const byId = agentById(snapshot);
+  const manager = agent.managerId ? byId.get(agent.managerId) : undefined;
+  const teammates = agent.teamId
+    ? snapshot.agents.filter((entry) => entry.teamId === agent.teamId && entry.id !== agent.id)
+    : [];
+  const lines: string[] = [];
+  if (manager?.voice) lines.push('- ' + manager.slug + ' (your manager): ' + manager.voice);
+  for (const mate of teammates) {
+    if (mate.voice) lines.push('- ' + mate.slug + ' (your team): ' + mate.voice);
+  }
+  if (!lines.length) return '';
+  return 'How your manager and team write, so mail from or about them reads like them:\n' + lines.join('\n');
+}
+
+/**
  * The org chart as plain text, shared by the overview tool and the prompts.
  *
  * `org` is optional and only buys the run numbers: without it a running piece
@@ -324,6 +346,10 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
   const manager = agent.managerId ? byId.get(agent.managerId) : undefined;
   const reports = snapshot.agents.filter((entry) => entry.managerId === agent.id);
   const sections: string[] = [];
+  // A run answers as a letter only when it was born from mail and the
+  // company has roleplay switched on (decision E10/E14, F6); a run started
+  // by `assign` keeps today's report register unconditionally.
+  const letterRegister = Boolean(input.sourceMailSubject) && config.org.roleplay;
 
   sections.push(
     [
@@ -345,6 +371,9 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
 
   sections.push('Your standing instructions:\n' + agent.instructions);
 
+  const colleagueVoices = renderColleagueVoices(agent, snapshot);
+  if (colleagueVoices) sections.push(colleagueVoices);
+
   // Mail is the company's only channel between colleagues, so the prompt
   // says who to write to rather than leaving `send_mail` as a tool nobody
   // reaches for. The lead sentence is the reason the user's phone stays
@@ -356,8 +385,10 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
       'it. Mail with a colleague on To starts a real run of theirs and their answer comes back as a',
       'reply, so it is how you ask somebody for something you do not have to sit and wait for; Cc only',
       'delivers, for keeping somebody in the picture. Use it: a question for whoever knows the system,',
-      'a heads-up that changes their plans, a hand-off of work that is not yours. What it is not for',
-      'is thinking out loud or saying thank you - every mail you send costs somebody a run.',
+      'a heads-up that changes their plans, a hand-off of work that is not yours. What it is not for is a',
+      'mail whose entire content is politeness - if there is nothing in it beyond a thank-you, do not send',
+      'it, because every mail you send costs somebody a run. A mail that has something to say may say it',
+      'in whatever tone fits; that cost is about content, not about tone.',
       team && team.leadId === agent.id
         ? 'You lead ' + team.name + ': your team reaches the user through you, so what the team has to ' +
           'tell them is yours to write - one mail with the whole picture, not one per person.'
@@ -415,12 +446,37 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
       const recent = earlier.slice(-THREAD_TAIL_MAILS);
       sections.push(renderMail(recent, snapshot, 'The last of those, at length:', THREAD_TAIL_CHARS));
     }
-    sections.push(
-      'This task arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '". ' +
-        "Write your result as the reply's body, not a chat answer or a report - it goes back to them " +
-        'automatically, and everyone who was Cc on their mail stays Cc on yours. Do not send_mail the ' +
-        'same answer to them on top of it; send_mail is for bringing in somebody who was not on the thread.',
-    );
+    // Decision E10 (section 6.3): the same text stays `assignment.result` -
+    // no second model call, no rewrite, no marker in it for anybody to
+    // parse. Only the instruction changes which register that one text is
+    // written in. Off, or born from `assign` rather than mail, this is
+    // always the plain paragraph below, unchanged from before roleplay
+    // existed (F6).
+    if (letterRegister) {
+      sections.push(
+        [
+          'This task arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '".',
+          "It goes back as the reply's body automatically, and everyone who was Cc on their mail stays Cc on",
+          'yours. Do not send_mail the same answer to them on top of it; that tool is for bringing in',
+          'somebody who was not on the thread.',
+          'Write it as a letter to a colleague, not a report: a short salutation, one sentence of context,',
+          'the result, a stance on it, and a sign-off' +
+            (agent.voice ? ', in your own voice: ' + agent.voice : ', in a plain, neutral voice') + '.',
+          'The result stands in the first paragraph; politeness frames it and never postpones it - a letter',
+          'where the reader has to hunt for the answer is worse than the report it replaces. No invented',
+          'private life, no weekends, no coffee breaks; no played delay and no "I will look at that shortly"',
+          'without work already done behind it - a run either did the work or it is answering, never',
+          'pretending to be about to. Write in the language the task is written in.',
+        ].join(' '),
+      );
+    } else {
+      sections.push(
+        'This task arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '". ' +
+          "Write your result as the reply's body, not a chat answer or a report - it goes back to them " +
+          'automatically, and everyone who was Cc on their mail stays Cc on yours. Do not send_mail the ' +
+          'same answer to them on top of it; send_mail is for bringing in somebody who was not on the thread.',
+      );
+    }
   }
 
   // The assistant is told not to accept dead ends; an agent that reports
@@ -436,15 +492,20 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
     ].join(' '),
   );
 
-  sections.push(
-    [
-      'Work the task and nothing else. Your output is a report to whoever asked for it,',
-      'not a chat with the user: lead with the result, then what you changed or found, then open',
-      'questions. No preamble, no restating the brief. Separate what you verified from what you',
-      'assume. Anything that belongs to somebody other than whoever asked for this goes by mail, as',
-      'described above, not into the report. Write in the language the task is written in.',
-    ].join(' '),
-  );
+  // Skipped for a letter-register reply: "lead with the result, no preamble"
+  // directly contradicts a salutation and a sign-off, and E10 means only one
+  // of the two instructions is ever in the prompt for a given run.
+  if (!letterRegister) {
+    sections.push(
+      [
+        'Work the task and nothing else. Your output is a report to whoever asked for it,',
+        'not a chat with the user: lead with the result, then what you changed or found, then open',
+        'questions. No preamble, no restating the brief. Separate what you verified from what you',
+        'assume. Anything that belongs to somebody other than whoever asked for this goes by mail, as',
+        'described above, not into the report. Write in the language the task is written in.',
+      ].join(' '),
+    );
+  }
 
   // Decision E2: qualitative, never a number - see AgentPromptInput.agentNotes.
   if (input.agentNotes?.length) {
