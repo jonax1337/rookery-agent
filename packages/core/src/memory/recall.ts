@@ -36,6 +36,18 @@ const RECENCY_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 const byScoreThenId = (a: ScoredMemory, b: ScoredMemory): number =>
   b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
+/**
+ * Where profile rows sit on the retrieval scale: the old literal `1` is the
+ * foot of the same scale the direct hits score on (the four weights sum to
+ * exactly 1.00), so the merge can finally compare the two currencies.
+ */
+const PROFILE_LEAD = 1;
+
+/** Exponential recency decay over the half-life above, mirroring `recall`'s. */
+function recencyOf(updatedAt: number, now: number): number {
+  return Math.pow(0.5, (now - updatedAt) / RECENCY_HALF_LIFE_MS);
+}
+
 /** Words too common to narrow anything down, in the two languages Rookery targets. */
 const STOP_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'be', 'been', 'to', 'of',
@@ -276,6 +288,7 @@ export function coreProfile(
   const limit = options.limit ?? 5;
   const minImportance = options.minImportance ?? 0.7;
   const owner = options.owner ?? ASSISTANT_MEMORY_OWNER;
+  const now = Date.now();
 
   // Pinned first, then insights, then plain weight: what the user fixed in
   // place and what the nights concluded outrank whatever scored highest.
@@ -294,7 +307,16 @@ export function coreProfile(
     const record = mapMemory(row);
     return {
       ...record,
-      score: 1,
+      // A score on the retrieval scale instead of the flat literal 1, so the
+      // turn merge orders profile rows by the same currency that orders
+      // direct hits. The bonuses mirror the SQL order above: pinned (1.0)
+      // beats any insight-plus-weights rest (at most 0.5 + 0.2 + 0.15).
+      score:
+        PROFILE_LEAD +
+        (record.pinned ? 1 : 0) +
+        (record.kind === 'insight' ? 0.5 : 0) +
+        WEIGHTS.importance * record.importance +
+        WEIGHTS.recency * recencyOf(record.updatedAt, now),
       hop: 'direct' as const,
       reason: record.pinned ? 'pinned' : record.kind === 'insight' ? 'insight' : 'core profile',
     };
