@@ -214,6 +214,36 @@ test('forgetting, archiving and deleting memories all reach the frames', () => {
   deleted.store.close();
 });
 
+test('undoing a night run drops the frames that quote what it wrote (R17)', () => {
+  const store = makeStore();
+  const run = store.createSleepRun({ owner: ASSISTANT_MEMORY_OWNER, trigger: 'manual' });
+  // A memory the night wrote, carrying the run id and origin the undo
+  // selects on, with the user's evidence quote a frame would freeze with it.
+  const night = store.upsertMemory({
+    kind: 'insight',
+    content: 'The night concluded the harbor ledger matters.',
+    importance: 0.8,
+    origin: 'sleep',
+    sleepRunId: run.id,
+    evidence: 'user: please keep the harbor ledger in mind',
+  });
+  const record = store.getMemory(night.id);
+  const trace = store.beginTrace(traceInput());
+  assert.equal(
+    store.saveFrame(trace.id, 'recall', framePayload({ records: { [night.id]: record } })),
+    true,
+  );
+  assert.equal(count(store, 'dream_frames'), 1);
+
+  const result = store.undoSleepRun(run.id);
+
+  assert.equal(result.removed, 1, 'the night-written memory is deleted');
+  assert.equal(store.getMemory(night.id), null);
+  assert.equal(count(store, 'dream_frames'), 0, 'the frame quoting it is gone too, not retained for 45 days');
+  assert.equal(store.undoSleepRun(run.id), null, 'a second undo is a no-op');
+  store.close();
+});
+
 test('open traces are closed by the restart pass', () => {
   const store = makeStore();
   store.beginTrace(traceInput());

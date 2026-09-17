@@ -1545,8 +1545,11 @@ export class Store {
 
   /**
    * Take back one night, in a single transaction: the memories the run wrote
-   * are deleted, everything it put to sleep wakes up, and its edges go. This
-   * is what makes an unattended nightly process acceptable at all.
+   * are deleted, everything it put to sleep wakes up, and its edges go. The
+   * frames go with them - they quote the deleted rows verbatim, and the drop
+   * is the same owner-level mechanics the other memory delete paths use
+   * (R17). This is what makes an unattended nightly process acceptable at
+   * all.
    */
   undoSleepRun(id: string): { woken: number; removed: number; edges: number } | null {
     const run = this.getSleepRun(id);
@@ -1595,6 +1598,11 @@ export class Store {
           .run(row.id as string);
         counts.woken += 1;
       }
+      // Frames quote the rows this run wrote verbatim, and undo deletes those
+      // rows outright, so they must fall inside the same transaction, before
+      // the rows they freeze go - the owner-level drop the four wired delete
+      // paths use, never a piecemeal payload edit (R17).
+      this.dropDreamFramesForOwner(run.owner);
       for (const row of written) {
         this.db.prepare('DELETE FROM memories WHERE id = ?').run(row.id as string);
         counts.removed += 1;
