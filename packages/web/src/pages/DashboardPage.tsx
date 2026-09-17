@@ -26,19 +26,12 @@ import {
   useTasksState,
 } from '@/providers/rookery-provider';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
-import { RollingText } from '@/components/animate-ui/primitives/texts/rolling';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { PageBody } from '@/components/blocks/page-body';
 import { SectionHeading } from '@/components/blocks/section-heading';
 import { StatCards, type StatCardProps } from '@/components/blocks/stat-cards';
-import {
-  TREND_RANGE_DAYS,
-  TREND_RANGE_SUFFIX,
-  TrendChartCard,
-  type TrendRange,
-  type TrendSeries,
-} from '@/components/blocks/trend-chart-card';
+import { ActivityHeatmapCard } from '@/components/blocks/activity-heatmap-card';
 import { DataTable, type DataTableTab } from '@/components/blocks/data-table/data-table';
 import { relativeTimeCell } from '@/components/blocks/data-table/table-columns';
 import {
@@ -85,8 +78,12 @@ import {
 /**
  * The one page that answers "what is going on" - and the reference
  * composition of the whole rebuild: `dashboard-01` in its intended order,
- * headline numbers, then the curve, then the recent rows, then the machine
- * underneath.
+ * headline numbers, then the activity calendar, then the recent rows, then
+ * the machine underneath. The area curve the original block puts here made
+ * way for the calendar in September 2026 - one activity view that shows a
+ * quiet stretch as a pale band beats a second axis to parse, and the curve
+ * still lives on the tasks, assignments and memory pages where a range
+ * switch is wanted.
  *
  * Every figure here comes from `GET /api/stats`, which counts in the
  * database. That matters more than it sounds: before it existed, each total
@@ -96,17 +93,22 @@ import {
  * nature - running tasks and assignments - and those say where they come
  * from.
  *
- * The trend badge of the original block is still missing, and still on
- * purpose: nothing in the API returns a previous-period value, and
- * "+12,5 % gegenüber Vormonat" invented on the client would be the most
- * convincing lie on the page.
+ * Growth is stated only where the API can prove it: nothing returns a
+ * previous-period value, and "+12,5 % gegenüber Vormonat" invented on the
+ * client would be the most convincing lie on the page - so every badge here
+ * counts forward ("learned · 7 days"), never against a fictive baseline.
  */
 
 /** How many rows the "Recent" table shows per facet. A preview, not a list. */
 const RECENT_ROWS = 10;
 
-/** The window the chart fetches. The range switch narrows it client-side. */
-const CHART_DAYS = 90;
+/**
+ * The calendar's window: a whole year, straight up to the server's cap for
+ * one stats call. Fifty-three week columns fill the card's width at a
+ * readable cell size - the ninety days this fetched before stretched each
+ * day into a bar once the calendar became the page's only activity view.
+ */
+const CALENDAR_DAYS = 366;
 
 /** Org broadcasts arrive in bursts while work runs; one refetch per burst. */
 const REFETCH_DEBOUNCE_MS = 400;
@@ -120,34 +122,13 @@ const TAB_TARGET: Record<RecentTab, string> = {
   sessions: '/chats',
 };
 
-/**
- * The three bands of the activity curve.
- *
- * The keys are the field names `StatsDay` already carries, so the server's
- * series is the chart's data with no mapping in between; the German is in
- * `label`, which is what the axis, the legend and the tooltip print.
- *
- * The three bands are not one population, and the card description says so:
- * the server counts sessions and messages over the whole database (archived
- * conversations included), assignments only within the active organisation.
- * With one company installed that is invisible; with a second one it would
- * be a chart quietly comparing different worlds.
- */
-const ACTIVITY_SERIES: TrendSeries[] = [
-  { key: 'messages', label: 'Messages', color: 'var(--chart-1)' },
-  { key: 'sessions', label: 'Conversations', color: 'var(--chart-2)' },
-  { key: 'assignments', label: 'Assignments', color: 'var(--chart-3)' },
-];
-
 const assignmentColumn = createRookeryColumnHelper<Assignment>();
 
 /**
  * First day of a range, as the `YYYY-MM-DD` key the series is keyed by.
  *
  * Stepping with `setDate` instead of subtracting milliseconds is what keeps
- * the window right across a DST change - and it is exactly what
- * `TrendChartCard` does internally, so the tokens counted here cover the same
- * days the curve draws.
+ * the window right across a DST change.
  */
 function windowStartKey(days: number): string {
   const start = new Date();
@@ -219,7 +200,6 @@ export function DashboardPage() {
   const [statsFailed, setStatsFailed] = useState(false);
   const [recentRuns, setRecentRuns] = useState<Assignment[] | null>(null);
   const [runsFailed, setRunsFailed] = useState(false);
-
   // Sequence guard: the debounced socket refetch can overtake a load that is
   // still in flight; only the newest run may write state.
   const loadSeq = useRef(0);
@@ -229,7 +209,7 @@ export function DashboardPage() {
   const load = useCallback(async (): Promise<void> => {
     const seq = ++loadSeq.current;
     const [snapshot, runs] = await Promise.allSettled([
-      api.stats({ days: CHART_DAYS }),
+      api.stats({ days: CALENDAR_DAYS }),
       api.assignments({ limit: RECENT_ROWS }),
     ]);
     if (seq !== loadSeq.current) return;
@@ -272,13 +252,12 @@ export function DashboardPage() {
   const totals = stats?.totals ?? null;
   const memoryStats = memories.stats;
 
-  /* -------------------------------- the curve ------------------------------ */
+  /* ------------------------------ the calendar ----------------------------- */
 
-  const [range, setRange] = useState<TrendRange>('90d');
-
-  // The server leaves days with nothing on them out of the series; an area
-  // chart over that would draw a straight line from Monday to Friday as if
-  // Wednesday had been busy.
+  // The server leaves days with nothing on them out of the series; a
+  // calendar drawn over that would show only the days that carried
+  // something, and the empty ones - the quiet stretches, the story's pauses
+  // - would vanish from the grid entirely.
   const chartData = useMemo(
     () => (stats ? fillDayGaps(stats.series, stats.since, stats.until) : []),
     [stats],
@@ -288,26 +267,6 @@ export function DashboardPage() {
     () => sumSince(chartData, 7, (day) => day.memories),
     [chartData],
   );
-
-  /**
-   * Tokens over the days the curve currently shows.
-   *
-   * Two guards, and both of them are about the same lie. `tokensAvailable`
-   * says whether the database holds usage data at all over the whole ninety
-   * days; a zero sum says this particular window holds none of it - because
-   * the range switch narrowed past the last measured day, or because a
-   * provider wrote a usage object without token fields. Either way "0 Tokens"
-   * would be a lie with a number on it, so the badge disappears instead.
-   */
-  const windowTokens = useMemo(() => {
-    if (!stats?.tokensAvailable) return null;
-    const sum = sumSince(
-      chartData,
-      TREND_RANGE_DAYS[range],
-      (day) => day.inputTokens + day.outputTokens,
-    );
-    return sum > 0 ? sum : null;
-  }, [chartData, range, stats]);
 
   /* ------------------------------- the cards ------------------------------- */
 
@@ -592,35 +551,14 @@ export function DashboardPage() {
         <StatCards items={cards} />
       </Fade>
 
+      {/*
+        The activity view: the same window the headline numbers rest on,
+        drawn as a calendar. A three-week drought reads as a pale stretch
+        here - a curve would average it into a gentle dip.
+      */}
       <Fade delay={50}>
         <div className="px-4 lg:px-6">
-          <TrendChartCard
-            title={<RollingText text="Activity" />}
-            description="Per day: conversations and messages including archive; assignments from the active organization."
-            descriptionShort="Created per day"
-            data={chartData}
-            series={ACTIVITY_SERIES}
-            range={range}
-            onRangeChange={setRange}
-            {...(windowTokens !== null
-              ? {
-                  badge: (
-                    <Badge variant="outline" className="hidden @[540px]/card:inline-flex">
-                      {formatNumber(windowTokens)} Tokens {TREND_RANGE_SUFFIX[range]}
-                    </Badge>
-                  ),
-                }
-              : {})}
-            empty={
-              <EmptyState
-                icon={AnimatedActivityIcon}
-                title="Nothing happened during this period"
-                description="A longer period may show more."
-                variant="plain"
-                size="sm"
-              />
-            }
-          />
+          <ActivityHeatmapCard data={chartData} />
         </div>
       </Fade>
 
