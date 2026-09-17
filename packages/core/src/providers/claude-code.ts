@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type {
   AgentEvent,
   McpServerSpec,
@@ -247,6 +250,32 @@ export class ClaudeCodeProvider implements Provider {
       args.push('--allowedTools', servers.map((server) => 'mcp__' + server.name).join(','));
     }
 
+    // Three further channels of their own, all paths, all unaffected by the
+    // empty `--setting-sources` above - which is exactly why they are usable:
+    // Rookery keeps composing the environment, and what a person approved out
+    // of the Claude Code installation travels here rather than by letting
+    // that installation's own settings back in.
+    //
+    // Everything foreign travels as a file, never as argv. On Windows a shim
+    // spawn goes through `cmd.exe` in verbatim mode, where a quote inside a
+    // JSON argument cannot be escaped in any way both sides agree on, so text
+    // a plugin wrote would be able to break out of its argument and run as a
+    // command of its own. `--settings` takes a path by contract; approved
+    // agents and hooks are laid down as a generated plugin folder that
+    // `--plugin-dir` loads. Both also keep the command line well clear of the
+    // 8191 characters `cmd.exe` allows.
+    //
+    // `--settings` carries Rookery's own `permissions.deny` floor even when
+    // nobody approved a single hook, so a `full` turn finally has limits
+    // between it and `--dangerously-skip-permissions`.
+    const handoff = await writeHandoffDir(options);
+    if (handoff.settingsFile) args.push('--settings', handoff.settingsFile);
+    // A plugin trusted outright comes in whole, folder and all; the curated
+    // skills, agents and hooks of that same source are left out upstream.
+    for (const dir of [...(options.pluginDirs ?? []), ...(handoff.dir ? [handoff.dir] : [])]) {
+      args.push('--plugin-dir', dir);
+    }
+
     const handle = spawnCli(binary, {
       args,
       cwd: options.cwd,
@@ -380,7 +409,81 @@ export class ClaudeCodeProvider implements Provider {
       }
     } catch (error) {
       yield { type: 'error', message: (error as Error).message, fatal: true };
+    } finally {
+      handoff.cleanup();
     }
+  }
+}
+
+/**
+ * The files one turn hands the CLI outside of argv. `cleanup` is wired into
+ * the turn's `finally` and always exists, even when nothing was written.
+ */
+interface Handoff {
+  dir?: string;
+  settingsFile?: string;
+  cleanup: () => void;
+}
+
+const HANDOFF_PLUGIN_JSON = JSON.stringify({
+  name: 'rookery-handoff',
+  version: '1.0.0',
+  description: 'Subagents and hooks a person approved for this one Rookery turn.',
+});
+
+/**
+ * Lay down what a person approved as plain files under one temp folder.
+ *
+ * The settings document holds only Rookery's own words, so it could safely be
+ * inline; it goes to a file anyway, to keep the command line short. The agents
+ * and hooks are copied verbatim from the files the approval named, which is
+ * the whole point: their bytes are foreign, and foreign bytes never enter the
+ * command line, where a Windows shim spawn cannot be trusted to keep them
+ * inside one argument.
+ *
+ * A file that vanished or turned unreadable between approval and spawn is
+ * left out, exactly as an approval that no longer matches should behave.
+ */
+async function writeHandoffDir(options: ProviderTurnOptions): Promise<Handoff> {
+  const agents = options.handoffAgents ?? [];
+  const hooks =
+    options.hooks && Object.keys(options.hooks).length ? (options.hooks as Record<string, unknown[]>) : undefined;
+  const wantsSettings = Boolean(options.settings && Object.keys(options.settings).length);
+
+  if (!agents.length && !hooks && !wantsSettings) return { cleanup: () => {} };
+
+  const root = await mkdtemp(join(tmpdir(), 'rookery-handoff-'));
+  const cleanup = (): void => {
+    // Best effort: a leftover temp folder is untidy, not a failed turn.
+    void rm(root, { recursive: true, force: true }).catch(() => {});
+  };
+
+  try {
+    let dir: string | undefined;
+    if (agents.length || hooks) {
+      dir = join(root, 'plugin');
+      await mkdir(join(dir, 'agents'), { recursive: true });
+      await mkdir(join(dir, 'hooks'), { recursive: true });
+      await writeFile(join(dir, 'plugin.json'), HANDOFF_PLUGIN_JSON);
+      for (const agent of agents) {
+        // Discovery guarantees this shape; rechecked so a name that slipped
+        // past it cannot write the plugin somewhere it was never meant to go.
+        if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent.name)) continue;
+        await copyFile(agent.path, join(dir, 'agents', agent.name + '.md')).catch(() => {});
+      }
+      if (hooks) await writeFile(join(dir, 'hooks', 'hooks.json'), JSON.stringify({ hooks }));
+    }
+
+    let settingsFile: string | undefined;
+    if (wantsSettings && options.settings) {
+      settingsFile = join(root, 'settings.json');
+      await writeFile(settingsFile, JSON.stringify(options.settings));
+    }
+
+    return { dir, settingsFile, cleanup };
+  } catch {
+    cleanup();
+    throw new Error('The approved hand-off files could not be written.');
   }
 }
 

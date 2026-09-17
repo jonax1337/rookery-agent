@@ -1,6 +1,7 @@
 import { dirname } from 'node:path';
 import type { RookeryConfig, ToolServerAudience } from '../types.js';
 import { enabledExternalSkills, externalScan, sourceEnabled } from '../external/discovery.js';
+import { loadWholeSourceIds } from '../tools/hub.js';
 import type { ExternalSkillRef, ExternalSource } from '../external/shared.js';
 import { readSkillFolder, type Skill } from './store.js';
 
@@ -31,7 +32,13 @@ export function externalSources(config: RookeryConfig): { source: ExternalSource
 /** The skills of the switched-on sources that this audience may open. */
 export function externalSkillsFor(config: RookeryConfig, who: 'assistant' | 'agent'): ExternalSkillRef[] {
   const scan = externalScan({ enabled: config.external.enabled });
-  return enabledExternalSkills(scan, config.external.skillSources).filter((skill) => serves(skill.audience, who));
+  // A source loaded whole brings its own skills with it through the plugin
+  // folder the turn is handed; the curated shelf keeps out so the same shelf
+  // does not stand in the turn twice, under two names.
+  const loadedWhole = loadWholeSourceIds(config);
+  return enabledExternalSkills(scan, config.external.skillSources).filter(
+    (skill) => serves(skill.audience, who) && !loadedWhole.has(skill.sourceId),
+  );
 }
 
 /** Words worth matching on: short noise carries no signal in a search. */

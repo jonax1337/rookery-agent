@@ -377,6 +377,8 @@ export interface AssignmentLogSnapshot {
   events: AssignmentLogEntry[];
   /** True once the oldest whole entries were dropped to stay under the cap. */
   overflowed: boolean;
+  /** Whether more is coming: a journalled run answers after its end too. */
+  active: boolean;
 }
 
 export interface AgentMessage {
@@ -718,7 +720,7 @@ export interface AgentAction {
   createdAt: number;
 }
 
-/** One row of GET /api/org/performance - the company-wide "HR" view. */
+/** One row of GET /api/org/performance - the company-wide Performance view. */
 export interface OrgPerformanceEntry {
   agent: { id: string; name: string; slug: string; title: string };
   performance: AgentPerformance;
@@ -737,6 +739,23 @@ export interface AssignmentDetail {
 }
 
 /* --------------------------------- events -------------------------------- */
+
+/** One offered answer to a question the assistant asked. */
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+/**
+ * What came back: indices into the question's `options`, plus a free answer
+ * from the "Other" field. At least one of the two is always set.
+ */
+export interface QuestionAnswer {
+  selected: number[];
+  text?: string;
+  source?: 'web' | 'tui' | 'telegram' | 'api';
+  at?: number;
+}
 
 export type AgentEvent =
   | {
@@ -765,6 +784,22 @@ export type AgentEvent =
   | { type: 'sleep'; run: SleepRun; phase?: string; cycle?: number }
   /** The provider reported the account's limit windows during the turn. */
   | { type: 'quota'; quota: ProviderQuota }
+  /**
+   * The assistant asked something and the turn is waiting on the answer. Any
+   * connection may answer - the id is the question's, not the turn's.
+   */
+  | {
+      type: 'question';
+      id: string;
+      header: string;
+      question: string;
+      options: QuestionOption[];
+      multiSelect: boolean;
+      /** Epoch ms after which the question gives up and the turn moves on. */
+      expiresAt: number;
+    }
+  /** The question is over: whoever is showing the card takes it away again. */
+  | { type: 'question-closed'; id: string; reason: 'answered' | 'cancelled' | 'expired'; answer?: QuestionAnswer }
   | { type: 'error'; message: string; fatal: boolean }
   | { type: 'done'; text: string; usage?: TurnUsage; providerSessionId?: string };
 
@@ -1216,11 +1251,63 @@ export interface ExternalSkillRef {
   path: string;
 }
 
+/**
+ * A subagent type on one of those shelves. Off until somebody says otherwise:
+ * it carries its own system prompt and tool list into a turn.
+ */
+export interface ExternalAgentRef {
+  id: string;
+  name: string;
+  description: string;
+  sourceId: string;
+  path: string;
+  model?: string;
+  tools?: string[];
+  enabled: boolean;
+  audience: ToolServerAudience;
+  /** False once the file changed after approval - it has to be read again. */
+  active: boolean;
+}
+
+/**
+ * The hook handlers one source declares. A hook set is a list of command
+ * lines that run around every tool call, so the page has to show them before
+ * anybody switches it on, and nothing here is ever written back.
+ */
+export interface ExternalHookSet {
+  sourceId: string;
+  path: string;
+  /** Event names it hooks, e.g. `PreToolUse`. */
+  events: string[];
+  handlerCount: number;
+  /** The command lines, for reading only. */
+  commands: string[];
+  enabled: boolean;
+  audience: ToolServerAudience;
+  /** False once `hooks.json` changed after approval. */
+  active: boolean;
+}
+
+/** The "load the whole plugin" switch for one source. */
+export interface ExternalPluginState {
+  sourceId: string;
+  loadWhole: boolean;
+  audience: ToolServerAudience;
+  active: boolean;
+}
+
 /** `GET /api/external`. */
 export interface ExternalOverview {
   enabled: boolean;
   sources: ExternalSource[];
   skills: ExternalSkillRef[];
+  /**
+   * The three newer shelves. Optional so a server that does not send them yet
+   * still satisfies the type; read them as `?? []`.
+   */
+  agents?: ExternalAgentRef[];
+  hooks?: ExternalHookSet[];
+  plugins?: ExternalPluginState[];
 }
 
 export interface CustomToolInput {
@@ -1402,6 +1489,18 @@ export type ClientFrame =
   | { type: 'watch'; assignmentId: string }
   /** Opt back out. Watching never affects the run itself. */
   | { type: 'unwatch'; assignmentId: string }
+  /**
+   * An answer to a question the assistant asked. `id` is the question's, not
+   * a request id: the waiting turn may have been started elsewhere, so this
+   * frame opens no stream and gets no per-request reply.
+   */
+  | { type: 'answer'; id: string; selected: number[]; text?: string }
+  /**
+   * Rejoin a conversation: this socket wants the live tail of whatever turn
+   * runs there. The replay of what already happened came over REST, from the
+   * journal; the `attached` reply lines the two up.
+   */
+  | { type: 'attach'; sessionId: string }
   | { type: 'ping' };
 
 /** One structural change somewhere in the company. */
@@ -1411,7 +1510,17 @@ export interface OrgChange {
 }
 
 export type ServerFrame =
-  | { type: 'event'; id: string; event: AgentEvent }
+  /**
+   * One event of a turn. `seq` is the journal position: a client that
+   * rebuilt the turn over REST applies only frames above where its replay
+   * ended, so replay and live neither duplicate nor drop an event.
+   */
+  | { type: 'event'; id: string; seq?: number; event: AgentEvent }
+  /**
+   * Reply to `attach`: the turn running in that session - whose live events
+   * this socket now receives - or `null` when none is.
+   */
+  | { type: 'attached'; id: string | null; seq: number }
   | { type: 'memory'; event: { sessionId: string; stored: MemoryRecord[] } }
   | { type: 'assignment'; event: AgentEvent }
   | { type: 'message'; event: AgentEvent }
@@ -1423,6 +1532,10 @@ export type ServerFrame =
   | { type: 'cron'; event: AgentEvent }
   /** Broadcast: the memory is asleep, working, or done for the night. */
   | { type: 'sleep'; event: AgentEvent }
+  /** Broadcast: the assistant asked something and a turn is waiting on it. */
+  | { type: 'question'; event: AgentEvent }
+  /** Broadcast: that question is over, so the card goes away. */
+  | { type: 'question-closed'; event: AgentEvent }
   /**
    * Watchers only: one live-log entry of a running assignment, in arrival
    * order. `seq` is monotone over the whole run, so a client can merge these

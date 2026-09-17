@@ -209,8 +209,14 @@ test('live-log frames reach only the watching socket, and /log mirrors the buffe
   );
 
   response = await app.inject({ url: '/api/org/assignments/' + assignment.id + '/log' });
-  assert.equal(response.statusCode, 410);
-  assert.equal(response.json().status, 'done');
+  // The journal answers after the end: nothing more is coming, and the
+  // transcript stands where the buffer used to vanish.
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().active, false);
+  assert.ok(
+    response.json().events.some((entry) => entry.event.delta === 'first line'),
+    'the transcript is still there in full',
+  );
 
   response = await app.inject({ url: '/api/org/assignments/nope/log' });
   assert.equal(response.statusCode, 404);
@@ -265,7 +271,8 @@ test('unwatch stops the frames without touching the run', async (t) => {
   await run;
   assert.equal(assistant.store.org.getAssignment(assignment.id).status, 'done');
   const response = await app.inject({ url: '/api/org/assignments/' + assignment.id + '/log' });
-  assert.equal(response.statusCode, 410);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().active, false, 'ended, and the journal still answers');
 });
 
 test('a closed watcher socket is dropped from the map and the run goes on', async (t) => {

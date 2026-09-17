@@ -781,6 +781,80 @@ test('cron: an event fires a clock-backed schedule without costing it its next r
   assistant.close();
 });
 
+test('cron: the assistant sets up an event schedule, its webhook and the mailbox that fires it', async () => {
+  const { assistant } = createAssistant(createFakeProvider());
+  const orgId = assistant.org.activeOrganization().id;
+  const as = { orgId, audience: 'assistant' };
+  const call = (name, args) => assistant.org.handle(as, name, args);
+
+  const created = await call('create_schedule', {
+    name: 'Mail watcher',
+    prompt: 'Read the new mail and report.',
+    triggerMode: 'event',
+    cooldownSeconds: 0,
+  });
+  assert.ok(!created.isError, created.text);
+  const job = assistant.cron.list(orgId).find((entry) => entry.name === 'Mail watcher');
+  assert.equal(job.triggerMode, 'event');
+  assert.equal(job.schedule, '', 'an event schedule is created without an expression');
+  assert.equal(job.eventCooldownMs, 0);
+  assert.equal(job.nextRunAt, undefined);
+
+  // The old rule still holds for everything that is on the clock.
+  const refused = await call('create_schedule', { name: 'Clockless', prompt: 'x' });
+  assert.ok(refused.isError);
+  assert.match(refused.text, /cron expression/);
+
+  const hook = await call('set_webhook', { id: job.id });
+  assert.ok(!hook.isError, hook.text);
+  const token = assistant.cron.get(job.id).webhookToken;
+  assert.ok(token);
+  assert.ok(hook.text.includes('/hooks/' + token), 'the assistant can hand the URL over');
+
+  const rotated = await call('set_webhook', { id: job.id });
+  assert.notEqual(assistant.cron.get(job.id).webhookToken, token, 'asking again rotates it');
+  assert.match(rotated.text, /stopped working/);
+
+  const secret = 'not-a-real-password';
+  const set = await call('set_listener', {
+    id: 'work',
+    schedule: 'Mail watcher',
+    host: 'imap.example.org',
+    user: 'me@example.org',
+    password: secret,
+    mailbox: 'INBOX',
+    enabled: true,
+  });
+  assert.ok(!set.isError, set.text);
+  assert.ok(!set.text.includes(secret), 'the password is never said back into the transcript');
+
+  const stored = assistant.config.listeners.imap.find((entry) => entry.id === 'work');
+  assert.equal(stored.jobId, job.id, 'the mailbox points at the schedule it was told to fire');
+  assert.equal(stored.password, secret);
+  assert.equal(stored.enabled, true);
+  assert.equal(stored.port, 993);
+
+  const listed = await call('list_listeners', {});
+  assert.match(listed.text, /password set/);
+  assert.ok(!listed.text.includes(secret), 'nor when listing them');
+
+  // Changing one field keeps the rest, the password included.
+  const changed = await call('set_listener', { id: 'work', mailbox: 'Archive' });
+  assert.ok(!changed.isError, changed.text);
+  const after = assistant.config.listeners.imap.find((entry) => entry.id === 'work');
+  assert.equal(after.mailbox, 'Archive');
+  assert.equal(after.password, secret, 'a change that does not mention the password keeps it');
+
+  const orphan = await call('set_listener', { id: 'other', host: 'imap.example.org', user: 'me@example.org' });
+  assert.ok(orphan.isError, 'a mailbox with no schedule to fire is refused');
+  assert.match(orphan.text, /schedule to fire/);
+
+  const removed = await call('remove_listener', { id: 'work' });
+  assert.ok(!removed.isError, removed.text);
+  assert.equal(assistant.config.listeners.imap.length, 0);
+  assistant.close();
+});
+
 test('cron: a schedule without an expression does not stop the clock from starting', async () => {
   const { assistant } = createAssistant(createFakeProvider());
   const orgId = assistant.org.activeOrganization().id;

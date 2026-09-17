@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 21;
 
 export type Db = DatabaseSync;
 
@@ -279,16 +279,16 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE sleep_runs ADD COLUMN learned_count INTEGER NOT NULL DEFAULT 0');
   }
 
-  // Schema 18 -> 19: dream bookkeeping on the run - traces the nightly probe
+  // Schema 20 -> 21: dream bookkeeping on the run - traces the nightly probe
   // looked at.
   if (!hasColumn(db, 'sleep_runs', 'dream_traces_seen')) {
     db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_traces_seen INTEGER NOT NULL DEFAULT 0');
   }
-  // Schema 18 -> 19: grid placements the nightly probe scored.
+  // Schema 20 -> 21: grid placements the nightly probe scored.
   if (!hasColumn(db, 'sleep_runs', 'dream_frames_scored')) {
     db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_frames_scored INTEGER NOT NULL DEFAULT 0');
   }
-  // Schema 18 -> 19: model-written candidates. Its writer arrives with
+  // Schema 20 -> 21: model-written candidates. Its writer arrives with
   // Phase 3; Stage 1 leaves it at 0 rather than borrowing the column for
   // something else in between. There is deliberately no dream_promoted -
   // nothing is promoted in Stage 1, so that counter would have no writer.
@@ -866,6 +866,84 @@ function migrate(db: Db): void {
   `);
 
   backfillMailThreads(db);
+
+  // Schema 19: the running-turn journal. Every event a conversation turn
+  // yields is a row the moment it is yielded, so any client - a reloaded
+  // tab, another browser, whoever opens the conversation next - can rebuild
+  // the turn exactly as it stood, and the live stream just continues on top.
+  // Schema 20 widens the key: an assignment run has no conversation, so a
+  // turn is owned by a session, an assignment, or both.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS turns (
+      id         TEXT PRIMARY KEY,
+      session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+      assignment_id TEXT,
+      kind       TEXT NOT NULL DEFAULT 'chat',
+      status     TEXT NOT NULL DEFAULT 'running',
+      started_at INTEGER NOT NULL,
+      ended_at   INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_turns_session
+      ON turns(session_id, started_at);
+    CREATE TABLE IF NOT EXISTS turn_events (
+      turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+      seq     INTEGER NOT NULL,
+      json    TEXT NOT NULL,
+      PRIMARY KEY (turn_id, seq)
+    );
+  `);
+
+  // Schema 19 -> 20: the session column loses its NOT NULL. A rebuild rather
+  // than two ALTERs, because SQLite cannot drop a constraint in place. Both
+  // tables move: a plain rename would leave `turn_events` pointing at the
+  // discarded name, so it is recreated beside its parent, rows first - the
+  // journal is the record, and none of it is dropped.
+  const turnsShape = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'",
+  ).get() as { sql: string } | undefined;
+  if (turnsShape && !turnsShape.sql.includes('assignment_id')) {
+    db.exec('PRAGMA foreign_keys = OFF');
+    db.exec(`
+      ALTER TABLE turns RENAME TO turns_v19;
+      ALTER TABLE turn_events RENAME TO turn_events_v19;
+      DROP INDEX IF EXISTS idx_turns_session;
+      CREATE TABLE turns (
+        id         TEXT PRIMARY KEY,
+        session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+        assignment_id TEXT,
+        kind       TEXT NOT NULL DEFAULT 'chat',
+        status     TEXT NOT NULL DEFAULT 'running',
+        started_at INTEGER NOT NULL,
+        ended_at   INTEGER
+      );
+      CREATE TABLE turn_events (
+        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+        seq     INTEGER NOT NULL,
+        json    TEXT NOT NULL,
+        PRIMARY KEY (turn_id, seq)
+      );
+      INSERT INTO turns (id, session_id, assignment_id, kind, status, started_at, ended_at)
+        SELECT id, session_id, NULL, kind, status, started_at, ended_at FROM turns_v19;
+      INSERT INTO turn_events (turn_id, seq, json)
+        SELECT turn_id, seq, json FROM turn_events_v19;
+      DROP TABLE turn_events_v19;
+      DROP TABLE turns_v19;
+      CREATE INDEX idx_turns_session ON turns(session_id, started_at);
+      CREATE INDEX idx_turns_assignment ON turns(assignment_id, started_at);
+    `);
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+  // For fresh installs and rebuilt ones alike: the assignment key's index.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_turns_assignment ON turns(assignment_id, started_at);');
+
+  // Whatever still claims to be running was orphaned by the process that
+  // wrote it: this database is single-writer and just opened, so nobody is
+  // producing those turns any more. Marked here rather than in the journal
+  // because every open is the startup for exactly one writer. The events
+  // stay: they are the only record of an answer that never finished.
+  db.prepare(
+    "UPDATE turns SET status = 'interrupted', ended_at = ? WHERE status = 'running'",
+  ).run(Date.now());
 
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',

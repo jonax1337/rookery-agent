@@ -442,6 +442,93 @@ export function classifyCallback(update: unknown, config: TelegramGatewayConfig)
   return { ...known, ok: true };
 }
 
+/* ------------------------- what a button says -------------------------- */
+
+/**
+ * The words the bot is allowed to write on a button, and how they read back.
+ *
+ * `callback_data` is a round trip through Telegram: the bot writes a string
+ * on a button, and gets that same string back when it is tapped. It is not
+ * evidence of anything - `classifyCallback` above has already proved who
+ * pressed it - so this is a vocabulary, not a token: a small closed set of
+ * sentences this channel knows how to say, written in one place and read in
+ * the same one, because a prefix that is built in one file and parsed in
+ * another drifts the first time one of them is edited.
+ *
+ * Telegram allows 64 bytes. `question:<uuid>:<index>` is 48 of them, and a
+ * mail id is the same shape, so both fit with room left - but the budget is
+ * why ids go on a button and never a label.
+ */
+const MAIL_READ = 'mail:read:';
+const MAIL_READ_DONE = 'mail:read-done';
+const QUESTION = 'question:';
+const QUESTION_DONE = 'question:done';
+
+/** What a tap turned out to mean. */
+export type GatewayCallbackAction =
+  /** Mark this mail as read - the read receipt the Bot API does not have. */
+  | { kind: 'mail-read'; mailId: string }
+  /** A tap on a read button that has already been spent. */
+  | { kind: 'mail-read-done' }
+  /** Answer the open question with the option at this index. */
+  | { kind: 'question'; questionId: string; option: number }
+  /** A tap on a question that has already been answered, or has expired. */
+  | { kind: 'question-done' }
+  /** A button from an older version of this code, or one we never drew. */
+  | { kind: 'unknown' };
+
+/** The data under one option of a question. */
+export function questionCallbackData(questionId: string, option: number): string {
+  return QUESTION + questionId + ':' + String(option);
+}
+
+/** The data under a question that is over, whichever way it ended. */
+export function questionDoneCallbackData(): string {
+  return QUESTION_DONE;
+}
+
+/** The data under a fresh mail's read button. */
+export function mailReadCallbackData(mailId: string): string {
+  return MAIL_READ + mailId;
+}
+
+/** The data under a read button that has been pressed. */
+export function mailReadDoneCallbackData(): string {
+  return MAIL_READ_DONE;
+}
+
+/**
+ * Read a tap back.
+ *
+ * Anything unrecognised comes back as `unknown` rather than being guessed
+ * at: a button whose meaning is no longer known must say so on the phone,
+ * not do the nearest thing it can think of.
+ */
+export function readCallbackData(data: string | undefined): GatewayCallbackAction {
+  if (!data) return { kind: 'unknown' };
+  if (data === MAIL_READ_DONE) return { kind: 'mail-read-done' };
+  if (data === QUESTION_DONE) return { kind: 'question-done' };
+
+  if (data.startsWith(MAIL_READ)) {
+    const mailId = data.slice(MAIL_READ.length);
+    return mailId ? { kind: 'mail-read', mailId } : { kind: 'unknown' };
+  }
+
+  if (data.startsWith(QUESTION)) {
+    const rest = data.slice(QUESTION.length);
+    // The index is the tail, so an id carrying a colon of its own still
+    // comes back whole.
+    const cut = rest.lastIndexOf(':');
+    if (cut <= 0) return { kind: 'unknown' };
+    const questionId = rest.slice(0, cut);
+    const option = Number(rest.slice(cut + 1));
+    if (!Number.isInteger(option) || option < 0) return { kind: 'unknown' };
+    return { kind: 'question', questionId, option };
+  }
+
+  return { kind: 'unknown' };
+}
+
 /**
  * Where the next piece ends: at a paragraph break if the window holds one,
  * otherwise at a line break, otherwise hard. Telegram refuses anything over

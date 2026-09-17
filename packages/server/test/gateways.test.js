@@ -594,3 +594,57 @@ test('a half-written answer still converts to something Telegram accepts', () =>
     assert.equal(opened, closed, 'unbalanced tags for: ' + partial + ' -> ' + html);
   }
 });
+
+/**
+ * A question is the one item in the notification lane that cannot wait: it
+ * expires, so quiet hours and the hourly cap - which exist so a finished
+ * assignment can be delivered at breakfast - must not hold it back. It also
+ * does not go out as text: the gateway draws it, because the buttons and the
+ * bookkeeping that lets a typed reply count are its business.
+ */
+test('a question reaches the phone during quiet hours, and through the gateway', async (t) => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.gateways.telegram.allowedUserIds = [7];
+  // A window that certainly contains right now, whenever the suite runs.
+  const pad = (value) => String(value).padStart(2, '0');
+  const now = new Date();
+  const later = new Date(now.getTime() + 60 * 60 * 1000);
+  Object.assign(config.gateways.telegram.push, {
+    enabled: true,
+    quietFrom: pad(now.getHours()) + ':' + pad(now.getMinutes()),
+    quietUntil: pad(later.getHours()) + ':' + pad(later.getMinutes()),
+    maxPerHour: 1,
+  });
+
+  const assistant = new EventEmitter();
+  const sent = [];
+  const asked = [];
+  const closed = [];
+  const push = attachGatewayPush(
+    { config, assistant, log: { warn() {} } },
+    {
+      status: () => ({ running: true }),
+      send: async (_id, text) => { sent.push(text); },
+      ask: (userId, question) => asked.push([userId, question.id]),
+      closeQuestion: (id, reason) => closed.push([id, reason]),
+    },
+  );
+  t.after(() => push.detach());
+
+  assistant.emit('question', {
+    type: 'question',
+    id: 'q-1',
+    header: 'Deploy target',
+    question: 'Where should this go?',
+    options: [{ label: 'staging' }, { label: 'production' }],
+    multiSelect: false,
+    expiresAt: Date.now() + 60_000,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(asked, [[7, 'q-1']]);
+  assert.equal(sent.length, 0);
+
+  assistant.emit('question-closed', { type: 'question-closed', id: 'q-1', reason: 'answered' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(closed, [['q-1', 'answered']]);
+});

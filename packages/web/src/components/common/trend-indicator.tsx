@@ -6,7 +6,7 @@ import type { IconComponent } from "@/components/icons";
 /**
  * The rolling trend of an agent's reviews: one arrow, one signed number.
  *
- * Two pages had typed this out by hand and the copies had drifted - the HR
+ * Two pages had typed this out by hand and the copies had drifted - the Performance
  * table coloured the rising case `emerald-600/400` while the performance card
  * already used the palette's status green, and each re-decided the threshold.
  * Both decisions live here now: more than ±0.05 is movement, everything inside

@@ -21,7 +21,7 @@ import { EyeOffIcon as MonitorXIcon, GitGraphIcon as NetworkIcon } from "@/compo
  *
  * Mermaid cannot read the app's oklch design tokens any more than the WebGL
  * memory graph can (`MemoryGraph3D.tsx`), so it gets the identical fix:
- * literal hex colours in a `.org-chart-stage` class in `styles/index.css`,
+ * literal hex colours in a `.org-hierarchy-stage` class in `styles/index.css`,
  * redefined under `.dark`, read back here with `getComputedStyle` and fed
  * into `mermaid.initialize({ themeVariables })`. A `MutationObserver` on the
  * root element's class re-renders the diagram when the theme flips, the
@@ -135,7 +135,7 @@ function buildDefinition(
       (badge ? '<br/><small style="color:' + badge.colorVar + '">' + badge.text + '</small>' : '');
     lines.push('  ' + nodeId + '("' + label + '")');
     lines.push('  ' + parentId + ' --> ' + nodeId);
-    lines.push('  click ' + nodeId + ' call orgChartNavigate("' + node.agent.id + '")');
+    lines.push('  click ' + nodeId + ' call orgHierarchyNavigate("' + node.agent.id + '")');
     if (stage === 3) lines.push('  class ' + nodeId + ' stageCritical');
     else if (stage > 0) lines.push('  class ' + nodeId + ' stageWarn');
     for (const child of node.children) walk(child, nodeId);
@@ -146,8 +146,8 @@ function buildDefinition(
   return { definition: lines.join('\n'), agentByNodeId };
 }
 
-export function OrgChartPage() {
-  usePageMeta({ title: 'Org chart' }, []);
+export function OrgHierarchyPage() {
+  usePageMeta({ title: 'Hierarchy' }, []);
   const org = useOrgState();
   const navigate = useNavigate();
   const stageRef = useRef<HTMLDivElement>(null);
@@ -169,7 +169,7 @@ export function OrgChartPage() {
     [tree, org.snapshot?.organization.name, performance],
   );
 
-  // Read the theme's literal colours off `.org-chart-stage` and re-read them
+  // Read the theme's literal colours off `.org-hierarchy-stage` and re-read them
   // whenever the root class changes (light/dark toggle) - see the file
   // comment and `useGraphPalette` in MemoryGraph3D.tsx for why this cannot
   // just be the app's oklch tokens.
@@ -182,17 +182,17 @@ export function OrgChartPage() {
     return () => observer.disconnect();
   }, []);
 
-  // The one function `click ... call orgChartNavigate(...)` in the diagram
+  // The one function `click ... call orgHierarchyNavigate(...)` in the diagram
   // resolves against - kept current via a ref so the diagram never has to
   // be re-rendered just because `navigate` itself got a new identity.
   const navigateRef = useRef(navigate);
   navigateRef.current = navigate;
   useEffect(() => {
-    (window as unknown as Record<string, unknown>).orgChartNavigate = (agentId: string): void => {
+    (window as unknown as Record<string, unknown>).orgHierarchyNavigate = (agentId: string): void => {
       navigateRef.current('/org/agents/' + agentId);
     };
     return () => {
-      delete (window as unknown as Record<string, unknown>).orgChartNavigate;
+      delete (window as unknown as Record<string, unknown>).orgHierarchyNavigate;
     };
   }, []);
 
@@ -219,7 +219,7 @@ export function OrgChartPage() {
           },
         });
         const result = await mermaid.render(
-          'org-chart-' + renderId,
+          'org-hierarchy-' + renderId,
           [
             definition,
             'classDef rootNode fill:' + palette.rootBg + ',stroke:' + palette.rootBorder + ',stroke-width:2px;',
@@ -257,7 +257,7 @@ export function OrgChartPage() {
           <EmptyState
             icon={NetworkIcon}
             title="Nobody hired yet"
-            description="The org chart fills in as soon as an agent is hired."
+            description="The hierarchy fills in as soon as an agent is hired."
             actionLabel="Hire agent"
             actionTo="/org/agents/new"
           />
@@ -267,7 +267,7 @@ export function OrgChartPage() {
   }
 
   return (
-    <div ref={stageRef} className="org-chart-stage px-4 lg:px-6">
+    <div ref={stageRef} className="org-hierarchy-stage px-4 lg:px-6">
       {status === 'unavailable' ? (
         <Fade>
           <EmptyState
@@ -304,7 +304,7 @@ export function OrgChartPage() {
         </Fade>
       )}
       <p className="sr-only" role="note">
-        {agentByNodeId.size} agents in the reporting chart. Use the Agents list for a text version.
+        {agentByNodeId.size} agents in the reporting hierarchy. Use the Agents list for a text version.
       </p>
     </div>
   );

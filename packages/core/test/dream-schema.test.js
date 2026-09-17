@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { openDatabase, reindex, SCHEMA_VERSION } from '../dist/index.js';
 
 /**
- * Schema 19 (the dream) and the connection hygiene that comes with it.
+ * Schema 21 (the dream) and the connection hygiene that comes with it.
  *
  * The reopen cases need a real file - a downgrade brake and idempotent
  * migration cannot be observed on `:memory:` - so they get a throwaway
@@ -20,11 +20,11 @@ function tempPath(t) {
   return join(root, 'state.db');
 }
 
-test('schema 19 is what a fresh database writes into meta', () => {
+test('schema 21 is what a fresh database writes into meta', () => {
   const db = openDatabase(':memory:');
-  assert.equal(SCHEMA_VERSION, 19);
+  assert.equal(SCHEMA_VERSION, 21);
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
-  assert.equal(row.value, '19');
+  assert.equal(row.value, String(SCHEMA_VERSION));
   db.close();
 });
 

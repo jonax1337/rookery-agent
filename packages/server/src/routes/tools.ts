@@ -1,9 +1,13 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { z } from 'zod';
 import {
   SKILL_SOURCES,
   customToolId,
+  externalAgentStates,
+  externalHookStates,
+  externalPluginStates,
   externalSkillsFor,
   externalSources,
   importSkillFromGitHub,
@@ -11,6 +15,7 @@ import {
   refreshExternal,
   skillSlug,
   toolServerStates,
+  withExternalApproval,
   withToolServer,
   withoutToolServer,
 } from '@rookery/core';
@@ -27,6 +32,27 @@ import {
 
 type IdParams = { Params: { id: string } };
 type NameParams = { Params: { name: string } };
+
+/**
+ * What the browser may decide about something found in Claude Code, and
+ * nothing else.
+ *
+ * Same rule `publicTool` follows for a discovered MCP server, one step
+ * further: a hook set's command lines and a subagent's prompt path go *out*
+ * so a person can read what they are approving, and nothing about the
+ * definition ever comes back in. The fingerprint is taken from the scan when
+ * the approval is stored, so the only thing a request decides is yes or no,
+ * and for whom.
+ */
+const approvalSchema = z.object({
+  enabled: z.boolean().optional(),
+  audience: z.enum(['assistant', 'agents', 'both']).optional(),
+});
+
+const pluginApprovalSchema = z.object({
+  loadWhole: z.boolean().optional(),
+  audience: z.enum(['assistant', 'agents', 'both']).optional(),
+});
 
 /** The state as the browser sees it: recipe metadata, never env values. */
 function publicTool(state: ToolServerState): Record<string, unknown> {
@@ -173,7 +199,49 @@ export async function registerToolRoutes(app: FastifyInstance, context: ServerCo
       sourceId: skill.sourceId,
       path: skill.path,
     })),
+    // The subagent types, the hook sets and the whole-plugin switches. Every
+    // one of them off until somebody says otherwise, which is why the list
+    // itself carries what there is to read before deciding - a hook set's
+    // command lines above all.
+    agents: externalAgentStates(context.config),
+    hooks: externalHookStates(context.config),
+    plugins: externalPluginStates(context.config),
   }));
+
+  /** Whether one discovered subagent type may be handed to a turn. */
+  app.patch('/api/external/agents/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const input = parseOrThrow(approvalSchema, request.body ?? {});
+    const patch = withExternalApproval(context.config, 'agent', request.params.id, input);
+    if (!patch) return notFound(reply, 'No external agent ' + request.params.id);
+    apply(patch);
+    const updated = externalAgentStates(context.config).find((entry) => entry.id === request.params.id);
+    return updated ?? notFound(reply, 'Gone');
+  });
+
+  /**
+   * Whether one source's hook set runs around a turn. Approved per source and
+   * per audience on purpose: a plugin's hooks are written for a person at a
+   * keyboard, and the assistant is the audience that has one.
+   */
+  app.patch('/api/external/hooks/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const input = parseOrThrow(approvalSchema, request.body ?? {});
+    const patch = withExternalApproval(context.config, 'hook', request.params.id, input);
+    if (!patch) return notFound(reply, 'No hook set for ' + request.params.id);
+    apply(patch);
+    if (input.enabled) context.log.warn('External hooks approved', { source: request.params.id });
+    const updated = externalHookStates(context.config).find((entry) => entry.sourceId === request.params.id);
+    return updated ?? notFound(reply, 'Gone');
+  });
+
+  /** The "load the whole plugin" switch: everything in it, curated copies off. */
+  app.patch('/api/external/plugins/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const input = parseOrThrow(pluginApprovalSchema, request.body ?? {});
+    const patch = withExternalApproval(context.config, 'plugin', request.params.id, input);
+    if (!patch) return notFound(reply, 'No plugin ' + request.params.id);
+    apply(patch);
+    const updated = externalPluginStates(context.config).find((entry) => entry.sourceId === request.params.id);
+    return updated ?? notFound(reply, 'Gone');
+  });
 
   /** Whether one source's skills are available. */
   app.patch('/api/external/sources/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {

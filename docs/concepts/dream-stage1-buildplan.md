@@ -76,7 +76,7 @@ aufgegeben wird — der Commit ist vor Phase 1, auch wenn das Paket es baut.
 2. Die vier Gleichstandsbrecher plus alle In-JS-Sortierungen.
 3. `entitiesForMany` und der partitionierte Nachbarabruf.
 4. `resolvePolicy` als einzige Wahrheit ueber die `recall`-Parameter - geliefert fuer den Assistentenpfad (AP9); der Agentenaufruf in `org/controller.ts` bleibt in Stufe 1 bewusst roh, ihn umzuleiten waere bei abweichendem `memory.graph` eine Verhaltensaenderung (R15).
-5. Schema 19: `dream_traces`, `dream_frames`, `memory_touches`, `dream_labels` (leer, ohne Schreiber) und drei `sleep_runs`-Zaehler.
+5. Schema 21: `dream_traces`, `dream_frames`, `memory_touches`, `dream_labels` (leer, ohne Schreiber) und drei `sleep_runs`-Zaehler.
 6. Der gesampelte Rekorder in einer `SAVEPOINT`-Transaktion, nur `site='turn'`, nur Assistenten-Owner.
 7. Das Blockmass aus Konzept 5.2 mit auf 1 normierten Gewichten.
 8. Die Gitterprobe ueber 8–12 feste Belegungen.
@@ -169,7 +169,7 @@ genau die Datei, an der sich drei Pakete treffen.
 
 ## 3. Die Arbeitspakete
 
-### AP1 — Schema 19 und Verbindungshygiene
+### AP1 — Schema 21 und Verbindungshygiene
 
 **Schreibt (exklusiv):** `packages/core/src/memory/db.ts`
 **Liest:** `packages/core/src/memory/store.ts` (Hausstil), `packages/core/src/types.ts`
@@ -542,7 +542,7 @@ bauen koennen.
 
 * `types.ts:417-455` — `SleepRun` bekommt hinter `resolvedCount` drei Felder:
   `dreamTracesSeen?`, `dreamFramesScored?`, `dreamCandidates?` — **optional**,
-  Doc-Kommentar je Feld "gesetzt ab AP7/Schema 19". Pflichtfelder wuerden das
+  Doc-Kommentar je Feld "gesetzt ab AP7/Schema 21". Pflichtfelder wuerden das
   typecheck-Gate der Welle 1 brechen: die einzigen Stellen, die ein
   vollstaendiges `SleepRun`-Literal bzw. -Return bauen, liegen in `store.ts`
   (`createSleepRun` bei `store.ts:1314-1333`, `mapSleepRun` bei
@@ -1446,7 +1446,7 @@ gesetzt, der alle fuenf Budgets haelt.
 
 ```
 Welle 1  (5 parallel, keine gemeinsame Datei)
-  AP1  db.ts                      Schema 19, busy_timeout, Abwaertsbremse, fts5vocab
+  AP1  db.ts                      Schema 21, busy_timeout, Abwaertsbremse, fts5vocab
   AP2  recall.ts                  Gleichstandsbrecher 1+3, In-JS-Sortierungen, Profilskala
   AP3  store.ts                   Gleichstandsbrecher 2+4, entitiesForMany, perEntity
   AP4  types.ts config.ts schemas.ts   Vokabular (inkl. Traum-Typen), Vorgaben, Schema-Untermenge
@@ -1526,7 +1526,7 @@ die Grundlinie aus §5 wieder erreicht ist.
 | **Kein Schreiben aus offener Transaktion.** Ein blankes `BEGIN` waehrend `mergeEntities` (`store.ts:853`) oder `undoSleepRun` (`store.ts:1435`) wirft und bricht genau den Pfad, den es protokollieren wollte. `SAVEPOINT`/`RELEASE` statt Waechter-Flag. | AP7 | AP7 |
 | **`recall` darf sein Verhalten NICHT aendern.** Das ist die Abnahme von AP6, nicht eine Nebenbedingung. | AP2, AP6, AP9 | AP2, AP6, AP9 |
 | **`dream_frames` ist ein Wortlautspeicher.** `frame.query.text` ist die woertliche Nutzeranfrage, `frame.records` traegt `content` und `evidence`. Kein bestehender Loeschpfad erreicht ihn heute. | AP1 (`owner`/`session_id`-Spalten, kein `pinned`), AP7 (Loeschmethoden), AP9 (`deleteSession`) | AP1, AP7, AP9 |
-| **Schema-Nummer 19 kann kollidieren** mit dem Schwesterbaum `E:\DEV\rookery-agent`. | AP1 | AP1 |
+| **Schema-Nummer 21 kann kollidieren** mit dem Schwesterbaum `E:\DEV\rookery-agent`. | AP1 | AP1 |
 | **`SUM(LENGTH(content))` ist kein billiger Fingerabdruck**, sondern ein Vollscan im Turn. Einmal je Nacht in `meta`, nie im Turn. | AP7, AP10 | AP7, AP10 |
 | **Kein `#throwIfAborted` zwischen `sleep.ts:296` und `sleep.ts:310`.** Die erste Zeile der Probe muss der Abbruchwaechter sein. | AP10 | AP10 |
 | **`ask` wirft nie** (`sleep.ts:1789`). Eine neue Phase, die wirft, ist die erste echte Wurfstelle im Block. | AP10 | AP10 |

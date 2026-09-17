@@ -1323,7 +1323,7 @@ und `cooldownNights` Zeremonie.
 
 **Phase 1 — Rahmen und Grundlinie. Null Modellaufrufe, null Befoerderungen, kein Kandidatenschreiber.**
 Inhalt: der `fetchFrame`/`scoreFrame`-Schnitt; die vier Gleichstandsbrecher; `entitiesForMany`;
-`resolvePolicy`; Schema 19 mit `dream_traces`, `dream_frames`, `memory_touches`, `dream_labels` und den
+`resolvePolicy`; Schema 21 mit `dream_traces`, `dream_frames`, `memory_touches`, `dream_labels` und den
 drei `sleep_runs`-Spalten; der gesampelte Rekorder auf `site = 'turn'` in einer SAVEPOINT-Klammer; der
 Korpusstempel; das Mass aus 5.2; die Gitterprobe; der Frisch-Test; das Groessen- und Latenzprotokoll mit
 dem Budgettor aus 8.7. Dazu die drei vorgezogenen Fremdarbeiten (9.7).
@@ -1580,6 +1580,9 @@ zurueck, wenn er ein eigenes Messziel hat.
 11. **Reicht der Frisch-Test bei ruhiger Bank?** Dann sind eingefroren und live identisch und der Test ist
     gegenstandslos. Der Bericht muss den Anteil der Rahmen ausweisen, deren Zeilen sich von live
     unterscheiden, damit die Teststaerke selbst sichtbar ist.
-12. **Schema-Nummer 19.** Dieselbe Datei existiert im Schwester-Arbeitsbaum `E:\DEV\rookery-agent`, der
-    derzeit nur das unversionierte Konzeptdokument selbst traegt; die Nummer kann kollidieren, sobald dort
-    Aenderungen an `memory/db.ts` einlaufen.
+12. **Schema-Nummer 21 - die Kollision ist eingetreten und aufgeloest.** Waehrend Stufe 1 gebaut
+    wurde, hat `main` die Nummern 19 (Turn-Journal) und 20 (Sitzungsspalte ohne NOT NULL) belegt.
+    Der Traum ist beim Zusammenfuehren auf **21** umnummeriert worden; das war folgenlos, weil die
+    Traum-Migration ausschliesslich aus `CREATE TABLE IF NOT EXISTS` und `hasColumn`-gewachten
+    `ALTER TABLE` besteht, also idempotent und reihenfolgeunabhaengig ist. Die Lehre bleibt: wer
+    eine Nummer im Voraus beansprucht, haelt sie nicht - nur die Idempotenz der Bloecke haelt.

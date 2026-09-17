@@ -373,8 +373,8 @@ export const REQUESTER_LABEL: Record<RequesterKind, string> = {
 
 /**
  * An agent's escalation stage (agent-performance-management). Four pages
- * show this badge - the agents list, the agent's own page, the org chart,
- * the HR overview - so it is stated once, the same way `ASSIGNMENT_STATUS_*`
+ * show this badge - the agents list, the agent's own page, the hierarchy,
+ * the Performance overview - so it is stated once, the same way `ASSIGNMENT_STATUS_*`
  * above is.
  */
 export const AGENT_STAGE_LABEL: Record<0 | 1 | 2 | 3, string> = {

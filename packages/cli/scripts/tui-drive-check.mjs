@@ -6,8 +6,8 @@
  * actually runs: it mounts `<App>` with `render()`, feeds real keystrokes into
  * a stdin that claims to be a TTY, and asserts on what lands on stdout -
  * including the slash palette, Tab completion, a streamed chat turn, Ctrl+C
- * aborting that turn, a delegated `/assign`, and Ctrl+C at an idle prompt
- * exiting.
+ * aborting that turn, a delegated `/assign`, a turn that asks a question back
+ * and is answered from the keyboard, and Ctrl+C at an idle prompt exiting.
  *
  * The assistant is stubbed so nothing is spawned, nothing is billed and no
  * session or memory is written to ~/.rookery.
@@ -68,8 +68,18 @@ function fakeStdout() {
   stream.readAll = () => clean(chunks.join(''));
   stream.since = (mark) => clean(chunks.slice(mark).join(''));
   stream.mark = () => chunks.length;
-  // Ink rewrites the whole frame each time, so the last chunk is the last frame.
-  stream.lastFrame = () => clean(chunks[chunks.length - 1] ?? '');
+  // Ink rewrites the whole frame each time, but it wraps a render in the
+  // synchronized-update markers (`ESC[?2026h` / `l`) and sends the erase
+  // sequences separately, so the last chunk is usually a control sequence and
+  // not the frame. The frame is the last chunk that still carries visible text
+  // once the escapes are stripped - which is what this returns.
+  stream.lastFrame = () => {
+    for (let i = chunks.length - 1; i >= 0; i -= 1) {
+      const frame = clean(chunks[i]);
+      if (frame.trim()) return frame;
+    }
+    return '';
+  };
   return stream;
 }
 
@@ -160,9 +170,42 @@ const orgStore = {
   },
 };
 
+/**
+ * The question registry, stubbed the way core's will behave: `ask` parks the
+ * turn on a promise and `answer`/`cancel` resolve it from whatever surface got
+ * there first. The TUI answers in-process, so this is the whole contract.
+ */
+let parked = null;
+const questions = {
+  answer(id, answer) {
+    const waiting = parked;
+    parked = null;
+    waiting?.({ id, reason: 'answered', answer });
+    // The real registry returns whether the id was still open.
+    return Boolean(waiting);
+  },
+  cancel(id, reason) {
+    const waiting = parked;
+    parked = null;
+    waiting?.({ id, reason });
+    return Boolean(waiting);
+  },
+};
+
+const QUESTION = {
+  type: 'question',
+  id: 'q-drive-1',
+  header: 'Deploy target',
+  question: 'Which environment should this go to?',
+  options: [{ label: 'staging' }, { label: 'production' }],
+  multiSelect: false,
+  expiresAt: Date.now() + 600_000,
+};
+
 const assistant = {
   getSession: () => ({ title: 'Driven session', provider: 'claude' }),
   rememberFact: () => ({ id: 'stub0000' }),
+  questions,
   org: {
     activeOrganization: () => ORGANIZATION,
     snapshot: () => ({
@@ -185,7 +228,30 @@ const assistant = {
       { id: 'claude', available: true, authenticated: true, version: '2.0.0', binary: 'claude' },
     ],
   },
-  async *chat() {
+  async *chat(input) {
+    // One turn that asks something back, so the question surface is driven for
+    // real: the generator parks exactly the way the `ask_user` tool will.
+    if (input?.text?.startsWith('ask me')) {
+      yield { type: 'session', sessionId: 'drive-0002', provider: 'claude' };
+      yield QUESTION;
+      const settled = await new Promise((resolve) => {
+        parked = resolve;
+      });
+      yield {
+        type: 'question-closed',
+        id: QUESTION.id,
+        reason: settled.reason,
+        ...(settled.answer ? { answer: settled.answer } : {}),
+      };
+      const text =
+        settled.reason === 'answered'
+          ? 'Going to ' + (QUESTION.options[settled.answer.selected[0]]?.label ?? '?') + '.'
+          : 'Nobody said, so nothing ships.';
+      yield { type: 'text', delta: text };
+      yield { type: 'done', text };
+      return;
+    }
+
     yield { type: 'session', sessionId: 'drive-0001', provider: 'claude' };
     yield { type: 'tool', name: 'Read', status: 'start', detail: 'src/repl.ts' };
     // The assistant putting something on the board mid-turn: a side channel,
@@ -362,7 +428,39 @@ console.log(preview(frame, 6));
 expect(frame, 'OPEN', '/tasks renders the board');
 expect(frame, 'Write the release notes', '/tasks lists the task that was just added');
 
-/* 8. /talk switches the counterpart and starts a new conversation */
+/* 8. a turn that asks back: the question surface takes the input box's place */
+mark = stdout.mark();
+stdin.write('ask me where this goes');
+await wait(150);
+stdin.write('\r');
+await wait(500);
+frame = stdout.since(mark);
+console.log('\n--- the turn asks back ----------------------------------------');
+console.log(preview(frame, 12));
+expect(frame, 'Deploy target', 'the header of the open question');
+expect(frame, 'Which environment should this go to?', 'the question itself');
+expect(frame, 'staging', 'the first option');
+expect(frame, 'production', 'the second option');
+expect(frame, 'Enter answers', 'how to answer');
+expect(frame, 'waiting for you', 'the status line says the turn is blocked, not thinking');
+refute(stdout.lastFrame(), 'Ask anything, or / for commands', 'the input box gave up its place');
+
+/* Enter picks the focused option, the turn unblocks and finishes. */
+mark = stdout.mark();
+stdin.write('\r');
+await wait(500);
+frame = stdout.since(mark);
+console.log('\n--- after answering -------------------------------------------');
+console.log(preview(frame, 10));
+expect(frame, 'Going to staging.', 'the turn carried on with the answer');
+expect(frame, 'answered staging', 'the transcript records what was chosen');
+expect(
+  stdout.lastFrame(),
+  'Ask anything, or / for commands',
+  'the input box comes back once the question is closed',
+);
+
+/* 9. /talk switches the counterpart and starts a new conversation */
 mark = stdout.mark();
 stdin.write('/talk backend-dev');
 await wait(150);
@@ -386,7 +484,7 @@ expect(frame, 'talking to jarvis', '/talk assistant hands the floor back');
 // assistant again: while the agent held the floor it said "ready  backend-dev".
 expect(frame, 'ready  jarvis', 'the status line is back to the assistant');
 
-/* 9. Ctrl+C at an idle prompt leaves */
+/* 10. Ctrl+C at an idle prompt leaves */
 let exited = false;
 instance.waitUntilExit().then(() => {
   exited = true;

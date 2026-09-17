@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { TurnBlocks } from '../lib/blocks';
-import type { RookerySocket } from '../lib/socket';
+import type { QuestionEvent, RookerySocket } from '../lib/socket';
 import type {
   ActivityItem,
   AgentEvent,
@@ -34,6 +34,57 @@ export function prettyToolName(name: string): string {
   return match ? match[1] + ' · ' + match[2] : name;
 }
 
+/** What an answer carries back: chosen option indices and a free text. */
+export interface QuestionReply {
+  selected: number[];
+  text?: string;
+}
+
+/**
+ * Merge one asked question into the open list, by id.
+ *
+ * The same question reaches a client that started the turn twice - once on
+ * the turn's own stream, once as the broadcast every connection gets - and a
+ * reload adds a third copy from `GET /api/questions`. Merging by id keeps
+ * exactly one card per question; the newest copy wins, so a re-broadcast with
+ * a later `expiresAt` moves the deadline instead of adding a row.
+ */
+export function mergeQuestion(current: QuestionEvent[], event: QuestionEvent): QuestionEvent[] {
+  const index = current.findIndex((entry) => entry.id === event.id);
+  if (index === -1) return [...current, event];
+  const next = [...current];
+  next[index] = event;
+  return next;
+}
+
+/** A row from `GET /api/questions` is only usable if it has what a card needs. */
+function isQuestion(value: unknown): value is QuestionEvent {
+  if (typeof value !== 'object' || value === null) return false;
+  const row = value as Partial<QuestionEvent>;
+  return typeof row.id === 'string' && typeof row.question === 'string' && Array.isArray(row.options);
+}
+
+/**
+ * The questions still waiting for an answer.
+ *
+ * A reload loses every frame that was sent before it, so the card has to come
+ * back over REST - and a late listener (a second window, a phone that just
+ * woke up) needs the same list. Answered from either shape the route may
+ * take, a bare array or `{ questions }`, and `type` is filled in because the
+ * stored question is a request, not an event.
+ */
+export async function fetchOpenQuestions(): Promise<QuestionEvent[]> {
+  const response = await fetch('/api/questions');
+  if (!response.ok) throw new Error('Open questions could not be loaded.');
+  const body: unknown = await response.json();
+  const rows: unknown[] = Array.isArray(body)
+    ? body
+    : Array.isArray((body as { questions?: unknown }).questions)
+      ? ((body as { questions: unknown[] }).questions)
+      : [];
+  return rows.filter(isQuestion).map((row) => ({ ...row, type: 'question' as const }));
+}
+
 export interface ChatState {
   messages: Message[];
   streaming: string;
@@ -56,9 +107,34 @@ export interface ChatState {
   tasks: Task[];
   /** Newest subscription usage the provider reported mid-turn, if any. */
   quota: ProviderQuota | null;
+  /**
+   * Questions waiting for a human answer, oldest first. They are not part of
+   * the turn: one may well come from a turn another window or the phone
+   * started, and a turn that asked stays `busy` while it waits.
+   */
+  questions: QuestionEvent[];
   error: string | null;
   send(payload: ChatPayload, options?: { onSpoken?(text: string): void }): void;
   sendAssign(payload: AssignPayload): void;
+  /**
+   * Show a question that did not arrive on this turn's stream - the broadcast
+   * every connection gets, or the reload's `GET /api/questions`.
+   */
+  openQuestion(event: QuestionEvent): void;
+  /** Take one away again, whoever answered it and wherever. */
+  closeQuestion(id: string): void;
+  /**
+   * Answer one. Resolves once the answer is on its way - over the socket, or
+   * over REST when the socket is down - and rejects if neither got through,
+   * so the card can stay and say so instead of vanishing into nothing.
+   */
+  answerQuestion(id: string, reply: QuestionReply): Promise<void>;
+  /**
+   * Rejoin this conversation's running turn after a reload - or to watch it
+   * from a second tab: rebuild the journal's events into the live state,
+   * then continue the stream from where the replay ended.
+   */
+  attach(sessionId: string): Promise<void>;
   abort(): void;
   setMessages(messages: Message[]): void;
   reset(): void;
@@ -91,6 +167,7 @@ export function useChat(
   const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [quota, setQuota] = useState<ProviderQuota | null>(null);
+  const [questions, setQuestions] = useState<QuestionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const turnRef = useRef<string | null>(null);
@@ -116,6 +193,55 @@ export function useChat(
   const partsRef = useRef(new TurnBlocks());
   const [parts, setParts] = useState<MessageBlock[]>([]);
 
+  /**
+   * The streamed state is painted at most once per frame.
+   *
+   * A provider sends one event per token, and rendering each of them on its
+   * own made a turn cost quadratic work: every delta re-rendered the whole
+   * answer so far, so a long one fell further and further behind the stream
+   * and arrived in jerks - while a reload, which renders the finished text
+   * once, looked perfectly smooth. Every event is still applied in arrival
+   * order and none is dropped; only the paint is coalesced, which is all a
+   * reader can see anyway.
+   */
+  const thinkingRef = useRef('');
+  const frameRef = useRef<number | null>(null);
+
+  const paint = useCallback(() => {
+    frameRef.current = null;
+    setStreaming(bufferRef.current);
+    setThinking(thinkingRef.current);
+    setParts([...partsRef.current.blocks]);
+  }, []);
+
+  /** Drop a frame owed to a turn that is being settled or replaced. */
+  const cancelPaint = useCallback(() => {
+    if (frameRef.current === null) return;
+    if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+  }, []);
+
+  /**
+   * Ask for a paint on the next frame; repeated calls within one frame are
+   * free. Where there are no frames - a test harness, a server render -
+   * there is nothing to coalesce either, so the paint happens at once and
+   * the hook behaves exactly as it did before.
+   */
+  const schedulePaint = useCallback(() => {
+    if (frameRef.current !== null) return;
+    if (typeof requestAnimationFrame !== 'function') {
+      paint();
+      return;
+    }
+    frameRef.current = requestAnimationFrame(paint);
+  }, [paint]);
+
+  /** Paint now and drop a pending frame: for the rare structural events. */
+  const paintNow = useCallback(() => {
+    cancelPaint();
+    paint();
+  }, [paint]);
+
   const pushActivity = useCallback((item: Omit<ActivityItem, 'at'>) => {
     setActivity((current) => {
       // A tool's 'end' closes the matching 'start' rather than adding a row.
@@ -131,11 +257,17 @@ export function useChat(
     });
   }, []);
 
-  /** Folds one text/thinking/tool event into the ordered transcript. */
-  const foldPart = useCallback((event: AgentEvent) => {
-    partsRef.current.apply(event);
-    setParts([...partsRef.current.blocks]);
-  }, []);
+  /**
+   * Folds one text/thinking/tool event into the ordered transcript. The fold
+   * happens per event, in order; the paint it asks for is coalesced.
+   */
+  const foldPart = useCallback(
+    (event: AgentEvent) => {
+      partsRef.current.apply(event);
+      schedulePaint();
+    },
+    [schedulePaint],
+  );
 
   const handleEvent = useCallback(
     (event: AgentEvent) => {
@@ -146,19 +278,21 @@ export function useChat(
 
         case 'text':
           bufferRef.current += event.delta;
-          setStreaming(bufferRef.current);
           foldPart(event);
           break;
 
         case 'thinking':
-          setThinking((current) => (current + event.delta).slice(-2000));
+          thinkingRef.current = (thinkingRef.current + event.delta).slice(-2000);
           foldPart(event);
           break;
 
         case 'tool':
           toolCallsRef.current = [...toolCallsRef.current, event];
           setToolCalls(toolCallsRef.current);
-          foldPart(event);
+          // A tool call is structural and rare: it shows up at once rather
+          // than waiting for the next frame behind a wall of deltas.
+          partsRef.current.apply(event);
+          paintNow();
           pushActivity({
             id: event.id ?? event.name + ':' + Date.now(),
             kind: 'tool',
@@ -222,6 +356,22 @@ export function useChat(
           setQuota(event.quota);
           break;
 
+        case 'question': {
+          // `busy` stays true on purpose: the turn has not finished, it is
+          // standing still in front of the question until someone answers.
+          const asked = event;
+          setQuestions((current) => mergeQuestion(current, asked));
+          break;
+        }
+
+        case 'question-closed': {
+          // Answered here, on the phone, or run out of time - either way the
+          // turn moved on and the card has nothing left to collect.
+          const closed = event;
+          setQuestions((current) => current.filter((entry) => entry.id !== closed.id));
+          break;
+        }
+
         case 'memory':
           if (event.action === 'recalled' && event.items) {
             setRecalled(event.items);
@@ -276,7 +426,11 @@ export function useChat(
         ]);
         onSpoken?.(answer);
       }
+      // The turn is over, so a frame still owed to it would paint the state
+      // this settle is about to clear - and paint it after the clearing.
+      cancelPaint();
       bufferRef.current = '';
+      thinkingRef.current = '';
       toolCallsRef.current = [];
       setToolCalls([]);
       partsRef.current.clear();
@@ -292,36 +446,49 @@ export function useChat(
   );
 
   /** Everything a fresh turn resets, whether it is a chat or an assignment. */
-  const beginTurn = useCallback((prompt: string) => {
+  const resetTurnState = useCallback(() => {
     setError(null);
     setActivity([]);
     setRecalled([]);
     setAssignments([]);
     setAgentMessages([]);
     setTasks([]);
+    // Same reason as in `finish`: a frame owed to the turn being replaced
+    // would paint its leftovers over the one starting here.
+    cancelPaint();
     bufferRef.current = '';
+    thinkingRef.current = '';
     toolCallsRef.current = [];
     setToolCalls([]);
     partsRef.current.clear();
     setParts([]);
     setStreaming('');
+    setThinking('');
     finishedRef.current = false;
     inFlight.current = true;
     setBusy(true);
     const token = {};
     turnToken.current = token;
-    setMessages((current) => [
-      ...current,
-      {
-        id: nextId(),
-        sessionId: '',
-        role: 'user' as const,
-        content: prompt,
-        createdAt: Date.now(),
-      },
-    ]);
     return token;
   }, []);
+
+  const beginTurn = useCallback(
+    (prompt: string) => {
+      const token = resetTurnState();
+      setMessages((current) => [
+        ...current,
+        {
+          id: nextId(),
+          sessionId: '',
+          role: 'user' as const,
+          content: prompt,
+          createdAt: Date.now(),
+        },
+      ]);
+      return token;
+    },
+    [resetTurnState],
+  );
 
   const send = useCallback<ChatState['send']>(
     (payload, options) => {
@@ -355,6 +522,94 @@ export function useChat(
     [beginTurn, finish, handleEvent, sessionId, socket],
   );
 
+  /**
+   * Rejoin whatever turn is running in this conversation.
+   *
+   * A reload - or a second tab opening the conversation - starts here: the
+   * journal's events come back over REST and run through the same reduction
+   * the live stream feeds, so the rebuilt screen is the screen before the
+   * reload, streaming text and old tool calls included. The socket attach
+   * that follows continues from the journal's numbering, and whatever began
+   * after the fetch - on another screen, say - is joined the same way when
+   * its `attached` reply arrives.
+   */
+  const attach = useCallback<ChatState['attach']>(
+    async (id) => {
+      // Arming comes before the busy guard, deliberately: the effect that
+      // calls this re-runs whenever its inputs change identity, and its
+      // cleanup has just disarmed the socket again. A turn already on screen
+      // needs no rebuild, but the conversation must never stop being armed -
+      // a reconnect after a silent disarm would lose the live tail for good.
+      socket.attachConversation(id, (frame) => {
+        // The busy guard inside `rejoin` keeps a re-arm of the conversation
+        // from rebuilding what is already on screen.
+        if (frame.id) void rejoin();
+      });
+      if (inFlight.current) return;
+
+      const readRunning = async (): Promise<{
+        turn: { id: string; status: string } | null;
+        events: { seq: number; event: AgentEvent }[];
+      } | null> => {
+        try {
+          const response = await fetch('/api/sessions/' + encodeURIComponent(id) + '/running');
+          if (!response.ok) return null;
+          return (await response.json()) as {
+            turn: { id: string; status: string } | null;
+            events: { seq: number; event: AgentEvent }[];
+          };
+        } catch {
+          return null;
+        }
+      };
+
+      const rejoin = async (prefetched?: Awaited<ReturnType<typeof readRunning>>): Promise<void> => {
+        if (inFlight.current) return;
+        const body = prefetched ?? (await readRunning());
+        if (!body?.turn) return;
+
+        const token = resetTurnState();
+        for (const entry of body.events) {
+          if (turnToken.current !== token) return;
+          handleEvent(entry.event);
+        }
+        // A turn interrupted by a server restart has no live tail and will
+        // never say done: what the journal holds is the whole answer, so it
+        // settles here and now with the text it had reached.
+        if (body.turn.status === 'interrupted') {
+          finish('');
+          return;
+        }
+
+        const cursor = body.events.at(-1)?.seq ?? 0;
+        turnRef.current = body.turn.id;
+        socket.adopt(
+          body.turn.id,
+          {
+            onEvent: (event) => {
+              if (turnToken.current !== token) return;
+              handleEvent(event);
+            },
+            onDone: (answer, usage) => {
+              if (turnToken.current !== token) return;
+              finish(answer, undefined, usage);
+            },
+            onError: (message) => {
+              if (turnToken.current !== token) return;
+              setError(message);
+              finish('');
+            },
+          },
+          cursor,
+        );
+      };
+
+      const body = await readRunning();
+      if (body?.turn) await rejoin(body);
+    },
+    [finish, handleEvent, resetTurnState, socket],
+  );
+
   const sendAssign = useCallback<ChatState['sendAssign']>(
     (payload) => {
       if (inFlight.current) return;
@@ -385,6 +640,37 @@ export function useChat(
     [beginTurn, finish, handleEvent, sessionId, socket],
   );
 
+  const openQuestion = useCallback((event: QuestionEvent) => {
+    setQuestions((current) => mergeQuestion(current, event));
+  }, []);
+
+  const closeQuestion = useCallback((id: string) => {
+    setQuestions((current) => current.filter((entry) => entry.id !== id));
+  }, []);
+
+  const answerQuestion = useCallback<ChatState['answerQuestion']>(
+    async (id, reply) => {
+      const text = reply.text?.trim();
+      const body = { selected: reply.selected, ...(text ? { text } : {}) };
+      // The socket is the short way: the server is already holding the tool
+      // call open on the other end of it. A closed socket is no reason to
+      // lose a typed answer, so the REST route carries it instead - it is the
+      // same door the phone and any SSE client use.
+      if (!socket.answer(id, body)) {
+        const response = await fetch('/api/questions/' + encodeURIComponent(id) + '/answer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error('The answer could not be delivered.');
+      }
+      // Sent is enough to take the card away; `question-closed` follows and
+      // removes it everywhere else too.
+      setQuestions((current) => current.filter((entry) => entry.id !== id));
+    },
+    [socket],
+  );
+
   const abort = useCallback(() => {
     if (turnRef.current) socket.abort(turnRef.current);
     // Keep whatever text already arrived rather than discarding the turn.
@@ -396,7 +682,9 @@ export function useChat(
     // socket entry, so its frames cannot follow the user into whichever
     // conversation replaces this one.
     if (turnRef.current) socket.abort(turnRef.current);
+    cancelPaint();
     bufferRef.current = '';
+    thinkingRef.current = '';
     toolCallsRef.current = [];
     setToolCalls([]);
     partsRef.current.clear();
@@ -432,9 +720,17 @@ export function useChat(
     agentMessages,
     tasks,
     quota,
+    // Questions outlive the conversation they were asked in: `reset` does not
+    // clear them, because the turn waiting on one may have been started
+    // somewhere else entirely. They go when they are closed or expire.
+    questions,
     error,
     send,
     sendAssign,
+    attach,
+    openQuestion,
+    closeQuestion,
+    answerQuestion,
     abort,
     setMessages,
     reset,

@@ -33,6 +33,12 @@ export type CronEvent = Extract<AgentEvent, { type: 'cron' }>;
 /** The `sleep` broadcast: the run as it stands, and which phase it just left. */
 export type SleepEvent = Extract<AgentEvent, { type: 'sleep' }>;
 
+/** The `question` broadcast: a turn is waiting on a human answer. */
+export type QuestionEvent = Extract<AgentEvent, { type: 'question' }>;
+
+/** The `question-closed` broadcast: that question is over, however it ended. */
+export type QuestionClosedEvent = Extract<AgentEvent, { type: 'question-closed' }>;
+
 /** One live-log entry of a running assignment this socket watches. */
 export type AssignmentLogFrame = Extract<ServerFrame, { type: 'assignment-log' }>;
 
@@ -44,7 +50,17 @@ export interface TurnHandlers {
 
 interface PendingTurn extends TurnHandlers {
   id: string;
+  /**
+   * How far into the turn this client already is, in journal positions. A
+   * locally started turn begins at 0 and counts everything; a re-joined turn
+   * begins where its REST replay ended, so the first live frames - which may
+   * overlap what the journal already gave - are dropped rather than doubled.
+   */
+  cursor: number;
 }
+
+/** What an `attached` frame says: which turn answered, and where it stands. */
+export type AttachedFrame = Extract<ServerFrame, { type: 'attached' }>;
 
 const MAX_BACKOFF_MS = 15000;
 const PING_INTERVAL_MS = 25000;
@@ -56,6 +72,10 @@ export class RookerySocket {
   #attempt = 0;
   #closedByUs = false;
   #pending = new Map<string, PendingTurn>();
+  /** Conversations this socket wants the running turn of, re-armed on reconnect. */
+  #attachedConversations = new Set<string>();
+  /** The latest `attachConversation` handler; one page attaches one conversation. */
+  #onAttached: ((frame: AttachedFrame) => void) | null = null;
   #statusListeners = new Set<(status: SocketStatus) => void>();
   #memoryListeners = new Set<(event: { sessionId: string; stored: MemoryRecord[] }) => void>();
   #assignmentListeners = new Set<(assignment: AssignmentView) => void>();
@@ -66,6 +86,8 @@ export class RookerySocket {
   #changedListeners = new Set<(change: OrgChange) => void>();
   #sleepListeners = new Set<(event: SleepEvent) => void>();
   #quotaListeners = new Set<(quota: ProviderQuota) => void>();
+  #questionListeners = new Set<(event: QuestionEvent) => void>();
+  #questionClosedListeners = new Set<(event: QuestionClosedEvent) => void>();
   #assignmentLogListeners = new Set<(frame: AssignmentLogFrame) => void>();
   /** Assignments this socket should be watching, so a reconnect can re-arm them. */
   #watchedAssignments = new Set<string>();
@@ -141,6 +163,26 @@ export class RookerySocket {
     return () => this.#quotaListeners.delete(listener);
   }
 
+  /**
+   * The assistant asked something and a turn is waiting on the answer.
+   *
+   * This is the broadcast, not the turn's own stream: the turn may have been
+   * started in another window or on the phone, and the question is still ours
+   * to show and ours to answer - the id belongs to the question, not to a
+   * turn. A client that started the turn itself sees the same event twice,
+   * once here and once on its stream, so listeners merge by id.
+   */
+  onQuestion(listener: (event: QuestionEvent) => void): () => void {
+    this.#questionListeners.add(listener);
+    return () => this.#questionListeners.delete(listener);
+  }
+
+  /** That question is over - answered, cancelled or expired. Take the card away. */
+  onQuestionClosed(listener: (event: QuestionClosedEvent) => void): () => void {
+    this.#questionClosedListeners.add(listener);
+    return () => this.#questionClosedListeners.delete(listener);
+  }
+
   /** An agent, team, project or the company itself was created or edited. */
   onChanged(listener: (change: OrgChange) => void): () => void {
     this.#changedListeners.add(listener);
@@ -213,6 +255,9 @@ export class RookerySocket {
       // The server's watcher sets died with the old socket: every live
       // terminal re-arms its watch here, before any frames could be missed.
       for (const id of this.#watchedAssignments) this.#send({ type: 'watch', assignmentId: id });
+      // Same for the conversations being followed: the turn kept running
+      // while the connection was down, and its journal has the part missed.
+      for (const sessionId of this.#attachedConversations) this.#send({ type: 'attach', sessionId });
     };
 
     socket.onmessage = (message) => {
@@ -287,7 +332,7 @@ export class RookerySocket {
     handlers: TurnHandlers,
   ): string {
     const id = crypto.randomUUID();
-    this.#pending.set(id, { id, ...handlers });
+    this.#pending.set(id, { id, cursor: 0, ...handlers });
 
     const delivered = this.#send({ ...frame, id } as ClientFrame);
     if (!delivered) {
@@ -297,9 +342,58 @@ export class RookerySocket {
     return id;
   }
 
+  /**
+   * Register handlers for a turn this client did not start - the one the
+   * journal replayed over REST. Its live frames arrive with the same id;
+   * `cursor` is how far the replay already went, and everything numbered up
+   * to it is dropped on arrival rather than applied twice.
+   */
+  adopt(id: string, handlers: TurnHandlers, cursor: number): void {
+    this.#pending.set(id, { id, cursor, ...handlers });
+  }
+
   abort(id: string): void {
     this.#send({ type: 'abort', id });
     this.#pending.delete(id);
+  }
+
+  /**
+   * Point this socket at a conversation: whichever turn runs there, its live
+   * frames come to this client from now on. Re-armed on every reconnect, like
+   * the assignment watches. The handler hears each `attached` reply, so a
+   * turn that started after the REST replay - on another screen, say - can
+   * still be fetched and joined; one page attaches one conversation, which is
+   * why the latest handler wins.
+   */
+  attachConversation(sessionId: string, onAttached?: (frame: AttachedFrame) => void): void {
+    this.#attachedConversations.add(sessionId);
+    if (onAttached) this.#onAttached = onAttached;
+    this.#send({ type: 'attach', sessionId });
+  }
+
+  /** Stop asking after a conversation. Its turns keep running, unseen here. */
+  detachConversation(sessionId: string): void {
+    this.#attachedConversations.delete(sessionId);
+    this.#onAttached = null;
+  }
+
+  /**
+   * Answer an open question. `id` is the question's, not a turn's, so this
+   * opens no stream and gets no reply of its own: the server resolves the
+   * waiting tool call and closes the question with a `question-closed`
+   * broadcast, which is what takes the card away everywhere at once.
+   *
+   * Returns `false` when the socket is not open, so the caller can fall back
+   * to `POST /api/questions/:id/answer` rather than lose the answer.
+   */
+  answer(id: string, payload: { selected: number[]; text?: string }): boolean {
+    const text = payload.text?.trim();
+    return this.#send({
+      type: 'answer',
+      id,
+      selected: payload.selected,
+      ...(text ? { text } : {}),
+    });
   }
 
   /* ---------------------------- internals ---------------------------- */
@@ -368,6 +462,22 @@ export class RookerySocket {
       return;
     }
 
+    if (frame.type === 'question') {
+      if (frame.event.type === 'question') {
+        const event = frame.event;
+        for (const listener of this.#questionListeners) listener(event);
+      }
+      return;
+    }
+
+    if (frame.type === 'question-closed') {
+      if (frame.event.type === 'question-closed') {
+        const event = frame.event;
+        for (const listener of this.#questionClosedListeners) listener(event);
+      }
+      return;
+    }
+
     if (frame.type === 'changed') {
       for (const listener of this.#changedListeners) listener(frame.change);
       return;
@@ -387,6 +497,11 @@ export class RookerySocket {
       return;
     }
 
+    if (frame.type === 'attached') {
+      this.#onAttached?.(frame);
+      return;
+    }
+
     if (frame.type === 'event') {
       // Quota is about the account, not the turn, so it is handed on even
       // when the turn itself is no longer ours to render (a reload mid-turn,
@@ -398,6 +513,13 @@ export class RookerySocket {
 
       const turn = this.#pending.get(frame.id);
       if (!turn) return;
+      // The journal position this frame carries is the guard of the handover:
+      // a re-joined turn has already applied everything up to its cursor, so
+      // an overlap frame is dropped instead of splicing duplicated text in.
+      if (typeof frame.seq === 'number') {
+        if (frame.seq <= turn.cursor) return;
+        turn.cursor = frame.seq;
+      }
       turn.onEvent(frame.event);
 
       if (frame.event.type === 'done') {

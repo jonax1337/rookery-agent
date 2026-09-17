@@ -253,7 +253,7 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
   });
 
   /**
-   * The company-wide performance view - the "HR" page's one call. Archived
+   * The company-wide performance view - the Performance page's one call. Archived
    * agents are excluded: there is nothing left to develop once an agent has
    * been replaced, and its personnel record stays reachable from its own
    * (archived) page instead.
@@ -318,11 +318,13 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
    */
   app.get('/api/org/assignments/:id/log', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
     const snapshot = context.assistant.snapshotAssignmentLog(request.params.id);
-    if (snapshot.active) return { events: snapshot.events, overflowed: snapshot.overflowed };
+    // A journalled run answers forever: `active` false only means nothing
+    // more is coming, and the client shows the transcript as finished.
+    if (snapshot) return { events: snapshot.events, overflowed: snapshot.overflowed, active: snapshot.active };
     const assignment = store.getAssignment(request.params.id);
     if (!assignment) return notFound(reply, 'No assignment ' + request.params.id);
     reply.code(410);
-    return { error: 'Gone', message: 'The run is over; only its result remains.', status: assignment.status };
+    return { error: 'Gone', message: 'The run predates the journal; only its result remains.', status: assignment.status };
   });
 
   /**

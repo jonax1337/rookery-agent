@@ -46,6 +46,20 @@ export async function registerSessionRoutes(
     return { session, messages: context.assistant.store.getMessages(session.id) };
   });
 
+  /**
+   * The turn of this conversation a client should rejoin, from the journal.
+   *
+   * This is the reload's half of the handover: the events that already
+   * happened, numbered; the websocket `attach` frame is the other half and
+   * continues from the same numbers. `turn: null` when nothing is running
+   * and nothing unfinished is worth showing.
+   */
+  app.get('/api/sessions/:id/running', async (request: FastifyRequest<IdParams>) => {
+    const rejoin = context.assistant.store.turns.rejoinable(request.params.id);
+    if (!rejoin) return { turn: null, events: [] };
+    return { turn: rejoin.turn, events: rejoin.events };
+  });
+
   app.patch('/api/sessions/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
     const session = context.assistant.getSession(request.params.id);
     if (!session) {

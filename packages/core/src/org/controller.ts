@@ -21,8 +21,10 @@ import type {
   NotifyEvent,
   Organization,
   PermissionLevel,
+  ImapListenerConfig,
   Project,
   ProviderId,
+  QuestionOption,
   RequesterKind,
   RookeryConfig,
   Task,
@@ -56,7 +58,15 @@ import {
 } from './review.js';
 import { buildTaskWaves, planTask, type TaskPlan } from './planner.js';
 import { toolsFor, type ToolAudience } from './tools.js';
-import { ensureToolServers, renderToolServers, toolServerStates, toolServersFor, withToolServer } from '../tools/hub.js';
+import type { QuestionCloseReason, QuestionRegistry } from './questions.js';
+import {
+  ensureToolServers,
+  externalTurnExtras,
+  renderToolServers,
+  toolServerStates,
+  toolServersFor,
+  withToolServer,
+} from '../tools/hub.js';
 import {
   SkillStore,
   projectSkillsDir,
@@ -121,6 +131,12 @@ export interface ToolContext {
    * storage.
    */
   scheduled?: boolean;
+  /**
+   * The bridge token of the calling turn, stamped in by `register`. `ask_user`
+   * files it with the question so the turn can take its questions with it on
+   * every exit, not only on an abort.
+   */
+  questionOwner?: string;
 }
 
 /**
@@ -168,6 +184,12 @@ export interface OrgControllerOptions {
   cron?: CronScheduler;
   /** The night shift, when the runtime has one; `sleep_now` needs it. */
   sleep?: SleepRunner;
+  /**
+   * The open questions, when the runtime has one; `ask_user` needs it. Left
+   * unset - a controller built for a one-off command, say - the tool says it
+   * cannot reach anybody instead of hanging on a promise nobody can settle.
+   */
+  questions?: QuestionRegistry;
   /**
    * Whether an outgoing channel could deliver a notification *right now* -
    * not merely whether one is registered. A Telegram push service that is
@@ -289,6 +311,7 @@ export class OrgController extends EventEmitter {
   readonly #skills: SkillStore;
   readonly #cron: CronScheduler | undefined;
   readonly #sleep: SleepRunner | undefined;
+  readonly #questions: QuestionRegistry | undefined;
   readonly #canNotify: (() => boolean) | undefined;
   readonly #runAssistantMail: OrgControllerOptions['runAssistantMail'];
   #running = 0;
@@ -310,6 +333,7 @@ export class OrgController extends EventEmitter {
     this.#skills = new SkillStore(options.config.skillsDir);
     this.#cron = options.cron;
     this.#sleep = options.sleep;
+    this.#questions = options.questions;
     this.#canNotify = options.canNotify;
     this.#runAssistantMail = options.runAssistantMail;
   }
@@ -347,9 +371,22 @@ export class OrgController extends EventEmitter {
     };
   }
 
-  /** Register a provider process with the bridge and hand back its token. */
+  /**
+   * Register a provider process with the bridge and hand back its token. The
+   * tool list is cut to the caller twice over: by audience, and by whether
+   * anybody is in front of a screen - a scheduled run is never even shown
+   * `ask_user`.
+   */
   register(context: ToolContext): string {
-    return this.#bridge.register(toolsFor(context.audience), this.handler(context));
+    // The handler closes over the context, so the token is stamped in rather
+    // than passed: it is what `ask_user` files with a question and what the
+    // runtime retires when the turn ends, on every exit.
+    const token = this.#bridge.register(
+      toolsFor(context.audience, { scheduled: context.scheduled }),
+      this.handler(context),
+    );
+    context.questionOwner = token;
+    return token;
   }
 
   unregister(token: string): void {
@@ -609,6 +646,75 @@ export class OrgController extends EventEmitter {
         const event: NotifyEvent = { text: text('text'), urgency, at: Date.now() };
         this.emit('notify', event);
         return { text: 'Sent' + (urgency === 'high' ? ' (high urgency)' : '') + ': ' + event.text };
+      }
+
+      case 'ask_user': {
+        // Only the assistant asks. An agent runs unattended by design and
+        // reports back by mail; letting one block on a person would stall a
+        // whole delegation chain behind somebody's inbox.
+        if (context.audience !== 'assistant') {
+          return fail('Only the assistant can ask the user. Report what you need in your result instead.');
+        }
+        // Belt and braces: a scheduled run is not offered the tool at all
+        // (see `register`), so getting here means the list was built for a
+        // conversation and the run turned out to be automated.
+        if (context.scheduled) {
+          return fail(
+            'This run was started by a schedule and nobody is there to answer. Decide it yourself ' +
+              'and say in your result what you assumed.',
+          );
+        }
+        if (!this.#questions) return fail('Asking the user is not available here.');
+        const header = text('header');
+        const question = text('question');
+        if (!question) return fail('A question needs its text.');
+        const options = asQuestionOptions(args.options);
+        if (options.length < 2) return fail('Offer at least two options to choose from.');
+        if (options.length > 4) return fail('Offer at most four options; more does not fit a phone.');
+
+        const timeoutMs = this.#config.questions.timeoutMs;
+        // The close event carries why it closed, and the turn wants to know:
+        // "nobody was there" and "somebody waved it away" are different
+        // things to carry on from.
+        let closedBecause: QuestionCloseReason | undefined;
+        const emit = (event: AgentEvent): void => {
+          if (event.type === 'question-closed') closedBecause = event.reason;
+          context.emit(event);
+        };
+        const answer = await this.#questions.ask(
+          {
+            header: header || 'Question',
+            question,
+            options,
+            multiSelect: args.multiSelect === true,
+            sessionId: context.sessionId,
+          },
+          // `emit` puts the card on the asking turn's own stream; `signal` is
+          // the half no other tool handler has: an aborted turn kills the
+          // provider process, and without this the question would stay open
+          // for its full timeout with nobody left to receive the answer.
+          // `owner` widens that to every way a turn can end.
+          { signal: context.signal, timeoutMs, emit, ...(context.questionOwner ? { owner: context.questionOwner } : {}) },
+        );
+
+        if (!answer) {
+          if (closedBecause === 'cancelled' || context.signal?.aborted) {
+            return { text: 'The question was cancelled before anybody answered it.' };
+          }
+          const minutes = Math.max(1, Math.round(timeoutMs / 60000));
+          return {
+            text:
+              'No answer within ' + minutes + ' minute' + (minutes === 1 ? '' : 's') + '. Carry on with ' +
+              'your own best judgement and say which way you went and why.',
+          };
+        }
+        const chosen = answer.selected
+          .map((index) => options[index]?.label)
+          .filter((label): label is string => Boolean(label));
+        const parts: string[] = [];
+        if (chosen.length) parts.push('The user chose: ' + chosen.join(', ') + '.');
+        if (answer.text) parts.push((chosen.length ? 'They added: ' : 'The user answered: ') + answer.text);
+        return { text: parts.join('\n') };
       }
 
       case 'use_skill': {
@@ -906,7 +1012,13 @@ export class OrgController extends EventEmitter {
       case 'update_schedule':
       case 'delete_schedule':
       case 'run_schedule':
+      case 'set_webhook':
         return this.#schedules(context, name, args);
+
+      case 'list_listeners':
+      case 'set_listener':
+      case 'remove_listener':
+        return this.#listeners(context, name, args);
 
       default:
         return fail('Unknown tool ' + name + '.');
@@ -931,9 +1043,16 @@ export class OrgController extends EventEmitter {
       return { text: renderSchedules(cron.list(context.orgId), snapshot) };
     }
 
+    // "event" takes a schedule off the clock, and then it needs no expression
+    // at all; anything else keeps the old rule that one is required.
+    const triggerMode = text('triggerMode').toLowerCase() === 'event' ? 'event' : text('triggerMode') ? 'schedule' : undefined;
+    const cooldownMs =
+      args.cooldownSeconds === undefined ? undefined : clampNumber(args.cooldownSeconds, 0, 86_400, 60) * 1000;
+
     if (name === 'create_schedule') {
-      if (!text('name') || !text('schedule') || !text('prompt')) {
-        return fail('A schedule needs a name, a cron expression and a prompt.');
+      if (!text('name') || !text('prompt')) return fail('A schedule needs a name and a prompt.');
+      if (!text('schedule') && triggerMode !== 'event') {
+        return fail('A schedule needs a cron expression, or triggerMode "event" to take it off the clock.');
       }
       const agent = text('agent') ? this.#store.org.findAgent(context.orgId, text('agent')) : null;
       if (text('agent') && !agent) return fail('No agent "' + text('agent') + '".');
@@ -949,6 +1068,8 @@ export class OrgController extends EventEmitter {
           orgId: context.orgId,
           name: text('name'),
           schedule: text('schedule'),
+          triggerMode,
+          eventCooldownMs: cooldownMs,
           prompt: text('prompt'),
           kind: agent ? 'agent' : 'assistant',
           agentId: agent?.id,
@@ -958,7 +1079,8 @@ export class OrgController extends EventEmitter {
           enabled: flag('enabled'),
           createdBy: 'assistant',
         });
-        return { text: 'Schedule created: ' + describeCron(job.schedule) + '.\n' + line(job) };
+        const when = job.schedule ? describeCron(job.schedule) : 'on events only, no timetable';
+        return { text: 'Schedule created: ' + when + '.\n' + line(job) };
       } catch (error) {
         return fail((error as Error).message);
       }
@@ -971,6 +1093,23 @@ export class OrgController extends EventEmitter {
     // The memory page owns it.
     if (job.kind === 'sleep') {
       return fail('"' + job.name + '" is the memory\'s own nightly run, not a schedule of yours. It is managed on the memory page.');
+    }
+
+    if (name === 'set_webhook') {
+      if (text('action').toLowerCase() === 'remove') {
+        cron.disableWebhook(job.id);
+        return { text: 'The webhook for "' + job.name + '" is gone; the URL opens nothing now.' };
+      }
+      const rotated = Boolean(job.webhookToken);
+      const updated = cron.enableWebhook(job.id);
+      const url = 'http://' + this.#config.host + ':' + this.#config.port + '/hooks/' + updated.webhookToken;
+      return {
+        text:
+          (rotated ? 'Rotated the webhook for "' : 'Webhook for "') + job.name +
+          '": ' + url + '\n' +
+          (rotated ? 'The previous URL stopped working just now. ' : '') +
+          'Anything that can send an HTTP POST to it starts this schedule.',
+      };
     }
 
     if (name === 'delete_schedule') {
@@ -1006,6 +1145,8 @@ export class OrgController extends EventEmitter {
         patch.projectId = project.id;
       }
     }
+    if (triggerMode) patch.triggerMode = triggerMode;
+    if (cooldownMs !== undefined) patch.eventCooldownMs = cooldownMs;
     if (flag('enabled') !== undefined) patch.enabled = flag('enabled');
     if (flag('once') !== undefined) patch.once = flag('once');
     if (!Object.keys(patch).length) return fail('Nothing to change; pass at least one field.');
@@ -1015,6 +1156,93 @@ export class OrgController extends EventEmitter {
     } catch (error) {
       return fail((error as Error).message);
     }
+  }
+
+  /* ------------------------------- listeners ------------------------------ */
+
+  /**
+   * The watched mailboxes.
+   *
+   * A listener is settings, not a row: it lives in `~/.rookery/config.json`
+   * beside everything else, and the connection itself belongs to the server.
+   * Core does not reach into it - it writes the config and says so, and the
+   * registry follows on the `changed` event. Same split as everywhere: the
+   * decision here, the socket there.
+   */
+  #listeners(context: ToolContext, name: string, args: Record<string, unknown>): ToolCallResult {
+    const text = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string).trim() : '');
+    const flag = (key: string): boolean | undefined => (typeof args[key] === 'boolean' ? (args[key] as boolean) : undefined);
+    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
+    if (context.audience !== 'assistant') return fail('Only the assistant can change listeners.');
+    const entries = this.#config.listeners.imap;
+    const jobName = (jobId: string): string => this.#cron?.get(jobId)?.name ?? '(no schedule)';
+
+    if (name === 'list_listeners') {
+      if (!entries.length) return { text: 'No mailbox is being watched.' };
+      return {
+        text: entries
+          .map(
+            (entry) =>
+              '- ' + entry.id + ': ' + entry.user + ' / ' + entry.mailbox + ' on ' + entry.host + ':' + entry.port +
+              ', fires "' + jobName(entry.jobId) + '", ' + (entry.enabled ? 'on' : 'off') +
+              ', password ' + (entry.password ? 'set' : 'missing'),
+          )
+          .join('\n'),
+      };
+    }
+
+    const id = text('id');
+    if (!id) return fail('Name the listener.');
+    // It ends up in `imap:<id>` on every run this mailbox causes, so it has to
+    // stay a plain word.
+    if (!/^[A-Za-z0-9._-]+$/.test(id)) return fail('A listener id is letters, digits, dot, dash or underscore.');
+    const existing = entries.find((entry) => entry.id === id) ?? null;
+
+    if (name === 'remove_listener') {
+      if (!existing) return fail('No listener "' + id + '".');
+      this.#writeListeners(entries.filter((entry) => entry.id !== id));
+      return { text: 'Stopped watching "' + id + '" and forgot its settings, the password included.' };
+    }
+
+    const wantedJob = text('schedule') ? this.#cron?.find(context.orgId, text('schedule')) ?? null : null;
+    if (text('schedule') && !wantedJob) {
+      return fail('No schedule "' + text('schedule') + '". list_schedules shows the names.');
+    }
+    const merged: ImapListenerConfig = {
+      id,
+      enabled: flag('enabled') ?? existing?.enabled ?? false,
+      host: text('host') || existing?.host || '',
+      port: args.port === undefined ? existing?.port ?? 993 : clampNumber(args.port, 1, 65535, 993),
+      secure: flag('secure') ?? existing?.secure ?? true,
+      user: text('user') || existing?.user || '',
+      password: text('password') || existing?.password || '',
+      mailbox: text('mailbox') || existing?.mailbox || 'INBOX',
+      jobId: wantedJob?.id ?? existing?.jobId ?? '',
+    };
+    const missing: string[] = [];
+    if (!merged.host) missing.push('a server');
+    if (!merged.user) missing.push('a user');
+    if (!merged.jobId) missing.push('a schedule to fire');
+    if (missing.length) return fail('This mailbox still needs ' + missing.join(', ') + '.');
+    // Switched on without a password it would only produce a rejected login
+    // and a stopped listener, which reads like a bug rather than a blank field.
+    if (merged.enabled && !merged.password) return fail('Set the password before switching "' + id + '" on.');
+
+    this.#writeListeners(existing ? entries.map((entry) => (entry.id === id ? merged : entry)) : [...entries, merged]);
+    // The password is never repeated back, not even to the person who just
+    // said it: a tool result is transcript too, and one copy is enough.
+    return {
+      text:
+        (existing ? 'Updated mailbox "' : 'Now watching "') + id + '": ' + merged.user + ' / ' + merged.mailbox +
+        ' on ' + merged.host + ':' + merged.port + ', firing "' + jobName(merged.jobId) + '", ' +
+        (merged.enabled ? 'on.' : 'off - switch it on once the details are right.'),
+    };
+  }
+
+  /** Write the list back; the server's registry follows on the event. */
+  #writeListeners(imap: ImapListenerConfig[]): void {
+    applyConfig(this.#config, { listeners: { imap } });
+    this.emit('changed', { kind: 'listeners', id: 'listeners' });
   }
 
   async #assign(
@@ -1533,13 +1761,16 @@ export class OrgController extends EventEmitter {
    * Append one event to a running assignment's live log: the buffer keeps
    * it for later snapshots and generators, its listeners get it now, and the
    * `assignment-log` event carries it to whoever fans frames out (the
-   * runtime, then the server's watching sockets).
+   * runtime, then the server's watching sockets). The journal gets it too,
+   * in the same breath and unconditionally - it has no byte cap to respect,
+   * because it is the record rather than the wire.
    */
   #logPush(assignmentId: string, event: AgentEvent): void {
     const buffer = this.#logs.get(assignmentId);
     if (!buffer) return;
     const frame: AssignmentLogFrame = { assignmentId, entry: buffer.push(event) };
     this.emit('assignment-log', frame);
+    this.#store.turns.append(assignmentId, event as unknown as Record<string, unknown>);
   }
 
   /** A provider switch starts the live transcript over; `seq` keeps counting. */
@@ -1618,8 +1849,12 @@ export class OrgController extends EventEmitter {
       controller.abort();
     });
     // The live log lives from the moment the run is queued: watching a
-    // pending assignment is legal, it simply has nothing to show yet.
+    // pending assignment is legal, it simply has nothing to show yet. Its
+    // journal opens here too, under the assignment's own id - the buffer is
+    // the transport's convenience, the journal is the record, and one without
+    // the other is exactly the half that does not survive a reload.
     this.#logs.set(assignment.id, new AssignmentLogBuffer());
+    this.#store.turns.beginAssignment(assignment.id, input.sessionId, Date.now());
     const cancelled = (): boolean => cancelledBy !== null || Boolean(input.signal?.aborted);
 
     announce();
@@ -1779,6 +2014,9 @@ export class OrgController extends EventEmitter {
               permission: agent.permission ?? this.#config.defaultPermission,
               mcp,
               mcpExtra: mcpExtra.length ? mcpExtra : undefined,
+              // Approved subagents and hooks out of the Claude Code
+              // installation, plus Rookery's own permission floor.
+              ...externalTurnExtras(this.#config, 'agent'),
               signal: controller.signal,
             })) {
               if (event.type === 'text') {
@@ -1905,11 +2143,12 @@ export class OrgController extends EventEmitter {
       if (log) {
         // The run is over: live watchers hear it from the `assignment`
         // broadcast `finish()` already sent, generators end here, and the
-        // buffer itself is gone - after a run only the persisted result
-        // remains.
+        // buffer itself is gone. The journal stays - after a run, its
+        // transcript remains readable instead of only the result.
         log.end();
         this.#logs.delete(assignment.id);
       }
+      this.#store.turns.settle(assignment.id, 'done', Date.now());
       this.#active.delete(assignment.id);
       input.signal?.removeEventListener('abort', onAbort);
       this.#release();
@@ -1950,14 +2189,25 @@ export class OrgController extends EventEmitter {
   /* ------------------------------- live log ------------------------------- */
 
   /**
-   * The live log of one assignment as it stands right now. An id that is
-   * queued or running reads back `active`; an unknown or finished one reads
-   * back an empty, inactive snapshot - after a run, only the persisted
-   * result exists.
+   * The live log of one assignment as it stands right now.
+   *
+   * The journal answers first: it holds every event of the run, uncut by any
+   * byte cap, and it outlives the run - a reload after the end, or after the
+   * whole server went down mid-run, still reads what stood. `active` says
+   * whether more is coming. Only a run from before the journal existed falls
+   * back to the in-memory buffer, which is live-only by design; an id nobody
+   * knows reads back null and the caller says so.
    */
-  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot {
+  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot | null {
+    const turn = this.#store.turns.ofAssignment(assignmentId);
+    if (turn) {
+      const events = this.#store.turns
+        .events(assignmentId)
+        .map((entry) => entry as unknown as AssignmentLogEntry);
+      return { events, overflowed: false, active: turn.status === 'running' };
+    }
     const buffer = this.#logs.get(assignmentId);
-    if (!buffer) return { events: [], overflowed: false, active: false };
+    if (!buffer) return null;
     return { events: [...buffer.entries], overflowed: buffer.overflowed, active: true };
   }
 
@@ -2805,6 +3055,31 @@ export function describeAgentPerformance(agent: Agent, org: OrgStore): string {
 
 function asMemoryKind(value: string): MemoryKind {
   return value === 'preference' || value === 'project' || value === 'event' ? value : 'fact';
+}
+
+/**
+ * The `ask_user` options, read defensively. The schema says objects with a
+ * label, but a model that answers a list of strings is asking the same
+ * question and should not be sent back round for a formality; anything
+ * without readable text is dropped rather than shown as an empty button.
+ */
+function asQuestionOptions(value: unknown): QuestionOption[] {
+  if (!Array.isArray(value)) return [];
+  const options: QuestionOption[] = [];
+  for (const entry of value) {
+    if (typeof entry === 'string') {
+      const label = entry.trim();
+      if (label) options.push({ label });
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const label = typeof record.label === 'string' ? record.label.trim() : '';
+    if (!label) continue;
+    const description = typeof record.description === 'string' ? record.description.trim() : '';
+    options.push(description ? { label, description } : { label });
+  }
+  return options;
 }
 
 /** A number argument within bounds; the fallback when it is missing or not a number. */

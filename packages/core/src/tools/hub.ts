@@ -1,7 +1,24 @@
-import type { McpServerSpec, ProviderId, RookeryConfig, ToolServerAudience, ToolServerConfig } from '../types.js';
+import type {
+  McpServerSpec,
+  ProviderAgentFile,
+  ProviderHookTable,
+  ProviderId,
+  ProviderSettings,
+  RookeryConfig,
+  ToolServerAudience,
+  ToolServerConfig,
+} from '../types.js';
 import { TOOL_CATALOG, catalogEntry, type ToolCatalogEntry } from './catalog.js';
 import { externalScan } from '../external/discovery.js';
-import type { ExternalMcpServer } from '../external/shared.js';
+import {
+  fingerprintOf,
+  readAgentFile,
+  readHookDocument,
+  type ExternalAgentRef,
+  type ExternalHookSet,
+  type ExternalMcpServer,
+  type ExternalSource,
+} from '../external/shared.js';
 
 /**
  * The hub: which MCP servers a turn gets, and what the model is told about
@@ -153,6 +170,332 @@ export function externalServerStates(config: RookeryConfig): ToolServerState[] {
       approvalRequired: true,
     };
   });
+}
+
+/* ------------------------- subagents, hooks, plugins ------------------------ */
+
+/**
+ * The same deal `externalServerStates` strikes, for the three things beside
+ * the MCP servers that a Claude Code installation offers.
+ *
+ * All of them are listed whether or not anybody wants them, none of them is
+ * ever handed to a turn until a person said so, and every approval is tied to
+ * a fingerprint of what was approved: a subagent whose frontmatter moved on,
+ * or a `hooks.json` edited afterwards, goes back to inactive and waits for
+ * somebody to look again. `approvalRequired` is implicit here - there is no
+ * tool that could flip these at all, only the page.
+ */
+
+export interface ExternalAgentState extends ExternalAgentRef {
+  enabled: boolean;
+  audience: ToolServerAudience;
+  /** Approved, and still what was approved. */
+  active: boolean;
+  /** Approved once, but the file has moved on since. */
+  changed: boolean;
+}
+
+export interface ExternalHookState extends ExternalHookSet {
+  enabled: boolean;
+  audience: ToolServerAudience;
+  active: boolean;
+  changed: boolean;
+}
+
+/** The "load the whole plugin" switch for one source. */
+export interface ExternalPluginState {
+  sourceId: string;
+  label: string;
+  /** The folder `--plugin-dir` would be given. */
+  installPath: string;
+  loadWhole: boolean;
+  audience: ToolServerAudience;
+  active: boolean;
+  changed: boolean;
+}
+
+/** Sources that can be loaded whole: a plugin has a folder, a home shelf has not. */
+function pluginSources(config: RookeryConfig): ExternalSource[] {
+  const scan = externalScan({ enabled: config.external.enabled });
+  return scan.sources.filter((source) => source.origin === 'plugin' && Boolean(source.installPath));
+}
+
+/**
+ * What a whole-plugin approval is taken over. The folder alone is not enough:
+ * a plugin can be updated in place, same path, different hooks. The
+ * fingerprint therefore folds in what the scan saw inside - every subagent
+ * and hook set of that source - so an edit in any of them re-locks the
+ * whole-plugin switch until somebody approves the new state.
+ */
+const pluginFingerprint = (source: ExternalSource): string => {
+  const scan = externalScan({ enabled: true });
+  const agents = (scan.agents ?? []).filter((agent) => agent.sourceId === source.id).map((agent) => agent.fingerprint);
+  const hooks = (scan.hooks ?? []).filter((set) => set.sourceId === source.id).map((set) => set.fingerprint);
+  return fingerprintOf(['plugin', source.id, source.installPath ?? '', ...agents, ...hooks]);
+};
+
+export function externalAgentStates(config: RookeryConfig): ExternalAgentState[] {
+  const scan = externalScan({ enabled: config.external.enabled });
+  const stored = config.external.agents ?? {};
+  return (scan.agents ?? []).map((agent) => {
+    const decision = stored[agent.id];
+    const changed = Boolean(decision?.enabled && decision.fingerprint !== agent.fingerprint);
+    const enabled = Boolean(decision?.enabled);
+    return {
+      ...agent,
+      enabled,
+      audience: decision?.audience ?? 'assistant',
+      active: enabled && !changed,
+      changed,
+    };
+  });
+}
+
+export function externalHookStates(config: RookeryConfig): ExternalHookState[] {
+  const scan = externalScan({ enabled: config.external.enabled });
+  const stored = config.external.hooks ?? {};
+  return (scan.hooks ?? []).map((set) => {
+    const decision = stored[set.sourceId];
+    const changed = Boolean(decision?.enabled && decision.fingerprint !== set.fingerprint);
+    const enabled = Boolean(decision?.enabled);
+    return {
+      ...set,
+      enabled,
+      audience: decision?.audience ?? 'assistant',
+      active: enabled && !changed,
+      changed,
+    };
+  });
+}
+
+export function externalPluginStates(config: RookeryConfig): ExternalPluginState[] {
+  const stored = config.external.plugins ?? {};
+  return pluginSources(config).map((source) => {
+    const decision = stored[source.id];
+    const print = pluginFingerprint(source);
+    const changed = Boolean(decision?.loadWhole && decision.fingerprint !== print);
+    const loadWhole = Boolean(decision?.loadWhole);
+    return {
+      sourceId: source.id,
+      label: source.label,
+      installPath: source.installPath ?? '',
+      loadWhole,
+      audience: decision?.audience ?? 'assistant',
+      active: loadWhole && !changed,
+      changed,
+    };
+  });
+}
+
+/**
+ * A config patch with one approval changed; pure, like `withToolServer`, so
+ * the caller decides how to persist it. Null means there is no such thing on
+ * this machine - the route answers 404 rather than storing a decision about
+ * something nobody can point at.
+ *
+ * The fingerprint is always taken from the scan, never from the caller:
+ * approving is approving what is there now, and the browser has no say in
+ * what "now" looks like.
+ */
+export function withExternalApproval(
+  config: RookeryConfig,
+  kind: 'agent' | 'hook' | 'plugin',
+  id: string,
+  patch: { enabled?: boolean; audience?: ToolServerAudience; loadWhole?: boolean },
+): Partial<RookeryConfig> | null {
+  const scan = externalScan({ enabled: config.external.enabled });
+
+  if (kind === 'plugin') {
+    const source = pluginSources(config).find((entry) => entry.id === id);
+    if (!source) return null;
+    const stored = config.external.plugins?.[id];
+    const loadWhole = patch.loadWhole ?? stored?.loadWhole ?? false;
+    return {
+      external: {
+        ...config.external,
+        plugins: {
+          ...(config.external.plugins ?? {}),
+          [id]: {
+            // One switch on the page, two fields in the config: `loadWhole`
+            // says what it means, `enabled` keeps the shape of every other
+            // approval so nothing has to special-case it.
+            enabled: loadWhole,
+            loadWhole,
+            audience: patch.audience ?? stored?.audience ?? 'assistant',
+            fingerprint: pluginFingerprint(source),
+          },
+        },
+      },
+    };
+  }
+
+  const found =
+    kind === 'agent'
+      ? (scan.agents ?? []).find((agent) => agent.id === id)
+      : (scan.hooks ?? []).find((set) => set.sourceId === id);
+  if (!found) return null;
+  const table = kind === 'agent' ? (config.external.agents ?? {}) : (config.external.hooks ?? {});
+  const stored = table[id];
+  const entry = {
+    enabled: patch.enabled ?? stored?.enabled ?? false,
+    audience: patch.audience ?? stored?.audience ?? 'assistant',
+    // Only a switch that faces the content re-approves it. An audience change
+    // or an empty patch keeps the fingerprint the approval was taken over, so
+    // a file edited in the meantime stays `changed` and locked out until
+    // somebody looks at it again - a dropdown is not a second look.
+    fingerprint: patch.enabled === true ? found.fingerprint : (stored?.fingerprint ?? found.fingerprint),
+  };
+  return {
+    external: {
+      ...config.external,
+      ...(kind === 'agent'
+        ? { agents: { ...(config.external.agents ?? {}), [id]: entry } }
+        : { hooks: { ...(config.external.hooks ?? {}), [id]: entry } }),
+    },
+  };
+}
+
+/**
+ * Rookery's own floor under every turn, hooks or no hooks.
+ *
+ * Until now `full` meant `--dangerously-skip-permissions` and there was
+ * nothing between that and `write`. This list is the something: the handful
+ * of commands that are never a legitimate step of an assignment, and the
+ * places outside a project that an agent has no business writing to - the
+ * CLI's own configuration among them, since an agent that may edit
+ * `~/.claude/settings.json` can rewrite the rules it runs under.
+ *
+ * It is a floor, not a fence. The Bash rules match on a command prefix, so a
+ * spelling nobody listed still gets through; what this removes is the
+ * accident, not the determined shell. Every entry is a form the provider
+ * documents - `Tool(prefix:*)` for a command, a gitignore-style path for a
+ * file - because a rule it cannot parse would take the whole settings
+ * document, hooks included, down with it.
+ */
+export const PERMISSION_DENY_BASELINE: readonly string[] = [
+  'Bash(rm -rf:*)',
+  'Bash(rm -fr:*)',
+  'Bash(sudo:*)',
+  'Bash(doas:*)',
+  'Bash(mkfs:*)',
+  'Bash(dd:*)',
+  'Bash(shutdown:*)',
+  'Bash(reboot:*)',
+  'Bash(git push --force:*)',
+  'Bash(git push -f:*)',
+  // Outside any project: keys, the CLI's own rules, the shell's own startup.
+  'Read(~/.ssh/**)',
+  'Edit(~/.ssh/**)',
+  'Write(~/.ssh/**)',
+  'Edit(~/.aws/**)',
+  'Write(~/.aws/**)',
+  'Edit(~/.claude/**)',
+  'Write(~/.claude/**)',
+  'Edit(~/.bashrc)',
+  'Write(~/.bashrc)',
+  'Edit(~/.profile)',
+  'Write(~/.profile)',
+  'Edit(//etc/**)',
+  'Write(//etc/**)',
+  // Rookery's own bookkeeping, for the same reason as the CLI's: config.json
+  // holds the external approval table, so a turn that may write it can enable
+  // a plugin - hooks included - without anybody clicking a switch. The
+  // workspace under ~/.rookery stays open on purpose: files land there by
+  // design, and the memory bank is not writable through these tools anyway.
+  'Read(~/.rookery/config.json)',
+  'Edit(~/.rookery/config.json)',
+  'Write(~/.rookery/config.json)',
+  'Read(~/.rookery/voice-keys.json)',
+  'Edit(~/.rookery/voice-keys.json)',
+  'Write(~/.rookery/voice-keys.json)',
+  'Edit(~/.rookery/rookery.db)',
+  'Write(~/.rookery/rookery.db)',
+];
+
+/**
+ * What a turn gets from the Claude Code installation beyond MCP servers:
+ * approved subagent types, approved hook sets, and the plugin folders
+ * somebody trusts outright - plus the permission floor above, which rides
+ * the same settings document whether or not a hook was ever approved.
+ *
+ * Called once per turn next to `toolServersFor`, and it reads from disk:
+ * the prompt body of an agent, and `hooks.json` again. The second read is
+ * the point - the scan is cached for minutes, and only bytes that still
+ * match the approved fingerprint are handed to a spawn.
+ */
+export function externalTurnExtras(
+  config: RookeryConfig,
+  who: 'assistant' | 'agent',
+): {
+  handoffAgents?: ProviderAgentFile[];
+  settings: ProviderSettings;
+  hooks?: ProviderHookTable;
+  pluginDirs?: string[];
+} {
+  const settings: ProviderSettings = { permissions: { deny: [...PERMISSION_DENY_BASELINE] } };
+  if (!config.external.enabled) return { settings };
+
+  // A source loaded whole brings its own skills, agents and hooks with it;
+  // handing the curated copies over as well would put the same shelf in the
+  // turn twice, under two names. Loading a folder whole cannot load half of
+  // it: `--plugin-dir` brings the hooks along whatever the per-capability
+  // switches say, so a source whose hook set exists but is not approved for
+  // this audience is left out entirely for that audience - the hook approval
+  // is the gate the plan set, and a convenience switch must not route around
+  // it. Subagents and skills come back the moment the hooks are approved too.
+  const hookStates = externalHookStates(config);
+  const hookSetFor = (sourceId: string): ExternalHookState | undefined =>
+    hookStates.find((set) => set.sourceId === sourceId);
+  const whole = externalPluginStates(config).filter((state) => {
+    if (!state.active || !serves(state.audience, who)) return false;
+    const hooks = hookSetFor(state.sourceId);
+    return !hooks || (hooks.active && serves(hooks.audience, who));
+  });
+  const loadedWhole = new Set(whole.map((state) => state.sourceId));
+  const pluginDirs = whole.map((state) => state.installPath).filter(Boolean);
+
+  const handoffAgents: ProviderAgentFile[] = [];
+  const taken = new Set<string>();
+  for (const state of externalAgentStates(config)) {
+    if (!state.active || !serves(state.audience, who) || loadedWhole.has(state.sourceId)) continue;
+    // Two plugins may name a subagent the same thing; the model has one name
+    // per agent, so the first one keeps it.
+    if (taken.has(state.name)) continue;
+    const file = readAgentFile(state.path, state.sourceId);
+    // Gone, unreadable, or edited since it was approved: left out silently,
+    // exactly as an approval that no longer matches should behave.
+    if (!file || file.ref.fingerprint !== state.fingerprint || !file.prompt) continue;
+    taken.add(state.name);
+    handoffAgents.push({ name: state.name, path: state.path });
+  }
+
+  const hooks: ProviderHookTable = {};
+  for (const state of hookStates) {
+    if (!state.active || !serves(state.audience, who) || loadedWhole.has(state.sourceId)) continue;
+    const doc = readHookDocument(state.path);
+    if (!doc || doc.fingerprint !== state.fingerprint) continue;
+    for (const [event, value] of Object.entries(doc.table)) {
+      if (!Array.isArray(value)) continue;
+      hooks[event] = [...(hooks[event] ?? []), ...value];
+    }
+  }
+
+  return {
+    ...(handoffAgents.length ? { handoffAgents } : {}),
+    settings,
+    ...(Object.keys(hooks).length ? { hooks } : {}),
+    ...(pluginDirs.length ? { pluginDirs } : {}),
+  };
+}
+
+/**
+ * Sources whose whole-plugin switch is on for somebody. The skills shelf uses
+ * this to keep the curated copies out of the prompt: a source loaded whole
+ * brings its own skills with it, and the same shelf twice is noise twice.
+ */
+export function loadWholeSourceIds(config: RookeryConfig): Set<string> {
+  if (!config.external.enabled) return new Set();
+  return new Set(externalPluginStates(config).filter((state) => state.loadWhole).map((state) => state.sourceId));
 }
 
 const serves = (audience: ToolServerAudience, who: 'assistant' | 'agent'): boolean =>

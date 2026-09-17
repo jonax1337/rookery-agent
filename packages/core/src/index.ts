@@ -238,17 +238,39 @@ export {
 } from './tools/catalog.js';
 export { BROWSER_DEBUG_PORT, browserAlive, browserExecutable, ensureBrowser } from './tools/browser.js';
 export {
+  PERMISSION_DENY_BASELINE,
   customToolId,
   dormantToolsHint,
   ensureToolServers,
+  externalAgentStates,
+  externalHookStates,
+  externalPluginStates,
+  externalTurnExtras,
   renderToolServers,
   toolServerConfig,
   toolServerStates,
   toolServersFor,
+  withExternalApproval,
   withToolServer,
   withoutToolServer,
+  type ExternalAgentState,
+  type ExternalHookState,
+  type ExternalPluginState,
   type ToolServerState,
 } from './tools/hub.js';
+export {
+  QuestionRegistry,
+  questionEvent,
+  type AskOptions,
+  type PendingQuestion,
+  type QuestionCloseReason,
+  type QuestionRequest,
+} from './org/questions.js';
+export {
+  TurnJournal,
+  type JournalEntry,
+  type JournalTurn,
+} from './turns/journal.js';
 export {
   BUILTIN_SKILLS,
   builtinSkill,

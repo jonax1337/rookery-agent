@@ -15,7 +15,13 @@
 
 import { createInterface, type Interface } from 'node:readline/promises';
 import { Assistant, loadConfig, providerQuota, renderBoard, renderOrgOverview } from '@rookery/core';
-import type { EffortLevel, PermissionLevel, ProviderId, ScoredMemory } from '@rookery/core';
+import type {
+  AgentEvent,
+  EffortLevel,
+  PermissionLevel,
+  ProviderId,
+  ScoredMemory,
+} from '@rookery/core';
 import { recall } from '@rookery/core';
 import { runTurn } from './commands/chat.js';
 import { runAssignment } from './commands/org.js';
@@ -52,6 +58,9 @@ export interface ReplOptions {
   verbose?: boolean;
   voice?: boolean;
 }
+
+/** A question the assistant asked, exactly as core streamed it. */
+type QuestionEvent = Extract<AgentEvent, { type: 'question' }>;
 
 interface ReplState {
   sessionId: string | undefined;
@@ -198,6 +207,12 @@ export async function startRepl(options: ReplOptions = {}): Promise<number> {
   const queue: string[] = [];
   let inputClosed = false;
   let waiter: ((line: string | null) => void) | null = null;
+  /**
+   * Set while a turn is blocked on a question. It outranks the prompt's own
+   * waiter: the next line typed is the answer the assistant is waiting for,
+   * not the next thing to say.
+   */
+  let questionWaiter: ((line: string | null) => void) | null = null;
 
   const wake = (line: string | null): void => {
     const resolveWaiter = waiter;
@@ -205,12 +220,20 @@ export async function startRepl(options: ReplOptions = {}): Promise<number> {
     resolveWaiter?.(line);
   };
 
+  const wakeQuestion = (line: string | null): void => {
+    const resolveQuestion = questionWaiter;
+    questionWaiter = null;
+    resolveQuestion?.(line);
+  };
+
   rl.on('line', (line: string) => {
-    if (waiter) wake(line);
+    if (questionWaiter) wakeQuestion(line);
+    else if (waiter) wake(line);
     else queue.push(line);
   });
   rl.on('close', () => {
     inputClosed = true;
+    wakeQuestion(null);
     wake(null);
   });
 
@@ -224,18 +247,110 @@ export async function startRepl(options: ReplOptions = {}): Promise<number> {
 
   const interrupt = (): void => {
     if (activeTurn) {
+      // Killing the turn kills the question with it, so stop waiting for an
+      // answer nobody needs any more.
+      wakeQuestion(null);
       activeTurn.abort();
       stopSpeaking();
       return;
     }
     leaving = true;
     queue.length = 0;
+    wakeQuestion(null);
     wake(null);
     rl.close();
   };
 
   rl.on('SIGINT', interrupt);
   process.on('SIGINT', interrupt);
+
+  /* --------------------------- questions --------------------------- */
+
+  /**
+   * A question the turn is blocked on, served as a numbered list.
+   *
+   * There are no widgets down here, so the options are numbered and the
+   * answer comes off stdin through the same readline every other line does -
+   * which means type-ahead still works and a piped session can answer too.
+   * One at a time: the turn only ever waits on a single question, and the
+   * chain keeps a second one from racing the first for the same line.
+   *
+   * Answering is a direct call into the registry the waiting tool is parked
+   * on. The CLI holds the assistant in its own process; there is no socket
+   * between the answer and the turn it unblocks.
+   */
+  let openQuestionId: string | null = null;
+  let questionChain: Promise<void> = Promise.resolve();
+
+  const readAnswerLine = (): Promise<string | null> => {
+    if (queue.length) return Promise.resolve(queue.shift() as string);
+    if (inputClosed || leaving) return Promise.resolve(null);
+    return new Promise((resolveLine) => {
+      questionWaiter = resolveLine;
+    });
+  };
+
+  const askInTerminal = async (event: QuestionEvent): Promise<void> => {
+    // Lines typed *before* the question existed are next prompts, not
+    // answers: without this, a line queued while the turn was running would
+    // answer the question in the same instant it appears on screen. Stashed
+    // and put back once the answer is in - typed ahead still works for a
+    // person, and a piped session keeps its scripted replies, because a pipe
+    // buffers everything up front and its lines are meant as answers.
+    const interactive = Boolean(process.stdin.isTTY);
+    const stash = interactive ? queue.splice(0, queue.length) : [];
+
+    openQuestionId = event.id;
+    printQuestion(event);
+
+    const line = await readAnswerLine();
+    for (const held of stash) queue.push(held);
+
+    if (openQuestionId !== event.id) {
+      // Answered somewhere else, or given up on, while we waited. A line that
+      // still arrived is the user's next prompt, not an answer to a question
+      // nobody is asking any more.
+      if (line !== null) queue.unshift(line);
+      return;
+    }
+    openQuestionId = null;
+
+    const answer = line === null ? null : parseAnswer(line, event.options.length, event.multiSelect);
+    if (!answer) {
+      assistant.questions.cancel(event.id, 'cancelled');
+      note(theme.dim('  ' + glyph.warn + ' skipped'));
+      return;
+    }
+
+    // The registry says whether the id was still open; `false` means somebody
+    // else got there first, which is normal on a channel that is one of many.
+    const delivered = assistant.questions.answer(event.id, {
+      ...answer,
+      source: 'tui',
+      at: Date.now(),
+    });
+    note(
+      delivered
+        ? theme.dim('  ' + glyph.ok + ' ' + answerEcho(answer, event))
+        : theme.dim('  ' + glyph.warn + ' already answered elsewhere'),
+    );
+  };
+
+  assistant.on('question', (event: QuestionEvent) => {
+    questionChain = questionChain
+      .then(() => askInTerminal(event))
+      .catch((error: unknown) => {
+        note(theme.red(glyph.fail + ' ' + (error as Error).message));
+      });
+  });
+
+  assistant.on('question-closed', (event: { id: string }) => {
+    if (openQuestionId !== event.id) return;
+    openQuestionId = null;
+    // Stop waiting for a line that is no longer an answer; the prompt gets
+    // the keyboard back instead.
+    wakeQuestion(null);
+  });
 
   await printBanner(assistant, state);
 
@@ -339,6 +454,70 @@ function promptText(state: ReplState): string {
 
 function note(text: string): void {
   process.stdout.write(text + '\n');
+}
+
+/**
+ * The question, as a numbered list.
+ *
+ * The block opens on a cleared line because a turn in flight may still be
+ * drawing its spinner on the current one, and a question the reader cannot
+ * read is worse than no question at all.
+ */
+function printQuestion(event: QuestionEvent): void {
+  if (isTty) process.stdout.write('\r\x1B[2K');
+  note('');
+  note(theme.amberBold(glyph.prompt + ' ' + event.header));
+  note('  ' + theme.ivory(event.question));
+  event.options.forEach((option, index) => {
+    note(
+      '  ' + theme.amber(String(index + 1) + '.') + ' ' + theme.ivory(option.label) +
+        (option.description ? theme.dim('  ' + glyph.dot + ' ' + option.description) : ''),
+    );
+  });
+  note(
+    theme.dim(
+      '  ' + (event.multiSelect ? 'numbers, e.g. "1 3"' : 'a number') +
+        ', your own words, or blank to skip  ' + glyph.dot + '  expires ' + untilTime(event.expiresAt),
+    ),
+  );
+}
+
+/**
+ * What a typed line means as an answer.
+ *
+ * Numbers pick options - one for a single choice, several when the question
+ * allows it - and anything else is a free answer, which every channel is
+ * allowed to give. A blank line is not an answer at all: it declines, and the
+ * turn is told so rather than left to run out its clock.
+ */
+export function parseAnswer(
+  line: string,
+  optionCount: number,
+  multiSelect: boolean,
+): { selected: number[]; text?: string } | null {
+  const input = line.trim();
+  if (!input) return null;
+
+  const parts = input.split(/[\s,]+/u).filter(Boolean);
+  const numbers = parts.map((part) => Number(part));
+  const picksOptions =
+    parts.length > 0 &&
+    numbers.every((value) => Number.isInteger(value) && value >= 1 && value <= optionCount);
+
+  if (!picksOptions) return { selected: [], text: input };
+
+  // A single-choice question takes the first number and ignores the rest
+  // rather than rejecting the line: the intent is plain enough.
+  const picked = multiSelect ? numbers : numbers.slice(0, 1);
+  return { selected: [...new Set(picked.map((value) => value - 1))].sort((a, b) => a - b) };
+}
+
+/** The one line that says what was just sent back into the waiting turn. */
+function answerEcho(answer: { selected: number[]; text?: string }, event: QuestionEvent): string {
+  if (answer.text) return shorten(answer.text, 70);
+  return answer.selected
+    .map((index) => event.options[index]?.label ?? 'option ' + (index + 1))
+    .join(', ');
 }
 
 async function printBanner(assistant: Assistant, state: ReplState): Promise<void> {

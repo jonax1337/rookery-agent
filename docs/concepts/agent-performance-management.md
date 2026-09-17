@@ -6,7 +6,7 @@ Stand: 2026-09-10, Umsetzung nachgetragen am 2026-09-15. **Alle vier Phasen umge
 `schemas.ts`; UI in `AssignmentDetailPage.tsx` (Sternleiste), `AgentDetailPage.tsx` (Leistung,
 Personalakte, Uebergabe, Trennungs-Handlungspunkt), `OrgAgentsPage.tsx` (Stage-Spalte), `DashboardPage.tsx`
 (Firma-Kachel). Zwei Seiten kamen ueber das Konzept hinaus hinzu, auf Nutzerwunsch:
-`OrgHrPage.tsx` (`/org/hr`, firmenweite Uebersicht) und `OrgChartPage.tsx` (`/org/chart`, Organigramm nach
+`OrgPerformancePage.tsx` (`/org/performance`, firmenweite Uebersicht) und `OrgHierarchyPage.tsx` (`/org/hierarchy`, Organigramm nach
 `Agent.managerId`) — beide unten in Abschnitt 9 dokumentiert, nicht Teil des urspruenglichen Konzepts.
 
 Zwei Abweichungen vom Text unten, beide bewusst:
@@ -310,11 +310,11 @@ nachgetragen, damit sie nicht verwaist im Code stehen:
 - **`GET /api/org/performance`** (neu): fuer jeden aktiven Agenten `{ agent, performance, pendingProposal }`
   in einem Aufruf - die eine Abfrage, auf der beide Seiten unten stehen, statt N+1 Aufrufen von
   `GET /api/org/agents/:id`.
-- **`/org/hr`** (`OrgHrPage.tsx`) - "Personalabteilung": offene Ersetzungsvorschlaege oben als
+- **`/org/performance`** (`OrgPerformancePage.tsx`, Reiter "Performance") - offene Ersetzungsvorschlaege oben als
   Handlungspunkte (verlinkt auf die Agentenseite, wo der Entwurf und die Freigabe liegen - keine
   Duplizierung der Freigabe-UI), darunter jeder aktive Agent nach Stufe und Schnitt sortiert,
   schwaechster zuerst.
-- **`/org/chart`** (`OrgChartPage.tsx`) - das Organigramm. Zeigt genau `Agent.managerId` als Baum, mit dem
+- **`/org/hierarchy`** (`OrgHierarchyPage.tsx`, Reiter "Hierarchy") - das Organigramm. Zeigt genau `Agent.managerId` als Baum, mit dem
   Assistenten als synthetischer Wurzel fuer alle Agenten ohne Manager; ein Team ist im Datenmodell keine
   Baumebene (es nistet keine Agenten unter sich), sondern eine Zuordnung - taucht deshalb bewusst nicht
   als Ebene auf. Eingerueckte, verbundene Liste statt Kaesten-und-Linien-Diagramm: bei einer kleinen

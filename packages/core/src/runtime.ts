@@ -40,8 +40,9 @@ import { SleepRunner } from './memory/sleep.js';
 import { buildSystemPrompt, deriveTitle } from './agents/persona.js';
 import { BridgeServer } from './org/bridge.js';
 import { OrgController } from './org/controller.js';
+import { QuestionRegistry } from './org/questions.js';
 import { assistantOrgBlock } from './org/prompts.js';
-import { dormantToolsHint, ensureToolServers, toolServersFor } from './tools/hub.js';
+import { dormantToolsHint, ensureToolServers, externalTurnExtras, toolServersFor } from './tools/hub.js';
 import { SkillStore, renderSkillsIndex } from './skills/store.js';
 import { renderExternalSkillsHint } from './skills/shelf.js';
 import { matchSkills, renderSkillMatches } from './skills/suggest.js';
@@ -193,6 +194,20 @@ export interface ChatInput {
   agentId?: string;
   /** Spoken turn: the reply is shaped to be read aloud. */
   voice?: boolean;
+  /**
+   * The id this turn is journalled under. A transport that has its own id for
+   * the turn - the websocket frame id - passes it through, so a client that
+   * rejoins after a reload can stop the very turn it re-joined; every other
+   * caller gets a fresh id and never sees the journal at all.
+   */
+  turnId?: string;
+  /**
+   * Set by callers that start this chat without a person in front of it - a
+   * schedule pinned to an existing conversation - so unattended-only rules
+   * apply even though the session itself is an ordinary one. Sessions of kind
+   * `schedule` and `mail` carry the flag on their own.
+   */
+  scheduled?: boolean;
   signal?: AbortSignal;
 }
 
@@ -254,6 +269,13 @@ export class Assistant extends EventEmitter {
    */
   readonly sleep: SleepRunner;
   /**
+   * The questions the assistant has put to the user and is waiting on. Held
+   * here, next to the company and the clock, because a question outlives the
+   * surface it appeared on: whoever is at a screen may answer it, so it
+   * cannot belong to one socket, one terminal or one chat.
+   */
+  readonly questions: QuestionRegistry;
+  /**
    * Whether a notification would actually reach the user right now. Set by
    * whoever owns the outgoing channels (the server, for its gateways); left
    * unset, the `notify` tool falls back to "is anything listening at all".
@@ -289,6 +311,15 @@ export class Assistant extends EventEmitter {
       config: this.config,
       logger: this.log,
     });
+    // Before the controller, like the night shift: the `ask_user` tool needs
+    // it at construction. Its own emitter is what the Assistant re-broadcasts:
+    // a question-closed can arrive after the asking turn's queue has closed -
+    // answered late, or cancelled when the turn's token was retired - and the
+    // turn stream would drop it exactly then, so the registry is the one wire
+    // both halves can rely on.
+    this.questions = new QuestionRegistry();
+    this.questions.on('question', (event: AgentEvent) => this.emit('question', event));
+    this.questions.on('question-closed', (event: AgentEvent) => this.emit('question-closed', event));
     this.org = new OrgController({
       store: this.store,
       registry: this.providers,
@@ -297,6 +328,7 @@ export class Assistant extends EventEmitter {
       logger: this.log,
       cron: this.cron,
       sleep: this.sleep,
+      questions: this.questions,
       // The `notify` tool asks this instead of a transport it cannot see. A
       // listener on `notify` is the floor, not the answer: a push service
       // attaches once at startup and stays attached while it is switched
@@ -329,6 +361,10 @@ export class Assistant extends EventEmitter {
   }
 
   close(): void {
+    // Anything still waiting on a person is settled first: an open question
+    // holds a promise inside a tool call, and shutting down around it would
+    // leave that call to time out long after there is anybody to answer.
+    this.questions.cancelAll();
     this.cron.stop();
     void this.org.bridge.close();
     void sharedCodexBridge.close();
@@ -490,8 +526,41 @@ export class Assistant extends EventEmitter {
 
   /* ------------------------------- chat ----------------------------- */
 
-  /** One conversational turn, streamed. Assignments the turn starts ride the same stream. */
+  /**
+   * One conversational turn, streamed - and journalled while it runs.
+   *
+   * The wrapper is the single place every yielded event passes through, which
+   * is what makes the journal faithful: whatever a live client saw, in the
+   * order it saw it, numbered once each. A client that arrives late - a
+   * reloaded tab, another browser - reads the same events back and continues
+   * from the same numbers, so rejoining can neither duplicate nor drop.
+   *
+   * `#chatTurn` does the work and opens the journal once its session is
+   * resolved; events yielded before that (a rejected empty prompt, say) are
+   * ephemeral by nature and stay unjournalled.
+   */
   async *chat(input: ChatInput): AsyncGenerator<AgentEvent, void, unknown> {
+    const turnId = input.turnId ?? randomUUID();
+    const journal = { begun: false };
+    try {
+      for await (const event of this.#chatTurn(input, turnId, journal)) {
+        if (journal.begun) this.store.turns.append(turnId, event as unknown as Record<string, unknown>);
+        yield event;
+      }
+      if (journal.begun) this.store.turns.settle(turnId, 'done', Date.now());
+    } catch (error) {
+      // The turn died mid-flight. Whatever reached the journal is the only
+      // record of it - it stays, marked, rather than vanishing whole.
+      if (journal.begun) this.store.turns.settle(turnId, 'interrupted', Date.now());
+      throw error;
+    }
+  }
+
+  async *#chatTurn(
+    input: ChatInput,
+    turnId: string,
+    journal: { begun: boolean },
+  ): AsyncGenerator<AgentEvent, void, unknown> {
     const prompt = input.text.trim();
     if (!prompt) {
       yield { type: 'error', message: 'Nothing to send.', fatal: true };
@@ -499,6 +568,8 @@ export class Assistant extends EventEmitter {
     }
 
     const session = this.#resolveSession(input);
+    this.store.turns.begin(turnId, session.id, 'chat', Date.now());
+    journal.begun = true;
     // Chat is exclusively the assistant's own conversation; a stale
     // `agentId` on an old session is never read here any more.
     const owner = ASSISTANT_MEMORY_OWNER;
@@ -656,7 +727,13 @@ export class Assistant extends EventEmitter {
           // A scheduled chat run works under the same rule as a scheduled
           // assignment: it may read memory and open skills, but nothing it
           // does lands back in the bank - no extraction, no tools that write.
-          scheduled: session.kind === 'schedule',
+          // That covers every run with nobody in front of it: a session of
+          // kind `schedule`, the mail-answer turn (`kind: 'mail'`), and a
+          // schedule pinned to an ordinary conversation, which arrives with
+          // `input.scheduled` set. All three are exactly the runs that must
+          // not be offered `ask_user` - there is no screen to answer on.
+          scheduled:
+            input.scheduled === true || session.kind === 'schedule' || session.kind === 'mail',
           emit: (event) => queue.push(event),
           signal: input.signal,
         });
@@ -679,6 +756,9 @@ export class Assistant extends EventEmitter {
               permission: input.permission ?? this.config.defaultPermission,
               mcp,
               mcpExtra: currentSpecs.length ? currentSpecs : undefined,
+              // Approved subagents and hooks out of the Claude Code
+              // installation, plus Rookery's own permission floor.
+              ...externalTurnExtras(this.config, who),
               signal: input.signal,
             })) {
               queue.push(event);
@@ -703,6 +783,15 @@ export class Assistant extends EventEmitter {
                 // what is being done. Nobody has to listen; the web UI reads
                 // these off the turn stream it already holds.
                 this.emit('tool', event);
+                yield event;
+                break;
+              case 'question':
+              case 'question-closed':
+                // Into this stream only. The assistant's emitter already
+                // carries both events - forwarded from the registry, which
+                // fires them even when this queue is long closed - so the
+                // phone and a second tab see the card without this turn's
+                // help, and emitting here as well would say everything twice.
                 yield event;
                 break;
               case 'text':
@@ -739,6 +828,11 @@ export class Assistant extends EventEmitter {
         } finally {
           await pump;
           this.org.unregister(token);
+          // Every exit, not only an abort: a provider crash or a fallback
+          // switch ends the pass without the signal ever firing, and the
+          // questions it asked would otherwise stand answerable on every
+          // surface for their full timeout, reaching a tool call that is gone.
+          this.questions.cancelForOwner(token);
         }
 
         answer = answer && passText ? answer + '\n\n' + passText : answer || passText;
@@ -911,7 +1005,7 @@ export class Assistant extends EventEmitter {
    * The live log of a running assignment so far; an unknown or finished id
    * reads as inactive and empty. Delegates to the org controller.
    */
-  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot {
+  snapshotAssignmentLog(assignmentId: string): AssignmentLogSnapshot | null {
     return this.org.snapshotAssignmentLog(assignmentId);
   }
 
@@ -1054,7 +1148,7 @@ export class Assistant extends EventEmitter {
       'notification is not posted on top of it.\n\n' + job.prompt;
     let text = '';
     let error: string | undefined;
-    for await (const event of this.chat({ text: prompt, sessionId, projectId: job.projectId, permission: job.permission, signal })) {
+    for await (const event of this.chat({ text: prompt, sessionId, projectId: job.projectId, permission: job.permission, signal, scheduled: true })) {
       if (event.type === 'done') text = event.text;
       else if (event.type === 'error' && event.fatal) error = event.message;
     }
