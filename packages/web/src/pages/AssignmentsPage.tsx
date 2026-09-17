@@ -63,6 +63,7 @@ import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { MetaList } from '@/components/common/meta-list';
 import { ProviderCell } from '@/components/common/provider-cell';
 import { RowMenuButton } from '@/components/common/row-menu-button';
+import { ResultMarkdown } from '@/components/result-markdown';
 import { RunningBadge, StatusBadge } from '@/components/common/status-badge';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -1018,15 +1019,23 @@ function RowDrawer({
         ]}
       />
 
+      {/* The whole brief stays here, only rendered: what an agent was told
+          is written in markdown, and `##` in plain sight is a display bug. */}
       <div className="space-y-1">
         <p className="text-xs text-muted-foreground">Brief</p>
-        <p className="whitespace-pre-wrap">{row.task}</p>
+        <ResultMarkdown text={row.task} preview />
       </div>
 
       {row.error ? (
         <div className="space-y-1">
           <p className="text-xs text-muted-foreground">Error</p>
-          <p className="whitespace-pre-wrap text-destructive">{row.error}</p>
+          {/* Paragraphs keep their line breaks: a stack trace is markdown
+              too, but its shape carries as much as its words. */}
+          <ResultMarkdown
+            text={row.error}
+            preview
+            className="text-destructive [&_p]:whitespace-pre-wrap"
+          />
         </div>
       ) : null}
     </DetailDrawer>

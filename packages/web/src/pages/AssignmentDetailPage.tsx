@@ -39,6 +39,7 @@ import { AssignmentTerminal } from '@/components/common/assignment-terminal';
 import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
 import { ProviderCell } from '@/components/common/provider-cell';
 import { ResultCard } from '@/components/common/result-card';
+import { ResultMarkdown } from '@/components/result-markdown';
 import { RowMenuButton } from '@/components/common/row-menu-button';
 import { RunningBadge, StatusBadge } from '@/components/common/status-badge';
 import { useRecord } from '@/hooks/useRecord';
@@ -323,7 +324,7 @@ export function AssignmentDetailPage() {
       <Blur delay={50}>
         <div className="flex flex-col gap-2">
           <h1 className="text-lg leading-snug font-semibold">{assignment.title}</h1>
-          <p className="text-sm leading-snug whitespace-pre-wrap text-muted-foreground">{assignment.task}</p>
+          <ResultMarkdown text={assignment.task} preview className="text-muted-foreground" />
         </div>
       </Blur>
 

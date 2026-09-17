@@ -1,12 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { formatToolValue } from '@/components/assistant-ui/elements/compact-tool-call';
-import { ToolCall } from '@/components/assistant-ui/elements/tool-call';
-import { ResultMarkdown } from '@/components/result-markdown';
-import { RunningBadge } from '@/components/common/status-badge';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { prettyToolName } from '@/hooks/useChat';
 import { useAssignmentLog } from '@/hooks/useAssignmentLog';
 import { useConnection, useOrgState } from '@/providers/rookery-provider';
@@ -18,9 +12,17 @@ import { cn } from '@/lib/utils';
  * The live window onto one running assignment: text, thinking and tool calls
  * in the order they happen - what the original Claude Code terminal shows.
  *
- * The buffer this reads is live-only: it exists while the run lasts, and the
- * moment the run ends only the persisted result remains, so the section is
- * mounted for running assignments and taken down when they finish.
+ * And it looks like one. A transcript is a recording of events, not a
+ * document: monospace, one column, chronological, printed rather than
+ * typeset. No card, no heading, no badges, no fade-ins, and no markdown -
+ * the finished result of the same work stays markdown, on the page where it
+ * belongs. Tool calls keep their information and lose the chat widget: a
+ * line with name and argument, the result unfolding underneath in the same
+ * block, because a terminal that hides what a tool returned is a progress
+ * bar.
+ *
+ * The buffer this reads is live-only while the run lasts; the journal behind
+ * it answers after the end too, so the transcript survives the run.
  */
 
 type TerminalRow =
@@ -88,126 +90,161 @@ export function AssignmentTerminal({ assignmentId, status: statusProp, className
   const hasThinking = folded.blocks.some((block) => block.type === 'thinking');
 
   /* Auto-scroll with pin-to-bottom: following the run keeps the newest line
-     in view; scrolling up pauses the chase until the reader returns to the
-     bottom themselves. */
+     in view; scrolling up stops the chase so the reader can stay where they
+     are, and the button that comes up with it starts it again. */
   const scrollRef = useRef<HTMLDivElement>(null);
-  const pinnedRef = useRef(true);
+  const [following, setFollowing] = useState(true);
+  const followingRef = useRef(true);
   useEffect(() => {
-    if (!pinnedRef.current) return;
+    followingRef.current = following;
+  }, [following]);
+  useEffect(() => {
+    if (!following) return;
     const node = scrollRef.current;
     if (node) node.scrollTop = node.scrollHeight;
-  }, [visible, log.finished]);
+  }, [visible, log.finished, following]);
   const handleScroll = (): void => {
     const node = scrollRef.current;
     if (!node) return;
-    pinnedRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+    const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+    if (atBottom !== followingRef.current) setFollowing(atBottom);
   };
 
   return (
-    <Fade asChild>
-      <Card className={cn('py-3', className)} aria-label="Live terminal of this run">
-        <CardHeader className="flex flex-wrap items-center gap-2 border-b px-3!">
-          <CardTitle className="text-sm">Live</CardTitle>
-          {!log.finished ? <RunningBadge count={1} /> : null}
-          {hasThinking ? (
-            <Button
+    <div
+      className={cn('relative rounded-lg bg-zinc-950 font-mono text-xs text-zinc-200', className)}
+      aria-label="Live terminal of this run"
+    >
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="flex max-h-[28rem] min-h-24 flex-col gap-1 overflow-y-auto p-3 pb-6 leading-relaxed"
+      >
+        {/* Sticky rather than floating: a toggle laid over the transcript
+            covers the first line the moment the block gets narrow. */}
+        {hasThinking ? (
+          <div className="sticky top-0 z-10 -mt-1 flex justify-end bg-zinc-950 pb-1">
+            <button
               type="button"
-              variant="ghost"
-              size="xs"
-              className="ml-auto text-muted-foreground"
+              className="text-[11px] text-zinc-500 hover:text-zinc-200"
               onClick={() => setShowThinking((current) => !current)}
             >
-              {showThinking ? 'Thinking verbergen' : 'Thinking zeigen'}
-            </Button>
-          ) : null}
-        </CardHeader>
+              {showThinking ? 'hide thinking' : 'show thinking'}
+            </button>
+          </div>
+        ) : null}
+        {log.overflowed ? (
+          <p className="text-zinc-500">
+            [the beginning was dropped — the live buffer keeps only the newest entries]
+          </p>
+        ) : null}
+        {log.error ? <p className="text-red-400">{log.error}</p> : null}
 
-        <Fade asChild delay={50}>
-          <CardContent className="px-3!">
-            <div className="flex flex-col gap-2">
-              {log.error ? (
-                <p className="text-xs leading-snug text-destructive">{log.error}</p>
-              ) : null}
-              {log.overflowed ? (
-                <p className="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
-                  Anfang wurde verworfen — der Live-Puffer behält nur die neuesten Einträge.
+        {visible.length === 0 ? (
+          <p className="text-zinc-500">
+            {log.finished
+              ? 'The run has finished.'
+              : log.error
+                ? 'The live log is reachable over the WebSocket.'
+                : 'Waiting for the first output …'}
+          </p>
+        ) : (
+          visible.map(({ key, row }) => {
+            if (row.kind === 'status') {
+              return (
+                <p key={key} className="text-zinc-500">
+                  {'— ' + (row.detail ? row.label + ' · ' + row.detail : row.label)}
                 </p>
-              ) : null}
+              );
+            }
+            if (row.kind === 'error') {
+              return (
+                <p key={key} className="whitespace-pre-wrap text-red-400">
+                  {row.message}
+                </p>
+              );
+            }
+            const block = folded.blocks[row.index];
+            if (!block) return null;
+            if (block.type === 'thinking') return <ThinkingRow key={key} text={block.text} />;
+            if (block.type === 'text')
+              return (
+                <p key={key} className="whitespace-pre-wrap text-zinc-100">
+                  {block.text}
+                </p>
+              );
+            return <TerminalToolRow key={key} event={block.call} />;
+          })
+        )}
+      </div>
 
-              <div
-                ref={scrollRef}
-                onScroll={handleScroll}
-                className="flex max-h-[28rem] min-h-24 flex-col gap-1.5 overflow-y-auto pr-1"
-              >
-                {visible.length === 0 ? (
-                  <p className="py-4 text-center text-xs text-muted-foreground">
-                    {log.finished
-                      ? 'Der Lauf ist beendet.'
-                      : log.error
-                        ? 'Das Live-Log ist über die WebSocket erreichbar.'
-                        : 'Warte auf den ersten Output …'}
-                  </p>
-                ) : (
-                  visible.map(({ key, row }) => {
-                    if (row.kind === 'status') {
-                      return (
-                        <p key={key} className="text-xs text-muted-foreground/80">
-                          {row.detail ? row.label + ' · ' + row.detail : row.label}
-                        </p>
-                      );
-                    }
-                    if (row.kind === 'error') {
-                      return (
-                        <p key={key} className="text-xs leading-snug text-destructive">
-                          {row.message}
-                        </p>
-                      );
-                    }
-                    const block = folded.blocks[row.index];
-                    if (!block) return null;
-                    if (block.type === 'thinking') return <ThinkingRow key={key} text={block.text} />;
-                    if (block.type === 'text') return <ResultMarkdown key={key} text={block.text} />;
-                    return <TerminalToolRow key={key} event={block.call} />;
-                  })
-                )}
-              </div>
-            </div>
-          </CardContent>
-        </Fade>
-      </Card>
-    </Fade>
+      {!following ? (
+        <button
+          type="button"
+          className="absolute end-3 bottom-2 rounded bg-zinc-800/90 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-700"
+          onClick={() => setFollowing(true)}
+        >
+          ↓ follow output
+        </button>
+      ) : null}
+    </div>
   );
 }
 
-/** Dimmed, quiet: reasoning is context, not the answer. */
+/** Dimmed and quiet: reasoning is context, not the answer. */
 function ThinkingRow({ text }: { text: string }) {
-  return (
-    <p className="border-l border-border pl-3 text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground/70">
-      {text}
-    </p>
-  );
+  return <p className="whitespace-pre-wrap text-zinc-500 italic">{text}</p>;
 }
 
 /**
- * One tool call as a terminal line: name and query visible at a glance, the
- * result behind the same collapsible the chat transcript uses. The line only
- * exists because the terminal is not the chat - the visual language is.
+ * One tool call, printed. The line carries name and argument; clicking it
+ * unfolds the request and what came back, indented, in the same monospace
+ * block - the information the chat widget used to hold, without the card.
  */
 function TerminalToolRow({ event }: { event: Extract<AgentEvent, { type: 'tool' }> }) {
   const [open, setOpen] = useState(false);
   const name = prettyToolName(event.name);
+  const request = formatToolValue(event.detail);
+  const result = formatToolValue(event.result);
+  const failed = event.isError === true;
+  const running = event.status === 'start';
+  const marker = failed ? '✗' : running ? '·' : '✓';
+
   return (
-    <ToolCall
-      label={name}
-      activeLabel={name}
-      query={event.detail ?? ''}
-      request={formatToolValue(event.detail)}
-      result={formatToolValue(event.result)}
-      running={event.status === 'start'}
-      failed={event.isError === true}
-      open={open}
-      onOpenChange={setOpen}
-      className="max-w-none"
-    />
+    <div>
+      <button
+        type="button"
+        className={cn(
+          'flex w-full items-baseline gap-1.5 text-left hover:text-zinc-100',
+          failed ? 'text-red-400' : 'text-sky-300',
+        )}
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+      >
+        <span className="shrink-0 text-zinc-500">{marker}</span>
+        <span className="shrink-0">{name}</span>
+        {event.detail ? (
+          <span className="min-w-0 flex-1 truncate text-zinc-400">{event.detail}</span>
+        ) : (
+          <span className="flex-1" />
+        )}
+        <span className="shrink-0 text-zinc-600">{open ? '−' : '+'}</span>
+      </button>
+
+      {open ? (
+        <div className="mt-0.5 border-s border-zinc-800 ps-3 text-zinc-400">
+          {/* The line above already carries the argument; repeating it here
+              only helps when the line had to shorten it. */}
+          {request && request !== event.detail ? (
+            <p className="whitespace-pre-wrap">{request}</p>
+          ) : null}
+          {result ? (
+            <p className={cn('whitespace-pre-wrap', failed ? 'text-red-400' : 'text-zinc-300')}>{result}</p>
+          ) : running ? (
+            <p className="text-zinc-500">running …</p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }

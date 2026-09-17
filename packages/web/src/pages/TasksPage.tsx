@@ -1,5 +1,5 @@
-import { forwardRef, useCallback, useMemo, useState } from 'react';
-import { NavLink, useNavigate } from 'react-router';
+import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
+import { NavLink, useNavigate, useSearchParams } from 'react-router';
 
 import {
   BanIcon,
@@ -24,7 +24,7 @@ import {
   TASK_STATUS_ORDER,
 } from '@/lib/format';
 import { countSince, formatNumber } from '@/lib/stats';
-import type { Task, TaskStatus } from '@/lib/types';
+import type { Mail, Task, TaskStatus } from '@/lib/types';
 import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-provider';
 import { useStatsTotals } from '@/hooks/useStatsTotals';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
@@ -115,6 +115,7 @@ export function TasksPage() {
   const { confirm, dialog } = useConfirm();
   const bulk = useBulkAction();
 
+  const [searchParams] = useSearchParams();
   const [tab, setTab] = useState('alle');
   const [assignee, setAssignee] = useState<string | null>(null);
   const [project, setProject] = useState<string | null>(null);
@@ -234,6 +235,56 @@ export function TasksPage() {
     }
     return filtered.filter((task) => task.status === tab);
   }, [filtered, tab]);
+
+  /*
+   * Deep links from elsewhere: the agent page points at "the board, filtered
+   * by this person", so `?assignee=` and `?status=` have to arrive as the
+   * filters they name. Read once - after that the page's own controls own
+   * the state, and a re-read would fight them.
+   */
+  useEffect(() => {
+    const who = searchParams.get('assignee');
+    if (who) setAssignee(who);
+    const status = searchParams.get('status');
+    if (status) setTab(status);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /*
+   * The newest mail of each task thread the user is on. A blocked card
+   * should say what it is waiting for, and this is the only real source for
+   * it: the `tasks` folder is every assignment thread addressed to the user,
+   * newest first, with the task id joined in. No entry means no line.
+   */
+  const [taskMails, setTaskMails] = useState<Mail[]>([]);
+  const blockedCount = tasks.countByStatus.blocked;
+  useEffect(() => {
+    if (blockedCount === 0) return;
+    let live = true;
+    api
+      .mail('user', 'tasks', 200)
+      .then((mails) => {
+        if (live) setTaskMails(mails);
+      })
+      .catch(() => {
+        // A missing subject line is a missing line, never an error banner.
+      });
+    return () => {
+      live = false;
+    };
+  }, [blockedCount]);
+
+  const lastMailByTask = useMemo(() => {
+    const newest = new Map<string, { subject: string; at: number }>();
+    for (const mail of taskMails) {
+      if (!mail.taskId) continue;
+      const known = newest.get(mail.taskId);
+      if (!known || known.at < mail.createdAt) {
+        newest.set(mail.taskId, { subject: mail.subject, at: mail.createdAt });
+      }
+    }
+    return newest;
+  }, [taskMails]);
 
   /* ------------------------------- actions ------------------------------ */
 
@@ -493,6 +544,7 @@ export function TasksPage() {
                 if (isSettableTaskStatus(status)) void setStatus(task, status);
               }}
               onReorder={reorderTask}
+              lastMailByTask={lastMailByTask}
             />
           </div>
         ) : (

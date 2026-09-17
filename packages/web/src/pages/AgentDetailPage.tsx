@@ -31,10 +31,8 @@ import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
 import { EMPTY_CELL, relativeTimeCell } from '@/components/blocks/data-table/table-columns';
 import { createRookeryColumnHelper } from '@/components/blocks/data-table/table-features';
-import { ActivityTimeline, useAssignmentActivityHistory } from '@/components/common/activity-timeline';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
-import { LiveRunList } from '@/components/common/live-run-list';
 import { MEMORY_COLUMN_LABELS, buildMemoryColumns } from '@/components/common/memory-columns';
 import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
 import { ProviderCell } from '@/components/common/provider-cell';
@@ -83,8 +81,8 @@ import {
   shorten,
 } from '@/lib/format';
 import { average, formatNumber } from '@/lib/stats';
-import type { AgentAction, AgentDetail, Agent, Assignment, AssignmentView } from '@/lib/types';
-import { useConfig, useConnection, useOrgState } from '@/providers/rookery-provider';
+import type { AgentAction, AgentDetail, Agent, Assignment } from '@/lib/types';
+import { useConfig, useConnection, useOrgState, useTasksState } from '@/providers/rookery-provider';
 import type { IconComponent } from "@/components/icons";
 
 /**
@@ -115,6 +113,7 @@ export function AgentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const org = useOrgState();
+  const board = useTasksState();
   const { socket } = useConnection();
   const { config } = useConfig();
   const { confirm, dialog } = useConfirm();
@@ -150,17 +149,28 @@ export function AgentDetailPage() {
   const pendingProposal =
     performance?.stage === 3 && actions[0]?.kind === 'probation' ? actions[0] : undefined;
 
-  /* -------------------------------- live now ------------------------------ */
+  /* -------------------------------- works on ------------------------------ */
 
-  // What this agent is doing *right now*, wherever the run was started from -
-  // the board, a direct assignment from another page, a delegation. Separate
-  // from the drawer's own `live` state below, which only ever shows a run
-  // this page itself just kicked off.
-  const runningAssignment = useMemo(
-    () => org.running.find((entry) => entry.agentId === agent?.id),
-    [org.running, agent?.id],
+  /*
+   * A pointer, not a stream. What runs through the wire belongs to the case,
+   * and a case has exactly one page it happens on; this page says that
+   * somebody is busy and where the work is, and stops there.
+   *
+   * The list needs no invented cut-off: `org.maxConcurrentAssignments` caps
+   * how many runs can exist at once, so only somebody raising that setting
+   * ever sees a summary line instead of the rest.
+   */
+  const runningTasks = useMemo(
+    () => (agent ? board.tasks.filter((task) => task.status === 'running' && task.assigneeId === agent.id) : []),
+    [board.tasks, agent],
   );
-  const liveActivity = useAssignmentActivityHistory(runningAssignment?.id, org.live);
+  const blockedTasks = useMemo(
+    () => (agent ? board.tasks.filter((task) => task.status === 'blocked' && task.assigneeId === agent.id) : []),
+    [board.tasks, agent],
+  );
+  const runLimit = config?.org.maxConcurrentAssignments ?? runningTasks.length;
+  const shownTasks = runningTasks.slice(0, runLimit);
+  const hiddenTasks = runningTasks.length - shownTasks.length;
 
   /* ------------------------------ the drawer ----------------------------- */
 
@@ -168,7 +178,6 @@ export function AgentDetailPage() {
   const [task, setTask] = useState('');
   const [projectId, setProjectId] = useState<string>(NO_PROJECT);
   const [busy, setBusy] = useState(false);
-  const [live, setLive] = useState<AssignmentView[]>([]);
   const [result, setResult] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -178,7 +187,6 @@ export function AgentDetailPage() {
     if (!trimmed) return;
 
     setBusy(true);
-    setLive([]);
     setResult('');
     setError(null);
 
@@ -190,16 +198,10 @@ export function AgentDetailPage() {
       },
       {
         onEvent: (event) => {
-          if (event.type === 'assignment') {
-            const view = event.assignment;
-            setLive((current) => {
-              const index = current.findIndex((entry) => entry.id === view.id);
-              if (index === -1) return [...current, view];
-              const next = [...current];
-              next[index] = { ...(next[index] as AssignmentView), ...view };
-              return next;
-            });
-          } else if (event.type === 'text') {
+          // Only the text of the run lands here. The run itself is a case on
+          // the board, and a case is watched where it happens - this drawer
+          // shows what it asked for coming back, nothing more.
+          if (event.type === 'text') {
             setResult((current) => current + event.delta);
           } else if (event.type === 'error') {
             setError(event.message);
@@ -209,10 +211,6 @@ export function AgentDetailPage() {
           if (text) setResult(text);
           setBusy(false);
           setTask('');
-          // The run is over, so the live list has nothing left to say - the
-          // finished assignment belongs in the table, and showing it twice is
-          // what made the old page read as if two runs had happened.
-          setLive([]);
           void reload();
           void org.refresh();
           toast('Assignment completed');
@@ -224,13 +222,6 @@ export function AgentDetailPage() {
       },
     );
   };
-
-  const cancelRun = useCallback(
-    (assignmentId: string) => {
-      void cancelAssignment(assignmentId);
-    },
-    [cancelAssignment],
-  );
 
   /* ------------------------------- archive ------------------------------- */
 
@@ -468,7 +459,7 @@ export function AgentDetailPage() {
       label: 'Runs',
       value: <CountingNumber number={assignments.length} />,
       ...cappedBadge(assignmentsCapped),
-      headline: assignments.length === 0 ? 'Nothing assigned yet' : 'Last run erteilte Assignments',
+      headline: assignments.length === 0 ? 'Nothing assigned yet' : 'Runs handed to this agent',
       footnote: 'The server returns the latest ' + ASSIGNMENT_LIMIT,
     },
     {
@@ -484,7 +475,7 @@ export function AgentDetailPage() {
       label: 'Average duration',
       value: meanDuration || '–',
       headline: doneDurations.length === 0 ? 'Nothing completed yet' : 'From start to response',
-      footnote: 'Across ' + doneDurations.length + ' abgeschlossene Assignments',
+      footnote: 'Across ' + doneDurations.length + ' finished runs',
     },
     {
       label: 'Memories',
@@ -612,31 +603,37 @@ export function AgentDetailPage() {
         </Fade>
       ) : null}
 
-      {/* Live only while this agent has a run in flight, wherever it was
-          started from - the org-wide broadcast Workstream B adds is what
-          makes this visible for a run this page never kicked off itself. */}
-      {runningAssignment && (
+      {/* Nothing running and nothing waiting means no line at all: a page
+          that announces "idle" says less than one that keeps quiet. */}
+      {(runningTasks.length > 0 || blockedTasks.length > 0) && agent && (
         <Fade delay={200}>
-          <div className="px-4 lg:px-6">
-            <Card className="py-3">
-              <CardHeader className="flex flex-row flex-wrap items-center gap-2 border-b px-3! [&_[data-slot=card-title]]:flex-1">
-                <CardTitle className="flex flex-wrap items-center gap-2 text-sm">
-                  Live now
-                  <StatusBadge kind="assignment" status={runningAssignment.status} />
-                </CardTitle>
-                <span className="text-xs text-muted-foreground">
-                  {shorten(runningAssignment.title, 80)}
-                </span>
-              </CardHeader>
-              <CardContent className="px-3!">
-                <ActivityTimeline
-                  items={liveActivity}
-                  variant="plain"
-                  emptyLabel="Waiting for the first tool call…"
-                  limit={8}
-                />
-              </CardContent>
-            </Card>
+          <div className="flex flex-col gap-1 px-4 text-sm lg:px-6">
+            {shownTasks.map((task) => (
+              <p key={task.id} className="text-muted-foreground">
+                Works on{' '}
+                <NavLink to={'/tasks/' + task.id} className="text-foreground hover:underline">
+                  {task.title}
+                </NavLink>
+              </p>
+            ))}
+            {hiddenTasks > 0 && (
+              <NavLink
+                to={'/tasks?assignee=' + agent.id + '&status=running'}
+                className="text-muted-foreground hover:underline"
+              >
+                +{hiddenTasks} more
+              </NavLink>
+            )}
+            {blockedTasks.length > 0 && (
+              <NavLink
+                to={'/tasks?assignee=' + agent.id + '&status=blocked'}
+                className="text-muted-foreground hover:underline"
+              >
+                {blockedTasks.length === 1
+                  ? '1 task waits for an answer'
+                  : blockedTasks.length + ' tasks wait for an answer'}
+              </NavLink>
+            )}
           </div>
         </Fade>
       )}
@@ -836,9 +833,9 @@ export function AgentDetailPage() {
           </Field>
         </FieldGroup>
 
-        {/* Derselbe Bau wie auf /org/assignments/:id und im Formularrahmen:
-            `Alert` bringt `role="alert"` mit, ein nacktes <p> sagte einer
-            Vorlesehilfe nichts. */}
+        {/* Same build as on /org/assignments/:id and in the form frame:
+            `Alert` brings `role="alert"` with it, where a bare <p> told a
+            screen reader nothing. */}
         {error ? (
           <Alert variant="destructive">
             <TriangleAlertIcon />
@@ -846,12 +843,6 @@ export function AgentDetailPage() {
             <AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription>
           </Alert>
         ) : null}
-
-        {/* The stream stays in the drawer: the page behind it must not jump
-            while an agent works. */}
-        {live.length > 0 && (
-          <LiveRunList assignments={live} onCancel={cancelRun} variant="plain" />
-        )}
 
         {result && (
           <div className="rounded-xl border p-4">
