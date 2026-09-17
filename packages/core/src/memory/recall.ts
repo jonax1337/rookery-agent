@@ -29,19 +29,25 @@ const WEIGHTS = { relevance: 0.55, importance: 0.2, recency: 0.15, usage: 0.1 };
 const RECENCY_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
+ * The ceiling of a direct hit on the retrieval scale: the four incumbent
+ * weights sum to exactly 1.00 and the tag bonus adds 0.1 on top.
+ */
+const RECALL_CEILING = 1.1;
+/**
+ * Where profile rows sit on that same scale. Held at the direct ceiling so a
+ * profile row can never be displaced from the head of the merged block by a
+ * direct hit (R13); before this, a near-ceiling direct hit could push the
+ * literal-scored profile rows out of the head of the block.
+ */
+const PROFILE_LEAD = RECALL_CEILING;
+
+/**
  * Total order for every in-JS sort of scored memories: score descending,
  * then id ascending. Sorting on score alone leaves ties to insertion order,
  * which is whatever SQLite happened to return first (R11).
  */
-const byScoreThenId = (a: ScoredMemory, b: ScoredMemory): number =>
+export const byScoreThenId = (a: ScoredMemory, b: ScoredMemory): number =>
   b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-
-/**
- * Where profile rows sit on the retrieval scale: the old literal `1` is the
- * foot of the same scale the direct hits score on (the four weights sum to
- * exactly 1.00), so the merge can finally compare the two currencies.
- */
-const PROFILE_LEAD = 1;
 
 /** Exponential recency decay over the half-life above, mirroring `recall`'s. */
 function recencyOf(updatedAt: number, now: number): number {
@@ -310,7 +316,9 @@ export function coreProfile(
       // A score on the retrieval scale instead of the flat literal 1, so the
       // turn merge orders profile rows by the same currency that orders
       // direct hits. The bonuses mirror the SQL order above: pinned (1.0)
-      // beats any insight-plus-weights rest (at most 0.5 + 0.2 + 0.15).
+      // beats any insight-plus-weights rest (at most 0.5 + 0.2 + 0.15), and
+      // PROFILE_LEAD keeps every profile row on or above the best possible
+      // direct hit (R13).
       score:
         PROFILE_LEAD +
         (record.pinned ? 1 : 0) +
