@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { join } from 'node:path';
 import type {
@@ -14,6 +15,8 @@ import type {
   NotifyEvent,
   PermissionLevel,
   ProviderId,
+  RecallBox,
+  RecallPolicy,
   RookeryConfig,
   ScoredMemory,
   Session,
@@ -28,7 +31,9 @@ import { remapModel } from './providers/provider-catalog.js';
 import { isUsageLimitError, providerBlocked, providerLow, rememberUsageFailure } from './providers/quota.js';
 import { sharedCodexBridge } from './providers/codex-bridge.js';
 import { Store } from './memory/store.js';
-import { coreProfile, dropContradicted, recall } from './memory/recall.js';
+import { byScoreThenId, coreProfile, dropContradicted, recall } from './memory/recall.js';
+import { fetchFrame } from './memory/dream/frame.js';
+import { resolvePolicy } from './memory/dream/policy.js';
 import { extractMemories, smallModelFor } from './memory/extractor.js';
 import { admitCandidates, linkEntities } from './memory/gate.js';
 import { SleepRunner } from './memory/sleep.js';
@@ -111,6 +116,63 @@ function continuePrompt(servers: string[]): string {
     'Carry on with what you stopped for, using the new tools, and finish the answer without',
     'repeating what you already said.',
   ].join(' ');
+}
+
+/* --------------------------- dream recorder --------------------------- */
+
+/**
+ * Salt for the dream's session-level sample draw. A fixed literal, not a
+ * per-process random: the sample must survive a restart, because it is drawn
+ * per session - consecutive turns of one session share topic, bank cutout and
+ * entity neighbourhood, and a restart must not split them across the sample.
+ */
+const DREAM_SAMPLE_SALT = 'rookery.dream.sample.v1';
+
+/**
+ * The sample draw of one session as a number in [0, 1): FNV-1a over the
+ * session id and the salt. Cheap, stable and portable - it only has to be
+ * deterministic, never cryptographic.
+ */
+function dreamSampleDraw(sessionId: string): number {
+  let hash = 0x811c9dc5;
+  const input = sessionId + DREAM_SAMPLE_SALT;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0) / 0x1_0000_0000;
+}
+
+/** Clamp to a range, for dream keys read outside the patch schema (E21). */
+function clampNumber(value: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, value));
+}
+
+/**
+ * The declared box around one turn's realised recall policy: the parameter
+ * space a replay of this turn's frame may move in. The interval widths are
+ * the house widths the night's grid places its candidates at - weights
+ * +/-0.1, threshold [0.05, 0.3], hop weights +/-0.15 and +/-0.2 - always
+ * stretched to contain the realised point and never past the valid range,
+ * so a knob the user turned cannot sit outside the box that is supposed to
+ * close over it. `limitMax` arrives already containing the realised limit.
+ */
+function declaredDreamBox(policy: RecallPolicy, limitMax: number): RecallBox {
+  const weight = (value: number): [number, number] => [Math.max(0, value - 0.1), Math.min(1, value + 0.1)];
+  return {
+    limitMax,
+    w: {
+      relevance: weight(policy.w.relevance),
+      importance: weight(policy.w.importance),
+      recency: weight(policy.w.recency),
+      usage: weight(policy.w.usage),
+    },
+    threshold: [Math.min(0.05, policy.threshold), Math.max(0.3, policy.threshold)],
+    hopEntity: [Math.max(0, policy.hopEntity - 0.15), Math.min(1, policy.hopEntity + 0.15)],
+    hopEdge: [Math.max(0, policy.hopEdge - 0.2), Math.min(1, policy.hopEdge + 0.2)],
+    kinds: policy.kinds,
+    minImportance: policy.minImportance,
+  };
 }
 
 export interface ChatInput {
@@ -312,6 +374,11 @@ export class Assistant extends EventEmitter {
   }
 
   deleteSession(id: string): void {
+    // A frame is a verbatim store of what was said in this session, so it
+    // may never outlive the session it quotes (R17). Dropped before the
+    // session row goes, the same safe direction the memory-retiring store
+    // methods take for their owner's frames.
+    this.store.dropDreamFramesForSession(id);
     this.store.deleteSession(id);
   }
 
@@ -325,6 +392,13 @@ export class Assistant extends EventEmitter {
 
   /* ------------------------------ memory ---------------------------- */
 
+  /**
+   * Read-only memory search for surfaces that inspect the bank. This is the
+   * `site: 'inspect'` population of the dream's vocabulary: never framed,
+   * never scored - the recorder sits at the conversational call site, never
+   * inside `recall` (R19), precisely so a browser search or a CLI call with a
+   * free-form owner cannot end up in the night's pool.
+   */
   recallMemories(text: string, limit?: number): ScoredMemory[] {
     return recall(this.store, {
       text,
@@ -457,24 +531,12 @@ export class Assistant extends EventEmitter {
     let memories: ScoredMemory[] = [];
     if (this.config.memory.enabled) {
       yield { type: 'status', label: 'recalling', detail: 'searching memory' };
-      const matched = recall(this.store, {
-        text: prompt,
-        owner,
-        limit: this.config.memory.recallLimit,
-        threshold: this.config.memory.recallThreshold,
-        hopEntity: this.config.memory.graph.hopEntity,
-        hopEdge: this.config.memory.graph.hopEdge,
-      });
-      const profile = coreProfile(this.store, {
-        owner,
-        limit: Math.max(3, Math.floor(this.config.memory.recallLimit / 2)),
-      });
-      const byId = new Map<string, ScoredMemory>();
-      for (const memory of profile) byId.set(memory.id, memory);
-      for (const memory of matched) byId.set(memory.id, memory);
-      // Of a contradicting pair only the newer sentence goes into the prompt;
-      // the older one stays in the bank and stays visible in the inspector.
-      memories = dropContradicted(this.store, [...byId.values()]).sort((a, b) => b.score - a.score);
+      // One truth about the recall parameters (concept 9.3): the resolver
+      // clamps at read time and both the turn and the recorder read it here,
+      // so a config change cannot leave the record and the live turn
+      // disagreeing about which policy produced the prompt.
+      const policy = resolvePolicy(this.store, this.config, owner, 'recall');
+      memories = this.#turnMemories(session, owner, prompt, policy);
       if (memories.length) {
         yield { type: 'memory', action: 'recalled', count: memories.length, items: memories };
       }
@@ -1042,6 +1104,121 @@ export class Assistant extends EventEmitter {
 
   /* ---------------------------- internals --------------------------- */
 
+  /**
+   * Whether this turn is framed for the dream. All conditions must hold
+   * (R18): the dream and the recorder are switched on, the owner is the
+   * assistant - stage 1 records nothing but the assistant's own bank, an
+   * agent frame would be cost without a night that ever scores it - and the
+   * session is a real conversation. A `schedule` run walks this same code
+   * but can never earn a correction label, because `sessionsActiveSince`
+   * filters its kind out; framing it would be pure cost. The sample itself
+   * is drawn per session, never per trace, and `frameRate` is clamped here
+   * because `rookery config set` bypasses the patch schema (E21).
+   */
+  #dreamRecords(session: Session, owner: string): boolean {
+    const dream = this.config.memory.dream;
+    if (!dream.enabled || !dream.record) return false;
+    if (owner !== ASSISTANT_MEMORY_OWNER) return false;
+    if (session.kind !== 'chat' && session.kind !== 'voice' && session.kind !== 'mail') return false;
+    return dreamSampleDraw(session.id) < clampNumber(dream.frameRate, 0, 1);
+  }
+
+  /**
+   * The turn's merged memory list: the ranking plus the profile, pairs that
+   * cannot both be true reduced to the newer sentence, and the whole merge
+   * totally ordered - score descending, id ascending (R11), so a tie can no
+   * longer pick whichever row the Map happened to insert first. That order
+   * is what the rendered block reads, and what the recorder freezes.
+   *
+   * A framed turn additionally records everything the night needs to replay
+   * this decision: the trace, the touches the ranking causes, and the frame
+   * at the permissive corner of the declared box. The live ranking inside
+   * the bracket is byte for byte the ranking of an unframed turn - the
+   * recorder may not change the turn it records - and everything it writes
+   * sits in the store's SAVEPOINT bracket (R9), so a framed turn is one
+   * transaction or nothing.
+   */
+  #turnMemories(session: Session, owner: string, prompt: string, policy: RecallPolicy): ScoredMemory[] {
+    const options = {
+      text: prompt,
+      owner,
+      limit: policy.limit,
+      threshold: policy.threshold,
+      hopEntity: policy.hopEntity,
+      hopEdge: policy.hopEdge,
+    };
+    const promptProfileLimit = Math.max(3, Math.floor(policy.limit / 2));
+    const merged = (matched: ScoredMemory[], profile: ScoredMemory[]): ScoredMemory[] => {
+      const byId = new Map<string, ScoredMemory>();
+      for (const memory of profile) byId.set(memory.id, memory);
+      for (const memory of matched) byId.set(memory.id, memory);
+      // Of a contradicting pair only the newer sentence goes into the prompt;
+      // the older one stays in the bank and stays visible in the inspector.
+      return dropContradicted(this.store, [...byId.values()]).sort(byScoreThenId);
+    };
+
+    if (!this.#dreamRecords(session, owner)) {
+      return merged(recall(this.store, options), coreProfile(this.store, { owner, limit: promptProfileLimit }));
+    }
+
+    const dream = this.config.memory.dream;
+    const limitMax = Math.max(Math.round(clampNumber(dream.limitMax, 4, 16)), policy.limit);
+    const maxFrameBytes = Math.round(clampNumber(dream.maxFrameBytes, 1000, 2_000_000));
+    // One id per turn: every traced call of this turn carries it, and labels
+    // attach to it rather than to any single call (R19).
+    const turnId = randomUUID();
+    let memories: ScoredMemory[] = [];
+    this.store.recordDreamTurn(() => {
+      const trace = this.store.beginTrace({
+        turnId,
+        owner,
+        kind: 'turn',
+        site: 'turn',
+        pipeline: 'assistant',
+        sessionId: session.id,
+        sessionKind: session.kind,
+        // The position of this turn in its session: the messages stored
+        // before it, which is the count the session carries at recall time.
+        turnIndex: session.messageCount,
+        policySet: { recall: policy },
+        framed: true,
+      });
+      // The record, fetched before the ranking: the frame freezes
+      // `access_count`, and the values worth freezing are the ones the live
+      // scores are about to read - not the ones this turn's own touch will
+      // write a moment later.
+      const frame = fetchFrame(this.store, {
+        ...options,
+        box: declaredDreamBox(policy, limitMax),
+        site: 'turn',
+        pipeline: 'assistant',
+        budgetChars: Math.floor(this.config.memory.contextBudget * 0.4),
+        subject: 'this user',
+        // A meta read and nothing more; empty until the first night has
+        // stamped a fingerprint, which certifies nothing yet (R10).
+        corpusStampId: this.store.currentCorpusStamp(owner)?.id ?? '',
+      });
+      const matched = recall(this.store, { ...options, touchContext: { traceId: trace.id, owner } });
+      // One profile read at the permissive corner of the box, sliced down
+      // for the prompt: the SQL behind `coreProfile` is prefix-invariant
+      // now that it tie-breaks on id, so the wider read costs one query and
+      // changes no row the prompt sees (R12).
+      const profile = coreProfile(this.store, {
+        owner,
+        limit: Math.max(promptProfileLimit, Math.max(3, Math.floor(limitMax / 2))),
+      }).slice(0, promptProfileLimit);
+      memories = merged(matched, profile);
+      // A frame over the size cap is refused rather than thrown at: the
+      // trace still closes, without a frame, and the night simply never
+      // scores this turn.
+      if (!this.store.saveFrame(trace.id, 'recall', frame, { maxFrameBytes })) {
+        this.log.debug('Dream frame refused: over dream.maxFrameBytes', { sessionId: session.id, turnId });
+      }
+      this.store.finishTrace(trace.id, { degraded: frame.degraded });
+    });
+    return memories;
+  }
+
   #resolveSession(input: ChatInput): Session {
     if (input.sessionId) {
       const existing = this.store.getSession(input.sessionId);
@@ -1114,6 +1291,12 @@ function labelForOwner(assistant: Assistant, owner: string): string {
 /**
  * The memories the extractor needs to see so it does not write them again:
  * whatever this exchange actually touches, plus the small core profile.
+ *
+ * Deliberately untraced: this is the `site: 'extract'` population of the
+ * dream's vocabulary - `touch: false`, `expand: false`, a wider limit and a
+ * lower threshold than any conversational turn. Stage 1 scores only
+ * `site = 'turn'`, so the recorder does not sit here; wiring it in would
+ * fill the night's pool with calls no label can ever attach to.
  */
 function relevantKnown(store: Store, owner: string, text: string): string[] {
   const matched = recall(store, { text, owner, limit: 20, threshold: 0.05, touch: false, expand: false });
