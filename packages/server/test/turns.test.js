@@ -104,6 +104,28 @@ test('an attached socket hears the running turn, numbered like the journal', asy
   script.end();
 });
 
+test('the connection that started the turn sees it without attaching', async () => {
+  const hub = new TurnHub(log);
+  const script = scriptedTurn();
+  const starter = fakeSocket();
+
+  // No attach, no second connection: the tab that sent the message is a
+  // subscriber from the first event, or it would stare at its own turn idle.
+  hub.start({ id: 't0', sessionId: 's0', controller: new AbortController(), events: script.events, socket: starter });
+
+  script.emit(text('first'));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  script.end();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const frames = starter.frames.filter((frame) => frame.type === 'event');
+  assert.deepEqual(
+    frames.map((frame) => [frame.seq, frame.event.delta]),
+    [[1, 'first']],
+    'the starter heard its own turn from the first event',
+  );
+});
+
 test('a socket that attaches to nothing running is told so, plainly', async () => {
   const hub = new TurnHub(log);
   const socket = fakeSocket();

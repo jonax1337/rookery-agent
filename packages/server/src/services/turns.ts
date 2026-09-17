@@ -46,12 +46,19 @@ export class TurnHub {
    * Take over a generator: drain it to the end, whatever happens to the
    * sockets along the way. The caller keeps the AbortController and hands it
    * in - `abort` is the one deliberate way a turn ends early.
+   *
+   * `socket` is the connection that asked for the turn, and it is a
+   * subscriber like any other from the very first event: without this, the
+   * tab that sent the message would hear nothing of the answer it started -
+   * not the stream, not the session event that routes it to `/c/<id>` - and
+   * would have to reload just to watch its own turn.
    */
   start(input: {
     id: string;
     sessionId?: string;
     controller: AbortController;
     events: AsyncGenerator<AgentEvent, void, unknown>;
+    socket?: WebSocket;
   }): void {
     const turn: RunningTurn = {
       id: input.id,
@@ -61,6 +68,7 @@ export class TurnHub {
       seq: 0,
     };
     this.#turns.set(turn.id, turn);
+    if (input.socket) this.#remember(input.socket, turn);
 
     void (async () => {
       try {
@@ -93,13 +101,7 @@ export class TurnHub {
       sendFrame(socket, { type: 'attached', id: null, seq: 0 });
       return;
     }
-    turn.subscribers.add(socket);
-    let mine = this.#subscriptions.get(socket);
-    if (!mine) {
-      mine = new Set();
-      this.#subscriptions.set(socket, mine);
-    }
-    mine.add(turn);
+    this.#remember(socket, turn);
     sendFrame(socket, { type: 'attached', id: turn.id, seq: turn.seq });
   }
 
@@ -126,5 +128,16 @@ export class TurnHub {
     if (!mine) return;
     mine.delete(turn);
     if (mine.size === 0) this.#subscriptions.delete(socket);
+  }
+
+  /** One socket, one turn, both indexes - there is no subscribing halfway. */
+  #remember(socket: WebSocket, turn: RunningTurn): void {
+    turn.subscribers.add(socket);
+    let mine = this.#subscriptions.get(socket);
+    if (!mine) {
+      mine = new Set();
+      this.#subscriptions.set(socket, mine);
+    }
+    mine.add(turn);
   }
 }

@@ -164,7 +164,7 @@ export async function registerWebsocketRoutes(
                   ? context.assistant.assign({ ...frame.data.payload, signal: controller.signal })
                   : context.assistant.runTask({ taskId: frame.data.payload.taskId, signal: controller.signal });
 
-            hub.start({ id, ...(sessionId ? { sessionId } : {}), controller, events });
+            hub.start({ id, ...(sessionId ? { sessionId } : {}), controller, events, socket });
             return;
           }
         }
