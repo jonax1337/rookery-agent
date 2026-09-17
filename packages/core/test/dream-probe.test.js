@@ -313,6 +313,29 @@ test('corpus drift is the largest relative df move over the frame tokens (R10)',
   assert.equal(corpusDrifted(frame, same, 0.25, null), false);
 });
 
+test('a stamp gap is unknown, not df zero: unmeasured tokens never abstain as drift', () => {
+  // The nightly stamp covers only the tokens of its own pool (R10), so a
+  // frame asking about something that entered the bank after the recording
+  // night carries a token the stamp never measured. That is not "df 0 then,
+  // df 2 now" - the corpus did not move, the measurement was never taken.
+  const frame = { query: { tokens: ['harbor', 'freshword'] } };
+  const recorded = { id: 'stamp-a', owner: ASSISTANT_MEMORY_OWNER, at: 1, df: { harbor: 10 } };
+  const today = { id: 'stamp-b', owner: ASSISTANT_MEMORY_OWNER, at: 2, df: { harbor: 10, freshword: 2 } };
+
+  assert.equal(corpusDrifted(frame, today, 0.25, recorded), false, 'an unmeasured token is not drift');
+  // The token both stamps measured still decides alone.
+  const moved = { ...today, df: { harbor: 20, freshword: 2 } };
+  assert.equal(corpusDrifted(frame, moved, 0.25, recorded), true);
+  // A token missing from today's side is equally unknown - both sides must
+  // have a df before a relative move exists.
+  const shrunkToday = { id: 'stamp-c', owner: ASSISTANT_MEMORY_OWNER, at: 3, df: { freshword: 2 } };
+  assert.equal(corpusDrifted(frame, shrunkToday, 0.25, recorded), false);
+  // Nothing covered on both sides: waived, never guessed - an empty-pool
+  // night must not condemn every frame recorded after it.
+  const emptyStamp = { id: 'stamp-d', owner: ASSISTANT_MEMORY_OWNER, at: 4, df: {} };
+  assert.equal(corpusDrifted(frame, today, 0.25, emptyStamp), false);
+});
+
 /* ------------------------------ the probe ------------------------------ */
 
 test('a full probe writes nothing to the bank and counts every reason (R6)', () => {

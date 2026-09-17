@@ -254,6 +254,14 @@ export function buildGrid(policy: RecallPolicy, box: RecallBox, size: number): F
  * night there was nothing to stamp, and abstaining that entire pool would
  * kill the very first probe. Frames older than a reindex or bulk import are
  * `corpus-invalidated`, a different reason - never guessed here.
+ *
+ * A token one of the stamps never measured is unknown, not df 0: the nightly
+ * stamp covers only the tokens of its own pool, so a query token that entered
+ * the bank after the recording night moved nothing that was measured. Such a
+ * token falls out of the comparison - only tokens with a df on both sides
+ * count, and a frame with none of those is waived here, never condemned: a
+ * stamp that cannot be read certifies nothing (and the store writes measured
+ * zeros explicitly, so a missing key really is an unmeasured token).
  */
 export function corpusDrifted(
   frame: RecallFrame,
@@ -264,8 +272,9 @@ export function corpusDrifted(
   if (!recorded) return false;
   let worst = 0;
   for (const token of frame.query.tokens) {
-    const then = recorded.df[token] ?? 0;
-    const now = today.df[token] ?? 0;
+    const then = recorded.df[token];
+    const now = today.df[token];
+    if (then === undefined || now === undefined) continue;
     // max(1, then): a token that went from 0 to 1 has moved as far as a
     // token can - df 0 cannot halve, and dividing by 0 would say otherwise.
     worst = Math.max(worst, Math.abs(now - then) / Math.max(1, then));
