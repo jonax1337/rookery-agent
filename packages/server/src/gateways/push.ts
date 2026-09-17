@@ -33,6 +33,13 @@ import type { TelegramInlineKeyboard } from './telegram-api.js';
  * worth a buzz is `push.mailFrom` - the assistant alone, the assistant plus
  * the agents named as a team's lead, or everything that reaches the mailbox.
  *
+ * A question the assistant stopped to ask belongs to that same first lane and
+ * is the one item in it that cannot be held back: it expires, so it is sent
+ * now or not at all. It is carried here rather than only on the turn that
+ * asked, because the turn may be a web turn, a schedule, or anything else
+ * nobody is sitting in front of - which is exactly when the phone is the only
+ * place the question can still be answered.
+ *
  * Everything composed here is plain text. The gateway's `send` is the single
  * place where text becomes Telegram HTML, and it escapes what it is given -
  * a line that arrived already escaped, or already carrying a tag, would reach
@@ -614,6 +621,37 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     });
   };
 
+  /**
+   * The assistant asking the user something, carried to the phone.
+   *
+   * It belongs in this lane and not in the commentary above: a question is
+   * somebody writing, not something finishing, which is the same reason mail
+   * is here. What it does *not* take from this lane is the buffering. Quiet
+   * hours and the hourly cap exist so a finished assignment can wait until
+   * breakfast - a question cannot, because it expires, and a question
+   * delivered from a buffer asks about a decision the turn was forced to make
+   * without it twenty minutes ago. So it goes out now or not at all, and for
+   * the same reason it is not counted against the cap that protects mail.
+   *
+   * The gateway does the drawing, because the buttons and the registry that
+   * makes a typed reply count are its business, and it only draws a question
+   * once per chat however many paths lead to it.
+   */
+  const onQuestion = (event: AgentEvent): void => {
+    if (event.type !== 'question') return;
+    if (!pushConfig().enabled) return;
+    for (const userId of pushRecipients(context.config.gateways.telegram)) {
+      if (disabled.has(userId)) continue;
+      gateway.ask(userId, event);
+    }
+  };
+
+  /** The question is over: the buttons say so, wherever it was answered. */
+  const onQuestionClosed = (event: AgentEvent): void => {
+    if (event.type !== 'question-closed') return;
+    gateway.closeQuestion(event.id, event.reason, event.answer);
+  };
+
   const onNotify = (event: NotifyEvent): void => {
     dispatch({
       id: 'notify:' + event.at,
@@ -635,6 +673,8 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
   assistant.on('task', onTask);
   assistant.on('mail', onMail);
   assistant.on('notify', onNotify);
+  assistant.on('question', onQuestion);
+  assistant.on('question-closed', onQuestionClosed);
   assistant.on('tool', onToolCall);
   assistant.on('memory', onMemoryLearned);
   assistant.on('changed', onChanged);
@@ -647,6 +687,8 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       assistant.off('task', onTask);
       assistant.off('mail', onMail);
       assistant.off('notify', onNotify);
+      assistant.off('question', onQuestion);
+      assistant.off('question-closed', onQuestionClosed);
       assistant.off('tool', onToolCall);
       assistant.off('memory', onMemoryLearned);
       assistant.off('changed', onChanged);

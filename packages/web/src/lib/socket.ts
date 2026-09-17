@@ -33,6 +33,12 @@ export type CronEvent = Extract<AgentEvent, { type: 'cron' }>;
 /** The `sleep` broadcast: the run as it stands, and which phase it just left. */
 export type SleepEvent = Extract<AgentEvent, { type: 'sleep' }>;
 
+/** The `question` broadcast: a turn is waiting on a human answer. */
+export type QuestionEvent = Extract<AgentEvent, { type: 'question' }>;
+
+/** The `question-closed` broadcast: that question is over, however it ended. */
+export type QuestionClosedEvent = Extract<AgentEvent, { type: 'question-closed' }>;
+
 /** One live-log entry of a running assignment this socket watches. */
 export type AssignmentLogFrame = Extract<ServerFrame, { type: 'assignment-log' }>;
 
@@ -66,6 +72,8 @@ export class RookerySocket {
   #changedListeners = new Set<(change: OrgChange) => void>();
   #sleepListeners = new Set<(event: SleepEvent) => void>();
   #quotaListeners = new Set<(quota: ProviderQuota) => void>();
+  #questionListeners = new Set<(event: QuestionEvent) => void>();
+  #questionClosedListeners = new Set<(event: QuestionClosedEvent) => void>();
   #assignmentLogListeners = new Set<(frame: AssignmentLogFrame) => void>();
   /** Assignments this socket should be watching, so a reconnect can re-arm them. */
   #watchedAssignments = new Set<string>();
@@ -139,6 +147,26 @@ export class RookerySocket {
   onQuota(listener: (quota: ProviderQuota) => void): () => void {
     this.#quotaListeners.add(listener);
     return () => this.#quotaListeners.delete(listener);
+  }
+
+  /**
+   * The assistant asked something and a turn is waiting on the answer.
+   *
+   * This is the broadcast, not the turn's own stream: the turn may have been
+   * started in another window or on the phone, and the question is still ours
+   * to show and ours to answer - the id belongs to the question, not to a
+   * turn. A client that started the turn itself sees the same event twice,
+   * once here and once on its stream, so listeners merge by id.
+   */
+  onQuestion(listener: (event: QuestionEvent) => void): () => void {
+    this.#questionListeners.add(listener);
+    return () => this.#questionListeners.delete(listener);
+  }
+
+  /** That question is over - answered, cancelled or expired. Take the card away. */
+  onQuestionClosed(listener: (event: QuestionClosedEvent) => void): () => void {
+    this.#questionClosedListeners.add(listener);
+    return () => this.#questionClosedListeners.delete(listener);
   }
 
   /** An agent, team, project or the company itself was created or edited. */
@@ -302,6 +330,25 @@ export class RookerySocket {
     this.#pending.delete(id);
   }
 
+  /**
+   * Answer an open question. `id` is the question's, not a turn's, so this
+   * opens no stream and gets no reply of its own: the server resolves the
+   * waiting tool call and closes the question with a `question-closed`
+   * broadcast, which is what takes the card away everywhere at once.
+   *
+   * Returns `false` when the socket is not open, so the caller can fall back
+   * to `POST /api/questions/:id/answer` rather than lose the answer.
+   */
+  answer(id: string, payload: { selected: number[]; text?: string }): boolean {
+    const text = payload.text?.trim();
+    return this.#send({
+      type: 'answer',
+      id,
+      selected: payload.selected,
+      ...(text ? { text } : {}),
+    });
+  }
+
   /* ---------------------------- internals ---------------------------- */
 
   #handleFrame(raw: unknown): void {
@@ -364,6 +411,22 @@ export class RookerySocket {
       if (frame.event.type === 'sleep') {
         const event = frame.event;
         for (const listener of this.#sleepListeners) listener(event);
+      }
+      return;
+    }
+
+    if (frame.type === 'question') {
+      if (frame.event.type === 'question') {
+        const event = frame.event;
+        for (const listener of this.#questionListeners) listener(event);
+      }
+      return;
+    }
+
+    if (frame.type === 'question-closed') {
+      if (frame.event.type === 'question-closed') {
+        const event = frame.event;
+        for (const listener of this.#questionClosedListeners) listener(event);
       }
       return;
     }

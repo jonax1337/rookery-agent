@@ -15,6 +15,20 @@ export interface ToolDefinition {
   inputSchema: Record<string, unknown>;
   /** Who may see the tool. */
   audience: ToolAudience[];
+  /**
+   * The tool only works with somebody in front of a screen. A scheduled run
+   * never sees it at all: offering a question to a turn that fires at four in
+   * the morning would block it until the question gives up, and the model
+   * cannot be told "there is nobody there" convincingly enough to be trusted
+   * with a tool it can see.
+   */
+  needsPerson?: boolean;
+}
+
+/** Whether the caller is a person's conversation or an unattended run. */
+export interface ToolAvailability {
+  /** A schedule started this run; nobody is present. */
+  scheduled?: boolean;
 }
 
 const BOTH: ToolAudience[] = ['assistant', 'agent'];
@@ -191,6 +205,48 @@ export const ORG_TOOLS: ToolDefinition[] = [
       additionalProperties: false,
     },
     audience: ASSISTANT_ONLY,
+  },
+  {
+    name: 'ask_user',
+    description:
+      'Put one question to the user and wait for the answer before carrying on. The question ' +
+      'appears wherever they are - the web chat, the terminal, their phone - and any of those may ' +
+      'answer it. Ask only when the answer changes what you do next and you cannot find it out ' +
+      'yourself: a fork with real consequences, a missing fact only they have, a destructive step ' +
+      'worth confirming. Never ask for something you can look up, decide on your own merits, or ' +
+      'simply state and be corrected on. Offer two to four concrete options, each a choice you are ' +
+      'ready to act on, and keep the labels short enough for a phone button. This call blocks; if ' +
+      'nobody answers in time it comes back saying so and you carry on with your best judgement.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        header: str('Two or three words naming the decision, e.g. "Deploy target".'),
+        question: str('The question itself, one or two sentences.'),
+        options: {
+          type: 'array',
+          minItems: 2,
+          maxItems: 4,
+          description: 'Two to four answers to choose from.',
+          items: {
+            type: 'object',
+            properties: {
+              label: str('The button text. A few words.'),
+              description: str('One line of detail under the label. Optional.'),
+            },
+            required: ['label'],
+            additionalProperties: false,
+          },
+        },
+        multiSelect: {
+          type: 'boolean',
+          description: 'Default false. True when several options may be picked at once.',
+        },
+      },
+      required: ['header', 'question', 'options'],
+      additionalProperties: false,
+    },
+    audience: ASSISTANT_ONLY,
+    needsPerson: true,
   },
   {
     name: 'use_skill',
@@ -828,9 +884,15 @@ export const ORG_TOOLS: ToolDefinition[] = [
   },
 ];
 
-/** The tools one audience may call. */
-export function toolsFor(audience: ToolAudience): ToolDefinition[] {
-  return ORG_TOOLS.filter((tool) => tool.audience.includes(audience));
+/**
+ * The tools one audience may call. The second argument narrows it further:
+ * an unattended run drops everything marked `needsPerson`, so the model is
+ * never offered a way to wait for an answer that cannot come.
+ */
+export function toolsFor(audience: ToolAudience, availability: ToolAvailability = {}): ToolDefinition[] {
+  return ORG_TOOLS.filter(
+    (tool) => tool.audience.includes(audience) && !(availability.scheduled && tool.needsPerson),
+  );
 }
 
 /** The MCP server name; the CLI exposes tools as `mcp__rookery__<name>`. */

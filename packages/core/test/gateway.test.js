@@ -5,9 +5,14 @@ import {
   classifyUpdate,
   escapeHtml,
   inQuietHours,
+  mailReadCallbackData,
+  mailReadDoneCallbackData,
   missingGatewaySettings,
   nextGatewayAction,
   pushRecipients,
+  questionCallbackData,
+  questionDoneCallbackData,
+  readCallbackData,
   splitMessage,
   wantsGatewayRunning,
 } from '../dist/index.js';
@@ -555,4 +560,43 @@ test('turning the channel off lifts a block even on the same token', () => {
   const state = { ...STOPPED, blockedToken: 'tok-a' };
   const decision = nextGatewayAction(state, makeConfig({ enabled: false }), 'tok-a', false);
   assert.deepEqual(decision, { action: 'none', clearBlock: true });
+});
+
+/**
+ * The callback vocabulary: every sentence this channel writes on a button,
+ * written and read in one place. The round trip is the whole point - a
+ * prefix built in the transport and parsed in the policy is exactly the pair
+ * that drifts apart the first time one of the two is edited.
+ */
+
+test('a question button reads back as the question and the option that was tapped', () => {
+  const data = questionCallbackData('q-7', 2);
+  // Telegram's own ceiling for callback data; a uuid plus an index fits.
+  assert.equal(data.length <= 64, true);
+  assert.deepEqual(readCallbackData(data), { kind: 'question', questionId: 'q-7', option: 2 });
+});
+
+test('a question id carrying a colon of its own survives the round trip', () => {
+  const data = questionCallbackData('ask:42', 0);
+  assert.deepEqual(readCallbackData(data), { kind: 'question', questionId: 'ask:42', option: 0 });
+});
+
+test('a spent question button is told apart from a live one', () => {
+  assert.deepEqual(readCallbackData(questionDoneCallbackData()), { kind: 'question-done' });
+});
+
+test('the mail read button still reads back the way it always did', () => {
+  assert.equal(mailReadCallbackData('mail-42'), 'mail:read:mail-42');
+  assert.deepEqual(readCallbackData('mail:read:mail-42'), { kind: 'mail-read', mailId: 'mail-42' });
+  assert.deepEqual(readCallbackData(mailReadDoneCallbackData()), { kind: 'mail-read-done' });
+});
+
+test('a button nobody drew is unknown rather than nearly understood', () => {
+  assert.deepEqual(readCallbackData(undefined), { kind: 'unknown' });
+  assert.deepEqual(readCallbackData(''), { kind: 'unknown' });
+  assert.deepEqual(readCallbackData('mail:read:'), { kind: 'unknown' });
+  assert.deepEqual(readCallbackData('question:q-7'), { kind: 'unknown' });
+  assert.deepEqual(readCallbackData('question:q-7:x'), { kind: 'unknown' });
+  assert.deepEqual(readCallbackData('question:q-7:-1'), { kind: 'unknown' });
+  assert.deepEqual(readCallbackData('something:else'), { kind: 'unknown' });
 });

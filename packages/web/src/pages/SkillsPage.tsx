@@ -41,13 +41,27 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { useExternal } from '@/hooks/useExternal';
 import { useSkills } from '@/hooks/useSkills';
 import { relativeTime } from '@/lib/format';
 import { formatNumber, formatDateTime } from '@/lib/stats';
-import { AUDIENCE_LABEL } from '@/lib/tools';
-import type { ExternalSource, Skill, SkillOrigin } from '@/lib/types';
+import { AUDIENCE_LABEL, AUDIENCE_SHORT_LABEL, AUDIENCE_VALUES } from '@/lib/tools';
+import type {
+  ExternalAgentRef,
+  ExternalSource,
+  Skill,
+  SkillOrigin,
+  ToolServerAudience,
+} from '@/lib/types';
 
 /**
  * Who wrote a skill. Worth a column of its own now that the shelf is no
@@ -96,8 +110,56 @@ const SOURCE_COLUMN_LABELS: Record<string, string> = {
   label: 'Source',
   origin: 'Kind',
   skillCount: 'Skills',
-  enabled: 'Available',
+  agents: 'Subagents',
+  hooks: 'Hooks',
+  enabled: 'Skills available',
+  loadWhole: 'Whole plugin',
 };
+
+/** The third table: one row per subagent type found in those shelves. */
+const agentColumn = createRookeryColumnHelper<ExternalAgentRef>();
+
+const AGENT_COLUMN_LABELS: Record<string, string> = {
+  name: 'Name',
+  description: 'When to use it',
+  model: 'Model',
+  tools: 'Tools',
+  audience: 'Audience',
+  enabled: 'Approved',
+};
+
+/**
+ * The audience picker that sits beside every approval switch.
+ *
+ * A hook set is approved per source *and* per audience, and the two are not
+ * interchangeable: the assistant runs with somebody watching, an agent does
+ * not. Small and inline rather than a dialog, because it is the second half
+ * of one decision, not a separate one.
+ */
+function AudienceSelect({
+  value,
+  label,
+  onChange,
+}: {
+  value: ToolServerAudience;
+  label: string;
+  onChange: (next: ToolServerAudience) => void;
+}) {
+  return (
+    <Select value={value} onValueChange={(next) => onChange(next as ToolServerAudience)}>
+      <SelectTrigger size="sm" className="w-[9.5rem]" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {AUDIENCE_VALUES.map((audience) => (
+          <SelectItem key={audience} value={audience}>
+            {AUDIENCE_SHORT_LABEL[audience]}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
 
 export function SkillsPage() {
   const navigate = useNavigate();
@@ -108,6 +170,7 @@ export function SkillsPage() {
 
   const [tab, setTab] = useState<Tab>('alle');
   const [search, setSearch] = useState('');
+  const [agentSearch, setAgentSearch] = useState('');
 
   usePageMeta({
     breadcrumb: [{ label: 'Skills' }],
@@ -250,6 +313,33 @@ export function SkillsPage() {
     [deleteSkill, navigate],
   );
 
+  const externalAgents = external.overview?.agents ?? [];
+  const externalHooks = external.overview?.hooks ?? [];
+  const externalPlugins = external.overview?.plugins ?? [];
+
+  /** How many subagents and hook handlers each shelf brought along. */
+  const perSource = useMemo(() => {
+    const counts = new Map<string, { agents: number; hooks: number }>();
+    const bump = (id: string, key: 'agents' | 'hooks', by: number) => {
+      const entry = counts.get(id) ?? { agents: 0, hooks: 0 };
+      entry[key] += by;
+      counts.set(id, entry);
+    };
+    for (const agent of externalAgents) bump(agent.sourceId, 'agents', 1);
+    for (const set of externalHooks) bump(set.sourceId, 'hooks', set.handlerCount);
+    return counts;
+  }, [externalAgents, externalHooks]);
+
+  const pluginBySource = useMemo(
+    () => new Map(externalPlugins.map((plugin) => [plugin.sourceId, plugin])),
+    [externalPlugins],
+  );
+
+  const sourceLabel = useMemo(
+    () => new Map((external.overview?.sources ?? []).map((source) => [source.id, source.label])),
+    [external.overview],
+  );
+
   const sourceColumns = useMemo(
     () =>
       sourceColumn.columns([
@@ -270,18 +360,127 @@ export function SkillsPage() {
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Skills" />,
           cell: ({ row }) => formatNumber(row.original.skillCount),
         }),
+        sourceColumn.accessor((source) => perSource.get(source.id)?.agents ?? 0, {
+          id: 'agents',
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Subagents" />,
+          cell: ({ row }) => formatNumber(perSource.get(row.original.id)?.agents ?? 0),
+        }),
+        sourceColumn.accessor((source) => perSource.get(source.id)?.hooks ?? 0, {
+          id: 'hooks',
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Hooks" />,
+          cell: ({ row }) => formatNumber(perSource.get(row.original.id)?.hooks ?? 0),
+        }),
         sourceColumn.accessor('enabled', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Available" />,
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Skills available" />,
           cell: ({ row }) => (
             <Switch
               checked={row.original.enabled}
-              aria-label={row.original.label + ' available'}
+              aria-label={row.original.label + ' skills available'}
               onCheckedChange={(on) => void external.setSource(row.original, on)}
             />
           ),
         }),
+        // The whole shelf at once: skills, subagents and hooks of this plugin
+        // go into the turn the way Claude Code itself would load them. Only a
+        // plugin has a folder to load, so the person's own skills folder
+        // shows nothing here.
+        sourceColumn.accessor((source) => pluginBySource.get(source.id)?.loadWhole ?? false, {
+          id: 'loadWhole',
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Whole plugin" />,
+          cell: ({ row }) => {
+            const plugin = pluginBySource.get(row.original.id);
+            if (!plugin) return emptyCell();
+            return (
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={plugin.loadWhole}
+                  aria-label={'Load all of ' + row.original.label}
+                  onCheckedChange={(on) => void external.setPlugin(plugin, { loadWhole: on })}
+                />
+                {plugin.loadWhole && !plugin.active ? (
+                  <Badge variant="outline" className="font-normal text-muted-foreground">
+                    Changed
+                  </Badge>
+                ) : null}
+              </div>
+            );
+          },
+        }),
       ]),
-    [external],
+    [external, perSource, pluginBySource],
+  );
+
+  const agentColumns = useMemo(
+    () =>
+      agentColumn.columns([
+        agentColumn.accessor('name', {
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Name" />,
+          cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+          enableHiding: false,
+        }),
+        agentColumn.accessor('description', {
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="When to use it" />,
+          cell: ({ row }) => (
+            <p className="line-clamp-1 max-w-[28rem] text-muted-foreground">{row.original.description}</p>
+          ),
+        }),
+        agentColumn.accessor((agent) => sourceLabel.get(agent.sourceId) ?? agent.sourceId, {
+          id: 'source',
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Source" />,
+          cell: ({ row }) => (
+            <Badge variant="outline" className="font-normal text-muted-foreground">
+              {sourceLabel.get(row.original.sourceId) ?? row.original.sourceId}
+            </Badge>
+          ),
+        }),
+        agentColumn.accessor((agent) => agent.model ?? '', {
+          id: 'model',
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Model" />,
+          cell: ({ row }) => row.original.model ?? emptyCell(),
+        }),
+        agentColumn.accessor((agent) => (agent.tools ?? []).join(', '), {
+          id: 'tools',
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Tools" />,
+          cell: ({ row }) =>
+            row.original.tools?.length ? (
+              <p className="line-clamp-1 max-w-[16rem] text-muted-foreground">
+                {row.original.tools.join(', ')}
+              </p>
+            ) : (
+              emptyCell()
+            ),
+        }),
+        agentColumn.accessor('audience', {
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Audience" />,
+          cell: ({ row }) => (
+            <AudienceSelect
+              value={row.original.audience}
+              label={'Audience for ' + row.original.name}
+              onChange={(audience) => void external.setAgent(row.original, { audience })}
+            />
+          ),
+        }),
+        agentColumn.accessor('enabled', {
+          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Approved" />,
+          cell: ({ row }) => (
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={row.original.enabled}
+                aria-label={'Approve ' + row.original.name}
+                onCheckedChange={(on) => void external.setAgent(row.original, { enabled: on })}
+              />
+              {/* Approved once, and the file has moved on since: the approval
+                  stands but nothing is handed over until somebody looks. */}
+              {row.original.enabled && !row.original.active ? (
+                <Badge variant="outline" className="font-normal text-muted-foreground">
+                  Changed
+                </Badge>
+              ) : null}
+            </div>
+          ),
+        }),
+      ]),
+    [external, sourceLabel],
   );
 
   const counts = useMemo(
@@ -531,6 +730,132 @@ export function SkillsPage() {
           />
         </SectionHeading>
       </Fade>
+
+      {/*
+        Subagent types out of the same shelves. Each one carries its own
+        system prompt and tool list into a turn Rookery otherwise composes
+        itself, so none of them is handed over until somebody approved it -
+        and the approval is tied to the file as it was read: edit the agent
+        in Claude Code and the row goes back to "Changed" until it is looked
+        at again.
+      */}
+      <Fade delay={150}>
+        <SectionHeading
+          title="Subagents from Claude Code"
+          hint={
+            externalAgents.length
+              ? formatNumber(externalAgents.filter((agent) => agent.active).length) +
+                ' of ' +
+                formatNumber(externalAgents.length) +
+                ' subagent types are approved. An approved one can be delegated to during a turn; its prompt is read when the turn starts.'
+              : 'No subagent types in the Claude Code on this machine, or reading it is switched off.'
+          }
+        >
+          <DataTable
+            data={externalAgents}
+            columns={agentColumns}
+            getRowId={(agent) => agent.id}
+            idPrefix="external-agents"
+            columnLabels={AGENT_COLUMN_LABELS}
+            searchable
+            search={agentSearch}
+            onSearchChange={setAgentSearch}
+            searchPlaceholder="Search subagents"
+            searchText={(agent) => agent.name + ' ' + agent.description}
+            initialSorting={[{ id: 'name', desc: false }]}
+            rowLabel={{ singular: 'Subagent', plural: 'Subagents' }}
+            loading={external.loading}
+            error={external.error ? <ServerOffline onRetry={() => void external.reload()} /> : undefined}
+            empty={
+              <Fade>
+                <EmptyState
+                  icon={BookOpenIcon}
+                  title="Nothing found"
+                  description="Rookery reads the agents folder of Claude Code and of every plugin switched on there. It never writes to them."
+                  variant="plain"
+                  size="sm"
+                />
+              </Fade>
+            }
+            filteredEmpty={
+              <Fade>
+                <NoResults
+                  {...(agentSearch.trim() ? { query: agentSearch.trim() } : {})}
+                  onReset={() => setAgentSearch('')}
+                />
+              </Fade>
+            }
+          />
+        </SectionHeading>
+      </Fade>
+
+      {/*
+        Hook sets. Not a table: a hook is a command line that runs around
+        every tool call, and the whole point of the approval is that somebody
+        read those lines first. So they are on the page, in full, before the
+        switch - and they only ever travel in this direction.
+      */}
+      {externalHooks.length ? (
+        <Fade delay={200}>
+          <SectionHeading
+            title="Hooks from Claude Code"
+            hint="A hook set runs its own commands around every tool call of a turn. Off everywhere until you say otherwise, and approved separately for the assistant and for agents."
+          >
+            <div className="flex flex-col gap-4 px-4 lg:px-6">
+              <Alert>
+                <AlertTitle>Plugin hooks are written for someone at a keyboard</AlertTitle>
+                <AlertDescription>
+                  They expect a person to be watching. ECC&apos;s PreToolUse hook on Bash, for
+                  example, refuses the first attempt and asks the model to state its facts and
+                  repeat the command — in an unattended agent run that costs a round trip at best,
+                  and can stall the run at worst. Approve hooks for the assistant first, and only
+                  extend them to agents once you have seen what they do.
+                </AlertDescription>
+              </Alert>
+
+              {externalHooks.map((set) => (
+                <div
+                  key={set.sourceId}
+                  className="flex flex-col gap-3 rounded-lg border bg-card p-4"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="font-medium">
+                        {sourceLabel.get(set.sourceId) ?? set.sourceId}
+                      </span>
+                      <span className="text-sm text-muted-foreground">
+                        {formatNumber(set.handlerCount)} handler(s) over {set.events.join(', ')}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {set.enabled && !set.active ? (
+                        <Badge variant="outline" className="font-normal text-muted-foreground">
+                          Changed
+                        </Badge>
+                      ) : null}
+                      <AudienceSelect
+                        value={set.audience}
+                        label={'Audience for the hooks of ' + (sourceLabel.get(set.sourceId) ?? set.sourceId)}
+                        onChange={(audience) => void external.setHook(set, { audience })}
+                      />
+                      <Switch
+                        checked={set.enabled}
+                        aria-label={'Approve the hooks of ' + (sourceLabel.get(set.sourceId) ?? set.sourceId)}
+                        onCheckedChange={(on) => void external.setHook(set, { enabled: on })}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{set.path}</p>
+                  {/* Wide content scrolls in its own box; the page never does. */}
+                  <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed">
+                    {set.commands.join('\n\n')}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          </SectionHeading>
+        </Fade>
+      ) : null}
     </PageBody>
   );
 }

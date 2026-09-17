@@ -24,6 +24,7 @@ import type {
   ImapListenerConfig,
   Project,
   ProviderId,
+  QuestionOption,
   RequesterKind,
   RookeryConfig,
   Task,
@@ -57,7 +58,15 @@ import {
 } from './review.js';
 import { buildTaskWaves, planTask, type TaskPlan } from './planner.js';
 import { toolsFor, type ToolAudience } from './tools.js';
-import { ensureToolServers, renderToolServers, toolServerStates, toolServersFor, withToolServer } from '../tools/hub.js';
+import type { QuestionCloseReason, QuestionRegistry } from './questions.js';
+import {
+  ensureToolServers,
+  externalTurnExtras,
+  renderToolServers,
+  toolServerStates,
+  toolServersFor,
+  withToolServer,
+} from '../tools/hub.js';
 import {
   SkillStore,
   projectSkillsDir,
@@ -122,6 +131,12 @@ export interface ToolContext {
    * storage.
    */
   scheduled?: boolean;
+  /**
+   * The bridge token of the calling turn, stamped in by `register`. `ask_user`
+   * files it with the question so the turn can take its questions with it on
+   * every exit, not only on an abort.
+   */
+  questionOwner?: string;
 }
 
 /**
@@ -169,6 +184,12 @@ export interface OrgControllerOptions {
   cron?: CronScheduler;
   /** The night shift, when the runtime has one; `sleep_now` needs it. */
   sleep?: SleepRunner;
+  /**
+   * The open questions, when the runtime has one; `ask_user` needs it. Left
+   * unset - a controller built for a one-off command, say - the tool says it
+   * cannot reach anybody instead of hanging on a promise nobody can settle.
+   */
+  questions?: QuestionRegistry;
   /**
    * Whether an outgoing channel could deliver a notification *right now* -
    * not merely whether one is registered. A Telegram push service that is
@@ -290,6 +311,7 @@ export class OrgController extends EventEmitter {
   readonly #skills: SkillStore;
   readonly #cron: CronScheduler | undefined;
   readonly #sleep: SleepRunner | undefined;
+  readonly #questions: QuestionRegistry | undefined;
   readonly #canNotify: (() => boolean) | undefined;
   readonly #runAssistantMail: OrgControllerOptions['runAssistantMail'];
   #running = 0;
@@ -311,6 +333,7 @@ export class OrgController extends EventEmitter {
     this.#skills = new SkillStore(options.config.skillsDir);
     this.#cron = options.cron;
     this.#sleep = options.sleep;
+    this.#questions = options.questions;
     this.#canNotify = options.canNotify;
     this.#runAssistantMail = options.runAssistantMail;
   }
@@ -348,9 +371,22 @@ export class OrgController extends EventEmitter {
     };
   }
 
-  /** Register a provider process with the bridge and hand back its token. */
+  /**
+   * Register a provider process with the bridge and hand back its token. The
+   * tool list is cut to the caller twice over: by audience, and by whether
+   * anybody is in front of a screen - a scheduled run is never even shown
+   * `ask_user`.
+   */
   register(context: ToolContext): string {
-    return this.#bridge.register(toolsFor(context.audience), this.handler(context));
+    // The handler closes over the context, so the token is stamped in rather
+    // than passed: it is what `ask_user` files with a question and what the
+    // runtime retires when the turn ends, on every exit.
+    const token = this.#bridge.register(
+      toolsFor(context.audience, { scheduled: context.scheduled }),
+      this.handler(context),
+    );
+    context.questionOwner = token;
+    return token;
   }
 
   unregister(token: string): void {
@@ -610,6 +646,75 @@ export class OrgController extends EventEmitter {
         const event: NotifyEvent = { text: text('text'), urgency, at: Date.now() };
         this.emit('notify', event);
         return { text: 'Sent' + (urgency === 'high' ? ' (high urgency)' : '') + ': ' + event.text };
+      }
+
+      case 'ask_user': {
+        // Only the assistant asks. An agent runs unattended by design and
+        // reports back by mail; letting one block on a person would stall a
+        // whole delegation chain behind somebody's inbox.
+        if (context.audience !== 'assistant') {
+          return fail('Only the assistant can ask the user. Report what you need in your result instead.');
+        }
+        // Belt and braces: a scheduled run is not offered the tool at all
+        // (see `register`), so getting here means the list was built for a
+        // conversation and the run turned out to be automated.
+        if (context.scheduled) {
+          return fail(
+            'This run was started by a schedule and nobody is there to answer. Decide it yourself ' +
+              'and say in your result what you assumed.',
+          );
+        }
+        if (!this.#questions) return fail('Asking the user is not available here.');
+        const header = text('header');
+        const question = text('question');
+        if (!question) return fail('A question needs its text.');
+        const options = asQuestionOptions(args.options);
+        if (options.length < 2) return fail('Offer at least two options to choose from.');
+        if (options.length > 4) return fail('Offer at most four options; more does not fit a phone.');
+
+        const timeoutMs = this.#config.questions.timeoutMs;
+        // The close event carries why it closed, and the turn wants to know:
+        // "nobody was there" and "somebody waved it away" are different
+        // things to carry on from.
+        let closedBecause: QuestionCloseReason | undefined;
+        const emit = (event: AgentEvent): void => {
+          if (event.type === 'question-closed') closedBecause = event.reason;
+          context.emit(event);
+        };
+        const answer = await this.#questions.ask(
+          {
+            header: header || 'Question',
+            question,
+            options,
+            multiSelect: args.multiSelect === true,
+            sessionId: context.sessionId,
+          },
+          // `emit` puts the card on the asking turn's own stream; `signal` is
+          // the half no other tool handler has: an aborted turn kills the
+          // provider process, and without this the question would stay open
+          // for its full timeout with nobody left to receive the answer.
+          // `owner` widens that to every way a turn can end.
+          { signal: context.signal, timeoutMs, emit, ...(context.questionOwner ? { owner: context.questionOwner } : {}) },
+        );
+
+        if (!answer) {
+          if (closedBecause === 'cancelled' || context.signal?.aborted) {
+            return { text: 'The question was cancelled before anybody answered it.' };
+          }
+          const minutes = Math.max(1, Math.round(timeoutMs / 60000));
+          return {
+            text:
+              'No answer within ' + minutes + ' minute' + (minutes === 1 ? '' : 's') + '. Carry on with ' +
+              'your own best judgement and say which way you went and why.',
+          };
+        }
+        const chosen = answer.selected
+          .map((index) => options[index]?.label)
+          .filter((label): label is string => Boolean(label));
+        const parts: string[] = [];
+        if (chosen.length) parts.push('The user chose: ' + chosen.join(', ') + '.');
+        if (answer.text) parts.push((chosen.length ? 'They added: ' : 'The user answered: ') + answer.text);
+        return { text: parts.join('\n') };
       }
 
       case 'use_skill': {
@@ -1902,6 +2007,9 @@ export class OrgController extends EventEmitter {
               permission: agent.permission ?? this.#config.defaultPermission,
               mcp,
               mcpExtra: mcpExtra.length ? mcpExtra : undefined,
+              // Approved subagents and hooks out of the Claude Code
+              // installation, plus Rookery's own permission floor.
+              ...externalTurnExtras(this.#config, 'agent'),
               signal: controller.signal,
             })) {
               if (event.type === 'text') {
@@ -2925,6 +3033,31 @@ export function describeAgentPerformance(agent: Agent, org: OrgStore): string {
 
 function asMemoryKind(value: string): MemoryKind {
   return value === 'preference' || value === 'project' || value === 'event' ? value : 'fact';
+}
+
+/**
+ * The `ask_user` options, read defensively. The schema says objects with a
+ * label, but a model that answers a list of strings is asking the same
+ * question and should not be sent back round for a formality; anything
+ * without readable text is dropped rather than shown as an empty button.
+ */
+function asQuestionOptions(value: unknown): QuestionOption[] {
+  if (!Array.isArray(value)) return [];
+  const options: QuestionOption[] = [];
+  for (const entry of value) {
+    if (typeof entry === 'string') {
+      const label = entry.trim();
+      if (label) options.push({ label });
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const label = typeof record.label === 'string' ? record.label.trim() : '';
+    if (!label) continue;
+    const description = typeof record.description === 'string' ? record.description.trim() : '';
+    options.push(description ? { label, description } : { label });
+  }
+  return options;
 }
 
 /** A number argument within bounds; the fallback when it is missing or not a number. */

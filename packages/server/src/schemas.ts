@@ -461,6 +461,10 @@ export const patchConfigSchema = z
     gateways: gatewaysConfigSchema,
     listeners: listenersConfigSchema,
     router: z.object({ enabled: z.boolean(), port: z.number().int().min(1).max(65535) }).partial(),
+    // How long an `ask_user` card stays answerable. Capped well under the
+    // six-hour MCP tool ceiling the blocked call sits under, and above zero
+    // so a saved value can never wedge a turn forever.
+    questions: z.object({ timeoutMs: z.number().int().min(30_000).max(60 * 60 * 1000) }).partial(),
     providerFallback: z
       .object({
         enabled: z.boolean(),
@@ -511,6 +515,16 @@ export const skillSchema = z.object({
   body: z.string().max(200_000),
 });
 
+/**
+ * POST /api/questions/:id/answer - the same payload as the `answer` frame
+ * below, for SSE clients and as the REST fallback. The question id is the
+ * route param, not part of the body.
+ */
+export const answerQuestionSchema = z.object({
+  selected: z.array(z.number().int().min(0).max(63)).max(64).default([]),
+  text: z.string().max(4000).optional(),
+});
+
 /** Frames a client may send over /ws. */
 export const clientFrameSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('chat'), id: z.string().min(1), payload: chatInputSchema }),
@@ -523,6 +537,16 @@ export const clientFrameSchema = z.discriminatedUnion('type', [
   // `unwatch` frame is the whole lifecycle.
   z.object({ type: z.literal('watch'), assignmentId: z.string().min(1) }),
   z.object({ type: z.literal('unwatch'), assignmentId: z.string().min(1) }),
+  // An answer to a question the assistant asked. The id is the question's,
+  // not a turn's: the turn waiting on it may have been started on another
+  // connection entirely, so this frame carries no request id and gets no
+  // stream of its own. `selected` holds indices into the offered options.
+  z.object({
+    type: z.literal('answer'),
+    id: z.string().min(1),
+    selected: z.array(z.number().int().min(0).max(63)).max(64).default([]),
+    text: z.string().max(4000).optional(),
+  }),
   z.object({ type: z.literal('ping') }),
 ]);
 

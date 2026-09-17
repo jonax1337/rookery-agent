@@ -3,6 +3,7 @@ import type { WebSocket } from '@fastify/websocket';
 import type { ServerContext } from '../context.js';
 import { isAuthorized, requireSameOrigin } from '../auth.js';
 import { clientFrameSchema, formatIssues } from '../schemas.js';
+import { buildAnswer, isOpenQuestion } from './questions.js';
 import { pipeToSocket, sendFrame } from '../services/stream.js';
 
 /**
@@ -13,6 +14,10 @@ import { pipeToSocket, sendFrame } from '../services/stream.js';
  * frame carries back, so a UI with two panes never mixes streams. The
  * AbortController map is per connection and is emptied when a turn settles, so
  * a long-lived socket does not accumulate dead controllers.
+ *
+ * The one frame that is not scoped to a turn is `answer`: a question belongs
+ * to the person, not to the connection that provoked it, so its id is looked
+ * up in the assistant's question registry rather than in `turns`.
  */
 export async function registerWebsocketRoutes(
   app: FastifyInstance,
@@ -94,6 +99,34 @@ export async function registerWebsocketRoutes(
             if (!watched) return;
             watched.delete(frame.data.assignmentId);
             if (watched.size === 0) context.assignmentWatchers.delete(socket);
+            return;
+          }
+
+          // An answer to a question the assistant asked. Deliberately not
+          // looked up in `turns`: the id is the question's, and the turn
+          // blocked on it may have been started on another connection, in
+          // another window or on the phone. Any connection may answer any
+          // open question - the person is one person.
+          case 'answer': {
+            const answer = buildAnswer(frame.data, 'web');
+            if (!answer) {
+              sendFrame(socket, {
+                type: 'error',
+                message: 'An answer needs a selected option or some text.',
+              });
+              return;
+            }
+            // Stale card: the question timed out, the turn was aborted, or
+            // another surface got there first. The `question-closed`
+            // broadcast already told this socket so; say it plainly rather
+            // than dropping the frame silently. No `id` on the error frame -
+            // that field is a turn id to every client reading it, and this
+            // one is not.
+            if (!isOpenQuestion(context, frame.data.id)) {
+              sendFrame(socket, { type: 'error', message: 'No open question with that id.' });
+              return;
+            }
+            context.assistant.questions.answer(frame.data.id, answer);
             return;
           }
 

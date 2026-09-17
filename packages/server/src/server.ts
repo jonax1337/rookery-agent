@@ -31,6 +31,7 @@ import { registerToolRoutes } from './routes/tools.js';
 import { registerGatewayRoutes } from './routes/gateways.js';
 import { registerHookRoutes } from './routes/hooks.js';
 import { registerListenerRoutes } from './routes/listeners.js';
+import { registerQuestionRoutes } from './routes/questions.js';
 import { registerWebsocketRoutes } from './routes/ws.js';
 import { createListenerRegistry } from './listeners/registry.js';
 import { createTelegramGateway, type GatewayHandle } from './gateways/telegram.js';
@@ -155,6 +156,7 @@ export async function buildServer(
   await registerToolRoutes(app, context);
   await registerGatewayRoutes(app, context);
   await registerListenerRoutes(app, context);
+  await registerQuestionRoutes(app, context);
   // Deliberately outside /api, where the shared bearer token is not demanded
   // on top of the job's own secret. See routes/hooks.ts for the whole argument.
   await registerHookRoutes(app, context);
@@ -222,6 +224,18 @@ export async function buildServer(
   const onSleep = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'sleep', event });
   };
+  // A question is the one event where the broadcast is not a convenience but
+  // the point: the turn that asked is blocked, and the person may well be at
+  // another screen by now. Every open connection gets the card, and the
+  // matching close so that whichever surface did not answer takes it away
+  // again. `GET /api/questions` covers the third case - a reload, which was
+  // not connected for either frame.
+  const onQuestion = (event: AgentEvent): void => {
+    for (const socket of context.sockets) sendFrame(socket, { type: 'question', event });
+  };
+  const onQuestionClosed = (event: AgentEvent): void => {
+    for (const socket of context.sockets) sendFrame(socket, { type: 'question-closed', event });
+  };
   assistant.on('assignment', onAssignment);
   assistant.on('assignment-log', onAssignmentLog);
   assistant.on('message', onMessage);
@@ -230,6 +244,8 @@ export async function buildServer(
   assistant.on('task', onTask);
   assistant.on('cron', onCron);
   assistant.on('sleep', onSleep);
+  assistant.on('question', onQuestion);
+  assistant.on('question-closed', onQuestionClosed);
 
   // A crash or a plain restart leaves any assignment/task/sleep run still
   // marked pending/running stuck that way forever - nothing ever revisits
@@ -335,6 +351,8 @@ export async function buildServer(
     assistant.off('task', onTask);
     assistant.off('cron', onCron);
     assistant.off('sleep', onSleep);
+    assistant.off('question', onQuestion);
+    assistant.off('question-closed', onQuestionClosed);
     telegramPush.detach();
     assistant.notifyProbe = undefined;
     try {

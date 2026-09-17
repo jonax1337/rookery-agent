@@ -3,15 +3,22 @@ import {
   classifyCallback,
   classifyUpdate,
   isAudible,
+  mailReadCallbackData,
+  mailReadDoneCallbackData,
   missingGatewaySettings,
   nextGatewayAction,
   providerQuota,
+  questionCallbackData,
+  questionDoneCallbackData,
+  readCallbackData,
   splitMessage,
+  type AgentEvent,
   type GatewayAttachment,
   type GatewayLifecycleState,
   type GatewayRejection,
   type GatewayReplyTo,
   type GatewayVerdict,
+  type QuestionAnswer,
   type Session,
   type TelegramGatewayConfig,
 } from '@rookery/core';
@@ -60,24 +67,15 @@ const POLL_SECONDS = 50;
 const ALLOWED_UPDATES = ['message', 'callback_query'];
 
 /**
- * The one button this channel draws, and the prefix that identifies a tap on
- * it: `mail:read:<mail id>`.
+ * The two things this channel draws buttons for, and nothing else.
  *
- * Telegram gives 64 bytes for `callback_data`, which a prefix plus a UUID
- * fits inside with room to spare. Mail ids are opaque to the phone either
- * way - the tap is only believed because the guard chain already proved who
+ * What goes *on* a button - the prefixes and how they read back - lives in
+ * `@rookery/core`'s gateway policy, next to the guard that decides whether a
+ * tap counts at all. What is left here is the drawing: labels, rows, and the
+ * wording a spent button carries. Mail ids and question ids are opaque to
+ * the phone either way; a tap is believed because the guard chain proved who
  * pressed it, never because of what the data says.
  */
-const MAIL_READ_PREFIX = 'mail:read:';
-
-/**
- * What the button becomes once it has been pressed.
- *
- * Telegram has no disabled state for an inline button, so the spent one is a
- * button too - it just says what happened and answers a second tap with the
- * same sentence instead of writing the read state again.
- */
-const MAIL_READ_SPENT = 'mail:read-done';
 
 /**
  * The button as it is drawn under a fresh mail push.
@@ -88,11 +86,10 @@ const MAIL_READ_SPENT = 'mail:read-done';
  * it will do; what it did belongs to `mailReadDone` below.
  *
  * Exported so `push.ts` can ask for it without knowing what goes on a
- * button: the wording and the callback data stay in the one file that also
- * reads them back.
+ * button: the wording stays in the one file that also draws the rest.
  */
 export function mailReadKeyboard(mailId: string): TelegramInlineKeyboard {
-  return [[{ text: 'Mark as read', callbackData: MAIL_READ_PREFIX + mailId }]];
+  return [[{ text: 'Mark as read', callbackData: mailReadCallbackData(mailId) }]];
 }
 
 /**
@@ -103,7 +100,138 @@ export function mailReadKeyboard(mailId: string): TelegramInlineKeyboard {
  */
 export function mailReadDone(at: number): TelegramInlineKeyboard {
   const stamp = new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  return [[{ text: '✓ Read at ' + stamp, callbackData: MAIL_READ_SPENT }]];
+  return [[{ text: '✓ Read at ' + stamp, callbackData: mailReadDoneCallbackData() }]];
+}
+
+/** The assistant's question, as it arrives on the wire. */
+export type QuestionPrompt = Extract<AgentEvent, { type: 'question' }>;
+
+/** How a question ended, in the words the closing event uses. */
+export type QuestionClosedReason = Extract<AgentEvent, { type: 'question-closed' }>['reason'];
+
+/** Longest an option reads on a button before the phone wraps it badly. */
+const OPTION_LABEL = 48;
+
+/**
+ * The options of an open question, one per row.
+ *
+ * Numbered, and numbered the same way the message above them is, because
+ * there are two ways to answer on this channel and they have to agree: a tap
+ * on "2." and the typed reply "2" must mean the same option. One option per
+ * row rather than two side by side - a label long enough to be worth reading
+ * is a label that gets cut in half in a two-column keyboard.
+ */
+export function questionKeyboard(question: QuestionPrompt): TelegramInlineKeyboard {
+  return question.options.map((option, index) => [
+    {
+      text: String(index + 1) + '. ' + oneLine(option.label, OPTION_LABEL),
+      callbackData: questionCallbackData(question.id, index),
+    },
+  ]);
+}
+
+/**
+ * What is left standing once a question is over.
+ *
+ * The same reasoning as the mail button: Telegram has no disabled state, so
+ * the spent keyboard is a keyboard too, and its one job is to say what
+ * happened - including when the answer came from the web app or the terminal
+ * rather than from here, which is the case this exists for.
+ */
+export function questionClosedKeyboard(
+  reason: QuestionClosedReason | 'gone',
+  chosen?: string,
+): TelegramInlineKeyboard {
+  const text =
+    reason === 'answered'
+      ? '✓ ' + oneLine(chosen || 'Answered', OPTION_LABEL)
+      : reason === 'expired'
+        ? '⏳ No answer in time'
+        : reason === 'cancelled'
+          ? '✕ Withdrawn'
+          : // Closed between drawing the buttons and pressing one, and this
+            // channel was not told which way. Saying that is better than
+            // picking the likelier of two wordings and being wrong.
+            '• No longer open';
+  return [[{ text, callbackData: questionDoneCallbackData() }]];
+}
+
+/**
+ * The question as a message.
+ *
+ * The options are written out above the buttons even though the buttons
+ * carry them too, and that is deliberate: a button holds a label and nothing
+ * more, while an option that needs a sentence of explanation only has room
+ * for it here. The numbering is the bridge between the two answers this
+ * channel takes - tapping "2." and writing "2" are the same act.
+ *
+ * The deadline is named rather than implied. A question that quietly stops
+ * mattering while the phone is in a pocket is worse than one that said when
+ * it would.
+ */
+export function questionText(question: QuestionPrompt): string {
+  const lines = [
+    '❓ ' + oneLine(question.header, 80),
+    '',
+    question.question.trim(),
+    '',
+    ...question.options.map(
+      (option, index) =>
+        String(index + 1) + '. ' + option.label + (option.description ? ' – ' + option.description : ''),
+    ),
+    '',
+    question.multiSelect
+      ? 'Tap one, or write the numbers you mean ("1 3"), or answer in your own words.'
+      : 'Tap one, write its number, or answer in your own words.',
+  ];
+  if (Number.isFinite(question.expiresAt) && question.expiresAt > 0) {
+    const stamp = new Date(question.expiresAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    lines.push('If nothing comes back by ' + stamp + ' I carry on without it.');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * A typed reply, read as an answer to the question that is open.
+ *
+ * Three shapes, in the order a person is likely to mean them: the numbers
+ * printed next to the options, the wording of an option itself, and anything
+ * else, which is a free answer and goes through whole. Nothing is rejected -
+ * the registry takes free text on purpose, and a reply this cannot classify
+ * is still the user talking to the question, not a new turn.
+ *
+ * Exported for its own test: "1" meaning the first option and "1" meaning
+ * the literal word are the same three characters, and only the open question
+ * tells them apart.
+ */
+export function readTypedAnswer(text: string, question: QuestionPrompt): QuestionAnswer {
+  const at = Date.now();
+  const written = text.trim();
+  const source = 'telegram' as const;
+
+  const tokens = written.split(/[\s,;]+/).filter(Boolean);
+  const numbers = tokens.map((token) => Number(token));
+  const inRange = (value: number): boolean => Number.isInteger(value) && value >= 1 && value <= question.options.length;
+  if (tokens.length > 0 && numbers.every(inRange)) {
+    const picked = [...new Set(numbers.map((value) => value - 1))];
+    return { selected: question.multiSelect ? picked : picked.slice(0, 1), source, at };
+  }
+
+  const flat = written.toLowerCase();
+  const labelled = question.options.findIndex((option) => option.label.trim().toLowerCase() === flat);
+  if (labelled >= 0) return { selected: [labelled], source, at };
+
+  return { selected: [], text: written, source, at };
+}
+
+/** The labels behind an answer, for the button that says what was chosen. */
+function chosenLabels(question: QuestionPrompt, answer: QuestionAnswer | undefined): string | undefined {
+  if (!answer) return undefined;
+  const labels = answer.selected
+    .map((index) => question.options[index]?.label)
+    .filter((label): label is string => Boolean(label));
+  if (labels.length > 0) return labels.join(', ');
+  return answer.text?.trim() || undefined;
 }
 
 /**
@@ -253,11 +381,49 @@ export interface GatewayHandle {
     text: string,
     options?: { origin?: Omit<MessageOrigin, 'at'>; silent?: boolean; keyboard?: TelegramInlineKeyboard },
   ): Promise<number[]>;
+  /**
+   * Put an open question in front of one person, at most once per question.
+   *
+   * Two paths lead here and both are needed: the turn that asked, when it is
+   * a Telegram turn, and `push.ts`, when the question was raised at a screen
+   * the user has walked away from. They arrive milliseconds apart for a
+   * Telegram turn, so this is idempotent per question and chat rather than
+   * relying on either caller to know about the other.
+   */
+  ask(userId: number, question: QuestionPrompt): void;
+  /**
+   * Take a question's buttons away once it is over - answered here, answered
+   * in the web app, withdrawn or expired. What is left says which.
+   */
+  closeQuestion(id: string, reason: QuestionClosedReason, answer?: QuestionAnswer): void;
 }
 
 interface SenderQueue {
   depth: number;
   tail: Promise<void>;
+}
+
+/** One question, as it currently stands in one chat. */
+interface QuestionPost {
+  question: QuestionPrompt;
+  chatId: number;
+  /**
+   * Where this card came from. `turn`: the asking run is this chat's own
+   * turn, still holding this sender's queue - a typed line here must be
+   * intercepted as the answer or it queues behind the very turn it releases.
+   * `push`: the question was raised at another screen and the phone is only
+   * watching - an ordinary message in this chat is a new turn, and only a
+   * reply to the card itself counts as an answer.
+   */
+  origin: 'turn' | 'push';
+  /**
+   * The message the buttons sit under, so they can be rewritten when the
+   * question ends. Unset until the send comes back - a tap cannot arrive
+   * before that, because the buttons do not exist yet.
+   */
+  messageId?: number;
+  /** When it was drawn here: the newest one is the one a typed reply means. */
+  at: number;
 }
 
 /**
@@ -403,6 +569,18 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   /** Per chat, so two answers never race each other onto the wire. */
   const outbox = new Map<number, Promise<void>>();
   const idReplies = new Map<number, number>();
+  /**
+   * The questions standing on this phone, keyed by question *and* chat.
+   *
+   * One question can be drawn in several chats (push has a recipient list),
+   * and one chat can hold more than one at a time (a scheduled turn and a
+   * web turn can both stop to ask). So the key is the pair, the entry
+   * carries the message the buttons sit under, and an entry exists exactly
+   * as long as the question is worth answering from here: it is written when
+   * the question is drawn and deleted the moment it is answered, withdrawn
+   * or expired.
+   */
+  const questionPosts = new Map<string, QuestionPost>();
 
   const settings = (): TelegramGatewayConfig => context.config.gateways.telegram;
   // The config is the source: `loadConfig` has already let TELEGRAM_BOT_TOKEN
@@ -492,6 +670,117 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     void api?.setMessageReaction(chatId, messageId, emoji).catch((error: unknown) => {
       log.debug('Telegram reaction not accepted', { chatId, error: errorText(error) });
     });
+  }
+
+  /* ---------------------------- questions ---------------------------- */
+
+  /**
+   * The assistant asking the person something, carried to the phone.
+   *
+   * A turn that asks is a turn that has stopped, and until now this channel
+   * had no way to show that - the question was raised somewhere in core and
+   * the phone saw a typing bubble until the question gave up. Two things make
+   * it answerable from here: buttons, which are the second and last exception
+   * to this channel's "no buttons" rule (see
+   * `docs/concepts/telegram-channel.md`), and a plain typed reply, which is
+   * what a phone is actually good at.
+   *
+   * The typed path is the one with the trap in it. A message normally becomes
+   * a turn and turns are serialised per sender, so an answer typed while the
+   * asking turn is still running would queue up *behind the very turn it
+   * would release*, and both would sit there until the question expired. So a
+   * message that answers an open question never reaches the queue. A tap has
+   * the same property for free: a `callback_query` is not a message and never
+   * was queued.
+   */
+  const postKey = (questionId: string, chatId: number): string => questionId + '@' + String(chatId);
+
+  /** Is somebody being asked something in this chat right now? */
+  function openQuestion(chatId: number): QuestionPost | undefined {
+    let newest: QuestionPost | undefined;
+    for (const post of questionPosts.values()) {
+      if (post.chatId !== chatId) continue;
+      // Expired questions are cleaned up by the closing event, but a clock
+      // that has already passed the deadline is reason enough not to answer
+      // into it - core has moved the turn on by then.
+      if (post.question.expiresAt > 0 && post.question.expiresAt <= Date.now()) continue;
+      if (!newest || post.at > newest.at) newest = post;
+    }
+    return newest;
+  }
+
+  /** Draw the question in one chat, unless it is already standing there. */
+  function offerQuestion(chatId: number, question: QuestionPrompt, origin: 'turn' | 'push'): void {
+    const key = postKey(question.id, chatId);
+    // Claimed before anything is awaited: the turn that asked and the push
+    // listener both arrive within the same tick. A Telegram turn claims the
+    // post first, so the push that follows a heartbeat later does not
+    // overwrite where the card came from.
+    if (questionPosts.has(key)) return;
+    const post: QuestionPost = { question, chatId, origin, at: Date.now() };
+    questionPosts.set(key, post);
+
+    void chain(chatId, async () => {
+      const ids = await deliver(chatId, questionText(question), { keyboard: questionKeyboard(question) });
+      // The buttons sit under the last piece, so that is the message a
+      // closing event has to rewrite.
+      post.messageId = ids[ids.length - 1];
+    }).catch((error: unknown) => {
+      // Undrawn means unanswerable from here: dropping the entry lets a
+      // later attempt try again, and keeps a typed reply from being taken
+      // as the answer to a question nobody ever saw.
+      questionPosts.delete(key);
+      log.warn('Telegram question could not be delivered', { chatId, error: errorText(error) });
+    });
+  }
+
+  /** Rewrite one standing question's buttons to say how it ended. */
+  function settlePost(post: QuestionPost, reason: QuestionClosedReason | 'gone', answer?: QuestionAnswer): void {
+    const client = api;
+    if (!client || post.messageId === undefined) return;
+    const keyboard = questionClosedKeyboard(reason, chosenLabels(post.question, answer));
+    void client.editMessageReplyMarkup(post.chatId, post.messageId, keyboard).catch((error: unknown) => {
+      // A stale keyboard is a cosmetic loss; the answer itself was recorded
+      // by the registry long before this ran.
+      log.debug('Telegram question buttons could not be redrawn', { error: errorText(error) });
+    });
+  }
+
+  /**
+   * The question is over, wherever that happened. Every chat it was drawn in
+   * gets its buttons rewritten - including the ones that did not answer,
+   * which is the whole reason the closing event exists.
+   */
+  function closeQuestion(id: string, reason: QuestionClosedReason, answer?: QuestionAnswer): void {
+    for (const [key, post] of questionPosts) {
+      if (post.question.id !== id) continue;
+      questionPosts.delete(key);
+      settlePost(post, reason, answer);
+    }
+  }
+
+  /**
+   * Hand an answer to the registry that is holding the turn. `false` when
+   * the registry no longer has that question - answered at another screen, or
+   * given up on - which is normal rather than an error.
+   *
+   * The entry is dropped first, so the closing event that follows finds
+   * nothing left to redraw here and this chat is not asked to rewrite the
+   * same buttons twice; Telegram answers a second identical edit with a 400.
+   */
+  function submitAnswer(post: QuestionPost, answer: QuestionAnswer): boolean {
+    questionPosts.delete(postKey(post.question.id, post.chatId));
+    const taken = context.assistant.questions.answer(post.question.id, answer);
+    settlePost(post, taken ? 'answered' : 'gone', taken ? answer : undefined);
+    if (taken) {
+      log.info('Question answered from Telegram', {
+        chat: post.chatId,
+        question: post.question.id,
+        selected: answer.selected,
+        free: answer.text !== undefined,
+      });
+    }
+    return taken;
   }
 
   /**
@@ -1216,6 +1505,10 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     turns.set(userId, turn);
 
     const typing = setInterval(() => {
+      // Not while the turn is waiting on an answer: a typing bubble over an
+      // open question claims the machine is busy when it is the person who
+      // is being waited for.
+      if (openQuestion(chatId)) return;
       void api?.sendChatAction(chatId, 'typing').catch(() => {});
     }, TYPING_INTERVAL_MS);
     typing.unref?.();
@@ -1306,6 +1599,15 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
           // simply never arrives.
           failed = true;
           say(chatId, `Error: ${event.message}`);
+        } else if (event.type === 'question') {
+          // The turn has stopped and is waiting on a person. Whatever the
+          // progress line last claimed it was doing, it is not doing that.
+          progress.clear();
+          // Idempotent: push may put the same question here in the same tick,
+          // because it cannot know this turn came from the phone.
+          offerQuestion(chatId, event, 'turn');
+        } else if (event.type === 'question-closed') {
+          closeQuestion(event.id, event.reason, event.answer);
         } else if (event.type === 'status' && Date.now() - openedAt >= FIRST_NOTE_MS) {
           // Only once the turn has been quiet long enough to worry about;
           // the line itself then rewrites at its own pace.
@@ -1405,6 +1707,36 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   };
 
   /**
+   * A tap on one of a question's options.
+   *
+   * The button is only trusted as far as the entry behind it: the index has
+   * to name an option of a question this chat is actually holding open. A
+   * question that has since been answered elsewhere, or expired, has no entry
+   * any more - and says so, rather than writing into a turn that has long
+   * since moved on.
+   */
+  async function answerFromTap(
+    questionId: string,
+    option: number,
+    chatId: number | undefined,
+    acknowledge: (text?: string) => Promise<void>,
+  ): Promise<void> {
+    const post = chatId === undefined ? undefined : questionPosts.get(postKey(questionId, chatId));
+    if (!post) {
+      await acknowledge('That question is no longer open.');
+      return;
+    }
+    const chosen = post.question.options[option];
+    if (!chosen) {
+      await acknowledge('That option is gone.');
+      return;
+    }
+
+    const taken = submitAnswer(post, { selected: [option], source: 'telegram', at: Date.now() });
+    await acknowledge(taken ? '✓ ' + oneLine(chosen.label, 60) : 'That question is no longer open.');
+  }
+
+  /**
    * A tapped button: the one gesture on Telegram that means "I have read
    * this", and the only one there can be.
    *
@@ -1442,19 +1774,34 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       return;
     }
 
-    if (data === MAIL_READ_SPENT) {
+    // What the tap meant, read back through the one vocabulary in core. The
+    // data is never believed because of what it says - the guard above has
+    // already proved who pressed it.
+    const action = readCallbackData(data);
+
+    if (action.kind === 'mail-read-done') {
       await acknowledge('Already marked as read.');
       return;
     }
 
-    if (!data?.startsWith(MAIL_READ_PREFIX)) {
+    if (action.kind === 'question-done') {
+      await acknowledge('That question is already settled.');
+      return;
+    }
+
+    if (action.kind === 'question') {
+      await answerFromTap(action.questionId, action.option, chatId, acknowledge);
+      return;
+    }
+
+    if (action.kind !== 'mail-read') {
       // A button from an older version of this code, or one we no longer
       // draw. Saying so beats leaving the phone to guess.
       await acknowledge('This button no longer does anything.');
       return;
     }
 
-    const mailId = data.slice(MAIL_READ_PREFIX.length);
+    const mailId = action.mailId;
     const store = context.assistant.store.org;
     const mail = mailId ? store.getMail(mailId) : null;
     if (!mail) {
@@ -1559,6 +1906,43 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     // rather than asserted - nothing here narrows foreign input by claim.
     const { userId, chatId } = verdict;
     if (userId === undefined || chatId === undefined) return;
+
+    // A question is standing in this chat, so a written message may be its
+    // answer and not a new turn.
+    //
+    // This is the branch the whole typed path depends on. Turns are
+    // serialised per sender, and the turn that asked is still holding that
+    // queue while it waits - so an answer that went in as a turn would be
+    // queued behind the very turn it releases, and the two would deadlock
+    // until the question expired. A tap never had this problem: a
+    // `callback_query` is not a message and bypasses the queue by nature.
+    //
+    // But "the turn that asked" is the condition, not "a question exists
+    // somewhere". A card the phone only received as a push - the question
+    // came from a browser tab - leaves an ordinary message alone: swallowing
+    // it would eat the user's next request and hand the blocked turn an
+    // answer nobody gave. Such a card is answered by its buttons, or by a
+    // reply addressed to the card itself.
+    //
+    // Only plain text, though. A photo is content in its own right, and
+    // "here, look at this" is a new turn even mid-question.
+    const candidate = (verdict.text ?? '').trim() && (verdict.attachments ?? []).length === 0 ? openQuestion(chatId) : undefined;
+    const asked =
+      candidate &&
+      (candidate.origin === 'turn' ||
+        (verdict.replyTo?.fromBot === true && verdict.replyTo.messageId === candidate.messageId))
+        ? candidate
+        : undefined;
+    if (asked) {
+      if (submitAnswer(asked, readTypedAnswer(verdict.text ?? '', asked.question))) {
+        // No message back: the reaction says it arrived, and the turn that
+        // was waiting is about to say the rest.
+        react(chatId, verdict.messageId, REACTION.done);
+        return;
+      }
+      // The question was already over by the time this got here. Then it was
+      // never an answer, and it goes on as what it looks like: a message.
+    }
 
     const job: Incoming = {
       userId,
@@ -1894,6 +2278,23 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         ids = await deliver(userId, text, options);
       });
       return ids;
+    },
+
+    /**
+     * A question, put where somebody can answer it. The chat id of a private
+     * chat is the user id, so there is nothing to look up.
+     *
+     * Nothing is returned and nothing is awaited: whether this phone answers
+     * is the person's business, and the turn waiting on it is held by the
+     * registry in core, not by this call.
+     */
+    ask(userId: number, question: QuestionPrompt): void {
+      if (!running) return;
+      offerQuestion(userId, question, 'push');
+    },
+
+    closeQuestion(id: string, reason: QuestionClosedReason, answer?: QuestionAnswer): void {
+      closeQuestion(id, reason, answer);
     },
   };
 }

@@ -21,7 +21,9 @@ import { InputBox } from '../dist/tui/components/InputBox.js';
 import { SlashPalette } from '../dist/tui/components/SlashPalette.js';
 import { Scrollback } from '../dist/tui/components/Scrollback.js';
 import { AssignmentsView } from '../dist/tui/components/AssignmentsView.js';
+import { QuestionView } from '../dist/tui/components/QuestionView.js';
 import { WatchView } from '../dist/tui/components/WatchView.js';
+import { parseAnswer } from '../dist/repl.js';
 import { SLASH_COMMANDS, commandWord } from '../dist/tui/hooks/useSlash.js';
 import { applyEvent, LiveBlocks, toEntries } from '../dist/tui/hooks/useTurn.js';
 import { foldWatchEvent } from '../dist/tui/hooks/useWatch.js';
@@ -651,6 +653,129 @@ const watchEmpty = renderToString(
 
 show('WatchView - nothing streamed', watchEmpty);
 expect(watchEmpty, 'no live output', 'the empty watch explains itself rather than sitting blank');
+
+/* ------------------------------ the question ----------------------------- */
+
+const NOW = Date.now();
+
+/** One `question` event, exactly as core sends it. */
+const questionEvent = {
+  type: 'question',
+  id: 'q1',
+  header: 'Deploy target',
+  question: 'Which environment should this release go to?',
+  options: [
+    { label: 'staging', description: 'safe, nobody is on it' },
+    { label: 'production', description: 'the live site' },
+  ],
+  multiSelect: false,
+  expiresAt: NOW + 9 * 60_000,
+};
+
+const questionSingle = renderToString(
+  themed(h(QuestionView, { question: questionEvent, now: NOW, onAnswer: () => {} })),
+  { columns: COLUMNS },
+);
+
+show('QuestionView - a single-choice question', questionSingle);
+expect(questionSingle, 'Deploy target', 'the header names what is being decided');
+expect(questionSingle, 'Which environment should this release go to?', 'the question itself');
+expect(questionSingle, 'staging', 'first option');
+expect(questionSingle, 'safe, nobody is on it', 'the option description rides its label');
+expect(questionSingle, '9m left', 'how long the turn keeps waiting');
+expect(questionSingle, 'Enter answers', 'how to answer');
+expect(questionSingle, 'Esc skips', 'how to decline');
+refute(questionSingle, 'Space picks', 'a single-choice question does not offer Space');
+
+const questionMulti = renderToString(
+  themed(
+    h(QuestionView, {
+      question: { ...questionEvent, id: 'q2', multiSelect: true, expiresAt: NOW + 40_000 },
+      now: NOW,
+      onAnswer: () => {},
+    }),
+  ),
+  { columns: COLUMNS },
+);
+
+show('QuestionView - several answers allowed', questionMulti);
+expect(questionMulti, 'Space picks', 'a multi-select says how to pick more than one');
+expect(questionMulti, '40s left', 'under a minute counts in seconds');
+
+/* The reducer: a question opens the surface and the close takes it away. */
+const asking = {
+  current: {
+    busy: true,
+    text: '',
+    activities: [],
+    blocks: new LiveBlocks(),
+    assignments: null,
+    question: null,
+    label: 'thinking',
+    startedAt: NOW,
+  },
+};
+const askNotes = [];
+const askNote = (icon, text) => askNotes.push(icon + ' ' + text);
+
+applyEvent(asking, questionEvent, false, askNote);
+check(asking.current.question?.id === 'q1', 'a question opens the surface', String(asking.current.question?.id));
+check(
+  askNotes.some((line) => line.includes('Deploy target')),
+  'the transcript keeps what was asked',
+  JSON.stringify(askNotes),
+);
+
+applyEvent(
+  asking,
+  { type: 'question-closed', id: 'q1', reason: 'answered', answer: { selected: [1] } },
+  false,
+  askNote,
+);
+check(asking.current.question === null, 'the close takes the surface away', String(asking.current.question));
+check(
+  askNotes.some((line) => line.includes('answered production')),
+  'the outcome resolves back to the label the person saw',
+  JSON.stringify(askNotes),
+);
+
+/* A close for some other question must not clear the one on screen. */
+applyEvent(asking, { ...questionEvent, id: 'q3' }, false, askNote);
+applyEvent(asking, { type: 'question-closed', id: 'q-other', reason: 'expired' }, false, askNote);
+check(
+  asking.current.question?.id === 'q3',
+  'a close for another id leaves this question standing',
+  String(asking.current.question?.id),
+);
+
+/* ---------------------- the plain REPL's answer parser ------------------- */
+
+check(
+  JSON.stringify(parseAnswer('2', 3, false)) === JSON.stringify({ selected: [1] }),
+  'a number picks the option with that ordinal',
+  JSON.stringify(parseAnswer('2', 3, false)),
+);
+check(
+  JSON.stringify(parseAnswer('3 1', 3, true)) === JSON.stringify({ selected: [0, 2] }),
+  'a multi-select takes several numbers, in offer order',
+  JSON.stringify(parseAnswer('3 1', 3, true)),
+);
+check(
+  JSON.stringify(parseAnswer('3 1', 3, false)) === JSON.stringify({ selected: [2] }),
+  'a single-choice question takes the first number and ignores the rest',
+  JSON.stringify(parseAnswer('3 1', 3, false)),
+);
+check(
+  parseAnswer('neither, use the sandbox', 3, false)?.text === 'neither, use the sandbox',
+  'anything that is not an option index is a free answer',
+  JSON.stringify(parseAnswer('neither, use the sandbox', 3, false)),
+);
+check(
+  parseAnswer('9', 3, false)?.text === '9',
+  'a number outside the list is text, not an out-of-range pick',
+  JSON.stringify(parseAnswer('9', 3, false)),
+);
+check(parseAnswer('   ', 3, false) === null, 'a blank line declines rather than answering', 'null');
 
 /* --------------------- the watch fold's provider seam -------------------- */
 

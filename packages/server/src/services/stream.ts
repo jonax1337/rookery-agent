@@ -109,6 +109,14 @@ export type ServerFrame =
   | { type: 'cron'; event: AgentEvent }
   /** Broadcast: the memory started, advanced through or finished a night. */
   | { type: 'sleep'; event: AgentEvent }
+  /**
+   * Broadcast: the assistant asked something and a turn is waiting. It goes
+   * to every open connection, not only the one that started the turn - the
+   * person may well be at a different screen by now.
+   */
+  | { type: 'question'; event: AgentEvent }
+  /** Broadcast: that question is over, so every surface drops the card. */
+  | { type: 'question-closed'; event: AgentEvent }
   /** Broadcast: an agent, team or project was created or edited. */
   | { type: 'changed'; change: { kind: string; id: string } }
   | { type: 'pong' }

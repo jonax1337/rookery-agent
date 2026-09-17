@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { TurnBlocks } from '../lib/blocks';
-import type { RookerySocket } from '../lib/socket';
+import type { QuestionEvent, RookerySocket } from '../lib/socket';
 import type {
   ActivityItem,
   AgentEvent,
@@ -34,6 +34,57 @@ export function prettyToolName(name: string): string {
   return match ? match[1] + ' · ' + match[2] : name;
 }
 
+/** What an answer carries back: chosen option indices and a free text. */
+export interface QuestionReply {
+  selected: number[];
+  text?: string;
+}
+
+/**
+ * Merge one asked question into the open list, by id.
+ *
+ * The same question reaches a client that started the turn twice - once on
+ * the turn's own stream, once as the broadcast every connection gets - and a
+ * reload adds a third copy from `GET /api/questions`. Merging by id keeps
+ * exactly one card per question; the newest copy wins, so a re-broadcast with
+ * a later `expiresAt` moves the deadline instead of adding a row.
+ */
+export function mergeQuestion(current: QuestionEvent[], event: QuestionEvent): QuestionEvent[] {
+  const index = current.findIndex((entry) => entry.id === event.id);
+  if (index === -1) return [...current, event];
+  const next = [...current];
+  next[index] = event;
+  return next;
+}
+
+/** A row from `GET /api/questions` is only usable if it has what a card needs. */
+function isQuestion(value: unknown): value is QuestionEvent {
+  if (typeof value !== 'object' || value === null) return false;
+  const row = value as Partial<QuestionEvent>;
+  return typeof row.id === 'string' && typeof row.question === 'string' && Array.isArray(row.options);
+}
+
+/**
+ * The questions still waiting for an answer.
+ *
+ * A reload loses every frame that was sent before it, so the card has to come
+ * back over REST - and a late listener (a second window, a phone that just
+ * woke up) needs the same list. Answered from either shape the route may
+ * take, a bare array or `{ questions }`, and `type` is filled in because the
+ * stored question is a request, not an event.
+ */
+export async function fetchOpenQuestions(): Promise<QuestionEvent[]> {
+  const response = await fetch('/api/questions');
+  if (!response.ok) throw new Error('Open questions could not be loaded.');
+  const body: unknown = await response.json();
+  const rows: unknown[] = Array.isArray(body)
+    ? body
+    : Array.isArray((body as { questions?: unknown }).questions)
+      ? ((body as { questions: unknown[] }).questions)
+      : [];
+  return rows.filter(isQuestion).map((row) => ({ ...row, type: 'question' as const }));
+}
+
 export interface ChatState {
   messages: Message[];
   streaming: string;
@@ -56,9 +107,28 @@ export interface ChatState {
   tasks: Task[];
   /** Newest subscription usage the provider reported mid-turn, if any. */
   quota: ProviderQuota | null;
+  /**
+   * Questions waiting for a human answer, oldest first. They are not part of
+   * the turn: one may well come from a turn another window or the phone
+   * started, and a turn that asked stays `busy` while it waits.
+   */
+  questions: QuestionEvent[];
   error: string | null;
   send(payload: ChatPayload, options?: { onSpoken?(text: string): void }): void;
   sendAssign(payload: AssignPayload): void;
+  /**
+   * Show a question that did not arrive on this turn's stream - the broadcast
+   * every connection gets, or the reload's `GET /api/questions`.
+   */
+  openQuestion(event: QuestionEvent): void;
+  /** Take one away again, whoever answered it and wherever. */
+  closeQuestion(id: string): void;
+  /**
+   * Answer one. Resolves once the answer is on its way - over the socket, or
+   * over REST when the socket is down - and rejects if neither got through,
+   * so the card can stay and say so instead of vanishing into nothing.
+   */
+  answerQuestion(id: string, reply: QuestionReply): Promise<void>;
   abort(): void;
   setMessages(messages: Message[]): void;
   reset(): void;
@@ -91,6 +161,7 @@ export function useChat(
   const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [quota, setQuota] = useState<ProviderQuota | null>(null);
+  const [questions, setQuestions] = useState<QuestionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const turnRef = useRef<string | null>(null);
@@ -221,6 +292,22 @@ export function useChat(
         case 'quota':
           setQuota(event.quota);
           break;
+
+        case 'question': {
+          // `busy` stays true on purpose: the turn has not finished, it is
+          // standing still in front of the question until someone answers.
+          const asked = event;
+          setQuestions((current) => mergeQuestion(current, asked));
+          break;
+        }
+
+        case 'question-closed': {
+          // Answered here, on the phone, or run out of time - either way the
+          // turn moved on and the card has nothing left to collect.
+          const closed = event;
+          setQuestions((current) => current.filter((entry) => entry.id !== closed.id));
+          break;
+        }
 
         case 'memory':
           if (event.action === 'recalled' && event.items) {
@@ -385,6 +472,37 @@ export function useChat(
     [beginTurn, finish, handleEvent, sessionId, socket],
   );
 
+  const openQuestion = useCallback((event: QuestionEvent) => {
+    setQuestions((current) => mergeQuestion(current, event));
+  }, []);
+
+  const closeQuestion = useCallback((id: string) => {
+    setQuestions((current) => current.filter((entry) => entry.id !== id));
+  }, []);
+
+  const answerQuestion = useCallback<ChatState['answerQuestion']>(
+    async (id, reply) => {
+      const text = reply.text?.trim();
+      const body = { selected: reply.selected, ...(text ? { text } : {}) };
+      // The socket is the short way: the server is already holding the tool
+      // call open on the other end of it. A closed socket is no reason to
+      // lose a typed answer, so the REST route carries it instead - it is the
+      // same door the phone and any SSE client use.
+      if (!socket.answer(id, body)) {
+        const response = await fetch('/api/questions/' + encodeURIComponent(id) + '/answer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!response.ok) throw new Error('The answer could not be delivered.');
+      }
+      // Sent is enough to take the card away; `question-closed` follows and
+      // removes it everywhere else too.
+      setQuestions((current) => current.filter((entry) => entry.id !== id));
+    },
+    [socket],
+  );
+
   const abort = useCallback(() => {
     if (turnRef.current) socket.abort(turnRef.current);
     // Keep whatever text already arrived rather than discarding the turn.
@@ -432,9 +550,16 @@ export function useChat(
     agentMessages,
     tasks,
     quota,
+    // Questions outlive the conversation they were asked in: `reset` does not
+    // clear them, because the turn waiting on one may have been started
+    // somewhere else entirely. They go when they are closed or expire.
+    questions,
     error,
     send,
     sendAssign,
+    openQuestion,
+    closeQuestion,
+    answerQuestion,
     abort,
     setMessages,
     reset,

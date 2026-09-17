@@ -182,8 +182,16 @@ export const DEFAULT_CONFIG: RookeryConfig = {
   // windows lag a little behind the turns that fill them.
   providerFallback: { enabled: true, thresholdPercent: 95, order: [] },
   // Looking is free and always on; what is found stays out of the way until
-  // a person switches it on. See `ExternalConfig`.
-  external: { enabled: true, skillSources: {}, servers: {} },
+  // a person switches it on. See `ExternalConfig`. The three newer shelves -
+  // subagents, hook sets, whole plugins - start empty, which means off: a
+  // subagent carries its own prompt into a turn, a hook set carries command
+  // lines around every tool call, and neither arrives without a click.
+  external: { enabled: true, skillSources: {}, servers: {}, agents: {}, hooks: {}, plugins: {} },
+  // Ten minutes. Long enough to walk away from the desk and come back, short
+  // enough that a forgotten question does not hold a provider process open -
+  // and far under Claude Code's own six-hour MCP tool timeout, which is what
+  // the waiting call is actually sitting in.
+  questions: { timeoutMs: 10 * 60 * 1000 },
   skillsDir: join(DEFAULT_HOME, 'skills'),
 };
 

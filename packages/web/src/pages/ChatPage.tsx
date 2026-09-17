@@ -11,6 +11,7 @@ import {
 } from "@/components/icons";
 import { toast } from 'sonner';
 
+import { fetchOpenQuestions } from '@/hooks/useChat';
 import { api, ApiError } from '@/lib/api';
 import { failureMessage, reportFailure } from '@/lib/errors';
 import { greeting, NO_PROJECT, UNTITLED_SESSION } from '@/lib/format';
@@ -33,6 +34,7 @@ import { EmptyState, EmptyStateGreeting } from '@/components/assistant-ui/elemen
 import { useCancelAssignment } from '@/components/common/entity-actions';
 import { AssignmentTerminal } from '@/components/common/assignment-terminal';
 import { LiveRunList } from '@/components/common/live-run-list';
+import { QuestionCard } from '@/components/common/question-card';
 import { RowMenuButton } from '@/components/common/row-menu-button';
 import { collectErrors, FormField } from '@/components/forms/form-kit';
 
@@ -198,6 +200,47 @@ export function ChatPage() {
     };
   }, [activeId, dropActiveThread, navigate, refreshThreads, resetTranscript, socket]);
 
+  /* ------------------------------ questions ------------------------------- */
+
+  // A question belongs to no one conversation. The turn waiting on it may
+  // have been started in another window or on the phone, so it arrives as a
+  // broadcast beside the turn's own stream, and answering it here is what
+  // lets that turn carry on.
+  //
+  // A reload has missed every frame sent before it, which is what
+  // `GET /api/questions` is for. It runs again on each reconnect: a socket
+  // that was away may have missed the question outright, and one that was
+  // never open has nothing to have missed.
+  const openQuestion = chat.openQuestion;
+  const closeQuestion = chat.closeQuestion;
+  React.useEffect(() => {
+    let disposed = false;
+    const load = (): void => {
+      void fetchOpenQuestions()
+        .then((open) => {
+          if (disposed) return;
+          for (const question of open) openQuestion(question);
+        })
+        .catch(() => {
+          // An unreachable server says so loudly enough elsewhere, and a
+          // failed load means only that no card appears.
+        });
+    };
+    // `onStatus` reports the current status straight away, so an open socket
+    // loads at once and every later reconnect loads again.
+    const stopStatus = socket.onStatus((status) => {
+      if (status === 'open') load();
+    });
+    const stopQuestion = socket.onQuestion(openQuestion);
+    const stopClosed = socket.onQuestionClosed((event) => closeQuestion(event.id));
+    return () => {
+      disposed = true;
+      stopStatus();
+      stopQuestion();
+      stopClosed();
+    };
+  }, [closeQuestion, openQuestion, socket]);
+
   /* -------------------------------- meta --------------------------------- */
 
   // Without an open conversation there is nothing to rename, reset or delete,
@@ -319,6 +362,25 @@ export function ChatPage() {
     <div className="flex min-h-0 flex-1 flex-col">
       {dialog}
       {cancelDialog}
+
+      {/* Inline, in the page's own band above the thread - never a modal.
+          AGENTS.md wants real surfaces, and a dialog would lock the whole app
+          for as long as a turn waits, which may be minutes. The band is the
+          one place this page can put a surface that is always in view: the
+          composer itself lives inside `thread.aui.tsx`, which has no slot
+          above its input. */}
+      {chat.questions.length > 0 && (
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pt-4">
+          {chat.questions.map((question) => (
+            <QuestionCard
+              key={question.id}
+              question={question}
+              onAnswer={(reply) => chat.answerQuestion(question.id, reply)}
+              onExpire={() => chat.closeQuestion(question.id)}
+            />
+          ))}
+        </div>
+      )}
 
       {chat.assignments.length > 0 && (
         <div className="mx-auto w-full max-w-3xl px-4 pt-4">

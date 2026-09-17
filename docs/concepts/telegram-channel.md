@@ -28,10 +28,22 @@ Nicht-Ziel: ein Mehrbenutzer-Bot. Nicht-Ziel: ein zweites Bedienkonzept mit Knoe
 Inline-Tastaturen – der Kanal ist ein Chat, nichts weiter. Nicht-Ziel: Webhooks und damit ein
 oeffentlich erreichbarer Rookery-Port.
 
-Von dem Nicht-Ziel "keine Knoepfe" gibt es genau eine Ausnahme, und sie steht hier, damit sie nicht
-unbemerkt zur Regel wird: die Gelesen-Quittung unter einer Mail (7.5). Sie ist kein Bedienkonzept,
-sondern der Ersatz fuer etwas, das die Bot-API nicht hat – ein Bot erfaehrt nie, dass seine
-Nachricht gelesen wurde. Alles andere bleibt Text.
+Von dem Nicht-Ziel "keine Knoepfe" gibt es genau zwei Ausnahmen, und sie stehen hier, damit sie
+nicht unbemerkt zur Regel werden.
+
+Die erste ist die Gelesen-Quittung unter einer Mail (7.5). Sie ist kein Bedienkonzept, sondern der
+Ersatz fuer etwas, das die Bot-API nicht hat – ein Bot erfaehrt nie, dass seine Nachricht gelesen
+wurde.
+
+Die zweite ist die Rueckfrage des Assistenten (7.6). Auch sie ist kein zweites Bedienkonzept: die
+Frage selbst steht als Text da, sie laesst sich mit einer gewoehnlichen Nachricht beantworten, und
+die Knoepfe sind nur die schnelle Fassung derselben Antwort. Sie sind aus einem technischen Grund da
+und nicht aus einem gestalterischen: Ein Tastendruck ist ein `callback_query` und umgeht damit die
+serielle Warteschlange pro Absender, waehrend eine Nachricht sie durchlaufen muesste – und in der
+Warteschlange steht genau der Turn, der auf die Antwort wartet. Die getippte Antwort kommt deshalb
+ueber einen eigenen Sonderfall an der Warteschlange vorbei (6.8); der Knopf braucht ihn nicht.
+
+Alles andere bleibt Text.
 
 ## 2. Befund: was heute da ist
 
@@ -484,6 +496,24 @@ die einzige Ausnahme vom stillen Verwerfen: Ohne sie kommt man beim Einrichten n
 Nummer, und die Antwort verraet nichts, was der Absender nicht ohnehin weiss. Sie wird pro ID auf
 eine Antwort pro Stunde gedrosselt.
 
+### 6.8 Eine Antwort statt eines Turns
+
+Es gibt genau einen Fall, in dem eine angenommene Nachricht **keinen** Turn startet: Wenn in diesem
+Chat gerade eine Rueckfrage des Assistenten offen steht (7.6), ist der geschriebene Text die Antwort
+darauf und wird der Frage-Registratur zugestellt, statt in die Warteschlange zu gehen.
+
+Das ist keine Bequemlichkeit, sondern notwendig. Turns laufen seriell pro Absender, und der Turn,
+der die Frage gestellt hat, *haelt diese Warteschlange*, waehrend er wartet. Eine Antwort, die als
+gewoehnliche Nachricht eingereiht wuerde, stuende damit hinter genau dem Turn, den sie loesen soll –
+beide warten, bis die Frage abgelaufen ist. Ein Tastendruck hat das Problem nicht: ein
+`callback_query` ist keine Nachricht und war nie in der Warteschlange.
+
+Zwei Einschraenkungen, beide mit Absicht: Befehle werden vorher abgezweigt, damit `/stop` eine
+wartende Frage weiterhin abbrechen kann, und eine Nachricht mit Anhang bleibt ein Turn – ein Foto
+ist Inhalt und "schau dir das an" ist auch mitten in einer Frage eine neue Bitte. Quittiert wird die
+Antwort mit der 👍-Reaktion, nicht mit einer eigenen Nachricht: was zu sagen ist, sagt gleich der
+Turn, der weiterlaeuft.
+
 ## 7. Der ausgehende Weg: Push
 
 ### 7.1 Quellen
@@ -649,20 +679,53 @@ aufgeteilte Mail "gelesen" auf halber Strecke an.
 `allowed_updates` wird entsprechend um `callback_query` erweitert. Das ist die einzige Stelle, an der
 der Kanal ausser Nachrichten noch etwas entgegennimmt.
 
+### 7.6 Die Rueckfrage des Assistenten
+
+Nachgetragen 2026-09-17. Der Assistent kann mitten in einem Turn stehenbleiben und fragen
+(`ask_user`); der Turn wartet dann auf einen Menschen. Bis dahin sah das Handy davon nichts – es sah
+eine Tippanzeige, bis die Frage von selbst ablief. Die Frage ist ein Ereignis wie `mail` oder
+`cron`, also haengt sich `push.ts` daran, und zwar in der Meldungs- und nicht in der Kommentarspur
+(7.2): Eine Frage ist jemand, der schreibt, kein Mitschrieb dessen, was die Maschine gerade tut.
+
+Vier Dinge daran sind Absicht:
+
+- **Zwei Wege, dieselbe Frage.** Kommt der Turn selbst vom Handy, sieht ihn die Turn-Schleife in
+  `telegram.ts`; kommt er aus dem Web, aus einem Zeitplan oder von der Kommandozeile, sieht ihn nur
+  `push.ts`. Beide Wege rufen dieselbe Stelle, und die zeichnet eine Frage **hoechstens einmal pro
+  Chat** – sonst stuende sie bei einem Telegram-Turn doppelt da.
+- **Nicht aufschiebbar.** Ruhezeit und Stundenlimit halten fertige Auftraege bis zum Fruehstueck
+  zurueck; eine Frage laeuft ab. Sie geht deshalb sofort raus oder gar nicht, und zaehlt aus
+  demselben Grund nicht gegen das Kontingent, das die Mail schuetzt.
+- **Die Knoepfe sind die Abkuerzung, nicht die Bedienung.** Die Optionen stehen nummeriert im Text –
+  nur dort ist Platz fuer die Erlaeuterung einer Option – und dieselben Nummern stehen auf den
+  Knoepfen. "2" tippen und auf "2." druecken ist derselbe Vorgang; alles andere geht als freier Text
+  durch. Was oben in Abschnitt 1 als zweite Ausnahme vom Knopf-Nicht-Ziel steht, ist genau das.
+- **Das Ende der Frage steht auch da, wenn sie woanders beantwortet wurde.** Auf das
+  `question-closed`-Ereignis wird die Tastatur zu einer Aussage umgeschrieben: das gewaehlte Label,
+  "Keine Antwort rechtzeitig" oder "Zurueckgezogen". Ohne das laedt ein Chat zum Antworten auf etwas
+  ein, das im Browser laengst entschieden wurde – dieselbe Begruendung wie bei der Gelesen-Quittung,
+  nur in die andere Richtung.
+
+Die Vokabel auf dem Knopf (`question:<id>:<index>`) liegt wie die der Gelesen-Quittung in
+`policy.ts` und wird dort auch wieder gelesen: Ein Praefix, der im Transport gebaut und in der
+Politik geparst wird, laeuft beim ersten Umbau auseinander. Geglaubt wird der Knopf ohnehin nicht,
+weil er etwas behauptet, sondern weil die Wache vorher bewiesen hat, wer gedrueckt hat – und weil
+die Frage im Chat des Druckenden ueberhaupt noch offen steht.
+
 ## 8. Struktur
 
 | Datei | Art | Inhalt |
 |---|---|---|
-| `packages/core/src/gateway/policy.ts` | neu | Wache (4.1) fuer Nachrichten *und* Knopfdruecke, Aufteilung langer Nachrichten, Ruhezeit-Fenster, Push-Empfaenger – reine Entscheidungslogik ohne HTTP (Abschnitt 3) |
+| `packages/core/src/gateway/policy.ts` | neu | Wache (4.1) fuer Nachrichten *und* Knopfdruecke, die Vokabel auf den Knoepfen samt Rueckweg (7.5, 7.6), Aufteilung langer Nachrichten, Ruhezeit-Fenster, Push-Empfaenger – reine Entscheidungslogik ohne HTTP (Abschnitt 3) |
 | `packages/core/test/gateway.test.js` | neu | Tests fuer `policy.ts` |
 | `packages/core/src/types.ts` | geaendert | `GatewayId`, `GatewaysConfig`, `TelegramGatewayConfig`, `TelegramPushConfig`, `NotifyEvent` |
 | `packages/core/src/config.ts` | geaendert | Defaults unter `gateways.telegram`; `TELEGRAM_BOT_TOKEN` als vorrangige Quelle in `envOverrides` |
 | `packages/core/src/memory/store.ts` | geaendert | `getMeta` / `setMeta` |
 | `packages/core/src/org/tools.ts` | geaendert | `notify` |
 | `packages/core/src/org/controller.ts` | geaendert | Handler fuer `notify`, emittiert das Ereignis |
-| `packages/server/src/gateways/telegram.ts` | neu | Poller, Aufruf der Wache aus `policy.ts`, Turn-Bruecke, Versand, Gelesen-Quittung (7.5) |
+| `packages/server/src/gateways/telegram.ts` | neu | Poller, Aufruf der Wache aus `policy.ts`, Turn-Bruecke, Versand, Gelesen-Quittung (7.5), offene Rueckfragen samt getippter Antwort an der Warteschlange vorbei (6.8, 7.6) |
 | `packages/server/src/gateways/telegram-api.ts` | neu | Duenne Huelle um `api.telegram.org` mit Timeout, Backoff und Token-Maskierung; Inline-Tastatur, `answerCallbackQuery`, `editMessageReplyMarkup` (7.5) |
-| `packages/server/src/gateways/push.ts` | neu | Ereignis-Abonnent, Ruhezeiten, Drosselung, Zusammenfassung; vermerkt zu jeder Meldung ihre Herkunft (6.5) und haengt an eine Mail den Gelesen-Knopf (7.5) |
+| `packages/server/src/gateways/push.ts` | neu | Ereignis-Abonnent, Ruhezeiten, Drosselung, Zusammenfassung; vermerkt zu jeder Meldung ihre Herkunft (6.5), haengt an eine Mail den Gelesen-Knopf (7.5) und traegt Rueckfragen aus fremden Turns ungepuffert weiter (7.6) |
 | `packages/server/src/gateways/markdown.ts` | neu | Markdown zu Telegrams HTML-Dialekt; balanciert auch auf halbem Text (6.3) |
 | `packages/server/src/gateways/attachments.ts` | neu | Ablage im Workspace-Posteingang, Endungen, Besen nach 30 Tagen (6.4) |
 | `packages/server/src/gateways/threads.ts` | neu | Herkunfts-Register, Nachrichten-Ledger, Faden pro Thema, Nachlesen des Originals aus dem Store (6.5) |

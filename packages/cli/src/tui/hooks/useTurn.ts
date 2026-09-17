@@ -46,6 +46,9 @@ const MAX_ACTIVITIES = 500;
 /** How much of a tool's argument summary is kept. Wrapping shows the rest. */
 const MAX_TOOL_DETAIL = 400;
 
+/** A question the assistant asked, exactly as core streamed it. */
+export type OpenQuestion = Extract<AgentEvent, { type: 'question' }>;
+
 export interface LiveTurn {
   busy: boolean;
   /** Streamed assistant text for the turn in flight. */
@@ -55,6 +58,12 @@ export interface LiveTurn {
   /** The ordered transcript: text, thinking, tools and notes interleaved. */
   blocks: LiveBlocks;
   assignments: AssignmentsState | null;
+  /**
+   * The question the turn is blocked on, while one is open. The turn keeps
+   * running - `busy` stays true - it is simply waiting for a person, so the
+   * app puts the answer surface where the input box normally sits.
+   */
+  question: OpenQuestion | null;
   /** Status-bar verb: 'thinking' or 'delegating'. */
   label: string;
   startedAt: number | null;
@@ -174,6 +183,7 @@ const IDLE: LiveTurn = {
   activities: [],
   blocks: new LiveBlocks(),
   assignments: null,
+  question: null,
   label: 'thinking',
   startedAt: null,
 };
@@ -254,6 +264,7 @@ export function useTurn({
         activities: [],
         blocks: new LiveBlocks(),
         assignments: null,
+        question: null,
         label: request.kind === 'assign' ? 'delegating' : 'thinking',
         startedAt: Date.now(),
       };
@@ -435,6 +446,30 @@ export function applyEvent(
       return;
     }
 
+    case 'question': {
+      // The surface below the scrollback is transient - it disappears the
+      // moment the question closes - so the transcript gets the question as a
+      // line of its own. What was asked is part of the conversation.
+      live.question = event;
+      pushActivity(glyph.prompt, shorten(event.header + ' ' + glyph.dot + ' ' + event.question, 90));
+      return;
+    }
+
+    case 'question-closed': {
+      // The option labels only exist on the question itself, so they are read
+      // off the open one before it is taken away. An answer that came in on
+      // another channel closes the card here too - that is what this event is
+      // for - and reads exactly like one given at this terminal.
+      const asked = live.question?.id === event.id ? live.question : null;
+      if (asked) live.question = null;
+      pushActivity(
+        event.reason === 'answered' ? glyph.ok : glyph.warn,
+        answerOutcome(event, asked),
+        event.reason === 'answered' ? ui.muted : ui.warn,
+      );
+      return;
+    }
+
     case 'error': {
       pushActivity(glyph.fail, event.message, ui.danger);
       return;
@@ -451,6 +486,28 @@ export function applyEvent(
     default:
       return;
   }
+}
+
+/**
+ * The one line a closed question leaves in the transcript.
+ *
+ * A question that was answered says what was chosen, resolved back to the
+ * labels the person actually saw; the indices alone would be unreadable a
+ * screen later. Everything else says why the turn stopped waiting.
+ */
+export function answerOutcome(
+  event: Extract<AgentEvent, { type: 'question-closed' }>,
+  asked: OpenQuestion | null,
+): string {
+  if (event.reason === 'expired') return 'no answer — the question expired';
+  if (event.reason === 'cancelled') return 'question cancelled';
+
+  const answer = event.answer;
+  const labels = (answer?.selected ?? []).map(
+    (index) => asked?.options[index]?.label ?? 'option ' + (index + 1),
+  );
+  if (answer?.text) labels.push(answer.text);
+  return labels.length ? 'answered ' + shorten(labels.join(', '), 80) : 'answered';
 }
 
 /**

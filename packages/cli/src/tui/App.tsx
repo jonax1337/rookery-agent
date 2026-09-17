@@ -47,6 +47,7 @@ import { InputBox } from './components/InputBox.js';
 import { SlashPalette } from './components/SlashPalette.js';
 import { StatusLine } from './components/StatusLine.js';
 import { AssignmentsView } from './components/AssignmentsView.js';
+import { QuestionView } from './components/QuestionView.js';
 import { WatchView } from './components/WatchView.js';
 import { inkUiTheme } from './inkTheme.js';
 import { useColumns } from './hooks/useColumns.js';
@@ -103,6 +104,10 @@ export function App({
   const [cursor, setCursor] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const [watch, setWatch] = useState<{ assignmentId: string } | null>(null);
+  // The question this terminal has already acted on. Core closes the card by
+  // streaming `question-closed`, but the surface must go the instant the key
+  // is pressed - waiting a round trip, however short, invites a second answer.
+  const [settled, setSettled] = useState<string | null>(null);
   const [frame, setFrame] = useState(0);
   const [now, setNow] = useState(() => Date.now());
 
@@ -290,9 +295,81 @@ export function App({
     setBuffer(value, value.length);
   }, [setBuffer, slash.active]);
 
+  /* ----------------------------- questions ---------------------------- */
+
+  /*
+   * The CLI holds the assistant in its own process, so answering is a direct
+   * call into the registry the waiting tool is parked on - no socket, no
+   * route, nothing that could be offline while the turn is not.
+   *
+   * A watch already owns the screen below the scrollback, so a question that
+   * lands while one is open waits behind it: Esc closes the watch and the
+   * card is there, still counting down.
+   */
+  const question = !watch && turn.question && turn.question.id !== settled ? turn.question : null;
+
+  const closeQuestion = useCallback(
+    (act: (id: string) => boolean) => {
+      const open = turnRef.current.question;
+      if (!open) return;
+      setSettled(open.id);
+      // The registry says whether the id was still open. A `false` means the
+      // question was settled somewhere else - the phone, a timeout - between
+      // the keystroke and this call. Nothing is broken: the turn already has
+      // its answer, so the card goes away and one dim line says why.
+      if (act(open.id)) return;
+      append([
+        {
+          kind: 'activity',
+          id: nextId(),
+          icon: glyph.warn,
+          text: 'That question was already answered elsewhere',
+        },
+      ]);
+    },
+    [append, nextId],
+  );
+
+  const answerQuestion = useCallback(
+    (selected: number[]) => {
+      closeQuestion((id) =>
+        assistant.questions.answer(id, { selected, source: 'tui', at: Date.now() }),
+      );
+    },
+    [assistant, closeQuestion],
+  );
+
+  const skipQuestion = useCallback(() => {
+    closeQuestion((id) => assistant.questions.cancel(id, 'cancelled'));
+  }, [assistant, closeQuestion]);
+
   /* ------------------------------ keymap ------------------------------ */
 
   useInput((input, key) => {
+    if (question) {
+      // The question owns the space the input box normally has. Arrows, Space
+      // and Enter belong to the picker underneath, which reads the keyboard
+      // itself, so they are deliberately not handled here; everything else is
+      // held back so typing cannot reach a prompt that is not on screen.
+      if (key.escape) {
+        skipQuestion();
+        return;
+      }
+      if (key.ctrl && input === 'c') {
+        // Interrupting the turn ends the question with it: core cancels the
+        // pending ask off the turn's own abort signal.
+        turnRef.current.abort();
+        speechRef.current?.abort();
+        stopSpeaking();
+        return;
+      }
+      if (key.ctrl && input === 'd') {
+        leave();
+        return;
+      }
+      return;
+    }
+
     if (watch) {
       // The watch owns the space below the scrollback: Esc and Ctrl+C leave
       // only the watch, Ctrl+D still leaves the app, everything else is held
@@ -547,12 +624,19 @@ export function App({
           {...(session.sessionId ? { sessionId: session.sessionId } : {})}
           busy={Boolean(watch) || turn.busy}
           elapsedMs={watch ? watchElapsedMs : elapsedMs}
-          label={watch ? 'watching' : turn.label}
+          // A blocked turn is not thinking. Saying so is the difference
+          // between a slow answer and one that will never come on its own.
+          label={watch ? 'watching' : question ? 'waiting for you' : turn.label}
           voice={session.voice}
           verbose={session.verbose}
           columns={columns}
         />
-        {watch ? null : (
+        {watch ? null : question ? (
+          /* An open question takes the input box's place, the way the watch
+           * takes the live region's: there is nothing useful to type at a
+           * turn that is waiting for exactly one of these answers. */
+          <QuestionView question={question} now={now} onAnswer={answerQuestion} />
+        ) : (
           <>
             <InputBox
               value={draft}

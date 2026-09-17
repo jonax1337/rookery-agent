@@ -4,9 +4,12 @@ import { join, resolve } from 'node:path';
 import { claudeHome, EXTERNAL_KIND, EXTERNAL_LABEL, readJsonFile } from './homes.js';
 import {
   EMPTY_SCAN,
+  readHookSet,
+  scanAgents,
   scanSkills,
-  skillSource,
   toExternalServer,
+  type ExternalAgentRef,
+  type ExternalHookSet,
   type ExternalMcpServer,
   type ExternalScan,
   type ExternalSkillRef,
@@ -20,7 +23,8 @@ import {
  * Four files carry it. `skills/` is the person's own shelf. `settings.json`
  * says which plugins are switched on, `plugins/installed_plugins.json` says
  * where each one was unpacked - a plugin brings its own `skills/` folder and
- * may bring an `.mcp.json`. And `.claude.json` holds the MCP servers the
+ * may bring an `.mcp.json`, an `agents/` folder of subagent types and a
+ * `hooks/hooks.json`. And `.claude.json` holds the MCP servers the
  * person added with `claude mcp add`, both the ones that count everywhere
  * and the ones kept under a single project path.
  */
@@ -76,27 +80,42 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
   const sources: ExternalSource[] = [];
   const skills: ExternalSkillRef[] = [];
   const servers: ExternalMcpServer[] = [];
+  const agents: ExternalAgentRef[] = [];
+  const hooks: ExternalHookSet[] = [];
 
-  const collect = (source: Omit<ExternalSource, 'skillCount'>): void => {
-    const found = scanSkills(source.dir, source.id);
-    const entry = skillSource(source, found);
-    if (!entry) return;
-    sources.push(entry);
-    skills.push(...found);
+  /**
+   * One shelf: its skills, its subagent types, its hook set. The source is
+   * listed when it holds any of the three - a plugin can ship seventy agents
+   * and no skill at all, and a shelf that is not listed has no switch.
+   */
+  const collect = (source: Omit<ExternalSource, 'skillCount'>, root: string): void => {
+    const foundSkills = scanSkills(source.dir, source.id);
+    const foundAgents = scanAgents(join(root, 'agents'), source.id);
+    const foundHooks = readHookSet(join(root, 'hooks'), source.id);
+    if (!foundSkills.length && !foundAgents.length && !foundHooks) return;
+    sources.push({ ...source, skillCount: foundSkills.length });
+    skills.push(...foundSkills);
+    agents.push(...foundAgents);
+    if (foundHooks) hooks.push(foundHooks);
   };
 
-  collect({ id: kind + ':home', label, origin: 'home', dir: join(dir, 'skills') });
+  collect({ id: kind + ':home', label, origin: 'home', dir: join(dir, 'skills') }, dir);
 
   for (const plugin of enabledPlugins(dir)) {
     const sourceId = kind + ':plugin/' + plugin.key;
     const pluginLabel = label + ' - ' + (plugin.key.split('@')[0] ?? plugin.key);
-    collect({
-      id: sourceId,
-      label: pluginLabel,
-      origin: 'plugin',
-      plugin: plugin.key,
-      dir: join(plugin.path, 'skills'),
-    });
+    collect(
+      {
+        id: sourceId,
+        label: pluginLabel,
+        origin: 'plugin',
+        plugin: plugin.key,
+        dir: join(plugin.path, 'skills'),
+        // `--plugin-dir` wants the plugin root, not its skills folder.
+        installPath: plugin.path,
+      },
+      plugin.path,
+    );
 
     const mcp = readJsonFile<{ mcpServers?: Record<string, McpServerJson> }>(join(plugin.path, '.mcp.json'));
     for (const [name, json] of Object.entries(mcp?.mcpServers ?? {})) {
@@ -129,5 +148,7 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
     }
   }
 
-  return { sources, skills, servers };
+  agents.sort((a, b) => a.name.localeCompare(b.name));
+  hooks.sort((a, b) => a.sourceId.localeCompare(b.sourceId));
+  return { sources, skills, servers, agents, hooks };
 }

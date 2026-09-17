@@ -147,6 +147,33 @@ export interface Session {
  * ------------------------------------------------------------------ */
 
 /**
+ * One offered answer to a question the assistant asked. Two to four of these
+ * ride a `question` event; a surface renders them as buttons, radio rows or
+ * a numbered list, whatever fits it.
+ */
+export interface QuestionOption {
+  /** What the button says. Short - it has to fit a phone keyboard row. */
+  label: string;
+  /** One line under the label, when the label alone is not enough. */
+  description?: string;
+}
+
+/**
+ * What came back. `selected` holds indices into the question's `options`, in
+ * the order they were offered; `text` carries a free answer, either from the
+ * "Other" field or from a plain chat reply on a channel that has no buttons.
+ * At least one of the two is always set.
+ */
+export interface QuestionAnswer {
+  selected: number[];
+  text?: string;
+  /** Which surface answered, for the log. Unset when nobody recorded it. */
+  source?: 'web' | 'tui' | 'telegram' | 'api';
+  /** Epoch ms the answer arrived. */
+  at?: number;
+}
+
+/**
  * The single event vocabulary Rookery streams to any frontend.
  * Provider adapters normalise their native JSON into exactly these.
  */
@@ -186,6 +213,30 @@ export type AgentEvent =
   | { type: 'sleep'; run: SleepRun; phase?: string; cycle?: number }
   /** The provider reported the account's limit windows during the turn. */
   | { type: 'quota'; quota: ProviderQuota }
+  /**
+   * The assistant asked the person something and the turn is waiting on the
+   * answer. Broadcast rather than confined to the turn that asked: whoever
+   * is at a screen may answer, including a channel that did not start it.
+   */
+  | {
+      type: 'question';
+      /** Global, not scoped to a turn: any connection may answer this id. */
+      id: string;
+      /** Two or three words over the card, e.g. "Deploy target". */
+      header: string;
+      question: string;
+      options: QuestionOption[];
+      /** More than one option may be picked. */
+      multiSelect: boolean;
+      /** Epoch ms after which the question gives up and the turn moves on. */
+      expiresAt: number;
+    }
+  /**
+   * The question is over. Needed so a surface that is showing the card takes
+   * it away again when the answer came from somewhere else - or when nobody
+   * answered at all.
+   */
+  | { type: 'question-closed'; id: string; reason: 'answered' | 'cancelled' | 'expired'; answer?: QuestionAnswer }
   | { type: 'error'; message: string; fatal: boolean }
   | { type: 'done'; text: string; usage?: TurnUsage; providerSessionId?: string };
 
@@ -1030,6 +1081,39 @@ export interface McpServerSpec {
   headers?: Record<string, string>;
 }
 
+/**
+ * One subagent type handed to the provider CLI for a single turn, as the file
+ * it was approved from. The body never travels through argv: a Windows shim
+ * spawn goes through `cmd.exe` in verbatim mode, where no escaping of ours can
+ * guarantee that foreign text stays one argument, so the provider copies the
+ * file into a generated plugin folder instead and points `--plugin-dir` at it.
+ */
+export interface ProviderAgentFile {
+  /** The name the model calls the subagent by, from the file's frontmatter. */
+  name: string;
+  /** The approved source file, copied verbatim at spawn time. */
+  path: string;
+}
+
+/**
+ * The settings document for one turn, written to a file and passed to
+ * `--settings` by path. It carries Rookery's own `permissions.deny`
+ * groundwork and nothing a plugin wrote: foreign text reaches the spawn
+ * through files, never through this document. Left open on purpose - the
+ * provider owns the schema, Rookery only assembles it.
+ */
+export interface ProviderSettings {
+  permissions?: { allow?: string[]; ask?: string[]; deny?: string[] };
+  [key: string]: unknown;
+}
+
+/**
+ * Approved hook handlers for one turn, merged across sources into the
+ * `hooks.json` of the generated plugin folder. Opaque on purpose: the table is
+ * the plugin's own format, read back verbatim after the fingerprint matched.
+ */
+export type ProviderHookTable = Record<string, unknown[]>;
+
 export interface ProviderTurnOptions {
   prompt: string;
   /** Prepended context: persona, recalled memories, conversation digest. */
@@ -1052,6 +1136,22 @@ export interface ProviderTurnOptions {
   mcp?: McpServerSpec;
   /** Further MCP servers for this turn, e.g. computer control. */
   mcpExtra?: McpServerSpec[];
+  /**
+   * Subagent types for this turn, as approved files the provider copies into
+   * its generated plugin folder. Empty or unset passes nothing, so the CLI
+   * keeps whatever it would have had.
+   */
+  handoffAgents?: ProviderAgentFile[];
+  /** Rookery's own permission floor for this turn, passed as a settings file. */
+  settings?: ProviderSettings;
+  /** Approved hook handlers for this turn, merged into the plugin folder. */
+  hooks?: ProviderHookTable;
+  /**
+   * Plugin folders to load whole for this turn. A source loaded this way is
+   * not additionally passed as curated skills, agents or hooks - otherwise
+   * the same shelf would stand there twice.
+   */
+  pluginDirs?: string[];
   signal?: AbortSignal;
 }
 
@@ -1161,6 +1261,8 @@ export interface RookeryConfig {
   tools: ToolsConfig;
   /** What is taken over from the Claude Code installed here. */
   external: ExternalConfig;
+  /** How long the assistant waits when it asks the user something. */
+  questions: QuestionsConfig;
   /** Where skills live, one folder per skill. Defaults to `<home>/skills`. */
   skillsDir: string;
   /** Alternative backends for the `claude` binary. Empty by default: opt-in per provider. */
@@ -1362,6 +1464,18 @@ export interface RouterConfig {
  * are not things that arrive unannounced. Rookery never writes back into
  * `~/.claude`.
  */
+/**
+ * One decision about something found in that installation. The fingerprint is
+ * taken over the definition at the moment of approval, so anything edited in
+ * `~/.claude` afterwards goes inactive until a person looks at it again - the
+ * rule `servers` already follows, spelled out once for everything else.
+ */
+export interface ExternalApproval {
+  enabled: boolean;
+  audience: ToolServerAudience;
+  fingerprint: string;
+}
+
 export interface ExternalConfig {
   /** Look at that installation at all. */
   enabled: boolean;
@@ -1378,6 +1492,37 @@ export interface ExternalConfig {
    * looks at it again.
    */
   servers: Record<string, { enabled: boolean; audience: ToolServerAudience; projectIds?: string[]; fingerprint: string }>;
+  /**
+   * Discovered subagent id (`<sourceId>/<name>`) to what was decided about
+   * it. Nothing is on until somebody says so: a subagent carries a system
+   * prompt and a tool list into a turn Rookery otherwise composes itself.
+   */
+  agents: Record<string, ExternalApproval>;
+  /**
+   * Hook-set id to what was decided about it. Off everywhere by default and
+   * meant to stay that way for agents: a hook is a command line that runs
+   * around every tool call of an unattended run, so it is approved per source
+   * *and* per audience, and the assistant gets the first try, not the agents.
+   */
+  hooks: Record<string, ExternalApproval>;
+  /**
+   * Source id to the "load the whole plugin" switch, for a plugin that is
+   * trusted outright. With `loadWhole` on, the source is handed to the CLI as
+   * a plugin directory and its curated skills, agents and hooks are *not*
+   * passed a second time.
+   */
+  plugins: Record<string, ExternalApproval & { loadWhole: boolean }>;
+}
+
+/** The `ask_user` tool: how long a question stays open. */
+export interface QuestionsConfig {
+  /**
+   * Milliseconds a question waits before it resolves itself as unanswered
+   * and the turn carries on. Has to stay well under the provider's own MCP
+   * tool timeout (six hours for Claude Code), or the call the question is
+   * blocking dies before the question can give up.
+   */
+  timeoutMs: number;
 }
 
 export interface OrgConfig {

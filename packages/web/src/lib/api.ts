@@ -381,6 +381,24 @@ export const api = {
       method: 'PATCH',
       ...json({ enabled }),
     }),
+  /** Whether one discovered subagent may be handed to a turn, and to whose. */
+  setExternalAgent: (id: string, patch: { enabled?: boolean; audience?: ToolServerAudience }) =>
+    request<unknown>('/api/external/agents/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      ...json(patch),
+    }),
+  /** Same for a hook set - its command lines are shown, never written back. */
+  setExternalHook: (id: string, patch: { enabled?: boolean; audience?: ToolServerAudience }) =>
+    request<unknown>('/api/external/hooks/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      ...json(patch),
+    }),
+  /** The per-source "load the whole plugin" switch. */
+  setExternalPlugin: (id: string, patch: { loadWhole?: boolean; audience?: ToolServerAudience }) =>
+    request<unknown>('/api/external/plugins/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      ...json(patch),
+    }),
   refreshExternal: () =>
     request<{ sources: ExternalSource[]; servers: number }>('/api/external/refresh', { method: 'POST' }),
   /** Fetches a skill folder from GitHub. Takes a few seconds. */

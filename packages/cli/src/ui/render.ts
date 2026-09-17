@@ -173,6 +173,16 @@ export class EventRenderer {
         return;
       }
 
+      case 'question': {
+        // The numbered block the REPL prints below is the surface now, and a
+        // person is about to type into that line; a spinner redrawing it
+        // would eat the answer as it is being written. One-way like every
+        // other stop: whatever follows the question is announced as itself.
+        this.#spinner?.stop();
+        return;
+      }
+
+      case 'question-closed':
       case 'session':
       case 'done':
         return;
