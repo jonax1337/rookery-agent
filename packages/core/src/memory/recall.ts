@@ -28,6 +28,14 @@ import { mapMemory, type Store } from './store.js';
 const WEIGHTS = { relevance: 0.55, importance: 0.2, recency: 0.15, usage: 0.1 };
 const RECENCY_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * Total order for every in-JS sort of scored memories: score descending,
+ * then id ascending. Sorting on score alone leaves ties to insertion order,
+ * which is whatever SQLite happened to return first (R11).
+ */
+const byScoreThenId = (a: ScoredMemory, b: ScoredMemory): number =>
+  b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
 /** Words too common to narrow anything down, in the two languages Rookery targets. */
 const STOP_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'be', 'been', 'to', 'of',
@@ -104,7 +112,7 @@ export function recall(store: Store, options: RecallOptions): ScoredMemory[] {
         AND m.archived_at IS NULL
         AND m.importance >= ?` +
     kindFilter +
-    ` ORDER BY relevance DESC LIMIT ?`;
+    ` ORDER BY relevance DESC, m.id LIMIT ?`;
 
   let rows: Record<string, unknown>[];
   try {
@@ -143,7 +151,7 @@ export function recall(store: Store, options: RecallOptions): ScoredMemory[] {
     };
   });
 
-  const direct = scored.filter((memory) => memory.score >= threshold).sort((a, b) => b.score - a.score);
+  const direct = scored.filter((memory) => memory.score >= threshold).sort(byScoreThenId);
 
   // The second hop: what the question could not say in words. Only the best
   // few direct hits get to pull neighbours in, so a vague question does not
@@ -158,7 +166,7 @@ export function recall(store: Store, options: RecallOptions): ScoredMemory[] {
     if (!existing || memory.score > existing.score) byId.set(memory.id, memory);
   }
 
-  const top = [...byId.values()].sort((a, b) => b.score - a.score).slice(0, limit);
+  const top = [...byId.values()].sort(byScoreThenId).slice(0, limit);
 
   if (options.touch !== false && top.length) {
     store.touchMemories(top.map((memory) => memory.id));
@@ -224,7 +232,7 @@ function expand(
     );
   }
 
-  return [...out.values()];
+  return [...out.values()].sort(byScoreThenId);
 }
 
 /**
@@ -277,7 +285,7 @@ export function coreProfile(
         WHERE owner = ? AND forgotten = 0 AND dormant_at IS NULL AND superseded_by IS NULL
           AND archived_at IS NULL
           AND (importance >= ? OR pinned = 1)
-        ORDER BY pinned DESC, (kind = 'insight') DESC, importance DESC, updated_at DESC
+        ORDER BY pinned DESC, (kind = 'insight') DESC, importance DESC, updated_at DESC, id
         LIMIT ?`,
     )
     .all(owner, minImportance, limit) as Record<string, unknown>[];
@@ -387,8 +395,8 @@ function groupByEntity(
     if (bucket.memories.length > 1) grouped.push(bucket);
     else loose.push(...bucket.memories);
   }
-  grouped.sort((a, b) => b.memories.length - a.memories.length);
-  loose.sort((a, b) => b.score - a.score);
+  grouped.sort((a, b) => b.memories.length - a.memories.length || (a.entity.id < b.entity.id ? -1 : 1));
+  loose.sort(byScoreThenId);
   return { grouped, loose };
 }
 
