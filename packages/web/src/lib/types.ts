@@ -456,7 +456,8 @@ export interface Mail {
 
 /* ----------------------------------- tasks ---------------------------------- */
 
-export type TaskStatus = 'open' | 'planned' | 'running' | 'done' | 'failed' | 'cancelled';
+/** `blocked` is a task whose run ended with a question and waits for an answer. */
+export type TaskStatus = 'open' | 'planned' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 export type TaskPriority = 'low' | 'normal' | 'high';
 
 /**

@@ -511,7 +511,85 @@ test('folders route reports, and archiving moves a thread whole', async () => {
   assistant.close();
 });
 
-test('marking a task done tells its thread, and wakes nobody', async () => {
+test('marking a task done by hand tells a thread that heard nothing, and wakes nobody', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  // A work order that was never run: the thread has the order and nothing
+  // else, so the hand change is the only news it will ever get.
+  const task = store.org.createTask({
+    orgId: org.id,
+    title: 'Fix the gate',
+    description: 'Please fix it.',
+    assigneeId: mara.id,
+    createdBy: 'user',
+  });
+  const order = store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'user' },
+    to: [{ kind: 'agent', id: mara.id }],
+    subject: 'Fix the gate',
+    body: 'Please fix it.',
+    kind: 'assignment',
+  });
+  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
+
+  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'done');
+
+  const note = store.org.thread(org.id, order.threadId).at(-1);
+  assert.equal(note.fromKind, 'assistant', 'the status note is a system mail');
+  assert.match(note.body, /marked as done/);
+  assert.equal(
+    store.org.listAssignments(org.id, { agentId: mara.id }).length,
+    0,
+    'a status note starts nothing',
+  );
+  assistant.close();
+});
+
+test('a reply in a task thread continues the same task instead of running beside it', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const { mail, task } = await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: mara.slug,
+    subject: 'Ship the thing',
+    body: 'Please ship it.',
+  });
+  await sleep(200);
+  assert.equal(store.org.listAssignments(org.id, { agentId: mara.id }).length, 1, 'the work order ran once');
+
+  await assistant.org.sendUserMail({
+    orgId: org.id,
+    to: [mara.slug],
+    subject: 'Re: Ship the thing',
+    body: 'One more thing before you do.',
+    inReplyTo: mail.id,
+  });
+  await sleep(300);
+
+  const runs = store.org.listAssignments(org.id, { agentId: mara.id });
+  assert.equal(runs.length, 2, 'the reply started exactly one more run');
+  for (const run of runs) {
+    assert.equal(
+      store.org.getTaskIdForAssignment(run.id),
+      task.id,
+      'every run in the thread hangs on the same task - no board-less run beside it',
+    );
+  }
+  assert.ok(
+    runs.some((run) => (run.task ?? '').includes('One more thing before you do.')),
+    'the continued run was briefed with the mail that continued it',
+  );
+  assistant.close();
+});
+
+test('a task that ends failed leaves a status note in its thread', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const org = assistant.org.activeOrganization();
@@ -521,22 +599,77 @@ test('marking a task done tells its thread, and wakes nobody', async () => {
     orgId: org.id,
     to: mara.slug,
     subject: 'Fix the gate',
-    body: 'Please fix it.',
+    body: 'FAIL - this run goes nowhere.',
   });
-  await sleep(150);
-  const runsBefore = store.org.listAssignments(org.id, { agentId: mara.id }).length;
+  await sleep(250);
 
-  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'done');
-
+  assert.equal(store.org.getTask(task.id).status, 'failed');
   const thread = store.org.getMailThreadForTask(org.id, task.id);
   const note = store.org.thread(org.id, thread.threadId).at(-1);
-  assert.equal(note.fromKind, 'assistant', 'the status note is a system mail');
-  assert.match(note.body, /marked as done/);
-  assert.equal(
-    store.org.listAssignments(org.id, { agentId: mara.id }).length,
-    runsBefore,
-    'a status note starts nothing',
+  assert.equal(note.fromKind, 'assistant', 'a failure the thread would otherwise never hear about');
+  assert.match(note.body, /failed/);
+  assistant.close();
+});
+
+test('an agent that asks its assigner on To leaves the task blocked, not done', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const { task } = await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: mara.slug,
+    subject: 'Fix the gate',
+    body: 'MAILBACK:user|Which gate do you mean?',
+  });
+  await sleep(250);
+
+  const current = store.org.getTask(task.id);
+  assert.equal(current.status, 'blocked', 'a run that ended with a question is waiting, not finished');
+  const thread = store.org.getMailThreadForTask(org.id, task.id);
+  const mails = store.org.thread(org.id, thread.threadId);
+  assert.equal(mails.at(-1).fromKind, 'agent', 'the question itself is the last word in the thread');
+  assert.ok(
+    !mails.some((entry) => entry.fromKind === 'assistant'),
+    'and it is the message - no status note repeats it',
   );
+
+  // And the answer puts the very same task back to work instead of opening
+  // a second one beside it.
+  await assistant.org.sendUserMail({
+    orgId: org.id,
+    to: [mara.slug],
+    subject: 'Re: Fix the gate',
+    body: 'The north gate.',
+    inReplyTo: mails.at(-1).id,
+  });
+  await sleep(300);
+  const runs = store.org.listAssignments(org.id, { agentId: mara.id });
+  assert.equal(runs.length, 2, 'the answer started the next run of the task');
+  for (const run of runs) assert.equal(store.org.getTaskIdForAssignment(run.id), task.id);
+  assistant.close();
+});
+
+test('a task that ends done with a result reply gets no status note on top', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const { task } = await assistant.org.sendTaskMail({
+    orgId: org.id,
+    to: mara.slug,
+    subject: 'Ship the thing',
+    body: 'Please ship it.',
+  });
+  await sleep(250);
+
+  assert.equal(store.org.getTask(task.id).status, 'done');
+  const thread = store.org.getMailThreadForTask(org.id, task.id);
+  const mails = store.org.thread(org.id, thread.threadId);
+  assert.equal(mails.length, 2, 'the work order and the answer, nothing else');
+  assert.equal(mails.at(-1).fromKind, 'agent', 'the result is the message');
   assistant.close();
 });
 

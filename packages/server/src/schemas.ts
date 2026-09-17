@@ -171,7 +171,7 @@ export const patchTaskSchema = z.object({
   priority: z.enum(['low', 'normal', 'high']).optional(),
   projectId: nullableText,
   assigneeId: nullableText,
-  status: z.enum(['open', 'done', 'cancelled']).optional(),
+  status: z.enum(['open', 'done', 'cancelled', 'blocked']).optional(),
   result: nullableText,
   /** Board drag&drop position within a status column. */
   sortOrder: z.number().optional(),

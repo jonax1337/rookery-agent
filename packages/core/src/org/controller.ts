@@ -124,6 +124,13 @@ export interface ToolContext {
    */
   sourceMail?: SourceMailRef;
   /**
+   * Appended to the brief of the task leaf this context runs. It carries the
+   * mail that continued a task thread: that mail is not in the task's own
+   * description, and without it a continued run would read the original work
+   * order again and answer it twice.
+   */
+  taskNote?: string;
+  /**
    * Set when the caller is a scheduled run rather than a person's
    * conversation. Automated runs work, but they write nothing back: no
    * memories are extracted from them and `write_skill` refuses, so a cron
@@ -172,6 +179,16 @@ export interface RunAssignmentInput {
    * On success, `run()` mails the result back to the sender as a reply.
    */
   sourceMail?: SourceMailRef;
+  /**
+   * Told, when the run ends, whether the agent wrote to whoever asked for
+   * the work on the To line while it was running - the signal that turns a
+   * finished task leaf into `blocked` instead of `done` (decision E6).
+   *
+   * It is reported from inside the run because only here is the answer
+   * still true: the run's own reply goes out to the same recipient a breath
+   * later, and from outside the two are indistinguishable.
+   */
+  onAskedRequester?: (asked: boolean) => void;
 }
 
 export interface OrgControllerOptions {
@@ -1387,8 +1404,18 @@ export class OrgController extends EventEmitter {
    * followed by a second mail reading "Done - the reply went out". The
    * turn's own text loses, because by then the recipient has the answer in
    * writing and the leftover text is bookkeeping about it.
+   *
+   * `box` narrows the question to one line of the address: for the duplicate
+   * reply any box counts, but a task only goes `blocked` on a To (decision
+   * E6) - a Cc to the requester is information, not a question.
    */
-  #answeredDuringTurn(orgId: string, writer: MailWho, recipient: MailWho, since: number): boolean {
+  #answeredDuringTurn(
+    orgId: string,
+    writer: MailWho,
+    recipient: MailWho,
+    since: number,
+    box?: 'to' | 'cc',
+  ): boolean {
     const key = (who: MailWho): string => who.kind + ':' + (who.id ?? '');
     const wanted = key(recipient);
     return this.#store.org
@@ -1396,7 +1423,11 @@ export class OrgController extends EventEmitter {
       .some(
         (sent) =>
           sent.createdAt >= since &&
-          sent.recipients.some((entry) => key({ kind: entry.recipientKind, id: entry.recipientId }) === wanted),
+          sent.recipients.some(
+            (entry) =>
+              (!box || entry.box === box) &&
+              key({ kind: entry.recipientKind, id: entry.recipientId }) === wanted,
+          ),
       );
   }
 
@@ -1475,10 +1506,17 @@ export class OrgController extends EventEmitter {
     });
     this.#announce({ type: 'mail', mail }, params.emit);
 
-    // An assignment thread already has its work: sendTaskMail starts the run
-    // itself, over the task, and the To-trigger here would start a second,
-    // untracked one beside it.
-    if (!params.autoReply && params.kind !== 'assignment' && params.depth < this.#config.org.maxDelegationDepth) {
+    // A task thread is dispatched by its task, never by the To line: the
+    // thread's own row decides that, not the call's `kind` (decision E4).
+    // Reading the parameter instead let a reply into a task thread - where
+    // no caller passes a kind - start a second run beside the task, on no
+    // board and on no card.
+    if (!params.autoReply && mail.threadKind === 'assignment') {
+      this.#continueTask(mail, params.from, params.depth);
+      return mail;
+    }
+
+    if (!params.autoReply && params.depth < this.#config.org.maxDelegationDepth) {
       const senderLabel = this.#mailWhoLabel(params.from);
       for (const target of params.to) {
         if (target.kind === 'assistant' && this.#runAssistantMail) {
@@ -1547,6 +1585,53 @@ export class OrgController extends EventEmitter {
       }
     }
     return mail;
+  }
+
+  /**
+   * A mail in a task thread continues its task; it never starts a run beside
+   * it (decision E5). The task decides what happens, not the mail: a running
+   * task only receives - the run it is in already has its prompt, and
+   * aborting it would burn work that was started in good faith (F1) - while
+   * a task that has stopped, however it stopped, runs again with this mail
+   * as its brief. The new run hangs on the same task through
+   * `linkTaskAssignment`, so the card keeps its whole chain, and the old
+   * result stands until the new run has a better one.
+   */
+  #continueTask(mail: Mail, from: MailWho, depth: number): void {
+    if (depth >= this.#config.org.maxDelegationDepth) return;
+    const thread = this.#store.org.getMailThread(mail.orgId, mail.threadId);
+    // A task thread with no task: the mail that opens one arrives here
+    // before `sendTaskMail` has linked it, and its run is already on its
+    // way. Nothing else may start a run in a thread that owns no task.
+    if (!thread?.taskId) return;
+    const task = this.#store.org.getTask(thread.taskId);
+    if (!task || task.status === 'running') return;
+    const agent = task.assigneeId ? this.#store.org.getAgent(task.assigneeId) : null;
+    if (!agent) return;
+
+    void this.runTask(
+      {
+        orgId: mail.orgId,
+        audience: 'assistant',
+        // One below the mail, so the leaf that carries out the task runs at
+        // the mail's own depth - exactly where the To-trigger put it.
+        depth: depth - 1,
+        projectId: task.projectId,
+        emit: () => undefined,
+        sourceMail: {
+          id: mail.id,
+          threadId: mail.threadId,
+          depth,
+          fromKind: from.kind,
+          fromAgentId: from.id,
+          subject: mail.subject,
+        },
+        taskNote: this.#mailWhoLabel(from) + ' wrote back:\n\n' + mail.body,
+      },
+      task,
+    ).catch((error: unknown) => {
+      this.#log.warn('Task continuation failed', { task: task.id, error: String(error) });
+    });
   }
 
   async #sendMail(
@@ -1720,13 +1805,24 @@ export class OrgController extends EventEmitter {
    * assistant as a reply, so the mail trail shows not just the work order
    * and the result but also how the work ended. Never throws, and never
    * wakes anyone - `autoReply` delivers without triggering.
+   *
+   * It writes only when the thread has heard nothing else about this ending
+   * (decision E7). A finished run mails its result and a stuck one mails its
+   * question; both are the message, and a note repeating them is the same
+   * news twice. What the thread never hears on its own is a run that failed
+   * or was called off, and that is what the note is for.
    */
-  async notifyTaskStatus(task: Task, status: 'done' | 'cancelled'): Promise<void> {
+  async notifyTaskStatus(task: Task, status: 'done' | 'failed' | 'cancelled' | 'blocked'): Promise<void> {
     const orgId = task.orgId;
     const thread = this.#store.org.getMailThreadForTask(orgId, task.id);
     if (!thread) return;
-    const latest = this.#store.org.thread(orgId, thread.threadId, { limit: 50 }).at(-1);
+    const mails = this.#store.org.thread(orgId, thread.threadId, { limit: 50 });
+    const latest = mails.at(-1);
     if (!latest) return;
+    // Anyone but the person who asked: their own mail is the work order, and
+    // only an answer to it counts as the thread having been told.
+    const since = task.startedAt ?? task.createdAt;
+    if (mails.some((entry) => entry.createdAt >= since && entry.fromKind !== 'user')) return;
     try {
       await this.#deliverMail({
         orgId,
@@ -1736,10 +1832,7 @@ export class OrgController extends EventEmitter {
         // is bookkeeping, but bookkeeping the assignee should see.
         cc: this.#replyCc(latest, { kind: 'assistant' }, { kind: 'user' }),
         subject: latest.subject.startsWith('Re: ') ? latest.subject : 'Re: ' + latest.subject,
-        body:
-          status === 'done'
-            ? 'The task "' + task.title + '" was marked as done.'
-            : 'The task "' + task.title + '" was cancelled.',
+        body: statusNote(task, status),
         inReplyTo: latest.id,
         threadId: thread.threadId,
         depth: latest.depth + 1,
@@ -2105,6 +2198,16 @@ export class OrgController extends EventEmitter {
         void this.#learn(agent, input.task, text, usedProvider);
       }
       if (this.#config.org.autoReview) void this.#review(agent, done, input.task, text, usedProvider);
+      if (input.onAskedRequester) {
+        // Who asked for this: the sender of the mail that started the run,
+        // or else whoever handed the assignment over.
+        const requester: MailWho = input.sourceMail
+          ? { kind: input.sourceMail.fromKind, id: input.sourceMail.fromAgentId }
+          : { kind: input.requesterKind, id: input.requesterAgentId };
+        input.onAskedRequester(
+          this.#answeredDuringTurn(input.orgId, { kind: 'agent', id: agent.id }, requester, started, 'to'),
+        );
+      }
       if (input.sourceMail) {
         const sourceMail = input.sourceMail;
         const replier: MailWho = { kind: 'agent', id: agent.id };
@@ -2411,7 +2514,7 @@ export class OrgController extends EventEmitter {
       }
     }
     const status = text('status');
-    if (status === 'open' || status === 'done' || status === 'cancelled') {
+    if (status === 'open' || status === 'done' || status === 'cancelled' || status === 'blocked') {
       patch.status = status;
       if (status !== 'open') patch.finishedAt = Date.now();
       if (text('result')) patch.result = text('result');
@@ -2521,10 +2624,16 @@ export class OrgController extends EventEmitter {
     org.updateTask(task.id, { status: 'running', startedAt: started, error: null });
     this.#announceTask(reload(), context.emit);
 
+    // How a run ends is the thread's business, not an HTTP route's: every
+    // ending passes here, and `notifyTaskStatus` decides for itself whether
+    // the thread still needs to be told (decision E7).
     const finish = (status: TaskStatus, patch: { result?: string; error?: string }): Task => {
       org.updateTask(task.id, { status, finishedAt: Date.now(), ...patch });
       const done = reload();
       this.#announceTask(done, context.emit);
+      if (status !== 'open' && status !== 'planned' && status !== 'running') {
+        void this.notifyTaskStatus(done, status);
+      }
       return done;
     };
 
@@ -2533,10 +2642,7 @@ export class OrgController extends EventEmitter {
       const agent = current.assigneeId ? org.getAgent(current.assigneeId) : null;
       if (!agent) return finish('failed', { error: 'Nobody is assigned and nobody could be found to do it.' });
       const outcome = await this.#runTaskLeaf(context, current, agent);
-      return finish(outcome.status === 'done' ? 'done' : outcome.status === 'cancelled' ? 'cancelled' : 'failed', {
-        result: outcome.result,
-        error: outcome.error,
-      });
+      return finish(taskStatusFor(outcome), { result: outcome.result, error: outcome.error });
     }
 
     const waves = buildTaskWaves(children.filter((c) => c.status !== 'done'));
@@ -2544,7 +2650,7 @@ export class OrgController extends EventEmitter {
     // the thread in turn - three subtasks would mail three replies. The
     // waves run without the mail context; the parent speaks for the split
     // once, below, with the combined result.
-    const waveContext: ToolContext = { ...context, sourceMail: undefined };
+    const waveContext: ToolContext = { ...context, sourceMail: undefined, taskNote: undefined };
     for (const wave of waves) {
       if (waveContext.signal?.aborted) break;
       await Promise.all(wave.map((child) => this.#runSubtask(waveContext, child)));
@@ -2569,9 +2675,10 @@ export class OrgController extends EventEmitter {
               result: combined,
               error: failed.length ? failed.length + ' of ' + all.length + ' subtasks failed.' : undefined,
             };
-    const done = finish(outcome.status, { result: outcome.result, error: outcome.error });
     // The one answer the mailed split makes: the parent's combined report,
-    // through the same auto-reply path a leaf would have used.
+    // through the same auto-reply path a leaf would have used. It goes out
+    // before the task is closed, so that the status note `finish()` may add
+    // sees a thread that has already heard how the work ended.
     if (context.sourceMail && outcome.status === 'done') {
       const sourceMail = context.sourceMail;
       const replier: MailWho = { kind: 'assistant' };
@@ -2594,7 +2701,7 @@ export class OrgController extends EventEmitter {
         });
       }
     }
-    return done;
+    return finish(outcome.status, { result: outcome.result, error: outcome.error });
   }
 
   /** One subtask inside a wave: mark it, run its leaf, record the outcome. */
@@ -2623,7 +2730,7 @@ export class OrgController extends EventEmitter {
       } else {
         const outcome = await this.#runTaskLeaf(context, child, agent, deps.filter((t) => t.result));
         org.updateTask(child.id, {
-          status: outcome.status === 'done' ? 'done' : outcome.status === 'cancelled' ? 'cancelled' : 'failed',
+          status: taskStatusFor(outcome),
           result: outcome.result,
           error: outcome.error,
           finishedAt: Date.now(),
@@ -2639,16 +2746,27 @@ export class OrgController extends EventEmitter {
     task: Task,
     agent: Agent,
     deps: Task[] = [],
-  ): Promise<{ status: Assignment['status']; result?: string; error?: string; assignmentId: string }> {
+  ): Promise<{
+    status: Assignment['status'];
+    result?: string;
+    error?: string;
+    assignmentId: string;
+    /** The agent asked its requester something while running (decision E6). */
+    askedRequester: boolean;
+  }> {
     const prior = deps.length
       ? 'Results of the subtasks this one depends on:\n\n' +
         deps.map((dep) => '### ' + dep.title + '\n' + clip(dep.result ?? '', 6000)).join('\n\n') +
         '\n\n---\n\n'
       : '';
+    // What continued the thread comes after the work order: the order is
+    // what the task is, the note is what changed about it.
+    const note = context.taskNote ? '\n\n---\n\n' + context.taskNote : '';
+    let askedRequester = false;
     const assignment = await this.run({
       orgId: context.orgId,
       agent,
-      task: prior + 'TASK: ' + task.title + '\n\n' + task.description,
+      task: prior + 'TASK: ' + task.title + '\n\n' + task.description + note,
       projectId: task.projectId ?? context.projectId,
       sessionId: context.sessionId,
       parentId: context.parentAssignmentId,
@@ -2660,9 +2778,18 @@ export class OrgController extends EventEmitter {
       // A task that arrived as mail answers in its thread: the leaf's run
       // mails its result back to the sender, the way a To-line run does.
       sourceMail: context.sourceMail,
+      onAskedRequester: (asked) => {
+        askedRequester = asked;
+      },
     });
     this.#store.org.linkTaskAssignment(task.id, assignment.id);
-    return { status: assignment.status, result: assignment.result, error: assignment.error, assignmentId: assignment.id };
+    return {
+      status: assignment.status,
+      result: assignment.result,
+      error: assignment.error,
+      assignmentId: assignment.id,
+      askedRequester,
+    };
   }
 
   #announceTask(task: Task, emit: (event: AgentEvent) => void): void {
@@ -3103,6 +3230,29 @@ export function describeSettings(config: RookeryConfig): string {
 
 function asPriority(value: string): TaskPriority | undefined {
   return value === 'low' || value === 'normal' || value === 'high' ? value : undefined;
+}
+
+/** The status note itself: one sentence a person can read without the board. */
+function statusNote(task: Task, status: 'done' | 'failed' | 'cancelled' | 'blocked'): string {
+  const name = 'The task "' + task.title + '"';
+  if (status === 'done') return name + ' was marked as done.';
+  if (status === 'cancelled') return name + ' was cancelled.';
+  if (status === 'blocked') return name + ' is waiting for an answer.';
+  return name + ' failed' + (task.error ? ': ' + task.error : '.');
+}
+
+/**
+ * What one finished leaf run means for its card. A run that ended by asking
+ * its requester a question is not done, whatever its own status says: the
+ * work waits for an answer, and the card says so (decision E6). The error
+ * falls the safe way round - a task wrongly left `blocked` sits on the board
+ * and is carried on by the next reply, while a task wrongly called `done`
+ * disappears.
+ */
+function taskStatusFor(outcome: { status: Assignment['status']; askedRequester: boolean }): TaskStatus {
+  if (outcome.status === 'cancelled') return 'cancelled';
+  if (outcome.status !== 'done') return 'failed';
+  return outcome.askedRequester ? 'blocked' : 'done';
 }
 
 /** The plan as the assistant reads it back, with the subtask ids it can edit. */

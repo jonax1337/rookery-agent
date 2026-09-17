@@ -483,7 +483,9 @@ export const ORG_TOOLS: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        status: str('Comma-separated statuses to include (open, planned, running, done, failed, cancelled). Optional.'),
+        status: str(
+          'Comma-separated statuses to include (open, planned, running, blocked, done, failed, cancelled). Optional.',
+        ),
       },
       additionalProperties: false,
     },
@@ -491,7 +493,9 @@ export const ORG_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'update_task',
-    description: 'Edit a task: title, description, priority, assignee, or mark it done or cancelled by hand.',
+    description:
+      'Edit a task: title, description, priority, assignee, or set its status by hand - done, ' +
+      'cancelled, or blocked while it waits for an answer.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -500,7 +504,11 @@ export const ORG_TOOLS: ToolDefinition[] = [
         description: str('Optional.'),
         priority: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Optional.' },
         assignee: str('Agent slug, or "none". Optional.'),
-        status: { type: 'string', enum: ['open', 'done', 'cancelled'], description: 'Optional.' },
+        status: {
+          type: 'string',
+          enum: ['open', 'done', 'cancelled', 'blocked'],
+          description: 'Optional. "blocked" means it waits for an answer.',
+        },
         result: str('What was done, when closing by hand. Optional.'),
       },
       required: ['id'],

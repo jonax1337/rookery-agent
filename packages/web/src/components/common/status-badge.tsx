@@ -5,6 +5,7 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   CircleDashedIcon as CircleDotIcon,
+  CircleHelpIcon,
   LoaderIcon,
 } from "@/components/icons";
 import { AnimatePresence, motion } from 'motion/react';
@@ -88,6 +89,7 @@ const TASK_ICON: Record<TaskStatus, IconComponent> = {
   open: CircleDashedIcon,
   planned: CircleDotIcon,
   running: LoaderIcon,
+  blocked: CircleHelpIcon,
   done: CircleCheckIcon,
   failed: CircleXIcon,
   cancelled: BanIcon,

@@ -242,7 +242,7 @@ export interface TaskPatch {
   projectId?: Nullable<string>;
   assigneeId?: Nullable<string>;
   /** Only the states a human sets by hand; the runner owns the rest. */
-  status?: 'open' | 'done' | 'cancelled';
+  status?: 'open' | 'blocked' | 'done' | 'cancelled';
   result?: Nullable<string>;
   /** Board drag&drop position within a status column. */
   sortOrder?: number;

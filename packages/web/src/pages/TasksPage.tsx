@@ -18,6 +18,7 @@ import { reportFailure } from '@/lib/errors';
 import {
   relativeTime,
   isSettableTaskStatus,
+  type SettableTaskStatus,
   NO_PROJECT,
   TASK_STATUS_LABEL,
   TASK_STATUS_ORDER,
@@ -204,6 +205,7 @@ export function TasksPage() {
       open: 0,
       planned: 0,
       running: 0,
+      blocked: 0,
       done: 0,
       failed: 0,
       cancelled: 0,
@@ -218,6 +220,7 @@ export function TasksPage() {
       { value: 'open', label: 'Open', count: counts.open },
       { value: 'planned', label: 'Planned', count: counts.planned },
       { value: 'running', label: 'Running', count: counts.running },
+      { value: 'blocked', label: 'Blocked', count: counts.blocked },
       { value: 'done', label: 'Done', count: counts.done },
       { value: 'undone', label: 'Not done', count: counts.failed + counts.cancelled },
     ],
@@ -235,7 +238,7 @@ export function TasksPage() {
   /* ------------------------------- actions ------------------------------ */
 
   const setStatus = useCallback(
-    async (task: Task, status: 'open' | 'done' | 'cancelled', force = false): Promise<void> => {
+    async (task: Task, status: SettableTaskStatus, force = false): Promise<void> => {
       setPending((current) => ({ ...current, [task.id]: status }));
       try {
         await api.updateTask(task.id, { status, ...(force ? { force: true } : {}) });
@@ -364,7 +367,7 @@ export function TasksPage() {
             onStatus={(next) => {
               if (next === task.status) return;
               if (next === 'cancelled') void cancelTask(task);
-              else if (next === 'open' || next === 'done') void setStatus(task, next);
+              else if (next === 'open' || next === 'done' || next === 'blocked') void setStatus(task, next);
             }}
             onCancel={() => void cancelTask(task)}
           />
@@ -487,9 +490,7 @@ export function TasksPage() {
               agentById={org.agentById}
               onOpenDetail={(task) => setDrawerId(task.id)}
               onStatusChange={(task, status) => {
-                if (status === 'open' || status === 'done' || status === 'cancelled') {
-                  void setStatus(task, status);
-                }
+                if (isSettableTaskStatus(status)) void setStatus(task, status);
               }}
               onReorder={reorderTask}
             />

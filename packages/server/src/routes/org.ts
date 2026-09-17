@@ -450,8 +450,10 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     const updated = store.getTask(task.id);
     if (updated) context.assistant.emit('task', { type: 'task', task: updated });
     // An assignment thread is told how its work ended - the note rides along
-    // after the patch succeeded and must never fail the patch itself.
-    if (updated && (patch.status === 'done' || patch.status === 'cancelled')) {
+    // after the patch succeeded and must never fail the patch itself. A run
+    // that ends by itself tells its own thread from inside the run; this is
+    // the hand change, where nobody else would.
+    if (updated && patch.status && patch.status !== 'open') {
       await context.assistant.org.notifyTaskStatus(updated, patch.status).catch(() => undefined);
     }
     return updated;

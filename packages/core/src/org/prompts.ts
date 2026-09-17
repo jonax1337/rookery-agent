@@ -40,6 +40,11 @@ export interface OrgSnapshot {
   active: Assignment[];
 }
 
+/** How many of a thread's mails a continued run reads without asking (F4). */
+const THREAD_TAIL_MAILS = 2;
+/** And how much of each of them. */
+const THREAD_TAIL_CHARS = 4000;
+
 const agentById = (snapshot: OrgSnapshot): Map<string, Agent> =>
   new Map(snapshot.agents.map((agent) => [agent.id, agent]));
 
@@ -160,6 +165,8 @@ export function assistantOrgBlock(
       '`update_project` shape the company when the user asks or when a job clearly needs a role',
       'nobody holds. `list_assignments` is the history of what ran; `cancel_assignment` stops a',
       'stuck or unwanted one, and `update_task` with status "cancelled" stops a running task.',
+      'A task whose run ended with a question to whoever asked for it is set to "blocked" by itself',
+      'and waits there; the next mail in its thread carries it on, and you may set that status by hand.',
       '`remember`, `forget` and `search_memory` are your long-term memory of the user;',
       '`get_settings` and `update_settings` are the defaults and limits you work under.',
       '`create_schedule`, `list_schedules`, `update_schedule`, `delete_schedule` and `run_schedule`',
@@ -372,9 +379,12 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
   if (input.skillsIndex) sections.push(input.skillsIndex);
 
   if (input.sourceMailSubject) {
-    // The thread stays out of the prompt: a long conversation would cost more
-    // context than most mails need. What goes in is the index and where to get
-    // the rest, so the agent pays for the history only when it reads it.
+    // Most of the thread stays out of the prompt: a long conversation would
+    // cost more context than most mails need. What goes in is the index and
+    // where to get the rest, so the agent pays for the history only when it
+    // reads it - plus the last two mails at length, because a run that
+    // continues a thread almost always turns on what was said last, and
+    // making it fetch that costs a tool call every time (F4).
     const earlier = input.sourceMailThread ?? [];
     if (earlier.length && input.sourceMailThreadId) {
       // With the id: eight replies in one thread share almost the same
@@ -387,6 +397,8 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
           index + '\nRead the full text with read_mail_thread("' + input.sourceMailThreadId + '") when the answer ' +
           'depends on it.',
       );
+      const recent = earlier.slice(-THREAD_TAIL_MAILS);
+      sections.push(renderMail(recent, snapshot, 'The last of those, at length:', THREAD_TAIL_CHARS));
     }
     sections.push(
       'This assignment arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '". ' +

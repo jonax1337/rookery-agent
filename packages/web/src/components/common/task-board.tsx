@@ -34,10 +34,11 @@ import type { Agent, Task, TaskStatus } from '@/lib/types';
  * job is to compute the next value of each and hand it to the caller; it
  * owns no server state itself.
  *
- * Columns follow `TASK_STATUS_ORDER`. Only `open`/`done`/`cancelled` are
- * columns a person may drop a card into - `planned`/`running`/`failed`
- * belong to the runner, exactly like the row menu already enforces - so a
- * drop into one of those three is rejected and the card springs back.
+ * Columns follow `TASK_STATUS_ORDER`. Only `open`/`blocked`/`done`/
+ * `cancelled` are columns a person may drop a card into -
+ * `planned`/`running`/`failed` belong to the runner, exactly like the row
+ * menu already enforces - so a drop into one of those is rejected and the
+ * card springs back.
  */
 
 export interface TaskBoardProps {

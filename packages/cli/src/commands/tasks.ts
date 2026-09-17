@@ -360,6 +360,8 @@ function paintStatus(status: TaskStatus): string {
       return theme.red(status);
     case 'running':
       return theme.yellow(status);
+    case 'blocked':
+      return theme.cyan(status);
     case 'cancelled':
       return theme.dim(status);
     default:

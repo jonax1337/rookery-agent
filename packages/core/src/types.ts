@@ -1178,7 +1178,12 @@ export interface MailRecipient {
   readAt?: number;
 }
 
-export type TaskStatus = 'open' | 'planned' | 'running' | 'done' | 'failed' | 'cancelled';
+/**
+ * `blocked` is the state a task is in while it waits for an answer: its run
+ * ended with a question to whoever assigned it, so the work is neither done
+ * nor failed. The next mail in its thread continues it.
+ */
+export type TaskStatus = 'open' | 'planned' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 export type TaskPriority = 'low' | 'normal' | 'high';
 
 /**
