@@ -45,6 +45,17 @@ export {
   type PipelineResult,
 } from './memory/dream/score.js';
 export { resolvePolicy } from './memory/dream/policy.js';
+// The block measure (stage 1, AP8): scores what the model read, not what
+// recall returned, against a caller-supplied gain.
+export {
+  deltaIsLabelBacked,
+  isScalarMultiple,
+  measure,
+  normaliseWeights,
+  type DeltaPosition,
+  type GainFunction,
+  type MeasureResult,
+} from './memory/dream/measure.js';
 // The write gate and the night shift: what may enter the bank at all, and
 // what happens to it once nobody is asking anything.
 export {
