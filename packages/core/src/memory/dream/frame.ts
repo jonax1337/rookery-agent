@@ -96,6 +96,26 @@ export function boxFromOptions(options: RecallOptions): RecallBox {
   };
 }
 
+/**
+ * Whether every interval of the box collapsed to the point the caller used
+ * (`lo === hi` everywhere). A point box is what an untraced `recall` frames
+ * with, and on it the interval arithmetic above is not an estimate but the
+ * exact score - which is what lets `scoreFrame` treat the seeds cap as a
+ * measurement-validity statement rather than a delivery decision there.
+ */
+export function isPointBox(box: RecallBox): boolean {
+  const collapsed = <T,>(interval: readonly [T, T]): boolean => interval[0] === interval[1];
+  return (
+    collapsed(box.w.relevance) &&
+    collapsed(box.w.importance) &&
+    collapsed(box.w.recency) &&
+    collapsed(box.w.usage) &&
+    collapsed(box.threshold) &&
+    collapsed(box.hopEntity) &&
+    collapsed(box.hopEdge)
+  );
+}
+
 /** The score interval of one frontier row over the box, tag bonus included. */
 function scoreBounds(
   relevance: number,

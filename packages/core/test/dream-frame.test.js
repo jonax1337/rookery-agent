@@ -451,6 +451,67 @@ test('a box whose lower weight bounds approach zero caps the seeds and abstains'
   });
 });
 
+test('a point box at the seeds cap still delivers: recall never abstains seeds-capped live', () => {
+  withFrozenClock(() => {
+    const store = makeStore();
+    try {
+      // Twenty-six permutations of one token multiset: identical bm25,
+      // importance, updatedAt (frozen clock) and accessCount make the rows
+      // score-equal bit for bit, so every one of them qualifies as a
+      // possible seed and the list hits the cap. UNIQUE(owner, kind,
+      // content) forces permutations - a copy would reinforce one row
+      // instead of adding a second.
+      const words = ['harbor', 'ledger', 'beacon', 'anchor', 'compass'];
+      const permutations = [];
+      const walk = (remaining, prefix) => {
+        if (permutations.length >= 26) return;
+        if (!remaining.length) {
+          permutations.push(prefix.join(' '));
+          return;
+        }
+        for (let index = 0; index < remaining.length; index += 1) {
+          walk([...remaining.slice(0, index), ...remaining.slice(index + 1)], [...prefix, remaining[index]]);
+        }
+      };
+      walk(words, []);
+      assert.equal(permutations.length, 26, 'the fixture really is above the cap');
+      for (const line of permutations) {
+        store.upsertMemory({ kind: 'fact', content: line, importance: 0.5 });
+      }
+
+      const options = { text: words.join(' '), limit: 8, threshold: 0.05 };
+      const frame = fetchFrame(store, { ...options, box: boxFromOptions(options) });
+      assert.equal(frame.possibleSeeds.length, SEEDS_CAP, 'the frontier filled the cap');
+
+      // The live path delivers its limit rows instead of an empty hand: the
+      // cap says the frame is incomplete as a measurement, and on a point
+      // box it is not - the interval arithmetic is exact.
+      const replay = scoreFrame(frame, options);
+      assert.ok(replay.ok, 'a point box never abstains seeds-capped');
+      assert.equal(replay.ranked.length, 8);
+      assert.equal(recall(store, { ...options, touch: false }).length, 8);
+
+      // The night side keeps its abstention: a real box whose list is an
+      // interval-arithmetic superset is still discarded, not inflated.
+      const box = {
+        ...boxFromOptions(options),
+        w: {
+          relevance: [0.0001, 0.55],
+          importance: [0.0001, 0.2],
+          recency: [0.0001, 0.15],
+          usage: [0.0001, 0.1],
+        },
+        threshold: [0, 0.5],
+      };
+      const wide = fetchFrame(store, { text: options.text, limit: 8, box });
+      assert.equal(wide.possibleSeeds.length, SEEDS_CAP);
+      assert.deepEqual(scoreFrame(wide, { limit: 8 }), { ok: false, reason: 'seeds-capped' });
+    } finally {
+      store.close();
+    }
+  });
+});
+
 test('resolvePolicy is one truth for both paths and honours user config', () => {
   const store = makeStore();
   try {

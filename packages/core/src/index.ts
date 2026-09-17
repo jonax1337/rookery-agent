@@ -30,6 +30,7 @@ export {
 export {
   boxFromOptions,
   fetchFrame,
+  isPointBox,
   SEEDS_CAP,
   type FetchFrameOptions,
 } from './memory/dream/frame.js';

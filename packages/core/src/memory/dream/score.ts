@@ -7,7 +7,7 @@ import type {
   ScoreResult,
   ScoredMemory,
 } from '../../types.js';
-import { SEEDS_CAP } from './frame.js';
+import { SEEDS_CAP, isPointBox } from './frame.js';
 import { WEIGHTS, PROFILE_LEAD, byScoreThenId, describe, recencyOf } from '../recall.js';
 
 /**
@@ -51,11 +51,20 @@ export type PipelineResult =
  * the seeds cap was discarded rather than inflated; a degraded turn is not a
  * legitimate miss. Note what is NOT here: "rows came but all fell below the
  * threshold" returns an empty, valid ranking - three worlds, not two.
+ *
+ * The seeds cap is a measurement-validity statement, never a delivery
+ * decision: on a point box (`recall`, every interval collapsed to `lo === hi`)
+ * the interval arithmetic is exact and the top-3 seeds the second hop uses
+ * are always the head of the truncated `possibleSeeds` list, so the scoring
+ * is complete however many equal-scoring rows reached the cap. Only a real
+ * box - the night's replay, whose list is a superset estimate - abstains.
  */
 export function scoreFrame(frame: RecallFrame, policy: FrameScoringPolicy = {}): ScoreResult {
   const limit = policy.limit ?? 8;
   if (limit > frame.box.limitMax) return { ok: false, reason: 'limit-out-of-box' };
-  if (frame.possibleSeeds.length >= SEEDS_CAP) return { ok: false, reason: 'seeds-capped' };
+  if (!isPointBox(frame.box) && frame.possibleSeeds.length >= SEEDS_CAP) {
+    return { ok: false, reason: 'seeds-capped' };
+  }
   if (frame.degraded) return { ok: false, reason: 'degraded-turn' };
 
   const raw = policy.w ?? WEIGHTS;
