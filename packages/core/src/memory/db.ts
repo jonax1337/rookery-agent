@@ -415,6 +415,10 @@ function migrate(db: Db): void {
     CREATE INDEX IF NOT EXISTS idx_dream_traces_session ON dream_traces(session_id, turn_index);
     CREATE INDEX IF NOT EXISTS idx_dream_traces_turn    ON dream_traces(turn_id);
     CREATE INDEX IF NOT EXISTS idx_dream_traces_open    ON dream_traces(finished_at);
+    -- The trace sweep cuts on created_at exactly like the frame sweep does
+    -- (store.ts, sweepDreamTraces); without this index every LIMIT batch of
+    -- the nightly sweep full-scans the table.
+    CREATE INDEX IF NOT EXISTS idx_dream_traces_age    ON dream_traces(created_at);
 
     CREATE TABLE IF NOT EXISTS dream_frames (
       trace_id        TEXT NOT NULL REFERENCES dream_traces(id) ON DELETE CASCADE,

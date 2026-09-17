@@ -48,6 +48,17 @@ test('the dream can read document frequencies through fts5vocab', () => {
   db.close();
 });
 
+test('the sweep cut columns carry their age indexes', () => {
+  const db = openDatabase(':memory:');
+  const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((row) => row.name);
+  // sweepDreamFrames and sweepDreamTraces delete in LIMIT batches on
+  // created_at < ?; without these indexes every batch full-scans its table.
+  for (const index of ['idx_dream_frames_age', 'idx_dream_traces_age']) {
+    assert.ok(indexes.includes(index), `${index} should exist`);
+  }
+  db.close();
+});
+
 test('a contended write waits instead of failing immediately', () => {
   const db = openDatabase(':memory:');
   // The pragma reports its value under the bare column name `timeout`.
