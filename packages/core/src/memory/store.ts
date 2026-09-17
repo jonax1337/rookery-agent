@@ -574,7 +574,11 @@ export class Store {
   }
 
   deleteMemory(id: string): void {
+    // The owner is read before the row goes, so the frame drop afterwards
+    // still knows whose bank the deleted memory belonged to (R17).
+    const row = this.db.prepare('SELECT owner FROM memories WHERE id = ?').get(id) as Row | undefined;
     this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+    if (row) this.dropDreamFramesForOwner(row.owner as string);
   }
 
   /**
