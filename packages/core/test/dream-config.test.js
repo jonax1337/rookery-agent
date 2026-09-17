@@ -17,8 +17,8 @@ import {
  * Two properties are under test: the shape is complete - every key a later
  * package reads exists in the shipped default - and it is honest - no key
  * without a reader, above all no `promote`, which nothing would read in
- * stage 1 (R16). The one assertion that needs the store to write the
- * sleep-run counters is marked todo until AP7 lands them.
+ * stage 1 (R16). The last test needs the store to write the sleep-run
+ * counters, which AP7's createSleepRun literal does.
  */
 
 /** The key table from the build plan, mirrored here so a stray key fails loudly. */
@@ -64,9 +64,7 @@ test('a partial dream patch merges without wiping the rest of the block', () => 
   assert.equal(config.memory.dream.limitMax, 16, 'an untouched neighbour keeps its value');
 });
 
-test('a fresh sleep run carries the dream counters', { todo: true }, () => {
-  // TODO(AP7): the counters are optional on SleepRun until the store writes
-  // them; AP7 sets them in the createSleepRun literal and lifts this todo.
+test('a fresh sleep run carries the dream counters', () => {
   const store = new Store(':memory:');
   try {
     const run = store.createSleepRun({ owner: ASSISTANT_MEMORY_OWNER, trigger: 'manual' });
