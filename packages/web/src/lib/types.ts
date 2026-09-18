@@ -38,7 +38,22 @@ export interface TurnUsage {
 export type MessageBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
-  | { type: 'tool'; call: Extract<AgentEvent, { type: 'tool' }> };
+  | { type: 'tool'; call: Extract<AgentEvent, { type: 'tool' }> }
+  | { type: 'memory'; memories: RecalledMemory[]; turnId?: string };
+
+/**
+ * One memory as an answer keeps it: the id a feedback click posts against and
+ * the sentence its row shows - not the whole `MemoryRecord`, because this is
+ * stored on every answer that recalled anything.
+ *
+ * A type alias rather than an interface: the card reaches assistant-ui as a
+ * message part whose `args` must be `ReadonlyJSONValue`, and only an alias
+ * gets the implicit index signature that assignment needs.
+ */
+export type RecalledMemory = {
+  id: string;
+  content: string;
+};
 
 export interface Message {
   id: string;

@@ -31,6 +31,7 @@ import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { Thread, type ThreadComponents } from '@/components/assistant-ui/elements/thread.aui';
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, EmptyStateGreeting } from '@/components/assistant-ui/elements/empty-state';
+import { MemoryRecallToolUI } from '@/components/assistant-ui/elements/memory-call';
 import { useCancelAssignment } from '@/components/common/entity-actions';
 import { AssignmentTerminal } from '@/components/common/assignment-terminal';
 import { LiveRunList } from '@/components/common/live-run-list';
@@ -432,6 +433,9 @@ export function ChatPage() {
       )}
 
       <div className="min-h-0 flex-1 overflow-hidden">
+        {/* Draws nothing itself: it registers who renders the memories a turn
+            was given, which the transcript carries as a part of its own. */}
+        <MemoryRecallToolUI />
         <Thread components={components} />
       </div>
 

@@ -7,6 +7,13 @@ import type { AgentEvent, MessageBlock } from './types';
  */
 const BLOCK_CLIP = 16000;
 
+/**
+ * A recalled memory is one self-contained sentence, and a turn carries a
+ * handful of them on every single answer - its own, far smaller budget, the
+ * same one core applies.
+ */
+const MEMORY_CLIP = 600;
+
 /** Clip text to `max` characters, marking the cut - core's `util/queue.clip`. */
 function clip(text: string, max: number): string {
   return text.length <= max ? text : text.slice(0, max) + '\n[...clipped]';
@@ -33,13 +40,17 @@ export class TurnBlocks {
     return this.#blocks;
   }
 
-  /** Forget everything - a settled or abandoned turn starts from zero. */
+  /**
+   * Forget everything - a settled or abandoned turn starts from zero. Core's
+   * own `clear` keeps the recall, because there it also runs mid-turn for a
+   * provider fallback; here it only ever runs between turns.
+   */
   clear(): void {
     this.#blocks = [];
     this.#sealed = false;
   }
 
-  /** Fold one streaming event in. Text, thinking and tool events only. */
+  /** Fold one streaming event in. Text, thinking, tool and memory events. */
   apply(event: AgentEvent): void {
     if (event.type === 'text') {
       this.#appendDelta('text', event.delta);
@@ -49,7 +60,11 @@ export class TurnBlocks {
       this.#appendDelta('thinking', event.delta);
       return;
     }
-    if (event.type === 'tool') this.#applyTool(event);
+    if (event.type === 'tool') {
+      this.#applyTool(event);
+      return;
+    }
+    if (event.type === 'memory') this.#applyMemory(event);
   }
 
   /**
@@ -144,5 +159,27 @@ export class TurnBlocks {
         ...(event.isError !== undefined ? { isError: event.isError } : {}),
       },
     };
+  }
+
+  /**
+   * What the turn was handed out of memory, in the place it arrived: before
+   * the first word, which is where it was actually read. Only a `recalled`
+   * event with something in it becomes a block - a turn that recalled nothing
+   * says nothing, rather than saying "0 memories".
+   */
+  #applyMemory(event: Extract<AgentEvent, { type: 'memory' }>): void {
+    if (event.action !== 'recalled') return;
+    // `content ?? ''`: these arrive off the socket, and a row without its
+    // sentence is still a row the turn was given.
+    const memories = (event.items ?? []).map((memory) => ({
+      id: memory.id,
+      content: clip(memory.content ?? '', MEMORY_CLIP),
+    }));
+    if (!memories.length) return;
+    this.#blocks.push({
+      type: 'memory',
+      memories,
+      ...(event.turnId !== undefined ? { turnId: event.turnId } : {}),
+    });
   }
 }

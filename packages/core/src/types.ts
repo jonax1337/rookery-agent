@@ -48,15 +48,28 @@ export interface Message {
 }
 
 /**
+ * One memory as an answer keeps it: the id a feedback click posts against
+ * and the sentence its row shows. Deliberately not the whole `MemoryRecord` -
+ * this is stored on every answer that recalled anything.
+ */
+export interface RecalledMemory {
+  id: string;
+  content: string;
+}
+
+/**
  * One segment of a turn, in arrival order: assistant text, model reasoning,
- * or a tool call. A tool block carries its whole event - the start event as
- * it arrived, with `status: 'end'` and the (clipped) result merged in once
- * the matching end event shows up.
+ * a tool call, or the memories the turn was given before it answered. A tool
+ * block carries its whole event - the start event as it arrived, with
+ * `status: 'end'` and the (clipped) result merged in once the matching end
+ * event shows up. A memory block carries the journal's turn id, because a
+ * verdict on one of its rows is a claim about this turn (concept 4.2b, S6).
  */
 export type MessageBlock =
   | { type: 'text'; text: string }
   | { type: 'thinking'; text: string }
-  | { type: 'tool'; call: Extract<AgentEvent, { type: 'tool' }> };
+  | { type: 'tool'; call: Extract<AgentEvent, { type: 'tool' }> }
+  | { type: 'memory'; memories: RecalledMemory[]; turnId?: string };
 
 export interface TurnUsage {
   inputTokens?: number;

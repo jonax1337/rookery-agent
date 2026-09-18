@@ -25,7 +25,7 @@ after(() => {
   }
 });
 
-function createAssistant(script) {
+function createAssistant(script, { memory = false } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'rookery-blocks-'));
   mkdirSync(join(home, 'run'), { recursive: true });
   const store = new Store(':memory:');
@@ -46,7 +46,9 @@ function createAssistant(script) {
     config: {
       home,
       logLevel: 'silent',
-      memory: { enabled: false, autoExtract: false },
+      // Recall off unless a test is about it; writing memories never on, so a
+      // turn cannot change the bank it was tested against.
+      memory: { enabled: memory, autoExtract: false },
       org: { autoReview: false },
     },
   });
@@ -222,6 +224,79 @@ test('clear resets the transcript for a fresh attempt', () => {
   assert.deepEqual(blocks.blocks, [{ type: 'text', text: 'retry' }]);
 });
 
+/* ------------------------------ the recall ------------------------------ */
+
+test('a recalled batch becomes one block in arrival order, carrying the turn id', () => {
+  const blocks = new TurnBlocks();
+  blocks.apply({
+    type: 'memory',
+    action: 'recalled',
+    count: 2,
+    turnId: 'turn-1',
+    items: [
+      { id: 'm1', content: 'The user prefers short answers.', kind: 'preference', importance: 0.7 },
+      { id: 'm2', content: 'Rookery runs locally.', kind: 'fact', importance: 0.4 },
+    ],
+  });
+  blocks.apply({ type: 'text', delta: 'Short, then.' });
+  assert.deepEqual(blocks.blocks, [
+    {
+      type: 'memory',
+      turnId: 'turn-1',
+      memories: [
+        { id: 'm1', content: 'The user prefers short answers.' },
+        { id: 'm2', content: 'Rookery runs locally.' },
+      ],
+    },
+    { type: 'text', text: 'Short, then.' },
+  ]);
+});
+
+test('an empty recall, a stored event and a long sentence: nothing, nothing, and a clip', () => {
+  const blocks = new TurnBlocks();
+  blocks.apply({ type: 'memory', action: 'recalled', count: 0, items: [], turnId: 'turn-1' });
+  blocks.apply({ type: 'memory', action: 'recalled', count: 1, turnId: 'turn-1' });
+  // Writing a memory is not something the answer was given; only recall is.
+  blocks.apply({
+    type: 'memory',
+    action: 'stored',
+    count: 1,
+    turnId: 'turn-1',
+    items: [{ id: 'm9', content: 'learned just now' }],
+  });
+  assert.equal(blocks.blocks.length, 0);
+
+  // A provider that has not caught up to the contract sends no turn id - the
+  // rows still render, they just have nothing to post a verdict against.
+  blocks.apply({
+    type: 'memory',
+    action: 'recalled',
+    count: 1,
+    items: [{ id: 'm1', content: 'z'.repeat(900) }],
+  });
+  assert.deepEqual(blocks.blocks, [
+    { type: 'memory', memories: [{ id: 'm1', content: 'z'.repeat(600) + '\n[...clipped]' }] },
+  ]);
+});
+
+test('the recall survives clear: it happened before the attempt that died', () => {
+  const blocks = new TurnBlocks();
+  blocks.apply({
+    type: 'memory',
+    action: 'recalled',
+    count: 1,
+    turnId: 'turn-1',
+    items: [{ id: 'm1', content: 'still true on the second provider' }],
+  });
+  blocks.apply({ type: 'text', delta: 'the doomed attempt' });
+  blocks.clear();
+  blocks.apply({ type: 'text', delta: 'the retry' });
+  assert.deepEqual(blocks.blocks, [
+    { type: 'memory', turnId: 'turn-1', memories: [{ id: 'm1', content: 'still true on the second provider' }] },
+    { type: 'text', text: 'the retry' },
+  ]);
+});
+
 /* ------------------------- the runtime wiring ------------------------- */
 
 test('chat persists the interleaved transcript beside the flat views', async () => {
@@ -275,6 +350,43 @@ test('an interrupted turn keeps its open tool block in the transcript', async ()
     { type: 'text', text: 'on it' },
     { type: 'tool', call: { type: 'tool', name: 'read', status: 'start', id: 't1', detail: 'notes.md' } },
   ]);
+  store.close();
+});
+
+test('chat opens the transcript with what the turn was given to read', async () => {
+  const { assistant, store } = createAssistant(
+    [
+      { type: 'text', delta: 'It is nearly done.' },
+      { type: 'done', text: 'It is nearly done.' },
+    ],
+    { memory: true },
+  );
+  store.upsertMemory({
+    kind: 'project',
+    content: 'The user is migrating the billing service to Fastify.',
+    importance: 0.8,
+  });
+
+  const { messages } = await chat(assistant, 'How is the billing migration going?');
+  const answer = messages[1];
+  const recalled = answer.blocks[0];
+  assert.equal(recalled.type, 'memory');
+  assert.equal(recalled.memories.length, 1);
+  assert.match(recalled.memories[0].content, /billing service/);
+  // The same turn id the answer carries: a verdict on one of these rows is a
+  // claim about this turn, not about the session it fell in.
+  assert.equal(recalled.turnId, answer.turnId);
+  assert.deepEqual(answer.blocks[1], { type: 'text', text: 'It is nearly done.' });
+  store.close();
+});
+
+test('a turn that recalled nothing writes no memory block at all', async () => {
+  const { assistant, store } = createAssistant(
+    [{ type: 'text', delta: 'Nothing to go on.' }, { type: 'done', text: 'Nothing to go on.' }],
+    { memory: true },
+  );
+  const { messages } = await chat(assistant, 'How is the billing migration going?');
+  assert.deepEqual(messages[1].blocks, [{ type: 'text', text: 'Nothing to go on.' }]);
   store.close();
 });
 

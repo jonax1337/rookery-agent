@@ -8,6 +8,7 @@ import {
   type ThreadMessageLike,
 } from '@assistant-ui/react';
 import { prettyToolName } from '../hooks/useChat';
+import { MEMORY_RECALL_TOOL } from '../lib/memory-recall';
 import { splitMessageSources } from './message-sources';
 import type { ChatState } from '../hooks/useChat';
 import type {
@@ -96,6 +97,21 @@ function convertMessage(message: RookeryThreadMessage): ThreadMessageLike {
     blocks.forEach((block, index) => {
       if (block.type === 'thinking') {
         if (block.text) content.push({ type: 'reasoning', text: block.text });
+        return;
+      }
+      if (block.type === 'memory') {
+        // The recall reaches the thread as a tool call under a reserved name,
+        // because a part with a component of its own is what assistant-ui
+        // renders; `memory-call.tsx` registers what draws it. An old row has
+        // no such block and so shows nothing at all.
+        content.push({
+          type: 'tool-call',
+          toolCallId: message.id + ':memory:' + index,
+          toolName: MEMORY_RECALL_TOOL,
+          args: { memories: block.memories, ...(block.turnId ? { turnId: block.turnId } : {}) },
+          argsText: '',
+          result: block.memories.length,
+        });
         return;
       }
       if (block.type === 'text') {

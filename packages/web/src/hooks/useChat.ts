@@ -382,6 +382,11 @@ export function useChat(
 
         case 'memory':
           if (event.action === 'recalled' && event.items) {
+            // Into the transcript as well, so what was put in front of the
+            // answer is part of the answer - live in the same shape the
+            // server persists, and structural enough to show at once.
+            partsRef.current.apply(event);
+            paintNow();
             setRecalled(event.items);
             // The turn this batch was recalled in (concept 4.2b, S6) - the
             // real reference a feedback click posts against.

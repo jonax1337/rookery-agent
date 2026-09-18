@@ -17,6 +17,7 @@ import type {
   TurnUsage,
 } from '@rookery/core';
 import { shorten } from '../ui/render.js';
+import { glyph } from './theme.js';
 
 /** One coloured line inside a `notice` entry. */
 export interface NoticeLine {
@@ -164,6 +165,22 @@ export function blockSegments(blocks: LiveBlock[], options: BlockSegmentOptions 
     }
     if (block.type === 'text') {
       segments.push({ kind: 'text', text: block.text, streaming: false });
+      continue;
+    }
+    if (block.type === 'memory') {
+      // A reloaded turn says what it was given the same way the live turn
+      // said it: one dim line, in the place the recall happened. The rows
+      // themselves belong to the web's card, not to a scrollback.
+      const word = block.memories.length === 1 ? 'memory' : 'memories';
+      segments.push({
+        kind: 'note',
+        note: {
+          kind: 'note',
+          id: 'm' + segments.length,
+          icon: glyph.memory,
+          text: block.memories.length + ' ' + word + ' recalled',
+        },
+      });
       continue;
     }
     segments.push({ kind: 'thinking', text: block.text });

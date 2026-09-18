@@ -173,7 +173,10 @@ export function AssignmentTerminal({ assignmentId, status: statusProp, className
                   {block.text}
                 </p>
               );
-            return <TerminalToolRow key={key} event={block.call} />;
+            if (block.type === 'tool') return <TerminalToolRow key={key} event={block.call} />;
+            // What an agent read out of its own memory is its page's business,
+            // not a line in the output its run is streaming.
+            return null;
           })
         )}
       </div>

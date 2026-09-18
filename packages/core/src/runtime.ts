@@ -728,6 +728,12 @@ export class Assistant extends EventEmitter {
     const effort = input.effort ?? this.config.defaultEffort;
 
     let memories: ScoredMemory[] = [];
+    /**
+     * The recall as it went out on the wire, kept so the ordered transcript
+     * can carry it too: the recall happens before the first provider attempt,
+     * and `turnBlocks` below is only born once one is about to start.
+     */
+    let recall: Extract<AgentEvent, { type: 'memory' }> | undefined;
     if (this.config.memory.enabled) {
       yield { type: 'status', label: 'recalling', detail: 'searching memory' };
       // One truth about the recall parameters (concept 9.3): the resolver
@@ -740,7 +746,8 @@ export class Assistant extends EventEmitter {
         // The turn id travels with the list the surface is about to render:
         // a click on one of these rows becomes a label about THIS turn, not
         // about the session it happened in (S6, concept 4.2b).
-        yield { type: 'memory', action: 'recalled', count: memories.length, items: memories, turnId };
+        recall = { type: 'memory', action: 'recalled', count: memories.length, items: memories, turnId };
+        yield recall;
       }
     }
 
@@ -787,6 +794,10 @@ export class Assistant extends EventEmitter {
     // arrival order, kept beside the flat views. One instance spans every
     // pass of every attempt; a provider fallback is the only reset.
     const turnBlocks = new TurnBlocks();
+    // What was put in front of the answer, first in the transcript because it
+    // was first in the turn. It survives `clear()`, so a fallback attempt
+    // keeps it too.
+    if (recall) turnBlocks.apply(recall);
     let providerSessionId = resumed ? session.providerSessionId : undefined;
     let usage: TurnUsage | undefined;
     let lastFatal: string | null = null;

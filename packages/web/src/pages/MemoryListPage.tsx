@@ -32,6 +32,12 @@ import {
   RELATION_LABEL,
   shorten,
 } from '@/lib/format';
+import {
+  applyJudgement,
+  feedbackKey,
+  postMemoryFeedback,
+  type MemoryFeedbackVerdict,
+} from '@/lib/memory-recall';
 import { formatDateTime, formatNumber } from '@/lib/stats';
 import type {
   MemoryKind,
@@ -115,58 +121,6 @@ type PatchFn = (id: string, changes: MemoryPatch, message: string) => Promise<vo
 
 function isScored(item: Row): item is ScoredMemory {
   return 'score' in item;
-}
-
-/* --------------------------- Chat-highlight feedback --------------------------- */
-
-/**
- * The chat highlight as a label channel (concept 4.2b, S6).
- *
- * The highlight already names the memories a turn recalled; what it lacked
- * was a click target and a turn reference. These three are pure on purpose,
- * kept outside the component so each is a name a test can call directly
- * rather than JSX to render.
- */
-export type MemoryFeedbackVerdict = 'point' | 'ballast';
-
-/** The key one turn's judgement of one memory is tracked under. */
-export function feedbackKey(turnId: string, memoryId: string): string {
-  return turnId + ':' + memoryId;
-}
-
-/**
- * Records a judgement. An already-judged key is left untouched: a second
- * click reads back what was already said instead of silently writing a
- * second label - the client-side half of what the store's `(turn_id,
- * target, source)` key already guarantees server-side.
- */
-export function applyJudgement(
-  judged: Record<string, MemoryFeedbackVerdict>,
-  turnId: string,
-  memoryId: string,
-  verdict: MemoryFeedbackVerdict,
-): Record<string, MemoryFeedbackVerdict> {
-  const key = feedbackKey(turnId, memoryId);
-  if (key in judged) return judged;
-  return { ...judged, [key]: verdict };
-}
-
-/**
- * `POST /api/memories/:id/feedback` - the highlight's click target. Throws
- * like every other write on this page, so the caller's try/catch and
- * `reportFailure` handle it the same way `patch` and `forget` do.
- */
-export async function postMemoryFeedback(
-  id: string,
-  turnId: string,
-  verdict: MemoryFeedbackVerdict,
-): Promise<void> {
-  const response = await fetch('/api/memories/' + encodeURIComponent(id) + '/feedback', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ turnId, verdict }),
-  });
-  if (!response.ok) throw new Error('The feedback could not be saved.');
 }
 
 /** What a memory currently is, as the badges the status column draws. */

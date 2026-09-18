@@ -1,6 +1,8 @@
 "use client";
 
 
+import type { ReactNode } from "react";
+
 import { BadgeAlertIcon as CircleAlertIcon, CheckIcon, ChevronRightIcon } from "@/components/icons";
 import {
   Collapsible,
@@ -27,6 +29,13 @@ export interface ToolCallProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   className?: string;
+  /**
+   * The panel's rows, for a call whose content is not a request and a result.
+   * The trigger stays exactly as it is either way: everything the assistant
+   * did before it answered reads as the same kind of thing. Omitted - the
+   * ordinary case - the panel shows `request` and `result`.
+   */
+  children?: ReactNode;
 }
 
 export function ToolCall({
@@ -40,6 +49,7 @@ export function ToolCall({
   open,
   onOpenChange,
   className,
+  children,
 }: ToolCallProps) {
   return (
     <Collapsible
@@ -75,15 +85,19 @@ export function ToolCall({
       </CollapsibleTrigger>
       <CollapsibleContent className={cn(collapsePanel, "outline-none")}>
         <div className={cn(field, "my-1 ml-5 overflow-hidden rounded-lg text-xs")}>
-          <div className="px-3.5 pt-2.5 pb-2">
-            <p className={cn(mono, "text-foreground/35 mb-1")}>Request</p>
-            <pre className="text-muted-foreground max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px]">{request || 'No arguments'}</pre>
-          </div>
-          <div className="bg-foreground/[0.06] mx-3.5 h-px" />
-          <div className="px-3.5 pt-2 pb-2.5">
-            <p className={cn(mono, "text-foreground/35 mb-1")}>Result</p>
-            <pre className="text-foreground/90 max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed">{result || (running ? 'In progress…' : failed ? 'No result received.' : 'Completed without output.')}</pre>
-          </div>
+          {children ?? (
+            <>
+              <div className="px-3.5 pt-2.5 pb-2">
+                <p className={cn(mono, "text-foreground/35 mb-1")}>Request</p>
+                <pre className="text-muted-foreground max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px]">{request || 'No arguments'}</pre>
+              </div>
+              <div className="bg-foreground/[0.06] mx-3.5 h-px" />
+              <div className="px-3.5 pt-2 pb-2.5">
+                <p className={cn(mono, "text-foreground/35 mb-1")}>Result</p>
+                <pre className="text-foreground/90 max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed">{result || (running ? 'In progress…' : failed ? 'No result received.' : 'Completed without output.')}</pre>
+              </div>
+            </>
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>

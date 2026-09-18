@@ -9,6 +9,13 @@ import { clip } from './queue.js';
 const BLOCK_CLIP = 16000;
 
 /**
+ * A recalled memory is one self-contained sentence, and a turn carries a
+ * handful of them on every single answer. Its own, far smaller budget, so a
+ * runaway row cannot make the transcript expensive.
+ */
+const MEMORY_CLIP = 600;
+
+/**
  * Folds a turn's streaming events into the ordered transcript the original
  * Claude Code window shows: text, thinking and tool calls interleaved in the
  * order they actually arrived.
@@ -28,13 +35,18 @@ export class TurnBlocks {
     return this.#blocks;
   }
 
-  /** Forget everything - a provider fallback restarts the turn from zero. */
+  /**
+   * Forget what the provider produced - a provider fallback restarts the turn
+   * from zero. The recall is not the provider's work: it happened once, before
+   * the first attempt, and is not repeated for the second one, so its block
+   * stays instead of being dropped from a turn that really did use it.
+   */
   clear(): void {
-    this.#blocks = [];
+    this.#blocks = this.#blocks.filter((block) => block.type === 'memory');
     this.#sealed = false;
   }
 
-  /** Fold one streaming event in. Text, thinking and tool events only. */
+  /** Fold one streaming event in. Text, thinking, tool and memory events. */
   apply(event: AgentEvent): void {
     if (event.type === 'text') {
       this.#appendDelta('text', event.delta);
@@ -44,7 +56,11 @@ export class TurnBlocks {
       this.#appendDelta('thinking', event.delta);
       return;
     }
-    if (event.type === 'tool') this.#applyTool(event);
+    if (event.type === 'tool') {
+      this.#applyTool(event);
+      return;
+    }
+    if (event.type === 'memory') this.#applyMemory(event);
   }
 
   /**
@@ -140,5 +156,25 @@ export class TurnBlocks {
         ...(event.isError !== undefined ? { isError: event.isError } : {}),
       },
     };
+  }
+
+  /**
+   * What the turn was handed out of memory, in the place it arrived: before
+   * the first word, which is where it was actually read. Only a `recalled`
+   * event with something in it becomes a block - a turn that recalled nothing
+   * says nothing, rather than saying "0 memories".
+   */
+  #applyMemory(event: Extract<AgentEvent, { type: 'memory' }>): void {
+    if (event.action !== 'recalled') return;
+    const memories = (event.items ?? []).map((memory) => ({
+      id: memory.id,
+      content: clip(memory.content, MEMORY_CLIP),
+    }));
+    if (!memories.length) return;
+    this.#blocks.push({
+      type: 'memory',
+      memories,
+      ...(event.turnId !== undefined ? { turnId: event.turnId } : {}),
+    });
   }
 }
