@@ -811,6 +811,82 @@ test('a task the assistant handed out tells its thread when it fails', async () 
   assistant.close();
 });
 
+test('a delegated task reports back to the agent who ordered it, not to the user', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const victor = hire(assistant, { name: 'Victor' });
+  const mara = hire(assistant, { name: 'Mara' });
+
+  // What `assign` builds: one agent opens a task for another. The user never
+  // ordered this and must not be handed a receipt for it.
+  const task = store.org.createTask({
+    orgId: org.id,
+    title: 'Raise the upload limit',
+    description: 'Ten megabytes is not enough.',
+    assigneeId: mara.id,
+    createdBy: 'agent',
+    createdByAgentId: victor.id,
+  });
+  const order = store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'agent', id: victor.id },
+    to: [{ kind: 'agent', id: mara.id }],
+    subject: task.title,
+    body: task.description,
+    kind: 'assignment',
+  });
+  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
+  store.org.updateTask(task.id, { status: 'failed', error: 'boom' });
+
+  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'failed', order.createdAt);
+
+  const note = store.org.thread(org.id, order.threadId).at(-1);
+  assert.match(note.body, /failed/, 'the thread still hears how it ended');
+  const to = note.recipients.filter((entry) => entry.box === 'to');
+  assert.equal(to.length, 1);
+  assert.equal(to[0].recipientKind, 'agent');
+  assert.equal(to[0].recipientId, victor.id, 'the note goes to whoever asked for the work');
+  assert.ok(
+    !note.recipients.some((entry) => entry.recipientKind === 'user' && entry.box === 'to'),
+    'the user is not on To for a task they never ordered',
+  );
+  assistant.close();
+});
+
+test('a task the user ordered still reports to the user', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const task = store.org.createTask({
+    orgId: org.id,
+    title: 'Raise the upload limit',
+    description: 'Ten megabytes is not enough.',
+    assigneeId: mara.id,
+    createdBy: 'user',
+  });
+  const order = store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'user' },
+    to: [{ kind: 'agent', id: mara.id }],
+    subject: task.title,
+    body: task.description,
+    kind: 'assignment',
+  });
+  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
+  store.org.updateTask(task.id, { status: 'failed', error: 'boom' });
+
+  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'failed', order.createdAt);
+
+  const note = store.org.thread(org.id, order.threadId).at(-1);
+  const to = note.recipients.filter((entry) => entry.box === 'to');
+  assert.equal(to.length, 1);
+  assert.equal(to[0].recipientKind, 'user');
+  assistant.close();
+});
+
 test('the board says what a blocked task waits for', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);

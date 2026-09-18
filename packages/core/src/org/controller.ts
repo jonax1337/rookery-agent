@@ -1995,14 +1995,24 @@ export class OrgController extends EventEmitter {
     const asked = (entry: Mail): boolean =>
       entry.fromKind === task.createdBy && (task.createdBy !== 'agent' || entry.fromAgentId === task.createdByAgentId);
     if (mails.some((entry) => entry.createdAt >= since && !asked(entry))) return;
+    // The note is addressed to whoever asked for the work, which is not always
+    // the user: an agent that delegates through `assign` opens a task of its
+    // own, and a receipt for it in the user's inbox is a receipt for something
+    // they never ordered. On a morning of ordinary delegation that was eight
+    // of them. They still see it when they are on the thread - `#replyCc`
+    // keeps everyone the conversation already had.
+    const requester: MailWho =
+      task.createdBy === 'agent' && task.createdByAgentId
+        ? { kind: 'agent', id: task.createdByAgentId }
+        : { kind: task.createdBy };
     try {
       await this.#deliverMail({
         orgId,
         from: { kind: 'assistant' },
-        to: [{ kind: 'user' }],
+        to: [requester],
         // Everyone the conversation already has stays on it; the status note
         // is bookkeeping, but bookkeeping the assignee should see.
-        cc: this.#replyCc(latest, { kind: 'assistant' }, { kind: 'user' }),
+        cc: this.#replyCc(latest, { kind: 'assistant' }, requester),
         subject: latest.subject.startsWith('Re: ') ? latest.subject : 'Re: ' + latest.subject,
         body: statusNote(task, status),
         inReplyTo: latest.id,
