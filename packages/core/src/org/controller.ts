@@ -46,6 +46,7 @@ import { extractMemories, smallModelFor } from '../memory/extractor.js';
 import { admitCandidates, linkEntities } from '../memory/gate.js';
 import type { SleepRunner } from '../memory/sleep.js';
 import { clip, shorten, tail, titleFromBrief } from '../util/queue.js';
+import { formatAge, formatDay, formatWhen } from '../util/time.js';
 import type { BridgeServer, ToolCallResult, ToolHandler } from './bridge.js';
 import { buildAgentPrompt, renderBoard, renderMail, renderOrgOverview, renderSchedules, type OrgSnapshot } from './prompts.js';
 import {
@@ -513,8 +514,16 @@ export class OrgController extends EventEmitter {
           text: rows
             .map((entry) => {
               const who = byId.get(entry.agentId)?.slug ?? '?';
-              const when = new Date(entry.createdAt).toISOString().slice(0, 16).replace('T', ' ');
-              const took = entry.durationMs ? ' ' + Math.round(entry.durationMs / 1000) + 's' : '';
+              // Local wall clock, and for anything still going the elapsed
+              // span as well: "has this run too long" is the question the
+              // board watcher asks, and a span cannot be read in the wrong
+              // timezone the way a stamp can.
+              const when = formatWhen(entry.createdAt);
+              const took = entry.durationMs
+                ? ' ' + Math.round(entry.durationMs / 1000) + 's'
+                : entry.status === 'running'
+                  ? ' running ' + formatAge(entry.createdAt)
+                  : '';
               // The name, never the brief: three runs of the same errand open
               // with the same twenty words, and a list of those tells nobody
               // which is which (concept 7.1).
@@ -3356,7 +3365,7 @@ export function describeAgentPerformance(agent: Agent, org: OrgStore): string {
   if (actions.length) {
     lines.push('', 'Personnel record:');
     for (const action of actions) {
-      const when = new Date(action.createdAt).toISOString().slice(0, 10);
+      const when = formatDay(action.createdAt);
       lines.push('- ' + when + ' ' + action.kind + ' (stage ' + action.stage + '): ' + clip(action.reason, 200));
     }
   } else {

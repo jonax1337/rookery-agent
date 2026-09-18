@@ -323,6 +323,7 @@ export {
 } from './skills/import.js';
 export { EventQueue, clip, shorten, titleFromBrief } from './util/queue.js';
 export { TurnBlocks } from './util/blocks.js';
+export { formatAge, formatDay, formatNow, formatWhen, localOffset, localZone } from './util/time.js';
 export * from './gateway/policy.js';
 
 export {

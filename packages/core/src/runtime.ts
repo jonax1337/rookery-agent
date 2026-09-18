@@ -51,6 +51,7 @@ import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
 import { runCronScript } from './cron/script.js';
 import { EventQueue, titleFromBrief } from './util/queue.js';
+import { formatNow } from './util/time.js';
 import { TurnBlocks } from './util/blocks.js';
 
 /**
@@ -1248,7 +1249,8 @@ export class Assistant extends EventEmitter {
     } else {
       sessionId = this.createSession({ title: 'Schedule: ' + job.name, kind: 'schedule', projectId: job.projectId }).id;
     }
-    const when = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+    // Same clock, same zone, same wording as every other stamp a model reads.
+    const when = formatNow();
     const prompt =
       'Automatic run of schedule “' + job.name + '” (' +
       (job.schedule ? describeCron(job.schedule) : 'fired by an event') + '), ' + when + '. ' +

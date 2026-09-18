@@ -1,4 +1,5 @@
 import type { Provider } from '../types.js';
+import { formatDay } from '../util/time.js';
 
 /**
  * Model calls behind agent performance management
@@ -108,7 +109,7 @@ export interface WeakReview {
 function reviewLines(reviews: WeakReview[]): string {
   return reviews
     .map((review) => {
-      const when = new Date(review.createdAt).toISOString().slice(0, 10);
+      const when = formatDay(review.createdAt);
       return (
         '- ' + when + ' [' + review.source + '] overall ' + review.overall +
         (review.tags.length ? ' (' + review.tags.join(', ') + ')' : '') +
@@ -292,7 +293,7 @@ export async function draftHandover(provider: Provider, input: HandoverInput): P
   if (!input.memories.length) return null;
   const lines = input.memories
     .slice(0, 200)
-    .map((memory) => '- (' + new Date(memory.createdAt).toISOString().slice(0, 10) + ') ' + memory.content)
+    .map((memory) => '- (' + formatDay(memory.createdAt) + ') ' + memory.content)
     .join('\n');
   const prompt =
     HANDOVER_PROMPT +

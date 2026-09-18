@@ -18,6 +18,7 @@ import { renderMemoryBlock } from '../memory/recall.js';
 import { PONYTAIL_RULESET } from './ponytail.js';
 import { describeCronJob } from '../cron/scheduler.js';
 import { clip, shorten } from '../util/queue.js';
+import { formatAge, formatNow } from '../util/time.js';
 
 /**
  * Prompt text for the organisation.
@@ -522,7 +523,10 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
     sections.push('Handover from ' + input.handoverFrom.predecessorName + ':\n' + input.handoverFrom.text);
   }
 
-  sections.push('Today is ' + new Date().toISOString().slice(0, 10) + '.');
+  // The clock a model judges every other stamp against, in this machine's own
+  // zone. A UTC date here and a local one elsewhere is how a healthy run comes
+  // to look hours old.
+  sections.push('It is now ' + formatNow() + '.');
   return sections.join('\n\n');
 }
 
@@ -563,8 +567,6 @@ function waitingOn(task: Task, store: OrgStore): string {
   if (task.status !== 'blocked') return '';
   const thread = store.getMailThreadForTask(task.orgId, task.id);
   const last = thread ? store.thread(task.orgId, thread.threadId, { limit: 1 }).at(-1) : null;
-  const waited = Math.max(0, Date.now() - (task.updatedAt || task.createdAt));
-  const hours = Math.floor(waited / 3_600_000);
-  const span = hours >= 24 ? Math.floor(hours / 24) + 'd' : hours >= 1 ? hours + 'h' : Math.floor(waited / 60_000) + 'm';
+  const span = formatAge(task.updatedAt || task.createdAt, Date.now(), 'minute');
   return ' · waiting ' + span + (last ? ' on "' + shorten(last.subject, 60) + '"' : '');
 }

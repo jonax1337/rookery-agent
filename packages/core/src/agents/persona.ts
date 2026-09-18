@@ -2,6 +2,7 @@ import type { Message, RookeryConfig, ScoredMemory } from '../types.js';
 import { renderMemoryBlock } from '../memory/recall.js';
 import type { Store } from '../memory/store.js';
 import { renderProfile } from '../profile.js';
+import { formatNow } from '../util/time.js';
 
 /**
  * Context assembly for the assistant's own voice.
@@ -187,7 +188,9 @@ export function buildSystemPrompt(input: ContextInput): string {
   for (const hint of input.toolHints ?? []) sections.push(hint);
   if (input.skillsIndex) sections.push(input.skillsIndex);
 
-  sections.push('Today is ' + new Date().toISOString().slice(0, 10) + '.');
+  // Local wall clock with its zone, not a UTC date: the assistant compares
+  // this against run and mail stamps, and a mixed pair invents hours.
+  sections.push('It is now ' + formatNow() + '.');
 
   return sections.join('\n\n');
 }
