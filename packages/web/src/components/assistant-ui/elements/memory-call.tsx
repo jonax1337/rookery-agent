@@ -3,11 +3,10 @@
 import { useCallback, useState } from "react";
 import { makeAssistantToolUI, type ToolCallMessagePartComponent } from "@assistant-ui/react";
 
-import { BanIcon as CircleXIcon, CircleCheckIcon } from "@/components/icons";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { ButtonGroup } from "@/components/ui/button-group";
+import { ThumbsDownIcon, ThumbsUpIcon } from "lucide-react";
+
 import { Spinner } from "@/components/ui/spinner";
+import { TooltipIconButton } from "@/components/tooltip-icon-button";
 import { reportFailure } from "@/lib/errors";
 import { shorten } from "@/lib/format";
 import {
@@ -118,44 +117,61 @@ interface MemoryVerdictProps {
   onJudge(memory: RecalledMemory, verdict: MemoryFeedbackVerdict): Promise<void>;
 }
 
-/** One row's two words about one memory - or, once said, what was said. */
+/**
+ * One row's verdict on one memory: two thumbs, and once one is pressed, only
+ * the one that was pressed.
+ *
+ * Icons rather than words, because the question is asked of every delivered
+ * row and a pair of labelled buttons per row shouts louder than the sentence
+ * being judged. `StarIcon` on the assignment page is the precedent for
+ * reaching straight into lucide for a rating control.
+ */
 function MemoryVerdict({ memory, verdict, busy, onJudge }: MemoryVerdictProps) {
+  const name = shorten(memory.content, 40);
   if (verdict) {
+    const up = verdict === 'point';
+    const Icon = up ? ThumbsUpIcon : ThumbsDownIcon;
     return (
-      <Badge variant={verdict === 'point' ? 'secondary' : 'outline'} className="shrink-0 gap-1">
-        {verdict === 'point' ? (
-          <CircleCheckIcon aria-hidden="true" />
-        ) : (
-          <CircleXIcon aria-hidden="true" />
+      <span
+        className={cn(
+          'flex size-6 shrink-0 items-center justify-center',
+          up ? 'text-foreground' : 'text-muted-foreground',
         )}
-        {verdict === 'point' ? 'Was the point' : 'Was ballast'}
-      </Badge>
+        title={up ? 'You said this one helped' : "You said this one did not belong"}
+      >
+        <Icon className="size-4 fill-current" aria-hidden="true" />
+        <span className="sr-only">
+          {(up ? 'You said “' : 'You said “') + name + (up ? '” helped' : '” did not belong')}
+        </span>
+      </span>
     );
   }
-  const name = shorten(memory.content, 40);
   return (
-    <ButtonGroup className="shrink-0">
-      <Button
-        variant="outline"
-        size="xs"
-        aria-label={'Mark “' + name + '” as the point'}
+    <span className="flex shrink-0 items-center gap-0.5">
+      {/*
+        The tooltip stays short because the sentence it judges is right next to
+        it; repeating it there would only push the row wider. The accessible
+        name quotes it, because a screen reader has no "right next to it".
+      */}
+      <TooltipIconButton
+        tooltip="This one helped"
+        aria-label={'“' + name + '” helped'}
+        side="top"
         disabled={busy}
         onClick={() => void onJudge(memory, 'point')}
       >
-        {busy ? <Spinner /> : <CircleCheckIcon aria-hidden="true" />}
-        Was the point
-      </Button>
-      <Button
-        variant="outline"
-        size="xs"
-        aria-label={'Mark “' + name + '” as ballast'}
+        {busy ? <Spinner /> : <ThumbsUpIcon aria-hidden="true" />}
+      </TooltipIconButton>
+      <TooltipIconButton
+        tooltip="This one did not belong"
+        aria-label={'“' + name + '” did not belong'}
+        side="top"
         disabled={busy}
         onClick={() => void onJudge(memory, 'ballast')}
       >
-        {busy ? <Spinner /> : <CircleXIcon aria-hidden="true" />}
-        Was ballast
-      </Button>
-    </ButtonGroup>
+        {busy ? <Spinner /> : <ThumbsDownIcon aria-hidden="true" />}
+      </TooltipIconButton>
+    </span>
   );
 }
 

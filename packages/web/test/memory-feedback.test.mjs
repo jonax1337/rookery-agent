@@ -346,6 +346,19 @@ test('the card is the tool-call template, judges through the shared rule, and ne
 
   // A row already judged reads back what was said instead of voting again.
   assert.match(source, /if \(verdict\) \{/);
+
+  // Icons, not words. The question is put to every delivered row, and a pair
+  // of labelled buttons per row shouts louder than the sentence being judged.
+  assert.match(source, /ThumbsUpIcon/);
+  assert.match(source, /ThumbsDownIcon/);
+  assert.match(source, /TooltipIconButton/);
+  assert.ok(
+    !/Was the point|Was ballast/.test(source),
+    'the control carries no shouted label beside every row',
+  );
+  // Icon-only still has to say what it does out loud.
+  assert.match(source, /tooltip=\{/);
+  assert.match(source, /sr-only/);
 });
 
 test('the card registers itself by name, standalone, so it is not folded into the tool group', async () => {
