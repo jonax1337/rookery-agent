@@ -356,9 +356,12 @@ test('the card is the tool-call template, judges through the shared rule, and ne
     !/Was the point|Was ballast/.test(source),
     'the control carries no shouted label beside every row',
   );
-  // Icon-only still has to say what it does out loud.
-  assert.match(source, /tooltip=\{/);
-  assert.match(source, /sr-only/);
+  // Icon-only still has to say what it does out loud: a visible tooltip, and
+  // an accessible name that quotes the sentence, since a screen reader cannot
+  // see the row the thumb sits next to.
+  assert.match(source, /tooltip="This one helped"/);
+  assert.match(source, /tooltip="This one did not belong"/);
+  assert.match(source, /aria-label=\{/);
 });
 
 test('the card registers itself by name, standalone, so it is not folded into the tool group', async () => {
