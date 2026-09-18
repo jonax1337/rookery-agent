@@ -35,9 +35,11 @@ import { Store } from './memory/store.js';
 import { byScoreThenId, coreProfile, dropContradicted, recall } from './memory/recall.js';
 import { fetchFrame } from './memory/dream/frame.js';
 import { resolvePolicy } from './memory/dream/policy.js';
+import { DEFAULT_SPLIT_RATES, splitOf } from './memory/dream/evaluate.js';
+import { episodeFromEvents } from './memory/dream/trajectory.js';
 import { extractMemories, smallModelFor } from './memory/extractor.js';
 import { admitCandidates, linkEntities } from './memory/gate.js';
-import { SleepRunner } from './memory/sleep.js';
+import { SleepRunner, type PromotionNotice } from './memory/sleep.js';
 import { buildSystemPrompt, deriveTitle } from './agents/persona.js';
 import { BridgeServer } from './org/bridge.js';
 import { OrgController } from './org/controller.js';
@@ -200,6 +202,19 @@ function declaredDreamBox(policy: RecallPolicy, limitMax: number): RecallBox {
   };
 }
 
+/**
+ * What the journal wrapper learns while the turn it wraps is running.
+ *
+ * `chat()` opens and closes the journal but does not resolve the session -
+ * `#chatTurn` does, once the prompt has survived its first checks - so the
+ * two facts the wrapper needs afterwards are handed back through this one
+ * object rather than re-derived from the store.
+ */
+interface TurnJournalState {
+  begun: boolean;
+  sessionId?: string;
+}
+
 export interface ChatInput {
   text: string;
   sessionId?: string;
@@ -343,11 +358,15 @@ export class Assistant extends EventEmitter {
       timeoutMs: this.config.org.assignmentTimeoutMs,
     });
     // Before the controller: the `sleep_now` tool needs it at construction.
+    // The promotion hook is a closure rather than `this.org.sendUserMail`
+    // itself for exactly that reason - the controller does not exist yet
+    // here, and it does by the time a night can promote anything.
     this.sleep = new SleepRunner({
       store: this.store,
       registry: this.providers,
       config: this.config,
       logger: this.log,
+      onPromotion: (notice) => this.#announcePromotion(notice),
     });
     // Before the controller, like the night shift: the `ask_user` tool needs
     // it at construction. Its own emitter is what the Assistant re-broadcasts:
@@ -643,13 +662,19 @@ export class Assistant extends EventEmitter {
    */
   async *chat(input: ChatInput): AsyncGenerator<AgentEvent, void, unknown> {
     const turnId = input.turnId ?? randomUUID();
-    const journal = { begun: false };
+    const startedAt = Date.now();
+    const journal: TurnJournalState = { begun: false };
     try {
       for await (const event of this.#chatTurn(input, turnId, journal)) {
         if (journal.begun) this.store.turns.append(turnId, event as unknown as Record<string, unknown>);
         yield event;
       }
-      if (journal.begun) this.store.turns.settle(turnId, 'done', Date.now());
+      if (journal.begun) {
+        this.store.turns.settle(turnId, 'done', Date.now());
+        // Only an orderly end is an episode: a turn that died mid-flight has
+        // no outcome to judge a trajectory against (concept 7.2).
+        this.#recordTrialEpisode(turnId, journal, startedAt);
+      }
     } catch (error) {
       // The turn died mid-flight. Whatever reached the journal is the only
       // record of it - it stays, marked, rather than vanishing whole.
@@ -661,7 +686,7 @@ export class Assistant extends EventEmitter {
   async *#chatTurn(
     input: ChatInput,
     turnId: string,
-    journal: { begun: boolean },
+    journal: TurnJournalState,
   ): AsyncGenerator<AgentEvent, void, unknown> {
     const prompt = input.text.trim();
     if (!prompt) {
@@ -672,6 +697,7 @@ export class Assistant extends EventEmitter {
     const session = this.#resolveSession(input);
     this.store.turns.begin(turnId, session.id, 'chat', Date.now());
     journal.begun = true;
+    journal.sessionId = session.id;
     // Chat is exclusively the assistant's own conversation; a stale
     // `agentId` on an old session is never read here any more.
     const owner = ASSISTANT_MEMORY_OWNER;
@@ -709,9 +735,12 @@ export class Assistant extends EventEmitter {
       // so a config change cannot leave the record and the live turn
       // disagreeing about which policy produced the prompt.
       const policy = resolvePolicy(this.store, this.config, owner, 'recall');
-      memories = this.#turnMemories(session, owner, prompt, policy);
+      memories = this.#turnMemories(session, owner, prompt, policy, turnId);
       if (memories.length) {
-        yield { type: 'memory', action: 'recalled', count: memories.length, items: memories };
+        // The turn id travels with the list the surface is about to render:
+        // a click on one of these rows becomes a label about THIS turn, not
+        // about the session it happened in (S6, concept 4.2b).
+        yield { type: 'memory', action: 'recalled', count: memories.length, items: memories, turnId };
       }
     }
 
@@ -743,7 +772,10 @@ export class Assistant extends EventEmitter {
     ]
       .filter(Boolean)
       .join('\n\n');
-    this.store.addMessage({ sessionId: session.id, role: 'user', content: prompt });
+    // The journal's id, on the message (concept 9.4): it is what makes a
+    // quote from this prompt locatable to this exact turn later, instead of
+    // to a position counted off the transcript.
+    this.store.addMessage({ sessionId: session.id, role: 'user', content: prompt, turnId });
     if (session.messageCount === 0 && session.title === 'New conversation') {
       this.store.updateSession(session.id, { title: deriveTitle(prompt) });
     }
@@ -1001,6 +1033,7 @@ export class Assistant extends EventEmitter {
       sessionId: session.id,
       role: 'assistant',
       content: answer,
+      turnId,
       provider: usedProvider,
       model: usedModel,
       usage: turnUsage,
@@ -1331,6 +1364,105 @@ export class Assistant extends EventEmitter {
   }
 
   /**
+   * Index a finished turn as a trial episode (concept 7.2, Phase 6).
+   *
+   * `dream.trialEpisodes` gets its reader here rather than in the night,
+   * for the plain reason that the night cannot reach the turn journal: the
+   * episode is an INDEX over `turn_events`, and only the process that just
+   * wrote those rows knows the turn is over. Zero by default, so this is a
+   * single config read and a return on every turn Rookery has ever run.
+   *
+   * The key is a quota, not a switch: `trialEpisodes` many episodes per
+   * bank, then nothing. Phase 6 is a sample to validate a mechanism on, not
+   * a recorder to leave running - and a trial that never stops would keep
+   * pointing at verbatim journal rows long after anybody looked at it.
+   *
+   * Nothing in here may cost the turn. The turn is finished and answered by
+   * the time this runs; a store that refuses the write costs the episode
+   * and a debug line (10.5).
+   */
+  #recordTrialEpisode(turnId: string, journal: TurnJournalState, startedAt: number): void {
+    const trial = Math.round(clampNumber(this.config.memory.dream.trialEpisodes, 0, 1000));
+    if (trial <= 0) return;
+    const owner = ASSISTANT_MEMORY_OWNER;
+    try {
+      // Read with the quota as the limit: the question is "are there already
+      // enough", never "how many are there".
+      if (this.store.dreamEpisodes(owner, { limit: trial }).length >= trial) return;
+      const sessionId = journal.sessionId;
+      // The same session-wise split the recorder stamps on a trace (E3): a
+      // turn outside any conversation is its own cluster.
+      const split = splitOf(sessionId ?? turnId, DEFAULT_SPLIT_RATES);
+      const { episode } = episodeFromEvents(turnId, this.store.turns.events(turnId), {
+        owner,
+        kind: 'turn',
+        slot: 'recall',
+        ...(sessionId ? { sessionId } : {}),
+        startedAt,
+        finishedAt: Date.now(),
+        holdout: split === 'holdout',
+        audit: split === 'audit',
+      });
+      this.store.recordDreamEpisode(episode);
+    } catch (error) {
+      this.log.debug('Trial episode not recorded', { turnId, error: (error as Error).message });
+    }
+  }
+
+  /**
+   * A retrieval policy went in force, so the user hears about it (S26,
+   * concept 9.6). This is the one place that can say so: the night owns the
+   * promotion and knows nothing about mail, the controller owns the mail and
+   * knows nothing about the night, and the runtime holds both.
+   *
+   * Everything quoted is a number, an id or the promotion's own stored
+   * rationale, which carries no verbatim text by construction (E19/S21), so
+   * the message can outlive the memories the evaluation stood on.
+   *
+   * A failing send costs the message, never the night: `#announcePromotion`
+   * in sleep.ts catches whatever comes back out of here, and this catches
+   * first so the warning names the mail rather than the hook.
+   */
+  async #announcePromotion(notice: PromotionNotice): Promise<void> {
+    const version = notice.version;
+    const evaluation = notice.evaluation;
+    const body = [
+      'A new ' + notice.slot + ' policy is in force for ' + notice.owner +
+        ' (version ' + version.version + ').',
+      '',
+      notice.rationale,
+      '',
+      'delta ' + evaluation.delta.toFixed(4) +
+        ', ci_low ' + evaluation.ciLow.toFixed(4) +
+        ', over ' + evaluation.closed + ' of ' + evaluation.traces + ' traces' +
+        (evaluation.auditCiLow === undefined
+          ? ''
+          : ', audit ci_low ' + evaluation.auditCiLow.toFixed(4)) +
+        '.',
+      'No further promotion of this slot before ' + new Date(notice.cooldownUntil).toISOString() + '.',
+      '',
+      'Take it back on its own: POST /api/dream/policies/' + version.id + '/revert' +
+        (notice.prevActiveId ? ' (restores version ' + notice.prevActiveId + ').' : '.'),
+      'Take the whole night back: undo sleep run ' + notice.runId + '.',
+    ].join('\n');
+    try {
+      await this.org.sendUserMail({
+        orgId: this.org.activeOrganization().id,
+        to: ['user'],
+        subject: 'Retrieval policy ' + notice.slot + ' v' + version.version + ' is in force',
+        body,
+      });
+    } catch (error) {
+      this.log.warn('Could not mail the promotion notice', {
+        owner: notice.owner,
+        slot: notice.slot,
+        policy: version.id,
+        error: (error as Error).message,
+      });
+    }
+  }
+
+  /**
    * The turn's merged memory list: the ranking plus the profile, pairs that
    * cannot both be true reduced to the newer sentence, and the whole merge
    * totally ordered - score descending, id ascending (R11), so a tie can no
@@ -1344,8 +1476,22 @@ export class Assistant extends EventEmitter {
    * recorder may not change the turn it records - and everything it writes
    * sits in the store's SAVEPOINT bracket (R9), so a framed turn is one
    * transaction or nothing.
+   *
+   * `turnId` is the JOURNAL's id, handed down from `chat()` - not one minted
+   * here. That is the whole of concept 9.4's "one turn id instead of three":
+   * the trace, the message and the journal now say the same word, so a
+   * correction quote found in `messages.turn_id` lands on exactly the trace
+   * that produced the prompt it corrects. Minted separately, `locateTurn`
+   * could never match one and every correction label fell back to session
+   * scope - where, by S3, it can never contribute a gain.
    */
-  #turnMemories(session: Session, owner: string, prompt: string, policy: RecallPolicy): ScoredMemory[] {
+  #turnMemories(
+    session: Session,
+    owner: string,
+    prompt: string,
+    policy: RecallPolicy,
+    turnId: string,
+  ): ScoredMemory[] {
     const options = {
       text: prompt,
       owner,
@@ -1371,12 +1517,19 @@ export class Assistant extends EventEmitter {
     const dream = this.config.memory.dream;
     const limitMax = Math.max(Math.round(clampNumber(dream.limitMax, 4, 16)), policy.limit);
     const maxFrameBytes = Math.round(clampNumber(dream.maxFrameBytes, 1000, 2_000_000));
-    // One id per turn: every traced call of this turn carries it, and labels
-    // attach to it rather than to any single call (R19).
-    const turnId = randomUUID();
+    // Which half of the evidence this turn belongs to, stamped at record
+    // time (E3). The unit is the SESSION, never the trace: two traces of one
+    // session can never disagree, and the rates come from the one exported
+    // constant the night reads back months later - if the recorder and the
+    // evaluation ever picked their rates separately, a session would change
+    // sides between the stamp and the measurement and the holdout would
+    // quietly stop being one.
+    const split = splitOf(session.id, DEFAULT_SPLIT_RATES);
     let memories: ScoredMemory[] = [];
     this.store.recordDreamTurn(() => {
       const trace = this.store.beginTrace({
+        // One id per turn: every traced call of this turn carries it, and
+        // labels attach to it rather than to any single call (R19).
         turnId,
         owner,
         kind: 'turn',
@@ -1389,6 +1542,8 @@ export class Assistant extends EventEmitter {
         turnIndex: session.messageCount,
         policySet: { recall: policy },
         framed: true,
+        holdout: split === 'holdout',
+        audit: split === 'audit',
       });
       // The record, fetched before the ranking: the frame freezes
       // `access_count`, and the values worth freezing are the ones the live

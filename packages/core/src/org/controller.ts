@@ -42,6 +42,7 @@ import { isUsageLimitError, providerBlocked, rememberUsageFailure } from '../pro
 import type { Store } from '../memory/store.js';
 import type { OrgStore } from './store.js';
 import { byScoreThenId, coreProfile, recall } from '../memory/recall.js';
+import { resolvePolicy } from '../memory/dream/policy.js';
 import { extractMemories, smallModelFor } from '../memory/extractor.js';
 import { admitCandidates, linkEntities } from '../memory/gate.js';
 import type { SleepRunner } from '../memory/sleep.js';
@@ -2130,6 +2131,10 @@ export class OrgController extends EventEmitter {
     // the transport's convenience, the journal is the record, and one without
     // the other is exactly the half that does not survive a reload.
     this.#logs.set(assignment.id, new AssignmentLogBuffer());
+    // The assignment id IS the journal's turn id here, so this path needs no
+    // threading of the kind `chat()` does (concept 9.4): it stores no
+    // messages of its own and opens no recall trace, and the one label its
+    // runs can earn - the review (4.2d) - is keyed on this same id.
     this.#store.turns.beginAssignment(assignment.id, input.sessionId, Date.now());
     const cancelled = (): boolean => cancelledBy !== null || Boolean(input.signal?.aborted);
 
@@ -3025,13 +3030,33 @@ export class OrgController extends EventEmitter {
     return new SkillStore([this.#config.skillsDir, projectSkillsDir(project.path)]).for('agent');
   }
 
+  /**
+   * The memories an agent's turn runs on, through the one resolver (E16,
+   * S18).
+   *
+   * This call site used to assemble its own parameter set: `recallLimit` and
+   * `recallThreshold` from the config, and nothing for the hop weights - so
+   * `recall` fell back to the literals in recall.ts while the assistant's
+   * turn handed in `memory.graph`. Two effective policies for one function,
+   * invisible only because the values happen to match. They stop matching
+   * the moment somebody moves a knob, and a promotion is exactly such a
+   * move. Nothing is promoted FOR an agent in this stage; what changes here
+   * is that a config deviation now reaches the agent path too.
+   *
+   * The other two `recall` call sites - the memory tool and the extractor's
+   * pre-check - stay as they are on purpose: they are a different
+   * population, neither of them is the ranking a turn is judged on.
+   */
   #memoriesFor(agentId: string, task: string) {
     if (!this.#config.memory.enabled) return [];
+    const policy = resolvePolicy(this.#store, this.#config, agentId, 'recall');
     const matched = recall(this.#store, {
       text: task,
       owner: agentId,
-      limit: this.#config.memory.recallLimit,
-      threshold: this.#config.memory.recallThreshold,
+      limit: policy.limit,
+      threshold: policy.threshold,
+      hopEntity: policy.hopEntity,
+      hopEdge: policy.hopEdge,
     });
     const profile = coreProfile(this.#store, { owner: agentId, limit: 3 });
     const byId = new Map(profile.map((memory) => [memory.id, memory]));

@@ -42,6 +42,7 @@ export const MEMORY_COLUMN_LABELS: Record<string, string> = {
   createdAt: 'Learned',
   state: 'Status',
   score: 'Matches',
+  feedback: 'Feedback',
 };
 
 /** Newest weight first - the list opens on what matters most. */
@@ -66,6 +67,13 @@ export interface MemoryColumnsOptions {
    * always-empty column would read as a ranking that failed.
    */
   score?(memory: MemoryRecord): { value: number; reason: string } | null;
+  /**
+   * Adds the "Feedback" column: a "was the point / was ballast" control on
+   * each row this turn's recall highlighted (concept 4.2b, S6). Returning
+   * `null` renders the column's own empty cell - a row recall did not just
+   * surface gets no vote.
+   */
+  feedback?(memory: MemoryRecord): ReactNode;
   /** Adds the trailing menu column. */
   rowActions?(memory: MemoryRecord): ReactNode;
 }
@@ -73,8 +81,16 @@ export interface MemoryColumnsOptions {
 export function buildMemoryColumns(
   options: MemoryColumnsOptions = {},
 ): RookeryColumnDef<MemoryRecord>[] {
-  const { selectable = false, onOpen, highlighted, compact = false, state, score, rowActions } =
-    options;
+  const {
+    selectable = false,
+    onOpen,
+    highlighted,
+    compact = false,
+    state,
+    score,
+    feedback,
+    rowActions,
+  } = options;
 
   const column = createRookeryColumnHelper<MemoryRecord>();
   const columns: RookeryColumnDef<MemoryRecord>[] = [];
@@ -204,6 +220,16 @@ export function buildMemoryColumns(
             </div>
           );
         },
+      }),
+    );
+  }
+
+  if (feedback) {
+    columns.push(
+      column.display({
+        id: 'feedback',
+        header: ({ column: col }) => <DataTableColumnHeader column={col} title="Feedback" />,
+        cell: ({ row }) => feedback(row.original) ?? emptyCell('start'),
       }),
     );
   }

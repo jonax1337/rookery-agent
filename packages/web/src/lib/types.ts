@@ -776,7 +776,10 @@ export type AgentEvent =
   | { type: 'thinking'; delta: string }
   | { type: 'tool'; name: string; status: 'start' | 'end'; detail?: string; id?: string; result?: string; isError?: boolean }
   | { type: 'status'; label: string; detail?: string }
-  | { type: 'memory'; action: 'recalled' | 'stored'; count: number; items?: MemoryRecord[] }
+  // `turnId` rides the recall so a highlighted row can carry a real turn
+  // reference into a feedback label (concept 4.2b, S6); mirrors
+  // `packages/core/src/types.ts`'s `AgentEvent`.
+  | { type: 'memory'; action: 'recalled' | 'stored'; count: number; items?: MemoryRecord[]; turnId?: string }
   /** An assignment changed state. Rides the turn's stream and the broadcast. */
   | { type: 'assignment'; assignment: AssignmentView }
   /** A message between agents, their manager or the assistant was posted. */

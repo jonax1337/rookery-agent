@@ -77,6 +77,23 @@ export const chatPath = (id: string | null): string => (id ? CHAT_PATH + id : '/
 /** The hands-free screen keeps its own URL and its own frame. */
 const VOICE_PATH = '/voice';
 
+/**
+ * The memories a running turn recalled, as the memory list can act on them:
+ * which rows to emphasise, and the turn a "was the point / was ballast" click
+ * writes its label against (concept 4.2b, S6). `turnId` is `null` until the
+ * `'memory'` event carries one - the highlight still renders, a feedback
+ * click just has nothing to post.
+ */
+export interface Highlighted {
+  ids: Set<string>;
+  turnId: string | null;
+}
+
+/** Pure reduction, kept outside the component so it is a name, not an inline closure. */
+export function highlightFromRecall(items: MemoryRecord[], turnId: string | null): Highlighted {
+  return { ids: new Set(items.map((memory) => memory.id)), turnId };
+}
+
 /** The turn parameters the composer sets and every send reads. */
 export interface TurnSettings {
   provider: ProviderId;
@@ -109,8 +126,8 @@ interface RookeryValue {
   chat: ChatState;
   /** What the model had in front of it on the newest answer of this thread. */
   context: ContextUsage | null;
-  /** Ids of the memories this turn recalled, for highlighting in the list. */
-  highlighted: Set<string>;
+  /** The memories this turn recalled, for highlighting in the list and for feedback. */
+  highlighted: Highlighted;
   openConversation(id: string): void;
   newConversation(): void;
 
@@ -388,8 +405,8 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
   );
 
   const highlighted = useMemo(
-    () => new Set(chat.recalled.map((memory) => memory.id)),
-    [chat.recalled],
+    () => highlightFromRecall(chat.recalled, chat.recalledTurnId),
+    [chat.recalled, chat.recalledTurnId],
   );
 
   /* ------------------------------- voice ------------------------------ */
@@ -634,7 +651,7 @@ export function useConfig(): ConfigState {
 export interface ChatSessionState {
   chat: ChatState;
   context: ContextUsage | null;
-  highlighted: Set<string>;
+  highlighted: Highlighted;
   turn: TurnSettings;
   openConversation(id: string): void;
   newConversation(): void;
@@ -686,8 +703,8 @@ export interface MemoryState {
   memories: ReturnType<typeof useMemories>;
   graph: ReturnType<typeof useMemoryGraph>;
   sleep: ReturnType<typeof useSleep>;
-  /** Memories the running turn recalled. */
-  highlighted: Set<string>;
+  /** Memories the running turn recalled, and the turn to post feedback against. */
+  highlighted: Highlighted;
 }
 
 export function useMemoryState(): MemoryState {

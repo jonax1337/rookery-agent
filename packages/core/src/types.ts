@@ -215,8 +215,12 @@ export type AgentEvent =
     }
   /** Rookery-level progress: memory recall, delegation, lifecycle. */
   | { type: 'status'; label: string; detail?: string }
-  /** A memory record was written or recalled. */
-  | { type: 'memory'; action: 'recalled' | 'stored'; count: number; items?: MemoryRecord[] }
+  /**
+   * A memory record was written or recalled. A `recalled` event carries the
+   * journal's turn id (S6): it is what lets the chat highlight write a label
+   * about THIS turn instead of about the session it happened in.
+   */
+  | { type: 'memory'; action: 'recalled' | 'stored'; count: number; items?: MemoryRecord[]; turnId?: string }
   /**
    * An assignment changed state. Sent when an agent is handed a task, while
    * it produces output, and once when it finishes or fails. Assignments a

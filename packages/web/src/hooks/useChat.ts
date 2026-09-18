@@ -99,6 +99,13 @@ export interface ChatState {
   busy: boolean;
   activity: ActivityItem[];
   recalled: MemoryRecord[];
+  /**
+   * The turn the current `recalled` batch belongs to, straight off the
+   * `'memory'` event (concept 4.2b, S6). `null` until a provider that has not
+   * yet learned to send it recalls something - the highlight still renders,
+   * a feedback click just has nothing to attach to.
+   */
+  recalledTurnId: string | null;
   /** Assignments this turn started, in the order they first appeared. */
   assignments: AssignmentView[];
   /** Notes agents and the assistant exchanged during this turn. */
@@ -163,6 +170,7 @@ export function useChat(
   const [busy, setBusy] = useState(false);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [recalled, setRecalled] = useState<MemoryRecord[]>([]);
+  const [recalledTurnId, setRecalledTurnId] = useState<string | null>(null);
   const [assignments, setAssignments] = useState<AssignmentView[]>([]);
   const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -375,6 +383,9 @@ export function useChat(
         case 'memory':
           if (event.action === 'recalled' && event.items) {
             setRecalled(event.items);
+            // The turn this batch was recalled in (concept 4.2b, S6) - the
+            // real reference a feedback click posts against.
+            setRecalledTurnId(event.turnId ?? null);
             pushActivity({
               id: 'memory:' + Date.now(),
               kind: 'memory',
@@ -450,6 +461,7 @@ export function useChat(
     setError(null);
     setActivity([]);
     setRecalled([]);
+    setRecalledTurnId(null);
     setAssignments([]);
     setAgentMessages([]);
     setTasks([]);
@@ -700,6 +712,7 @@ export function useChat(
     setThinking('');
     setActivity([]);
     setRecalled([]);
+    setRecalledTurnId(null);
     setAssignments([]);
     setAgentMessages([]);
     setTasks([]);
@@ -716,6 +729,7 @@ export function useChat(
     busy,
     activity,
     recalled,
+    recalledTurnId,
     assignments,
     agentMessages,
     tasks,

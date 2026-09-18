@@ -2503,6 +2503,22 @@ export class Store {
   }
 
   /**
+   * What the wake test actually read, written back next to what the
+   * promotion promised (concept 5.5c).
+   *
+   * `replay_score` is the claim a version was promoted on; `online_score` is
+   * the same quantity measured again, live, once `dream.calibrationTraces`
+   * frames have accumulated since the promotion. The night computes that
+   * drift and freezes the slot on it, but until this setter existed it had
+   * nowhere to put the number it had just read - the column was written by
+   * nothing, so the one reading that could tell a person "the promise held"
+   * survived only inside the night's own report sentence.
+   */
+  setPolicyOnlineScore(id: string, score: number): void {
+    this.db.prepare('UPDATE policy_versions SET online_score = ? WHERE id = ?').run(score, id);
+  }
+
+  /**
    * Freeze state and cooldown clock of one slot. A slot with no row has
    * never been promoted and is not frozen, which is a state, not a gap - so
    * this returns a record rather than null and the callers stay free of a

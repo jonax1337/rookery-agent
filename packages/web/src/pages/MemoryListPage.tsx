@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
 import {
+  BanIcon as CircleXIcon,
   BookmarkIcon as AnimatedPinIcon,
   BookmarkIcon as PinIcon,
   BookmarkIcon as TagIcon,
   BookmarkXIcon as AnimatedPinOffIcon,
   BookmarkXIcon as PinOffIcon,
   BrainIcon,
+  CircleCheckIcon,
   DeleteIcon as AnimatedTrash2Icon,
   DeleteIcon as Trash2Icon,
   ExternalLinkIcon as SquareArrowOutUpRightIcon,
@@ -56,6 +58,7 @@ import { RowMenuButton } from '@/components/common/row-menu-button';
 import { useMemoryOutlet } from '@/pages/MemoryLayout';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { ButtonGroup } from '@/components/ui/button-group';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -75,6 +78,7 @@ import {
 } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Slider } from '@/components/ui/slider';
+import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -111,6 +115,58 @@ type PatchFn = (id: string, changes: MemoryPatch, message: string) => Promise<vo
 
 function isScored(item: Row): item is ScoredMemory {
   return 'score' in item;
+}
+
+/* --------------------------- Chat-highlight feedback --------------------------- */
+
+/**
+ * The chat highlight as a label channel (concept 4.2b, S6).
+ *
+ * The highlight already names the memories a turn recalled; what it lacked
+ * was a click target and a turn reference. These three are pure on purpose,
+ * kept outside the component so each is a name a test can call directly
+ * rather than JSX to render.
+ */
+export type MemoryFeedbackVerdict = 'point' | 'ballast';
+
+/** The key one turn's judgement of one memory is tracked under. */
+export function feedbackKey(turnId: string, memoryId: string): string {
+  return turnId + ':' + memoryId;
+}
+
+/**
+ * Records a judgement. An already-judged key is left untouched: a second
+ * click reads back what was already said instead of silently writing a
+ * second label - the client-side half of what the store's `(turn_id,
+ * target, source)` key already guarantees server-side.
+ */
+export function applyJudgement(
+  judged: Record<string, MemoryFeedbackVerdict>,
+  turnId: string,
+  memoryId: string,
+  verdict: MemoryFeedbackVerdict,
+): Record<string, MemoryFeedbackVerdict> {
+  const key = feedbackKey(turnId, memoryId);
+  if (key in judged) return judged;
+  return { ...judged, [key]: verdict };
+}
+
+/**
+ * `POST /api/memories/:id/feedback` - the highlight's click target. Throws
+ * like every other write on this page, so the caller's try/catch and
+ * `reportFailure` handle it the same way `patch` and `forget` do.
+ */
+export async function postMemoryFeedback(
+  id: string,
+  turnId: string,
+  verdict: MemoryFeedbackVerdict,
+): Promise<void> {
+  const response = await fetch('/api/memories/' + encodeURIComponent(id) + '/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ turnId, verdict }),
+  });
+  if (!response.ok) throw new Error('The feedback could not be saved.');
 }
 
 /** What a memory currently is, as the badges the status column draws. */
@@ -166,6 +222,35 @@ export function MemoryListPage() {
     [graph, memories],
   );
 
+  // What this page's own clicks have already told the dream a highlighted
+  // row was worth (concept 4.2b, S6) - `pendingFeedback` guards the moment
+  // between a click and its response, `judged` the moment after.
+  const [judged, setJudged] = useState<Record<string, MemoryFeedbackVerdict>>({});
+  const [pendingFeedback, setPendingFeedback] = useState<Set<string>>(new Set());
+
+  const judgeMemory = useCallback(
+    async (memory: MemoryRecord, verdict: MemoryFeedbackVerdict): Promise<void> => {
+      const turnId = highlighted.turnId;
+      if (!turnId) return;
+      const key = feedbackKey(turnId, memory.id);
+      if (key in judged || pendingFeedback.has(key)) return;
+      setPendingFeedback((current) => new Set(current).add(key));
+      try {
+        await postMemoryFeedback(memory.id, turnId, verdict);
+        setJudged((current) => applyJudgement(current, turnId, memory.id, verdict));
+      } catch (caught) {
+        reportFailure('Feedback', caught);
+      } finally {
+        setPendingFeedback((current) => {
+          const next = new Set(current);
+          next.delete(key);
+          return next;
+        });
+      }
+    },
+    [highlighted.turnId, judged, pendingFeedback],
+  );
+
   const forget = useCallback(
     async (memory: MemoryRecord): Promise<void> => {
       const ok = await confirm({
@@ -195,12 +280,61 @@ export function MemoryListPage() {
       buildMemoryColumns({
         selectable: true,
         onOpen: (memory) => setSelectedId(memory.id),
-        highlighted,
+        highlighted: highlighted.ids,
         state: (memory) => <StateBadges memory={memory} />,
         ...(searching
           ? {
               score: (memory: MemoryRecord) =>
                 isScored(memory) ? { value: memory.score, reason: memory.reason } : null,
+            }
+          : {}),
+        // Only while there is both a highlighted batch and a turn to post
+        // against - an always-empty column would read as a vote that failed
+        // rather than as one that was never offered.
+        ...(highlighted.turnId && highlighted.ids.size > 0
+          ? {
+              feedback: (memory: MemoryRecord) => {
+                if (!highlighted.ids.has(memory.id)) return null;
+                const turnId = highlighted.turnId as string;
+                const key = feedbackKey(turnId, memory.id);
+                const verdict = judged[key];
+                if (verdict) {
+                  return (
+                    <Badge variant={verdict === 'point' ? 'secondary' : 'outline'} className="gap-1">
+                      {verdict === 'point' ? (
+                        <CircleCheckIcon aria-hidden="true" />
+                      ) : (
+                        <CircleXIcon aria-hidden="true" />
+                      )}
+                      {verdict === 'point' ? 'Was the point' : 'Was ballast'}
+                    </Badge>
+                  );
+                }
+                const busy = pendingFeedback.has(key);
+                const name = shorten(memory.content, 40);
+                return (
+                  <ButtonGroup>
+                    <Button
+                      variant="outline"
+                      size="icon-xs"
+                      aria-label={'Mark “' + name + '” as the point'}
+                      disabled={busy}
+                      onClick={() => void judgeMemory(memory, 'point')}
+                    >
+                      {busy ? <Spinner /> : <CircleCheckIcon aria-hidden="true" />}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="icon-xs"
+                      aria-label={'Mark “' + name + '” as ballast'}
+                      disabled={busy}
+                      onClick={() => void judgeMemory(memory, 'ballast')}
+                    >
+                      {busy ? <Spinner /> : <CircleXIcon aria-hidden="true" />}
+                    </Button>
+                  </ButtonGroup>
+                );
+              },
             }
           : {}),
         rowActions: (memory) => (
@@ -212,7 +346,7 @@ export function MemoryListPage() {
           />
         ),
       }),
-    [forget, highlighted, patch, searching],
+    [forget, highlighted, judgeMemory, judged, patch, pendingFeedback, searching],
   );
 
   /* -------------------------------- Facetten ------------------------------ */

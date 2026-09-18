@@ -2361,6 +2361,13 @@ export class SleepRunner extends EventEmitter {
     // could not run, and freezes nothing.
     if (closed < required) return { ...seen, drift: null, observed: null };
     const observed = total / closed;
+    // The reading itself goes on the version it judges. The drift decides
+    // whether the slot freezes tonight; `online_score` is what a person
+    // reads next to `replay_score` later - "this is what the promise was
+    // worth once it was actually in force" (5.5c). A test that could not
+    // close enough frames returned above and writes nothing: an absent
+    // reading stays absent rather than being recorded as a bad one.
+    this.#store.setPolicyOnlineScore(active.id, observed);
     return { ...seen, drift: observed - active.replayScore, observed };
   }
 

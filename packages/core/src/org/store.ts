@@ -26,6 +26,7 @@ import type {
   Team,
 } from '../types.js';
 import type { Db } from '../memory/db.js';
+import { reviewLabel } from '../memory/dream/label.js';
 import { titleFromBrief } from '../util/queue.js';
 
 type Row = Record<string, unknown>;
@@ -1174,10 +1175,72 @@ export class OrgStore {
             Date.now(),
             existing.id,
           );
-        return this.getReview(existing.id) as AgentReview;
+        const updated = this.getReview(existing.id) as AgentReview;
+        this.#writeReviewLabel(updated);
+        return updated;
       }
     }
-    return this.createReview(input);
+    const created = this.createReview(input);
+    this.#writeReviewLabel(created);
+    return created;
+  }
+
+  /**
+   * The `review` label (concept 4.2d, S8), written where every review source
+   * already meets: `upsertReview` is the one funnel of all four of them -
+   * Jarvis's judgement, the system's technical failure, the manager's note
+   * and the HTTP route - so one writer here catches them all without four
+   * call sites having to remember.
+   *
+   * Two warnings this source carries, and they are the reason the sentence
+   * above is not the whole story. `upsertReview` REPLACES the row for the
+   * same `(assignment_id, source)` and resets `created_at`, so a reward once
+   * appended can later be revoked silently - and the label follows it,
+   * because `(turn_id, target, source)` is the label's key too. Two
+   * different review SOURCES scoring one assignment collapse onto that same
+   * key for the same reason: the label says `source: 'review'`, not which
+   * review. And an agent never receives a correction through `#replay`, so
+   * this one blurry source is nearly its whole label supply.
+   *
+   * It is `gainFrom` that keeps the row out of DCG, never the caller (S8):
+   * scoring an assignment from 1 to 5 says nothing about which memory
+   * belonged in which prompt, which is why the target is the sentinel `'*'`.
+   */
+  #writeReviewLabel(review: AgentReview): void {
+    const assignment = review.assignmentId ? this.getAssignment(review.assignmentId) : null;
+    const label = reviewLabel({
+      // The agent's own bank - the population this review is evidence about.
+      owner: review.agentId,
+      // A periodic review names no assignment; it is keyed on itself, and
+      // its scope is session-wide either way.
+      assignmentId: review.assignmentId ?? review.id,
+      ...(assignment?.sessionId ? { sessionId: assignment.sessionId } : {}),
+      overall: review.overall,
+      evidence: 'review:' + review.id + ':' + review.source,
+      now: review.createdAt,
+    });
+    // The same statement `Store.putLabels` writes, spelled out here because
+    // `OrgStore` holds the raw `Db` and nothing else: reaching the memory
+    // store from inside the organisation store would be the wrong direction
+    // of dependency for one INSERT.
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO dream_labels
+           (turn_id, target, source, relevance, scope, evidence, dead_at, created_at, owner, session_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        label.turnId,
+        label.target,
+        label.source,
+        label.relevance,
+        label.scope,
+        label.evidence ?? null,
+        label.deadAt ?? null,
+        label.createdAt,
+        label.owner,
+        label.sessionId ?? null,
+      );
   }
 
   getReview(id: string): AgentReview | null {
