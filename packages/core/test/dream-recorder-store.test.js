@@ -109,14 +109,14 @@ test('a dream counter survives the create-update-read round trip', () => {
   store.close();
 });
 
-test('a fresh run carries all three dream counters and no fourth', () => {
+test('a fresh run carries all five dream counters and no sixth', () => {
   const store = makeStore();
   const run = store.createSleepRun({ owner: ASSISTANT_MEMORY_OWNER, trigger: 'manual' });
   assert.deepEqual(
     Object.keys(run)
       .filter((key) => key.startsWith('dream'))
       .sort(),
-    ['dreamCandidates', 'dreamFramesScored', 'dreamTracesSeen'],
+    ['dreamCandidates', 'dreamFramesScored', 'dreamLabelsWritten', 'dreamPromoted', 'dreamTracesSeen'],
   );
   store.close();
 });

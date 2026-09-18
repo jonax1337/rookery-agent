@@ -74,6 +74,84 @@ export {
   type ProbeOptions,
   type ProbeReport,
 } from './memory/dream/probe.js';
+// Stage 2+ of the dream. Appended after the probe block, never reordered -
+// seven packages meet in this file, so each module keeps its own export list.
+// Labels (AP4): the four sources turned into a gain, and the arithmetic that
+// says how much of the measure is actually backed by one.
+export {
+  REVIEW_TARGET,
+  cohensKappa,
+  correctionLabels,
+  costOnlyShare,
+  gainFrom,
+  labelCoverage,
+  locateTurn,
+  mergeLabels,
+  pairedRatings,
+  pairwiseAgreement,
+  reviewLabel,
+  sessionsInUserLabelWindow,
+  userLabel,
+  type CorrectionLabelInput,
+  type GainResult,
+  type LabelMessage,
+  type LabelTarget,
+  type LabelTurn,
+  type MergeLabelInput,
+  type MergeTarget,
+  type RatingPair,
+  type ReviewLabelInput,
+  type TurnLocation,
+  type UserLabelInput,
+} from './memory/dream/label.js';
+// Admission (AP5): the predicates that run before a candidate gets a number,
+// because against a legal degenerate candidate a comparison does not help.
+export {
+  admit,
+  boxViolations,
+  coverageFloorHolds,
+  isWeightScalarMultiple,
+  revivalRateHolds,
+  type AdmissionResult,
+  type AdmissionStats,
+} from './memory/dream/admission.js';
+// The candidate writer (AP6): numeric aggregates in, a parameter set out, and
+// never a word of anybody's text in between.
+export {
+  buildAggregates,
+  parseCandidate,
+  proposeCandidates,
+  renderCandidatePrompt,
+  withIncumbent,
+  type CandidateAggregates,
+  type CandidateParse,
+  type CandidateProposal,
+  type CandidateRequest,
+  type ComponentMeans,
+} from './memory/dream/candidate.js';
+// First-divergence scoring (AP7): a recorded trajectory as a prefix-closed
+// simulator. Off by default; the proxy gate decides whether it ever lives.
+export {
+  PROXY_AGREEMENT_FLOOR,
+  PROXY_MIN_SAMPLES,
+  TOOL_INPUT_LIMIT,
+  argsHashOf,
+  canonicalJson,
+  divergenceProxyReport,
+  episodeFromEvents,
+  hashCanonicalJson,
+  judgeEpisode,
+  type DecisionContext,
+  type DivergenceProxyReport,
+  type DivergenceSample,
+  type EpisodeJudgement,
+  type EpisodeSource,
+  type JournalledEvent,
+  type JudgementStop,
+  type ProposedAction,
+  type StepDecider,
+  type StepObservation,
+} from './memory/dream/trajectory.js';
 // The write gate and the night shift: what may enter the bank at all, and
 // what happens to it once nobody is asking anything.
 export {

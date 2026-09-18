@@ -79,6 +79,7 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     //   slots                     AP12 (candidate loop, slot state)
     //   candidates                AP6 (candidate writer: how many it proposes per slot per night)
     //   model                     AP6 (candidate writer's own caller, never ask's wired 'low' effort)
+    //   effort                    AP6 (same caller: medium or high, never low)
     //   minTraces                 AP8 (validity rule 3: n_closed floor)
     //   margin                    AP9 (promotion condition 2a) + AP8 (freshness check sign-agreement tolerance)
     //   coverageFloor             AP8 (validity: label_coverage floor)
@@ -159,6 +160,10 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       // judgement call, and this never runs at `ask`'s wired 'low' effort
       // (S16) - the candidate writer gets its own caller.
       model: 'sonnet',
+      // Medium effort, and the type forbids `'low'`: `ask` wires `'low'`
+      // because triage is extraction, but reading a cause out of failure
+      // cases is judgement, and that contradiction gets resolved here (E14).
+      effort: 'medium',
       // Two hundred closed traces before an evaluation is trusted at all;
       // below it the result is invalid, not "the candidate lost".
       minTraces: 200,

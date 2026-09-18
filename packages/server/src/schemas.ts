@@ -276,6 +276,7 @@ const sleepConfigSchema = z
     cycles: z.number().int().min(1).max(5),
     agentThreshold: z.number().int().min(1).max(500),
     model: z.string().max(80),
+    effort: z.enum(['medium', 'high']),
     insightModel: z.string().max(80),
   })
   .partial();

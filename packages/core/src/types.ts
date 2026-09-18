@@ -2028,6 +2028,8 @@ export interface DreamConfig {
   candidates: number;
   /** Model for the candidate writer. Never `smallModelFor`/`ask`'s wired `'low'` effort (S16). */
   model: string;
+  /** Reasoning effort for that same caller. Never `'low'`: designing a policy is judgement (E14). */
+  effort: 'medium' | 'high';
   /** Below this many closed traces (post-intersection), an evaluation is invalid, not lost (validity rule 3). */
   minTraces: number;
   /** Promotion needs `delta > margin` on the holdout, and the freshness check's sign-agreement tolerance. */
