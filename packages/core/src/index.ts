@@ -45,7 +45,7 @@ export {
   type FrameScoringPolicy,
   type PipelineResult,
 } from './memory/dream/score.js';
-export { resolvePolicy } from './memory/dream/policy.js';
+export { factoryPolicy, resolvePolicy } from './memory/dream/policy.js';
 // The block measure (stage 1, AP8): scores what the model read, not what
 // recall returned, against a caller-supplied gain.
 export {
@@ -152,6 +152,95 @@ export {
   type StepDecider,
   type StepObservation,
 } from './memory/dream/trajectory.js';
+// The evaluation machinery (AP8): the session-wise split, the paired delta on
+// the intersection, the cluster bootstrap, and the five validity rules that
+// decide whether a number means anything at all.
+export {
+  DEFAULT_SPLIT_RATES,
+  abstainRuleHolds,
+  agreementReport,
+  coverageRuleHolds,
+  evaluateCandidate,
+  pairedOnIntersection,
+  reachableFloorHolds,
+  renderEvidenceDigest,
+  selectOnTraining,
+  splitOf,
+  splitPool,
+  traceFloorHolds,
+  traceSetHash,
+  validityLimits,
+  validityOf,
+  type AgreementOptions,
+  type AgreementReport,
+  type DreamEvalDetail,
+  type DreamEvalResult,
+  type DreamSplit,
+  type EvaluateInput,
+  type FrameEntry,
+  type FreshnessSummary,
+  type PairedCounts,
+  type RankedCandidate,
+  type SelectionInput,
+  type SelectionReport,
+  type SourceAgreement,
+  type SplitPool,
+  type SplitRates,
+  type ValidityLimits,
+} from './memory/dream/evaluate.js';
+// The promotion gate (AP9): nine conditions, each named, plus the freeze and
+// the manual revert over prev_active_id.
+export {
+  POLICY_FIELDS,
+  admissionClean,
+  agreementHolds,
+  applyPromotion,
+  auditBeatsFactory,
+  cooldownExpired,
+  evaluationIsValid,
+  explorationHolds,
+  freezeFor,
+  freezeReasonFor,
+  freshnessAgrees,
+  holdoutBeatsIncumbent,
+  oneCandidateOnHoldout,
+  overwrittenUserFields,
+  promotionDecision,
+  renderRationale,
+  revertPolicy,
+  slotIsThawed,
+  traceSetIsDisjoint,
+  withinNightlyCap,
+  type ApplyPromotionInput,
+  type FreezeSignals,
+  type PolicyField,
+  type PromotionDecision,
+  type PromotionInput,
+  type PromotionRecord,
+  type RevertResult,
+} from './memory/dream/promote.js';
+// The budget and retry slots (AP11): shares that are exact, yields that are
+// approximate and never extrapolated, and a retry judgement that only ever
+// looks backwards.
+export {
+  NIGHT_PHASES,
+  applyBudgetPolicy,
+  estimateYield,
+  judgeRetry,
+  replayBudgetPolicy,
+  yieldRates,
+  type BudgetAbstainReason,
+  type BudgetPolicy,
+  type BudgetReplayResult,
+  type BudgetRun,
+  type NightPhase,
+  type PhaseDemand,
+  type RetryAttempt,
+  type RetryPolicy,
+  type RetryVerdict,
+  type YieldEstimate,
+  type YieldRate,
+} from './memory/dream/slots.js';
 // The write gate and the night shift: what may enter the bank at all, and
 // what happens to it once nobody is asking anything.
 export {
