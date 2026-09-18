@@ -109,7 +109,7 @@ const GROWTH_SERIES: TrendSeries[] = [
  * `SleepStage` from `types.ts`: `phaseProgress` maps an unknown phase to zero,
  * so a missing stage makes the bar jump back to the start mid-run.
  */
-const SLEEP_PHASES = ['started', 'replay', 'light', 'deep', 'rem', 'finished'] as const;
+const SLEEP_PHASES = ['started', 'replay', 'dream', 'light', 'deep', 'rem', 'finished'] as const;
 
 const TABS = [
   { to: '/memory', label: 'Overview', end: true },

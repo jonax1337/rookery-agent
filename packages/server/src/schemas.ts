@@ -282,16 +282,15 @@ const sleepConfigSchema = z
 
 /**
  * The dream block of the memory config. Every field is clamped to the range
- * its reader assumes. This schema only guards the HTTP PATCH: `rookery
- * config set` bypasses Zod entirely, so each reader clamps again at read
- * time rather than trusting that a value was validated when written.
- *
- * `promote` is not here on purpose - it has no reader in stage 1 (R16).
+ * its reader assumes - the same ranges `resolvePolicy` and its neighbours
+ * clamp again at read time (S23/E21), because `rookery config set` bypasses
+ * Zod entirely and this schema only guards the HTTP PATCH.
  */
 const dreamConfigSchema = z
   .object({
     enabled: z.boolean(),
     record: z.boolean(),
+    promote: z.boolean(),
     // A share of sessions; never above "every session".
     frameRate: z.number().min(0).max(1),
     // The policy space's limit span is 4..16; a frame outside it is not
@@ -309,6 +308,32 @@ const dreamConfigSchema = z
     frameRetainDays: z.number().int().min(1).max(3650),
     retainDays: z.number().int().min(7).max(3650),
     maxCallsPerNight: z.number().int().min(0).max(100),
+    // Whole-array replacement (E21): a patch that sends `slots` replaces the
+    // set wholesale, it does not add to it.
+    slots: z.array(z.enum(['recall', 'budget', 'retry'])),
+    // Zero candidates is legitimate: the grid probe alone still runs.
+    candidates: z.number().int().min(0).max(20),
+    model: z.string().min(1).max(80),
+    minTraces: z.number().int().min(0).max(100_000),
+    // A margin above 1 could never be cleared by a bounded delta.
+    margin: z.number().min(0).max(1),
+    coverageFloor: z.number().min(0).max(1),
+    costOnlyCeiling: z.number().min(0).max(1),
+    abstainEps: z.number().min(0).max(1),
+    abstainFloor: z.number().min(0).max(1),
+    reachableFloor: z.number().min(0).max(1),
+    correctionPrecisionFloor: z.number().min(0).max(1),
+    labelModelCalls: z.number().int().min(0).max(1000),
+    // Milliseconds; a week is the guess, a year the outer bound worth
+    // allowing.
+    userLabelWindow: z.number().int().min(0).max(365 * 24 * 60 * 60 * 1000),
+    agreementFloor: z.number().min(0).max(1),
+    calibrationTraces: z.number().int().min(0).max(100_000),
+    tolerance: z.number().min(0).max(1),
+    cooldownNights: z.number().int().min(0).max(365),
+    maxPromotionsPerNight: z.number().int().min(0).max(10),
+    explorationRate: z.number().min(0).max(1),
+    trialEpisodes: z.number().int().min(0).max(1000),
   })
   .partial();
 

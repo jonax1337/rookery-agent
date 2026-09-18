@@ -56,27 +56,50 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       hopEdge: 0.6,
       maxNodes: 300,
     },
-    // The dream (stage 1): frames and traces for recall, so the night can
-    // measure the retrieval policy instead of guessing at it. Key table
-    // (R16) - every key names its reader, and no key without a reader
-    // ships. `dream.promote` is deliberately absent: in stage 1 nothing
-    // would read it.
+    // The dream: frames and traces for recall, so the night can measure the
+    // retrieval policy instead of guessing at it - stage 1 recorded and
+    // measured only; stage 2 (docs/concepts/dream-stage2plus-buildplan.md)
+    // adds labels, a candidate writer and a promotion gate. Key table (S22/
+    // E20) - every key names the package that reads it, and no key without
+    // a reader ships.
     //
-    //   enabled          runtime.ts (recorder call site), sleep.ts (night probe)
-    //   record           runtime.ts (recorder call site)
-    //   frameRate        runtime.ts, session-level hash
-    //   limitMax         memory/dream/frame.ts (fetchFrame frontier: max(limit, limitMax) * 4)
-    //   gridSize         memory/dream/probe.ts (grid construction)
-    //   costWeight       memory/dream/measure.ts (score = nDCG - lambda * chars)
-    //   corpusTolerance  memory/dream/probe.ts (abstain reason 'corpus-drifted')
-    //   maxFrameBytes    store.ts (saveFrame rejects above it)
-    //   maxEvalMs        memory/dream/probe.ts (wall clock)
-    //   frameRetainDays  store.ts (sweepDreamFrames)
-    //   retainDays       store.ts (sweepDreamTraces)
-    //   maxCallsPerNight sleep.ts (run-global cap over all owners)
+    //   enabled                   AP12 (night entry point, before everything else) + stage-1 recorder call sites
+    //   record                    stage-1 recorder call sites (runtime.ts, org/controller.ts)
+    //   promote                   AP9 (promotion gate) - has no reader before stage 2
+    //   frameRate                 stage-1 (runtime.ts, session-level hash)
+    //   limitMax                  stage-1 (memory/dream/frame.ts fetchFrame frontier)
+    //   gridSize                  stage-1 (memory/dream/probe.ts grid construction)
+    //   costWeight                stage-1 (memory/dream/measure.ts score term)
+    //   corpusTolerance           stage-1 (memory/dream/probe.ts abstain reason)
+    //   maxFrameBytes             stage-1 (store.ts saveFrame)
+    //   maxEvalMs                 stage-1 (memory/dream/probe.ts wall clock)
+    //   frameRetainDays           stage-1 (store.ts sweepDreamFrames) + AP12 sweep
+    //   retainDays                stage-1 (store.ts sweepDreamTraces) + AP12 sweep
+    //   maxCallsPerNight          AP12 (run-global cap over all owners; funds AP6's candidate writer from stage 2 on)
+    //   slots                     AP12 (candidate loop, slot state)
+    //   candidates                AP6 (candidate writer: how many it proposes per slot per night)
+    //   model                     AP6 (candidate writer's own caller, never ask's wired 'low' effort)
+    //   minTraces                 AP8 (validity rule 3: n_closed floor)
+    //   margin                    AP9 (promotion condition 2a) + AP8 (freshness check sign-agreement tolerance)
+    //   coverageFloor             AP8 (validity: label_coverage floor)
+    //   costOnlyCeiling           AP8 (validity: cost_only_share ceiling)
+    //   abstainEps                AP8 (validity rule 2: candidate vs baseline abstain-rate slack)
+    //   abstainFloor              AP8 (validity rule 2: abstain-rate ceiling for both arms)
+    //   reachableFloor            AP8 (validity rule 4: mean reachable_rate floor)
+    //   correctionPrecisionFloor  AP12 (the `correction` label source, concept 4.2a)
+    //   labelModelCalls           AP12 (same source's fallback: a model call per correction)
+    //   userLabelWindow           AP4 (correction/merge label windowing) + AP13 (user label HTTP route)
+    //   agreementFloor            AP8 (label agreement check, concept 5.5b)
+    //   calibrationTraces         AP12 (wake test: traces after promotion before it runs)
+    //   tolerance                 AP12 (wake test: score drift it tolerates)
+    //   cooldownNights            AP9 (promotion condition 6: nights between promotions of one slot)
+    //   maxPromotionsPerNight     AP9 (promotion condition 8: cap across every slot)
+    //   explorationRate           AP9 (free exploration vs promotion attempt, E17)
+    //   trialEpisodes             AP7 (episode recording) + AP12 (night wiring) - phase 6, its own gate
     //
     // `rookery config set` bypasses Zod entirely, so these values are
-    // clamped where they are read, never trusted because they were written.
+    // clamped where they are read, never trusted because they were written
+    // (S23/E21).
     dream: {
       // Off until the stage-1 budget gate has measured what a frame costs:
       // this ships the capability, not the operation.
@@ -84,6 +107,9 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       // The recorder has its own switch, so recording can be switched off
       // to relieve turn latency without losing the night's probe.
       record: false,
+      // Off: this stage ships the promotion machine, not its start (plan
+      // section 1.2 - "kein Default an").
+      promote: false,
       // A quarter of the sessions, drawn per session and never per trace:
       // consecutive turns of one session share topic, bank cutout and
       // entity neighbourhood, so per-trace sampling would split
@@ -119,10 +145,67 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       // Traces and touches are small and carry the calibration; a year
       // keeps every later promotion's justification reconstructable.
       retainDays: 365,
-      // Zero in stage 1: the probe makes no model calls. The ceiling is
-      // wired now anyway, run-global over all owners, so Phase 3 does not
-      // have to retrofit the cap.
-      maxCallsPerNight: 0,
+      // Six: from stage 2 on the candidate writer spends one call per
+      // candidate, so the run-global wallet has to cover a night's worth of
+      // proposals across every owner, not stay at the stage-1 zero.
+      maxCallsPerNight: 6,
+      // Stage 2 carries a policy for `recall` alone; `budget` and `retry`
+      // wait for phase 5.
+      slots: ['recall'],
+      // Six candidates a night, ranked on the training half; exactly one of
+      // them goes on to the holdout (concept 5.3).
+      candidates: 6,
+      // Sonnet, not the cheapest model: proposing a parameter set is a
+      // judgement call, and this never runs at `ask`'s wired 'low' effort
+      // (S16) - the candidate writer gets its own caller.
+      model: 'sonnet',
+      // Two hundred closed traces before an evaluation is trusted at all;
+      // below it the result is invalid, not "the candidate lost".
+      minTraces: 200,
+      // Two percent: the delta a promotion needs over the incumbent, and
+      // the freshness check's sign-agreement slack around zero.
+      margin: 0.02,
+      // Below 30 percent label coverage, an evaluation cannot tell a real
+      // delta from missing labels (concept 4.4).
+      coverageFloor: 0.3,
+      // Above half the paired traces moving on the cost term alone, the
+      // delta is not a delta (concept 4.4).
+      costOnlyCeiling: 0.5,
+      // A candidate may abstain at most five points more often than the
+      // baseline, or it is winning by only trying where it is comfortable.
+      abstainEps: 0.05,
+      // Neither arm may abstain more than 30 percent of the time.
+      abstainFloor: 0.3,
+      // Below 50 percent mean reachable_rate, an evaluation is invalid.
+      reachableFloor: 0.5,
+      // Below 60 percent precision, `correction` stops being a usable label
+      // source (concept 4.2a); `labelModelCalls` is the paid fallback.
+      correctionPrecisionFloor: 0.6,
+      // Zero: labelling stays model-free until the precision floor says
+      // otherwise.
+      labelModelCalls: 0,
+      // Seven days: the session window a `user` label's HTTP edit is
+      // attributed over, because the edit itself carries no turn (4.2b).
+      userLabelWindow: 7 * 24 * 60 * 60 * 1000,
+      // Below 0.4 Cohen's kappa between two label sources, the label
+      // agreement check is unvalidated rather than passing.
+      agreementFloor: 0.4,
+      // Fifty traces after a promotion before the wake test's regression
+      // alarm runs, tolerating five percent score drift.
+      calibrationTraces: 50,
+      tolerance: 0.05,
+      // A week between promotions of the same slot, so `trace_set_hash`
+      // disjointness has something to be disjoint from.
+      cooldownNights: 7,
+      // One promotion a night, across every slot - the ratchet stays slow.
+      maxPromotionsPerNight: 1,
+      // Zero: exploration costs a slot's one promotion attempt for the
+      // night (E17), and this stage does not spend it on its own.
+      explorationRate: 0,
+      // Zero: phase 6's first-divergence evaluation ships as a mechanism,
+      // not switched on. Its own validation gate decides if it ever is
+      // (concept 11, Phase 6).
+      trialEpisodes: 0,
     },
     sleep: {
       enabled: true,

@@ -30,6 +30,12 @@ export interface Message {
   /** Provenance only, never identity. Unset for an ordinary turn. */
   agent?: string;
   createdAt: number;
+  /**
+   * The journal's turn id (`runtime.ts:645`), carried onto the message so a
+   * dream label can target this exact turn instead of guessing at it from
+   * session position (concept 9.4, "one turn id instead of three").
+   */
+  turnId?: string;
   /** Token/cost accounting, when the provider reported it. */
   usage?: TurnUsage;
   /**
@@ -189,8 +195,24 @@ export type AgentEvent =
   | { type: 'text'; delta: string }
   /** Model reasoning trace, when the provider exposes it. */
   | { type: 'thinking'; delta: string }
-  /** The provider started or finished running one of its own tools. */
-  | { type: 'tool'; name: string; status: 'start' | 'end'; detail?: string; id?: string; result?: string; isError?: boolean }
+  /**
+   * The provider started or finished running one of its own tools.
+   * `argsHash`/`input` are the recorder fidelity Phase 6 needs (concept
+   * S28): a sha256 over the canonical JSON of the call's arguments, and the
+   * canonical JSON itself up to a size limit, both set on the start event.
+   * `detail` is unchanged - the surface still renders off it.
+   */
+  | {
+      type: 'tool';
+      name: string;
+      status: 'start' | 'end';
+      detail?: string;
+      id?: string;
+      result?: string;
+      isError?: boolean;
+      argsHash?: string;
+      input?: string;
+    }
   /** Rookery-level progress: memory recall, delegation, lifecycle. */
   | { type: 'status'; label: string; detail?: string }
   /** A memory record was written or recalled. */
@@ -458,8 +480,14 @@ export type SleepStatus = 'running' | 'done' | 'failed';
  * whole conversation is invisible to it. Reading the transcripts at night
  * catches that - and it comes first so the day's harvest is in the bank
  * before deep sleep starts condensing, rather than waiting a day for it.
+ *
+ * `dream` is stage 2 (concept 11, Phase 3 on): the model-free grid probe,
+ * evaluation and promotion gate. It sits between `replay` and `light` - the
+ * probe reads the day's fresh traces before condensation starts folding
+ * memories away, and it never runs inside the light/deep/rem cycle itself
+ * (concept 5.5a: it must not see a bank `#condense` has already touched).
  */
-export type SleepStage = 'replay' | 'light' | 'deep' | 'rem';
+export type SleepStage = 'replay' | 'dream' | 'light' | 'deep' | 'rem';
 
 /**
  * One night's work on one memory bank. Every write a run makes carries its
@@ -513,6 +541,17 @@ export interface SleepRun {
    * so the counter cannot quietly change meaning. Set from AP7 / Schema 21 on.
    */
   dreamCandidates?: number;
+  /**
+   * Stage 2 counters, same reason these are optional as the three above:
+   * only `createSleepRun`, `updateSleepRun`'s whitelist and `mapSleepRun`
+   * from AP3/Schema 24 on set them, at the same four places in lockstep
+   * (concept 8.8), and a required field would break the wave-1 typecheck
+   * before AP3 lands.
+   */
+  /** Policy versions this run promoted. At most `dream.maxPromotionsPerNight`. */
+  dreamPromoted?: number;
+  /** Dream labels this run's replay and merge passes wrote (concept 4.2a/c). */
+  dreamLabelsWritten?: number;
   /** Small-model calls spent. Capped by config. */
   modelCalls: number;
   /** Two or three sentences a person can read. */
@@ -871,6 +910,216 @@ export interface DreamFrame {
   bytes: number;
   createdAt: number;
 }
+
+/* ------------------------------------------------------------------ *
+ * Dream, stage 2+ - labels, policy promotion, episodes
+ *
+ * Stage 1 (above) only records and measures. From here on the vocabulary
+ * every wave-2 package builds against for Phase 2 (labels), Phase 3
+ * (promotion) and Phase 6 (trajectory evaluation) - see
+ * docs/concepts/dream-and-recursive-self-improvement.md and
+ * docs/concepts/dream-stage2plus-buildplan.md. Every field below mirrors,
+ * 1:1, a column of the tables AP1 adds in Schema 24.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Where a dream label came from. `usefulness`/`access_count`/`memory_touches`
+ * are deliberately not sources (concept 4.3, E9) - they are score inputs,
+ * frozen into the frame, never a claim about a turn.
+ */
+export type DreamLabelSource = 'correction' | 'review' | 'merge' | 'user';
+
+/**
+ * Whether a label names an exact turn or only the session it fell in.
+ * Only `scope: 'turn'` feeds `gain(m)`/DCG (concept 4.2a) - a session-wide
+ * label from an unlocatable quote still counts for the label agreement
+ * check and calibration, never for a score.
+ */
+export type DreamLabelScope = 'turn' | 'session';
+
+/**
+ * A claim that one memory should, or should not, have been in one turn's
+ * prompt (concept 4.1): `(turnId, target, relevance in {0,1}, source,
+ * evidence)`. `target` is a memory id, or the sentinel `'*'` for a `review`
+ * assignment-level weight (concept 4.2d), which never enters DCG. `dead_at`
+ * survives the row when its target is later removed (concept 8.3, S9) - the
+ * label history is calibration material and is never deleted outright.
+ */
+export interface DreamLabel {
+  turnId: string;
+  /** Memory id, or `'*'` for a `review` assignment-level weight. */
+  target: string;
+  source: DreamLabelSource;
+  /** 1 = proven relevant, 0 = proven irrelevant. `review` lands in (0,1). */
+  relevance: number;
+  scope: DreamLabelScope;
+  /** Correction id / review id / route name + actor. */
+  evidence?: string;
+  /** Set once the target is gone; the row itself is never deleted (S9). */
+  deadAt?: number;
+  createdAt: number;
+  /** Denormalised for the deletion paths, mirroring `DreamFrame.owner`. */
+  owner: string;
+  sessionId?: string;
+}
+
+/** The three recall-family slots stage 2 carries a policy for (concept 7.1). */
+export type DreamSlot = 'recall' | 'budget' | 'retry';
+
+/**
+ * One resolved, versioned parameter set for one owner's slot: the factory
+ * default, a user override, or a dream promotion (`PolicyOrigin`, already
+ * declared above for `RecallPolicyOrigin`). `resolvePolicy` (AP10) reads the
+ * highest `version` with `promotedAt` set and `retiredAt` unset; `prevActiveId`
+ * is what was active right before this one was promoted, so a revert or a
+ * night's undo has something to reactivate (concept 8.5).
+ */
+export interface PolicyVersion {
+  id: string;
+  owner: string;
+  slot: DreamSlot;
+  version: number;
+  /** Full parameter set for `slot`; shape depends on which slot this is. */
+  params: Record<string, unknown>;
+  /** The box this version was validated against; shape depends on `slot`. */
+  box: Record<string, unknown>;
+  origin: PolicyOrigin;
+  parentId?: string;
+  /** What was active when this version was promoted. `undefined`: none was. */
+  prevActiveId?: string;
+  sleepRunId?: string;
+  rationale?: string;
+  replayScore?: number;
+  replayN?: number;
+  baselineScore?: number;
+  /** Against the factory default parameter set, on the frozen audit set. */
+  auditDelta?: number;
+  auditCiLow?: number;
+  onlineScore?: number;
+  promotedAt?: number;
+  retiredAt?: number;
+  createdAt: number;
+}
+
+/**
+ * The four freeze causes (concept 10.3). A frozen slot keeps measuring but
+ * never promotes again until a person thaws it.
+ */
+export type DreamSlotFreezeReason = 'calibration' | 'staleness' | 'agreement' | 'manual';
+
+/** Per-owner, per-slot promotion state: frozen or not, and the cooldown clock. */
+export interface DreamSlotState {
+  owner: string;
+  slot: DreamSlot;
+  frozenAt?: number;
+  frozenReason?: DreamSlotFreezeReason;
+  cooldownUntil?: number;
+  lastPromoted?: number;
+}
+
+/**
+ * One candidate evaluation: the paired, bootstrapped delta against the
+ * incumbent, its validity certificate (concept 5.4) and its promotion
+ * outcome. `abstainReasons` keys on `AbstainReason`; `signAgree` is the
+ * freshness check's verdict (concept 5.5a) - `null` means "undetermined",
+ * because `|delta_frozen| <= margin` makes the sign comparison moot.
+ */
+export interface DreamEval {
+  id: string;
+  sleepRunId: string;
+  policyId: string;
+  slot: DreamSlot;
+  /** Offered. */
+  traces: number;
+  /** Closed and scored. */
+  closed: number;
+  abstained: number;
+  abstainReasons: Partial<Record<AbstainReason, number>>;
+  reachableRate: number;
+  labelCoverage: number;
+  costOnlyShare: number;
+  score: number;
+  baseline: number;
+  delta: number;
+  /** Cluster-bootstrap over sessions, 95 percent, reported as approximated. */
+  ciLow: number;
+  ciHigh: number;
+  /** Against the factory default, on the frozen audit set. */
+  auditDelta?: number;
+  auditCiLow?: number;
+  /** Freshness check: score against the live bank instead of frozen frames. */
+  deltaLive?: number;
+  /**
+   * `null` is a legitimate value, not "not yet known" - it means
+   * undetermined (`|delta| <= margin`), see the freshness check above. The
+   * same pattern `DreamTrace.degraded` already uses.
+   */
+  signAgree: boolean | null;
+  evalMs: number;
+  /** sha256 over the sorted trace ids this evaluation closed over. */
+  traceSetHash: string;
+  /** Condensed reasoning, never verbatim text. */
+  evidenceDigest?: string;
+  promoted: boolean;
+  /** Score per label source, gaming-admission counters. */
+  detail?: Record<string, unknown>;
+  createdAt: number;
+}
+
+/**
+ * The index over one turn's or one assignment's existing `turn_events`
+ * journal (concept, AP1 "dream_episodes"): not a second transcript store,
+ * only what the journal does not already know - outcome, step count, and
+ * whether this episode fell into the frozen audit set. `id` is the same id
+ * as the underlying `turns`/`assignments` row.
+ */
+export interface DreamEpisode {
+  id: string;
+  owner: string;
+  kind: 'turn' | 'assignment';
+  sessionId?: string;
+  /** Which slot's policy this episode is relevant to. */
+  slot: string;
+  steps: number;
+  outcome: 'success' | 'failure' | 'unknown';
+  holdout: boolean;
+  audit: boolean;
+  startedAt: number;
+  finishedAt?: number;
+  createdAt: number;
+}
+
+/**
+ * One tool step of an episode, read back from `turn_events` rather than
+ * stored anywhere new (`episodeFromEvents`, AP7). Observations are keyed on
+ * `(step, argsHash)` - concept S28/S29 - so a diverging action can
+ * structurally never match a recorded one.
+ */
+export interface DreamEpisodeStep {
+  step: number;
+  name: string;
+  argsHash?: string;
+  input?: string;
+  result?: string;
+  isError?: boolean;
+  at: number;
+}
+
+/**
+ * The first-divergence verdict (concept 7.2/S29): `k = n` is `no-change`;
+ * `k < n` on a failed episode is `may-avoid-failure` and counts for nothing;
+ * `k < n` on a successful episode is `regression-risk` at step `k`. Nothing
+ * is claimed about steps after `k`.
+ */
+export type DreamVerdict = 'no-change' | 'may-avoid-failure' | 'regression-risk';
+
+/**
+ * Who caused a memory write or edit. `'model'` is the default for every
+ * existing store call site so nothing breaks; only the HTTP path passes
+ * `'user'` explicitly (concept 4.2b, S5), and `'sleep'` is the night itself.
+ * Only `actor === 'user'` makes the store write a `user` dream label.
+ */
+export type MemoryActor = 'user' | 'model' | 'sleep';
 
 /* ------------------------------------------------------------------ *
  * Organisation
@@ -1702,8 +1951,9 @@ export interface MemoryConfig {
   graph: MemoryGraphConfig;
   /**
    * The dream: recording and replaying recall so the night can measure the
-   * retrieval policy. Stage 1 ships the capability switched off - it
-   * records and measures, and promotes nothing.
+   * retrieval policy, and - stage 2 on - promoting what measurably wins.
+   * Every switch ships off (`enabled`, `record`, `promote`); this stage
+   * delivers the machine, not its start (concept 11, plan section 1.2).
    */
   dream: DreamConfig;
   /** The nightly clean-up. */
@@ -1733,14 +1983,21 @@ export interface MemoryGraphConfig {
 /**
  * The dream's own settings, beside `memory.sleep`. Every key names its
  * reader - the key table sits above the `dream:` block in config.ts - and a
- * key without a reader does not ship. That is why there is no `promote`
- * here: in stage 1, nothing would read it (R16).
+ * key without a reader does not ship (E20). Stage 2 adds the keys the
+ * candidate writer, the evaluation machinery and the promotion gate read;
+ * see docs/concepts/dream-stage2plus-buildplan.md section 3, AP2.
  */
 export interface DreamConfig {
   /** The whole dream. Off means: no recorder, no night probe. */
   enabled: boolean;
   /** Only the recorder. Separate, so it can be switched off without losing the night. */
   record: boolean;
+  /**
+   * The promotion gate. Off means: the night still measures and writes
+   * `dream_evals`, but never touches `policy_versions` (concept 10.2,
+   * condition 8; E20/E22 - this stage ships it off).
+   */
+  promote: boolean;
   /** Share of sessions that get framed at all. Drawn per session, never per trace. */
   frameRate: number;
   /** The most permissive corner: up to which `limit` a frame stays replayable. */
@@ -1759,8 +2016,59 @@ export interface DreamConfig {
   frameRetainDays: number;
   /** Retention for traces and touches (small, they carry the calibration). */
   retainDays: number;
-  /** Run-global ceiling over all owners. Zero model calls in stage 1; the ceiling stands anyway. */
+  /**
+   * Run-global ceiling over all owners. Zero in stage 1, where nothing spent
+   * a call; from stage 2 on the candidate writer does, so this is the wallet
+   * for it (concept 9.4).
+   */
   maxCallsPerNight: number;
+  /** Which slots the night carries a policy for. Stage 2 ships `['recall']` alone. */
+  slots: DreamSlot[];
+  /** Candidates the candidate writer proposes per slot per night (concept 6.2). */
+  candidates: number;
+  /** Model for the candidate writer. Never `smallModelFor`/`ask`'s wired `'low'` effort (S16). */
+  model: string;
+  /** Below this many closed traces (post-intersection), an evaluation is invalid, not lost (validity rule 3). */
+  minTraces: number;
+  /** Promotion needs `delta > margin` on the holdout, and the freshness check's sign-agreement tolerance. */
+  margin: number;
+  /** Below this `label_coverage`, an evaluation is invalid (concept 4.4). */
+  coverageFloor: number;
+  /** Above this `cost_only_share`, an evaluation is invalid (concept 4.4). */
+  costOnlyCeiling: number;
+  /** Candidate abstain rate may exceed the baseline's by at most this (validity rule 2). */
+  abstainEps: number;
+  /** Both arms' abstain rate must stay under this (validity rule 2). */
+  abstainFloor: number;
+  /** Below this mean `reachable_rate`, an evaluation is invalid (validity rule 4). */
+  reachableFloor: number;
+  /**
+   * Below this precision, the `correction` label source is not a source
+   * (concept 4.2a) - the fallback is `labelModelCalls` below.
+   */
+  correctionPrecisionFloor: number;
+  /** Model calls spent labelling corrections directly, when precision falls short. Zero: modelfree. */
+  labelModelCalls: number;
+  /** Milliseconds: the session window a `user` label's HTTP edit is attributed over (concept 4.2b). */
+  userLabelWindow: number;
+  /** Below this Cohen's kappa between label sources, the label agreement check is unvalidated (concept 5.5b). */
+  agreementFloor: number;
+  /** Traces after promotion before the wake test's regression alarm runs (concept 5.5c). */
+  calibrationTraces: number;
+  /** Replay-vs-online score drift the wake test tolerates before it freezes the slot. */
+  tolerance: number;
+  /** Nights a slot must wait between promotions (concept 5.3, `trace_set_hash` disjointness). */
+  cooldownNights: number;
+  /** Hard cap on promotions per night, across every slot (concept 10.2, condition 8). */
+  maxPromotionsPerNight: number;
+  /** Share of nights that spend a free exploration instead of a promotion attempt (E17). Zero: none. */
+  explorationRate: number;
+  /**
+   * Trial episodes for Phase 6's first-divergence evaluation. Zero in this
+   * stage on purpose (concept 11, Phase 6; plan section 1.2): the mechanism
+   * ships, its validation gate does not open itself.
+   */
+  trialEpisodes: number;
 }
 
 export interface SleepConfig {
