@@ -1106,12 +1106,14 @@ export interface MemoryConfig {
 }
 
 /**
- * The three switches of `config.memory.dream` the nights page reads (S22/E20).
+ * The part of `config.memory.dream` the nights page reads (S22/E20).
  *
- * The block carries some thirty more keys; only these four reach a label, and
- * a key without a reader has no business in a browser type. All of them are
- * `false` / `['recall']` by default, which is why the dream section's empty
- * state can say "switched off" rather than "nothing here yet".
+ * The block carries some thirty more keys; only these reach a label, and a key
+ * without a reader has no business in a browser type. The three switches are
+ * `false` by default, which is why the dream section's empty state can say
+ * "switched off" rather than "nothing here yet" - and why they are switches on
+ * that page rather than rows on the settings page, which has no honest label
+ * for a number whose effect shows up only in a nightly run.
  */
 export interface MemoryDreamConfig {
   /** The whole stage. Off by default. */
@@ -1122,6 +1124,12 @@ export interface MemoryDreamConfig {
   promote: boolean;
   /** Which slots the candidate loop runs for at all. */
   slots?: DreamSlot[];
+  /** Share of eligible turns the recorder frames, 0..1. */
+  frameRate?: number;
+  /** Candidates the writer proposes per slot per night. */
+  candidates?: number;
+  /** The model that writes them. Never the cheap one: this is judgement. */
+  model?: string;
 }
 
 export interface OrgConfig {

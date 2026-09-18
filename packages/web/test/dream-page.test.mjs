@@ -314,6 +314,30 @@ test('the switched-off dream reads as switched off', () => {
   );
 });
 
+test('the three switches are switches, and the gate asks first', () => {
+  const section = read(SECTION);
+  // The settings page says in its own header comment that memory.gate,
+  // memory.graph and memory.sleep do not belong there, because it has no
+  // honest label for a number whose effect shows up only in a nightly run.
+  // The same argument puts these three here - but "not there" must not mean
+  // "nowhere", which is what a read-only list amounted to.
+  assert.ok(section.includes('<Switch'), 'the switches are switches, not a read-only list');
+  assert.ok(section.includes("save({ memory: { dream:"), 'they write the served config back');
+  for (const key of ["'enabled'", "'record'", "'promote'"]) {
+    assert.ok(section.includes(key), 'the switch table carries ' + key);
+  }
+  // Opening the gate is the one that changes behaviour unattended.
+  assert.match(
+    section,
+    /promote'\s*&&\s*next[\s\S]{0,200}confirm\(/,
+    'the promotion gate asks before it opens, and only when opening',
+  );
+  assert.ok(
+    section.includes('The gate is open, the stage is off'),
+    'an open gate with the stage off is named, not left as a silent no-op',
+  );
+});
+
 test('the capped history names its own base', () => {
   const section = read(SECTION);
   assert.ok(section.includes('HISTORY_LIMIT'), 'the section knows its own limit');

@@ -23,6 +23,13 @@ Der Bauplan dazu ist `dream-stage2plus-buildplan.md` (siebzehn Arbeitspakete, se
 **Immer noch aus.** `memory.dream.enabled`, `record`, `promote` und `trialEpisodes` stehen auf
 `false` beziehungsweise 0. Diese Stufe liefert die Maschine, nicht ihren Anlauf.
 
+**Angeschaltet wird im Traumabschnitt der Naechte-Seite**, nicht auf der Einstellungsseite: 9.6
+verbietet die Knoepfe dort, weil die Seite keine ehrlichen Beschriftungen fuer Zahlen hat, deren
+Wirkung nur im Nachtlauf sichtbar ist. Der Traumabschnitt hat sie — er kann je Schalter sagen, was
+er kostet und was ihm noch fehlt. Genau das ist die Bedingung, unter der sich `promote` ueberhaupt
+anbieten laesst: der Schalter fragt vorher nach und nennt dabei, dass die Handpruefung der
+Korrekturetiketten noch aussteht. "Nicht auf der Einstellungsseite" heisst nicht "nirgends".
+
 **Was jetzt fehlt, ist keine Mechanik mehr, sondern Messung.** Vier Zahlen dieses Dokuments sind
 weiter `geraten` und lassen sich nur an echten Daten ersetzen:
 

@@ -26,7 +26,9 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
 import { Spinner } from '@/components/ui/spinner';
+import { Switch } from '@/components/ui/switch';
 import {
   Table,
   TableBody,
@@ -222,15 +224,86 @@ function diffParams(
   });
 }
 
+/** The three switches of E20, in the order a reader turns them on. */
+type DreamSwitch = 'enabled' | 'record' | 'promote';
+
+/**
+ * What each switch does and what it costs, in the words this section can
+ * honestly use. `enabled` and `record` are free to turn on; `promote` is the
+ * one that changes behaviour unattended, and it asks first.
+ */
+const SWITCHES: { key: DreamSwitch; label: string; detail: string }[] = [
+  {
+    key: 'enabled',
+    label: 'Dream stage',
+    detail:
+      'The night measures its own retrieval against the recorded frames. No model calls, no changes - it runs even on a night with no provider.',
+  },
+  {
+    key: 'record',
+    label: 'Recording frames',
+    detail:
+      'A sample of turns writes down what recall had in front of it. Costs a little latency and disk per turn; without it there is nothing to measure later.',
+  },
+  {
+    key: 'promote',
+    label: 'Promotion gate',
+    detail:
+      'Lets a night put a measured policy in force by itself. Every promotion is mailed, falls under the undo and can be reverted here.',
+  },
+];
+
 export interface DreamSectionProps {
   /** Whose bank. Left out, every route answers for the assistant's own. */
   owner?: string;
 }
 
 export function DreamSection({ owner }: DreamSectionProps) {
-  const { config } = useConfig();
+  const { config, save } = useConfig();
   const { confirm, dialog } = useConfirm();
+  const [switching, setSwitching] = useState<DreamSwitch | null>(null);
   const dream = config?.memory?.dream;
+
+  /*
+    The three switches live HERE and not on the settings page. That page says
+    so itself, about `memory.gate`, `memory.graph` and `memory.sleep`: it has
+    no honest labels for numbers whose effect is only visible in the nightly
+    run (concept 9.6). This section is that run's own surface - it can say what
+    each switch costs and what it is still missing, which is the only way to
+    offer `promote` honestly.
+  */
+  const flip = useCallback(
+    async (key: DreamSwitch, next: boolean) => {
+      if (key === 'promote' && next) {
+        const go = await confirm({
+          title: 'Let the night change what the assistant recalls?',
+          description: (
+            <>
+              <span className="block">
+                With the gate open a night may put a retrieval policy in force on its own. It cannot
+                do that until it has measured one: the evaluation has to be valid, beat the incumbent
+                on a holdout AND beat the factory defaults on a frozen audit set. Every promotion is
+                mailed to you, falls under the night&rsquo;s undo, and can be reverted from this page.
+              </span>
+              <span className="mt-2 block">
+                What is not proven yet is the measure itself. The concept asks for a hand check of
+                the correction labels over at least fifty corrections before this runs for real, and
+                that check has not happened.
+              </span>
+            </>
+          ),
+          confirmLabel: 'Open the gate',
+          destructive: true,
+        });
+        if (!go) return;
+      }
+      setSwitching(key);
+      const saved = await save({ memory: { dream: { [key]: next } } } as never);
+      setSwitching(null);
+      if (saved) setReloads((count) => count + 1);
+    },
+    [confirm, save],
+  );
 
   const [slots, setSlots] = useState<DreamSlotView[] | null>(null);
   const [history, setHistory] = useState<Record<DreamSlot, PolicyVersion[]> | null>(null);
@@ -563,21 +636,67 @@ export function DreamSection({ owner }: DreamSectionProps) {
               />
             ) : null}
 
-            {/* Every number on this surface rests on the same served config. */}
+            {/* Every number on this surface rests on the same served config -
+                and so do these three switches, which write it back. */}
+            {dream ? (
+              <div className="px-4 lg:px-6">
+                <Card>
+                  <CardContent className="grid gap-4 @[720px]/card:grid-cols-3">
+                    {SWITCHES.map((entry) => (
+                      <div key={entry.key} className="flex items-start gap-3">
+                        <Switch
+                          id={'dream-' + entry.key}
+                          checked={Boolean(dream[entry.key])}
+                          onCheckedChange={(checked) => void flip(entry.key, checked)}
+                          disabled={switching !== null}
+                        />
+                        <div className="grid gap-1">
+                          <Label htmlFor={'dream-' + entry.key} className="text-sm font-medium">
+                            {entry.label}
+                          </Label>
+                          <p className="text-xs text-muted-foreground">{entry.detail}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              </div>
+            ) : null}
+
+            {/* The gate is open but the stage is not: an honest contradiction,
+                not a silent no-op. Nothing can be promoted by a night that
+                never runs. */}
+            {dream && dream.promote && !dream.enabled ? (
+              <div className="px-4 lg:px-6">
+                <Alert>
+                  <AlertTitle>The gate is open, the stage is off</AlertTitle>
+                  <AlertDescription>
+                    Nothing will be promoted: the dream stage is what runs the measurement, and with
+                    it off no night ever produces a policy for the gate to pass.
+                  </AlertDescription>
+                </Alert>
+              </div>
+            ) : null}
+
             {dream ? (
               <div className="px-4 lg:px-6">
                 <MetaList
                   columns={3}
                   items={[
-                    { label: 'Dream stage', value: dream.enabled ? 'on' : 'off' },
-                    { label: 'Recording frames', value: dream.record ? 'on' : 'off' },
-                    { label: 'Promotion gate', value: dream.promote ? 'on' : 'off' },
                     {
                       label: 'Slots it runs for',
                       value:
                         dream.slots && dream.slots.length > 0
                           ? dream.slots.map((slot) => SLOT_LABEL[slot] ?? slot).join(', ')
                           : 'none',
+                    },
+                    {
+                      label: 'Frames it records',
+                      value: formatNumber(Math.round((dream.frameRate ?? 0) * 100)) + '% of turns',
+                    },
+                    {
+                      label: 'Candidates a night',
+                      value: formatNumber(dream.candidates ?? 0) + ' on ' + (dream.model ?? '?'),
                     },
                   ]}
                 />
