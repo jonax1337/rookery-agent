@@ -124,16 +124,6 @@ export function AssignmentDetailPage() {
     if (liveStatus) void reload();
   }, [liveStatus, reload]);
 
-  /**
-   * Once this visit has seen the assignment run, the terminal stays: the
-   * journal keeps answering after the end, so the run's last stretch - and a
-   * reload at any point - still shows the transcript it recorded.
-   */
-  const [sawRunning, setSawRunning] = useState(false);
-  useEffect(() => {
-    if (liveStatus === 'running') setSawRunning(true);
-  }, [liveStatus]);
-
   /* -------------------------------- actions ------------------------------ */
 
   const assignment = detail?.assignment ?? null;
@@ -392,7 +382,7 @@ export function AssignmentDetailPage() {
           </TabsList>
 
           <TabsContent value="ergebnis" className="mt-4 flex flex-col gap-4">
-            {(status === 'running' || sawRunning) && id ? (
+            {id ? (
               // The run as it happens, above the result it is heading for -
               // and past its end too, because the journal it reads outlives
               // the run: the transcript stays where the buffer used to vanish.
