@@ -198,6 +198,19 @@ export interface SleepRun {
   conflictCount: number;
   resolvedCount: number;
   modelCalls: number;
+  /**
+   * The five dream counters, exactly as `SleepRun` in `packages/core/src/types.ts`
+   * declares them: optional there because the runs written before schema 21 / 24
+   * have no column for them, and optional here for the same reason. A night from
+   * an older database answers `undefined`, which is not the same claim as zero -
+   * the table and the report draw them through `formatNumber(value ?? 0)` only
+   * where the column itself says what it counts.
+   */
+  dreamTracesSeen?: number;
+  dreamFramesScored?: number;
+  dreamCandidates?: number;
+  dreamPromoted?: number;
+  dreamLabelsWritten?: number;
   report?: string;
   error?: string;
   undoneAt?: number;
@@ -247,6 +260,135 @@ export interface SleepStatusView {
   lastRun: SleepRun | null;
   schedule: CronJob | null;
   config: SleepConfig;
+}
+
+/* --------------------------------- dream ---------------------------------- */
+
+/**
+ * The dream's own shapes, as `routes/dream.ts` hands them out.
+ *
+ * Every one of these mirrors a declaration in `packages/core/src/types.ts`
+ * field for field; the server maps the rows and answers with numbers and this
+ * vocabulary, never with a word of the frames behind them (concept E19). They
+ * are optional-heavy on purpose: a version nobody has measured yet carries no
+ * score, and a slot nobody has promoted in carries no state but its own name.
+ */
+
+/** The three recall-family slots a policy exists for (concept 7.1). */
+export type DreamSlot = 'recall' | 'budget' | 'retry';
+
+/** The four causes a slot can be frozen for (concept 10.3). */
+export type DreamSlotFreezeReason = 'calibration' | 'staleness' | 'agreement' | 'manual';
+
+/** Factory default, a user override, or a promotion the night made. */
+export type PolicyOrigin = 'default' | 'user' | 'dream';
+
+/**
+ * One versioned parameter set for one slot.
+ *
+ * Read the row by its numbers, the way the route's own comment does:
+ * `promotedAt` set and `retiredAt` unset is in force; `replayScore` set and
+ * not promoted is measured and passed over; `replayScore` unset is a proposal
+ * nobody has measured yet.
+ */
+export interface PolicyVersion {
+  id: string;
+  owner: string;
+  slot: DreamSlot;
+  version: number;
+  /** Full parameter set for `slot`; the shape depends on which slot this is. */
+  params: Record<string, unknown>;
+  box: Record<string, unknown>;
+  origin: PolicyOrigin;
+  parentId?: string;
+  /** What was in force right before this was promoted - what a revert restores. */
+  prevActiveId?: string;
+  sleepRunId?: string;
+  rationale?: string;
+  /** Score on the held-out half, 0..1. Unset: never measured. */
+  replayScore?: number;
+  replayN?: number;
+  baselineScore?: number;
+  /** Against the factory default, on the frozen audit set. */
+  auditDelta?: number;
+  auditCiLow?: number;
+  onlineScore?: number;
+  promotedAt?: number;
+  retiredAt?: number;
+  createdAt: number;
+}
+
+/** Whether a slot still promotes, and when it may do so again. */
+export interface DreamSlotState {
+  owner: string;
+  slot: DreamSlot;
+  frozenAt?: number;
+  frozenReason?: DreamSlotFreezeReason;
+  cooldownUntil?: number;
+  lastPromoted?: number;
+}
+
+/** One row of `GET /api/dream/policies`: a slot, what is in force, its state. */
+export interface DreamSlotView {
+  slot: DreamSlot;
+  /** `null` until the slot's first promotion - the normal case. */
+  active: PolicyVersion | null;
+  state: DreamSlotState;
+}
+
+/**
+ * One evaluation: the paired delta against the incumbent, its validity
+ * certificate (concept 5.4) and whether it led to a promotion.
+ */
+export interface DreamEval {
+  id: string;
+  sleepRunId: string;
+  policyId: string;
+  slot: DreamSlot;
+  /** Traces offered. */
+  traces: number;
+  /** Traces closed and scored. */
+  closed: number;
+  abstained: number;
+  abstainReasons: Record<string, number>;
+  reachableRate: number;
+  labelCoverage: number;
+  costOnlyShare: number;
+  score: number;
+  baseline: number;
+  delta: number;
+  /** Cluster bootstrap over sessions, 95 percent, reported as approximated. */
+  ciLow: number;
+  ciHigh: number;
+  auditDelta?: number;
+  auditCiLow?: number;
+  deltaLive?: number;
+  /** `null` is a value, not a gap: the sign comparison was undetermined. */
+  signAgree: boolean | null;
+  evalMs: number;
+  traceSetHash: string;
+  evidenceDigest?: string;
+  promoted: boolean;
+  detail?: Record<string, unknown>;
+  createdAt: number;
+}
+
+/**
+ * What `POST /api/dream/policies/:id/revert` answers, field for field the
+ * `RevertResult` of `memory/dream/promote.ts`.
+ *
+ * `restored: null` with `ok: true` is an outcome, not a failure: the reverted
+ * promotion was the first one in its slot, so what comes back into force is
+ * the configured default rather than an older version.
+ */
+export interface PolicyRevertResult {
+  ok: boolean;
+  /** The version that was in force and no longer is. */
+  retired: PolicyVersion | null;
+  /** What `prevActiveId` pointed at, back in force. `null` when there was none. */
+  restored: PolicyVersion | null;
+  /** Why nothing happened. Empty exactly when `ok`. */
+  findings: string[];
 }
 
 /* ------------------------------ organisation ------------------------------ */
@@ -960,6 +1102,26 @@ export interface MemoryConfig {
   gate?: MemoryGateConfig;
   graph?: MemoryGraphConfig;
   sleep?: SleepConfig;
+  dream?: MemoryDreamConfig;
+}
+
+/**
+ * The three switches of `config.memory.dream` the nights page reads (S22/E20).
+ *
+ * The block carries some thirty more keys; only these four reach a label, and
+ * a key without a reader has no business in a browser type. All of them are
+ * `false` / `['recall']` by default, which is why the dream section's empty
+ * state can say "switched off" rather than "nothing here yet".
+ */
+export interface MemoryDreamConfig {
+  /** The whole stage. Off by default. */
+  enabled: boolean;
+  /** The recorder alone - frames and traces, without the night's probe. */
+  record: boolean;
+  /** The promotion gate. Off by default: the machine ships, not its start. */
+  promote: boolean;
+  /** Which slots the candidate loop runs for at all. */
+  slots?: DreamSlot[];
 }
 
 export interface OrgConfig {
