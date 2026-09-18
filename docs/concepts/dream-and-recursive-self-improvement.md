@@ -1,35 +1,78 @@
 # Traum und rekursive Selbstverbesserung
 
-Stand: 2026-09-17. **Phase 1 ist gebaut und in `main`** (Merge `2a90243`, Schema 21).
-Phase 2 bis 6 stehen aus.
+Stand: 2026-09-18. **Phase 1 bis 6 sind gebaut** (Schema 24). Der Traum ist vollstaendig
+verdrahtet und **standardmaessig aus**.
 
 ## Stand der Umsetzung - hier anknuepfen
 
-**Gebaut (Phase 1, das Messfundament).** `packages/core/src/memory/dream/` mit `frame.ts` (der
-`fetchFrame`/`scoreFrame`-Schnitt, Rahmen an der permissivsten Ecke der Box), `score.ts`, `policy.ts`
-(`resolvePolicy`), `measure.ts` (das Blockmass), `probe.ts` (die Gitterprobe). Rekorder an der
-Aufrufstelle in `runtime.ts`, Persistenz in `memory/store.ts`, Tabellen in `memory/db.ts` (Schema 21).
-Die Probe laeuft in `memory/sleep.ts` vor der Zyklusschleife und ueber dem Provider-Waechter.
-Dazu vier vorgezogene Fremdarbeiten, die Rookery ohnehin fehlten: die vier Gleichstandsbrecher im
-Abruf, `PRAGMA busy_timeout`, die Abwaertsbremse gegen neuere Datenbanken, und `replay` in
-`SLEEP_PHASES`.
+**Gebaut.** `packages/core/src/memory/dream/` traegt jetzt zehn Module: `frame.ts`, `score.ts`,
+`policy.ts`, `measure.ts`, `probe.ts` (Stufe 1) sowie `label.ts` (die vier Quellen aus Abschnitt 4,
+rein, ohne Store und ohne Uhr), `admission.ts` (H1/H3/H9 und der Boxverstoss als Erzeugungsfehler),
+`candidate.ts` (Aggregate ohne ein einziges Zeichenkettenfeld, eigener Aufrufer mit eigenem Effort),
+`evaluate.ts` (sitzungsweiser Split, gepaartes Delta auf der Schnittmenge, Cluster-Bootstrap, die
+fuenf Gueltigkeitsregeln, Etikettenabgleich), `promote.ts` (die neun Bedingungen aus 10.2 als je
+einzeln testbare Blocker), `slots.ts` (`budget` und `retry`) und `trajectory.ts` (Erst-Divergenz mit
+den vier Urteilen). Dazu: Schema 24 mit `policy_versions`, `dream_slot_state`, `dream_evals` und
+`dream_episodes`; die Persistenz in `store.ts`; die Verdrahtung in `sleep.ts`; der Resolver an allen
+Aufrufstellen; `server/src/routes/dream.ts`; der Traumabschnitt der Naechte-Seite mit Versionskurve,
+Diff-Blatt und Revert; die Chat-Hervorhebung als Etikettenkanal; und die Rekordertreue aus Phase 6
+(`argsHash` ueber kanonisches JSON, echter Werkzeugname am `end`-Ereignis).
 
-**Nicht gebaut, und zwar mit Absicht.** Es gibt keinen Schreiber fuer `dream_labels` (die Tabelle ist
-leer angelegt), keine Tabelle `policy_versions`, keinen Kandidatenschreiber und kein Befoerderungstor.
-**Rookery verbessert sich also noch nicht selbst.** `memory.dream.enabled` und `memory.dream.record`
-stehen beide auf `false`.
+Der Bauplan dazu ist `dream-stage2plus-buildplan.md` (siebzehn Arbeitspakete, sechs Wellen).
 
-**Was das heute bedeutet.** Schaltet man die Probe ein, rechnet sie - aber jede Spur enthaelt sich mit
-`no-reachable-label`, weil ohne Etiketten `IDCG = 0` ist. Das Geruest steht, der Massstab fehlt.
+**Immer noch aus.** `memory.dream.enabled`, `record`, `promote` und `trialEpisodes` stehen auf
+`false` beziehungsweise 0. Diese Stufe liefert die Maschine, nicht ihren Anlauf.
 
-**Der naechste Schritt ist Phase 2 (§11), und sie ist der eigentliche Test.** Dort entsteht die
-Abbildung von den Quellen auf `gain(m)` (§5). Bevor Phase 3 gebaut wird, verlangt dieses Dokument die
-Pruefung an einigen Dutzend handbeurteilten Turns, ob die Etiketten ungefaehr das treffen, was ein
-Mensch relevant nennen wuerde. Faellt das durch, ist der Weg zu stoppen und nicht zu umgehen - siehe
-"Was dieses Dokument nicht beweisen kann".
+**Was jetzt fehlt, ist keine Mechanik mehr, sondern Messung.** Vier Zahlen dieses Dokuments sind
+weiter `geraten` und lassen sich nur an echten Daten ersetzen:
 
-Ein Bauplan existiert nur fuer Phase 1 (`dream-stage1-buildplan.md`, erledigt). Phase 2 und 3 brauchen
-einen eigenen, nach demselben Muster: Arbeitspakete mit disjunkten Dateimengen, Wellen, Gate je Welle.
+1. Die **Trefferquote der Zitat- und Aehnlichkeitslokalisierung** (Offene Frage 2). Der Zaehler und
+   sein Boden (`correctionPrecisionFloor`) stehen und werden berichtet; die Handpruefung an
+   mindestens 50 Korrekturen hat nicht stattgefunden. **Vor Phase 3 im Betrieb** verlangt dieses
+   Dokument sie, und ein Durchfallen ist ein Stopp, kein Umweg.
+2. Der **Kappa-Schwellwert** (Offene Frage 1), `agreementFloor: 0.4`.
+3. **`minTraces: 200`** (Offene Frage 4).
+4. Das **Validierungstor der Erst-Divergenz-Bewertung** (Phase 6). `divergenceProxyReport` misst es
+   und beschoenigt nichts; gelaufen ist es nie. Faellt es durch, ist Phase 6 tot.
+
+**Entscheidungen, die beim Bauen fielen und hier nachgetragen sind, weil der Code sie traegt:**
+
+* **Ein heute geschriebener Kandidat wird morgen gemessen.** Der Bauplan setzt die Bewertung vor die
+  Zyklusschleife und den Kandidatenschreiber in den letzten Zyklus; beides zusammen heisst, dass ein
+  Vorschlag eine Nacht liegen bleibt. Das ist die Stelle, an der der Befoerderungspfad modellfrei
+  bleibt: eine Nacht ohne Provider schlaegt nichts vor und befoerdert trotzdem, was die letzte
+  vorgeschlagen hat. Zurueckgezogen wird ein Vorschlag erst, wenn ueber ihn entschieden wurde.
+* **Ein sitzungsweites Etikett traegt die Sitzungs-ID in `turn_id`.** Abschnitt 8.3 legt die Spalte
+  `NOT NULL` und in den Primaerschluessel und verlangt zugleich `NULL` bei Mehrdeutigkeit; das ist
+  ein Widerspruch im Dokument. Aufgeloest ueber `scope`: nur `scope = 'turn'` geht in DCG ein.
+* **H9 lehnt den Faktor eins nicht ab.** Ein identischer Gewichtsvektor ist kein Rescale - er ist,
+  was jeder Kandidat traegt, der nur `threshold` oder die Hop-Gewichte bewegt, und der Amtsinhaber
+  selbst waere das erste Opfer gewesen.
+* **`dream.effort` ist ein Konfigurationsschluessel geworden.** E14 verlangt, dass der
+  Kandidatenschreiber nicht auf `ask`s verdrahtetem `'low'` laeuft; der Typ laesst `'low'` gar nicht
+  zu.
+* **Der Wach-Test schreibt keine `dream_evals`-Zeile.** Diese Tabelle ist gepaart; ein Arm gegen sich
+  selbst bewegt auf keiner Spur eine etikettierte Position. Er misst direkt mit demselben Schaetzer
+  und denselben Etiketten, und sein Befund steht im Bericht und im Einfrieren. Er friert nicht ein,
+  wenn er nicht genug Rahmen schliessen konnte - die Zahl der Enthaltungen steht daneben.
+* **`holdoutRate` und `auditRate` sind Modulkonstanten**, kein Konfigurationsschluessel: Rekorder und
+  Nacht muessen dieselbe Rate lesen, sonst wechselt eine Sitzung zwischen Stempel und Bewertung die
+  Seite. Ebenso `PROXY_AGREEMENT_FLOOR` und `PROXY_MIN_SAMPLES` (Phase 6) - E20 verbietet einen
+  Schluessel ohne Leser, und einen Leser in der Konfiguration haetten sie nicht.
+* **Die manuelle Befoerderung ueber `POST /api/dream/policies/:id/promote` setzt
+  `dream_evals.promoted` nicht nach.** Eine von Hand befoerderte Spurenmenge sieht die
+  H6-Disjunktheitspruefung darum weiter als unverbraucht.
+
+Beruehrt sind heute `packages/core/src/memory/` (`db.ts`, `store.ts`, `sleep.ts`, `recall.ts`,
+`dream/*`), `config.ts`, `types.ts`, `runtime.ts`, `org/{controller,store}.ts`,
+`providers/claude-code.ts`, `packages/server/src/{schemas.ts,server.ts,routes/{dream,memories}.ts}`
+und in `packages/web` die Naechte-Seite, die Gedaechtnisliste und der Chat-Haken.
+
+Verwandte Konzepte: `dream-stage2plus-buildplan.md` (der Bauplan dieser Stufe),
+`dream-stage1-buildplan.md` (Phase 1, erledigt), `memory-graph-and-sleep.md` (der bestehende
+Schlaf), `confirmed-memory-and-self-written-skills.md` (Skills als Artefakt),
+`agent-performance-management.md` (die Bewertungsrubrik), `night-intensity-and-cron-exclusion.md`
+(welche Sitzungen nachts ueberhaupt zaehlen).
 
 Diese Fassung aendert nicht das Ziel von Fassung 1, sondern die **Beweislast**. Fassung 1 behauptete,
 `recall` sei exakt replaybar, weil es eine reine Funktion sei. Das ist eine Eigenschaft des Codes.
@@ -42,15 +85,6 @@ gilt; eine Zahl ohne dieses Wort ist ein Fehler im Dokument, nicht bloss eine Na
 zweite Haelfte der Beweislast, die Fassung 1 gar nicht gesehen hat, liegt bei den Etiketten: ohne einen
 benannten Schreiber fuer `dream_labels.relevance` misst der ganze Apparat nichts. Abschnitt 4 schreibt
 diesen Schreiber aus, mitsamt dem, was er nicht kann.
-
-Beruehrt wuerde vor allem `packages/core/src/memory/recall.ts`, `memory/sleep.ts`, `memory/gate.ts`,
-`memory/store.ts`, `memory/db.ts`, `config.ts`, dazu `packages/server/src/routes/` und die Naechte-Seite
-in `packages/web`.
-
-Verwandte Konzepte: `memory-graph-and-sleep.md` (der bestehende Schlaf, umgesetzt),
-`confirmed-memory-and-self-written-skills.md` (Skills als Artefakt), `agent-performance-management.md`
-(die Bewertungsrubrik), `night-intensity-and-cron-exclusion.md` (welche Sitzungen nachts ueberhaupt
-zaehlen).
 
 ---
 

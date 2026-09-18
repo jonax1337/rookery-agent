@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 export type Db = DatabaseSync;
 
@@ -436,6 +436,11 @@ function migrate(db: Db): void {
     CREATE INDEX IF NOT EXISTS idx_dream_frames_age   ON dream_frames(created_at);
     CREATE INDEX IF NOT EXISTS idx_dream_frames_owner ON dream_frames(owner, session_id);
 
+    -- turn_id is NOT NULL and sits in the primary key, so a session-scoped
+    -- label (concept 4.2a: an ambiguous quote resolves to no turn at all,
+    -- never a guess) has nowhere else to carry its locator. It goes here
+    -- instead: turn_id holds the SESSION id when scope = 'session', and only
+    -- scope = 'turn' rows (turn_id holding an actual turn id) feed DCG.
     CREATE TABLE IF NOT EXISTS dream_labels (
       turn_id    TEXT NOT NULL,
       target     TEXT NOT NULL,                 -- memory id, or '*' for a per-trace weight
@@ -461,6 +466,132 @@ function migrate(db: Db): void {
     CREATE INDEX IF NOT EXISTS idx_memory_touches_memory ON memory_touches(memory_id, at);
     CREATE INDEX IF NOT EXISTS idx_memory_touches_owner  ON memory_touches(owner, at);
     CREATE INDEX IF NOT EXISTS idx_memory_touches_trace  ON memory_touches(trace_id);
+  `);
+
+  /* --------------------------- dream, stage 2+ ----------------------------
+     Schema 23 -> 24. docs/concepts/dream-stage2plus-buildplan.md AP1;
+     verbatim column lists from dream-and-recursive-self-improvement.md 8.5
+     (policy_versions, dream_slot_state) and 8.6 (dream_evals).
+
+     dream_episodes is NOT a second verbatim store: the steps of an episode
+     already live in the turn_events journal (turns/turn_events above). This
+     table is only the index Phase 6's first-divergence judging needs over
+     that journal - one row per turn or assignment, keyed the same way. */
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS policy_versions (
+      id             TEXT PRIMARY KEY,
+      owner          TEXT NOT NULL,
+      slot           TEXT NOT NULL,
+      version        INTEGER NOT NULL,
+      params         TEXT NOT NULL,      -- JSON, full parameter set
+      box            TEXT NOT NULL,      -- JSON, the box it was validated against
+      origin         TEXT NOT NULL,      -- default | dream | user
+      parent_id      TEXT,
+      prev_active_id TEXT,               -- what was active WHEN this one was promoted
+      sleep_run_id   TEXT,
+      rationale      TEXT,
+      replay_score   REAL,
+      replay_n       INTEGER,
+      baseline_score REAL,
+      audit_delta    REAL,               -- against the factory default, on the audit set
+      audit_ci_low   REAL,
+      online_score   REAL,
+      promoted_at    INTEGER,
+      retired_at     INTEGER,
+      created_at     INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_slot_version ON policy_versions(owner, slot, version);
+    CREATE INDEX IF NOT EXISTS idx_policy_active ON policy_versions(owner, slot, promoted_at DESC);
+
+    CREATE TABLE IF NOT EXISTS dream_slot_state (
+      owner          TEXT NOT NULL,
+      slot           TEXT NOT NULL,
+      frozen_at      INTEGER,
+      frozen_reason  TEXT,               -- calibration | staleness | agreement | manual
+      cooldown_until INTEGER,
+      last_promoted  INTEGER,
+      PRIMARY KEY (owner, slot)
+    );
+
+    CREATE TABLE IF NOT EXISTS dream_evals (
+      id               TEXT PRIMARY KEY,
+      sleep_run_id     TEXT NOT NULL,
+      policy_id        TEXT NOT NULL REFERENCES policy_versions(id) ON DELETE CASCADE,
+      slot             TEXT NOT NULL,
+      traces           INTEGER NOT NULL,   -- offered
+      closed           INTEGER NOT NULL,   -- closed and scored
+      abstained        INTEGER NOT NULL,
+      abstain_reasons  TEXT NOT NULL,      -- JSON histogram
+      reachable_rate   REAL NOT NULL,
+      label_coverage   REAL NOT NULL,
+      cost_only_share  REAL NOT NULL,
+      score            REAL NOT NULL,
+      baseline         REAL NOT NULL,
+      delta            REAL NOT NULL,
+      ci_low           REAL NOT NULL,      -- cluster bootstrap over sessions, 95 percent
+      ci_high          REAL NOT NULL,
+      audit_delta      REAL,               -- against the factory default, on the audit set
+      audit_ci_low     REAL,
+      delta_live       REAL,               -- freshness check
+      sign_agree       INTEGER,            -- 1 | 0 | NULL = undetermined (|delta| <= margin)
+      eval_ms          INTEGER NOT NULL,
+      trace_set_hash   TEXT NOT NULL,
+      evidence_digest  TEXT,               -- condensed rationale, no verbatim quotes
+      promoted         INTEGER NOT NULL DEFAULT 0,
+      detail           TEXT,               -- JSON: score per label source, gaming counters
+      created_at       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_dream_evals_run ON dream_evals(sleep_run_id);
+
+    CREATE TABLE IF NOT EXISTS dream_episodes (
+      id          TEXT PRIMARY KEY,       -- turns.id, or assignments.id
+      owner       TEXT NOT NULL,
+      kind        TEXT NOT NULL,          -- turn | assignment
+      session_id  TEXT,
+      slot        TEXT NOT NULL,
+      steps       INTEGER NOT NULL,
+      outcome     TEXT NOT NULL,          -- success | failure | unknown
+      holdout     INTEGER NOT NULL DEFAULT 0,
+      audit       INTEGER NOT NULL DEFAULT 0,
+      started_at  INTEGER NOT NULL,
+      finished_at INTEGER,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_dream_episodes_owner ON dream_episodes(owner, created_at);
+  `);
+
+  // Schema 23 -> 24: a correction is only turn-locatable once it carries the
+  // turn it corrects (addCorrection took only session_id until now).
+  if (!hasColumn(db, 'corrections', 'turn_id')) {
+    db.exec('ALTER TABLE corrections ADD COLUMN turn_id TEXT');
+  }
+  // Schema 23 -> 24: label(m) needs to know whose memory it is judging and
+  // which session produced it - target alone is not enough once a label can
+  // come from outside the labelled owner's own turn.
+  if (!hasColumn(db, 'dream_labels', 'owner')) {
+    db.exec('ALTER TABLE dream_labels ADD COLUMN owner TEXT');
+  }
+  if (!hasColumn(db, 'dream_labels', 'session_id')) {
+    db.exec('ALTER TABLE dream_labels ADD COLUMN session_id TEXT');
+  }
+  // Schema 23 -> 24: locateTurn resolves a quote to the turn that carried it,
+  // and that resolution has to land somewhere a correction label can join on.
+  if (!hasColumn(db, 'messages', 'turn_id')) {
+    db.exec('ALTER TABLE messages ADD COLUMN turn_id TEXT');
+  }
+  // Schema 23 -> 24: the promotion gate and the label writers get their own
+  // counters on the run, in step with the other dream counters (8.8).
+  if (!hasColumn(db, 'sleep_runs', 'dream_promoted')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_promoted INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!hasColumn(db, 'sleep_runs', 'dream_labels_written')) {
+    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_labels_written INTEGER NOT NULL DEFAULT 0');
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dream_labels_source ON dream_labels(source, created_at);
+    CREATE INDEX IF NOT EXISTS idx_corrections_turn     ON corrections(turn_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_turn        ON messages(turn_id);
   `);
 
   // FTS index over memory content plus tags, kept in sync by triggers.

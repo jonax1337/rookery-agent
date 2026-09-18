@@ -19,6 +19,7 @@ import { parseClaudeWindows, rememberQuota } from './quota.js';
 import { sharedRouterManager } from './router.js';
 import { sharedCodexBridge } from './codex-bridge.js';
 import { codexContextWindow } from './provider-catalog.js';
+import { TOOL_INPUT_LIMIT, canonicalJson, hashCanonicalJson } from '../memory/dream/trajectory.js';
 
 /** The built-in `claude` provider: OAuth login, no endpoint override. */
 const BUILTIN_PROFILE: ProviderProfile = {
@@ -296,6 +297,13 @@ export class ClaudeCodeProvider implements Provider {
     let sessionId: string | undefined;
     let accumulated = '';
     let emittedDone = false;
+    /**
+     * Tool name by tool-use id, so the `end` event can carry the real name
+     * instead of the literal `'tool'` (concept S28). The CLI names the tool
+     * only on the `tool_use` block; its `tool_result` counterpart carries the
+     * id alone, and a divergence judge cannot compare names it never saw.
+     */
+    const toolNames = new Map<string, string>();
     /** Context size of the latest request: prompt cache plus fresh input. */
     let contextTokens: number | undefined;
 
@@ -348,12 +356,16 @@ export class ClaudeCodeProvider implements Provider {
           contextTokens = contextSize(message?.usage) ?? contextTokens;
           for (const block of asArray(message?.content)) {
             if (block.type === 'tool_use') {
+              const name = String(block.name ?? 'tool');
+              const id = block.id as string | undefined;
+              if (id) toolNames.set(id, name);
               yield {
                 type: 'tool',
-                name: String(block.name ?? 'tool'),
+                name,
                 status: 'start',
-                id: block.id as string | undefined,
+                id,
                 detail: summariseInput(block.input),
+                ...recordedInput(block.input),
               };
             }
           }
@@ -364,11 +376,14 @@ export class ClaudeCodeProvider implements Provider {
           const message = event.message as Record<string, unknown> | undefined;
           for (const block of asArray(message?.content)) {
             if (block.type === 'tool_result') {
+              const id = block.tool_use_id as string | undefined;
+              const name = (id !== undefined ? toolNames.get(id) : undefined) ?? 'tool';
+              if (id !== undefined) toolNames.delete(id);
               yield {
                 type: 'tool',
-                name: 'tool',
+                name,
                 status: 'end',
-                id: block.tool_use_id as string | undefined,
+                id,
                 result: typeof block.content === 'string' ? block.content.slice(0, 16000) : JSON.stringify(block.content)?.slice(0, 16000),
                 isError: block.is_error === true,
               };
@@ -523,6 +538,30 @@ function summariseInput(input: unknown): string | undefined {
     record.file_path ?? record.command ?? record.pattern ?? record.query ?? record.path;
   if (typeof candidate !== 'string') return JSON.stringify(input).slice(0, 4000);
   return candidate.length > 120 ? candidate.slice(0, 117) + '...' : candidate;
+}
+
+/**
+ * The recorder half of Phase 6's precondition (concept S28).
+ *
+ * `summariseInput` above picks one of five keys and cuts it at 120
+ * characters, so an `Edit(file_path, old_string, new_string)` is journalled
+ * as a path alone - one cannot detect a divergence on arguments one never
+ * recorded. This pair is the fix, and it is additive: `detail` stays exactly
+ * what it was, because the activity feed renders off it.
+ *
+ * `argsHash` covers the whole canonical JSON even when `input` is truncated,
+ * and both come from `memory/dream/trajectory.ts` rather than from a copy
+ * here: the judge keys its observations on that same hash, and two
+ * implementations that drifted apart would make every episode look as if it
+ * diverged at step 0.
+ */
+function recordedInput(input: unknown): { argsHash?: string; input?: string } {
+  if (input === undefined || input === null) return {};
+  const canonical = canonicalJson(input);
+  return {
+    argsHash: hashCanonicalJson(canonical),
+    input: canonical.length > TOOL_INPUT_LIMIT ? canonical.slice(0, TOOL_INPUT_LIMIT) : canonical,
+  };
 }
 
 function mapUsage(

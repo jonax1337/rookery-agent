@@ -17,7 +17,7 @@ import ts from 'typescript';
  */
 
 /** Mirror of the `SleepStage` union - a type has no runtime presence to read. */
-const STAGES = ['replay', 'light', 'deep', 'rem'];
+const STAGES = ['replay', 'dream', 'light', 'deep', 'rem'];
 
 // Pull `SLEEP_PHASES` and `phaseProgress` out of the page itself, so the tests
 // follow the shipped list rather than a copy of it that could go stale here.
@@ -62,7 +62,15 @@ test('every SleepStage occurs in SLEEP_PHASES', () => {
 
   assert.ok(STAGES.every((stage) => phases.includes(stage)));
   // And in walking order: replay sits between settling in and the cycles.
-  assert.deepEqual(phases, ['started', 'replay', 'light', 'deep', 'rem', 'finished']);
+  assert.deepEqual(phases, ['started', 'replay', 'dream', 'light', 'deep', 'rem', 'finished']);
+});
+
+test('neither replay nor dream drops the progress bar to zero', () => {
+  for (const stage of ['replay', 'dream']) {
+    const value = progressFor(stage);
+    assert.ok(value > 0, `progressFor('${stage}') is ${value}, not zero`);
+    assert.ok(value < 100, `progressFor('${stage}') is ${value}, not the whole night`);
+  }
 });
 
 test('the replay phase no longer drops the progress bar to zero', () => {

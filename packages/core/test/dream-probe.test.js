@@ -520,6 +520,49 @@ test('a zero evaluation budget scores nothing and does not throw', () => {
   });
 });
 
+test('the probe runs on the wall clock it is handed, not on a second one of its own', () => {
+  withFrozenClock(() => {
+    const store = makeStore();
+    // Twenty seconds of `dream.maxEvalMs`, and a night that has already
+    // spent them. Concept 6.1 gives the model-free evaluation ONE ceiling:
+    // a probe computing its own from the same key could legally spend the
+    // whole budget and leave the slot behind it starting past its deadline,
+    // where every evaluation comes back invalid and nothing is written.
+    const config = makeConfig({ enabled: true, maxEvalMs: 20_000 });
+    seedBank(store);
+    recordFrame(store, config, 'What does the harbor manifest list?', { sessionId: 'session-one' });
+
+    const spent = runGridProbe(
+      store,
+      config,
+      ASSISTANT_MEMORY_OWNER,
+      'run-spent',
+      new AbortController().signal,
+      { deadline: Date.now() - 1 },
+    );
+    assert.equal(spent.framesScored, 0, 'the night had no clock left to lend');
+    assert.equal(spent.deadlineHit, true, 'and the report says which ceiling bit');
+    assert.equal(spent.error, null, 'a spent budget is a state, not a failure');
+
+    // With room on the night's clock it measures exactly as it always did.
+    const ample = runGridProbe(
+      store,
+      config,
+      ASSISTANT_MEMORY_OWNER,
+      'run-ample',
+      new AbortController().signal,
+      { deadline: Date.now() + 20_000 },
+    );
+    assert.ok(ample.framesScored > 0, 'the frames were scored');
+    assert.equal(ample.deadlineHit, false);
+
+    // And a probe called without one still keeps its own, which is what the
+    // tests above and every direct caller rely on.
+    const alone = runGridProbe(store, config, ASSISTANT_MEMORY_OWNER, 'run-alone', new AbortController().signal);
+    assert.equal(alone.framesScored, ample.framesScored);
+  });
+});
+
 test('a corrupted frame is reported, never thrown', () => {
   withFrozenClock(() => {
     const store = makeStore();

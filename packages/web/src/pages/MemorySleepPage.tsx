@@ -33,6 +33,7 @@ import { SectionHeading } from '@/components/blocks/section-heading';
 import { cappedBadge } from '@/components/blocks/stat-cards';
 import { TrendChartCard, type TrendPoint, type TrendSeries } from '@/components/blocks/trend-chart-card';
 import { useConfirm } from '@/components/common/confirm-dialog';
+import { DreamSection } from '@/components/common/dream-section';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { MetaList } from '@/components/common/meta-list';
 import { StatusBadge } from '@/components/common/status-badge';
@@ -92,6 +93,11 @@ const COLUMN_LABELS: Record<string, string> = {
   skillRevisedCount: 'Skills revised',
   skillCount: 'Skills written',
   modelCalls: 'Model calls',
+  dreamTracesSeen: 'Dream traces',
+  dreamFramesScored: 'Dream frames scored',
+  dreamCandidates: 'Dream candidates',
+  dreamPromoted: 'Policies promoted',
+  dreamLabelsWritten: 'Dream labels',
   status: 'Status',
 };
 
@@ -104,6 +110,14 @@ function undoable(run: SleepRun): boolean {
   // The skill counts belong here too: undoing a night now puts the skill
   // files back as well, so a night that only rewrote a procedure is every bit
   // as undoable as one that touched the bank.
+  //
+  // The dream counters belong here for a harder reason than symmetry: a
+  // promotion changes how the assistant recalls, falls under this night's undo
+  // (E18), and may be the only thing a night did. Without these two terms the
+  // page would hide the undo button for exactly the nights that have to stay
+  // reversible. `dreamLabelsWritten` counts rows the undo removes as well, so
+  // it joins them; the three measuring counters do not - looking at a trace
+  // changes nothing and gives nothing to take back.
   return (
     run.mergedCount > 0 ||
     run.dormantCount > 0 ||
@@ -111,7 +125,9 @@ function undoable(run: SleepRun): boolean {
     run.insightCount > 0 ||
     run.skillCount > 0 ||
     run.skillRevisedCount > 0 ||
-    run.learnedCount > 0
+    run.learnedCount > 0 ||
+    (run.dreamPromoted ?? 0) > 0 ||
+    (run.dreamLabelsWritten ?? 0) > 0
   );
 }
 
@@ -264,6 +280,15 @@ export function MemorySleepPage() {
         countColumn('skillRevisedCount', 'Skills revised'),
         countColumn('skillCount', 'Skills written'),
         countColumn('modelCalls', 'Model calls'),
+        // The five the night has been writing all along while the table
+        // ignored them. Hidden by default like `readCount` and `modelCalls`:
+        // they stay at zero until the dream is switched on, and a column of
+        // zeroes pushes the ones that carry news off a narrow screen.
+        countColumn('dreamTracesSeen', 'Dream traces'),
+        countColumn('dreamFramesScored', 'Dream frames scored'),
+        countColumn('dreamCandidates', 'Dream candidates'),
+        countColumn('dreamPromoted', 'Policies promoted'),
+        countColumn('dreamLabelsWritten', 'Dream labels'),
         column.accessor('status', {
           id: 'status',
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Status" />,
@@ -546,7 +571,15 @@ export function MemorySleepPage() {
             initialSorting={[{ id: 'startedAt', desc: true }]}
             pageSize={10}
             columnLabels={COLUMN_LABELS}
-            initialColumnVisibility={{ readCount: false, modelCalls: false }}
+            initialColumnVisibility={{
+              readCount: false,
+              modelCalls: false,
+              dreamTracesSeen: false,
+              dreamFramesScored: false,
+              dreamCandidates: false,
+              dreamPromoted: false,
+              dreamLabelsWritten: false,
+            }}
             rowLabel={{ singular: 'Night', plural: 'nights' }}
             capped={runsCapped}
             loading={sleep.loading}
@@ -570,6 +603,14 @@ export function MemorySleepPage() {
           />
         </SectionHeading>
       </Fade>
+
+      {/*
+        The dream is a section of this page, not a fourth tab under /memory
+        (concept 9.6, S27): it is one stage of the same night the table above
+        lists, and `page-navigation.test.mjs` asserts /memory keeps exactly
+        three children.
+      */}
+      <DreamSection />
 
       {/*
         One drawer for the whole table instead of one per row: two hundred
@@ -610,6 +651,18 @@ export function MemorySleepPage() {
                 { label: 'Skills revised', value: formatNumber(report.skillRevisedCount) },
                 { label: 'Skills written', value: formatNumber(report.skillCount) },
                 { label: 'Model calls', value: formatNumber(report.modelCalls) },
+                // The dream's own five. `?? 0` and not a dropped row: a night
+                // that ran the dream stage and found nothing is a result, and
+                // `MetaList` drops an `undefined` value, which would have read
+                // as "the stage never ran".
+                { label: 'Dream traces', value: formatNumber(report.dreamTracesSeen ?? 0) },
+                {
+                  label: 'Dream frames scored',
+                  value: formatNumber(report.dreamFramesScored ?? 0),
+                },
+                { label: 'Dream candidates', value: formatNumber(report.dreamCandidates ?? 0) },
+                { label: 'Policies promoted', value: formatNumber(report.dreamPromoted ?? 0) },
+                { label: 'Dream labels', value: formatNumber(report.dreamLabelsWritten ?? 0) },
                 {
                   label: 'Conflicts',
                   value:

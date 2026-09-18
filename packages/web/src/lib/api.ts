@@ -22,6 +22,9 @@ import type {
   CronOverview,
   CronPreview,
   CronTriggerMode,
+  DreamEval,
+  DreamSlot,
+  DreamSlotView,
   GatewayId,
   GatewayStatus,
   GatewayTestResult,
@@ -39,6 +42,8 @@ import type {
   OrgPerformanceEntry,
   OrgSnapshot,
   PermissionLevel,
+  PolicyRevertResult,
+  PolicyVersion,
   Project,
   ProjectMcpInfo,
   ProviderId,
@@ -578,6 +583,56 @@ export const api = {
     request<{ woken: number; removed: number; edges: number; skills: number }>('/api/sleep/runs/' + id + '/undo', {
       method: 'POST',
     }),
+
+  /* --------------------------------- dream --------------------------------- */
+
+  /*
+    The dream's four reads, in the order the nights page needs them. Every one
+    of them exists while `memory.dream.enabled` is false too - the routes are
+    there, the tables are empty - so the section can ask honestly and then say
+    that nothing was ever written, instead of failing.
+
+    `owner` is left out everywhere it is optional: the routes default to the
+    assistant's bank, which is the only one this stage evaluates or promotes
+    for (build plan section 1.2).
+  */
+
+  /** What is in force per slot right now, and whether the slot is frozen. */
+  dreamPolicies: (owner?: string) =>
+    request<DreamSlotView[]>(
+      '/api/dream/policies' + (owner ? '?owner=' + encodeURIComponent(owner) : ''),
+    ),
+  /** One slot's versions, newest first - what the version curve draws. */
+  dreamPolicyHistory: (slot: DreamSlot, options: { owner?: string; limit?: number } = {}) => {
+    const query = new URLSearchParams();
+    if (options.owner) query.set('owner', options.owner);
+    if (options.limit) query.set('limit', String(options.limit));
+    const search = query.toString();
+    return request<PolicyVersion[]>(
+      '/api/dream/policies/' + encodeURIComponent(slot) + '/history' + (search ? '?' + search : ''),
+    );
+  },
+  /** The evaluations behind a version's numbers - the diff sheet's receipt. */
+  dreamEvals: (
+    options: { owner?: string; slot?: DreamSlot; policyId?: string; sleepRunId?: string; promoted?: boolean; limit?: number } = {},
+  ) => {
+    const query = new URLSearchParams();
+    if (options.owner) query.set('owner', options.owner);
+    if (options.slot) query.set('slot', options.slot);
+    if (options.policyId) query.set('policyId', options.policyId);
+    if (options.sleepRunId) query.set('sleepRunId', options.sleepRunId);
+    if (options.promoted !== undefined) query.set('promoted', options.promoted ? '1' : '0');
+    if (options.limit) query.set('limit', String(options.limit));
+    const search = query.toString();
+    return request<DreamEval[]>('/api/dream/evals' + (search ? '?' + search : ''));
+  },
+  /** Take one promotion back by hand, over `prevActiveId` (concept 10.4). */
+  revertPolicy: (id: string, owner?: string) =>
+    request<PolicyRevertResult>(
+      '/api/dream/policies/' + encodeURIComponent(id) + '/revert' +
+        (owner ? '?owner=' + encodeURIComponent(owner) : ''),
+      { method: 'POST' },
+    ),
 
   /* ------------------------------ organisation ----------------------------- */
 

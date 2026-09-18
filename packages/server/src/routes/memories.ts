@@ -1,8 +1,22 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { z } from 'zod';
 import { MEMORY_KINDS, recall } from '@rookery/core';
 import type { MemoryKind } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import { createMemorySchema, patchMemorySchema, parseOrThrow } from '../schemas.js';
+
+/**
+ * Body of `POST /api/memories/:id/feedback` - the chat highlight's click
+ * target, agreed with the web package as part of this wave's cross-package
+ * contract: `{ turnId, verdict }`, `'point'` maps to `relevance = 1`,
+ * `'ballast'` to `relevance = 0`. Not in `schemas.ts` - that file belongs to
+ * a different package this wave - the same way `routes/profile.ts` and
+ * `routes/tools.ts` already build their own request schemas inline.
+ */
+const memoryFeedbackSchema = z.object({
+  turnId: z.string().min(1, 'turnId must not be empty'),
+  verdict: z.enum(['point', 'ballast']),
+});
 
 type MemoryQuery = {
   Querystring: { q?: string; kind?: string | string[]; limit?: string; includeForgotten?: string; owner?: string };
@@ -137,15 +151,22 @@ export async function registerMemoryRoutes(
         return { error: 'No memory ' + request.params.id + '.' };
       }
       if (input.dormant === false) store.wakeMemory(request.params.id);
-      return store.updateMemory(request.params.id, {
-        content: input.content,
-        kind: input.kind,
-        tags: input.tags,
-        importance: input.importance,
-        pinned: input.pinned,
-        forgotten: input.forgotten,
-        ...(input.dormant === true ? { dormantAt: Date.now() } : {}),
-      });
+      // The HTTP path is the only door a `user` label can enter through
+      // (concept 4.2b, S5) - the model's own memory tool reaches
+      // `updateMemory` too, but never with this actor.
+      return store.updateMemory(
+        request.params.id,
+        {
+          content: input.content,
+          kind: input.kind,
+          tags: input.tags,
+          importance: input.importance,
+          pinned: input.pinned,
+          forgotten: input.forgotten,
+          ...(input.dormant === true ? { dormantAt: Date.now() } : {}),
+        },
+        'user',
+      );
     },
   );
 
@@ -154,10 +175,50 @@ export async function registerMemoryRoutes(
     async (request: FastifyRequest<{ Params: { id: string }; Querystring: { hard?: string } }>) => {
       const { id } = request.params;
       if (isTruthy(request.query.hard)) {
-        context.assistant.store.deleteMemory(id);
+        context.assistant.store.deleteMemory(id, 'user');
       } else {
-        context.assistant.store.forgetMemory(id);
+        context.assistant.store.forgetMemory(id, 'user');
       }
+      return { ok: true };
+    },
+  );
+
+  /**
+   * The chat highlight's "was the point / was ballast" (concept 4.2b, S6):
+   * the one `user` label with a real turn reference, because the highlight
+   * already knows which memory a given turn surfaced. AP15 is the only
+   * caller today, off the `'memory'` event's `turnId`.
+   */
+  app.post(
+    '/api/memories/:id/feedback',
+    async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const input = parseOrThrow(memoryFeedbackSchema, request.body ?? {});
+      const store = context.assistant.store;
+      const memory = store.getMemory(request.params.id);
+      if (!memory) {
+        reply.code(404);
+        return { error: 'No memory ' + request.params.id + '.' };
+      }
+      // `userLabel` (dream/label.ts) is built for this claim, but it asks
+      // for a `sessionId` this route has no honest way to produce: nothing
+      // here maps an arbitrary turn id back to the session it fell in
+      // (`store.ts` exposes no such lookup), and guessing one would be
+      // exactly the anachronism S3 forbids elsewhere. `scope` only ever
+      // reads `turnId` when one is given, so the label is written directly,
+      // with the memory's own source session carried along purely as the
+      // denormalised metadata `DreamLabel.sessionId` already documents
+      // itself as (S9's deletion paths) - never as part of the claim.
+      store.putLabel({
+        turnId: input.turnId,
+        target: memory.id,
+        source: 'user',
+        relevance: input.verdict === 'point' ? 1 : 0,
+        scope: 'turn',
+        owner: memory.owner,
+        evidence: 'memories:feedback',
+        createdAt: Date.now(),
+        ...(memory.sourceSessionId ? { sessionId: memory.sourceSessionId } : {}),
+      });
       return { ok: true };
     },
   );

@@ -24,6 +24,7 @@ import { registerProviderRoutes } from './routes/providers.js';
 import { registerSessionRoutes } from './routes/sessions.js';
 import { registerMemoryRoutes } from './routes/memories.js';
 import { registerSleepRoutes } from './routes/sleep.js';
+import { registerDreamRoutes } from './routes/dream.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerOrgRoutes } from './routes/org.js';
 import { registerCronRoutes } from './routes/cron.js';
@@ -151,6 +152,7 @@ export async function buildServer(
   await registerSessionRoutes(app, context);
   await registerMemoryRoutes(app, context);
   await registerSleepRoutes(app, context);
+  await registerDreamRoutes(app, context);
   await registerChatRoutes(app, context);
   await registerOrgRoutes(app, context);
   await registerCronRoutes(app, context);

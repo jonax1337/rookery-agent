@@ -109,14 +109,14 @@ test('a dream counter survives the create-update-read round trip', () => {
   store.close();
 });
 
-test('a fresh run carries all three dream counters and no fourth', () => {
+test('a fresh run carries all five dream counters and no sixth', () => {
   const store = makeStore();
   const run = store.createSleepRun({ owner: ASSISTANT_MEMORY_OWNER, trigger: 'manual' });
   assert.deepEqual(
     Object.keys(run)
       .filter((key) => key.startsWith('dream'))
       .sort(),
-    ['dreamCandidates', 'dreamFramesScored', 'dreamTracesSeen'],
+    ['dreamCandidates', 'dreamFramesScored', 'dreamLabelsWritten', 'dreamPromoted', 'dreamTracesSeen'],
   );
   store.close();
 });
@@ -376,6 +376,52 @@ test('framesFor hands frames back with their traces', () => {
   assert.deepEqual(rows[0].frame.payload, frame);
   assert.equal(rows[0].frame.bytes, Buffer.byteLength(JSON.stringify(frame), 'utf8'));
   assert.equal(store.framesFor('somebody-else').length, 0);
+  store.close();
+});
+
+test('framesFor cuts the limit from the end the caller asks for', () => {
+  const store = makeStore();
+  // Six frames, one a day apart. The default pool takes them from the old
+  // end; `newest` takes them from the new one - and hands both back oldest
+  // first, so the last entry is the newest either way and every caller that
+  // reads a box or a trailing slice off the tail keeps reading the same
+  // thing.
+  const at = [];
+  for (let index = 0; index < 6; index += 1) {
+    const trace = store.beginTrace(traceInput({ turnId: 'turn-' + index, sessionId: 'session-' + index }));
+    assert.equal(store.saveFrame(trace.id, 'recall', framePayload()), true);
+    const created = 1_700_000_000_000 + index * 86_400_000;
+    store.db.prepare('UPDATE dream_frames SET created_at = ? WHERE trace_id = ?').run(created, trace.id);
+    at.push({ traceId: trace.id, created });
+  }
+
+  const all = store.framesFor(ASSISTANT_MEMORY_OWNER);
+  assert.deepEqual(all.map((row) => row.frame.createdAt), at.map((row) => row.created));
+
+  const oldest = store.framesFor(ASSISTANT_MEMORY_OWNER, { limit: 2 });
+  assert.deepEqual(
+    oldest.map((row) => row.frame.createdAt),
+    [at[0].created, at[1].created],
+    'the default cut is still the oldest rows - the grid probe walks and reports exactly that pool',
+  );
+
+  const newest = store.framesFor(ASSISTANT_MEMORY_OWNER, { limit: 2, newest: true });
+  assert.deepEqual(
+    newest.map((row) => row.frame.createdAt),
+    [at[4].created, at[5].created],
+    'the newest cut takes the other end, ascending',
+  );
+  assert.equal(newest[newest.length - 1].trace.id, at[5].traceId, 'and the tail is the newest frame');
+
+  // Below the cap the two agree: `newest` changes which rows fall out, never
+  // the order of the rows that stay.
+  assert.deepEqual(
+    store.framesFor(ASSISTANT_MEMORY_OWNER, { newest: true }).map((row) => row.frame.createdAt),
+    all.map((row) => row.frame.createdAt),
+  );
+  // And `since` still selects on the frame's own creation, from either end.
+  const recent = store.framesFor(ASSISTANT_MEMORY_OWNER, { since: at[4].created, newest: true });
+  assert.deepEqual(recent.map((row) => row.frame.createdAt), [at[4].created, at[5].created]);
   store.close();
 });
 
