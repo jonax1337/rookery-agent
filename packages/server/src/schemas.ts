@@ -115,6 +115,7 @@ export const agentSchema = z.object({
   name: z.string().min(1, 'name must not be empty'),
   title: z.string().min(1, 'title must not be empty'),
   instructions: z.string().min(1, 'instructions must not be empty'),
+  voice: z.string().optional(),
   slug: z.string().optional(),
   teamId: z.string().optional(),
   managerId: z.string().optional(),
@@ -127,6 +128,7 @@ export const patchAgentSchema = z.object({
   name: z.string().min(1).optional(),
   title: z.string().min(1).optional(),
   instructions: z.string().min(1).optional(),
+  voice: nullableText,
   slug: z.string().min(1).optional(),
   teamId: nullableText,
   managerId: nullableText,
@@ -153,6 +155,8 @@ export const replaceAgentSchema = z.object({
   slug: z.string().optional(),
   title: z.string().min(1, 'title must not be empty'),
   instructions: z.string().min(1, 'instructions must not be empty'),
+  /** Never inherited from the outgoing agent (decision E4) - a fresh identity. */
+  voice: z.string().optional(),
   /** Overrides the auto-generated handover document. Optional. */
   handover: z.string().optional(),
 });
@@ -171,7 +175,7 @@ export const patchTaskSchema = z.object({
   priority: z.enum(['low', 'normal', 'high']).optional(),
   projectId: nullableText,
   assigneeId: nullableText,
-  status: z.enum(['open', 'done', 'cancelled']).optional(),
+  status: z.enum(['open', 'done', 'cancelled', 'blocked']).optional(),
   result: nullableText,
   /** Board drag&drop position within a status column. */
   sortOrder: z.number().optional(),
@@ -190,8 +194,6 @@ export const sendMailSchema = z.object({
   subject: z.string().min(1, 'subject must not be empty'),
   body: z.string().min(1, 'body must not be empty'),
   inReplyTo: z.string().min(1).optional(),
-  /** `'task'` turns the mail into a work order: one agent, one task, one thread. */
-  mode: z.enum(['mail', 'task']).optional(),
 });
 
 /** POST /api/org/mail/read */
@@ -356,6 +358,7 @@ const orgConfigSchema = z
     maxDelegationDepth: z.number().int().min(1).max(6),
     assignmentTimeoutMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000),
     lazyCoding: z.boolean(),
+    roleplay: z.boolean(),
     activeOrganizationId: z.string().min(1),
   })
   .partial();

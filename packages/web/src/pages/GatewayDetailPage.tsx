@@ -710,7 +710,7 @@ export function GatewayDetailPage() {
 
               <Field orientation="horizontal">
                 <FieldContent>
-                  <FieldLabel htmlFor="gw-push-assignments">Assignments</FieldLabel>
+                  <FieldLabel htmlFor="gw-push-assignments">Runs</FieldLabel>
                   <FieldDescription>
                     One message per finished run. Off by default: the company reports in mail.
                   </FieldDescription>

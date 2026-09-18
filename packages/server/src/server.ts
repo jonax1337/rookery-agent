@@ -293,6 +293,9 @@ export async function buildServer(
   assistant.cron.start();
   // The nightly memory run is an ordinary schedule row, created on first start.
   assistant.ensureSleepSchedule();
+  // Jarvis gets the board as a standing order too - a visible, editable
+  // schedule row like any other, seeded once and left alone after that.
+  assistant.ensureBoardWatchSchedule();
 
   // The Telegram channel is best-effort: a missing token or a network hiccup
   // is a reason to run without it, never a reason the server itself refuses

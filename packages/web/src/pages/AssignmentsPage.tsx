@@ -63,6 +63,7 @@ import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { MetaList } from '@/components/common/meta-list';
 import { ProviderCell } from '@/components/common/provider-cell';
 import { RowMenuButton } from '@/components/common/row-menu-button';
+import { ResultMarkdown } from '@/components/result-markdown';
 import { RunningBadge, StatusBadge } from '@/components/common/status-badge';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -124,6 +125,9 @@ export interface AssignmentRow {
   agentId: string;
   agentName: string;
   agentSlug: string;
+  /** The run's name - a task's name when it carries one out. */
+  title: string;
+  /** The full brief, kept for search and for the drawer. */
   task: string;
   provider?: ProviderId;
   model?: string;
@@ -160,6 +164,7 @@ export function toAssignmentRow(
     agentId: assignment.agentId,
     agentName: agent?.name ?? live?.agentName ?? 'Unknown',
     agentSlug: agent?.slug ?? live?.agentSlug ?? '',
+    title: live?.title ?? assignment.title,
     task: assignment.task,
     chars: live?.chars ?? assignment.chars,
     depth: assignment.depth,
@@ -217,7 +222,7 @@ export function buildAssignmentColumns({
   if (selectable) {
     columns.push(
       selectionColumn<AssignmentRow>({
-        rowLabel: (row) => shorten(row.task, 60) + ' selected',
+        rowLabel: (row) => shorten(row.title, 60) + ' selected',
       }),
     );
   }
@@ -260,22 +265,24 @@ export function buildAssignmentColumns({
       ),
     }),
 
-    column.accessor('task', {
-      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Assignment" />,
+    // The name, never the brief: three runs of the same errand start with
+    // the same twenty words, and a column of those tells nobody them apart.
+    column.accessor('title', {
+      header: ({ column: col }) => <DataTableColumnHeader column={col} title="Run" />,
       cell: ({ row }) =>
         onOpenDetail ? (
           <DetailDrawerTrigger
             className="line-clamp-2 h-auto max-w-xl py-0 text-sm whitespace-normal"
             onClick={() => onOpenDetail(row.original)}
           >
-            {row.original.task}
+            {row.original.title}
           </DetailDrawerTrigger>
         ) : (
           <NavLink
             to={'/assignments/' + row.original.id}
             className="line-clamp-2 max-w-xl text-sm hover:underline"
           >
-            {row.original.task}
+            {row.original.title}
           </NavLink>
         ),
       enableHiding: false,
@@ -358,7 +365,7 @@ function RowActions({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <RowMenuButton label={'Actions for ' + shorten(row.task, 60)} />
+        <RowMenuButton label={'Actions for ' + shorten(row.title, 60)} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuItem asChild>
@@ -713,7 +720,7 @@ export function AssignmentsPage() {
   );
 
   usePageMeta({
-    breadcrumb: [{ label: 'Assignments' }],
+    breadcrumb: [{ label: 'Runs' }],
     actions: (
       <Button size="sm" onClick={() => setAssignOpen(true)}>
         {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
@@ -768,9 +775,9 @@ export function AssignmentsPage() {
           <Fade delay={50}>
             <div className="px-4 lg:px-6">
               <TrendChartCard
-                title="Assignments created per day"
+                title="Runs started per day"
                 description={
-                  'Colored by their current outcome; running assignments are not included yet. ' +
+                  'Colored by their current outcome; runs still going are not included yet. ' +
                   basis +
                   '.'
                 }
@@ -783,7 +790,7 @@ export function AssignmentsPage() {
                     <EmptyState
                       icon={EmptySendIcon}
                       title="Nothing in this period"
-                      description="No assignment created during the selected days has been completed yet."
+                      description="Nothing started during the selected days has finished yet."
                       variant="plain"
                       size="sm"
                     />
@@ -805,8 +812,8 @@ export function AssignmentsPage() {
           onTabChange={setTab}
           tabLabel="Status"
           searchable
-          searchPlaceholder="Assignments durchsuchen"
-          searchText={(row) => row.task}
+          searchPlaceholder="Search runs"
+          searchText={(row) => row.title + ' ' + row.task}
           filters={
             <AgentFilter options={agentOptions} value={agentId} onChange={setAgentId} />
           }
@@ -847,7 +854,7 @@ export function AssignmentsPage() {
             <Fade>
               <EmptyState
                 icon={EmptySendIcon}
-                title="No assignments yet"
+                title="Nothing has run yet"
                 description="Each agent run appears here with its result, duration, and reported usage."
                 actionLabel="Assign agent"
                 onAction={() => setAssignOpen(true)}
@@ -961,7 +968,7 @@ function RowDrawer({
     <DetailDrawer
       open={chosen !== null}
       onOpenChange={onOpenChange}
-      title={shorten(row.task, 80)}
+      title={shorten(row.title, 80)}
       description={row.agentName + ' · ' + relativeTime(row.createdAt)}
       footer={
         <div className="flex flex-wrap gap-2">
@@ -1012,15 +1019,23 @@ function RowDrawer({
         ]}
       />
 
+      {/* The whole brief stays here, only rendered: what an agent was told
+          is written in markdown, and `##` in plain sight is a display bug. */}
       <div className="space-y-1">
-        <p className="text-xs text-muted-foreground">Assignment</p>
-        <p className="whitespace-pre-wrap">{row.task}</p>
+        <p className="text-xs text-muted-foreground">Brief</p>
+        <ResultMarkdown text={row.task} preview />
       </div>
 
       {row.error ? (
         <div className="space-y-1">
           <p className="text-xs text-muted-foreground">Error</p>
-          <p className="whitespace-pre-wrap text-destructive">{row.error}</p>
+          {/* Paragraphs keep their line breaks: a stack trace is markdown
+              too, but its shape carries as much as its words. */}
+          <ResultMarkdown
+            text={row.error}
+            preview
+            className="text-destructive [&_p]:whitespace-pre-wrap"
+          />
         </div>
       ) : null}
     </DetailDrawer>
@@ -1173,7 +1188,7 @@ function AssignDrawer({
           )}
         </FormField>
 
-        <FormField id="auftrag-text" label="Assignment" error={errors.task}>
+        <FormField id="auftrag-text" label="Task" error={errors.task}>
           {(control) => (
             <Textarea
               {...control}

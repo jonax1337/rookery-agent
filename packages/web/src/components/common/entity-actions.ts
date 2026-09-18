@@ -36,10 +36,10 @@ import type { Skill, ToolServer } from '@/lib/types';
 /* ------------------------------ assignments ------------------------------ */
 
 const CANCEL_ONE = {
-  title: 'Cancel assignment?',
+  title: 'Stop this run?',
   description:
-    'The agent will stop working. Anything produced so far will remain attached to the assignment.',
-  confirmLabel: 'Cancel assignment',
+    'The agent will stop working. Anything produced so far stays on the run.',
+  confirmLabel: 'Stop the run',
   cancelLabel: 'Keep running',
   destructive: true,
   icon: BanIcon,
@@ -65,7 +65,7 @@ export function useCancelAssignment(): CancelAssignmentHandle {
       if (!ok) return false;
       try {
         await api.cancelAssignment(id);
-        toast('Assignment is being cancelled');
+        toast('The run is being stopped');
         return true;
       } catch (caught) {
         reportFailure('Cancellation', caught);
@@ -85,7 +85,7 @@ export function useCancelAssignment(): CancelAssignmentHandle {
       }
       const ok = await confirm({
         ...CANCEL_ONE,
-        title: 'Cancel ' + formatNumber(ids.length) + ' assignments?',
+        title: 'Stop ' + formatNumber(ids.length) + ' runs?',
       });
       if (!ok) return null;
 
@@ -94,7 +94,7 @@ export function useCancelAssignment(): CancelAssignmentHandle {
       const results = await Promise.allSettled(ids.map((id) => api.cancelAssignment(id)));
       const failed = results.filter((entry) => entry.status === 'rejected').length;
       const done = ids.length - failed;
-      if (failed === 0) toast(formatNumber(done) + ' assignments are being cancelled');
+      if (failed === 0) toast(formatNumber(done) + ' runs are being stopped');
       else {
         toast.error(formatNumber(failed) + ' of ' + formatNumber(ids.length) + ' could not be cancelled');
       }

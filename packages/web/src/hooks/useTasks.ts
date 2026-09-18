@@ -32,6 +32,7 @@ const EMPTY_COUNTS: Record<TaskStatus, number> = {
   open: 0,
   planned: 0,
   running: 0,
+  blocked: 0,
   done: 0,
   failed: 0,
   cancelled: 0,

@@ -106,8 +106,8 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/tasks/:id', label: 'Task', parent: '/tasks', hidden: true },
   { path: '/tasks/:id/edit', label: 'Edit task', parent: '/tasks', hidden: true },
 
-  { path: '/assignments', label: 'Assignments', icon: AssignmentsIcon, group: 'operations' },
-  { path: '/assignments/:id', label: 'Assignment', parent: '/assignments', hidden: true },
+  { path: '/assignments', label: 'Runs', icon: AssignmentsIcon, group: 'operations' },
+  { path: '/assignments/:id', label: 'Run', parent: '/assignments', hidden: true },
 
   { path: '/cron', label: 'Schedules', icon: SchedulesIcon, group: 'operations' },
   { path: '/cron/new', label: 'Create schedule', parent: '/cron', hidden: true },

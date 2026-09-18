@@ -292,7 +292,7 @@ export interface AssignmentsOptions {
   json?: boolean;
 }
 
-/** `rookery org assignments` - what has been handed out lately. */
+/** `rookery org assignments` - what has run lately. */
 export async function orgAssignmentsCommand(options: AssignmentsOptions = {}): Promise<number> {
   return withAssistant((assistant) => {
     const organization = assistant.org.activeOrganization();
@@ -305,13 +305,13 @@ export async function orgAssignmentsCommand(options: AssignmentsOptions = {}): P
     }
 
     if (!assignments.length) {
-      out.write(theme.dim('No assignments yet. Try `rookery assign <agent> "<task>"`.') + '\n');
+      out.write(theme.dim('Nothing has run yet. Try `rookery assign <agent> "<task>"`.') + '\n');
       return 0;
     }
 
     const agents = agentIndex(assistant, organization);
 
-    out.write('\n' + heading('Assignments') + theme.dim('  (' + assignments.length + ')') + '\n\n');
+    out.write('\n' + heading('Runs') + theme.dim('  (' + assignments.length + ')') + '\n\n');
     for (const assignment of assignments) {
       out.write(assignmentLine(assignment, agents.get(assignment.agentId)) + '\n');
     }
@@ -320,12 +320,20 @@ export async function orgAssignmentsCommand(options: AssignmentsOptions = {}): P
   });
 }
 
-/** `rookery org assignment <id>` - the full record, report included. */
+/** `rookery org assignment <id>` - one run in full, report included. */
 export async function orgAssignmentCommand(idOrPrefix: string): Promise<number> {
   return withAssistant((assistant) => {
     const organization = assistant.org.activeOrganization();
     const assignment = resolveAssignment(assistant, organization, idOrPrefix);
-    out.write('\n' + describeAssignment(assignment, assistant.store.org.getAgent(assignment.agentId)) + '\n\n');
+    out.write(
+      '\n' +
+        describeAssignment(
+          assignment,
+          assistant.store.org.getAgent(assignment.agentId),
+          assistant.store.org.taskRunNumber(assignment.id),
+        ) +
+        '\n\n',
+    );
     return 0;
   });
 }
@@ -524,7 +532,7 @@ function assignmentLine(assignment: Assignment, agent: Agent | undefined): strin
     theme.cyan(shorten(agent?.slug ?? assignment.agentId, 15).padEnd(16)) +
     paint(assignment.status.padEnd(10)) +
     theme.dim((assignment.durationMs === undefined ? '' : formatDuration(assignment.durationMs)).padStart(7) + '  ') +
-    theme.ivory(shorten(assignment.task, 48))
+    theme.ivory(shorten(assignment.title, 48))
   );
 }
 
@@ -543,8 +551,8 @@ function resolveAssignment(
     .filter((assignment) => assignment.id.toLowerCase().startsWith(needle));
 
   if (matches.length === 1) return matches[0] as Assignment;
-  if (matches.length === 0) throw new CliError('No assignment matches "' + idOrPrefix + '".');
+  if (matches.length === 0) throw new CliError('No run matches "' + idOrPrefix + '".');
   throw new CliError(
-    'Ambiguous assignment id "' + idOrPrefix + '": ' + matches.map((a) => shortId(a.id)).join(', '),
+    'Ambiguous run id "' + idOrPrefix + '": ' + matches.map((a) => shortId(a.id)).join(', '),
   );
 }

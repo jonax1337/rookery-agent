@@ -53,6 +53,7 @@ import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
 import { AssignmentTerminal } from '@/components/common/assignment-terminal';
 import { LiveRunList } from '@/components/common/live-run-list';
+import { MailThreadView } from '@/components/common/mail-thread';
 import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
 import { ResultCard } from '@/components/common/result-card';
 import { RowMenuButton } from '@/components/common/row-menu-button';
@@ -121,7 +122,7 @@ import type { IconComponent } from "@/components/icons";
  * looks like a run producing nothing.
  */
 
-type TabValue = 'ueberblick' | 'teilaufgaben' | 'laeufe' | 'ergebnis';
+type TabValue = 'ueberblick' | 'thread' | 'teilaufgaben' | 'laeufe' | 'ergebnis';
 
 /** Statuses in which a run is still open, for the live list and the tab badge. */
 const OPEN = new Set(['pending', 'running']);
@@ -750,6 +751,9 @@ export function TaskDetailPage() {
           <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
             <TabsList>
               <TabsTrigger value="ueberblick">Overview</TabsTrigger>
+              {/* A case is one page, not two: the thread it was ordered and
+                  answered in belongs next to the task, not behind a link. */}
+              {detail?.thread ? <TabsTrigger value="thread">Thread</TabsTrigger> : null}
               <TabsTrigger value="teilaufgaben">
                 Subtasks
                 {children.length > 0 ? (
@@ -811,6 +815,21 @@ export function TaskDetailPage() {
               </Card>
             ) : null}
           </TabsContent>
+
+          {/* ------------------------------ thread ----------------------------- */}
+          {detail?.thread ? (
+            <TabsContent value="thread" className="mt-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Thread</CardTitle>
+                  <CardDescription>Everything said about this task, oldest first.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <MailThreadView threadId={detail.thread.threadId} />
+                </CardContent>
+              </Card>
+            </TabsContent>
+          ) : null}
 
           {/* ----------------------------- subtasks ---------------------------- */}
           <TabsContent value="teilaufgaben" className="mt-4">
@@ -887,7 +906,7 @@ export function TaskDetailPage() {
               columns={runColumns}
               getRowId={(row) => row.id}
               searchable
-              searchPlaceholder="Search assignments"
+              searchPlaceholder="Search runs"
               searchText={(row) => row.task}
               initialSorting={ASSIGNMENT_SORTING}
               paginate={false}
@@ -989,6 +1008,7 @@ function viewOf(assignment: Assignment, agent?: Agent): AssignmentView {
     agentId: assignment.agentId,
     agentSlug: agent?.slug ?? assignment.agentId,
     agentName: agent?.name ?? 'Agent',
+    title: assignment.title,
     task: assignment.task,
     status: assignment.status,
     depth: assignment.depth,

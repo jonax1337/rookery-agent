@@ -436,7 +436,7 @@ export function DashboardPage() {
   // are - and the reason "Show all" is worth clicking.
   const tabs: DataTableTab[] = [
     { value: 'tasks', label: 'Tasks', ...(totals ? { count: totals.tasks } : {}) },
-    { value: 'assignments', label: 'Assignments', ...(totals ? { count: totals.assignments } : {}) },
+    { value: 'assignments', label: 'Runs', ...(totals ? { count: totals.assignments } : {}) },
     { value: 'sessions', label: 'Conversations', ...(totals ? { count: totals.sessions } : {}) },
   ];
 
@@ -612,8 +612,8 @@ export function DashboardPage() {
               empty={
                 <EmptyState
                   icon={AnimatedSendIcon}
-                  title="No assignments yet"
-                  description="Assignments appear when work is delegated to an agent."
+                  title="Nothing has run yet"
+                  description="Runs appear when work is handed to an agent."
                   actionLabel="View agents"
                   actionTo="/org/agents"
                   variant="plain"

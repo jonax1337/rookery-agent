@@ -64,6 +64,7 @@ interface AgentDraft {
   title: string;
   slug: string;
   instructions: string;
+  voice: string;
   teamId: string | null;
   managerId: string | null;
   permission: PermissionChoice;
@@ -76,6 +77,7 @@ const EMPTY: AgentDraft = {
   title: '',
   slug: '',
   instructions: '',
+  voice: '',
   teamId: null,
   managerId: null,
   permission: STANDARD_CHOICE,
@@ -100,6 +102,7 @@ function draftOf(agent: Agent): AgentDraft {
     title: agent.title,
     slug: agent.slug,
     instructions: agent.instructions,
+    voice: agent.voice ?? '',
     teamId: agent.teamId ?? null,
     managerId: agent.managerId ?? null,
     permission: agent.permission ?? STANDARD_CHOICE,
@@ -118,6 +121,7 @@ function buildPatch(draft: AgentDraft): AgentPatch {
     name: draft.name.trim(),
     title: draft.title.trim(),
     instructions: draft.instructions.trim(),
+    voice: draft.voice.trim() || null,
     ...(draft.slug.trim() ? { slug: draft.slug.trim() } : {}),
     teamId: draft.teamId,
     managerId: draft.managerId,
@@ -132,6 +136,7 @@ function toInput(patch: AgentPatch): AgentInput {
     name: patch.name ?? '',
     title: patch.title ?? '',
     instructions: patch.instructions ?? '',
+    ...(patch.voice ? { voice: patch.voice } : {}),
     ...(patch.slug ? { slug: patch.slug } : {}),
     ...(patch.teamId ? { teamId: patch.teamId } : {}),
     ...(patch.managerId ? { managerId: patch.managerId } : {}),
@@ -209,7 +214,7 @@ export function AgentFormPage() {
         value: status.id as ProviderChoice,
         label: PROVIDER_LABEL[status.id] ?? status.displayName,
         icon: <ProviderIcon provider={status.id} label={status.displayName} className="size-4 text-muted-foreground" />,
-        ...(!status.available ? { description: 'Not installed. Assignments for this agent will fail.' } : {}),
+        ...(!status.available ? { description: 'Not installed. Work for this agent will fail.' } : {}),
       })),
     ],
     [config, providers],
@@ -361,7 +366,7 @@ export function AgentFormPage() {
         description={
           <Blur>
             {editing
-              ? 'Role, instructions, and Memory persist; every assignment still starts a fresh process.'
+              ? 'Role, instructions, and Memory persist; every run still starts a fresh process.'
               : 'An agent is a permanent team member: role, instructions, and personal Memory persist.'}
           </Blur>
         }
@@ -513,6 +518,20 @@ export function AgentFormPage() {
                 characters. Included verbatim in every assignment system prompt.
               </FieldDescription>
               <FieldError>{errors.instructions}</FieldError>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="agent-voice">Voice</FieldLabel>
+              <Textarea
+                id="agent-voice"
+                rows={4}
+                placeholder="How this person writes - two to four sentences. Leave empty for a neutral, unstyled voice."
+                value={draft.voice}
+                onChange={(event) => set({ voice: event.target.value })}
+              />
+              <FieldDescription>
+                How they write, not what they can do - that stays in Instructions. Colours mail sent from a task; empty stays neutral.
+              </FieldDescription>
             </Field>
           </FieldSet>
         </Fade>

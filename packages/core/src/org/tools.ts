@@ -37,6 +37,17 @@ const ASSISTANT_ONLY: ToolAudience[] = ['assistant'];
 const str = (description: string): Record<string, unknown> => ({ type: 'string', description });
 
 /**
+ * The one rule for naming work, word for word wherever a name is asked for.
+ * Whoever writes a brief can name it; a name nobody can write is a brief
+ * nobody understood (decision E16), so there is no model call for this and
+ * no fallback worth advertising.
+ */
+const TITLE_RULE =
+  'A name for this work: three to eight words, no full stop, a noun phrase or an imperative, ' +
+  'in the language of the brief. "Login bug in the password reset", not "Please have a look at ' +
+  'why the login sometimes". Never the brief itself.';
+
+/**
  * How a provider argument is described to the model.
  *
  * Deliberately not an enum: every turn runs on the same harness and the id
@@ -64,7 +75,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'org_overview',
     description:
-      'The company you run: teams, agents (with slug, title and manager), projects, and assignments ' +
+      'The company you run: teams, agents (with slug, title and manager), projects, and the work ' +
       'currently running. Call this before delegating when you are unsure who does what.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     audience: BOTH,
@@ -72,18 +83,21 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'assign',
     description:
-      'Hand a task to one agent and wait for the finished result. The agent works in a separate ' +
-      'process with no access to this conversation, so the task must be self-contained: restate ' +
-      'every fact, file and constraint it needs. Call assign several times in one message to run ' +
-      "agents in parallel. Returns the agent's complete report. With wait=false it returns at once " +
-      'with the assignment id and the agent keeps working in the background; check on it with ' +
-      'assignment_status. In a chat, name yourself as the agent with wait=false to spin off real ' +
-      "work in the background while the conversation keeps going - your report posts back into " +
-      'the same chat once it finishes. A self-assignment must use wait=false.',
+      'Hand a task to one agent and wait for the finished result. It goes on the board as a task ' +
+      'of its own, so the work is visible while it runs and afterwards; handed on from inside a ' +
+      'task, it becomes a subtask of that one. The agent works in a separate process with no ' +
+      'access to this conversation, so the instruction must be self-contained: restate every ' +
+      'fact, file and constraint it needs. Call assign several times in one message to run agents ' +
+      "in parallel. Returns the agent's complete report. With wait=false it returns at once and " +
+      'the agent keeps working in the background; check on it with assignment_status. In a chat, ' +
+      'name yourself as the agent with wait=false to spin off real work in the background while ' +
+      'the conversation keeps going - your report posts back into the same chat once it finishes. ' +
+      'Handing work to yourself must use wait=false.',
     inputSchema: {
       type: 'object',
       properties: {
         agent: str('Agent slug or name.'),
+        title: str(TITLE_RULE),
         task: str('The full, self-contained instruction.'),
         project: str("Project name or id. The agent works in that project's directory. Optional."),
         wait: {
@@ -91,17 +105,17 @@ export const ORG_TOOLS: ToolDefinition[] = [
           description: 'Default true. False hands the task off and returns immediately.',
         },
       },
-      required: ['agent', 'task'],
+      required: ['agent', 'title', 'task'],
       additionalProperties: false,
     },
     audience: BOTH,
   },
   {
     name: 'assignment_status',
-    description: 'Status, duration and result of one assignment by id.',
+    description: 'Status, duration and result of one run by id.',
     inputSchema: {
       type: 'object',
-      properties: { id: str('Assignment id.') },
+      properties: { id: str('Run id.') },
       required: ['id'],
       additionalProperties: false,
     },
@@ -110,12 +124,12 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'cancel_assignment',
     description:
-      'Stop a pending or running assignment. The agent process is killed and the assignment ends ' +
+      'Stop a pending or running task. The agent process is killed and the run ends ' +
       'as cancelled; whatever it had written so far is lost. Use it for a stuck or runaway agent, ' +
       'or when the user changes their mind.',
     inputSchema: {
       type: 'object',
-      properties: { id: str('Assignment id or prefix.') },
+      properties: { id: str('Run id or prefix.') },
       required: ['id'],
       additionalProperties: false,
     },
@@ -124,7 +138,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'list_assignments',
     description:
-      'The assignment history: what ran, for whom, how it ended, how long it took. Newest first. ' +
+      'The history of what ran: for whom, how it ended, how long it took. Newest first. ' +
       'Filter by agent, status or project when the question is about one of them.',
     inputSchema: {
       type: 'object',
@@ -170,7 +184,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'read_mail_thread',
     description:
       'The full text of one mail conversation, oldest first - only the mails you sent or were To or ' +
-      'Cc on. A mail that starts an assignment names its thread; call this when the answer depends on ' +
+      'Cc on. A mail that opens a task names its thread; call this when the answer depends on ' +
       'what was already said, and skip it when the mail stands on its own.',
     inputSchema: {
       type: 'object',
@@ -351,6 +365,13 @@ export const ORG_TOOLS: ToolDefinition[] = [
         name: str('Display name, e.g. "Mara". With replaces set, must differ from the outgoing agent\'s name.'),
         title: str('Job title, e.g. "Backend Engineer".'),
         instructions: str('Standing instructions for the role, two to six sentences.'),
+        voice: str(
+          'Two to four sentences on HOW this person writes - never what they can do, which stays in ' +
+            "instructions. When the user described a voice, use it; when they said nothing, invent one " +
+            'yourself that fits the role rather than leaving it out. With replaces set, write a new voice ' +
+            "- a successor's is never the outgoing agent's. Omit only when the user explicitly wants a " +
+            'plain, colourless agent.',
+        ),
         slug: str('Short handle, lowercase with dashes. Derived from the name when omitted.'),
         team: str('Team name or id. Optional. Ignored when replaces is set (inherited instead).'),
         manager: str('Manager agent slug. Omit for an agent reporting to you directly. Ignored when replaces is set.'),
@@ -410,14 +431,14 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'review_assignment',
     description:
-      'Add or correct your own judgment of one finished assignment - the same review that runs ' +
+      'Add or correct your own judgment of one finished run - the same review that runs ' +
       'automatically after every run, but by hand: after the user disagreed with the automatic ' +
-      'one, or for a run from before this existed. Upserts: a second call for the same assignment ' +
+      'one, or for a run from before this existed. Upserts: a second call for the same run ' +
       'replaces your earlier judgment rather than adding a second one.',
     inputSchema: {
       type: 'object',
       properties: {
-        id: str('Assignment id or prefix.'),
+        id: str('Run id or prefix.'),
         overall: { type: 'number', description: '1 to 5. 5 as good as a good colleague would do it, 1 unusable or invented.' },
         comment: str('One to three sentences on what was good or bad. Optional.'),
       },
@@ -461,12 +482,12 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'create_task',
     description:
       'Put a task on the company board without running it yet. Use this for work the user ' +
-      'wants tracked, or for anything bigger than one quick assignment. Then plan_task decides ' +
+      'wants tracked, or for anything bigger than one quick hand-off. Then plan_task decides ' +
       'who does it and whether to split it, and run_task executes it.',
     inputSchema: {
       type: 'object',
       properties: {
-        title: str('Short title.'),
+        title: str(TITLE_RULE),
         description: str('Everything an agent needs to do the task: goal, constraints, files, definition of done.'),
         project: str('Project name or id. Optional.'),
         priority: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Optional, default normal.' },
@@ -483,7 +504,9 @@ export const ORG_TOOLS: ToolDefinition[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        status: str('Comma-separated statuses to include (open, planned, running, done, failed, cancelled). Optional.'),
+        status: str(
+          'Comma-separated statuses to include (open, planned, running, blocked, done, failed, cancelled). Optional.',
+        ),
       },
       additionalProperties: false,
     },
@@ -491,7 +514,9 @@ export const ORG_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'update_task',
-    description: 'Edit a task: title, description, priority, assignee, or mark it done or cancelled by hand.',
+    description:
+      'Edit a task: title, description, priority, assignee, or set its status by hand - done, ' +
+      'cancelled, or blocked while it waits for an answer.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -500,7 +525,11 @@ export const ORG_TOOLS: ToolDefinition[] = [
         description: str('Optional.'),
         priority: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Optional.' },
         assignee: str('Agent slug, or "none". Optional.'),
-        status: { type: 'string', enum: ['open', 'done', 'cancelled'], description: 'Optional.' },
+        status: {
+          type: 'string',
+          enum: ['open', 'done', 'cancelled', 'blocked'],
+          description: 'Optional. "blocked" means it waits for an answer.',
+        },
         result: str('What was done, when closing by hand. Optional.'),
       },
       required: ['id'],
@@ -530,7 +559,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'run_task',
     description:
       'Execute a task from the board and wait for the outcome. A task without a plan is planned ' +
-      'first. Subtasks run as parallel assignments in dependency order; their reports come back ' +
+      'first. Subtasks run in parallel in dependency order; their reports come back ' +
       'combined. This is the right tool for anything that should be tracked on the board.',
     inputSchema: {
       type: 'object',
@@ -558,7 +587,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'create_project',
     description:
-      'Create a project. With a path, assignments for it run inside that directory; without one, ' +
+      'Create a project. With a path, work on it runs inside that directory; without one, ' +
       'agents work in the scratch workspace.',
     inputSchema: {
       type: 'object',
@@ -596,7 +625,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       "The MCP servers listed in a project's own .mcp.json - the same file a person's own Claude " +
       'Code session in that folder would read - and whether they are trusted yet. An untrusted or ' +
-      'changed file never starts its servers for an assignment. Call this before trust_project_mcp.',
+      'changed file never starts its servers for a run. Call this before trust_project_mcp.',
     inputSchema: {
       type: 'object',
       properties: { project: str('Project name or id.') },
@@ -609,7 +638,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'trust_project_mcp',
     description:
       "Approve or revoke a project's own .mcp.json, so its MCP servers do or do not start for " +
-      "assignments in that project. This starts real processes from a file inside the project's " +
+      "runs in that project. This starts real processes from a file inside the project's " +
       'own folder, so show the user the server list and command lines from project_mcp_servers ' +
       'before approving. A later edit to .mcp.json needs approving again; revoke turns the ' +
       'servers off again without touching the file.',
@@ -639,7 +668,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
       '...", "every Friday at 17:00, have Mara ...", or a single later run (once=true) for ' +
       '"tomorrow at 15:00 remind me ...". By default you run the prompt yourself, as a turn of ' +
       'your own in a conversation dedicated to the job, with all your tools; name an agent to ' +
-      'have it run as an assignment instead. The outcome of every run lands in your inbox; a ' +
+      'have an agent run it instead. The outcome of every run lands in your inbox; a ' +
       'one-time run you do yourself (once=true, no agent) also replies directly in the ' +
       'conversation you are having right now, so "I\'ll get back to you here" actually happens - ' +
       'a recurring job, or one handed to an agent, keeps its own dedicated conversation. The ' +
@@ -667,7 +696,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
             'Events arriving during the rest are not lost - they collapse into one run at the end ' +
             'of it. Default 60. Optional.',
         },
-        agent: str('Agent slug or name to run it as an assignment. Omit to run it yourself.'),
+        agent: str('Agent slug or name to run it as their task. Omit to run it yourself.'),
         project: str('Project name or id the run belongs to. Optional.'),
         once: { type: 'boolean', description: 'Fire once, then switch the schedule off. Default false.' },
         enabled: { type: 'boolean', description: 'Default true.' },
@@ -745,7 +774,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'remember',
     description:
       'Write one fact into your long-term memory, so it comes back later. For the assistant this ' +
-      'is the memory of the user; an agent writes into its own working memory of its assignments. ' +
+      'is the memory of the user; an agent writes into its own working memory of its work. ' +
       'One self-contained sentence per call. Use it when you are told to remember something, or ' +
       'for something clearly worth keeping that the automatic extraction might miss.',
     inputSchema: {
@@ -858,7 +887,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     name: 'get_settings',
     description:
       'The current settings you may change: default provider, model and effort for turns and ' +
-      'assignments, and the company limits (parallel assignments, delegation depth, assignment ' +
+      'runs, and the company limits (parallel runs, delegation depth, run ' +
       'timeout).',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     audience: ASSISTANT_ONLY,
@@ -866,7 +895,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'update_settings',
     description:
-      'Change settings and persist them; they apply from the next turn or assignment. Only the ' +
+      'Change settings and persist them; they apply from the next turn or run. Only the ' +
       'fields given change. Do this when the user asks for it, or say what you changed and why.',
     inputSchema: {
       type: 'object',
@@ -876,7 +905,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
         defaultEffort: str('low, medium, high, or "default". Optional.'),
         maxConcurrentAssignments: { type: 'number', description: 'Agent processes at the same time, 1 to 16. Optional.' },
         maxDelegationDepth: { type: 'number', description: 'How deep agents may delegate below you, 1 to 6. Optional.' },
-        assignmentTimeoutMinutes: { type: 'number', description: 'Hard stop for one assignment, 1 to 600. Optional.' },
+        assignmentTimeoutMinutes: { type: 'number', description: 'Hard stop for one run, 1 to 600. Optional.' },
       },
       additionalProperties: false,
     },

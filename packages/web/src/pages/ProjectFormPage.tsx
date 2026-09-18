@@ -266,7 +266,7 @@ export function ProjectFormPage() {
         showActions={false}
         onSubmit={submit}
         error={failure}
-        description="A project groups conversations and assignments and defines the directory where work happens."
+        description="A project groups conversations and work and defines the directory where it happens."
       >
         <Fade>
           <FieldSet>

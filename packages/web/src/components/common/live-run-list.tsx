@@ -5,6 +5,7 @@ import { NavLink } from 'react-router';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { StatusBadge } from '@/components/common/status-badge';
+import { ResultMarkdown } from '@/components/result-markdown';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -38,7 +39,7 @@ import { cn } from '@/lib/utils';
 
 export interface LiveRunListProps {
   assignments: readonly AssignmentView[];
-  /** Given: every running row gets an "Abbrechen" action. */
+  /** Given: every running row gets a cancel action. */
   onCancel?: (id: string) => void;
   /**
    * Given: every running row gets a terminal button that opens the live log
@@ -83,7 +84,7 @@ export function LiveRunList({
   onCancel,
   onWatch,
   variant = 'card',
-  title = 'Assignments',
+  title = 'Runs',
   className,
 }: LiveRunListProps) {
   const tree = React.useMemo(() => toTree(assignments), [assignments]);
@@ -109,7 +110,7 @@ export function LiveRunList({
 
   return (
     <Fade asChild>
-      <Card className={cn('py-3', className)} aria-label="Assignments for this turn">
+      <Card className={cn('py-3', className)} aria-label="Runs for this turn">
         <CardHeader className="flex flex-wrap items-center gap-2 border-b px-3!">
           <CardTitle className="text-sm">{title}</CardTitle>
           <Badge variant="secondary" className="tabular-nums">
@@ -117,7 +118,7 @@ export function LiveRunList({
                 single flex item: the badge's own gap must not widen the space. */}
             <span>
               <SlidingNumber number={assignments.length} fromNumber={0} />{' '}
-              {assignments.length === 1 ? 'assignment' : 'assignments'}
+              {assignments.length === 1 ? 'run' : 'runs'}
             </span>
           </Badge>
 
@@ -182,16 +183,24 @@ function RunRow({
           <StatusBadge kind="assignment" status={assignment.status} />
         </ItemTitle>
 
-        <ItemDescription className="line-clamp-1">{assignment.task}</ItemDescription>
+        <ItemDescription className="line-clamp-1 font-medium text-foreground">
+          {assignment.title}
+        </ItemDescription>
 
         {meta.length > 0 && (
           <span className="text-xs tabular-nums text-muted-foreground">{meta.join(' · ')}</span>
         )}
 
+        {/* The tail of what the run is printing right now, rendered like
+            every other run text - the compact preset keeps a heading in it
+            a bold line and a fence a small box. */}
         {assignment.status === 'running' && assignment.preview && (
-          <span className="truncate font-mono text-xs text-muted-foreground/80">
-            {assignment.preview}
-          </span>
+          <ResultMarkdown
+            text={assignment.preview}
+            preview
+            clampRem={3}
+            className="text-xs text-muted-foreground/80"
+          />
         )}
 
         {assignment.error && (
@@ -208,13 +217,13 @@ function RunRow({
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  aria-label="Watch assignment live"
+                  aria-label="Watch this run live"
                   onClick={() => onWatch(assignment.id)}
                 >
                   <TerminalIcon />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Live zusehen</TooltipContent>
+              <TooltipContent>Watch live</TooltipContent>
             </Tooltip>
           )}
           {cancellable && onCancel && (
@@ -224,7 +233,7 @@ function RunRow({
                   type="button"
                   variant="ghost"
                   size="icon-sm"
-                  aria-label="Cancel assignment"
+                  aria-label="Stop this run"
                   onClick={() => onCancel(assignment.id)}
                 >
                   <XIcon />

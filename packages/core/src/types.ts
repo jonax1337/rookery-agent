@@ -934,6 +934,13 @@ export interface Agent {
   title: string;
   /** The role's standing instructions. Never mixed into the assistant's voice. */
   instructions: string;
+  /**
+   * Two to four sentences on HOW this person writes - never what they can
+   * do, which is what `instructions` is for. Nullable and usually empty:
+   * an unset voice colours nothing, exactly today's behaviour (decision
+   * E11, F5). Set at `hire_agent`, editable on the agent's own form.
+   */
+  voice?: string;
   teamId?: string;
   /** Direct manager. Unset: reports to the assistant. */
   managerId?: string;
@@ -961,6 +968,14 @@ export interface Assignment {
   parentId?: string;
   requesterKind: RequesterKind;
   requesterAgentId?: string;
+  /**
+   * What this run is called - three to eight words, never the brief itself.
+   * A run that belongs to a task carries that task's name (decision E17);
+   * one that does not is named by whoever started it. Required here and
+   * nullable in the column: a row written before the name existed is named
+   * from its own first line when it is read, and never written back.
+   */
+  title: string;
   task: string;
   status: AssignmentStatus;
   result?: string;
@@ -983,6 +998,8 @@ export interface AssignmentView {
   agentId: string;
   agentSlug: string;
   agentName: string;
+  /** The run's name, for lists; `task` stays the full brief underneath it. */
+  title: string;
   task: string;
   status: AssignmentStatus;
   projectId?: string;
@@ -1178,7 +1195,12 @@ export interface MailRecipient {
   readAt?: number;
 }
 
-export type TaskStatus = 'open' | 'planned' | 'running' | 'done' | 'failed' | 'cancelled';
+/**
+ * `blocked` is the state a task is in while it waits for an answer: its run
+ * ended with a question to whoever assigned it, so the work is neither done
+ * nor failed. The next mail in its thread continues it.
+ */
+export type TaskStatus = 'open' | 'planned' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 export type TaskPriority = 'low' | 'normal' | 'high';
 
 /**
@@ -1952,6 +1974,13 @@ export interface OrgConfig {
    * with no model call at all.
    */
   autoReview: boolean;
+  /**
+   * On, a mail-born run writes its result as a letter in the agent's own
+   * voice instead of a report (decision E10, section 6.3). Off restores
+   * today's report register everywhere, unconditionally. Global, not
+   * per-agent (decision E6/F6): the tone is a property of the company.
+   */
+  roleplay: boolean;
   /** Explicitly chosen company; the newest one otherwise. */
   activeOrganizationId?: string;
 }

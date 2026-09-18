@@ -640,7 +640,7 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
             ]}
           />
 
-          <SectionHeading title="Recent assignments" size="sm" level="h3" flush>
+          <SectionHeading title="Recent runs" size="sm" level="h3" flush>
             {failed ? (
               <ServerOffline size="sm" />
             ) : recent === null ? (
@@ -653,7 +653,7 @@ function AgentDrawer({ agent, onOpenChange, teamName, managerName }: AgentDrawer
               <EmptyState
                 icon={InboxIcon}
                 title={'No assignments for ' + agent.name}
-                description="Assignments run in a separate process, independently of the conversation."
+                description="Work runs in a separate process, independently of the conversation."
                 actionLabel="Open agent"
                 actionTo={'/org/agents/' + agent.id}
                 variant="plain"

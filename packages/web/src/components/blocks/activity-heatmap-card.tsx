@@ -324,7 +324,7 @@ export function ActivityHeatmapCard({ data, tokensAvailable = false, className }
                 <th scope="col">Day</th>
                 <th scope="col">Messages</th>
                 <th scope="col">Conversations</th>
-                <th scope="col">Assignments</th>
+                <th scope="col">Runs</th>
                 {tokensAvailable ? (
                   <>
                     <th scope="col">Input tokens</th>

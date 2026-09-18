@@ -321,7 +321,7 @@ export function OrgProjectsPage() {
             <EmptyState
               icon={FolderIcon}
               title="No projects yet"
-              description="A project gives assignments a working directory and organizes conversations. Without a project, everything runs in the shared workspace."
+              description="A project gives work a directory and organizes conversations. Without a project, everything runs in the shared workspace."
               actionLabel="Create project"
               actionTo="/org/projects/new"
               variant="plain"

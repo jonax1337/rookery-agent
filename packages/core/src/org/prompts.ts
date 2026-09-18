@@ -18,13 +18,14 @@ import { renderMemoryBlock } from '../memory/recall.js';
 import { PONYTAIL_RULESET } from './ponytail.js';
 import { describeCronJob } from '../cron/scheduler.js';
 import { clip, shorten } from '../util/queue.js';
+import { formatAge, formatNow } from '../util/time.js';
 
 /**
  * Prompt text for the organisation.
  *
  * Two kinds of prompt come out of here. The assistant's turn gets a block
  * describing the company it runs and how to use its tools; it is appended to
- * the ordinary identity prompt. An agent's assignment gets a complete system
+ * the ordinary identity prompt. An agent's run gets a complete system
  * prompt of its own, pointedly not built on the assistant's identity: an
  * agent is a member of staff, and its notes must never read like the
  * assistant speaking to the user.
@@ -36,15 +37,47 @@ export interface OrgSnapshot {
   teams: Team[];
   agents: Agent[];
   projects: Project[];
-  /** Assignments currently pending or running. */
+  /** Runs currently pending or running. */
   active: Assignment[];
 }
+
+/** How many of a thread's mails a continued run reads without asking (F4). */
+const THREAD_TAIL_MAILS = 2;
+/** And how much of each of them. */
+const THREAD_TAIL_CHARS = 4000;
 
 const agentById = (snapshot: OrgSnapshot): Map<string, Agent> =>
   new Map(snapshot.agents.map((agent) => [agent.id, agent]));
 
-/** The org chart as plain text, shared by the overview tool and the prompts. */
-export function renderOrgOverview(snapshot: OrgSnapshot): string {
+/**
+ * Voices of one agent's own team and manager only - never the whole company
+ * (decision E13, section 6.4): a company of twenty would otherwise carry
+ * nineteen irrelevant voice descriptions into every single run. An agent
+ * with no voice set contributes no line here at all; that is the silent,
+ * neutral default (F5), not something worth naming as absent.
+ */
+function renderColleagueVoices(agent: Agent, snapshot: OrgSnapshot): string {
+  const byId = agentById(snapshot);
+  const manager = agent.managerId ? byId.get(agent.managerId) : undefined;
+  const teammates = agent.teamId
+    ? snapshot.agents.filter((entry) => entry.teamId === agent.teamId && entry.id !== agent.id)
+    : [];
+  const lines: string[] = [];
+  if (manager?.voice) lines.push('- ' + manager.slug + ' (your manager): ' + manager.voice);
+  for (const mate of teammates) {
+    if (mate.voice) lines.push('- ' + mate.slug + ' (your team): ' + mate.voice);
+  }
+  if (!lines.length) return '';
+  return 'How your manager and team write, so mail from or about them reads like them:\n' + lines.join('\n');
+}
+
+/**
+ * The org chart as plain text, shared by the overview tool and the prompts.
+ *
+ * `org` is optional and only buys the run numbers: without it a running piece
+ * of work still has its name, which is the part that makes the list readable.
+ */
+export function renderOrgOverview(snapshot: OrgSnapshot, org?: OrgStore): string {
   const byId = agentById(snapshot);
   const teamName = new Map(snapshot.teams.map((team) => [team.id, team.name]));
   const lines: string[] = [];
@@ -89,10 +122,17 @@ export function renderOrgOverview(snapshot: OrgSnapshot): string {
 
   if (snapshot.active.length) {
     lines.push('');
-    lines.push('Running assignments:');
+    lines.push('Running now:');
     for (const assignment of snapshot.active) {
       const agent = byId.get(assignment.agentId);
-      lines.push('- ' + assignment.id.slice(0, 8) + ' ' + (agent?.slug ?? '?') + ': ' + clip(assignment.task, 120));
+      // The name, not the first 120 characters of the brief: three errands
+      // for the same agent open with the same twenty words, and a list of
+      // those tells nobody which is which (concept 7.1).
+      const run = org?.taskRunNumber(assignment.id) ?? null;
+      lines.push(
+        '- ' + assignment.id.slice(0, 8) + ' ' + (agent?.slug ?? '?') + ': ' + shorten(assignment.title, 120) +
+          (run && run > 1 ? ' (run ' + run + ')' : ''),
+      );
     }
   }
 
@@ -151,20 +191,27 @@ export function assistantOrgBlock(
   sections.push(
     [
       'As the personal assistant described in your saved profile, you run a small company of AI agents on their behalf.',
-      'The agents are permanent staff with roles and their own memory; every assignment you give',
+      'The agents are permanent staff with roles and their own memory; every task you hand',
       'one runs as a separate process in the background, in the project directory when the project',
-      'has one. The rookery tools are yours: `assign` hands a task to one agent and returns the',
-      'report (several `assign` calls in one message run in parallel); `create_task`, `plan_task`',
+      'has one. The rookery tools are yours: `assign` hands a task to one agent, puts it on the',
+      'board and returns the report (several `assign` calls in one message run in parallel);',
+      '`create_task`, `plan_task`',
       'and `run_task` put bigger work on the board, decide who does it or how to split it, and',
       'execute it; `hire_agent`, `update_agent`, `create_team`, `update_team`, `create_project` and',
       '`update_project` shape the company when the user asks or when a job clearly needs a role',
       'nobody holds. `list_assignments` is the history of what ran; `cancel_assignment` stops a',
-      'stuck or unwanted one, and `update_task` with status "cancelled" stops a running task.',
+      'stuck or unwanted run, and `update_task` with status "cancelled" stops a running task.',
+      'Everything that gets worked on is a task: it has a card on the board and the mail thread it',
+      'is discussed in, and those are two sides of one thing rather than two places to look.',
+      'Name every task you create: three to eight words, no full stop, a noun phrase or an',
+      'imperative, in the language of the brief - never the brief itself pasted into the title.',
+      'A task whose run ended with a question to whoever asked for it is set to "blocked" by itself',
+      'and waits there; the next mail in its thread carries it on, and you may set that status by hand.',
       '`remember`, `forget` and `search_memory` are your long-term memory of the user;',
       '`get_settings` and `update_settings` are the defaults and limits you work under.',
       '`create_schedule`, `list_schedules`, `update_schedule`, `delete_schedule` and `run_schedule`',
       'are your schedules (cron jobs): standing orders that fire on a timetable without anyone',
-      'asking - a turn of your own in a fresh conversation, or an assignment to an agent - with the',
+      'asking - a turn of your own in a fresh conversation, or a task for an agent - with the',
       'outcome posted to your inbox. Use them whenever the user wants something regularly ("every',
       'morning at 8", "on Fridays") or at a later time ("tomorrow at 15:00", once).',
       'Turn what they say into a cron expression yourself and confirm the time in words.',
@@ -173,9 +220,6 @@ export function assistantOrgBlock(
       'job. In that case end the turn with exactly [SILENT] instead of a report, or the user gets the',
       'same thing twice: the mail the job exists to send, and a second mail just saying it ran.',
       'Nothing here needs permission from anyone: you own the company and its machinery.',
-      'Two words to keep apart when you talk to the user: an assignment is',
-      'one agent running one brief, with a result; a task is an item on the',
-      'board that gets planned and then executed as one or more assignments.',
       'Delegate real work - code, research, analysis, long writing - instead of doing it here;',
       'you have no project files in this conversation.',
       'Most turns are not work at all. Small talk, questions about the user, their day or their',
@@ -190,9 +234,10 @@ export function assistantOrgBlock(
     [
       'Company mail is how everyone here talks to everyone else, and how you reach the user when no',
       'conversation is running. `send_mail` writes to an agent, to "user", or to several at once;',
-      '`read_mail` and `read_mail_thread` are your side of it. Mail with an agent on To starts a real',
-      'run of that agent and its report comes back to you as a reply - that is delegation you do not',
-      'have to wait for, where `assign` is delegation you do. Cc only delivers.',
+      '`read_mail` and `read_mail_thread` are your side of it. Mail with an agent on To hands them the',
+      'work and its report comes back to you as a reply; Cc only delivers. Use `assign` when you need',
+      'the result inside this turn, and mail when you do not have to wait for it - the same task',
+      'either way, on the same board.',
       'Write to the user by mail when you are the one starting it: a finished piece of work, a report',
       'they asked for, a decision only they can make. Answering a mail that arrived for you works the',
       'other way round - the answer is what you write in that turn, it goes back as the reply on its',
@@ -205,7 +250,7 @@ export function assistantOrgBlock(
     ].join(' '),
   );
 
-  sections.push(renderOrgOverview(snapshot));
+  sections.push(renderOrgOverview(snapshot, store?.org));
 
   if (store) {
     const flags = renderPerformanceFlags(snapshot, store.org);
@@ -216,7 +261,7 @@ export function assistantOrgBlock(
     sections.push(
       'Active project for this conversation: ' + activeProject.name +
         (activeProject.path ? ' at ' + activeProject.path : ' (no directory)') +
-        '. Assignments default to it.',
+        '. Work you hand out defaults to it.',
     );
   }
 
@@ -270,9 +315,9 @@ export interface AgentPromptInput {
   memories: ScoredMemory[];
   mail: Mail[];
   assignmentId: string;
-  /** Who gave the assignment, for the prompt's sense of the chain of command. */
+  /** Who asked for the work, for the prompt's sense of the chain of command. */
   requestedBy: string;
-  /** Set when this assignment came from mail: its subject, for the reply paragraph below. */
+  /** Set when this run came from mail: its subject, for the reply paragraph below. */
   sourceMailSubject?: string;
   /** That mail's id and thread, so the prompt can point at the history instead of carrying it. */
   sourceMailId?: string;
@@ -294,7 +339,7 @@ export interface AgentPromptInput {
   handoverFrom?: { predecessorName: string; text: string };
 }
 
-/** The complete system prompt for one agent running one assignment. */
+/** The complete system prompt for one agent carrying out one task. */
 export function buildAgentPrompt(input: AgentPromptInput): string {
   const { agent, snapshot, config } = input;
   const byId = agentById(snapshot);
@@ -302,6 +347,10 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
   const manager = agent.managerId ? byId.get(agent.managerId) : undefined;
   const reports = snapshot.agents.filter((entry) => entry.managerId === agent.id);
   const sections: string[] = [];
+  // A run answers as a letter only when it was born from mail and the
+  // company has roleplay switched on (decision E10/E14, F6); a run started
+  // by `assign` keeps today's report register unconditionally.
+  const letterRegister = Boolean(input.sourceMailSubject) && config.org.roleplay;
 
   sections.push(
     [
@@ -315,13 +364,16 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
         ? 'Your direct reports: ' + reports.map((entry) => entry.slug + ' (' + entry.title + ')').join(', ') +
           '. You may hand them parts of your work with the assign tool.'
         : 'You have no reports; do the work yourself.',
-      'This assignment (' + input.assignmentId.slice(0, 8) + ') was given to you by ' + input.requestedBy + '.',
+      'This task (' + input.assignmentId.slice(0, 8) + ') was given to you by ' + input.requestedBy + '.',
     ]
       .filter(Boolean)
       .join(' '),
   );
 
   sections.push('Your standing instructions:\n' + agent.instructions);
+
+  const colleagueVoices = renderColleagueVoices(agent, snapshot);
+  if (colleagueVoices) sections.push(colleagueVoices);
 
   // Mail is the company's only channel between colleagues, so the prompt
   // says who to write to rather than leaving `send_mail` as a tool nobody
@@ -334,8 +386,10 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
       'it. Mail with a colleague on To starts a real run of theirs and their answer comes back as a',
       'reply, so it is how you ask somebody for something you do not have to sit and wait for; Cc only',
       'delivers, for keeping somebody in the picture. Use it: a question for whoever knows the system,',
-      'a heads-up that changes their plans, a hand-off of work that is not yours. What it is not for',
-      'is thinking out loud or saying thank you - every mail you send costs somebody a run.',
+      'a heads-up that changes their plans, a hand-off of work that is not yours. What it is not for is a',
+      'mail whose entire content is politeness - if there is nothing in it beyond a thank-you, do not send',
+      'it, because every mail you send costs somebody a run. A mail that has something to say may say it',
+      'in whatever tone fits; that cost is about content, not about tone.',
       team && team.leadId === agent.id
         ? 'You lead ' + team.name + ': your team reaches the user through you, so what the team has to ' +
           'tell them is yours to write - one mail with the whole picture, not one per person.'
@@ -372,9 +426,12 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
   if (input.skillsIndex) sections.push(input.skillsIndex);
 
   if (input.sourceMailSubject) {
-    // The thread stays out of the prompt: a long conversation would cost more
-    // context than most mails need. What goes in is the index and where to get
-    // the rest, so the agent pays for the history only when it reads it.
+    // Most of the thread stays out of the prompt: a long conversation would
+    // cost more context than most mails need. What goes in is the index and
+    // where to get the rest, so the agent pays for the history only when it
+    // reads it - plus the last two mails at length, because a run that
+    // continues a thread almost always turns on what was said last, and
+    // making it fetch that costs a tool call every time (F4).
     const earlier = input.sourceMailThread ?? [];
     if (earlier.length && input.sourceMailThreadId) {
       // With the id: eight replies in one thread share almost the same
@@ -387,13 +444,40 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
           index + '\nRead the full text with read_mail_thread("' + input.sourceMailThreadId + '") when the answer ' +
           'depends on it.',
       );
+      const recent = earlier.slice(-THREAD_TAIL_MAILS);
+      sections.push(renderMail(recent, snapshot, 'The last of those, at length:', THREAD_TAIL_CHARS));
     }
-    sections.push(
-      'This assignment arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '". ' +
-        "Write your result as the reply's body, not a chat answer or a report - it goes back to them " +
-        'automatically, and everyone who was Cc on their mail stays Cc on yours. Do not send_mail the ' +
-        'same answer to them on top of it; send_mail is for bringing in somebody who was not on the thread.',
-    );
+    // Decision E10 (section 6.3): the same text stays `assignment.result` -
+    // no second model call, no rewrite, no marker in it for anybody to
+    // parse. Only the instruction changes which register that one text is
+    // written in. Off, or born from `assign` rather than mail, this is
+    // always the plain paragraph below, unchanged from before roleplay
+    // existed (F6).
+    if (letterRegister) {
+      sections.push(
+        [
+          'This task arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '".',
+          "It goes back as the reply's body automatically, and everyone who was Cc on their mail stays Cc on",
+          'yours. Do not send_mail the same answer to them on top of it; that tool is for bringing in',
+          'somebody who was not on the thread.',
+          'Write it as a letter to a colleague, not a report: a short salutation, one sentence of context,',
+          'the result, a stance on it, and a sign-off' +
+            (agent.voice ? ', in your own voice: ' + agent.voice : ', in a plain, neutral voice') + '.',
+          'The result stands in the first paragraph; politeness frames it and never postpones it - a letter',
+          'where the reader has to hunt for the answer is worse than the report it replaces. No invented',
+          'private life, no weekends, no coffee breaks; no played delay and no "I will look at that shortly"',
+          'without work already done behind it - a run either did the work or it is answering, never',
+          'pretending to be about to. Write in the language the task is written in.',
+        ].join(' '),
+      );
+    } else {
+      sections.push(
+        'This task arrived as an email from ' + input.requestedBy + ', subject "' + input.sourceMailSubject + '". ' +
+          "Write your result as the reply's body, not a chat answer or a report - it goes back to them " +
+          'automatically, and everyone who was Cc on their mail stays Cc on yours. Do not send_mail the ' +
+          'same answer to them on top of it; send_mail is for bringing in somebody who was not on the thread.',
+      );
+    }
   }
 
   // The assistant is told not to accept dead ends; an agent that reports
@@ -404,20 +488,25 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
       'closed door is the first attempt, not the answer: read what the error actually says, change',
       'the approach rather than the parameter, and try a genuinely different route before you report',
       'that something cannot be done. When you do report it, say what you tried and what would',
-      'unblock it. Stop short of anything irreversible or consequential the assignment did not ask',
+      'unblock it. Stop short of anything irreversible or consequential the task did not ask',
       'for, and never claim a result you have not seen.',
     ].join(' '),
   );
 
-  sections.push(
-    [
-      'Work the assignment and nothing else. Your output is a report to whoever assigned it,',
-      'not a chat with the user: lead with the result, then what you changed or found, then open',
-      'questions. No preamble, no restating the task. Separate what you verified from what you',
-      'assume. Anything that belongs to somebody other than whoever assigned this goes by mail, as',
-      'described above, not into the report. Write in the language the assignment is written in.',
-    ].join(' '),
-  );
+  // Skipped for a letter-register reply: "lead with the result, no preamble"
+  // directly contradicts a salutation and a sign-off, and E10 means only one
+  // of the two instructions is ever in the prompt for a given run.
+  if (!letterRegister) {
+    sections.push(
+      [
+        'Work the task and nothing else. Your output is a report to whoever asked for it,',
+        'not a chat with the user: lead with the result, then what you changed or found, then open',
+        'questions. No preamble, no restating the brief. Separate what you verified from what you',
+        'assume. Anything that belongs to somebody other than whoever asked for this goes by mail, as',
+        'described above, not into the report. Write in the language the task is written in.',
+      ].join(' '),
+    );
+  }
 
   // Decision E2: qualitative, never a number - see AgentPromptInput.agentNotes.
   if (input.agentNotes?.length) {
@@ -434,7 +523,10 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
     sections.push('Handover from ' + input.handoverFrom.predecessorName + ':\n' + input.handoverFrom.text);
   }
 
-  sections.push('Today is ' + new Date().toISOString().slice(0, 10) + '.');
+  // The clock a model judges every other stamp against, in this machine's own
+  // zone. A UTC date here and a local one elsewhere is how a healthy run comes
+  // to look hours old.
+  sections.push('It is now ' + formatNow() + '.');
   return sections.join('\n\n');
 }
 
@@ -442,18 +534,39 @@ export function buildAgentPrompt(input: AgentPromptInput): string {
 export function renderBoard(tasks: Task[], snapshot: OrgSnapshot, store: OrgStore): string {
   if (!tasks.length) return 'The board is empty.';
   const byId = agentById(snapshot);
+  // A status filter searches the whole board, subtasks included, so a task
+  // that is on the list in its own right must not turn up a second time
+  // under its parent.
+  const listed = new Set(tasks.map((task) => task.id));
   const lines: string[] = [];
   for (const task of tasks) {
     const assignee = task.assigneeId ? (byId.get(task.assigneeId)?.slug ?? '?') : 'unassigned';
     lines.push(
       '- [' + task.id.slice(0, 8) + '] ' + task.status.toUpperCase() + ' ' + task.priority + ' — ' + task.title +
-        ' (' + assignee + ')' + (task.planNote ? ' · ' + shorten(task.planNote, 80) : ''),
+        ' (' + assignee + ')' + (task.planNote ? ' · ' + shorten(task.planNote, 80) : '') + waitingOn(task, store),
     );
     for (const child of store.listTasks(task.orgId, { parentId: task.id })) {
-      if (child.status === 'cancelled') continue;
+      if (child.status === 'cancelled' || listed.has(child.id)) continue;
       const who = child.assigneeId ? (byId.get(child.assigneeId)?.slug ?? '?') : 'unassigned';
-      lines.push('    - [' + child.id.slice(0, 8) + '] ' + child.status + ' — ' + child.title + ' (' + who + ')');
+      lines.push(
+        '    - [' + child.id.slice(0, 8) + '] ' + child.status + ' — ' + child.title + ' (' + who + ')' +
+          waitingOn(child, store),
+      );
     }
   }
   return lines.join('\n');
+}
+
+/**
+ * What a waiting task waits for: how long it has stood there and the subject
+ * of the last mail in its thread (concept section 9). The board is all the
+ * watcher gets to read, and "BLOCKED normal — Fix the gate (mara)" says
+ * neither what was asked nor for how long.
+ */
+function waitingOn(task: Task, store: OrgStore): string {
+  if (task.status !== 'blocked') return '';
+  const thread = store.getMailThreadForTask(task.orgId, task.id);
+  const last = thread ? store.thread(task.orgId, thread.threadId, { limit: 1 }).at(-1) : null;
+  const span = formatAge(task.updatedAt || task.createdAt, Date.now(), 'minute');
+  return ' · waiting ' + span + (last ? ' on "' + shorten(last.subject, 60) + '"' : '');
 }

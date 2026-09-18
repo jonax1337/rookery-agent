@@ -174,7 +174,7 @@ export async function taskShowCommand(ref: string, options: TaskShowOptions = {}
         relativeTime(task.updatedAt) + theme.dim('  created ' + relativeTime(task.createdAt)),
       ) + '\n',
     );
-    if (task.assignmentId) out.write(keyValue('assignment', shortId(task.assignmentId)) + '\n');
+    if (task.assignmentId) out.write(keyValue('run', shortId(task.assignmentId)) + '\n');
 
     if (task.description && task.description !== task.title) {
       out.write('\n' + task.description.trimEnd() + '\n');
@@ -360,6 +360,8 @@ function paintStatus(status: TaskStatus): string {
       return theme.red(status);
     case 'running':
       return theme.yellow(status);
+    case 'blocked':
+      return theme.cyan(status);
     case 'cancelled':
       return theme.dim(status);
     default:

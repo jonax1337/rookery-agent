@@ -303,6 +303,8 @@ export interface Agent {
   name: string;
   title: string;
   instructions: string;
+  /** Two to four sentences on HOW this person writes. Never steers the work; only colours mail. */
+  voice?: string;
   teamId?: string;
   managerId?: string;
   provider?: ProviderId;
@@ -326,6 +328,8 @@ export interface Assignment {
   parentId?: string;
   requesterKind: RequesterKind;
   requesterAgentId?: string;
+  /** What this run is called; a run of a task carries that task's name. */
+  title: string;
   task: string;
   status: AssignmentStatus;
   result?: string;
@@ -346,6 +350,8 @@ export interface AssignmentView {
   agentId: string;
   agentSlug: string;
   agentName: string;
+  /** The run's name, for lists; `task` stays the full brief underneath it. */
+  title: string;
   task: string;
   status: AssignmentStatus;
   projectId?: string;
@@ -456,7 +462,8 @@ export interface Mail {
 
 /* ----------------------------------- tasks ---------------------------------- */
 
-export type TaskStatus = 'open' | 'planned' | 'running' | 'done' | 'failed' | 'cancelled';
+/** `blocked` is a task whose run ended with a question and waits for an answer. */
+export type TaskStatus = 'open' | 'planned' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 export type TaskPriority = 'low' | 'normal' | 'high';
 
 /**
@@ -958,6 +965,8 @@ export interface OrgConfig {
   assignmentTimeoutMs: number;
   /** Agents get the Ponytail ruleset in their system prompt. */
   lazyCoding: boolean;
+  /** On, a mail-born run answers as a letter in the agent's own voice instead of a report. */
+  roleplay: boolean;
   activeOrganizationId?: string;
 }
 

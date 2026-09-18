@@ -20,6 +20,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { StatusBadge } from '@/components/common/status-badge';
+import { ResultMarkdown } from '@/components/result-markdown';
 import { Badge } from '@/components/ui/badge';
 import { isSettableTaskStatus, TASK_STATUS_LABEL, TASK_STATUS_ORDER } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -34,10 +35,11 @@ import type { Agent, Task, TaskStatus } from '@/lib/types';
  * job is to compute the next value of each and hand it to the caller; it
  * owns no server state itself.
  *
- * Columns follow `TASK_STATUS_ORDER`. Only `open`/`done`/`cancelled` are
- * columns a person may drop a card into - `planned`/`running`/`failed`
- * belong to the runner, exactly like the row menu already enforces - so a
- * drop into one of those three is rejected and the card springs back.
+ * Columns follow `TASK_STATUS_ORDER`. Only `open`/`blocked`/`done`/
+ * `cancelled` are columns a person may drop a card into -
+ * `planned`/`running`/`failed` belong to the runner, exactly like the row
+ * menu already enforces - so a drop into one of those is rejected and the
+ * card springs back.
  */
 
 export interface TaskBoardProps {
@@ -48,6 +50,12 @@ export interface TaskBoardProps {
   onStatusChange(task: Task, status: TaskStatus): Promise<void> | void;
   /** Persists the new position; called after every reorder, same-column or cross-column. */
   onReorder(task: Task, sortOrder: number): Promise<void> | void;
+  /**
+   * The newest mail of a task's thread, by task id. A blocked card says what
+   * it is waiting for with it; without an entry it only says that it waits,
+   * because a subject nobody sent is not a subject.
+   */
+  lastMailByTask?: ReadonlyMap<string, { subject: string; at: number }>;
 }
 
 function byColumn(tasks: Task[]): Record<TaskStatus, string[]> {
@@ -61,7 +69,14 @@ function byColumn(tasks: Task[]): Record<TaskStatus, string[]> {
   return columns;
 }
 
-export function TaskBoard({ tasks, agentById, onOpenDetail, onStatusChange, onReorder }: TaskBoardProps) {
+export function TaskBoard({
+  tasks,
+  agentById,
+  onOpenDetail,
+  onStatusChange,
+  onReorder,
+  lastMailByTask,
+}: TaskBoardProps) {
   const tasksById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
   const [columns, setColumns] = useState<Record<TaskStatus, string[]>>(() => byColumn(tasks));
   const [activeId, setActiveId] = useState<UniqueIdentifier | null>(null);
@@ -175,6 +190,7 @@ export function TaskBoard({ tasks, agentById, onOpenDetail, onStatusChange, onRe
               tasksById={tasksById}
               agentById={agentById}
               onOpenDetail={onOpenDetail}
+              {...(lastMailByTask ? { lastMailByTask } : {})}
             />
           </Fade>
         ))}
@@ -196,9 +212,10 @@ interface BoardColumnProps {
   tasksById: Map<string, Task>;
   agentById(id: string | undefined): Agent | undefined;
   onOpenDetail(task: Task): void;
+  lastMailByTask?: ReadonlyMap<string, { subject: string; at: number }>;
 }
 
-function BoardColumn({ status, taskIds, tasksById, agentById, onOpenDetail }: BoardColumnProps) {
+function BoardColumn({ status, taskIds, tasksById, agentById, onOpenDetail, lastMailByTask }: BoardColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const settable = isSettableTaskStatus(status);
 
@@ -228,6 +245,7 @@ function BoardColumn({ status, taskIds, tasksById, agentById, onOpenDetail }: Bo
                 task={task}
                 agentById={agentById}
                 onOpenDetail={onOpenDetail}
+                {...(lastMailByTask?.get(id) ? { lastMail: lastMailByTask.get(id) as { subject: string; at: number } } : {})}
               />
             );
           })}
@@ -243,14 +261,26 @@ interface TaskCardProps {
   task: Task;
   agentById(id: string | undefined): Agent | undefined;
   onOpenDetail(task: Task): void;
+  /** The newest mail of this task's thread, when the board knows one. */
+  lastMail?: { subject: string; at: number };
   dragging?: boolean;
   handleProps?: Record<string, unknown>;
   style?: React.CSSProperties;
   setNodeRef?: (node: HTMLElement | null) => void;
 }
 
-function TaskCard({ task, agentById, onOpenDetail, dragging, handleProps, style, setNodeRef }: TaskCardProps) {
+function TaskCard({
+  task,
+  agentById,
+  onOpenDetail,
+  lastMail,
+  dragging,
+  handleProps,
+  style,
+  setNodeRef,
+}: TaskCardProps) {
   const assignee = agentById(task.assigneeId);
+  const description = task.description.trim();
   return (
     <div
       ref={setNodeRef}
@@ -277,6 +307,32 @@ function TaskCard({ task, agentById, onOpenDetail, dragging, handleProps, style,
           {task.title}
         </button>
       </div>
+
+      {/* The name is the heading, the description is the preview under it -
+          rendered, because the description is markdown wherever it came
+          from, and clamped on the rendered block rather than on the text. */}
+      {description ? (
+        <ResultMarkdown
+          text={description}
+          preview
+          clampRem={6}
+          className="pl-5 text-xs text-muted-foreground"
+        />
+      ) : null}
+
+      {/* A blocked card says who it is waiting for, and on what: the run
+          ended with a question, and the question went out as mail. */}
+      {task.status === 'blocked' ? (
+        <div className="flex flex-col gap-0.5 pl-5 text-xs">
+          <span className="font-medium text-destructive">Waiting for you</span>
+          {lastMail ? (
+            <span className="truncate text-muted-foreground">
+              {lastMail.subject || '(No subject)'}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-1.5 pl-5">
         <StatusBadge kind="priority" status={task.priority} />
         {task.error ? <StatusBadge kind="task" status={task.status} /> : null}
@@ -290,7 +346,7 @@ function TaskCard({ task, agentById, onOpenDetail, dragging, handleProps, style,
   );
 }
 
-function SortableTaskCard({ task, agentById, onOpenDetail }: Omit<TaskCardProps, 'dragging'>) {
+function SortableTaskCard({ task, agentById, onOpenDetail, lastMail }: Omit<TaskCardProps, 'dragging'>) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -302,6 +358,7 @@ function SortableTaskCard({ task, agentById, onOpenDetail }: Omit<TaskCardProps,
       task={task}
       agentById={agentById}
       onOpenDetail={onOpenDetail}
+      {...(lastMail ? { lastMail } : {})}
       setNodeRef={setNodeRef}
       style={style}
       handleProps={{ ...attributes, ...listeners }}

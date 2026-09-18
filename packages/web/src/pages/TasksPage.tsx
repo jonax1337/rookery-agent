@@ -1,5 +1,5 @@
-import { forwardRef, useCallback, useMemo, useState } from 'react';
-import { NavLink, useNavigate } from 'react-router';
+import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
+import { NavLink, useNavigate, useSearchParams } from 'react-router';
 
 import {
   BanIcon,
@@ -18,12 +18,13 @@ import { reportFailure } from '@/lib/errors';
 import {
   relativeTime,
   isSettableTaskStatus,
+  type SettableTaskStatus,
   NO_PROJECT,
   TASK_STATUS_LABEL,
   TASK_STATUS_ORDER,
 } from '@/lib/format';
 import { countSince, formatNumber } from '@/lib/stats';
-import type { Task, TaskStatus } from '@/lib/types';
+import type { Mail, Task, TaskStatus } from '@/lib/types';
 import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-provider';
 import { useStatsTotals } from '@/hooks/useStatsTotals';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
@@ -114,6 +115,7 @@ export function TasksPage() {
   const { confirm, dialog } = useConfirm();
   const bulk = useBulkAction();
 
+  const [searchParams] = useSearchParams();
   const [tab, setTab] = useState('alle');
   const [assignee, setAssignee] = useState<string | null>(null);
   const [project, setProject] = useState<string | null>(null);
@@ -204,6 +206,7 @@ export function TasksPage() {
       open: 0,
       planned: 0,
       running: 0,
+      blocked: 0,
       done: 0,
       failed: 0,
       cancelled: 0,
@@ -218,6 +221,7 @@ export function TasksPage() {
       { value: 'open', label: 'Open', count: counts.open },
       { value: 'planned', label: 'Planned', count: counts.planned },
       { value: 'running', label: 'Running', count: counts.running },
+      { value: 'blocked', label: 'Blocked', count: counts.blocked },
       { value: 'done', label: 'Done', count: counts.done },
       { value: 'undone', label: 'Not done', count: counts.failed + counts.cancelled },
     ],
@@ -232,10 +236,60 @@ export function TasksPage() {
     return filtered.filter((task) => task.status === tab);
   }, [filtered, tab]);
 
+  /*
+   * Deep links from elsewhere: the agent page points at "the board, filtered
+   * by this person", so `?assignee=` and `?status=` have to arrive as the
+   * filters they name. Read once - after that the page's own controls own
+   * the state, and a re-read would fight them.
+   */
+  useEffect(() => {
+    const who = searchParams.get('assignee');
+    if (who) setAssignee(who);
+    const status = searchParams.get('status');
+    if (status) setTab(status);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /*
+   * The newest mail of each task thread the user is on. A blocked card
+   * should say what it is waiting for, and this is the only real source for
+   * it: the `tasks` folder is every assignment thread addressed to the user,
+   * newest first, with the task id joined in. No entry means no line.
+   */
+  const [taskMails, setTaskMails] = useState<Mail[]>([]);
+  const blockedCount = tasks.countByStatus.blocked;
+  useEffect(() => {
+    if (blockedCount === 0) return;
+    let live = true;
+    api
+      .mail('user', 'tasks', 200)
+      .then((mails) => {
+        if (live) setTaskMails(mails);
+      })
+      .catch(() => {
+        // A missing subject line is a missing line, never an error banner.
+      });
+    return () => {
+      live = false;
+    };
+  }, [blockedCount]);
+
+  const lastMailByTask = useMemo(() => {
+    const newest = new Map<string, { subject: string; at: number }>();
+    for (const mail of taskMails) {
+      if (!mail.taskId) continue;
+      const known = newest.get(mail.taskId);
+      if (!known || known.at < mail.createdAt) {
+        newest.set(mail.taskId, { subject: mail.subject, at: mail.createdAt });
+      }
+    }
+    return newest;
+  }, [taskMails]);
+
   /* ------------------------------- actions ------------------------------ */
 
   const setStatus = useCallback(
-    async (task: Task, status: 'open' | 'done' | 'cancelled', force = false): Promise<void> => {
+    async (task: Task, status: SettableTaskStatus, force = false): Promise<void> => {
       setPending((current) => ({ ...current, [task.id]: status }));
       try {
         await api.updateTask(task.id, { status, ...(force ? { force: true } : {}) });
@@ -364,7 +418,7 @@ export function TasksPage() {
             onStatus={(next) => {
               if (next === task.status) return;
               if (next === 'cancelled') void cancelTask(task);
-              else if (next === 'open' || next === 'done') void setStatus(task, next);
+              else if (next === 'open' || next === 'done' || next === 'blocked') void setStatus(task, next);
             }}
             onCancel={() => void cancelTask(task)}
           />
@@ -487,11 +541,10 @@ export function TasksPage() {
               agentById={org.agentById}
               onOpenDetail={(task) => setDrawerId(task.id)}
               onStatusChange={(task, status) => {
-                if (status === 'open' || status === 'done' || status === 'cancelled') {
-                  void setStatus(task, status);
-                }
+                if (isSettableTaskStatus(status)) void setStatus(task, status);
               }}
               onReorder={reorderTask}
+              lastMailByTask={lastMailByTask}
             />
           </div>
         ) : (
@@ -581,7 +634,7 @@ export function TasksPage() {
                 <EmptyState
                   icon={AnimatedClipboardListIcon}
                   title="No tasks yet"
-                  description="Larger goals start here before they are planned and run as assignments. The assistant can add tasks too."
+                  description="Larger goals start here before they are planned and run. The assistant can add tasks too."
                   actionLabel="Create task"
                   actionTo="/tasks/new"
                   variant="plain"

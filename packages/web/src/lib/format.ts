@@ -244,6 +244,7 @@ export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   open: 'Open',
   planned: 'Planned',
   running: 'Running',
+  blocked: 'Blocked',
   done: 'Done',
   failed: 'Failed',
   cancelled: 'Cancelled',
@@ -256,6 +257,7 @@ export const TASK_STATUS_VARIANT: Record<
   open: 'outline',
   planned: 'secondary',
   running: 'default',
+  blocked: 'destructive',
   done: 'secondary',
   failed: 'destructive',
   cancelled: 'outline',
@@ -266,21 +268,24 @@ export const TASK_STATUS_ORDER: TaskStatus[] = [
   'open',
   'planned',
   'running',
+  'blocked',
   'done',
   'failed',
   'cancelled',
 ];
 
 /**
- * The three states a person may set.
+ * The four states a person may set.
  *
  * `PATCH /api/org/tasks/:id` accepts only these; `planned`, `running` and
- * `failed` belong to the runner and would be rejected. The board's status
- * menu and the task form both need the fact, so it is stated once.
+ * `failed` belong to the runner and would be rejected. `blocked` is normally
+ * the runner's word for a task waiting on an answer, but a person may park
+ * one there by hand. The board's status menu and the task form both need the
+ * fact, so it is stated once.
  */
-export type SettableTaskStatus = 'open' | 'done' | 'cancelled';
+export type SettableTaskStatus = 'open' | 'blocked' | 'done' | 'cancelled';
 
-export const SETTABLE_TASK_STATUS: readonly SettableTaskStatus[] = ['open', 'done', 'cancelled'];
+export const SETTABLE_TASK_STATUS: readonly SettableTaskStatus[] = ['open', 'blocked', 'done', 'cancelled'];
 
 export function isSettableTaskStatus(status: TaskStatus): status is SettableTaskStatus {
   return (SETTABLE_TASK_STATUS as readonly string[]).includes(status);

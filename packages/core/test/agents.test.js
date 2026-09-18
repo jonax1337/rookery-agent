@@ -285,7 +285,7 @@ test('an agent prompt is a member of staff, never the assistant', () => {
   assert.match(prompt, /You are Mara, Backend Engineer at Rookery & Co\./);
   assert.match(prompt, /Keep the API small/);
   assert.match(prompt, /direct reports: ben/);
-  assert.match(prompt, /report to whoever assigned it/);
+  assert.match(prompt, /report to whoever asked for it/);
   assert.doesNotMatch(prompt, /You are Rookery/);
 
   // org.lazyCoding is on by default, and off has to mean off: a switch that

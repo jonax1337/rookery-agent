@@ -58,6 +58,8 @@ export interface CronSchedulerOptions {
 }
 
 export interface CronJobInput {
+  /** Fixed id for a job that must stay findable across restarts (e.g. the board watcher); random otherwise. */
+  id?: string;
   orgId: string;
   name: string;
   /** May be empty when `triggerMode` is `event`: such a job has no clock. */

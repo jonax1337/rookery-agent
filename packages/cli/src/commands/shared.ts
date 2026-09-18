@@ -25,6 +25,7 @@ export const TASK_STATUSES: readonly TaskStatus[] = [
   'open',
   'planned',
   'running',
+  'blocked',
   'done',
   'failed',
   'cancelled',
@@ -34,7 +35,7 @@ export const TASK_PRIORITIES: readonly TaskPriority[] = ['low', 'normal', 'high'
  * What a board shows when nobody asked for a set of statuses. Finished and
  * cancelled work is history, and history is what `--all` is for.
  */
-export const ACTIVE_TASK_STATUSES: readonly TaskStatus[] = ['open', 'planned', 'running', 'failed'];
+export const ACTIVE_TASK_STATUSES: readonly TaskStatus[] = ['open', 'planned', 'running', 'blocked', 'failed'];
 
 export class CliError extends Error {
   readonly exitCode: number;

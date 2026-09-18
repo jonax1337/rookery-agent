@@ -328,7 +328,7 @@ export function CronDetailPage() {
         }),
         column.display({
           id: 'assignment',
-          header: () => <span className="text-sm font-medium">Assignment</span>,
+          header: () => <span className="text-sm font-medium">Run</span>,
           cell: ({ row }) =>
             row.original.assignmentId ? (
               <NavLink

@@ -21,6 +21,7 @@ import type {
   ScoredMemory,
   Session,
   SessionKind,
+  TaskStatus,
   TurnUsage,
 } from './types.js';
 import { ASSISTANT_MEMORY_OWNER } from './types.js';
@@ -49,7 +50,8 @@ import { matchSkills, renderSkillMatches } from './skills/suggest.js';
 import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
 import { runCronScript } from './cron/script.js';
-import { EventQueue } from './util/queue.js';
+import { EventQueue, titleFromBrief } from './util/queue.js';
+import { formatNow } from './util/time.js';
 import { TurnBlocks } from './util/blocks.js';
 
 /**
@@ -89,6 +91,28 @@ const MAX_PROVIDER_PASSES = 2;
  * costs one provider session, never the thread the turn was holding.
  */
 const MAX_PROVIDER_ATTEMPTS = 2;
+
+/**
+ * The board watcher's schedule id, deterministic so it stays findable across a
+ * restart - every other schedule id is a random uuid. One per organisation.
+ */
+function boardWatchJobId(orgId: string): string {
+  return 'board-watch:' + orgId;
+}
+
+/** Wide enough that the clock rarely fires it: the event path is the fast one, this is its backstop. */
+const BOARD_WATCH_SCHEDULE = '*/30 * * * *';
+
+/** What the watcher is told to look at and, just as importantly, what it may not do (E8, F3). */
+const BOARD_WATCH_PROMPT =
+  'Watch the board for what needs a person. Check list_tasks for anything failed or blocked, and ' +
+  'for anything running far longer than it should. For each one, do whatever actually helps - ' +
+  'reassign it, follow up with a fresh run on the same task, or restart it - and mail the user, at ' +
+  'most once per pass, only when something truly needs a human decision. Never close a blocked task ' +
+  "yourself: it is waiting on a person's answer, not on you, and only that person, or a reply in its " +
+  'own thread, ends the wait - the most you may do is mention that it has waited a long time. If the ' +
+  'board is healthy and none of this applies, do not report that everything is fine - answer with ' +
+  'exactly [SILENT] instead.';
 
 /** Add up what two passes of one turn cost; the last pass owns the context gauge. */
 function mergeUsage(base: TurnUsage | undefined, next: TurnUsage | undefined): TurnUsage | undefined {
@@ -222,6 +246,12 @@ export interface RunTaskInput {
 export interface AssignInput {
   /** Agent id, slug or name. */
   agent: string;
+  /**
+   * What the run is called in lists. A schedule passes its own name, which
+   * is right for a job that means the same thing every night; anything else
+   * falls back to the brief's first line (concept 7.2).
+   */
+  title?: string;
   task: string;
   projectId?: string;
   sessionId?: string;
@@ -283,6 +313,14 @@ export class Assistant extends EventEmitter {
    * a blocked recipient or a channel that was switched off mid-session.
    */
   notifyProbe?: () => boolean;
+  /**
+   * The last status seen for a task, by id - only so the board-watch
+   * subscriber can tell a fresh landing in `failed`/`blocked` apart from an
+   * unrelated edit to a task that was already sitting there. Never read for
+   * anything else; a task this process never saw simply fires on its first
+   * qualifying event, which is the right answer after a restart too.
+   */
+  readonly #taskStatusSeen = new Map<string, TaskStatus>();
 
   constructor(options: AssistantOptions = {}) {
     super();
@@ -353,6 +391,10 @@ export class Assistant extends EventEmitter {
     this.org.on('message', (event: AgentEvent) => this.emit('message', event));
     this.org.on('mail', (event: AgentEvent) => this.emit('mail', event));
     this.org.on('task', (event: AgentEvent) => this.emit('task', event));
+    // The watcher's fast path (section 5): a task landing in `failed` or
+    // `blocked` wakes it through the same event machinery a webhook or an
+    // IMAP listener uses, no different from any other schedule.
+    this.org.on('task', (event: AgentEvent) => this.#onTaskEvent(event));
     this.org.on('changed', (change: { kind: string; id: string }) => this.emit('changed', change));
     // The assistant reaching out on its own initiative - no HTTP, no
     // Telegram here, just an event a channel in another package can listen
@@ -522,6 +564,66 @@ export class Assistant extends EventEmitter {
       this.log.warn('Could not set up the nightly memory schedule', { error: (error as Error).message });
       return null;
     }
+  }
+
+  /* ------------------------------- board watch ----------------------------- */
+
+  /**
+   * Make sure the board has a watcher. Called once when the clock starts.
+   *
+   * Unlike the nightly memory schedule, this row is an ordinary, visible
+   * `cron_jobs` entry - E8 wants it editable and switchable in the same UI as
+   * every other job, not hidden system clockwork. Seeding is idempotent by
+   * id: a second call, on a later start, finds the same row and returns it
+   * untouched, whatever a person did to it since - edited the schedule,
+   * rewritten the prompt, switched it off. Only a row that does not exist yet
+   * gets created.
+   */
+  ensureBoardWatchSchedule(): CronJob | null {
+    try {
+      const organization = this.org.activeOrganization();
+      const id = boardWatchJobId(organization.id);
+      const existing = this.cron.get(id);
+      if (existing && existing.orgId === organization.id) return existing;
+      return this.cron.create({
+        id,
+        orgId: organization.id,
+        name: 'Board watch',
+        schedule: BOARD_WATCH_SCHEDULE,
+        triggerMode: 'schedule',
+        // The clock is the backstop; the fast path is the task-event
+        // subscriber below. A minute keeps ten failures or blocks in one
+        // burst to one run, exactly like every other event-fed schedule.
+        eventCooldownMs: 60_000,
+        kind: 'assistant',
+        prompt: BOARD_WATCH_PROMPT,
+        createdBy: 'assistant',
+      });
+    } catch (error) {
+      this.log.warn('Could not set up the board watcher', { error: (error as Error).message });
+      return null;
+    }
+  }
+
+  /**
+   * A task crossed into `failed` or `blocked` - the two transitions the
+   * watcher cares about (E8, section 5). The clock behind it fires every
+   * thirty minutes regardless; this is only the fast path, and it is
+   * edge-triggered on purpose: a task that merely stays blocked while its
+   * title or priority changes must not re-fire the watcher on every one of
+   * those unrelated edits, only on actually landing in the state.
+   */
+  #onTaskEvent(event: AgentEvent): void {
+    if (event.type !== 'task') return;
+    const { task } = event;
+    const attention = task.status === 'failed' || task.status === 'blocked';
+    const before = this.#taskStatusSeen.get(task.id);
+    this.#taskStatusSeen.set(task.id, task.status);
+    if (!attention || before === task.status) return;
+    const id = boardWatchJobId(task.orgId);
+    void this.cron.runEvent(id, 'task ' + task.id.slice(0, 8) + ' turned ' + task.status).catch((error: unknown) => {
+      this.log.warn('Could not wake the board watcher', { error: String(error) });
+    });
   }
 
   /* ------------------------------- chat ----------------------------- */
@@ -974,6 +1076,7 @@ export class Assistant extends EventEmitter {
       .run({
         orgId: organization.id,
         agent,
+        title: input.title?.trim() || titleFromBrief(task),
         task,
         projectId: input.projectId,
         sessionId: input.sessionId,
@@ -993,7 +1096,7 @@ export class Assistant extends EventEmitter {
     } else {
       yield {
         type: 'error',
-        message: 'Assignment ' + assignment.status + (assignment.error ? ': ' + assignment.error : '.'),
+        message: 'The run ' + assignment.status + (assignment.error ? ': ' + assignment.error : '.'),
         fatal: true,
       };
     }
@@ -1115,7 +1218,16 @@ export class Assistant extends EventEmitter {
       let error: string | undefined;
       // `scheduled` keeps the run from learning: the assignment's words are
       // the job's own prompt, and no memory should grow out of them.
-      for await (const event of this.assign({ agent: agent.id, task: job.prompt, projectId: job.projectId, signal, scheduled: true })) {
+      for await (const event of this.assign({
+        agent: agent.id,
+        // A recurring job is called the same thing every night, and that is
+        // right: the schedule's name is the third source of a run's name.
+        title: job.name,
+        task: job.prompt,
+        projectId: job.projectId,
+        signal,
+        scheduled: true,
+      })) {
         if (event.type === 'assignment' && !assignmentId) assignmentId = event.assignment.id;
         else if (event.type === 'done') text = event.text;
         else if (event.type === 'error' && event.fatal) error = event.message;
@@ -1137,7 +1249,8 @@ export class Assistant extends EventEmitter {
     } else {
       sessionId = this.createSession({ title: 'Schedule: ' + job.name, kind: 'schedule', projectId: job.projectId }).id;
     }
-    const when = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+    // Same clock, same zone, same wording as every other stamp a model reads.
+    const when = formatNow();
     const prompt =
       'Automatic run of schedule “' + job.name + '” (' +
       (job.schedule ? describeCron(job.schedule) : 'fired by an event') + '), ' + when + '. ' +

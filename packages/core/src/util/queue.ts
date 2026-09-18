@@ -56,6 +56,23 @@ export function shorten(text: string, max: number): string {
   return flat.length <= max ? flat : flat.slice(0, Math.max(0, max - 1)) + '…';
 }
 
+/**
+ * A name for a brief that nobody named: its first non-empty line, freed of
+ * the markup a heading, a quote or a bullet starts with, collapsed to one
+ * line and clamped short.
+ *
+ * This is the last resort of the title order (concept 7.2): whoever writes a
+ * brief should name it, and a name worth a second model call is a name the
+ * caller never understood. It is deliberately a local rule for titles only -
+ * markdown is meaningful everywhere else, and only a heading in a list reads
+ * as noise.
+ */
+export function titleFromBrief(text: string, max = 60): string {
+  const first = text.split('\n').find((line) => line.trim().length > 0) ?? '';
+  const bare = first.replace(/^[\s#>*+\-]+/, '').replace(/[\s#*]+$/, '');
+  return shorten(bare || first, max) || 'Untitled';
+}
+
 /** The last `max` characters of a text. */
 export function tail(text: string, max: number): string {
   return text.length <= max ? text : text.slice(-max);

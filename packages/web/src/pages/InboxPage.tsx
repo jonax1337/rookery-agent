@@ -19,7 +19,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Field, FieldLabel } from '@/components/ui/field';
+import { Field, FieldDescription, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -85,7 +85,6 @@ export function InboxPage() {
   const [inboxUnread, setInboxUnread] = useState<number | null>(null);
 
   const [composeOpen, setComposeOpen] = useState(false);
-  const [composeMode, setComposeMode] = useState<'mail' | 'task'>('mail');
   const [composeTo, setComposeTo] = useState<EntityOption[]>([]);
   const [composeCc, setComposeCc] = useState<EntityOption[]>([]);
   const [subject, setSubject] = useState('');
@@ -278,6 +277,19 @@ export function InboxPage() {
     [org.agents, assistantName],
   );
 
+  // What the address line is about to do, said before the mail goes out
+  // rather than chosen in a switch and forgotten afterwards (decision E2).
+  // Exactly one agent on To is a work order; anybody else, and anybody in
+  // company with them, is a conversation.
+  const composeOutcome = useMemo(() => {
+    if (composeTo.length === 0) return 'Add a recipient. One agent alone opens a task; anyone else is a conversation.';
+    const sole = composeTo.length === 1 ? composeTo[0] : undefined;
+    const agent = sole && sole.value !== 'assistant' ? org.agentById(sole.value) : undefined;
+    if (agent) return 'This opens a task for @' + agent.slug + '.';
+    const people = composeTo.length;
+    return 'This is a conversation with ' + people + (people === 1 ? ' person' : ' people') + '. No task is created.';
+  }, [composeTo, org]);
+
   /* --------------------------------- load ---------------------------------- */
 
   // Sequence guard: switching the mailbox or the box starts a new load while
@@ -443,7 +455,6 @@ export function InboxPage() {
   }, [selected]);
 
   const resetCompose = (): void => {
-    setComposeMode('mail');
     setComposeTo([]);
     setComposeCc([]);
     setSubject('');
@@ -505,19 +516,20 @@ export function InboxPage() {
     const trimmedSubject = subject.trim();
     const trimmedBody = body.trim();
     if (!trimmedBody || composeTo.length === 0 || sending) return;
-    const isTask = composeMode === 'task';
     setSending(true);
     try {
-      await api.sendMail({
+      // No mode to pick: the address line decides, and the answer says what
+      // it decided. One agent on To opened a task, anything else is a
+      // conversation.
+      const sent = await api.sendMail({
         to: composeTo.map((option) => option.value),
-        ...(composeCc.length > 0 && !isTask ? { cc: composeCc.map((option) => option.value) } : {}),
+        ...(composeCc.length > 0 ? { cc: composeCc.map((option) => option.value) } : {}),
         subject: trimmedSubject || '(No subject)',
         body: trimmedBody,
-        ...(isTask ? { mode: 'task' as const } : {}),
       });
       resetCompose();
       setComposeOpen(false);
-      toast(isTask ? 'Task created' : 'Mail sent');
+      toast(sent.task ? 'Task created: ' + sent.task.title : 'Mail sent');
       void load();
     } catch (caught) {
       reportFailure('Send', caught);
@@ -714,28 +726,6 @@ export function InboxPage() {
             <DialogTitle>New mail</DialogTitle>
           </DialogHeader>
           <div className="flex flex-col gap-3">
-            <div className="flex gap-1">
-              <Button
-                type="button"
-                size="sm"
-                variant={composeMode === 'mail' ? 'default' : 'outline'}
-                onClick={() => setComposeMode('mail')}
-              >
-                Message
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={composeMode === 'task' ? 'default' : 'outline'}
-                onClick={() => {
-                  setComposeMode('task');
-                  setComposeCc([]);
-                }}
-                aria-pressed={composeMode === 'task'}
-              >
-                Task
-              </Button>
-            </div>
             <Field>
               <FieldLabel>To</FieldLabel>
               <MultiEntityCombobox
@@ -744,23 +734,17 @@ export function InboxPage() {
                 onChange={setComposeTo}
                 placeholder="Add recipient…"
               />
+              <FieldDescription>{composeOutcome}</FieldDescription>
             </Field>
-            {composeMode === 'mail' ? (
-              <Field>
-                <FieldLabel>Cc</FieldLabel>
-                <MultiEntityCombobox
-                  options={recipientOptions}
-                  value={composeCc}
-                  onChange={setComposeCc}
-                  placeholder="Add Cc…"
-                />
-              </Field>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                A task goes to exactly one agent in To — it creates a task on the board, and the agent's answer lands
-                in this thread as a report.
-              </p>
-            )}
+            <Field>
+              <FieldLabel>Cc</FieldLabel>
+              <MultiEntityCombobox
+                options={recipientOptions}
+                value={composeCc}
+                onChange={setComposeCc}
+                placeholder="Add Cc…"
+              />
+            </Field>
             <Field>
               <FieldLabel>Subject</FieldLabel>
               <Input value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="Subject" />
@@ -779,15 +763,7 @@ export function InboxPage() {
             </Field>
           </div>
           <DialogFooter>
-            <Button
-              onClick={() => void submitCompose()}
-              disabled={
-                sending ||
-                !body.trim() ||
-                composeTo.length === 0 ||
-                (composeMode === 'task' && (composeTo.length !== 1 || composeTo[0]?.value === 'assistant'))
-              }
-            >
+            <Button onClick={() => void submitCompose()} disabled={sending || !body.trim() || composeTo.length === 0}>
               Send
             </Button>
           </DialogFooter>

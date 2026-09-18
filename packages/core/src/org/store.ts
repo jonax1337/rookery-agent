@@ -26,6 +26,7 @@ import type {
   Team,
 } from '../types.js';
 import type { Db } from '../memory/db.js';
+import { titleFromBrief } from '../util/queue.js';
 
 type Row = Record<string, unknown>;
 
@@ -201,6 +202,7 @@ export class OrgStore {
     name: string;
     title: string;
     instructions: string;
+    voice?: string;
     teamId?: string;
     managerId?: string;
     provider?: ProviderId;
@@ -215,6 +217,7 @@ export class OrgStore {
       name: input.name.trim() || 'Unnamed',
       title: input.title.trim() || 'Staff member',
       instructions: input.instructions.trim(),
+      voice: blank(input.voice),
       teamId: blank(input.teamId),
       managerId: blank(input.managerId),
       provider: input.provider,
@@ -227,9 +230,9 @@ export class OrgStore {
     this.#db
       .prepare(
         `INSERT INTO agents
-           (id, org_id, slug, name, title, instructions, team_id, manager_id, provider, model, permission,
+           (id, org_id, slug, name, title, instructions, voice, team_id, manager_id, provider, model, permission,
             created_at, updated_at, archived)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       )
       .run(
         agent.id,
@@ -238,6 +241,7 @@ export class OrgStore {
         agent.name,
         agent.title,
         agent.instructions,
+        agent.voice ?? null,
         agent.teamId ?? null,
         agent.managerId ?? null,
         agent.provider ?? null,
@@ -298,6 +302,7 @@ export class OrgStore {
       name?: string;
       title?: string;
       instructions?: string;
+      voice?: string | null;
       teamId?: string | null;
       managerId?: string | null;
       provider?: ProviderId | null;
@@ -313,6 +318,7 @@ export class OrgStore {
       name: patch.name?.trim(),
       title: patch.title?.trim(),
       instructions: patch.instructions?.trim(),
+      voice: patch.voice === undefined ? undefined : patch.voice === null ? null : patch.voice.trim() || null,
       team_id: patch.teamId,
       manager_id: patch.managerId,
       provider: patch.provider,
@@ -345,6 +351,8 @@ export class OrgStore {
   createAssignment(input: {
     orgId: string;
     agentId: string;
+    /** What the run is called. Falls back to the brief's first line. */
+    title?: string;
     task: string;
     projectId?: string;
     sessionId?: string;
@@ -363,6 +371,7 @@ export class OrgStore {
       parentId: blank(input.parentId),
       requesterKind: input.requesterKind,
       requesterAgentId: blank(input.requesterAgentId),
+      title: input.title?.trim() || titleFromBrief(input.task),
       task: input.task.trim(),
       status: 'pending',
       chars: 0,
@@ -373,8 +382,8 @@ export class OrgStore {
       .prepare(
         `INSERT INTO assignments
            (id, org_id, agent_id, project_id, session_id, parent_id, requester_kind, requester_agent_id,
-            task, status, chars, depth, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
+            title, task, status, chars, depth, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?)`,
       )
       .run(
         assignment.id,
@@ -385,6 +394,7 @@ export class OrgStore {
         assignment.parentId ?? null,
         assignment.requesterKind,
         assignment.requesterAgentId ?? null,
+        assignment.title,
         assignment.task,
         assignment.depth,
         now,
@@ -884,17 +894,28 @@ export class OrgStore {
     return row ? mapTask(row) : null;
   }
 
-  /** Board view: top-level tasks by default, or the subtasks of one parent. */
+  /**
+   * Board view: top-level tasks by default, or the subtasks of one parent.
+   * `anyLevel` drops the nesting question altogether - a search for every
+   * blocked task has to find the ones that hang under a parent too.
+   */
   listTasks(
     orgId: string,
-    options: { parentId?: string | null; status?: TaskStatus[]; assigneeId?: string; limit?: number } = {},
+    options: {
+      parentId?: string | null;
+      anyLevel?: boolean;
+      status?: TaskStatus[];
+      assigneeId?: string;
+      limit?: number;
+    } = {},
   ): Task[] {
     const clauses = ['org_id = ?'];
     const values: unknown[] = [orgId];
-    if (options.parentId === null || options.parentId === undefined) clauses.push('parent_id IS NULL');
-    else {
+    if (options.parentId !== null && options.parentId !== undefined) {
       clauses.push('parent_id = ?');
       values.push(options.parentId);
+    } else if (!options.anyLevel) {
+      clauses.push('parent_id IS NULL');
     }
     if (options.status?.length) {
       clauses.push('status IN (' + options.status.map(() => '?').join(', ') + ')');
@@ -995,6 +1016,27 @@ export class OrgStore {
       )
       .run(taskId, assignmentId, Date.now());
     this.updateTask(taskId, { assignmentId });
+  }
+
+  /**
+   * Which run of its task this one is, counting from one, or null when it
+   * belongs to no task. A run inherits its task's name (decision E17), so
+   * the chain is the only thing that tells two of them apart in a list -
+   * "Run 2" rather than a second, invented title for the same piece of work.
+   */
+  taskRunNumber(assignmentId: string): number | null {
+    const row = this.#db
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM task_assignments earlier
+                  WHERE earlier.task_id = link.task_id
+                    AND (earlier.created_at < link.created_at
+                         OR (earlier.created_at = link.created_at AND earlier.assignment_id <= link.assignment_id))
+                ) AS position
+           FROM task_assignments link
+          WHERE link.assignment_id = ?`,
+      )
+      .get(assignmentId) as { position: number } | undefined;
+    return row ? Number(row.position) : null;
   }
 
   /** The task an assignment belongs to, even one a later rerun's assignment_id overwrote. */
@@ -1514,6 +1556,7 @@ function mapAgent(row: Row): Agent {
     name: row.name as string,
     title: row.title as string,
     instructions: row.instructions as string,
+    voice: optional(row.voice),
     teamId: optional(row.team_id),
     managerId: optional(row.manager_id),
     provider: optional(row.provider) as ProviderId | undefined,
@@ -1535,6 +1578,10 @@ function mapAssignment(row: Row): Assignment {
     parentId: optional(row.parent_id),
     requesterKind: row.requester_kind as RequesterKind,
     requesterAgentId: optional(row.requester_agent_id),
+    // Rows from before the column existed are named when they are read and
+    // never written back: the derivation is cheap, and a backfill would put
+    // a guess in the place a real name belongs (decision E15).
+    title: optional(row.title) ?? titleFromBrief(row.task as string),
     task: row.task as string,
     status: row.status as AssignmentStatus,
     result: optional(row.result),

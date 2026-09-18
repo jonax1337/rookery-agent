@@ -164,6 +164,7 @@ export interface ReplaceAgentInput {
   slug?: string;
   title: string;
   instructions: string;
+  voice?: string;
   handover?: string;
 }
 
@@ -206,6 +207,7 @@ export interface AgentInput {
   name: string;
   title: string;
   instructions: string;
+  voice?: string;
   slug?: string;
   teamId?: string;
   managerId?: string;
@@ -218,6 +220,7 @@ export interface AgentPatch {
   name?: string;
   title?: string;
   instructions?: string;
+  voice?: Nullable<string>;
   slug?: string;
   teamId?: Nullable<string>;
   managerId?: Nullable<string>;
@@ -242,7 +245,7 @@ export interface TaskPatch {
   projectId?: Nullable<string>;
   assigneeId?: Nullable<string>;
   /** Only the states a human sets by hand; the runner owns the rest. */
-  status?: 'open' | 'done' | 'cancelled';
+  status?: 'open' | 'blocked' | 'done' | 'cancelled';
   result?: Nullable<string>;
   /** Board drag&drop position within a status column. */
   sortOrder?: number;
@@ -707,8 +710,13 @@ export const api = {
     request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&thread=' + encodeURIComponent(threadId)),
   archiveMailThread: (threadId: string, archived = true) =>
     request<{ ok: true }>('/api/org/mail/archive', { method: 'POST', ...json({ threadId, archived }) }),
-  sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string; mode?: 'mail' | 'task' }) =>
-    request<Mail | { mail: Mail; task: Task }>('/api/org/mail', { method: 'POST', ...json(input) }),
+  /**
+   * There is no mode to pass: exactly one agent on To opens a task, anything
+   * else is a conversation, and the answer carries the task when one was
+   * created so the page can link straight to it.
+   */
+  sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string }) =>
+    request<{ mail: Mail; task?: Task }>('/api/org/mail', { method: 'POST', ...json(input) }),
   /**
    * Marks a batch of mailbox rows read; the mailbox page calls this once per
    * load. `read: false` is the reading pane's "Mark as unread".
