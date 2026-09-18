@@ -590,15 +590,29 @@ export function DreamSection({ owner }: DreamSectionProps) {
                   <CardContent>
                     <EmptyState
                       icon={BrainIcon}
+                      /*
+                        Three states, not two. The served config can still be in
+                        flight - it arrives behind the provider probe, which on a
+                        real installation takes seconds - and until it lands
+                        neither reason is known. Saying "nothing written yet"
+                        then is a claim about a cause: it reads as "the dream is
+                        running and has produced nothing", when the truth is
+                        almost always "it is switched off". So the unknown state
+                        says it is unknown.
+                      */
                       title={
-                        dream && !dream.enabled
-                          ? 'The dream is switched off'
-                          : 'The dream has written nothing yet'
+                        !dream
+                          ? 'Reading the dream settings'
+                          : dream.enabled
+                            ? 'The dream has written nothing yet'
+                            : 'The dream is switched off'
                       }
                       description={
-                        dream && !dream.enabled
-                          ? 'memory.dream.enabled is false, which is the default. No night measures a retrieval policy, so there are no policy versions, no evaluations and no promotions to show. The counters in the table below stay at zero for the same reason.'
-                          : 'No policy version exists for any slot yet. A night writes candidates only once it has enough recorded traces to measure them against; until then the configured defaults are in force.'
+                        !dream
+                          ? 'The switches come from the served configuration, which has not arrived yet. Until it does, whether any of this ran is not something this page knows.'
+                          : dream.enabled
+                            ? 'No policy version exists for any slot yet. A night writes candidates only once it has enough recorded traces to measure them against; until then the configured defaults are in force.'
+                            : 'memory.dream.enabled is false, which is the default. No night measures a retrieval policy, so there are no policy versions, no evaluations and no promotions to show. The counters in the table below stay at zero for the same reason.'
                       }
                       variant="plain"
                       size="sm"

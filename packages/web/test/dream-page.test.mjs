@@ -299,6 +299,19 @@ test('the switched-off dream reads as switched off', () => {
     'the empty state names the setting it read, not an invented reason',
   );
   assert.ok(section.includes('dream.enabled'), 'the section reads the served config');
+
+  // Three states, not two. The served config arrives behind the provider probe,
+  // which takes seconds on a real installation; claiming "nothing written yet"
+  // in the meantime asserts a cause the page does not know, and on a default
+  // installation that cause is wrong.
+  assert.ok(
+    section.includes('Reading the dream settings'),
+    'an unknown config says it is unknown rather than naming a reason',
+  );
+  assert.ok(
+    /!dream[\s\S]{0,120}Reading the dream settings/.test(section),
+    'the unknown state is keyed on the absent config, not on a counter',
+  );
 });
 
 test('the capped history names its own base', () => {
