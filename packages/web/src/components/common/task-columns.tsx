@@ -120,10 +120,15 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
           return (
             <div className="min-w-0">
               <DetailDrawerTrigger
-                className="max-w-[28ch] truncate font-medium"
+                className="max-w-[28ch] font-medium"
                 onClick={() => onOpenDetail(task)}
               >
-                {task.title}
+                {/* The clamp belongs on the text, not on the button: the
+                    trigger is a flex box, so a `truncate` on it centres the
+                    overflow and cuts the title at BOTH ends instead of
+                    ellipsising it. Same span the memory and session columns
+                    already use. */}
+                <span className="truncate">{task.title}</span>
               </DetailDrawerTrigger>
               {hint}
             </div>
