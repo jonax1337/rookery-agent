@@ -554,6 +554,18 @@ export interface ProbeOptions {
    * rather than pretending a number. Phase 2 derives this from `dream_labels`.
    */
   gain?: GainFunction;
+  /**
+   * The caller's own wall clock, as an absolute timestamp, replacing the one
+   * the probe would compute from `dream.maxEvalMs`.
+   *
+   * Concept 6.1 gives the model-free evaluation ONE ceiling, and the night
+   * spends it across the probe AND the slot that follows it. Left out - a
+   * probe called on its own, as the tests do - the probe computes its own
+   * from the same key, which is the same clock started here instead of
+   * there. Handed in and already past, the probe scores nothing and says
+   * `deadlineHit`, exactly as a zero budget does.
+   */
+  deadline?: number;
 }
 
 /** One grid placement's paired result against the incumbent. */
@@ -669,14 +681,23 @@ export function runGridProbe(
   try {
     const dream = config.memory.dream;
     const maxEvalMs = clampNumber(dream.maxEvalMs, 0, 3_600_000);
-    // A zero budget is a legitimate off state, not an error: the probe
-    // reports nothing scored and the night carries on (the wall-clock test).
-    if (maxEvalMs <= 0) {
+    // One wall clock for the whole dream, not one per part (concept 6.1):
+    // where the night hands its own deadline down, that is the ceiling. A
+    // pool cut into pieces must not be able to buy itself a second budget,
+    // and the probe running its own copy of `maxEvalMs` was exactly that -
+    // it could legally spend the whole of it and leave the slot behind it
+    // starting past its deadline.
+    const handed = options.deadline;
+    const deadline =
+      handed !== undefined && Number.isFinite(handed) ? handed : startedAt + maxEvalMs;
+    // A budget that is switched off, or one the caller has already spent, is
+    // a legitimate state and not an error: the probe reports nothing scored
+    // and the night carries on (the wall-clock test).
+    if (deadline <= startedAt) {
       state.deadlineHit = true;
       state.evalMs = Date.now() - startedAt;
       return state;
     }
-    const deadline = startedAt + maxEvalMs;
     const gain = options.gain ?? ((): number => 0);
     const costWeight = clampNumber(dream.costWeight, 0, 1);
     const tolerance = clampNumber(dream.corpusTolerance, 0, 10);

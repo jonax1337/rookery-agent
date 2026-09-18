@@ -1982,11 +1982,26 @@ export class Store {
    * The night's read path: stored frames of one owner with their traces.
    * Oldest first with (trace, slot) as the tiebreaker, so the probe walks
    * a deterministic order; `since` selects on the frame's own creation.
+   *
+   * `newest` says WHICH end the limit cuts from, never which order comes
+   * back: the rows are handed over oldest first either way, so the last
+   * entry is always the newest one and every caller that reads a box or a
+   * trailing slice off the tail keeps reading the same thing. Without it a
+   * limited pool is the OLDEST rows, and a reader that means "since the
+   * last promotion" or "the newest slice" goes structurally dead the moment
+   * an owner holds more frames than the cap - it is pinned to a
+   * weeks-old slice for good. The default stays oldest, because the grid
+   * probe walks and reports exactly that pool.
    */
   framesFor(
     owner: string,
-    options: { since?: number; limit?: number } = {},
+    options: { since?: number; limit?: number; newest?: boolean } = {},
   ): { trace: DreamTrace; frame: DreamFrame }[] {
+    // Descending on all three keys, so the cut is the exact tail of the
+    // ascending order and reversing it restores that order row for row.
+    const order = options.newest
+      ? ' ORDER BY f.created_at DESC, f.trace_id DESC, f.slot DESC LIMIT ?'
+      : ' ORDER BY f.created_at ASC, f.trace_id, f.slot LIMIT ?';
     const sql =
       `SELECT t.*, f.trace_id AS f_trace_id, f.owner AS f_owner, f.session_id AS f_session_id,
               f.slot AS f_slot, f.frame_v AS f_frame_v, f.box AS f_box,
@@ -1996,19 +2011,21 @@ export class Store {
          JOIN dream_traces t ON t.id = f.trace_id
         WHERE f.owner = ?` +
       (options.since ? ' AND f.created_at >= ?' : '') +
-      ' ORDER BY f.created_at ASC, f.trace_id, f.slot LIMIT ?';
+      order;
     const values: unknown[] = [owner];
     if (options.since) values.push(options.since);
     values.push(options.limit ?? 500);
     const rows = this.db.prepare(sql).all(...(values as never[])) as Row[];
+    if (options.newest) rows.reverse();
     return rows.map((row) => ({ trace: mapDreamTrace(row), frame: mapDreamFrame(row) }));
   }
 
   /**
    * How many stored frames one owner has, regardless of any pool limit.
-   * `framesFor` walks a capped pool oldest first, so the probe reports this
-   * count beside the pool it actually read - a measurement over half the
-   * frames must be visible as one, not pass silently.
+   * `framesFor` walks a capped pool from one end or the other, so every
+   * reader that can hit the cap reports this count beside the pool it
+   * actually read - a measurement over half the frames must be visible as
+   * one, not pass silently.
    */
   dreamFrameCount(owner: string): number {
     const row = this.db

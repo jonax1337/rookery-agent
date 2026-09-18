@@ -261,6 +261,8 @@ export {
   type NightBudgets,
   type NightCeilings,
   type NightDemand,
+  type PromotionHook,
+  type PromotionNotice,
   type SleepInput,
   type SleepRunnerOptions,
 } from './memory/sleep.js';

@@ -33,12 +33,9 @@ const INCUMBENT_WEIGHTS = { relevance: 0.55, importance: 0.2, recency: 0.15, usa
 /**
  * A weight vector that is NOT a positive scalar multiple of
  * `INCUMBENT_WEIGHTS` (one term perturbed off the common ratio). Fixtures
- * that want to isolate H1, H3 or a plain box violation use this instead of
- * the incumbent's exact weights - identical weights are themselves a
- * (trivial, scale = 1) positive scalar multiple, and would trip H9 too,
- * which is correct behaviour (an "unchanged" candidate is exactly the
- * degenerate case H9 exists to catch) but would defeat the isolation these
- * fixtures need.
+ * that want to isolate H1, H3 or a plain box violation use this instead, so
+ * that a shared ratio cannot quietly become the reason a fixture fails.
+ * Identical weights would pass H9 on purpose (see the scale-one test below).
  */
 const NON_MULTIPLE_WEIGHTS = { relevance: 0.55, importance: 0.2, recency: 0.15, usage: 0.11 };
 
@@ -209,6 +206,22 @@ test('H9 falsification: scaling every weight by the same constant scores higher 
   });
   assert.equal(result.ok, false);
   assert.deepEqual(result.findings, ['h9-weight-scalar-multiple']);
+});
+
+test('an identical weight vector is not a rescale: only the factor-one case would kill the grid', () => {
+  // Four of the twelve declared grid placements carry the incumbent's weights
+  // and move only `threshold`, `hopEntity` or `hopEdge` (dream/probe.ts). They
+  // produce genuinely different blocks, so refusing them would make a quarter
+  // of the grid unmeasurable - and the incumbent, which is always a candidate
+  // (E2), would be the first casualty.
+  const incumbent = policy();
+  const same = policy({ threshold: incumbent.threshold + 0.05 });
+  assert.equal(isWeightScalarMultiple(same.w, incumbent.w), false);
+  const result = admit(same, incumbent, box(), {
+    coverage: { candidate: 5, incumbent: 5 },
+    revivalRate: { candidate: 0, incumbent: 0 },
+  });
+  assert.equal(result.ok, true, result.findings.join(', '));
 });
 
 test('a box violation is a generation error with its own finding, never an abstention, and fires independently of H1/H3/H9', () => {

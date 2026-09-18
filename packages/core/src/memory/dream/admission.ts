@@ -160,6 +160,21 @@ export function revivalRateHolds(candidateRate: number, incumbentRate: number): 
  * the incumbent's changes nothing about the ranking it produces and is
  * rejected outright, via stage 1's `isScalarMultiple`.
  */
+/**
+ * Whether two vectors that are already known to be scalar multiples differ by
+ * the factor one, i.e. are the same vector. Compared entry by entry with the
+ * same relative tolerance `isScalarMultiple` uses, so a rounding artefact does
+ * not read as a rescale.
+ */
+function scaleIsOne(a: Record<string, number>, b: Record<string, number>, eps = 1e-9): boolean {
+  for (const key of Object.keys(b)) {
+    const left = a[key] ?? 0;
+    const right = b[key] ?? 0;
+    if (Math.abs(left - right) > eps * Math.max(1, Math.abs(left), Math.abs(right))) return false;
+  }
+  return true;
+}
+
 export function isWeightScalarMultiple(
   candidateWeights: RecallPolicy['w'],
   incumbentWeights: RecallPolicy['w'],
@@ -167,10 +182,17 @@ export function isWeightScalarMultiple(
   // `RecallWeights` carries no index signature of its own, so the widening
   // goes through `unknown`; it is safe because every one of its properties is
   // already a `number`.
-  return isScalarMultiple(
-    candidateWeights as unknown as Record<string, number>,
-    incumbentWeights as unknown as Record<string, number>,
-  );
+  const a = candidateWeights as unknown as Record<string, number>;
+  const b = incumbentWeights as unknown as Record<string, number>;
+  if (!isScalarMultiple(a, b)) return false;
+  // Scale one is not a rescale. An identical weight vector is what every
+  // candidate that moves only `threshold`, `hopEntity` or `hopEdge` carries -
+  // four of the twelve declared grid placements do exactly that - and refusing
+  // those would make a quarter of the grid unmeasurable while catching nothing:
+  // H9's channel is a candidate that buys `chars` against `nDCG` by scaling,
+  // and a factor of one buys nothing. The incumbent itself is always a
+  // candidate (E2), and it would be the first casualty.
+  return !scaleIsOne(a, b);
 }
 
 /**
