@@ -8,6 +8,27 @@ Dieser Plan deckt die Phasen 2 bis 6 des Konzepts §11 **in einer Lieferung**.
 Er ist nach demselben Muster gebaut wie der Stufe-1-Plan: Arbeitspakete mit
 disjunkten Dateimengen, Wellen, ein Gate je Welle.
 
+> **Erledigt am 2026-09-18.** Alle siebzehn Pakete sind gebaut, sechs Wellen,
+> je ein Gate. Was beim Bauen anders entschieden wurde, steht im Konzept unter
+> "Stand der Umsetzung" — dort, wo der naechste Leser es sucht. Vier
+> Abweichungen betreffen diesen Plan direkt:
+>
+> * **AP17** (`SLEEP_PHASES += 'dream'`) lag in Welle 1 statt in Welle 5: AP2
+>   erweitert `SleepStage` schon dort, und der Web-Test faellt ab derselben
+>   Welle. Der Verantwortliche hat es zusammen mit dem Gate erledigt.
+> * **S24 war schon erfuellt.** `allocateNightBudget` leitet `keys` bereits aus
+>   `[...volume, ...judgement]` ab; AP11 liefert nur noch den Quelltest, der das
+>   gegen einen Rueckfall sichert.
+> * **`dream.effort`** ist als Schluessel nachgetragen (Leser AP6). Der Plan
+>   verlangte "Effort aus der Konfiguration", AP2s Tabelle hatte ihn nicht.
+> * **Eine adversarische Pruefung nach AP12** hat sieben Befunde ergeben, alle
+>   behoben. Der schlimmste war still: der Traum hatte zwei Wanduhren derselben
+>   Laenge, also konnte die Gitterprobe das ganze Budget verbrauchen und die
+>   Bewertung ein No-op werden lassen, das die bezahlten Vorschlaege der
+>   Vornacht trotzdem zurueckzieht. Die Lehre fuer den naechsten Plan: ein
+>   Wellen-Gate aus Build und Tests faengt so etwas nicht — nur ein Leser, der
+>   den Diff gegen das Konzept haelt.
+
 ---
 
 ## 0. Die Entscheidungen des Verantwortlichen, und wo sie landen
