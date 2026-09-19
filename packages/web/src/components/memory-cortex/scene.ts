@@ -11,6 +11,7 @@ import type { MemoryGraph, MemoryKind, MemoryRelation } from '@/lib/types';
 
 import {
   brainRadius,
+  cortexCameraDistance,
   fibrePath,
   layoutCortex,
   pathPoint,
@@ -40,6 +41,7 @@ import {
  */
 
 export interface CortexPalette {
+  mode: 'light' | 'dark';
   background: string;
   entity: string;
   mention: string;
@@ -93,6 +95,7 @@ const GLOW_VERT = /* glsl */ `
   uniform float uBreathe;
   uniform float uReveal;
   varying vec3 vColor;
+  varying float vVisibility;
   ${FACING}
   void main() {
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
@@ -102,13 +105,16 @@ const GLOW_VERT = /* glsl */ `
     float size = aSize * breathe * (1.0 + aBoost * 0.9) * (0.4 + 0.6 * reveal);
     gl_PointSize = clamp(size * uScale / -mv.z, 1.0, 256.0);
     gl_Position = projectionMatrix * mv;
-    vColor = aColor * (1.0 + aBoost * 1.0) * facing(position) * reveal;
+    vColor = aColor * (1.0 + aBoost);
+    vVisibility = facing(position) * reveal;
   }
 `;
 
 /** Five lobes of falloff: a hot pin in the middle, a wide faint halo around it. */
 const GLOW_FRAG = /* glsl */ `
+  uniform float uLight;
   varying vec3 vColor;
+  varying float vVisibility;
   void main() {
     vec2 c = gl_PointCoord - 0.5;
     float d = length(c);
@@ -118,7 +124,10 @@ const GLOW_FRAG = /* glsl */ `
     float mid = pow(max(0.0, 1.0 - d * 3.5), 3.5) * 0.45;
     float halo = pow(max(0.0, 1.0 - d * 2.0), 4.5) * 0.18;
     float outer = pow(max(0.0, 1.0 - d * 1.3), 7.0) * 0.06;
-    gl_FragColor = vec4(vColor * (core + hot + mid + halo + outer), 1.0);
+    float glow = core + hot + mid + halo + outer;
+    // Daylight fades opacity, not pigment toward black, as a node disappears.
+    vec3 pigment = mix(vColor, vec3(0.92, 0.96, 1.0), (1.0 - smoothstep(0.0, 0.09, d)) * 0.65);
+    gl_FragColor = vec4(mix(vColor * glow * vVisibility, pigment, uLight), mix(1.0, clamp(glow * 2.0, 0.0, 1.0) * vVisibility, uLight));
   }
 `;
 
@@ -133,12 +142,14 @@ const TISSUE_VERT = /* glsl */ `
   attribute float aFissure;
   varying vec3 vNormal;
   varying vec3 vView;
+  varying vec3 vPosition;
   varying float vFold;
   varying float vFissure;
   void main() {
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vNormal = normalize(normalMatrix * normal);
     vView = -mv.xyz;
+    vPosition = position;
     vFold = aFold;
     vFissure = aFissure;
     gl_Position = projectionMatrix * mv;
@@ -150,32 +161,63 @@ const TISSUE_FRAG = /* glsl */ `
   uniform vec3 uRim;
   uniform vec3 uBackground;
   uniform float uReveal;
+  uniform float uLight;
   varying vec3 vNormal;
   varying vec3 vView;
+  varying vec3 vPosition;
   varying float vFold;
   varying float vFissure;
+  // Object-space, smoothly interpolated detail stays attached while the camera moves.
+  float hash(vec3 p) {
+    p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3));
+    p *= 17.0;
+    return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+  }
+  float noise(vec3 p) {
+    vec3 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x),
+                   mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                   mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+  }
   void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(vView);
-    // The lights sit with the camera, so the brain is always lit from
-    // where it is being looked at and never turns its dark side to the
-    // viewer: a key from above right, a cooler fill from below left.
-    vec3 L = normalize(vec3(0.45, 0.8, 0.55));
-    vec3 F = normalize(vec3(-0.6, -0.3, 0.5));
-    float diffuse = max(dot(N, L), 0.0) + 0.3 * max(dot(N, F), 0.0);
-    // Wet tissue: a tight highlight where the key light bounces straight back.
-    float specular = pow(max(dot(N, normalize(L + V)), 0.0), 48.0) * 0.35;
-    float groove = 1.0 - 0.5 * clamp(-vFold, 0.0, 1.0) - 0.6 * vFissure;
-    float ridge = 1.0 + 0.25 * clamp(vFold, 0.0, 1.0);
-    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    vec3 colour = uColor * (0.3 + 0.85 * diffuse) * groove * ridge + uRim * (fresnel * 0.6 + specular);
-    // The brain comes up out of the dark: opaque all along, so no sorting
-    // trouble, it is simply painted in the background's colour until it is
-    // not. The rim leads, the way an object catches light before its body.
-    float body = smoothstep(0.0, 1.0, uReveal);
-    float edge = smoothstep(0.0, 0.6, uReveal);
-    vec3 shown = mix(uBackground, colour, body) + uRim * fresnel * 0.4 * (edge - body);
-    gl_FragColor = vec4(shown, 1.0);
+    float mottling = noise(vPosition * 9.0);
+    float detail = noise(vPosition * 62.0);
+    // Derivative bump mapping: fine tissue texture without changing the silhouette.
+    vec3 dpdx = dFdx(-vView), dpdy = dFdy(-vView);
+    vec3 r1 = cross(dpdy, N), r2 = cross(N, dpdx);
+    float determinant = dot(dpdx, r1);
+    vec3 gradient = sign(determinant) * (dFdx(detail) * r1 + dFdy(detail) * r2);
+    N = normalize(abs(determinant) * N - 0.0009 * gradient);
+    vec3 L = normalize(vec3(-0.55, 0.85, 0.8));
+    vec3 F = normalize(vec3(0.8, 0.05, 0.4));
+    float ndl = max(dot(N, L), 0.0);
+    float cavity = 1.0 - 0.60 * clamp(-vFold, 0.0, 1.0);
+    vec3 coolTissue = mix(vec3(0.88, 0.93, 1.0), vec3(1.04), mottling);
+    vec3 warmTissue = mix(vec3(0.94, 0.88, 0.82), vec3(1.06, 1.03, 0.99), mottling);
+    vec3 albedo = uColor * mix(coolTissue, warmTissue, uLight);
+    // Broad softbox reflection over a dielectric, moist surface (GGX).
+    vec3 H = normalize(L + V);
+    float ndv = max(dot(N, V), 0.001), ndh = max(dot(N, H), 0.0);
+    float roughness = mix(0.43, 0.58, detail);
+    float a2 = pow(roughness, 4.0);
+    float denom = ndh * ndh * (a2 - 1.0) + 1.0;
+    float distribution = a2 / max(3.14159 * denom * denom, 0.0001);
+    float k = pow(roughness + 1.0, 2.0) / 8.0;
+    float visibility = ndv / (ndv * (1.0 - k) + k) * ndl / (ndl * (1.0 - k) + k);
+    float fresnel = 0.028 + 0.972 * pow(1.0 - max(dot(V, H), 0.0), 5.0);
+    float specular = distribution * visibility * fresnel / max(4.0 * ndv * ndl, 0.001);
+    // Scattering and reflections follow each mode's material colour.
+    float wrap = pow(max(0.0, (dot(N, L) + 0.45) / 1.45), 2.0);
+    vec3 scattered = albedo * mix(vec3(0.55, 0.7, 1.0), vec3(1.0, 0.72, 0.52), uLight) * wrap * 0.20;
+    float fill = max(dot(N, F), 0.0) * 0.24;
+    vec3 colour = albedo * (mix(0.24, 0.22, uLight) + ndl * 0.95 + fill) * cavity;
+    colour += scattered * cavity + mix(vec3(0.65, 0.78, 1.0), vec3(1.0, 0.96, 0.89), uLight) * specular * ndl * 0.75;
+    colour += vec3(0.55, 0.65, 0.8) * pow(1.0 - ndv, 4.0) * 0.055 * cavity;
+    gl_FragColor = vec4(mix(uBackground, colour, smoothstep(0.0, 1.0, uReveal)), 1.0);
   }
 `;
 
@@ -191,20 +233,24 @@ const FIBRE_VERT = /* glsl */ `
   attribute float aAlong;
   uniform float uReveal;
   varying vec3 vColor;
+  varying float vAlpha;
   void main() {
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     vec3 outward = normalize(position);
     vec3 toCamera = normalize(cameraPosition - position);
     float front = 0.04 + 0.96 * smoothstep(-0.1, 0.5, dot(outward, toCamera));
     float drawn = smoothstep(aAlong, aAlong + 0.08, uReveal * 1.08);
-    vColor = aColor * front * drawn;
+    vColor = aColor;
+    vAlpha = front * drawn;
   }
 `;
 
 const FIBRE_FRAG = /* glsl */ `
+  uniform float uLight;
   varying vec3 vColor;
+  varying float vAlpha;
   void main() {
-    gl_FragColor = vec4(vColor, 1.0);
+    gl_FragColor = vec4(vColor, vAlpha * mix(0.48, 0.32, uLight));
   }
 `;
 
@@ -216,20 +262,24 @@ const PULSE_VERT = /* glsl */ `
   uniform float uReveal;
   varying vec3 vColor;
   varying float vProgress;
+  varying float vVisibility;
   ${FACING}
   void main() {
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     gl_PointSize = clamp(aSize * uScale / -mv.z, 1.0, 96.0);
     gl_Position = projectionMatrix * mv;
     // Signals only start once the fibres are all drawn.
-    vColor = aColor * facing(position) * smoothstep(0.85, 1.0, uReveal);
+    vColor = aColor;
+    vVisibility = facing(position) * smoothstep(0.85, 1.0, uReveal);
     vProgress = aProgress;
   }
 `;
 
 const PULSE_FRAG = /* glsl */ `
+  uniform float uLight;
   varying vec3 vColor;
   varying float vProgress;
+  varying float vVisibility;
   void main() {
     vec2 c = gl_PointCoord - 0.5;
     float d = length(c);
@@ -238,7 +288,8 @@ const PULSE_FRAG = /* glsl */ `
     float halo = pow(max(0.0, 1.0 - d * 2.0), 3.0) * 0.6;
     // A signal fades in as it leaves one body and out as it reaches the next.
     float fade = smoothstep(0.0, 0.15, vProgress) * (1.0 - smoothstep(0.82, 1.0, vProgress));
-    gl_FragColor = vec4(vColor * (core + halo) * fade, 1.0);
+    float glow = (core + halo) * fade;
+    gl_FragColor = vec4(mix(vColor * glow * vVisibility, vColor, uLight), mix(1.0, clamp(glow * 2.0, 0.0, 1.0) * vVisibility, uLight));
   }
 `;
 
@@ -250,20 +301,20 @@ const PULSE_CAPACITY = 480;
 const PULSES_AWAKE = 110;
 const PULSES_DREAMING = 420;
 /** Enough steps for a fibre to follow the grooves it crosses. */
-const MENTION_SEGMENTS = 32;
-const RELATION_SEGMENTS = 44;
+const MENTION_SEGMENTS = 96;
+const RELATION_SEGMENTS = 128;
 /** Seconds: the brain coming up out of the dark, then the net surfacing on it. */
 const TISSUE_REVEAL = 1.4;
 const NET_REVEAL = 2.2;
 /** How far above the tissue a fibre rides, as a share of the radius. */
-const MENTION_LIFT = 0.016;
-const RELATION_LIFT = 0.028;
+const MENTION_LIFT = 0.01;
+const RELATION_LIFT = 0.016;
 const CAMERA_DISTANCE = 3.7;
 const FOV = 38;
 /** Seconds of stillness before the brain starts turning again. */
 const IDLE_RESUME = 6;
 /** Labels beyond this rank only appear once the camera comes close. */
-const LABEL_RANK_ALWAYS = 22;
+const LABEL_RANK_ALWAYS = 12;
 
 /** Where the model and its decoder are served from; `index.html` preloads both. */
 export const MODEL_URL = '/models/brain.glb';
@@ -458,7 +509,7 @@ export class CortexScene {
       new THREE.WebGLRenderTarget(1, 1, { samples: 4, type: THREE.HalfFloatType }),
     );
     this.#composer.addPass(new RenderPass(this.#scene, this.#camera));
-    this.#bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.32, 0.4, 0.55);
+    this.#bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.20, 0.3, 1.05);
     this.#composer.addPass(this.#bloom);
     this.#composer.addPass(new OutputPass());
 
@@ -467,10 +518,11 @@ export class CortexScene {
       vertexShader: TISSUE_VERT,
       fragmentShader: TISSUE_FRAG,
       uniforms: {
-        uColor: { value: new THREE.Color(palette.tissue).multiplyScalar(ORGAN_GAIN) },
+        uColor: { value: new THREE.Color(palette.tissue).multiplyScalar(palette.mode === 'dark' ? ORGAN_GAIN : 1) },
         uRim: { value: new THREE.Color(palette.mention) },
         uBackground: { value: new THREE.Color(palette.background) },
         uReveal: { value: 0 },
+        uLight: { value: 0 },
       },
       // The tissue yields a little in the depth test, so a fibre lying just
       // above it wins cleanly instead of fighting it pixel by pixel as the
@@ -488,7 +540,7 @@ export class CortexScene {
     this.#fibreMaterial = new THREE.ShaderMaterial({
       vertexShader: FIBRE_VERT,
       fragmentShader: FIBRE_FRAG,
-      uniforms: { uReveal: { value: 0 } },
+      uniforms: { uReveal: { value: 0 }, uLight: { value: 0 } },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -503,7 +555,7 @@ export class CortexScene {
       new THREE.ShaderMaterial({
         vertexShader: GLOW_VERT,
         fragmentShader: GLOW_FRAG,
-        uniforms: { uTime: { value: 0 }, uScale: { value: 1 }, uBreathe: { value: 0.1 }, uReveal: { value: 0 } },
+        uniforms: { uTime: { value: 0 }, uScale: { value: 1 }, uBreathe: { value: 0.1 }, uReveal: { value: 0 }, uLight: { value: 0 } },
         transparent: true,
         depthTest,
         depthWrite: false,
@@ -536,7 +588,7 @@ export class CortexScene {
     this.#pulseMaterial = new THREE.ShaderMaterial({
       vertexShader: PULSE_VERT,
       fragmentShader: PULSE_FRAG,
-      uniforms: { uScale: { value: 1 }, uReveal: { value: 0 } },
+      uniforms: { uScale: { value: 1 }, uReveal: { value: 0 }, uLight: { value: 0 } },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -609,6 +661,7 @@ export class CortexScene {
       this.#tissue.geometry = geometry;
       this.#tissue.visible = true;
       this.#rebuild();
+      this.#resize();
     } catch {
       // No brain to show. The net still surfaces, laid out on the formula.
     } finally {
@@ -633,7 +686,23 @@ export class CortexScene {
 
   setPalette(palette: CortexPalette): void {
     this.#palette = palette;
+    const light = palette.mode === 'light';
+    this.#renderer.toneMapping = light ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
+    this.#renderer.toneMappingExposure = 1;
+    this.#bloom.enabled = !light;
+    this.#tissueMaterial.uniforms.uLight!.value = Number(light);
+    for (const material of [this.#neuronMaterial, this.#deepMaterial, this.#coreMaterial, this.#fibreMaterial, this.#pulseMaterial]) {
+      material.uniforms.uLight!.value = Number(light);
+      material.blending = light ? THREE.NormalBlending : THREE.AdditiveBlending;
+      material.needsUpdate = true;
+    }
+    for (const halo of [this.#hoverHalo, this.#selectHalo]) {
+      halo.material.blending = light ? THREE.NormalBlending : THREE.AdditiveBlending;
+      halo.material.needsUpdate = true;
+    }
     this.#renderer.setClearColor(new THREE.Color(palette.background), 1);
+    // A scene background is cleared after the composer binds its linear target.
+    this.#scene.background = new THREE.Color(palette.background);
     this.#tissueMaterial.uniforms.uRim!.value.set(palette.mention);
     this.#tissueMaterial.uniforms.uBackground!.value.set(palette.background);
     if (this.#graph) this.#rebuild();
@@ -666,7 +735,7 @@ export class CortexScene {
 
   /** Flies the camera to a named side of the brain. */
   view(preset: CortexView): void {
-    const to = VIEWS[preset].clone().multiplyScalar(CAMERA_DISTANCE);
+    const to = VIEWS[preset].clone().multiplyScalar(this.#fitDistance());
     this.#flight = {
       from: this.#camera.position.clone(),
       to,
@@ -705,6 +774,7 @@ export class CortexScene {
       halo.material.map?.dispose();
       halo.material.dispose();
     }
+    for (const pass of this.#composer.passes) pass.dispose();
     this.#composer.dispose();
     this.#renderer.dispose();
     this.#renderer.forceContextLoss();
@@ -793,12 +863,15 @@ export class CortexScene {
       // Brightness is what importance looks like; a pinned memory burns a
       // little whiter, a sleeping one is an ember, a deep one is seen
       // through the tissue and so a good deal fainter.
-      let intensity = 0.45 + memory.importance * 0.6;
+      let intensity = palette.mode === 'light' ? 1 : 0.45 + memory.importance * 0.6;
       if (memory.pinned) {
         intensity += 0.3;
         colour.lerp(new THREE.Color('#ffffff'), 0.25);
       }
-      if (placed.dormant) intensity *= 0.28;
+      if (placed.dormant) {
+        if (palette.mode === 'light') colour.lerp(new THREE.Color(palette.background), 0.55);
+        else intensity *= 0.28;
+      }
       if (placed.deep) intensity *= 0.45;
       colour.multiplyScalar(intensity).toArray(cloud.colour, body.slot * 3);
       cloud.size[body.slot] = body.size;
@@ -817,7 +890,7 @@ export class CortexScene {
     for (let index = 0; index < coreCount; index++) {
       const body = this.#entityBodies[index]!;
       body.position.toArray(corePosition, index * 3);
-      const intensity = 0.25 + Math.min(0.45, ((body.weight ?? 1) - 1) * 0.12);
+      const intensity = palette.mode === 'light' ? 1 : 0.25 + Math.min(0.45, ((body.weight ?? 1) - 1) * 0.12);
       entityColour.clone().multiplyScalar(intensity).toArray(coreColour, index * 3);
       coreSize[index] = body.size;
       corePhase[index] = (index * 0.618033) % 1;
@@ -847,7 +920,7 @@ export class CortexScene {
       // memory's colour so a cluster is tinted by what it holds. A long one
       // is quieter still - it is the short ones that draw a region.
       const chord = a.position.distanceTo(b.position);
-      const tint = mentionColour
+      const tint = palette.mode === 'light' ? mentionColour.clone().lerp(new THREE.Color(palette.kinds[kind]), 0.45) : mentionColour
         .clone()
         .multiplyScalar(0.26 / (1 + chord * 1.5))
         .lerp(new THREE.Color(palette.kinds[kind]), 0.18);
@@ -873,7 +946,7 @@ export class CortexScene {
         (1 + span * 0.9);
       fibres.push({
         path: fibrePath(a.position, b.position, RELATION_LIFT, RELATION_SEGMENTS, edge.id, surface),
-        colour: base.multiplyScalar(strength),
+        colour: base.multiplyScalar(palette.mode === 'light' ? 1 : strength * 0.85),
         start: vertexCount,
         count: RELATION_SEGMENTS * 2,
         relation: true,
@@ -962,12 +1035,12 @@ export class CortexScene {
     const font = getComputedStyle(this.#mount).fontFamily || 'sans-serif';
     const ranked = [...this.#entityBodies].sort((a, b) => b.size - a.size);
     ranked.forEach((body, rank) => {
-      const made = makeLabelTexture(body.label, this.#palette.entity, font);
+      const made = makeLabelTexture(body.label, this.#palette.entity, font, this.#palette.mode === 'light');
       if (!made) return;
       const material = new THREE.SpriteMaterial({
         map: made.texture,
         transparent: true,
-        depthTest: false,
+        depthTest: true,
         depthWrite: false,
         opacity: 0,
       });
@@ -1006,7 +1079,7 @@ export class CortexScene {
     this.#deepMaterial.uniforms.uTime!.value = time;
     this.#coreMaterial.uniforms.uTime!.value = time;
     this.#neuronMaterial.uniforms.uBreathe!.value = this.#reducedMotion ? 0 : 0.1 + this.#dream * 0.12;
-    this.#bloom.strength = 0.32 + this.#dream * 0.25;
+    this.#bloom.strength = 0.20 + this.#dream * 0.18;
 
     // First the brain, out of the dark; then, once it is fully there, the
     // net on it. Neither starts before what it needs has arrived.
@@ -1024,7 +1097,7 @@ export class CortexScene {
     // At night the tissue itself takes on a little of the dream's colour.
     this.#tissueMaterial.uniforms.uColor!.value
       .set(this.#palette.tissue)
-      .multiplyScalar(ORGAN_GAIN)
+      .multiplyScalar(this.#palette.mode === 'dark' ? ORGAN_GAIN : 1)
       .lerp(new THREE.Color(this.#palette.dream).multiplyScalar(0.6), this.#dream * 0.5);
 
     if (this.#flight) {
@@ -1072,7 +1145,7 @@ export class CortexScene {
     const progress = geometry.getAttribute('aProgress') as THREE.BufferAttribute;
     const colour = geometry.getAttribute('aColor') as THREE.BufferAttribute;
     const size = geometry.getAttribute('aSize') as THREE.BufferAttribute;
-    const speed = (this.#reducedMotion ? 0.35 : 1) * (1 + this.#dream * 0.6);
+    const speed = (this.#reducedMotion ? 0 : 0.65) * (1 + this.#dream * 0.6);
     const dream = new THREE.Color(this.#palette.dream);
     const tint = new THREE.Color();
     const point: Vec3 = { x: 0, y: 0, z: 0 };
@@ -1090,7 +1163,7 @@ export class CortexScene {
       progress.setX(index, pulse.t);
       // A signal is the fibre's own colour, burning; at night it goes the
       // night's colour instead.
-      tint.copy(fibre.colour).multiplyScalar(fibre.relation ? 1.8 : 2.6).lerp(dream, this.#dream * 0.7);
+      tint.copy(fibre.colour).multiplyScalar(this.#palette.mode === 'light' ? 0.7 : fibre.relation ? 1.8 : 2.6).lerp(dream, this.#dream * 0.7);
       colour.setXYZ(index, tint.r, tint.g, tint.b);
       size.setX(index, fibre.relation ? 0.075 : 0.05);
     }
@@ -1121,7 +1194,7 @@ export class CortexScene {
     const worldPerPixel = (2 * Math.tan((FOV * Math.PI) / 360)) / height;
     const toCamera = new THREE.Vector3();
     const projected = new THREE.Vector3();
-    const close = THREE.MathUtils.smoothstep(distance, 2.9, 2.2);
+    const close = 1 - THREE.MathUtils.smoothstep(distance, 2.2, 2.9);
     const width = this.#mount.clientWidth || 1;
     // Names are placed in rank order, and a name whose box would land on
     // one already placed stays hidden: a region of twelve topics shows the
@@ -1131,7 +1204,7 @@ export class CortexScene {
       toCamera.copy(camera.position).sub(label.body.position).normalize();
       const facing = label.dir.dot(toCamera);
       const front = THREE.MathUtils.smoothstep(facing, 0.05, 0.45);
-      const rank = label.rank < LABEL_RANK_ALWAYS ? 1 : close;
+      const rank = taken.length < (width < 600 ? 5 : LABEL_RANK_ALWAYS) ? 1 : close;
       let alpha = front * rank;
       const pixels = 13 * (label.rank < 6 ? 1.1 : 1);
       const bodyDistance = camera.position.distanceTo(label.body.position);
@@ -1153,7 +1226,7 @@ export class CortexScene {
         const overlaps = taken.some(
           (other) => Math.abs(other.x - box.x) < (other.w + box.w) / 2 && Math.abs(other.y - box.y) < (other.h + box.h) / 2,
         );
-        if (overlaps) alpha = 0;
+        if (overlaps || box.x - box.w / 2 < 8 || box.x + box.w / 2 > width - 8 || box.y < 12 || box.y > height - 12) alpha = 0;
         else taken.push({ ...box, w: pixels * label.aspect, h: pixels * 1.2 });
       }
       label.placed = alpha > 0.02;
@@ -1314,6 +1387,12 @@ export class CortexScene {
 
   /* -------------------------------- sizing ------------------------------- */
 
+  #fitDistance(): number {
+    const bounds = this.#tissue.geometry.boundingSphere;
+    const radius = bounds ? bounds.radius + bounds.center.length() + 0.09 : 1.45;
+    return cortexCameraDistance(radius, this.#camera.aspect, FOV);
+  }
+
   #resize(): void {
     const width = Math.max(1, this.#mount.clientWidth);
     const height = Math.max(1, this.#mount.clientHeight);
@@ -1321,6 +1400,11 @@ export class CortexScene {
     this.#composer.setSize(width, height);
     this.#bloom.resolution.set(width, height);
     this.#camera.aspect = width / height;
+    // Fit the full rotating organ to whichever dimension is tighter.
+    const distance = this.#fitDistance();
+    this.#controls.maxDistance = Math.max(9, distance * 1.8);
+    this.#camera.position.normalize().multiplyScalar(distance);
+    this.#flight = null;
     this.#camera.updateProjectionMatrix();
     // Pixels per world unit at distance one, so sizes can be stated in
     // world units and still come out the same on every screen.
@@ -1389,115 +1473,109 @@ function prepareModel(source: THREE.BufferGeometry): THREE.BufferGeometry {
 }
 
 /**
- * A surface function from a mesh: the outermost vertex in each direction
- * of a longitude/latitude grid, holes filled from their neighbours, read
- * back with bilinear interpolation. Outermost, because that is where the
- * gyri are and where a neuron should sit; the sulci between them are what
- * the fibres dip into as they follow the grid across them.
+ * Bake the outer triangle intersections into a radial atlas once at load.
+ * Sampling vertices alone leaves holes over broad triangles and misses the base.
+ * The grid is a conservative envelope, including the compressed brainstem.
  */
-function surfaceFromGeometry(geometry: THREE.BufferGeometry): Surface {
-  const cols = 256;
-  const rows = 128;
+export function surfaceFromGeometry(geometry: THREE.BufferGeometry): Surface {
+  const cols = 256, rows = 128;
   const table = new Float32Array(cols * rows);
-  const position = geometry.getAttribute('position') as THREE.BufferAttribute;
-  const p = new THREE.Vector3();
-  const cell = (dir: THREE.Vector3): [number, number] => {
-    const u = (Math.atan2(dir.z, dir.x) / (Math.PI * 2) + 0.5) * cols;
-    const v = (Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1)) / Math.PI) * rows;
-    return [u, v];
-  };
-  for (let index = 0; index < position.count; index++) {
-    p.fromBufferAttribute(position, index);
-    const radius = p.length();
-    if (radius === 0) continue;
-    // The pressed base of the brainstem is left out of the surface: nothing
-    // is laid out on it, and a fibre skirts it along the cerebellum.
-    if (p.y <= BRAINSTEM_BELOW + 1e-4) continue;
-    const [u, v] = cell(p.clone().normalize());
-    const col = Math.min(cols - 1, Math.floor(u));
-    const row = Math.min(rows - 1, Math.floor(v));
-    const at = row * cols + col;
-    if (radius > table[at]!) table[at] = radius;
-  }
-  // The upper envelope: every cell takes the tallest of its neighbours as
-  // well. Between two cells a gyrus can rise higher than the straight line
-  // between their values, and a fibre laid on that line would cut through
-  // it; on the envelope it rides clear of every ridge it crosses.
-  const raw = table.slice();
+  const position = geometry.getAttribute('position');
+  const indices = geometry.index;
+  const directions: THREE.Vector3[] = [];
   for (let row = 0; row < rows; row++) {
+    const phi = (row + 0.5) / rows * Math.PI;
     for (let col = 0; col < cols; col++) {
-      let tallest = 0;
-      for (let dr = -1; dr <= 1; dr++) {
-        const r = row + dr;
-        if (r < 0 || r >= rows) continue;
-        for (let dc = -1; dc <= 1; dc++) {
-          tallest = Math.max(tallest, raw[r * cols + ((col + dc + cols) % cols)]!);
-        }
-      }
-      table[row * cols + col] = tallest;
+      const theta = ((col + 0.5) / cols - 0.5) * Math.PI * 2;
+      directions.push(new THREE.Vector3(Math.sin(phi) * Math.cos(theta), Math.cos(phi), Math.sin(phi) * Math.sin(theta)));
     }
   }
-  // Then a blur, so the envelope has slopes rather than steps - but a blur
-  // only ever raises a cell here, never lowers it: lowered, the envelope
-  // would dip under the very ridge it exists to clear, which is exactly
-  // where fibres were seen cutting into the underside of the brain.
-  const sharp = table.slice();
-  for (let row = 0; row < rows; row++) {
-    for (let col = 0; col < cols; col++) {
-      let sum = 0;
-      let count = 0;
-      for (let dr = -1; dr <= 1; dr++) {
-        const r = row + dr;
-        if (r < 0 || r >= rows) continue;
-        for (let dc = -1; dc <= 1; dc++) {
-          const value = sharp[r * cols + ((col + dc + cols) % cols)]!;
-          if (value > 0) {
-            sum += value;
-            count++;
-          }
+  const vertices = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  const uv = vertices.map(() => new THREE.Vector2());
+  const ray = new THREE.Ray();
+  const hit = new THREE.Vector3();
+  const edge = new THREE.Vector3();
+  for (let i = 0, count = indices?.count ?? position.count; i < count; i += 3) {
+    for (let j = 0; j < 3; j++) {
+      const p = vertices[j]!.fromBufferAttribute(position, indices ? indices.getX(i + j) : i + j);
+      uv[j]!.set(Math.atan2(p.z, p.x) / (2 * Math.PI) + 0.5, Math.acos(THREE.MathUtils.clamp(p.y / p.length(), -1, 1)) / Math.PI);
+      if (j > 0) uv[j]!.x -= Math.round(uv[j]!.x - uv[0]!.x);
+    }
+    ray.direction.set(0, 1, 0);
+    const north = ray.intersectTriangle(vertices[0]!, vertices[1]!, vertices[2]!, false, hit) !== null;
+    ray.direction.set(0, -1, 0);
+    const south = ray.intersectTriangle(vertices[0]!, vertices[1]!, vertices[2]!, false, hit) !== null;
+    const minCol = north || south ? 0 : Math.floor(Math.min(...uv.map(p => p.x)) * cols - 0.5);
+    const maxCol = north || south ? cols - 1 : Math.ceil(Math.max(...uv.map(p => p.x)) * cols - 0.5);
+    // Latitude extrema can lie inside an edge, well beyond its endpoints.
+    let minV = Math.min(...uv.map(p => p.y)), maxV = Math.max(...uv.map(p => p.y));
+    for (let j = 0; j < 3; j++) {
+      const a = vertices[j]!;
+      edge.subVectors(vertices[(j + 1) % 3]!, a);
+      const ad = a.dot(edge);
+      const t = (a.y * ad - edge.y * a.lengthSq()) / (edge.y * ad - a.y * edge.lengthSq());
+      if (t > 0 && t < 1) {
+        hit.copy(a).addScaledVector(edge, t).normalize();
+        const v = Math.acos(THREE.MathUtils.clamp(hit.y, -1, 1)) / Math.PI;
+        minV = Math.min(minV, v); maxV = Math.max(maxV, v);
+      }
+    }
+    const minRow = north ? 0 : Math.max(0, Math.floor(minV * rows - 0.5));
+    const maxRow = south ? rows - 1 : Math.min(rows - 1, Math.ceil(maxV * rows - 0.5));
+    for (let row = minRow; row <= maxRow; row++) {
+      for (let col = minCol; col <= maxCol; col++) {
+        const at = row * cols + ((col % cols) + cols) % cols;
+        ray.direction.copy(directions[at]!);
+        if (ray.intersectTriangle(vertices[0]!, vertices[1]!, vertices[2]!, false, hit)) {
+          table[at] = Math.max(table[at]!, hit.length());
         }
       }
-      if (count) table[row * cols + col] = Math.max(sharp[row * cols + col]!, sum / count);
     }
   }
-  // Fill the cells no vertex fell into from whatever neighbours have a value.
-  let holes = true;
-  for (let pass = 0; pass < 32 && holes; pass++) {
-    holes = false;
-    const next = table.slice();
+  // Fill only holes; keep the measured folds instead of blurring away every groove.
+  for (let pass = 0; pass < 32; pass++) {
+    const before = table.slice();
+    let holes = 0;
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < cols; col++) {
-        if (table[row * cols + col]! > 0) continue;
-        let sum = 0;
-        let count = 0;
-        for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
-          const r = row + dr;
+        const at = row * cols + col;
+        if (before[at]! > 0) continue;
+        let sum = 0, count = 0;
+        for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+          const r = row + dr!;
           if (r < 0 || r >= rows) continue;
-          const value = table[r * cols + ((col + dc + cols) % cols)]!;
-          if (value > 0) {
-            sum += value;
-            count++;
-          }
+          const value = before[r * cols + ((col + dc! + cols) % cols)]!;
+          if (value > 0) { sum += value; count++; }
         }
-        if (count) next[row * cols + col] = sum / count;
-        else holes = true;
+        if (count) table[at] = sum / count;
+        else holes++;
       }
     }
-    table.set(next);
+    if (!holes) break;
+  }
+  // A one-cell upper envelope protects silhouettes and the valleys between samples.
+  const measured = table.slice();
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      for (let dr = -1; dr <= 1; dr++) {
+        const r = THREE.MathUtils.clamp(row + dr, 0, rows - 1);
+        for (let dc = -1; dc <= 1; dc++) {
+          table[row * cols + col] = Math.max(table[row * cols + col]!, measured[r * cols + (col + dc + cols) % cols]!);
+        }
+      }
+    }
   }
   return (dir) => {
-    const [u, v] = cell(new THREE.Vector3(dir.x, dir.y, dir.z));
-    const fu = u - 0.5;
-    const fv = THREE.MathUtils.clamp(v - 0.5, 0, rows - 1);
-    const c0 = ((Math.floor(fu) % cols) + cols) % cols;
-    const c1 = (c0 + 1) % cols;
-    const r0 = Math.floor(fv);
-    const r1 = Math.min(rows - 1, r0 + 1);
-    const tu = fu - Math.floor(fu);
-    const tv = fv - r0;
+    const u = (Math.atan2(dir.z, dir.x) / (Math.PI * 2) + 0.5) * cols - 0.5;
+    const v = THREE.MathUtils.clamp(Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1)) / Math.PI * rows - 0.5, 0, rows - 1);
+    const c0 = ((Math.floor(u) % cols) + cols) % cols, c1 = (c0 + 1) % cols;
+    const r0 = Math.floor(v), r1 = Math.min(rows - 1, r0 + 1);
+    const tu = u - Math.floor(u), tv = v - r0;
     const top = table[r0 * cols + c0]! * (1 - tu) + table[r0 * cols + c1]! * tu;
     const bottom = table[r1 * cols + c0]! * (1 - tu) + table[r1 * cols + c1]! * tu;
-    return top * (1 - tv) + bottom * tv;
+    // ponytail: a 1.2% guard covers ridges between this 256x128 grid's samples;
+    // use an exact surface accelerator if substantially finer geometry is introduced.
+    return (top * (1 - tv) + bottom * tv) * 1.012;
   };
 }
 
@@ -1520,7 +1598,7 @@ function makeHalo(): THREE.Sprite {
   const material = new THREE.SpriteMaterial({
     map: texture,
     transparent: true,
-    depthTest: false,
+    depthTest: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
@@ -1534,6 +1612,7 @@ function makeLabelTexture(
   text: string,
   colour: string,
   font: string,
+  light: boolean,
 ): { texture: THREE.CanvasTexture; aspect: number } | null {
   const ratio = 2;
   const pixels = 26;
@@ -1550,7 +1629,7 @@ function makeLabelTexture(
   context.textBaseline = 'middle';
   context.textAlign = 'center';
   // A dark rim under the glyphs so the name survives a bright fibre behind it.
-  context.shadowColor = 'rgba(0,0,0,0.9)';
+  context.shadowColor = light ? 'rgba(255,250,243,0.95)' : 'rgba(0,0,0,0.9)';
   context.shadowBlur = 8 * ratio;
   context.fillStyle = colour;
   context.fillText(shown, width / 2, height / 2);

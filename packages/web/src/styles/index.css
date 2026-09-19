@@ -217,15 +217,42 @@
   then read the same values, `memory-cortex` picks them up off this class with
   `getComputedStyle` instead of carrying a second copy in JavaScript.
 
-  There is no light variant on purpose. Everything on the stage is light
-  added to darkness - glowing neurons, fibres, bloom - and that has no
-  meaning on a pale ground. The stage is a night in both themes, like a
-  screen in a lit room; the frame around it still follows the theme.
+  Both themes use the same anatomy; daylight uses pigment for the signals,
+  while the dark stage adds a restrained glow.
 */
 .graph-stage {
-  --graph-background: #07080d;
+  --graph-mode: light;
+  --graph-background: #e6e9ec;
+  --graph-text: #34404c;
+  --graph-muted: #65717d;
+  --graph-overlay: #f4f6f8ed;
+  --graph-vignette: #64758816;
+  --graph-entity: #688096;
+  --graph-mention: #7891a7;
+  --graph-tissue: #d4c7b5;
+  --graph-dream: #8565aa;
+  --graph-fact: #2860ab;
+  --graph-preference: #7950a5;
+  --graph-project: #9a6119;
+  --graph-event: #287552;
+  --graph-summary: #596777;
+  --graph-insight: #8c4d36;
+  --graph-refines: #2860ab;
+  --graph-caused-by: #287552;
+  --graph-contradicts: #ad393c;
+  --graph-supersedes: #665e73;
+  --graph-co-occurs: #68655d;
+}
+
+.dark .graph-stage {
+  --graph-mode: dark;
+  --graph-background: #22262e;
+  --graph-text: #ece5dc;
+  --graph-muted: #b2aba4;
+  --graph-overlay: #181b21ed;
+  --graph-vignette: #03050966;
   --graph-entity: #eef1f6;
-  --graph-mention: #4a5568;
+  --graph-mention: #8a939c;
   --graph-tissue: #22293a;
   --graph-dream: #d8b4fe;
   --graph-fact: #5b9dff;
@@ -239,6 +266,23 @@
   --graph-contradicts: #ff5252;
   --graph-supersedes: #8b929c;
   --graph-co-occurs: #4a5568;
+}
+
+.graph-overlay { background: var(--graph-overlay); color: var(--graph-text); }
+.graph-vignette { background: radial-gradient(ellipse at center, transparent 50%, var(--graph-vignette)); }
+.graph-legend { border-color: color-mix(in srgb, var(--graph-text) 12%, transparent); }
+.memory-network-layout { padding-block: clamp(8px, 2dvh, 24px); }
+@media (max-width: 639px) {
+  .network-controls { width: 100%; }
+  .network-controls > [data-slot="input-group"] { flex: 1; width: auto; min-width: 80px; }
+  .network-controls label { font-size: 12px; }
+  .network-counts { margin-left: 0; font-size: 11px; }
+  .graph-legend { column-gap: 10px; font-size: 10px; padding: 6px 8px; }
+}
+@media (max-height: 500px) {
+  .memory-network-layout, .memory-network-layout [data-slot="tabs"] { gap: 8px; }
+  .memory-network { gap: 8px; }
+  .graph-legend { padding-block: 4px; }
 }
 
 /*

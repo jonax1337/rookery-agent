@@ -12,19 +12,20 @@ test('organization and memory open overviews with three distinct child destinati
   });
   const module = { exports: {} };
   new Function('require', 'module', 'exports', outputFiles[0].text)(require, module, module.exports);
-  const { routeMeta, breadcrumbsFor } = module.exports;
+  const { ROUTE_META, matchRoute, breadcrumbsFor } = module.exports;
   for (const path of ['/org', '/memory']) {
-    const section = routeMeta(path);
+    const section = matchRoute(path).meta;
     assert.equal(section.label, 'Overview');
     assert.equal(section.redirect, undefined);
-    assert.equal(new Set(section.children).size, 3);
-    for (const child of section.children) {
+    const children = ROUTE_META.filter(route => route.parent === path).map(route => route.path);
+    assert.equal(new Set(children).size, 3);
+    for (const child of children) {
       assert.notEqual(child, path);
-      assert.equal(routeMeta(child).parent, path);
+      assert.equal(matchRoute(child).meta.parent, path);
       assert.equal(breadcrumbsFor(child)[0].to, path);
     }
   }
-  assert.equal(routeMeta('/memory/memories').label, 'Memories');
+  assert.equal(matchRoute('/memory/memories').meta.label, 'Memories');
 });
 
 test('page navigation resets the shared scroller while query-only filtering keeps its position', async () => {
@@ -66,4 +67,9 @@ test('page navigation resets the shared scroller while query-only filtering keep
   location = { ...location, search: '?filter=example' };
   render();
   assert.equal(position, 120, 'filter changes do not jump back to the top');
+  const workspace = module.exports.PageBody({ scroll: false, children: 'Cortex' });
+  assert.match(workspace.props.className, /overflow-hidden/);
+  assert.doesNotMatch(workspace.props.className, /overflow-y-auto/);
+  assert.match(workspace.props.children.props.className, /min-h-0/);
+  assert.match(workspace.props.children.props.children.props.className, /min-h-0 flex-1/);
 });

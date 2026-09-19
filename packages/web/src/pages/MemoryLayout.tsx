@@ -298,10 +298,11 @@ export function MemoryLayout() {
 
   // Keep the view switcher on every route; only the overview needs the cards.
   const isIndex = active.to === TABS[0]?.to;
+  const isNetwork = active.to === '/memory/graph';
 
   return (
-    <PageBody>
-      {running ? (
+    <PageBody scroll={!isNetwork} className={isNetwork ? 'memory-network-layout' : undefined}>
+      {running && !isNetwork ? (
         <Fade>
           <div className="px-4 lg:px-6">
             <Item variant="outline" size="sm">
@@ -355,7 +356,7 @@ export function MemoryLayout() {
         panel of that id the promise points at nothing.
       */}
       <Tabs value={active.to} className="min-h-0 flex-1 gap-4">
-        <Fade delay={50}>
+        <Fade delay={50} className="shrink-0">
           <div className="overflow-x-auto px-4 lg:px-6">
             <TabsList>
               {TABS.map((tab) => (

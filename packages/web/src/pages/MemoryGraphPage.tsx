@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
+import { useTheme } from 'next-themes';
 
 import { MEMORY_KIND_LABEL, RELATION_LABEL } from '@/lib/format';
 import { formatNumber } from '@/lib/stats';
@@ -20,6 +21,7 @@ import {
   EyeOffIcon as MonitorXIcon,
   MaximizeIcon,
   MoonIcon,
+  SunIcon,
 } from "@/components/icons";
 
 /**
@@ -38,11 +40,11 @@ import {
  * cannot read the oklch tokens the rest of the app is painted with. The
  * stage element below carries that class, and the legend reads the same
  * values back - so a swatch here and a body in there are the same colour by
- * construction. The stage is dark in both themes: light added to darkness is
- * the whole picture, and it means nothing on a pale ground.
+ * construction. Lighting and signal contrast follow the app's theme.
  */
 export function MemoryGraphPage() {
   const { graph, sleep } = useMemoryState();
+  const { resolvedTheme, setTheme } = useTheme();
   const stageRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CortexHandle>(null);
   const palette = useCortexPalette(stageRef);
@@ -73,10 +75,10 @@ export function MemoryGraphPage() {
   const dreaming = sleep.status?.running ?? false;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 px-4 lg:px-6">
-      <Fade>
+    <div className="memory-network flex min-h-0 flex-1 flex-col gap-3 px-4 lg:px-6">
+      <Fade className="shrink-0">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
+          <div className="network-controls flex min-w-0 flex-wrap items-center gap-2">
             <EntityCombobox
               id="netz-thema"
               options={entityOptions}
@@ -84,7 +86,7 @@ export function MemoryGraphPage() {
               onChange={(value) => graph.setEntity(value ?? '')}
               placeholder="All topics"
               emptyLabel="No topic found"
-              className="w-full sm:w-56"
+              className="w-40 sm:w-48"
             />
             <Field orientation="horizontal" className="w-auto">
               <Switch
@@ -103,12 +105,16 @@ export function MemoryGraphPage() {
             >
               {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
               <MaximizeIcon data-icon="inline-start" />
-              Fit to view
+              <span className="hidden sm:inline">Fit to view</span>
+              <span className="sr-only sm:hidden">Fit to view</span>
+            </Button>
+            <Button variant="outline" size="icon" aria-label={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}>
+              {resolvedTheme === 'dark' ? <SunIcon /> : <MoonIcon />}
             </Button>
           </div>
 
           {data ? (
-            <div className="ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground tabular-nums">
+            <div className="network-counts ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground tabular-nums">
               {/* These three roll in from zero and keep rolling whenever the
                   topic filter or the sleeping toggle refetches the net;
                   `thousandSeparator` keeps `formatNumber`'s en-GB comma. */}
@@ -135,11 +141,12 @@ export function MemoryGraphPage() {
         canvas cannot get out of step. The `Fade` around it moves the frame
         only - the scene itself is never animated by React.
       */}
-      <Fade delay={50}>
+      <Fade delay={50} className="flex min-h-0 flex-1 flex-col">
         <div
           ref={stageRef}
-          className="graph-stage relative aspect-video min-h-80 w-full overflow-hidden rounded-lg border bg-[var(--graph-background)] sm:min-h-[480px]"
+          className="graph-stage relative flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-lg border bg-[var(--graph-background)] text-[var(--graph-text)]"
         >
+          <div className="graph-viewport relative min-h-0 flex-1">
           {unavailable ? (
             <Fade className="absolute inset-0 flex items-center justify-center p-6">
               <EmptyState
@@ -149,7 +156,7 @@ export function MemoryGraphPage() {
                 actionLabel="View memories"
                 actionTo="/memory/memories"
                 variant="plain"
-                className="text-white"
+                className="text-[var(--graph-text)]"
               />
             </Fade>
           ) : (
@@ -169,11 +176,11 @@ export function MemoryGraphPage() {
               {/* A soft vignette: the brain sits in a pool of light rather than on a flat black. */}
               <div
                 aria-hidden="true"
-                className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(0,0,0,0.55)_100%)]"
+                className="graph-vignette pointer-events-none absolute inset-0"
               />
 
               {graph.loading ? (
-                <Fade className="pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2 rounded-md bg-black/60 px-2 py-1 text-xs text-white/80 backdrop-blur">
+                <Fade className="graph-overlay pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2 rounded-md px-2 py-1 text-xs backdrop-blur">
                   <Spinner aria-hidden="true" />
                   loading
                 </Fade>
@@ -181,7 +188,7 @@ export function MemoryGraphPage() {
 
               {/* The night, named while it runs: the cortex is firing in its colour. */}
               {dreaming ? (
-                <Fade className="pointer-events-none absolute top-3 right-3 z-10 flex items-center gap-1.5 rounded-md bg-black/60 px-2 py-1 text-xs text-white/80 backdrop-blur">
+                <Fade className="graph-overlay pointer-events-none absolute top-3 right-3 z-10 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs backdrop-blur">
                   <MoonIcon size={14} aria-hidden="true" style={{ color: palette.dream }} />
                   Dreaming
                 </Fade>
@@ -196,12 +203,16 @@ export function MemoryGraphPage() {
                     actionLabel="View nights"
                     actionTo="/memory/sleep"
                     variant="plain"
-                    className="text-white"
+                    className="text-[var(--graph-text)]"
                   />
                 </Fade>
               ) : null}
 
-              {!empty ? <Legend palette={palette} /> : null}
+            </>
+          )}
+          </div>
+
+          {!unavailable && !empty && !picked ? <Legend palette={palette} /> : null}
 
               {/*
                 A clicked body names itself here and offers the one way on: the
@@ -211,13 +222,13 @@ export function MemoryGraphPage() {
                 immediate, as it always was.
               */}
               {picked ? (
-                <Fade className="absolute right-3 bottom-3 left-3 z-10 flex flex-wrap items-center gap-2 rounded-lg border border-white/10 bg-black/75 p-3 text-sm text-white backdrop-blur">
-                  <Badge variant="outline" className="border-white/20 text-white">
+                <Fade className="graph-overlay flex shrink-0 flex-wrap items-center gap-2 border-t p-2 text-sm">
+                  <Badge variant="outline">
                     {MEMORY_KIND_LABEL[picked.kind]}
                   </Badge>
                   <span className="line-clamp-2 min-w-0 flex-1">{picked.content}</span>
                   <Button size="sm" asChild>
-                    <Link to={'/memory?erinnerung=' + picked.id}>
+                    <Link to={'/memory/memories?erinnerung=' + picked.id}>
                       <SquareArrowOutUpRightIcon data-icon="inline-start" />
                       Open
                     </Link>
@@ -225,15 +236,12 @@ export function MemoryGraphPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="text-white hover:bg-white/10 hover:text-white"
                     onClick={() => setPicked(null)}
                   >
                     Close
                   </Button>
                 </Fade>
               ) : null}
-            </>
-          )}
         </div>
       </Fade>
     </div>
@@ -243,17 +251,14 @@ export function MemoryGraphPage() {
 /**
  * Without this the colours are decoration; with it they are information.
  *
- * It sits on the stage rather than under it: the swatches are lights, and a
- * light is only itself against the same dark the neurons are on. It steps
- * aside while a picked memory's strip is open - both would want the bottom
- * edge - and it never takes the pointer.
+ * It owns its height, so neither the legend nor a selected memory covers the brain.
  */
 function Legend({ palette }: { palette: ReturnType<typeof useCortexPalette> }) {
   const kinds = Object.keys(MEMORY_KIND_LABEL) as MemoryKind[];
   const relations = ['refines', 'contradicts', 'supersedes'] as const;
 
   return (
-    <div className="pointer-events-none absolute bottom-3 left-3 z-[5] flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-white/60">
+    <div className="graph-legend flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-2 text-[11px] text-[var(--graph-muted)]">
       {kinds.map((kind) => (
         <span key={kind} className="inline-flex items-center gap-1.5">
           <span
@@ -264,7 +269,7 @@ function Legend({ palette }: { palette: ReturnType<typeof useCortexPalette> }) {
           {MEMORY_KIND_LABEL[kind]}
         </span>
       ))}
-      <span aria-hidden="true" className="hidden h-3 w-px bg-white/15 sm:inline-block" />
+      <span aria-hidden="true" className="hidden h-3 w-px bg-border sm:inline-block" />
       {relations.map((relation) => (
         <span key={relation} className="inline-flex items-center gap-1.5">
           <span
@@ -275,7 +280,7 @@ function Legend({ palette }: { palette: ReturnType<typeof useCortexPalette> }) {
           {RELATION_LABEL[relation]}
         </span>
       ))}
-      <span className="ml-auto hidden text-white/40 md:inline">Drag to turn, scroll to zoom, click to select</span>
+      <span className="ml-auto hidden lg:inline">Drag to turn · Scroll to zoom · Click to select</span>
     </div>
   );
 }

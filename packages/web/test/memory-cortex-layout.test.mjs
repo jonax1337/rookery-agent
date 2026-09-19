@@ -13,18 +13,20 @@ import { build } from 'esbuild';
  * They run under `npm test -w @rookery/web`.
  */
 
-async function loadLayout() {
+async function loadLayout(file = 'layout.ts') {
   const require = createRequire(import.meta.url);
+  const three = file === 'scene.ts' ? await import('three') : null;
   const { outputFiles } = await build({
-    entryPoints: [fileURLToPath(new URL('../src/components/memory-cortex/layout.ts', import.meta.url))],
+    entryPoints: [fileURLToPath(new URL('../src/components/memory-cortex/' + file, import.meta.url))],
     bundle: true,
     write: false,
     platform: 'node',
     format: 'cjs',
     packages: 'external',
+    define: { 'import.meta.env.DEV': 'false' },
   });
   const module = { exports: {} };
-  new Function('require', 'module', 'exports', outputFiles[0].text)(require, module, module.exports);
+  new Function('require', 'module', 'exports', outputFiles[0].text)(id => id === 'three' ? three : require(id), module, module.exports);
   return module.exports;
 }
 
@@ -280,4 +282,37 @@ test('a fibre from a deep memory dives into the interior at that end only', asyn
   assert.ok(heightAt(2) < 0.95, 'near the deep end it is still inside');
   assert.ok(heightAt(12) > 1.0, 'by the middle it has surfaced');
   assert.ok(heightAt(19) > 1.0, 'and it stays on the surface to the far end');
+});
+
+
+test('camera fit contains the brain in portrait, landscape and ultrawide viewports', async () => {
+  const { cortexCameraDistance } = await loadLayout();
+  const radius = 1.45, fov = 38;
+  for (const [width, height] of [[2560, 900], [1920, 840], [1100, 540], [700, 180], [360, 500], [280, 650]]) {
+    const aspect = width / height;
+    const distance = cortexCameraDistance(radius, aspect, fov);
+    const halfAngle = Math.asin(radius / distance);
+    assert.ok(halfAngle < fov * Math.PI / 360, 'vertical fit: ' + width + 'x' + height);
+    assert.ok(halfAngle < Math.atan(Math.tan(fov * Math.PI / 360) * aspect), 'horizontal fit: ' + width + 'x' + height);
+  }
+});
+
+test('the surface atlas covers triangle interiors, both poles and the longitude seam', async () => {
+  const { BoxGeometry, SphereGeometry, Vector3 } = await import('three');
+  const { surfaceFromGeometry } = await loadLayout('scene.ts');
+  for (const geometry of [new BoxGeometry(2, 2, 2), new SphereGeometry(1, 64, 32)]) {
+    const surface = surfaceFromGeometry(geometry);
+    const directions = [new Vector3(0, 1, 0), new Vector3(0, -1, 0), new Vector3(-1, 0, 1e-8), new Vector3(-1, 0, -1e-8)];
+    for (let i = 0; i < 500; i++) {
+      const y = 1 - 2 * (i + 0.5) / 500, phi = i * 2.39996323;
+      directions.push(new Vector3(Math.sqrt(1 - y * y) * Math.cos(phi), y, Math.sqrt(1 - y * y) * Math.sin(phi)));
+    }
+    for (const dir of directions) {
+      const expected = geometry.type === 'BoxGeometry' ? 1 / Math.max(Math.abs(dir.x), Math.abs(dir.y), Math.abs(dir.z)) : 1;
+      const radius = surface(dir);
+      assert.ok(radius >= expected - 0.007, geometry.type + ' ' + dir.toArray() + ': ' + radius + ' < ' + expected);
+      assert.ok(radius <= expected + 0.13, 'surface stays close to the model: ' + radius + ' > ' + expected);
+    }
+    geometry.dispose();
+  }
 });

@@ -37,6 +37,7 @@ const RELATION_VARIABLE: Record<MemoryRelation, string> = {
 
 /** What the palette falls back to before the stage is mounted. */
 const FALLBACK: CortexPalette = {
+  mode: 'dark',
   background: '#07080d',
   entity: '#eef1f6',
   mention: '#4a5568',
@@ -75,6 +76,7 @@ function readPalette(element: HTMLElement | null): CortexPalette {
   }
 
   return {
+    mode: read('--graph-mode', 'dark') === 'light' ? 'light' : 'dark',
     background: read('--graph-background', FALLBACK.background),
     entity: read('--graph-entity', FALLBACK.entity),
     mention: read('--graph-mention', FALLBACK.mention),
@@ -87,6 +89,7 @@ function readPalette(element: HTMLElement | null): CortexPalette {
 
 function samePalette(a: CortexPalette, b: CortexPalette): boolean {
   if (
+    a.mode !== b.mode ||
     a.background !== b.background ||
     a.entity !== b.entity ||
     a.mention !== b.mention ||
@@ -108,9 +111,8 @@ function samePalette(a: CortexPalette, b: CortexPalette): boolean {
  * The stage's colours, read off the `.graph-stage` element the page renders.
  *
  * The hex values live in `styles/index.css` because WebGL cannot parse
- * oklch, which is what every design token in this app is. The stage is dark
- * in both themes - a lit brain needs a night behind it - but the values are
- * still read back rather than copied, so there is exactly one place that
+ * oklch, which is what every design token in this app is. Values for both
+ * themes are read back rather than copied, so there is exactly one place that
  * defines them and the legend and the canvas cannot drift apart.
  */
 export function useCortexPalette(stage: RefObject<HTMLElement | null>): CortexPalette {
@@ -296,7 +298,7 @@ export function MemoryCortex({
       */}
       {hover ? (
         <div
-          className="pointer-events-none absolute z-10 max-w-xs rounded-md border border-white/10 bg-black/70 px-2.5 py-1.5 text-xs text-white shadow-lg backdrop-blur"
+          className="graph-overlay pointer-events-none absolute z-10 max-w-[min(20rem,90%)] rounded-md border px-2.5 py-1.5 text-xs shadow-lg backdrop-blur"
           style={{
             left: hover.x,
             top: hover.y,
@@ -307,11 +309,11 @@ export function MemoryCortex({
             <span className="font-medium">{hover.label}</span>
           ) : (
             <>
-              <span className="mr-1.5 text-white/60">{MEMORY_KIND_LABEL[hover.memoryKind ?? 'fact']}</span>
+              <span className="mr-1.5 text-[var(--graph-muted)]">{MEMORY_KIND_LABEL[hover.memoryKind ?? 'fact']}</span>
               <span className="line-clamp-2">{hover.label}</span>
             </>
           )}
-          <span className="mt-0.5 block text-[10px] tracking-wide text-white/45 uppercase">{hover.region}</span>
+          <span className="mt-0.5 block text-[10px] tracking-wide text-[var(--graph-muted)] uppercase">{hover.region}</span>
         </div>
       ) : null}
     </>

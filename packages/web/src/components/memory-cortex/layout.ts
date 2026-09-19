@@ -533,6 +533,13 @@ export function layoutCortex(graph: MemoryGraph | null, surface: Surface = brain
 
 /* ---------------------------------- arcs --------------------------------- */
 
+/** Distance that contains a sphere in both dimensions, including room for its labels. */
+export function cortexCameraDistance(radius: number, aspect: number, fov: number): number {
+  const vertical = fov * Math.PI / 360;
+  const horizontal = Math.atan(Math.tan(vertical) * Math.max(0.01, aspect));
+  return radius / Math.sin(Math.min(vertical, horizontal)) * 1.07;
+}
+
 /** A unit vector at right angles to `dir`; any will do, but always the same one. */
 function perpendicular(dir: Vec3): Vec3 {
   const pick = Math.abs(dir.x) < 0.9 ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 };
@@ -601,7 +608,7 @@ export function fibrePath(
 
   // Sideways: perpendicular to the plane of the way.
   const axis = span > 1e-3 ? normalize(cross(da, mid)) : perpendicular(da);
-  const waveAmplitude = (0.02 + 0.06 * hash01(seed, 11)) * Math.min(1, span);
+  const waveAmplitude = (0.012 + 0.025 * hash01(seed, 11)) * Math.min(1, span);
   const waveFrequency = 1.5 + hash01(seed, 12) * 2;
   const wavePhase = hash01(seed, 13) * Math.PI * 2;
 
@@ -620,7 +627,7 @@ export function fibrePath(
     const wave = Math.sin(t * Math.PI * waveFrequency + wavePhase) * waveAmplitude * bell;
     const along = t < 0.5 ? slerp(da, mid, t * 2) : slerp(mid, db, t * 2 - 1);
     const dir = normalize(add(along, scale(axis, wave)));
-    const floor = surface(dir) * (1 + lift + 0.02 * bell);
+    const floor = surface(dir) * (1 + lift + 0.006 * bell);
     dirs.push(dir);
     floors.push(floor);
     heights.push(floor);
@@ -666,4 +673,3 @@ export function pathPoint(path: Float32Array, t: number, out: Vec3): Vec3 {
   out.z = path[i + 2]! + (path[i + 5]! - path[i + 2]!) * f;
   return out;
 }
-

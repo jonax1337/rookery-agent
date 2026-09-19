@@ -35,12 +35,14 @@ const MEASURE: Record<PageWidth, string> = {
 
 export interface PageBodyProps {
   width?: PageWidth;
+  /** A viewport-bound workspace, such as the network, owns its remaining height. */
+  scroll?: boolean;
   /** Lands on the rhythm container, not the scroller - spacing overrides. */
   className?: string;
   children: ReactNode;
 }
 
-export function PageBody({ width = 'full', className, children }: PageBodyProps) {
+export function PageBody({ width = 'full', scroll = true, className, children }: PageBodyProps) {
   const constrained = width !== 'full';
   const scrollRef = useRef<HTMLDivElement>(null);
   const { pathname } = useLocation();
@@ -56,17 +58,18 @@ export function PageBody({ width = 'full', className, children }: PageBodyProps)
       // `scrollbar-gutter: stable` keeps the content width still when a tab or
       // filter drops the content below the viewport height - without it the
       // disappearing scrollbar makes the whole table jump 10px sideways.
-      className="flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]"
+      className={cn('flex min-h-0 flex-1 flex-col', scroll ? 'overflow-y-auto [scrollbar-gutter:stable]' : 'overflow-hidden')}
     >
       {/*
         The measure sits on the container-query element on purpose: a card row
         inside a 2xl page should count its columns against 2xl, not against the
         viewport, or a form page would sprout four stat columns.
       */}
-      <div className={cn('@container/main flex flex-1 flex-col gap-2', MEASURE[width])}>
+      <div className={cn('@container/main flex flex-1 flex-col gap-2', !scroll && 'min-h-0', MEASURE[width])}>
         <div
           className={cn(
             'flex flex-col gap-4 py-4 md:gap-6 md:py-6',
+            !scroll && 'min-h-0 flex-1',
             constrained && 'px-4 lg:px-6',
             className,
           )}
