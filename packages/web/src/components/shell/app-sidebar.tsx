@@ -192,24 +192,28 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
                   header read as two labels for one thing.
                 */}
                 <img
-                  src="/mark.svg"
+                  src="/mark-small.svg"
                   alt="Rookery"
-                  className="hidden size-7 shrink-0 group-data-[collapsible=icon]:block dark:group-data-[collapsible=icon]:hidden"
+                  className="hidden size-6 shrink-0 group-data-[collapsible=icon]:block dark:group-data-[collapsible=icon]:hidden"
                 />
                 <img
-                  src="/mark-light.svg"
+                  src="/mark-small-light.svg"
                   alt="Rookery"
-                  className="hidden size-7 shrink-0 dark:group-data-[collapsible=icon]:block"
+                  className="hidden size-6 shrink-0 dark:group-data-[collapsible=icon]:block"
                 />
                 <img
                   src="/logo.svg"
                   alt="Rookery"
-                  className="h-8 w-auto group-data-[collapsible=icon]:hidden dark:hidden"
+                  width={524}
+                  height={150}
+                  className="h-auto w-40 group-data-[collapsible=icon]:hidden dark:hidden"
                 />
                 <img
                   src="/logo-light.svg"
                   alt="Rookery"
-                  className="hidden h-8 w-auto group-data-[collapsible=icon]:hidden dark:block dark:group-data-[collapsible=icon]:hidden"
+                  width={524}
+                  height={150}
+                  className="hidden h-auto w-40 group-data-[collapsible=icon]:hidden dark:block dark:group-data-[collapsible=icon]:hidden"
                 />
               </NavLink>
             </SidebarMenuItem>

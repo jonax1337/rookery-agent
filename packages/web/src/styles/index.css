@@ -2,22 +2,31 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 @import 'tw-shimmer';
-@import '@fontsource-variable/geist';
 @import '@fontsource-variable/geist-mono';
-@import '@fontsource-variable/bricolage-grotesque';
 @import '../../../../branding/colors.css';
+
+@font-face {
+  font-family: 'Manrope';
+  src: url('/fonts/Manrope-Variable.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+}
 
 @custom-variant dark (&:is(.dark *));
 
 /* Rookery palette, shared with the logo assets. */
 @theme inline {
-  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
-  --font-heading: 'Bricolage Grotesque Variable', 'Geist Variable', ui-sans-serif, sans-serif;
+  --font-heading: var(--font-sans);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-xl: calc(var(--radius) + 2px);
+  --radius-2xl: calc(var(--radius) + 4px);
+  --radius-3xl: calc(var(--radius) + 6px);
+  --radius-4xl: calc(var(--radius) + 8px);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -70,31 +79,31 @@
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: var(--rookery-ivory);
-  --foreground: var(--rookery-ink);
-  --card: #faf9f5;
+  --radius: 0.375rem;
+  --background: var(--rookery-frost);
+  --foreground: var(--rookery-evergreen);
+  --card: var(--rookery-white);
   --card-foreground: var(--foreground);
   --popover: var(--card);
   --popover-foreground: var(--foreground);
-  --primary: var(--rookery-ink);
-  --primary-foreground: var(--rookery-ivory);
-  --secondary: #e8e5dc;
+  --primary: var(--rookery-evergreen);
+  --primary-foreground: var(--rookery-frost);
+  --secondary: #e4ece6;
   --secondary-foreground: var(--foreground);
   --muted: var(--secondary);
-  --muted-foreground: #69665f;
-  --accent: #eee0c9;
-  --accent-foreground: var(--rookery-amber-text);
+  --muted-foreground: #566b62;
+  --accent: var(--rookery-celadon);
+  --accent-foreground: var(--rookery-evergreen);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: #d8d4ca;
-  --input: #8c867b;
-  --ring: var(--rookery-amber-text);
-  --chart-1: var(--rookery-amber);
+  --border: #cddcd2;
+  --input: #6f8a7f;
+  --ring: var(--rookery-evergreen);
+  --chart-1: var(--rookery-evergreen);
   --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: var(--rookery-amber-text);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: #eae7de;
+  --chart-3: #986313;
+  --chart-4: var(--rookery-eucalyptus);
+  --chart-5: #779082;
+  --sidebar: #e3ece5;
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
@@ -105,30 +114,30 @@
 }
 
 .dark {
-  --background: var(--rookery-ink);
-  --foreground: var(--rookery-ivory);
-  --card: #222629;
+  --background: #142321;
+  --foreground: var(--rookery-frost);
+  --card: #1b2d2a;
   --card-foreground: var(--foreground);
   --popover: var(--card);
   --popover-foreground: var(--foreground);
-  --primary: var(--rookery-ivory);
-  --primary-foreground: var(--rookery-ink);
-  --secondary: #303332;
+  --primary: var(--rookery-celadon);
+  --primary-foreground: var(--rookery-evergreen);
+  --secondary: #243a34;
   --secondary-foreground: var(--foreground);
   --muted: var(--secondary);
-  --muted-foreground: #b2aea4;
-  --accent: #3b3226;
-  --accent-foreground: var(--rookery-amber);
+  --muted-foreground: #b0c4b9;
+  --accent: #2b463d;
+  --accent-foreground: var(--rookery-frost);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: #41443f;
-  --input: #7f8178;
-  --ring: var(--rookery-amber);
-  --chart-1: var(--rookery-amber);
+  --border: #37534a;
+  --input: #718e80;
+  --ring: var(--rookery-celadon);
+  --chart-1: var(--rookery-celadon);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: #e9c88f;
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: #1d2123;
+  --chart-4: var(--rookery-eucalyptus);
+  --chart-5: #91aba2;
+  --sidebar: #182925;
   --sidebar-foreground: var(--foreground);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
@@ -222,10 +231,10 @@
 */
 .graph-stage {
   --graph-mode: light;
-  --graph-background: #e6e9ec;
-  --graph-text: #34404c;
-  --graph-muted: #65717d;
-  --graph-overlay: #f4f6f8ed;
+  --graph-background: #e4ece6;
+  --graph-text: #253a3b;
+  --graph-muted: #566b62;
+  --graph-overlay: #eff4f0ed;
   --graph-vignette: #64758816;
   --graph-entity: #688096;
   --graph-mention: #7891a7;
@@ -246,10 +255,10 @@
 
 .dark .graph-stage {
   --graph-mode: dark;
-  --graph-background: #22262e;
-  --graph-text: #ece5dc;
-  --graph-muted: #b2aba4;
-  --graph-overlay: #181b21ed;
+  --graph-background: #142321;
+  --graph-text: #eff4f0;
+  --graph-muted: #b0c4b9;
+  --graph-overlay: #1b2d2aed;
   --graph-vignette: #03050966;
   --graph-entity: #eef1f6;
   --graph-mention: #8a939c;
@@ -291,23 +300,23 @@
   hex read back with `getComputedStyle` off this class, redefined under `.dark`.
 */
 .org-hierarchy-stage {
-  --chart-line: #d8dbe0;
-  --chart-text: #171a1d;
-  --chart-muted: #6b7280;
+  --chart-line: #cddcd2;
+  --chart-text: #253a3b;
+  --chart-muted: #566b62;
   --chart-node-bg: #ffffff;
-  --chart-root-bg: #eef2ff;
-  --chart-root-border: #6366f1;
+  --chart-root-bg: #ccddd1;
+  --chart-root-border: #6a9185;
   --chart-stage-warn: #d97706;
   --chart-stage-critical: #dc2626;
 }
 
 .dark .org-hierarchy-stage {
-  --chart-line: #3a4049;
-  --chart-text: #f2f0ea;
-  --chart-muted: #8aa0b4;
-  --chart-node-bg: #1f2226;
-  --chart-root-bg: #1e2240;
-  --chart-root-border: #818cf8;
+  --chart-line: #37534a;
+  --chart-text: #eff4f0;
+  --chart-muted: #b0c4b9;
+  --chart-node-bg: #1b2d2a;
+  --chart-root-bg: #2b463d;
+  --chart-root-border: #91b9a7;
   --chart-stage-warn: #f59e0b;
   --chart-stage-critical: #ef4444;
 }

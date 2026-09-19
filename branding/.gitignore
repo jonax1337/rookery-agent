@@ -1,1 +1,6 @@
 node_modules/
+
+# Local design exploration and superseded artwork
+/concepts/
+/archive/
+/*.zip

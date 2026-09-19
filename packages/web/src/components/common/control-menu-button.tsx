@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils';
 import { ChevronDownIcon } from '@/components/icons';
 
 /**
- * The pill that opens a turn control.
+ * The compact button that opens a turn control.
  *
  * `App.tsx` carries three of these copy-paste identical (`ComposerMenuButton`
  * for Projekt, Zugriff and Effort), `model-menu.tsx` a fourth with an icon in
@@ -22,7 +22,7 @@ import { ChevronDownIcon } from '@/components/icons';
  *   …
  * ```
  *
- * Inside a `ButtonGroup` the pill squares itself off automatically, so the
+ * The shared `Button` supplies the standard corner radius, so the
  * same component works in the composer row and in a page's action bar.
  */
 
@@ -51,7 +51,7 @@ export function ControlMenuButton({
   size = 'sm',
   ...props
 }: ControlMenuButtonProps) {
-  // The pill shows the choice, so the accessible name has to supply the
+  // The button shows the choice, so the accessible name has to supply the
   // question it answers - "Mittel" alone says nothing out loud.
   const spoken = textOf(value);
   const ariaLabel = props['aria-label'] ?? (spoken ? label + ': ' + spoken : label);
@@ -64,7 +64,7 @@ export function ControlMenuButton({
       {...props}
       aria-label={ariaLabel}
       className={cn(
-        'h-7 gap-1.5 rounded-full px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground',
+        'h-7 gap-1.5 px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground',
         'in-data-[slot=button-group]:rounded-md',
         className,
       )}

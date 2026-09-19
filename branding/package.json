@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Reproduzierbare Vektor- und Icon-Exporte fuer Rookery, Soft Rook.",
+  "description": "Reproducible Rookery Atrium logos, icons, typography and brand colors.",
   "scripts": {
-    "build": "node scripts/build-brand.mjs"
+    "build": "node scripts/build-brand.mjs",
+    "test": "node scripts/check-brand.mjs"
   },
   "devDependencies": {
-    "fontkit": "2.0.4",
     "sharp": "0.35.4"
   }
 }

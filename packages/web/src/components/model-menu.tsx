@@ -64,12 +64,12 @@ export function ModelMenu({ provider, model, providers, effort, onEffortSelect, 
       <ModelSelectorTrigger asChild disabled={disabled}
         aria-label={'Model and effort: ' + label + ', ' + (effort ? EFFORT_LABEL[effort] : 'Auto')}>
         <ControlMenuButton label="Model" value={<ModelSelectorValue placeholder={label} />}
-          className="h-8 rounded-lg px-2" />
+          className="h-8 px-2" />
       </ModelSelectorTrigger>
       <ModelSelectorContent align="end" searchable className="w-80 max-w-[calc(100vw-2rem)]">
         <div className="flex h-10 items-center justify-between px-3">
           <span className="text-xs font-medium">Model & effort</span>
-          <Button variant="ghost" size="icon" className="size-7 rounded-lg" disabled={loading}
+          <Button variant="ghost" size="icon" className="size-7" disabled={loading}
             aria-label={loading ? 'Loading models' : 'Refresh models'} aria-busy={loading} onClick={() => void refresh()}>
             {loading ? <LoaderCircleIcon className="size-3.5 motion-safe:animate-spin" /> : <RefreshCwIcon className="size-3.5" />}
           </Button>

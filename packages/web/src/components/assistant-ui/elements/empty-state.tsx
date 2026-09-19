@@ -85,7 +85,7 @@ export function EmptyStateComposer({
       style={{ animationDelay: "360ms", ...style }}
       className={cn(
         paper,
-        "fade-in slide-in-from-bottom-2 animate-in fill-mode-both flex h-13 w-full items-center justify-between rounded-full py-2 ps-5 pe-2.5 duration-500 motion-reduce:animate-none",
+        "fade-in slide-in-from-bottom-2 animate-in fill-mode-both flex h-13 w-full items-center justify-between rounded-xl py-2 ps-5 pe-2.5 duration-500 motion-reduce:animate-none",
         className,
       )}
       {...props}
@@ -98,7 +98,7 @@ export function EmptyStateComposer({
         disabled={!onSend}
         className={cn(
           inkButton,
-          "flex size-8 items-center justify-center rounded-full disabled:pointer-events-none disabled:opacity-30",
+          "flex size-8 items-center justify-center rounded-md disabled:pointer-events-none disabled:opacity-30",
         )}
       >
         <ArrowUpIcon className="size-4" />

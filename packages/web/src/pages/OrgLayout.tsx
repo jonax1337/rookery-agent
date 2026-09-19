@@ -254,7 +254,7 @@ export function OrgLayout() {
       <Tabs value={active} className="gap-4">
         <Fade delay={50}>
           <div className="overflow-x-auto px-4 lg:px-6">
-            <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:rounded-full **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1">
+            <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1">
               <TabsTrigger value="overview" asChild>
                 <NavLink to="/org" end>Overview</NavLink>
               </TabsTrigger>

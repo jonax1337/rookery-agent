@@ -770,7 +770,7 @@ export function RookeryComposerSlots({ children }: { children: ReactNode }) {
   const left = (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <ControlMenuButton className="h-8 rounded-lg px-2" label="Project" value={projectLabel} />
+        <ControlMenuButton className="h-8 px-2" label="Project" value={projectLabel} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuLabel>Project</DropdownMenuLabel>
@@ -793,7 +793,7 @@ export function RookeryComposerSlots({ children }: { children: ReactNode }) {
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <ControlMenuButton className="h-8 rounded-lg px-2" label="Access" value={PERMISSION_LABEL[turn.permission]} />
+          <ControlMenuButton className="h-8 px-2" label="Access" value={PERMISSION_LABEL[turn.permission]} />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           <DropdownMenuLabel>Access</DropdownMenuLabel>

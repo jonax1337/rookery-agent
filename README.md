@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="branding/logo.png#gh-light-mode-only" alt="Rookery" width="260" height="77">
-  <img src="branding/logo-light.png#gh-dark-mode-only" alt="Rookery" width="260" height="77">
+  <img src="branding/logo.png#gh-light-mode-only" alt="Rookery" width="260" height="74">
+  <img src="branding/logo-light.png#gh-dark-mode-only" alt="Rookery" width="260" height="74">
 </p>
 
 <p align="center">

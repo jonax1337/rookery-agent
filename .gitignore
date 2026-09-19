@@ -12,6 +12,9 @@ data/
 packages/web/dist/
 logs/
 
+# Local previews, verification captures and scratch files
+/.tmp/
+
 # ProjectAtlas local index (config + db)
 .projectatlas/
 

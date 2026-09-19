@@ -224,7 +224,7 @@ export function QuestionCard({ question, onAnswer, onExpire, className }: Questi
         <Button
           type="submit"
           disabled={!canSend || sending}
-          className={cn(inkButton, pressable, 'ms-auto rounded-full px-4')}
+          className={cn(inkButton, pressable, 'ms-auto rounded-md px-4')}
         >
           {sending ? <Spinner /> : <SendIcon className="size-4" />}
           Send answer

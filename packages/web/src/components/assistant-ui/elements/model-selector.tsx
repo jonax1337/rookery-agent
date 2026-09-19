@@ -458,13 +458,13 @@ function ModelSelectorContent({
       side={renderedSide ?? side ?? "bottom"}
       sideOffset={sideOffset}
       className={cn(
-        "bg-popover w-72 min-w-(--radix-popover-trigger-width) overflow-hidden rounded-xl p-0",
+        "bg-popover w-72 min-w-(--radix-popover-trigger-width) overflow-hidden p-0",
         className,
       )}
       {...props}
     >
       <Command
-        className="bg-transparent"
+        className="rounded-[inherit]! bg-transparent"
         shouldFilter={!unfiltered}
         {...(value !== undefined ? { defaultValue: value } : {})}
       >
@@ -589,7 +589,7 @@ function ModelSelectorItem({
         onSelect?.(selectedValue);
       }}
       className={cn(
-        "relative items-start gap-2 rounded-lg py-2 ps-3 pe-9 [&_svg:not([class*='size-'])]:size-3.5",
+        "relative items-start gap-2 py-2 ps-3 pe-9 [&_svg:not([class*='size-'])]:size-3.5",
         className,
       )}
       {...props}

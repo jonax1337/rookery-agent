@@ -153,7 +153,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({
       style={{
         ["--thread-max-width" as string]: "44rem",
         ["--composer-bg" as string]: "var(--color-card)",
-        ["--composer-radius" as string]: "1rem",
+        ["--composer-radius" as string]: "var(--radius-xl)",
         ["--composer-padding" as string]: "8px",
       }}
     >
@@ -218,7 +218,7 @@ const ThreadScrollToBottom: FC = () => {
       <TooltipIconButton
         tooltip="Scroll to bottom"
         variant="outline"
-        className="aui-thread-scroll-to-bottom dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-full p-4 disabled:invisible"
+        className="aui-thread-scroll-to-bottom dark:border-border dark:bg-background dark:hover:bg-accent absolute -top-12 z-10 self-center rounded-md p-4 disabled:invisible"
       >
         <ArrowDownIcon />
       </TooltipIconButton>
@@ -283,7 +283,7 @@ const ComposerAction: FC = () => {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-8 rounded-lg"
+                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-8"
                 aria-label="Start dictation"
               >
                 <MicIcon className="aui-composer-dictate-icon size-4" />
@@ -298,7 +298,7 @@ const ComposerAction: FC = () => {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="aui-composer-stop-dictation text-destructive size-8 rounded-lg"
+                className="aui-composer-stop-dictation text-destructive size-8"
                 aria-label="Stop dictation"
               >
                 <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
@@ -314,7 +314,7 @@ const ComposerAction: FC = () => {
               type="button"
               variant="default"
               size="icon"
-              className="aui-composer-send size-8 rounded-lg"
+              className="aui-composer-send size-8"
               aria-label="Send"
             >
               <ArrowUpIcon className="aui-composer-send-icon size-4" />
@@ -327,7 +327,7 @@ const ComposerAction: FC = () => {
               type="button"
               variant="default"
               size="icon"
-              className="aui-composer-cancel size-8 rounded-lg"
+              className="aui-composer-cancel size-8"
               aria-label="Cancel"
             >
               <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
@@ -594,13 +594,13 @@ const EditComposer: FC = () => {
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 rounded-full px-3.5"
+              className="h-8 rounded-md px-3.5"
             >
               Cancel
             </Button>
           </ComposerPrimitive.Cancel>
           <ComposerPrimitive.Send asChild>
-            <Button size="sm" className="h-8 rounded-full px-3.5">
+            <Button size="sm" className="h-8 rounded-md px-3.5">
               Update
             </Button>
           </ComposerPrimitive.Send>
