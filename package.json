@@ -15,6 +15,9 @@
   "type": "module",
   "engines": { "node": ">=22.5.0" },
   "workspaces": ["packages/core", "packages/server", "packages/cli", "packages/web"],
+  "registries": {
+    "@react-bits": "https://reactbits.dev/r/{name}.json"
+  },
   "scripts": {
     "build": "npm run build -w @rookery/core && npm run build -w @rookery/server && npm run build -w @rookery/cli && npm run build -w @rookery/web",
     "build:core": "npm run build -w @rookery/core",
