@@ -142,6 +142,10 @@ export function useMemories() {
  */
 export function useMemoryGraph(options: { limit?: number } = {}) {
   const [graph, setGraph] = useState<MemoryGraph | null>(null);
+  // The whole net, unfiltered and with the sleeping memories in: the cortex
+  // lays everything out from this and draws only `graph`, so a filter
+  // removes bodies without moving the ones that stay.
+  const [atlas, setAtlas] = useState<MemoryGraph | null>(null);
   const [entities, setEntities] = useState<MemoryEntity[]>([]);
   const [entity, setEntity] = useState<string>('');
   const [includeDormant, setIncludeDormant] = useState(false);
@@ -155,17 +159,20 @@ export function useMemoryGraph(options: { limit?: number } = {}) {
     const run = ++seq.current;
     setLoading(true);
     try {
-      const [data, names] = await Promise.all([
+      const [data, names, whole] = await Promise.all([
         api.memoryGraph({ entity: entity || undefined, includeDormant, limit }),
         api.entities({ limit: 100 }),
+        api.memoryGraph({ includeDormant: true, limit }),
       ]);
       if (run !== seq.current) return;
       setGraph(data);
       setEntities(names);
+      setAtlas(whole);
     } catch {
       if (run !== seq.current) return;
       setGraph(null);
       setEntities([]);
+      setAtlas(null);
     } finally {
       if (run === seq.current) setLoading(false);
     }
@@ -175,7 +182,7 @@ export function useMemoryGraph(options: { limit?: number } = {}) {
     void refresh();
   }, [refresh]);
 
-  return { graph, entities, entity, setEntity, includeDormant, setIncludeDormant, loading, refresh };
+  return { graph, atlas, entities, entity, setEntity, includeDormant, setIncludeDormant, loading, refresh };
 }
 
 /**

@@ -20,7 +20,7 @@ import { EyeOffIcon as MonitorXIcon, GitGraphIcon as NetworkIcon } from "@/compo
  * Mermaid's job, not this component's.
  *
  * Mermaid cannot read the app's oklch design tokens any more than the WebGL
- * memory graph can (`MemoryGraph3D.tsx`), so it gets the identical fix:
+ * memory cortex can (`components/memory-cortex`), so it gets the identical fix:
  * literal hex colours in a `.org-hierarchy-stage` class in `styles/index.css`,
  * redefined under `.dark`, read back here with `getComputedStyle` and fed
  * into `mermaid.initialize({ themeVariables })`. A `MutationObserver` on the
@@ -28,7 +28,7 @@ import { EyeOffIcon as MonitorXIcon, GitGraphIcon as NetworkIcon } from "@/compo
  * same mechanism `useGraphPalette` uses for the other graph.
  *
  * The library itself is a dynamic `import('mermaid')`, not a top-level one -
- * `MemoryGraph3D.tsx` code-splits `3d-force-graph` the same way, so a visitor
+ * `memory-cortex` code-splits `three` the same way, so a visitor
  * who never opens either graph page never downloads either library.
  */
 
@@ -171,7 +171,7 @@ export function OrgHierarchyPage() {
 
   // Read the theme's literal colours off `.org-hierarchy-stage` and re-read them
   // whenever the root class changes (light/dark toggle) - see the file
-  // comment and `useGraphPalette` in MemoryGraph3D.tsx for why this cannot
+  // comment and `useCortexPalette` in `components/memory-cortex` for why this cannot
   // just be the app's oklch tokens.
   const [palette, setPalette] = useState<Palette>(() => readPalette(null));
   useEffect(() => {

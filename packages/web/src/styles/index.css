@@ -209,36 +209,25 @@
 }
 
 /*
-  The palette of the 3D memory net.
+  The palette of the memory cortex.
 
-  The WebGL renderer behind the net needs concrete colour values rather than
-  CSS colour expressions - so the net keeps hex colours here. They live here
-  rather than inside the component for one reason: a theme switch then becomes
-  a CSS change, and `MemoryGraph3D` reads the values back off this class with
-  `getComputedStyle` instead of carrying a second copy of the theme in
-  JavaScript. The class goes on the stage element that frames the canvas.
+  The WebGL renderer behind the brain needs concrete colour values rather than
+  CSS colour expressions - so the stage keeps hex colours here. They live here
+  rather than inside the component for one reason: the legend and the canvas
+  then read the same values, `memory-cortex` picks them up off this class with
+  `getComputedStyle` instead of carrying a second copy in JavaScript.
+
+  There is no light variant on purpose. Everything on the stage is light
+  added to darkness - glowing neurons, fibres, bloom - and that has no
+  meaning on a pale ground. The stage is a night in both themes, like a
+  screen in a lit room; the frame around it still follows the theme.
 */
 .graph-stage {
-  --graph-background: #f2f0ea;
-  --graph-entity: #171a1d;
-  --graph-mention: #cbd2da;
-  --graph-fact: #1f6feb;
-  --graph-preference: #7c4dff;
-  --graph-project: #c2710c;
-  --graph-event: #1a9e63;
-  --graph-summary: #5a6b7d;
-  --graph-insight: #111318;
-  --graph-refines: #1f6feb;
-  --graph-caused-by: #1a9e63;
-  --graph-contradicts: #d92020;
-  --graph-supersedes: #8b929c;
-  --graph-co-occurs: #cbd2da;
-}
-
-.dark .graph-stage {
-  --graph-background: #171a1d;
-  --graph-entity: #f2f0ea;
-  --graph-mention: #343a44;
+  --graph-background: #07080d;
+  --graph-entity: #eef1f6;
+  --graph-mention: #4a5568;
+  --graph-tissue: #22293a;
+  --graph-dream: #d8b4fe;
   --graph-fact: #5b9dff;
   --graph-preference: #a98bff;
   --graph-project: #f5a524;
@@ -248,8 +237,8 @@
   --graph-refines: #5b9dff;
   --graph-caused-by: #3fd18b;
   --graph-contradicts: #ff5252;
-  --graph-supersedes: #6b7280;
-  --graph-co-occurs: #3a4049;
+  --graph-supersedes: #8b929c;
+  --graph-co-occurs: #4a5568;
 }
 
 /*

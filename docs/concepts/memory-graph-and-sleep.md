@@ -431,6 +431,22 @@ naechste Tiefschlaf entscheidet. Entschieden am 2026-09-11 von Jonas.
 Knoten zum Knaeuel. `3d-force-graph` ueber WebGL, per dynamischem Import in ein eigenes Buendel gelegt.
 Entschieden am 2026-09-11 von Jonas.
 
+**E9 – Der Graph ist ein Cortex, kein Federmodell.** Das Kraeftelayout aus E8 wurde auch in drei
+Dimensionen zur Kugel aus Draht und sah bei jedem Laden anders aus. Seit 2026-09-19 liegt eine feste
+Gehirnform zugrunde (`packages/web/src/components/memory-cortex/layout.ts`: zwei Hemisphaeren, Fissur,
+flache Unterseite, Kleinhirn, Windungen): Entitaeten sind Regionen der Rinde und ziehen einander an,
+wenn dieselbe Erinnerung sie nennt; Erinnerungen sind Neuronen auf der Oberflaeche nahe ihren Themen,
+ohne Thema liegen sie im Inneren, schlafend sinken sie unter die Oberflaeche. Jede Position ist aus der
+Zeilen-ID gehasht, ein Filter verschiebt darum nichts, was sich nicht geaendert hat. Gezeichnet wird mit
+eigenem three.js-Code (`scene.ts`: ein verformtes, beleuchtetes Mesh der Gehirnform als Gewebe, das die
+Rueckseite verdeckt; additive Glow-Punkte darauf, Erinnerungen ohne Thema als eigene Wolke im Inneren
+ohne Tiefentest; ein einziger `LineSegments`-Puffer fuer alle Fasern als Boegen ueber der Oberflaeche;
+Signale, die an den Fasern entlanglaufen; wenig Bloom). Laeuft eine Nacht, feuert die Rinde staerker und in der Traumfarbe
+(`--graph-dream`). Die Buehne ist in beiden Themes dunkel. `3d-force-graph` und `three-spritetext` sind
+entfallen, `three` ist direkte Abhaengigkeit. Vorlagen, mit Dank: der fuenflappige Punkt-Glow und der
+verschmolzene Faserpuffer aus pratapchoudharys Brain-Portfolio, die Faden-Partikel aus SahilK-027s
+Digital Brain (beide MIT); keines ist Abhaengigkeit. Entschieden am 2026-09-19 von Jonas.
+
 ### Offen
 
 1. **Schema-Nummer.** Dieses Konzept braucht Version 5, das HR-Konzept in
