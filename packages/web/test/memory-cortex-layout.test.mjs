@@ -100,11 +100,11 @@ test('a memory lands beside the topic it mentions; one of two topics lands betwe
   for (const item of layout.memories) assert.equal(item.deep, false);
 });
 
-test('a memory that mentions nothing goes inside, unless a relation places it', async () => {
-  const { layoutCortex, brainRadius } = await loadLayout();
+test('a memory that mentions nothing still sits on the surface, in the region of its kind', async () => {
+  const { layoutCortex, brainRadius, SURFACE } = await loadLayout();
   const graph = graphOf({
     entities: [entity('a', 3)],
-    memories: [memory('anchored'), memory('lonely'), memory('related')],
+    memories: [memory('anchored'), memory('lonely', { kind: 'preference' }), memory('related')],
     links: [{ memoryId: 'anchored', entityId: 'a' }],
     edges: [
       {
@@ -122,10 +122,15 @@ test('a memory that mentions nothing goes inside, unless a relation places it', 
   const layout = layoutCortex(graph);
   const byId = Object.fromEntries(layout.memories.map((item) => [item.id, item]));
 
-  assert.equal(byId.lonely.deep, true);
-  assert.ok(length(byId.lonely.position) < brainRadius(byId.lonely.dir) * 0.7, 'a lonely memory floats well inside');
-  assert.equal(byId.related.deep, false, 'a relation is enough to put a memory on the cortex');
-  assert.equal(byId.anchored.deep, false);
+  // Nothing floats inside any more: a body inside the tissue was drawn
+  // through it and read as a body that had gone through it.
+  for (const item of layout.memories) {
+    assert.equal(item.deep, false);
+    assert.ok(Math.abs(length(item.position) / brainRadius(item.dir) - SURFACE.memory) < 1e-6, item.id + ' is on the surface');
+  }
+  assert.equal(byId.lonely.region, 'prefrontal');
+  assert.ok(byId.lonely.dir.z > 0.3, 'a lonely preference goes to the forehead: z=' + byId.lonely.dir.z);
+  assert.equal(byId.related.deep, false, 'a relation places a memory beside what it refines');
 });
 
 test('a sleeping memory sinks into the surface; an awake one sits proud of it', async () => {
@@ -225,6 +230,39 @@ test('a fibre lies on the cortex from end to end, and is not a perfect circle', 
   const out = { x: 0, y: 0, z: 0 };
   near(pathPoint(path, 0, out), a, 'sampling at 0 is the start');
   near(pathPoint(path, 1, out), b, 'sampling at 1 is the end');
+});
+
+test('topics go to the region their memories belong to', async () => {
+  const { layoutCortex } = await loadLayout();
+  const kinds = { likes: 'preference', knows: 'fact', happened: 'event', plans: 'project' };
+  const memories = Object.entries(kinds).map(([topic, kind]) => memory('m-' + topic, { kind }));
+  const graph = graphOf({
+    entities: [...Object.keys(kinds).map((id) => entity(id, 1)), entity('jonas-person', 1)],
+    memories: [...memories, memory('m-person', { kind: 'fact' })],
+    links: [
+      ...Object.keys(kinds).map((topic) => ({ memoryId: 'm-' + topic, entityId: topic })),
+      { memoryId: 'm-person', entityId: 'jonas-person' },
+    ],
+  });
+  graph.entities[4].kind = 'person';
+  const layout = layoutCortex(graph);
+  const by = Object.fromEntries(layout.entities.map((item) => [item.id, item]));
+
+  assert.equal(by.likes.region, 'prefrontal');
+  assert.ok(by.likes.dir.z > 0.5, 'a topic of preferences sits at the forehead: z=' + by.likes.dir.z);
+  assert.equal(by.knows.region, 'lateral-temporal');
+  assert.ok(Math.abs(by.knows.dir.x) > 0.6, 'a topic of facts sits on the side of the temporal lobe');
+  assert.equal(by.happened.region, 'medial-temporal');
+  assert.ok(by.happened.dir.y < -0.2, 'a topic of events sits on the underside');
+  assert.equal(by.plans.region, 'parietal');
+  assert.ok(by.plans.dir.y > 0.4, 'a topic of projects sits up on the crown');
+  assert.equal(by['jonas-person'].region, 'fusiform', 'a person has a place of their own whatever the memories say');
+
+  // The memories follow: the event sits below the fact even though both
+  // have a topic of their own.
+  const mem = Object.fromEntries(layout.memories.map((item) => [item.id, item]));
+  assert.equal(mem['m-happened'].region, 'medial-temporal');
+  assert.ok(mem['m-happened'].dir.y < mem['m-knows'].dir.y);
 });
 
 test('a fibre from a deep memory dives into the interior at that end only', async () => {

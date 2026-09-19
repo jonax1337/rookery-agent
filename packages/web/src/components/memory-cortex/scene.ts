@@ -4,10 +4,21 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 import type { MemoryGraph, MemoryKind, MemoryRelation } from '@/lib/types';
 
-import { brainShape, fibrePath, layoutCortex, pathPoint, surfaceDust, type Vec3 } from './layout';
+import {
+  brainRadius,
+  fibrePath,
+  layoutCortex,
+  pathPoint,
+  REGION_LABEL,
+  type CortexRegion,
+  type Surface,
+  type Vec3,
+} from './layout';
 
 /**
  * The cortex, lit.
@@ -44,6 +55,8 @@ export interface CortexHit {
   id: string;
   label: string;
   memoryKind?: MemoryKind;
+  /** The part of the cortex it sits in, named. */
+  region: string;
   /** Where the body is on the canvas, in CSS pixels. */
   x: number;
   y: number;
@@ -78,15 +91,18 @@ const GLOW_VERT = /* glsl */ `
   uniform float uTime;
   uniform float uScale;
   uniform float uBreathe;
+  uniform float uReveal;
   varying vec3 vColor;
   ${FACING}
   void main() {
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     float breathe = 1.0 + uBreathe * sin(uTime * 1.4 + aPhase * 6.2831853);
-    float size = aSize * breathe * (1.0 + aBoost * 0.9);
+    // Each body surfaces in its own moment of the reveal, staggered by its phase.
+    float reveal = smoothstep(aPhase * 0.7, aPhase * 0.7 + 0.3, uReveal);
+    float size = aSize * breathe * (1.0 + aBoost * 0.9) * (0.4 + 0.6 * reveal);
     gl_PointSize = clamp(size * uScale / -mv.z, 1.0, 256.0);
     gl_Position = projectionMatrix * mv;
-    vColor = aColor * (1.0 + aBoost * 1.0) * facing(position);
+    vColor = aColor * (1.0 + aBoost * 1.0) * facing(position) * reveal;
   }
 `;
 
@@ -132,6 +148,8 @@ const TISSUE_VERT = /* glsl */ `
 const TISSUE_FRAG = /* glsl */ `
   uniform vec3 uColor;
   uniform vec3 uRim;
+  uniform vec3 uBackground;
+  uniform float uReveal;
   varying vec3 vNormal;
   varying vec3 vView;
   varying float vFold;
@@ -139,60 +157,47 @@ const TISSUE_FRAG = /* glsl */ `
   void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(vView);
-    // The key light sits with the camera, so the brain is always lit from
-    // where it is being looked at and never turns its dark side to the viewer.
+    // The lights sit with the camera, so the brain is always lit from
+    // where it is being looked at and never turns its dark side to the
+    // viewer: a key from above right, a cooler fill from below left.
     vec3 L = normalize(vec3(0.45, 0.8, 0.55));
-    float diffuse = max(dot(N, L), 0.0);
+    vec3 F = normalize(vec3(-0.6, -0.3, 0.5));
+    float diffuse = max(dot(N, L), 0.0) + 0.3 * max(dot(N, F), 0.0);
+    // Wet tissue: a tight highlight where the key light bounces straight back.
+    float specular = pow(max(dot(N, normalize(L + V)), 0.0), 48.0) * 0.35;
     float groove = 1.0 - 0.5 * clamp(-vFold, 0.0, 1.0) - 0.6 * vFissure;
     float ridge = 1.0 + 0.25 * clamp(vFold, 0.0, 1.0);
     float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    vec3 colour = uColor * (0.35 + 0.9 * diffuse) * groove * ridge + uRim * fresnel * 0.6;
-    gl_FragColor = vec4(colour, 1.0);
-  }
-`;
-
-const DUST_VERT = /* glsl */ `
-  attribute float aPhase;
-  attribute float aShade;
-  uniform float uTime;
-  uniform float uScale;
-  uniform float uSize;
-  varying float vLight;
-  ${FACING}
-  void main() {
-    vec4 mv = modelViewMatrix * vec4(position, 1.0);
-    gl_PointSize = clamp(uSize * uScale / -mv.z, 1.0, 24.0);
-    gl_Position = projectionMatrix * mv;
-    vLight = aShade * (0.85 + 0.15 * sin(uTime * 0.6 + aPhase * 6.2831853)) * facing(position);
-  }
-`;
-
-const DUST_FRAG = /* glsl */ `
-  uniform vec3 uColor;
-  varying float vLight;
-  void main() {
-    vec2 c = gl_PointCoord - 0.5;
-    float d = length(c);
-    if (d > 0.5) discard;
-    float soft = pow(max(0.0, 1.0 - d * 2.0), 2.2);
-    gl_FragColor = vec4(uColor * soft * vLight, 1.0);
+    vec3 colour = uColor * (0.3 + 0.85 * diffuse) * groove * ridge + uRim * (fresnel * 0.6 + specular);
+    // The brain comes up out of the dark: opaque all along, so no sorting
+    // trouble, it is simply painted in the background's colour until it is
+    // not. The rim leads, the way an object catches light before its body.
+    float body = smoothstep(0.0, 1.0, uReveal);
+    float edge = smoothstep(0.0, 0.6, uReveal);
+    vec3 shown = mix(uBackground, colour, body) + uRim * fresnel * 0.4 * (edge - body);
+    gl_FragColor = vec4(shown, 1.0);
   }
 `;
 
 /**
  * Fibres fade out on the far side almost entirely. A neuron seen through
  * the brain is a faint point; a hundred fibres seen through it are a cage,
- * and the cage is what made the old net a ball.
+ * and the cage is what made the old net a ball. On reveal a fibre draws
+ * itself out from its first body to its second, `aAlong` being how far
+ * along it each vertex sits.
  */
 const FIBRE_VERT = /* glsl */ `
   attribute vec3 aColor;
+  attribute float aAlong;
+  uniform float uReveal;
   varying vec3 vColor;
   void main() {
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     vec3 outward = normalize(position);
     vec3 toCamera = normalize(cameraPosition - position);
     float front = 0.04 + 0.96 * smoothstep(-0.1, 0.5, dot(outward, toCamera));
-    vColor = aColor * front;
+    float drawn = smoothstep(aAlong, aAlong + 0.08, uReveal * 1.08);
+    vColor = aColor * front * drawn;
   }
 `;
 
@@ -208,6 +213,7 @@ const PULSE_VERT = /* glsl */ `
   attribute vec3 aColor;
   attribute float aSize;
   uniform float uScale;
+  uniform float uReveal;
   varying vec3 vColor;
   varying float vProgress;
   ${FACING}
@@ -215,7 +221,8 @@ const PULSE_VERT = /* glsl */ `
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     gl_PointSize = clamp(aSize * uScale / -mv.z, 1.0, 96.0);
     gl_Position = projectionMatrix * mv;
-    vColor = aColor * facing(position);
+    // Signals only start once the fibres are all drawn.
+    vColor = aColor * facing(position) * smoothstep(0.85, 1.0, uReveal);
     vProgress = aProgress;
   }
 `;
@@ -237,20 +244,20 @@ const PULSE_FRAG = /* glsl */ `
 
 /* ------------------------------- constants ------------------------------- */
 
-const DUST_COUNT = 7000;
-/** The tissue token is a dark grey; the dust is many faint additive points of it. */
-const TISSUE_GAIN = 0.9;
-/** The same token lit as a surface needs headroom for the shading to have anywhere to go. */
+/** The tissue token lit as a surface needs headroom for the shading to have anywhere to go. */
 const ORGAN_GAIN = 2.4;
 const PULSE_CAPACITY = 480;
 const PULSES_AWAKE = 110;
 const PULSES_DREAMING = 420;
 /** Enough steps for a fibre to follow the grooves it crosses. */
-const MENTION_SEGMENTS = 18;
-const RELATION_SEGMENTS = 28;
+const MENTION_SEGMENTS = 32;
+const RELATION_SEGMENTS = 44;
+/** Seconds: the brain coming up out of the dark, then the net surfacing on it. */
+const TISSUE_REVEAL = 1.4;
+const NET_REVEAL = 2.2;
 /** How far above the tissue a fibre rides, as a share of the radius. */
-const MENTION_LIFT = 0.012;
-const RELATION_LIFT = 0.03;
+const MENTION_LIFT = 0.016;
+const RELATION_LIFT = 0.028;
 const CAMERA_DISTANCE = 3.7;
 const FOV = 38;
 /** Seconds of stillness before the brain starts turning again. */
@@ -258,8 +265,32 @@ const IDLE_RESUME = 6;
 /** Labels beyond this rank only appear once the camera comes close. */
 const LABEL_RANK_ALWAYS = 22;
 
-/** Three-quarter view from above and in front: both hemispheres, the fissure, the forehead. */
-const DEFAULT_CAMERA = new THREE.Vector3(0.7, 0.62, 0.55).normalize().multiplyScalar(CAMERA_DISTANCE);
+/** Where the model and its decoder are served from; `index.html` preloads both. */
+export const MODEL_URL = '/models/brain.glb';
+const DRACO_PATH = '/draco/';
+/** Which way the model's forehead points along z; flipped here if the file has it backwards. */
+const MODEL_FRONT: 1 | -1 = 1;
+/** Half the length the model is scaled to, front to back - the formula's `RZ`. */
+const MODEL_LENGTH = 1.22;
+/**
+ * Below this height (in the scaled model) there is only brainstem: measured
+ * on the model, the bands under it hold a few dozen vertices within 0.45 of
+ * the axis, the band at it holds the cerebellum's whole width. Its axis
+ * sits behind the centre.
+ */
+const BRAINSTEM_BELOW = -0.8;
+const BRAINSTEM_AXIS_Z = -0.35;
+export type CortexView = 'default' | 'front' | 'side' | 'top' | 'back' | 'bottom';
+
+/** Unit directions the camera looks in from; `default` is the three-quarter view from above and in front. */
+const VIEWS: Record<CortexView, THREE.Vector3> = {
+  default: new THREE.Vector3(0.7, 0.62, 0.55).normalize(),
+  front: new THREE.Vector3(0, 0.15, 1).normalize(),
+  side: new THREE.Vector3(1, 0.1, 0).normalize(),
+  top: new THREE.Vector3(0.001, 1, 0.001).normalize(),
+  back: new THREE.Vector3(0, 0.15, -1).normalize(),
+  bottom: new THREE.Vector3(0.45, -0.9, -0.55).normalize(),
+};
 
 interface Fibre {
   /** The points it runs through, flat, on the cortex. */
@@ -283,6 +314,7 @@ interface Body {
   id: string;
   label: string;
   memoryKind?: MemoryKind;
+  region: CortexRegion;
   position: THREE.Vector3;
   /** Halo diameter in world units. */
   size: number;
@@ -306,6 +338,10 @@ interface Label {
   dir: THREE.Vector3;
   aspect: number;
   rank: number;
+  /** Whether it held a place last frame - a placed name is slow to give it up. */
+  placed: boolean;
+  /** Its opacity, eased toward where it should be rather than snapped. */
+  alpha: number;
 }
 
 /* --------------------------------- scene --------------------------------- */
@@ -316,6 +352,10 @@ export class CortexScene {
   #palette: CortexPalette;
   #graph: MemoryGraph | null = null;
   #atlas: MemoryGraph | null = null;
+  /** The formula until the model has loaded, the model's own surface after. */
+  #surface: Surface = brainRadius;
+  /** The model's bytes, fetched before the scene existed, if the hull got there first. */
+  readonly #modelBytes: Promise<ArrayBuffer | null> | null;
 
   readonly #renderer: THREE.WebGLRenderer;
   readonly #scene = new THREE.Scene();
@@ -329,8 +369,6 @@ export class CortexScene {
 
   readonly #tissue: THREE.Mesh;
   readonly #tissueMaterial: THREE.ShaderMaterial;
-  readonly #dust: THREE.Points;
-  readonly #dustMaterial: THREE.ShaderMaterial;
   readonly #neurons: THREE.Points;
   readonly #neuronMaterial: THREE.ShaderMaterial;
   readonly #deepNeurons: THREE.Points;
@@ -359,6 +397,13 @@ export class CortexScene {
   #selected: string | null = null;
   #dreaming = false;
   #dream = 0;
+  /** The brain has been read (or has failed for good) and may come up. */
+  #modelSettled = false;
+  /** 0..1: how far the tissue has come up, and how far the net has surfaced on it. */
+  #tissueReveal = 0;
+  #netReveal = 0;
+  /** The net surfaces once, the first time there is anything to show; a filter later does not replay it. */
+  #netSurfaced = false;
   #reducedMotion = false;
   #idleAt = 0;
   #frame = 0;
@@ -369,10 +414,16 @@ export class CortexScene {
   #hidden = false;
   #flight: { from: THREE.Vector3; to: THREE.Vector3; start: number; duration: number } | null = null;
 
-  constructor(mount: HTMLElement, palette: CortexPalette, callbacks: CortexCallbacks) {
+  constructor(
+    mount: HTMLElement,
+    palette: CortexPalette,
+    callbacks: CortexCallbacks,
+    options: { model?: Promise<ArrayBuffer | null> } = {},
+  ) {
     this.#mount = mount;
     this.#palette = palette;
     this.#callbacks = callbacks;
+    this.#modelBytes = options.model ?? null;
 
     // Throws where there is no WebGL - the hull catches it and says so.
     this.#renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' });
@@ -384,7 +435,9 @@ export class CortexScene {
     mount.appendChild(this.#renderer.domElement);
 
     this.#camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 40);
-    this.#camera.position.copy(DEFAULT_CAMERA);
+    this.#camera.position.copy(VIEWS.default).multiplyScalar(CAMERA_DISTANCE);
+    // A handle for the dev tools and for scripted screenshots; never in a build.
+    if (import.meta.env.DEV) (window as unknown as { __cortex?: CortexScene }).__cortex = this;
 
     this.#controls = new OrbitControls(this.#camera, this.#renderer.domElement);
     this.#controls.enableDamping = true;
@@ -398,55 +451,44 @@ export class CortexScene {
       this.#flight = null;
     });
 
-    this.#composer = new EffectComposer(this.#renderer);
+    // Multisampled: one-pixel fibres over a turning surface shimmer
+    // without it. Half float keeps the additive glow above one for bloom.
+    this.#composer = new EffectComposer(
+      this.#renderer,
+      new THREE.WebGLRenderTarget(1, 1, { samples: 4, type: THREE.HalfFloatType }),
+    );
     this.#composer.addPass(new RenderPass(this.#scene, this.#camera));
     this.#bloom = new UnrealBloomPass(new THREE.Vector2(1, 1), 0.32, 0.4, 0.55);
     this.#composer.addPass(this.#bloom);
     this.#composer.addPass(new OutputPass());
 
-    /* the organ itself */
+    /* the organ itself - an empty mesh until the model has been read */
     this.#tissueMaterial = new THREE.ShaderMaterial({
       vertexShader: TISSUE_VERT,
       fragmentShader: TISSUE_FRAG,
       uniforms: {
         uColor: { value: new THREE.Color(palette.tissue).multiplyScalar(ORGAN_GAIN) },
         uRim: { value: new THREE.Color(palette.mention) },
+        uBackground: { value: new THREE.Color(palette.background) },
+        uReveal: { value: 0 },
       },
+      // The tissue yields a little in the depth test, so a fibre lying just
+      // above it wins cleanly instead of fighting it pixel by pixel as the
+      // brain turns - that fight was the flicker.
+      polygonOffset: true,
+      polygonOffsetFactor: 1.5,
+      polygonOffsetUnits: 2,
     });
-    this.#tissue = new THREE.Mesh(buildTissueGeometry(), this.#tissueMaterial);
+    this.#tissue = new THREE.Mesh(new THREE.BufferGeometry(), this.#tissueMaterial);
     this.#tissue.renderOrder = -1;
+    this.#tissue.visible = false;
     this.#scene.add(this.#tissue);
-
-    /* the sparkle on it */
-    const dustGeometry = new THREE.BufferGeometry();
-    const dust = surfaceDust(DUST_COUNT);
-    dustGeometry.setAttribute('position', new THREE.BufferAttribute(dust.positions, 3));
-    dustGeometry.setAttribute('aShade', new THREE.BufferAttribute(dust.shades, 1));
-    const dustPhase = new Float32Array(DUST_COUNT);
-    for (let index = 0; index < DUST_COUNT; index++) dustPhase[index] = (index * 0.618033) % 1;
-    dustGeometry.setAttribute('aPhase', new THREE.BufferAttribute(dustPhase, 1));
-    this.#dustMaterial = new THREE.ShaderMaterial({
-      vertexShader: DUST_VERT,
-      fragmentShader: DUST_FRAG,
-      uniforms: {
-        uTime: { value: 0 },
-        uScale: { value: 1 },
-        uSize: { value: 0.026 },
-        uColor: { value: new THREE.Color(palette.tissue).multiplyScalar(TISSUE_GAIN) },
-      },
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-    this.#dust = new THREE.Points(dustGeometry, this.#dustMaterial);
-    this.#dust.frustumCulled = false;
-    this.#dust.renderOrder = 0;
-    this.#scene.add(this.#dust);
 
     /* fibres */
     this.#fibreMaterial = new THREE.ShaderMaterial({
       vertexShader: FIBRE_VERT,
       fragmentShader: FIBRE_FRAG,
+      uniforms: { uReveal: { value: 0 } },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -461,7 +503,7 @@ export class CortexScene {
       new THREE.ShaderMaterial({
         vertexShader: GLOW_VERT,
         fragmentShader: GLOW_FRAG,
-        uniforms: { uTime: { value: 0 }, uScale: { value: 1 }, uBreathe: { value: 0.1 } },
+        uniforms: { uTime: { value: 0 }, uScale: { value: 1 }, uBreathe: { value: 0.1 }, uReveal: { value: 0 } },
         transparent: true,
         depthTest,
         depthWrite: false,
@@ -494,7 +536,7 @@ export class CortexScene {
     this.#pulseMaterial = new THREE.ShaderMaterial({
       vertexShader: PULSE_VERT,
       fragmentShader: PULSE_FRAG,
-      uniforms: { uScale: { value: 1 } },
+      uniforms: { uScale: { value: 1 }, uReveal: { value: 0 } },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
@@ -531,6 +573,47 @@ export class CortexScene {
 
     this.setPalette(palette);
     this.#frame = requestAnimationFrame(this.#tick);
+    void this.#loadModel();
+  }
+
+  /**
+   * The real brain, once it arrives. "Brain Areas" by Versal (CC-BY 4.0,
+   * see `public/models/LICENSE.txt`), Draco-compressed, decoded with the
+   * decoder three.js ships. It replaces the formula's mesh and - through
+   * the radius table built from its vertices - the surface everything is
+   * laid out on, so the neurons sit on real gyri and the fibres follow real
+   * sulci. Until it is here, and if it never comes, the formula stands.
+   */
+  async #loadModel(): Promise<void> {
+    try {
+      const draco = new DRACOLoader();
+      draco.setDecoderPath(DRACO_PATH);
+      const loader = new GLTFLoader();
+      loader.setDRACOLoader(draco);
+      // Bytes the hull started fetching while three.js itself was still
+      // loading - the usual case - are parsed straight away; otherwise the
+      // file is fetched now.
+      const bytes = (await this.#modelBytes) ?? null;
+      const gltf = bytes ? await loader.parseAsync(bytes, '') : await loader.loadAsync(MODEL_URL);
+      draco.dispose();
+      if (this.#disposed) return;
+      const meshes: THREE.Mesh[] = [];
+      gltf.scene.traverse((object) => {
+        if ((object as THREE.Mesh).isMesh) meshes.push(object as THREE.Mesh);
+      });
+      const first = meshes[0];
+      if (!first) return;
+      const geometry = prepareModel(first.geometry);
+      this.#surface = surfaceFromGeometry(geometry);
+      this.#tissue.geometry.dispose();
+      this.#tissue.geometry = geometry;
+      this.#tissue.visible = true;
+      this.#rebuild();
+    } catch {
+      // No brain to show. The net still surfaces, laid out on the formula.
+    } finally {
+      this.#modelSettled = true;
+    }
   }
 
   /* ------------------------------- public -------------------------------- */
@@ -551,8 +634,8 @@ export class CortexScene {
   setPalette(palette: CortexPalette): void {
     this.#palette = palette;
     this.#renderer.setClearColor(new THREE.Color(palette.background), 1);
-    this.#dustMaterial.uniforms.uColor!.value.set(palette.tissue).multiplyScalar(TISSUE_GAIN);
     this.#tissueMaterial.uniforms.uRim!.value.set(palette.mention);
+    this.#tissueMaterial.uniforms.uBackground!.value.set(palette.background);
     if (this.#graph) this.#rebuild();
   }
 
@@ -568,9 +651,25 @@ export class CortexScene {
 
   /** Flies the camera back to where it started. */
   fit(): void {
+    this.view('default');
+  }
+
+  /** How far the brain and the net have come up, 0..1 each - for tests and dev tools. */
+  get reveal(): { tissue: number; net: number } {
+    return { tissue: this.#tissueReveal, net: this.#netReveal };
+  }
+
+  /** The tissue's geometry as drawn - for dev tools measuring the model. */
+  get tissueGeometry(): THREE.BufferGeometry {
+    return this.#tissue.geometry;
+  }
+
+  /** Flies the camera to a named side of the brain. */
+  view(preset: CortexView): void {
+    const to = VIEWS[preset].clone().multiplyScalar(CAMERA_DISTANCE);
     this.#flight = {
       from: this.#camera.position.clone(),
-      to: DEFAULT_CAMERA.clone(),
+      to,
       start: this.#clock.elapsedTime,
       duration: this.#reducedMotion ? 0 : 0.7,
     };
@@ -589,20 +688,11 @@ export class CortexScene {
     document.removeEventListener('visibilitychange', this.#onVisibility);
     this.#controls.dispose();
     this.#clearLabels();
-    for (const object of [
-      this.#tissue,
-      this.#dust,
-      this.#neurons,
-      this.#deepNeurons,
-      this.#cores,
-      this.#fibres,
-      this.#pulses,
-    ]) {
+    for (const object of [this.#tissue, this.#neurons, this.#deepNeurons, this.#cores, this.#fibres, this.#pulses]) {
       object.geometry.dispose();
     }
     for (const material of [
       this.#tissueMaterial,
-      this.#dustMaterial,
       this.#neuronMaterial,
       this.#deepMaterial,
       this.#coreMaterial,
@@ -628,13 +718,14 @@ export class CortexScene {
     const palette = this.#palette;
 
     /* where things go: from the atlas when there is one, else from the graph itself */
-    const placed = layoutCortex(this.#atlas ?? graph);
+    const surface = this.#surface;
+    const placed = layoutCortex(this.#atlas ?? graph, surface);
     const placedEntity = new Map(placed.entities.map((item) => [item.id, item]));
     const placedMemory = new Map(placed.memories.map((item) => [item.id, item]));
     // The atlas is capped like any graph; a body it does not know is placed
     // from the drawn graph instead, so nothing ever goes missing.
     let fallback: ReturnType<typeof layoutCortex> | null = null;
-    const fallbackFor = () => (fallback ??= this.#atlas ? layoutCortex(graph) : placed);
+    const fallbackFor = () => (fallback ??= this.#atlas ? layoutCortex(graph, surface) : placed);
     const entityPlaces = (graph?.entities ?? []).map(
       (entity) => placedEntity.get(entity.id) ?? fallbackFor().entities.find((item) => item.id === entity.id)!,
     );
@@ -660,6 +751,7 @@ export class CortexScene {
         // the former, and a hundred bright hubs would be a white haze.
         size: 0.045 + Math.min(0.13, (item.weight - 1) * 0.038),
         weight: item.weight,
+        region: item.region,
         layer: 'cores' as const,
         slot: index,
       };
@@ -678,6 +770,7 @@ export class CortexScene {
         memoryKind: memory.kind,
         position: new THREE.Vector3(item.position.x, item.position.y, item.position.z),
         size: (0.05 + memory.importance * 0.05 + (memory.pinned ? 0.015 : 0)) * (item.dormant ? 0.7 : 1),
+        region: item.region,
         layer,
         slot: item.deep ? deepSlots++ : surfaceSlots++,
       };
@@ -759,7 +852,7 @@ export class CortexScene {
         .multiplyScalar(0.26 / (1 + chord * 1.5))
         .lerp(new THREE.Color(palette.kinds[kind]), 0.18);
       fibres.push({
-        path: fibrePath(a.position, b.position, MENTION_LIFT, MENTION_SEGMENTS, a.key + b.key),
+        path: fibrePath(a.position, b.position, MENTION_LIFT, MENTION_SEGMENTS, a.key + b.key, surface),
         colour: tint,
         start: vertexCount,
         count: MENTION_SEGMENTS * 2,
@@ -779,7 +872,7 @@ export class CortexScene {
         (edge.relation === 'contradicts' ? 1.25 : edge.relation === 'co_occurs' ? 0.45 : 0.7 + edge.weight * 0.3) /
         (1 + span * 0.9);
       fibres.push({
-        path: fibrePath(a.position, b.position, RELATION_LIFT, RELATION_SEGMENTS, edge.id),
+        path: fibrePath(a.position, b.position, RELATION_LIFT, RELATION_SEGMENTS, edge.id, surface),
         colour: base.multiplyScalar(strength),
         start: vertexCount,
         count: RELATION_SEGMENTS * 2,
@@ -792,6 +885,7 @@ export class CortexScene {
 
     const fibrePosition = new Float32Array(vertexCount * 3);
     const fibreColour = new Float32Array(vertexCount * 3);
+    const fibreAlong = new Float32Array(vertexCount);
     for (const fibre of fibres) {
       const segments = fibre.count / 2;
       for (let segment = 0; segment < segments; segment++) {
@@ -803,6 +897,8 @@ export class CortexScene {
         fibrePosition[at + 3] = fibre.path[from + 3]!;
         fibrePosition[at + 4] = fibre.path[from + 4]!;
         fibrePosition[at + 5] = fibre.path[from + 5]!;
+        fibreAlong[fibre.start + segment * 2] = segment / segments;
+        fibreAlong[fibre.start + segment * 2 + 1] = (segment + 1) / segments;
       }
       for (let vertex = fibre.start; vertex < fibre.start + fibre.count; vertex++) {
         fibre.colour.toArray(fibreColour, vertex * 3);
@@ -811,6 +907,7 @@ export class CortexScene {
     const fibreGeometry = this.#fibres.geometry;
     fibreGeometry.setAttribute('position', new THREE.BufferAttribute(fibrePosition, 3));
     fibreGeometry.setAttribute('aColor', new THREE.BufferAttribute(fibreColour, 3));
+    fibreGeometry.setAttribute('aAlong', new THREE.BufferAttribute(fibreAlong, 1));
     fibreGeometry.computeBoundingSphere();
     this.#fibreList = fibres;
     // A copy, not the attribute's own array: `#light` multiplies the base
@@ -825,6 +922,9 @@ export class CortexScene {
 
     /* names */
     this.#buildLabels();
+
+    /* the first time there is a net, it surfaces; after that it is simply there */
+    if (this.#memoryBodies.length || this.#entityBodies.length) this.#netSurfaced = true;
 
     /* whatever was lit no longer necessarily exists */
     this.#hovered = null;
@@ -882,6 +982,8 @@ export class CortexScene {
         dir: body.position.clone().normalize(),
         aspect: made.aspect,
         rank,
+        placed: false,
+        alpha: 0,
       });
     });
   }
@@ -903,13 +1005,22 @@ export class CortexScene {
     this.#neuronMaterial.uniforms.uTime!.value = time;
     this.#deepMaterial.uniforms.uTime!.value = time;
     this.#coreMaterial.uniforms.uTime!.value = time;
-    this.#dustMaterial.uniforms.uTime!.value = time;
     this.#neuronMaterial.uniforms.uBreathe!.value = this.#reducedMotion ? 0 : 0.1 + this.#dream * 0.12;
     this.#bloom.strength = 0.32 + this.#dream * 0.25;
-    this.#dustMaterial.uniforms.uColor!.value
-      .set(this.#palette.tissue)
-      .multiplyScalar(TISSUE_GAIN)
-      .lerp(new THREE.Color(this.#palette.dream).multiplyScalar(0.7), this.#dream * 0.6);
+
+    // First the brain, out of the dark; then, once it is fully there, the
+    // net on it. Neither starts before what it needs has arrived.
+    const instant = this.#reducedMotion;
+    if (this.#modelSettled && this.#tissueReveal < 1) {
+      this.#tissueReveal = instant ? 1 : Math.min(1, this.#tissueReveal + delta / TISSUE_REVEAL);
+    }
+    if (this.#netSurfaced && this.#tissueReveal >= 1 && this.#netReveal < 1) {
+      this.#netReveal = instant ? 1 : Math.min(1, this.#netReveal + delta / NET_REVEAL);
+    }
+    this.#tissueMaterial.uniforms.uReveal!.value = this.#tissueReveal;
+    for (const material of [this.#neuronMaterial, this.#deepMaterial, this.#coreMaterial, this.#fibreMaterial, this.#pulseMaterial]) {
+      material.uniforms.uReveal!.value = this.#netReveal;
+    }
     // At night the tissue itself takes on a little of the dream's colour.
     this.#tissueMaterial.uniforms.uColor!.value
       .set(this.#palette.tissue)
@@ -929,7 +1040,7 @@ export class CortexScene {
     this.#controls.update();
 
     this.#stepPulses(delta);
-    this.#stepLabels();
+    this.#stepLabels(delta);
     if (this.#pointerDirty) {
       this.#pointerDirty = false;
       this.#pick();
@@ -1001,7 +1112,7 @@ export class CortexScene {
     return { fibre, t, speed: 0.25 + Math.random() * 0.35 };
   }
 
-  #stepLabels(): void {
+  #stepLabels(delta: number): void {
     if (!this.#labels.length) return;
     const camera = this.#camera;
     const distance = camera.position.length();
@@ -1009,21 +1120,51 @@ export class CortexScene {
     // A label keeps the same height on screen whatever the zoom.
     const worldPerPixel = (2 * Math.tan((FOV * Math.PI) / 360)) / height;
     const toCamera = new THREE.Vector3();
+    const projected = new THREE.Vector3();
     const close = THREE.MathUtils.smoothstep(distance, 2.9, 2.2);
+    const width = this.#mount.clientWidth || 1;
+    // Names are placed in rank order, and a name whose box would land on
+    // one already placed stays hidden: a region of twelve topics shows the
+    // few that matter, not twelve words on top of each other.
+    const taken: { x: number; y: number; w: number; h: number }[] = [];
     for (const label of this.#labels) {
       toCamera.copy(camera.position).sub(label.body.position).normalize();
       const facing = label.dir.dot(toCamera);
       const front = THREE.MathUtils.smoothstep(facing, 0.05, 0.45);
       const rank = label.rank < LABEL_RANK_ALWAYS ? 1 : close;
-      const alpha = front * rank;
-      label.material.opacity = alpha;
-      label.sprite.visible = alpha > 0.02;
-      if (!label.sprite.visible) continue;
+      let alpha = front * rank;
       const pixels = 13 * (label.rank < 6 ? 1.1 : 1);
       const bodyDistance = camera.position.distanceTo(label.body.position);
       const h = pixels * worldPerPixel * bodyDistance;
-      label.sprite.scale.set(h * label.aspect, h, 1);
       label.sprite.position.copy(label.body.position).addScaledVector(label.dir, label.body.size * 0.5 + h * 0.6);
+      if (alpha > 0.02) {
+        projected.copy(label.sprite.position).project(camera);
+        // A name that holds a place keeps it until another clearly covers
+        // it; a name without one waits for clear room. Without that slack
+        // two names at the edge of overlap trade places every frame as the
+        // brain turns, which reads as flicker.
+        const slack = label.placed ? 0.7 : 1.15;
+        const box = {
+          x: ((projected.x + 1) / 2) * width,
+          y: ((1 - projected.y) / 2) * height,
+          w: pixels * label.aspect * slack,
+          h: pixels * 1.2 * slack,
+        };
+        const overlaps = taken.some(
+          (other) => Math.abs(other.x - box.x) < (other.w + box.w) / 2 && Math.abs(other.y - box.y) < (other.h + box.h) / 2,
+        );
+        if (overlaps) alpha = 0;
+        else taken.push({ ...box, w: pixels * label.aspect, h: pixels * 1.2 });
+      }
+      label.placed = alpha > 0.02;
+      // Names come last in the reveal, once the bodies they name are lit;
+      // and they fade rather than snap, in about a fifth of a second.
+      const target = alpha * THREE.MathUtils.smoothstep(this.#netReveal, 0.5, 1);
+      label.alpha += (target - label.alpha) * Math.min(1, delta * 9);
+      label.material.opacity = label.alpha;
+      label.sprite.visible = label.alpha > 0.02;
+      if (!label.sprite.visible) continue;
+      label.sprite.scale.set(h * label.aspect, h, 1);
     }
   }
 
@@ -1164,6 +1305,7 @@ export class CortexScene {
       type: body.type,
       id: body.id,
       label: body.label,
+      region: REGION_LABEL[body.region],
       ...(body.memoryKind ? { memoryKind: body.memoryKind } : {}),
       x: ((projected.x + 1) / 2) * box.width,
       y: ((1 - projected.y) / 2) * box.height,
@@ -1183,13 +1325,7 @@ export class CortexScene {
     // Pixels per world unit at distance one, so sizes can be stated in
     // world units and still come out the same on every screen.
     const scale = (height * this.#renderer.getPixelRatio()) / (2 * Math.tan((FOV * Math.PI) / 360));
-    for (const material of [
-      this.#neuronMaterial,
-      this.#deepMaterial,
-      this.#coreMaterial,
-      this.#dustMaterial,
-      this.#pulseMaterial,
-    ]) {
+    for (const material of [this.#neuronMaterial, this.#deepMaterial, this.#coreMaterial, this.#pulseMaterial]) {
       material.uniforms.uScale!.value = scale;
     }
   }
@@ -1198,30 +1334,171 @@ export class CortexScene {
 /* -------------------------------- geometry ------------------------------- */
 
 /**
- * A sphere pushed out to the brain's radius in every direction, with the
- * fold and fissure of each vertex kept as attributes for the shader to
- * shade. The normals come from the displaced positions, which is what makes
- * the ridges catch the light.
+ * The loaded model, made ours: centred, turned so the forehead points down
+ * +z and the crown up +y like the formula's shape, and scaled so the brain
+ * is as long as the formula's. Its vertex colours mark the sulci (that is
+ * what the model's author painted red); they become the fold attribute the
+ * tissue shader darkens, and the fissure attribute stays zero because the
+ * real mesh has the real fissure.
  */
-function buildTissueGeometry(): THREE.BufferGeometry {
-  const geometry = new THREE.SphereGeometry(1, 192, 128);
+function prepareModel(source: THREE.BufferGeometry): THREE.BufferGeometry {
+  const geometry = source.clone();
+  if (MODEL_FRONT < 0) geometry.rotateY(Math.PI);
+  geometry.computeBoundingBox();
+  const box = geometry.boundingBox!;
+  const centre = box.getCenter(new THREE.Vector3());
+  geometry.translate(-centre.x, -centre.y, -centre.z);
+  const halfLength = (box.max.z - box.min.z) / 2;
+  const scale = MODEL_LENGTH / halfLength;
+  geometry.scale(scale, scale, scale);
+
   const position = geometry.getAttribute('position') as THREE.BufferAttribute;
-  const fold = new Float32Array(position.count);
-  const fissure = new Float32Array(position.count);
-  const dir = new THREE.Vector3();
+  // The brainstem goes. Nothing is laid out on it, and as a thin stalk far
+  // from the centre it was where every fibre passing its direction leapt.
+  // It is not cut off - that would leave a hole to look into the brain
+  // through - but pressed flat up to where the cerebellum begins and drawn
+  // in toward its own axis, a small closed base tucked under the cerebellum.
   for (let index = 0; index < position.count; index++) {
-    dir.fromBufferAttribute(position, index).normalize();
-    const shape = brainShape(dir);
-    position.setXYZ(index, dir.x * shape.radius, dir.y * shape.radius, dir.z * shape.radius);
-    fold[index] = shape.fold;
-    fissure[index] = shape.fissure;
+    const y = position.getY(index);
+    if (y >= BRAINSTEM_BELOW) continue;
+    position.setXYZ(
+      index,
+      position.getX(index) * 0.5,
+      BRAINSTEM_BELOW,
+      BRAINSTEM_AXIS_Z + (position.getZ(index) - BRAINSTEM_AXIS_Z) * 0.5,
+    );
   }
   position.needsUpdate = true;
+  const colour = geometry.getAttribute('color') as THREE.BufferAttribute | undefined;
+  const fold = new Float32Array(position.count);
+  if (colour) {
+    for (let index = 0; index < position.count; index++) {
+      const r = colour.getX(index);
+      const g = colour.getY(index);
+      const b = colour.getZ(index);
+      fold[index] = r > 0.5 && r > g * 1.5 && r > b * 1.5 ? -1 : 0;
+    }
+  }
   geometry.setAttribute('aFold', new THREE.BufferAttribute(fold, 1));
-  geometry.setAttribute('aFissure', new THREE.BufferAttribute(fissure, 1));
+  geometry.setAttribute('aFissure', new THREE.BufferAttribute(new Float32Array(position.count), 1));
+  // The pressed base needs normals of its own; the ones that came with the
+  // stalk point sideways.
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   return geometry;
+}
+
+/**
+ * A surface function from a mesh: the outermost vertex in each direction
+ * of a longitude/latitude grid, holes filled from their neighbours, read
+ * back with bilinear interpolation. Outermost, because that is where the
+ * gyri are and where a neuron should sit; the sulci between them are what
+ * the fibres dip into as they follow the grid across them.
+ */
+function surfaceFromGeometry(geometry: THREE.BufferGeometry): Surface {
+  const cols = 256;
+  const rows = 128;
+  const table = new Float32Array(cols * rows);
+  const position = geometry.getAttribute('position') as THREE.BufferAttribute;
+  const p = new THREE.Vector3();
+  const cell = (dir: THREE.Vector3): [number, number] => {
+    const u = (Math.atan2(dir.z, dir.x) / (Math.PI * 2) + 0.5) * cols;
+    const v = (Math.acos(THREE.MathUtils.clamp(dir.y, -1, 1)) / Math.PI) * rows;
+    return [u, v];
+  };
+  for (let index = 0; index < position.count; index++) {
+    p.fromBufferAttribute(position, index);
+    const radius = p.length();
+    if (radius === 0) continue;
+    // The pressed base of the brainstem is left out of the surface: nothing
+    // is laid out on it, and a fibre skirts it along the cerebellum.
+    if (p.y <= BRAINSTEM_BELOW + 1e-4) continue;
+    const [u, v] = cell(p.clone().normalize());
+    const col = Math.min(cols - 1, Math.floor(u));
+    const row = Math.min(rows - 1, Math.floor(v));
+    const at = row * cols + col;
+    if (radius > table[at]!) table[at] = radius;
+  }
+  // The upper envelope: every cell takes the tallest of its neighbours as
+  // well. Between two cells a gyrus can rise higher than the straight line
+  // between their values, and a fibre laid on that line would cut through
+  // it; on the envelope it rides clear of every ridge it crosses.
+  const raw = table.slice();
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      let tallest = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        const r = row + dr;
+        if (r < 0 || r >= rows) continue;
+        for (let dc = -1; dc <= 1; dc++) {
+          tallest = Math.max(tallest, raw[r * cols + ((col + dc + cols) % cols)]!);
+        }
+      }
+      table[row * cols + col] = tallest;
+    }
+  }
+  // Then a blur, so the envelope has slopes rather than steps - but a blur
+  // only ever raises a cell here, never lowers it: lowered, the envelope
+  // would dip under the very ridge it exists to clear, which is exactly
+  // where fibres were seen cutting into the underside of the brain.
+  const sharp = table.slice();
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      let sum = 0;
+      let count = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        const r = row + dr;
+        if (r < 0 || r >= rows) continue;
+        for (let dc = -1; dc <= 1; dc++) {
+          const value = sharp[r * cols + ((col + dc + cols) % cols)]!;
+          if (value > 0) {
+            sum += value;
+            count++;
+          }
+        }
+      }
+      if (count) table[row * cols + col] = Math.max(sharp[row * cols + col]!, sum / count);
+    }
+  }
+  // Fill the cells no vertex fell into from whatever neighbours have a value.
+  let holes = true;
+  for (let pass = 0; pass < 32 && holes; pass++) {
+    holes = false;
+    const next = table.slice();
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        if (table[row * cols + col]! > 0) continue;
+        let sum = 0;
+        let count = 0;
+        for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as const) {
+          const r = row + dr;
+          if (r < 0 || r >= rows) continue;
+          const value = table[r * cols + ((col + dc + cols) % cols)]!;
+          if (value > 0) {
+            sum += value;
+            count++;
+          }
+        }
+        if (count) next[row * cols + col] = sum / count;
+        else holes = true;
+      }
+    }
+    table.set(next);
+  }
+  return (dir) => {
+    const [u, v] = cell(new THREE.Vector3(dir.x, dir.y, dir.z));
+    const fu = u - 0.5;
+    const fv = THREE.MathUtils.clamp(v - 0.5, 0, rows - 1);
+    const c0 = ((Math.floor(fu) % cols) + cols) % cols;
+    const c1 = (c0 + 1) % cols;
+    const r0 = Math.floor(fv);
+    const r1 = Math.min(rows - 1, r0 + 1);
+    const tu = fu - Math.floor(fu);
+    const tv = fv - r0;
+    const top = table[r0 * cols + c0]! * (1 - tu) + table[r0 * cols + c1]! * tu;
+    const bottom = table[r1 * cols + c0]! * (1 - tu) + table[r1 * cols + c1]! * tu;
+    return top * (1 - tv) + bottom * tv;
+  };
 }
 
 /* --------------------------------- sprites ------------------------------- */

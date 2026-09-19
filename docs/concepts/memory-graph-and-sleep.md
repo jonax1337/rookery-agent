@@ -447,6 +447,29 @@ entfallen, `three` ist direkte Abhaengigkeit. Vorlagen, mit Dank: der fuenflappi
 verschmolzene Faserpuffer aus pratapchoudharys Brain-Portfolio, die Faden-Partikel aus SahilK-027s
 Digital Brain (beide MIT); keines ist Abhaengigkeit. Entschieden am 2026-09-19 von Jonas.
 
+**E10 – Ein echtes Gehirn, und jede Erinnerung in ihrem Areal.** Das Gewebe ist `public/models/brain.glb`
+(„Brain Areas“ von Versal, CC-BY 4.0, Nennung in `public/models/LICENSE.txt`, Draco-Decoder aus
+three.js), von `index.html` vorab geholt und von der Seite schon vor three.js angefordert. Aus seinen
+Vertices wird eine geglaettete obere Huelle als Radius-Tabelle nach Richtung, auf der Layout und Fasern
+gerechnet werden: Neuronen sitzen auf echten Gyri, Fasern folgen echten Sulci und laufen ueber einen
+Zwischenpunkt, damit gegenueberliegende Enden keinen undefinierten Grosskreis erzeugen. Glaettung darf
+die Huelle nur anheben, nie unterschreiten. Der Hirnstamm wird beim Laden zu einer flachen Basis unter
+dem Kleinhirn gestaucht (kein Areal liegt dort, und als duenner Fortsatz liess er jede vorbeilaufende
+Faser zur Spitze springen); lange Fasern, deren Weg unter das Kleinhirn fiele, werden seitlich daran
+vorbeigefuehrt. Erinnerungen ohne Thema liegen nicht mehr im Inneren, sondern auf der Oberflaeche im
+Areal ihrer Art. Die Formelform
+aus E9 gibt es nur noch als Oberflaechenfunktion fuer das Layout, falls das Modell ausbleibt; ein
+Formel-Mesh wird nicht mehr gezeichnet. Beim Oeffnen kommt das Gehirn aus der Hintergrundfarbe hoch,
+danach taucht das Netz auf: Neuronen gestaffelt, Fasern zeichnen sich von ihrem ersten Koerper aus,
+Signale und Namen zuletzt; ein spaeterer Filter spielt das nicht erneut. Die Areale sind
+Richtungskegel auf der Rinde (`layout.ts`, `REGION_DIR`), Neurowissenschaft als Metapher: Praeferenzen
+praefrontal, Fakten lateral temporal, Ereignisse medial temporal, Projekte parietal, Zusammenfassungen
+posterior parietal, Einsichten am vorderen Cingulum; Personen auf dem Gyrus fusiformis, Orte
+parahippocampal, Werkzeuge parietal; das Kleinhirn ist fuer Skills reserviert. Ein Topic wird in das
+Areal gezogen, das die Mehrheit seiner Erinnerungen nennt (eigene Entitaetsart geht vor), die
+Hemisphaere entscheidet die ID; eine Erinnerung folgt ihren Topics und lehnt sich zu einem Viertel an
+das Areal ihrer Art. Der Tooltip nennt das Areal. Entschieden am 2026-09-19 von Jonas.
+
 ### Offen
 
 1. **Schema-Nummer.** Dieses Konzept braucht Version 5, das HR-Konzept in

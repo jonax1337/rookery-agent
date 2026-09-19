@@ -138,6 +138,25 @@ export function useCortexPalette(stage: RefObject<HTMLElement | null>): CortexPa
   return palette;
 }
 
+/* --------------------------------- model --------------------------------- */
+
+/**
+ * The brain model's bytes, fetched once as soon as this module is loaded -
+ * that is, as soon as the page is - and long before three.js and the scene
+ * have arrived. `index.html` preloads the same file, so this usually reads
+ * from the browser's memory and the scene never shows the formula first.
+ */
+let modelBytes: Promise<ArrayBuffer | null> | null = null;
+
+function preloadModel(): Promise<ArrayBuffer | null> {
+  modelBytes ??= fetch('/models/brain.glb')
+    .then((response) => (response.ok ? response.arrayBuffer() : null))
+    .catch(() => null);
+  return modelBytes;
+}
+
+void preloadModel();
+
 /* -------------------------------- component ------------------------------ */
 
 /** What the page's "Fit to view" button reaches into the scene for. */
@@ -216,17 +235,22 @@ export function MemoryCortex({
       try {
         const { CortexScene } = await import('./scene');
         if (cancelled || !mountRef.current) return;
-        const scene = new CortexScene(mountRef.current, palette, {
-          onHover: (hit) => setHover(hit),
-          onClick: (hit) => {
-            if (hit.type === 'entity') {
-              entityRef.current(hit.id);
-              return;
-            }
-            const memory = graphRef.current?.memories.find((item) => item.id === hit.id);
-            if (memory) selectRef.current(memory);
+        const scene = new CortexScene(
+          mountRef.current,
+          palette,
+          {
+            onHover: (hit) => setHover(hit),
+            onClick: (hit) => {
+              if (hit.type === 'entity') {
+                entityRef.current(hit.id);
+                return;
+              }
+              const memory = graphRef.current?.memories.find((item) => item.id === hit.id);
+              if (memory) selectRef.current(memory);
+            },
           },
-        });
+          { model: preloadModel() },
+        );
         sceneRef.current = scene;
         setReady(true);
       } catch {
@@ -287,6 +311,7 @@ export function MemoryCortex({
               <span className="line-clamp-2">{hover.label}</span>
             </>
           )}
+          <span className="mt-0.5 block text-[10px] tracking-wide text-white/45 uppercase">{hover.region}</span>
         </div>
       ) : null}
     </>

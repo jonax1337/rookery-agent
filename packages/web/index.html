@@ -4,6 +4,11 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- The memory cortex's brain model and its decoder, fetched in idle time so the
+         graph page has them the moment it opens. See components/memory-cortex. -->
+    <link rel="prefetch" as="fetch" href="/models/brain.glb" crossorigin />
+    <link rel="prefetch" as="fetch" href="/draco/draco_decoder.wasm" crossorigin />
+    <link rel="prefetch" as="script" href="/draco/draco_wasm_wrapper.js" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 
     <title>Rookery — personal assistant</title>

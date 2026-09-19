@@ -16,6 +16,11 @@ import type { MemoryGraph } from '@/lib/types';
  * seeded from the row's id, so a filter or a refetch moves nothing that did
  * not change.
  *
+ * The shape written out below in `brainShape` is the stand-in surface: it
+ * is what the layout runs on before the real model has been read, and what
+ * it runs on if that model never arrives. The scene hands in the model's
+ * surface as soon as it has one.
+ *
  * This module is pure maths - no DOM, no WebGL - so a test can ask it where
  * things went.
  */
@@ -33,16 +38,31 @@ export interface CortexEntity {
   /** On the surface, slightly proud of it. */
   position: Vec3;
   weight: number;
+  /** The part of the cortex it was pulled to. */
+  region: CortexRegion;
 }
 
 export interface CortexMemory {
   id: string;
   dir: Vec3;
   position: Vec3;
-  /** Mentions nothing: lives inside rather than on the cortex. */
+  /**
+   * Always false now: a memory that mentions nothing used to float inside
+   * the brain, drawn through the tissue, and read as a body that had gone
+   * through it. It sits on the surface in the region of its kind instead.
+   * The flag stays so the surface offset table keeps its shape.
+   */
   deep: boolean;
   dormant: boolean;
+  region: CortexRegion;
 }
+
+/**
+ * Distance from the centre to the surface along a unit direction. The
+ * formula below is the default; the scene swaps in a real model's surface
+ * once it has loaded, and everything here lays out on that instead.
+ */
+export type Surface = (dir: Vec3) => number;
 
 export interface CortexLayout {
   entities: CortexEntity[];
@@ -168,9 +188,114 @@ function nudge(dir: Vec3, force: Vec3): Vec3 {
   return normalize(add(dir, sub(force, scale(dir, radial))));
 }
 
+/* -------------------------------- regions ------------------------------- */
+
+/**
+ * Where a kind of memory lives on the cortex.
+ *
+ * Neuroscience as a metaphor, not as a claim: preferences sit at the
+ * forehead where values and decisions are weighed, facts along the side
+ * of the temporal lobe where semantic memory is kept, events on its
+ * underside near the hippocampus, projects and plans up on the parietal
+ * crown, summaries behind them, insights at the front of the cingulate.
+ * People have a place of their own on the fusiform gyrus, places on the
+ * parahippocampal one, tools on the parietal lobe. The cerebellum is kept
+ * for procedure - skills, one day.
+ *
+ * Each region is a direction on the right hemisphere; `hemisphere` flips
+ * it to the left. The cerebellum sits on the midline and is not flipped.
+ */
+export type CortexRegion =
+  | 'prefrontal'
+  | 'parietal'
+  | 'posterior-parietal'
+  | 'lateral-temporal'
+  | 'medial-temporal'
+  | 'cingulate'
+  | 'fusiform'
+  | 'parahippocampal'
+  | 'cerebellum';
+
+export const REGION_LABEL: Record<CortexRegion, string> = {
+  prefrontal: 'Prefrontal cortex',
+  parietal: 'Parietal lobe',
+  'posterior-parietal': 'Posterior parietal cortex',
+  'lateral-temporal': 'Lateral temporal lobe',
+  'medial-temporal': 'Medial temporal lobe',
+  cingulate: 'Anterior cingulate',
+  fusiform: 'Fusiform gyrus',
+  parahippocampal: 'Parahippocampal gyrus',
+  cerebellum: 'Cerebellum',
+};
+
+const REGION_DIR: Record<CortexRegion, Vec3> = {
+  prefrontal: normalize({ x: 0.45, y: 0.35, z: 0.85 }),
+  parietal: normalize({ x: 0.6, y: 0.75, z: 0.1 }),
+  'posterior-parietal': normalize({ x: 0.5, y: 0.65, z: -0.55 }),
+  'lateral-temporal': normalize({ x: 0.95, y: -0.12, z: 0.15 }),
+  'medial-temporal': normalize({ x: 0.8, y: -0.5, z: 0.05 }),
+  cingulate: normalize({ x: 0.5, y: 0.2, z: 0.6 }),
+  fusiform: normalize({ x: 0.7, y: -0.6, z: 0.15 }),
+  parahippocampal: normalize({ x: 0.7, y: -0.5, z: -0.45 }),
+  cerebellum: normalize({ x: 0, y: -0.6, z: -0.8 }),
+};
+
+const KIND_REGION: Record<string, CortexRegion> = {
+  preference: 'prefrontal',
+  fact: 'lateral-temporal',
+  event: 'medial-temporal',
+  project: 'parietal',
+  summary: 'posterior-parietal',
+  insight: 'cingulate',
+};
+
+const ENTITY_KIND_REGION: Partial<Record<string, CortexRegion>> = {
+  person: 'fusiform',
+  place: 'parahippocampal',
+  tool: 'parietal',
+};
+
+/** The region a memory of this kind belongs to. */
+export function regionForKind(kind: string): CortexRegion {
+  return KIND_REGION[kind] ?? 'lateral-temporal';
+}
+
+/**
+ * The region a topic belongs to: its own kind when that says something
+ * (a person, a place, a tool), else wherever most of its memories go.
+ */
+export function regionForEntity(entityKind: string, memoryKinds: string[]): CortexRegion {
+  const own = ENTITY_KIND_REGION[entityKind];
+  if (own) return own;
+  const votes = new Map<CortexRegion, number>();
+  for (const kind of memoryKinds) {
+    const region = regionForKind(kind);
+    votes.set(region, (votes.get(region) ?? 0) + 1);
+  }
+  let best: CortexRegion = 'lateral-temporal';
+  let most = 0;
+  for (const [region, count] of votes) {
+    if (count > most) {
+      most = count;
+      best = region;
+    }
+  }
+  return best;
+}
+
+/** The region's direction on the given hemisphere (+1 right, -1 left). */
+export function regionDir(region: CortexRegion, hemisphere: 1 | -1): Vec3 {
+  const dir = REGION_DIR[region];
+  return region === 'cerebellum' ? dir : { x: dir.x * hemisphere, y: dir.y, z: dir.z };
+}
+
 /* -------------------------------- layout -------------------------------- */
 
 const ENTITY_ROUNDS = 80;
+/** How hard a topic is pulled to its region, against repulsion and co-mention. */
+const REGION_PULL = 0.14;
+/** How much a memory leans toward its own kind's region, against its topics. */
+const KIND_LEAN = 0.25;
 const MEMORY_ROUNDS = 60;
 /** How close two neurons may sit, as an angle in radians (about 3.5°). */
 const NEURON_SEPARATION = 0.062;
@@ -179,14 +304,14 @@ const CORE_CLEARANCE = 0.1;
 
 /** Surface offsets, as multiples of `brainRadius`. */
 export const SURFACE = {
-  entity: 1.045,
-  memory: 1.02,
+  entity: 1.04,
+  memory: 1.022,
   /** Sunk into the tissue: just at the surface, so it is still seen, as an ember. */
   dormant: 1.004,
   deep: 0.6,
 } as const;
 
-export function layoutCortex(graph: MemoryGraph | null): CortexLayout {
+export function layoutCortex(graph: MemoryGraph | null, surface: Surface = brainRadius): CortexLayout {
   if (!graph) return { entities: [], memories: [] };
 
   /* Topics: spread over the surface, big ones pushing harder. */
@@ -194,10 +319,31 @@ export function layoutCortex(graph: MemoryGraph | null): CortexLayout {
   const mentions = new Map<string, number>();
   for (const link of graph.links) mentions.set(link.entityId, (mentions.get(link.entityId) ?? 0) + 1);
 
+  const memoryKindById = new Map(graph.memories.map((memory) => [memory.id, memory.kind as string]));
+  const kindsOfEntity = new Map<string, string[]>();
+  for (const link of graph.links) {
+    const kind = memoryKindById.get(link.memoryId);
+    if (!kind) continue;
+    const list = kindsOfEntity.get(link.entityId);
+    if (list) list.push(kind);
+    else kindsOfEntity.set(link.entityId, [kind]);
+  }
+
+  // A topic starts in its region, on a hemisphere its id decides, a little
+  // off the region's centre so two topics of one region do not start on
+  // top of each other.
   const entityDirs = new Map<string, Vec3>();
+  const entityHome = new Map<string, Vec3>();
+  const entityRegion = new Map<string, CortexRegion>();
   const entityWeight = new Map<string, number>();
   for (const entity of graph.entities) {
-    entityDirs.set(entity.id, directionFrom(hash01(entity.id, 1), hash01(entity.id, 2)));
+    const hemisphere: 1 | -1 = hash01(entity.id, 9) < 0.5 ? 1 : -1;
+    const region = regionForEntity(entity.kind, kindsOfEntity.get(entity.id) ?? []);
+    const home = regionDir(region, hemisphere);
+    entityRegion.set(entity.id, region);
+    const jitter = directionFrom(hash01(entity.id, 1), hash01(entity.id, 2));
+    entityHome.set(entity.id, home);
+    entityDirs.set(entity.id, normalize(add(home, scale(jitter, 0.35))));
     entityWeight.set(entity.id, 1 + Math.log1p(mentions.get(entity.id) ?? entity.mentions ?? 0));
   }
 
@@ -250,6 +396,8 @@ export function layoutCortex(graph: MemoryGraph | null): CortexLayout {
       // Stay out of the fissure on the crown: a region sitting in the cut
       // between the hemispheres belongs to neither.
       if (da.y > 0) force.x += Math.sign(da.x || 1) * 0.15 * Math.exp(-(da.x * da.x) / 0.02);
+      // And home: the region its memories say it belongs to.
+      force = add(force, scale(sub(entityHome.get(a)!, da), REGION_PULL));
       forces.set(a, force);
     }
     for (const [key, count] of together) {
@@ -311,27 +459,34 @@ export function layoutCortex(graph: MemoryGraph | null): CortexLayout {
   }
 
   const working: Working[] = graph.memories.map((memory) => {
-    const anchor = anchors.get(memory.id) ?? null;
+    const topics = anchors.get(memory.id) ?? null;
     const jitter = directionFrom(hash01(memory.id, 3), hash01(memory.id, 4));
     const owned = memoryEntities.get(memory.id)?.length ?? 0;
+    const kindHome = regionDir(regionForKind(memory.kind), (topics ? topics.x : jitter.x) < 0 ? -1 : 1);
+    // Where its topics are, leaning toward where its kind belongs: an event
+    // filed under a topic of facts still drifts to the underside of that
+    // topic's lobe rather than sitting in the middle of the facts. A memory
+    // with no topic at all has only its kind, and goes where that lives.
+    const anchor = topics ? normalize(add(scale(topics, 1 - KIND_LEAN), scale(kindHome, KIND_LEAN))) : kindHome;
     // A neuron of one topic forms a cloud around that core; one of several
-    // topics sits between them and needs less room to be told apart.
-    const spread = owned > 1 ? 0.12 : 0.24;
-    const dir = anchor ? normalize(add(anchor, scale(jitter, spread))) : jitter;
-    return { id: memory.id, dir, anchor, deep: !anchor, dormant: Boolean(memory.dormantAt) };
+    // topics sits between them and needs less room to be told apart; one
+    // of none has a whole region to itself and spreads out in it.
+    const spread = owned > 1 ? 0.12 : owned === 1 ? 0.24 : 0.4;
+    const dir = normalize(add(anchor, scale(jitter, spread)));
+    return { id: memory.id, dir, anchor, deep: false, dormant: Boolean(memory.dormantAt) };
   });
 
   const coreDirs = entityIds.map((id) => entityDirs.get(id)!);
-  const surface = working.filter((item) => !item.deep);
+  const onSurface = working;
 
   for (let round = 0; round < MEMORY_ROUNDS; round++) {
     const step = 1 - round / MEMORY_ROUNDS;
-    for (let i = 0; i < surface.length; i++) {
-      const me = surface[i]!;
+    for (let i = 0; i < onSurface.length; i++) {
+      const me = onSurface[i]!;
       let force = { x: 0, y: 0, z: 0 };
-      for (let j = 0; j < surface.length; j++) {
+      for (let j = 0; j < onSurface.length; j++) {
         if (i === j) continue;
-        const other = surface[j]!;
+        const other = onSurface[j]!;
         const away = sub(me.dir, other.dir);
         const distance = Math.hypot(away.x, away.y, away.z);
         if (distance >= NEURON_SEPARATION || distance === 0) continue;
@@ -352,7 +507,13 @@ export function layoutCortex(graph: MemoryGraph | null): CortexLayout {
 
   const entities: CortexEntity[] = entityIds.map((id) => {
     const dir = entityDirs.get(id)!;
-    return { id, dir, position: scale(dir, brainRadius(dir) * SURFACE.entity), weight: entityWeight.get(id)! };
+    return {
+      id,
+      dir,
+      position: scale(dir, surface(dir) * SURFACE.entity),
+      weight: entityWeight.get(id)!,
+      region: entityRegion.get(id)!,
+    };
   });
 
   const memories: CortexMemory[] = working.map((item) => {
@@ -360,9 +521,10 @@ export function layoutCortex(graph: MemoryGraph | null): CortexLayout {
     return {
       id: item.id,
       dir: item.dir,
-      position: scale(item.dir, brainRadius(item.dir) * offset),
+      position: scale(item.dir, surface(item.dir) * offset),
       deep: item.deep,
       dormant: item.dormant,
+      region: regionForKind(memoryKindById.get(item.id) ?? 'fact'),
     };
   });
 
@@ -404,7 +566,14 @@ function slerp(a: Vec3, b: Vec3, t: number): Vec3 {
  *
  * Returned flat, `segments + 1` points, for a line buffer.
  */
-export function fibrePath(a: Vec3, b: Vec3, lift: number, segments: number, seed: string): Float32Array {
+export function fibrePath(
+  a: Vec3,
+  b: Vec3,
+  lift: number,
+  segments: number,
+  seed: string,
+  surface: Surface = brainRadius,
+): Float32Array {
   const out = new Float32Array((segments + 1) * 3);
   const da = normalize(a);
   const db = normalize(b);
@@ -412,8 +581,26 @@ export function fibrePath(a: Vec3, b: Vec3, lift: number, segments: number, seed
   const rb = Math.hypot(b.x, b.y, b.z);
   const span = Math.acos(Math.max(-1, Math.min(1, dot(da, db))));
 
-  // Sideways: perpendicular to the plane of the great circle.
-  const axis = span > 1e-3 ? normalize(cross(da, db)) : perpendicular(da);
+  // The way goes through a midpoint. For most pairs that is simply the
+  // halfway direction; for two bodies on opposite sides of the brain the
+  // great circle between them is not defined, and the fibre used to fly
+  // off into a spike there. Those go over the crown instead.
+  const sum = add(da, db);
+  let mid =
+    Math.hypot(sum.x, sum.y, sum.z) > 0.25
+      ? normalize(sum)
+      : normalize(add(perpendicular(da), { x: 0, y: 0.8, z: 0 }));
+  // The underside toward the back is where the cerebellum tucks under the
+  // cerebrum - no surface a fibre can lie on. A long fibre whose way would
+  // pass there is lifted just enough to skirt it along the side, keeping
+  // its own bearing: sending them all over the crown instead bunched every
+  // long fibre through one point, a cage of great circles.
+  if (span > 0.9 && mid.y < -0.2 && mid.z < 0.35) {
+    mid = normalize({ x: mid.x, y: -0.2, z: mid.z });
+  }
+
+  // Sideways: perpendicular to the plane of the way.
+  const axis = span > 1e-3 ? normalize(cross(da, mid)) : perpendicular(da);
   const waveAmplitude = (0.02 + 0.06 * hash01(seed, 11)) * Math.min(1, span);
   const waveFrequency = 1.5 + hash01(seed, 12) * 2;
   const wavePhase = hash01(seed, 13) * Math.PI * 2;
@@ -421,17 +608,38 @@ export function fibrePath(a: Vec3, b: Vec3, lift: number, segments: number, seed
   // How far each end sits off the fibre's own height, so the fibre can
   // start and finish exactly on the bodies and forget that within a third
   // of its length.
-  const offsetA = ra - brainRadius(da) * (1 + lift);
-  const offsetB = rb - brainRadius(db) * (1 + lift);
+  const offsetA = ra - surface(da) * (1 + lift);
+  const offsetB = rb - surface(db) * (1 + lift);
 
+  const dirs: Vec3[] = [];
+  const floors: number[] = [];
+  const heights: number[] = [];
   for (let index = 0; index <= segments; index++) {
     const t = index / segments;
     const bell = Math.sin(t * Math.PI);
     const wave = Math.sin(t * Math.PI * waveFrequency + wavePhase) * waveAmplitude * bell;
-    const dir = normalize(add(slerp(da, db, t), scale(axis, wave)));
-    const height = brainRadius(dir) * (1 + lift + 0.02 * bell);
-    const ease = (u: number): number => Math.pow(Math.max(0, 1 - u * 3), 2);
-    const radius = height + offsetA * ease(t) + offsetB * ease(1 - t);
+    const along = t < 0.5 ? slerp(da, mid, t * 2) : slerp(mid, db, t * 2 - 1);
+    const dir = normalize(add(along, scale(axis, wave)));
+    const floor = surface(dir) * (1 + lift + 0.02 * bell);
+    dirs.push(dir);
+    floors.push(floor);
+    heights.push(floor);
+  }
+  // The surface is sampled, and a sampled surface has steps; two passes of
+  // a small blur take the steps out of the height without moving the way.
+  // The blur may only lift a point, never lower it below the surface it
+  // was read from - a fibre smoothed downward is a fibre inside the brain.
+  for (let pass = 0; pass < 2; pass++) {
+    const before = heights.slice();
+    for (let index = 1; index < segments; index++) {
+      heights[index] = Math.max(floors[index]!, (before[index - 1]! + 2 * before[index]! + before[index + 1]!) / 4);
+    }
+  }
+  const ease = (u: number): number => Math.pow(Math.max(0, 1 - u * 3), 2);
+  for (let index = 0; index <= segments; index++) {
+    const t = index / segments;
+    const dir = dirs[index]!;
+    const radius = heights[index]! + offsetA * ease(t) + offsetB * ease(1 - t);
     out[index * 3] = dir.x * radius;
     out[index * 3 + 1] = dir.y * radius;
     out[index * 3 + 2] = dir.z * radius;
@@ -459,26 +667,3 @@ export function pathPoint(path: Float32Array, t: number, out: Vec3): Vec3 {
   return out;
 }
 
-/**
- * The tissue itself: points scattered over the cortex, hash-seeded so the
- * ghost of the brain is the same on every visit. Returned flat for a buffer.
- */
-export function surfaceDust(count: number): { positions: Float32Array; shades: Float32Array } {
-  const positions = new Float32Array(count * 3);
-  const shades = new Float32Array(count);
-  for (let index = 0; index < count; index++) {
-    const key = 'dust:' + index;
-    const dir = directionFrom(hash01(key, 5), hash01(key, 6));
-    const shape = brainShape(dir);
-    // Slightly under the neurons and a little uneven, like a real surface.
-    const radius = shape.radius * (0.985 + hash01(key, 7) * 0.02);
-    positions[index * 3] = dir.x * radius;
-    positions[index * 3 + 1] = dir.y * radius;
-    positions[index * 3 + 2] = dir.z * radius;
-    // Ridges catch the light, grooves and the fissure fall into shadow:
-    // that is what makes the tissue read as a cortex rather than a fog.
-    const ridge = 0.45 + 0.55 * Math.max(-1, Math.min(1, shape.fold));
-    shades[index] = ridge * (1 - 0.85 * shape.fissure) * (0.8 + hash01(key, 8) * 0.4);
-  }
-  return { positions, shades };
-}
