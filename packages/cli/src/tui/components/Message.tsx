@@ -1,7 +1,7 @@
 /**
  * One conversation turn.
  *
- * A user turn keeps its own words verbatim behind an amber caret - echoing
+ * A user turn keeps its own words verbatim behind a brand-green caret - echoing
  * someone's markdown back at them as rendered markdown is confusing. An
  * assistant turn gets a thin meta line naming who answered, on what, how long
  * it took and what it cost, and then the answer itself through the markdown
@@ -24,13 +24,13 @@ export interface UserMessageProps {
 export function UserMessage({ text }: UserMessageProps): React.JSX.Element {
   return (
     <Box flexDirection="row" marginTop={1}>
-      <Text color={ui.amber} bold>
+      <Text color={ui.accent} bold>
         {glyph.prompt + ' '}
       </Text>
       <Box flexGrow={1} flexDirection="column">
         {text.split('\n').map((line, index) => (
           // Lines of a user turn have no identity beyond their position.
-          <Text key={index} color={ui.ivory} wrap="wrap">
+          <Text key={index} color={ui.frost} wrap="wrap">
             {line || ' '}
           </Text>
         ))}
@@ -63,12 +63,12 @@ export function AssistantMessage({
   cursorVisible,
 }: AssistantMessageProps): React.JSX.Element {
   const trailing =
-    streaming && cursorVisible ? <Text color={ui.amber}>{STREAM_CURSOR}</Text> : null;
+    streaming && cursorVisible ? <Text color={ui.accent}>{STREAM_CURSOR}</Text> : null;
 
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row">
-        <Badge color={ui.amber}>{speaker}</Badge>
+        <Badge color={ui.accent}>{speaker}</Badge>
         {provider ? <Text color={ui.faint}>{'  ' + provider}</Text> : null}
         {durationMs !== undefined ? (
           <Text color={ui.faint}>{'  ' + formatDuration(durationMs)}</Text>

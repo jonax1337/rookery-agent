@@ -259,7 +259,7 @@ function Inline({
   dim?: boolean;
 }): React.JSX.Element {
   const spans = parseInline(text);
-  const base = color ?? ui.ivory;
+  const base = color ?? ui.frost;
   return (
     <Text color={base} bold={bold} dimColor={dim} wrap="wrap">
       {spans.map((span, index) => (
@@ -269,7 +269,7 @@ function Inline({
           italic={span.italic}
           strikethrough={span.strike}
           underline={span.link}
-          color={span.code ? ui.amberSoft : span.link ? ui.info : base}
+          color={span.code ? ui.accentSoft : span.link ? ui.info : base}
         >
           {span.text}
         </Text>
@@ -346,7 +346,7 @@ export function Markdown({ children, trailing }: MarkdownProps): React.JSX.Eleme
               <Box key={index} flexDirection="column" marginTop={gap}>
                 {block.text.split('\n').map((line, lineIndex, all) => (
                   <Box key={lineIndex} flexDirection="row">
-                    <Text color={ui.amber} dimColor>
+                    <Text color={ui.accent} dimColor>
                       {glyph.bar + ' '}
                     </Text>
                     <Box flexGrow={1}>
@@ -400,7 +400,7 @@ export function Markdown({ children, trailing }: MarkdownProps): React.JSX.Eleme
  * A heading, set rather than echoed.
  *
  * Level 1 is the loudest thing a reply can say, so it is set in caps with a
- * rule under it; level 2 is brand amber; level 3 and deeper stay in body
+ * rule under it; level 2 is brand green; level 3 and deeper stay in body
  * colour and lean on weight alone. No level prints its hashes.
  *
  * Caps carry the emphasis on their own - letterspacing them as well pulls the
@@ -423,7 +423,7 @@ function HeadingBlock({
       <Box flexDirection="column" marginTop={gap}>
         <Box flexDirection="row">
           <Box flexGrow={1}>
-            <Inline text={text.toUpperCase()} color={ui.amber} bold />
+            <Inline text={text.toUpperCase()} color={ui.accent} bold />
           </Box>
           {tail}
         </Box>
@@ -442,7 +442,7 @@ function HeadingBlock({
   return (
     <Box flexDirection="row" marginTop={gap}>
       <Box flexGrow={1}>
-        <Inline text={text} color={level === 2 ? ui.amber : ui.ivory} bold />
+        <Inline text={text} color={level === 2 ? ui.accent : ui.frost} bold />
       </Box>
       {tail}
     </Box>
@@ -453,7 +453,7 @@ function HeadingBlock({
 function ListRow({ item }: { item: ListItem }): React.JSX.Element {
   const marker =
     item.checked === undefined ? item.marker : item.checked ? glyph.boxOn : glyph.boxOff;
-  const color = item.checked ? ui.ok : item.checked === false ? ui.muted : ui.amber;
+  const color = item.checked ? ui.ok : item.checked === false ? ui.muted : ui.accent;
 
   return (
     <Box flexDirection="row" paddingLeft={item.indent * 2}>
@@ -497,7 +497,7 @@ function TableBlock({ header, rows }: { header: string[]; rows: string[][] }): R
 
   return (
     <Box flexDirection="column">
-      {row(header, ui.amber, true)}
+      {row(header, ui.accent, true)}
       <Box flexDirection="row">
         {widths.map((width, column) => (
           <Box key={column} marginRight={column === widths.length - 1 ? 0 : 2}>
@@ -506,7 +506,7 @@ function TableBlock({ header, rows }: { header: string[]; rows: string[][] }): R
         ))}
       </Box>
       {rows.map((cells, rowIndex) => (
-        <React.Fragment key={rowIndex}>{row(cells, ui.ivory, false)}</React.Fragment>
+        <React.Fragment key={rowIndex}>{row(cells, ui.frost, false)}</React.Fragment>
       ))}
     </Box>
   );

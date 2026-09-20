@@ -99,7 +99,7 @@ export function StatusLine(props: StatusLineProps): React.JSX.Element {
           <Text color={ui.ok}>{glyph.bullet + ' ready'}</Text>
         )}
 
-        <Text color={ui.ivory} bold>
+        <Text color={ui.frost} bold>
           {'  ' + assistantName}
         </Text>
         {counterpartTitle && wide ? (
@@ -213,7 +213,7 @@ function MeterRow({
             </Text>
           ) : null}
           {spent.costUsd > 0 ? (
-            <Text color={ui.amberSoft}>{'  ' + glyph.dot + '  ' + money(spent.costUsd)}</Text>
+            <Text color={ui.accentSoft}>{'  ' + glyph.dot + '  ' + money(spent.costUsd)}</Text>
           ) : null}
         </>
       ) : null}

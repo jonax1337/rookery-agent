@@ -67,14 +67,14 @@ export function QuestionView({ question, now, onAnswer }: QuestionViewProps): Re
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row">
-        <Text color={ui.amber} bold>
+        <Text color={ui.accent} bold>
           {glyph.prompt + ' ' + question.header}
         </Text>
         <Text color={ui.faint}>{'  ' + timeLeft(question.expiresAt - now)}</Text>
       </Box>
 
       <Box paddingLeft={2} flexDirection="column">
-        <Text color={ui.ivory}>{question.question}</Text>
+        <Text color={ui.frost}>{question.question}</Text>
 
         <Box marginTop={1} flexDirection="column">
           {question.multiSelect ? (

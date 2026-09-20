@@ -93,7 +93,7 @@ function AssignmentRow({
             line with the rows above. */}
         <Text color={ui.agent}>{slug(view.agentSlug, indent.length)}</Text>
         <Box flexGrow={1}>
-          <Text color={view.status === 'pending' ? ui.muted : ui.ivory} wrap="truncate-end">
+          <Text color={view.status === 'pending' ? ui.muted : ui.frost} wrap="truncate-end">
             {view.task}
           </Text>
         </Box>
@@ -153,7 +153,7 @@ function Headline({
 
   return (
     <Box flexDirection="row">
-      <Text color={ui.amber} bold>
+      <Text color={ui.accent} bold>
         {glyph.agent + ' delegating '}
       </Text>
       <Text color={ui.muted}>{bits.join('  ' + glyph.dot + '  ')}</Text>
@@ -181,7 +181,7 @@ export function AssignmentsSummaryView({
         <Text color={summary.failed ? ui.warn : ui.ok}>
           {(summary.failed ? glyph.warn : glyph.ok) + ' '}
         </Text>
-        <Text color={ui.amber} bold>
+        <Text color={ui.accent} bold>
           {'delegating '}
         </Text>
         <Text color={ui.muted}>{bits.join('  ' + glyph.dot + '  ')}</Text>
@@ -192,7 +192,7 @@ export function AssignmentsSummaryView({
             {'  ' + '  '.repeat(Math.max(0, view.depth)) + slug(view.agentSlug, view.depth * 2)}
           </Text>
           <Box flexGrow={1}>
-            <Text color={ui.ivory} wrap="truncate-end">
+            <Text color={ui.frost} wrap="truncate-end">
               {view.task}
             </Text>
           </Box>

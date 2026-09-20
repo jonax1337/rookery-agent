@@ -8,12 +8,37 @@
 
 import chalk from 'chalk';
 
-/** Brand colours, shared with the web UI. */
+/**
+ * Brand colours, shared with the web UI.
+ *
+ * These are Atrium, the identity `branding/` builds: evergreen, eucalyptus,
+ * celadon and frost. The web app reads the same hexes from
+ * `branding/colors.css`, which is why they are spelled out again here - a
+ * terminal cannot import a stylesheet, so this is the copy and
+ * `branding/colors.json` is the original.
+ */
 export const BRAND = {
-  ink: '#171A1D',
-  ivory: '#F2F0EA',
-  amber: '#D9A65C',
+  /** Evergreen: the web app's light-theme primary. In a terminal, a ground. */
+  evergreen: '#253A3B',
+  /** Eucalyptus: the supporting accent of the identity. */
+  eucalyptus: '#6A9185',
+  /** Celadon: the brightest brand green, the dark theme's primary. */
+  celadon: '#CCDDD1',
+  /** Frost: body text on a dark terminal. */
+  frost: '#EFF4F0',
 } as const;
+
+/**
+ * The accent the interface points with.
+ *
+ * Neither brand green works alone here. Celadon is so light it reads as a
+ * second off-white beside frost, and eucalyptus so dark it sinks to the weight
+ * of chrome. Halfway between the two sits a green that still carries the
+ * identity and holds the place amber held in the ramp - the same contrast
+ * against black, to within a rounding error - so nothing legible before became
+ * less so.
+ */
+export const ACCENT = '#9BB7AB';
 
 function detectColor(): boolean {
   const env = process.env;
@@ -43,11 +68,11 @@ const id: Paint = (text) => text;
 
 /** Every colour the CLI is allowed to use, in one place. */
 export const theme = {
-  /** Brand amber - prompts, headings, the assistant's own identity. */
-  amber: colorEnabled ? (text: string) => chalk.hex(BRAND.amber)(text) : id,
-  amberBold: colorEnabled ? (text: string) => chalk.hex(BRAND.amber).bold(text) : id,
-  /** Warm off-white for primary body text on dark terminals. */
-  ivory: colorEnabled ? (text: string) => chalk.hex(BRAND.ivory)(text) : id,
+  /** Brand green - prompts, headings, the assistant's own identity. */
+  accent: colorEnabled ? (text: string) => chalk.hex(ACCENT)(text) : id,
+  accentBold: colorEnabled ? (text: string) => chalk.hex(ACCENT).bold(text) : id,
+  /** Frost for primary body text on dark terminals. */
+  frost: colorEnabled ? (text: string) => chalk.hex(BRAND.frost)(text) : id,
   bold: colorEnabled ? (text: string) => chalk.bold(text) : id,
   dim: colorEnabled ? (text: string) => chalk.dim(text) : id,
   gray: colorEnabled ? (text: string) => chalk.gray(text) : id,

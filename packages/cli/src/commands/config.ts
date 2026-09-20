@@ -158,10 +158,10 @@ function isPlainObject(value: unknown): value is Plain {
 
 function format(value: unknown): string {
   if (value === undefined || value === null) return theme.dim('(unset)');
-  if (typeof value === 'string') return value === '' ? theme.dim('(empty)') : theme.ivory(value);
+  if (typeof value === 'string') return value === '' ? theme.dim('(empty)') : theme.frost(value);
   if (typeof value === 'boolean') return value ? theme.green('true') : theme.yellow('false');
   if (typeof value === 'number') return theme.cyan(String(value));
-  return theme.ivory(JSON.stringify(value));
+  return theme.frost(JSON.stringify(value));
 }
 
 function unknownKey(key: string, config: RookeryConfig): CliError {

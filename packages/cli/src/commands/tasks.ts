@@ -365,6 +365,6 @@ function paintStatus(status: TaskStatus): string {
     case 'cancelled':
       return theme.dim(status);
     default:
-      return theme.ivory(status);
+      return theme.frost(status);
   }
 }

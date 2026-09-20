@@ -1,12 +1,19 @@
 /**
- * The boot banner: the mark, who is answering, and what is logged in.
+ * The boot banner: the lockup, who is answering, and what is logged in.
  *
  * It is the first thing on screen and the only place the interface is allowed
  * to be decorative, so it earns its height by answering the three questions a
  * fresh prompt raises - which assistant, on which provider, with how much
- * permission - next to the mark rather than under it. The panel border is the
- * frame language the input box and the palette speak, so the three boxes read
- * as one interface rather than three coincidences.
+ * permission - directly under the mark. The panel border is the frame language
+ * the input box and the palette speak, so the three boxes read as one
+ * interface rather than three coincidences.
+ *
+ * The identity hangs under the wordmark rather than beside the whole lockup,
+ * because the wordmark is 41 columns wide on its own: set side by side the
+ * panel would need past a hundred columns, which is wider than most terminals
+ * are. In the wordmark's column it costs no height at all - the mark is six
+ * rows and the wordmark three, so the space was already there. Under a narrow
+ * terminal the wordmark drops away and the identity moves beside the mark.
  *
  * Rendered as a scrollback entry, which means `<Static>` writes it once and it
  * scrolls away like any other turn instead of pinning to the top.
@@ -16,30 +23,32 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import { Alert, Badge, StatusMessage } from '@inkjs/ui';
 import { glyph, ui } from '../theme.js';
-import { Wordmark } from './Wordmark.js';
+import { useColumns } from '../hooks/useColumns.js';
+import { Logo, LOCKUP_COLUMNS } from './Logo.js';
 import type { BannerState } from '../types.js';
+
+/** The panel's own border and padding, on top of whatever it wraps. */
+const PANEL_CHROME = 4;
 
 export interface BannerProps {
   state: BannerState;
 }
 
 export function Banner({ state }: BannerProps): React.JSX.Element {
+  const columns = useColumns();
+
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box
-        flexDirection="row"
+        flexDirection="column"
         borderStyle="round"
         borderColor={ui.faint}
         borderDimColor
         paddingX={1}
       >
-        <Box marginRight={3}>
-          <Wordmark text={state.wordmark} />
-        </Box>
-
-        <Box flexDirection="column" justifyContent="center" flexGrow={1}>
+        <Logo markOnly={columns < LOCKUP_COLUMNS + PANEL_CHROME}>
           <Box flexDirection="row">
-            <Text color={ui.ivory} bold>
+            <Text color={ui.frost} bold>
               {state.agent ?? state.assistantName}
             </Text>
             {state.agent ? <Text color={ui.agent}>{'  Direct chat'}</Text> : null}
@@ -52,7 +61,7 @@ export function Banner({ state }: BannerProps): React.JSX.Element {
           <Text color={ui.faint}>
             {state.project ? 'Project ' + state.project : 'no project selected'}
           </Text>
-        </Box>
+        </Logo>
       </Box>
 
       <Box flexDirection="row" marginTop={1} paddingX={1}>

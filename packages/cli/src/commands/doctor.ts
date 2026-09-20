@@ -127,7 +127,7 @@ export async function doctorCommand(options: DoctorOptions = {}): Promise<number
         const fix = status.available
           ? LOGIN_HINT[status.id] ?? 'log in to ' + status.id
           : 'install it: ' + INSTALL_HINT;
-        out.write('  ' + theme.amber(status.id) + '  ' + fix + '\n');
+        out.write('  ' + theme.accent(status.id) + '  ' + fix + '\n');
       }
       out.write('\n');
       return 1;
@@ -154,15 +154,15 @@ function providerBlock(status: ProviderStatus): string {
     : theme.red('not installed');
 
   const lines: string[] = [];
-  lines.push('  ' + mark + ' ' + theme.amberBold(status.id.padEnd(8)) + state);
+  lines.push('  ' + mark + ' ' + theme.accentBold(status.id.padEnd(8)) + state);
   lines.push('    ' + keyValue('binary', status.binary || theme.dim('not found'), 14));
   lines.push('    ' + keyValue('version', status.version ?? theme.dim('unknown'), 14));
   if (status.detail) lines.push('    ' + keyValue('detail', theme.dim(status.detail), 14));
   if (status.available && !status.authenticated) {
-    lines.push('    ' + keyValue('fix', theme.amber(LOGIN_HINT[status.id] ?? 'log in'), 14));
+    lines.push('    ' + keyValue('fix', theme.accent(LOGIN_HINT[status.id] ?? 'log in'), 14));
   }
   if (!status.available) {
-    lines.push('    ' + keyValue('fix', theme.amber(INSTALL_HINT), 14));
+    lines.push('    ' + keyValue('fix', theme.accent(INSTALL_HINT), 14));
   }
   return lines.join('\n') + '\n';
 }

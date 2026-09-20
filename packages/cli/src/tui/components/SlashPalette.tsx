@@ -51,10 +51,10 @@ export function SlashPalette({
         const label = command.name + (command.args ? ' ' + command.args : '');
         return (
           <Box key={command.name} flexDirection="row">
-            <Text color={active ? ui.amber : ui.faint}>
+            <Text color={active ? ui.accent : ui.faint}>
               {(active ? glyph.prompt : ' ') + ' '}
             </Text>
-            <Text color={active ? ui.amber : ui.muted} bold={active}>
+            <Text color={active ? ui.accent : ui.muted} bold={active}>
               {label.padEnd(width + 2)}
             </Text>
             <Box flexGrow={1}>

@@ -13,41 +13,51 @@
  * the transcript lined up with the columns of the status bar.
  */
 
-import { BRAND, glyph as baseGlyph } from '../ui/theme.js';
+import { ACCENT, BRAND, glyph as baseGlyph } from '../ui/theme.js';
 
-export { BRAND };
+export { ACCENT, BRAND };
 
 const ASCII = process.env.ROOKERY_ASCII === '1';
 
 /**
  * Semantic colours.
  *
- * Two accents carry the whole interface: brand amber for anything Rookery
- * itself says, and a dusty blue for anything a provider or a model says. The
- * three greys are a real ramp - `ivory` reads as white, `muted` as secondary,
- * `faint` as chrome - which is what stops a dense transcript from turning
- * into an undifferentiated wall.
+ * Two accents carry the whole interface: brand green for anything Rookery
+ * itself says, and a blue for anything a provider or a model says. The three
+ * greys are a real ramp - `frost` reads as white, `muted` as secondary,
+ * `faint` as chrome - which is what stops a dense transcript from turning into
+ * an undifferentiated wall.
+ *
+ * Every step keeps the contrast its amber-era predecessor had, measured
+ * against black rather than against the web app's dark green: a terminal is
+ * usually darker than the app, and the ramp has to survive that.
  */
 export const ui = {
-  /** Brand amber: the prompt, headings, the assistant's own identity. */
-  amber: BRAND.amber,
-  /** Lighter amber for the one thing on screen that should catch the eye. */
-  amberSoft: '#F0C88A',
-  /** Warm off-white: body text. */
-  ivory: BRAND.ivory,
-  /** Brand ink, only useful as a background. */
-  ink: BRAND.ink,
+  /** Brand green: the prompt, headings, the assistant's own identity. */
+  accent: ACCENT,
+  /** Celadon, for the one thing on screen that should catch the eye. */
+  accentSoft: BRAND.celadon,
+  /** Frost: body text. */
+  frost: BRAND.frost,
+  /** Evergreen, only useful as a background. */
+  evergreen: BRAND.evergreen,
   /** Secondary text: metadata, tool arguments, timings. */
-  muted: '#8A8F98',
+  muted: '#7E948B',
   /** Chrome: borders, rules, separators. Never carries information alone. */
-  faint: '#565C66',
-  ok: '#7FB88A',
-  warn: '#E0B85C',
-  danger: '#D8776B',
-  /** Providers, models, links, inline code. */
-  info: '#7FA9CE',
+  faint: '#4C6B5F',
+  /**
+   * Health, not decoration - the same three the web app aliases as
+   * `--color-status-ok`, `--color-status-warn` and `--color-status-error` in
+   * its dark theme. They stay outside the brand greens on purpose: a passing
+   * check must not be mistakable for an accent.
+   */
+  ok: '#00BC7D',
+  warn: '#E9C88F',
+  danger: '#FF6467',
+  /** Providers, models, links, inline code. The app's graph blue. */
+  info: '#5B9DFF',
   /** Agents of the company, in the assignments view and direct chats. */
-  agent: '#B79BD6',
+  agent: '#A98BFF',
 } as const;
 
 /** Braille spinner, same frames the line-based spinner uses. */
@@ -113,7 +123,7 @@ export const ASSIGNMENT_MARK = {
 
 export const ASSIGNMENT_COLOR = {
   pending: ui.muted,
-  running: ui.amber,
+  running: ui.accent,
   done: ui.ok,
   failed: ui.danger,
   cancelled: ui.warn,
@@ -130,7 +140,7 @@ export function gauge(fraction: number, width = GAUGE_WIDTH): string {
   return glyph.gaugeOn.repeat(filled) + glyph.gaugeOff.repeat(Math.max(0, width - filled));
 }
 
-/** Green under two thirds, amber past it, red when the window is nearly full. */
+/** Calm under two thirds, warning past it, red when the window is nearly full. */
 export function gaugeColor(fraction: number): string {
   if (fraction >= 0.9) return ui.danger;
   if (fraction >= 0.66) return ui.warn;

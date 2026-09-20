@@ -810,7 +810,7 @@ export async function startTui(options: TuiOptions = {}): Promise<number> {
   return 0;
 }
 
-/** What the boot banner shows: the mark, the counterpart, the logins. */
+/** What the boot banner shows beside the mark: the counterpart, the logins. */
 async function bannerState(
   assistant: Assistant,
   state: SessionState,
@@ -822,7 +822,6 @@ async function bannerState(
   const offline = statuses.filter((status) => !(status.available && status.authenticated));
 
   return {
-    wordmark: 'Rookery',
     assistantName: state.assistantName,
     ready: ready.map((status) => status.id),
     offline: offline.map((status) => status.id),

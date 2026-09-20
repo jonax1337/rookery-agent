@@ -23,10 +23,10 @@ export interface CodeBlockProps {
 
 /** Token kind -> colour. Comments recede, values come forward. */
 const TOKEN_COLOR: Record<TokenKind, string> = {
-  plain: ui.ivory,
+  plain: ui.frost,
   comment: ui.faint,
   string: ui.ok,
-  number: ui.amberSoft,
+  number: ui.accentSoft,
   keyword: ui.info,
   punctuation: ui.muted,
 };

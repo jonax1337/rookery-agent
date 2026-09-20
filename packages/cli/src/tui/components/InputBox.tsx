@@ -43,14 +43,14 @@ export function InputBox({
       <Box
         flexDirection="column"
         borderStyle="round"
-        borderColor={busy ? ui.faint : ui.amber}
+        borderColor={busy ? ui.faint : ui.accent}
         borderDimColor
         paddingX={1}
       >
         {lines.map((line, index) => (
           // Buffer lines have no identity beyond their position.
           <Box key={index} flexDirection="row">
-            <Text color={busy ? ui.faint : ui.amber} bold={index === 0}>
+            <Text color={busy ? ui.faint : ui.accent} bold={index === 0}>
               {index === 0 ? glyph.prompt + ' ' : glyph.bar + ' '}
             </Text>
             <Box flexGrow={1}>
@@ -90,7 +90,7 @@ function CaretLine({
 }): React.JSX.Element {
   if (column < 0) {
     return (
-      <Text color={ui.ivory} wrap="wrap">
+      <Text color={ui.frost} wrap="wrap">
         {line || ' '}
       </Text>
     );
@@ -101,9 +101,9 @@ function CaretLine({
   const after = line.slice(column + 1);
 
   return (
-    <Text color={ui.ivory} wrap="wrap">
+    <Text color={ui.frost} wrap="wrap">
       {before}
-      <Text inverse={visible} color={ui.ivory}>
+      <Text inverse={visible} color={ui.frost}>
         {at}
       </Text>
       {after}

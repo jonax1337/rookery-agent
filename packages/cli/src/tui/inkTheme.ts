@@ -28,8 +28,9 @@ const VARIANT_COLOR: Record<string, string> = {
 /**
  * `Select` and `MultiSelect` in Rookery colours.
  *
- * The row under the cursor is amber, the way everything the interface points
- * at is amber; a picked row is green, which is the one meaning `ok` carries
+ * The row under the cursor takes the accent, the way everything the interface
+ * points at does; a picked row is the success green, which is the one meaning
+ * `ok` carries
  * everywhere else. The row's own indentation is kept as the library sets it,
  * so the pointer it draws in front of the focused row lands in the gutter
  * instead of shifting the whole list sideways.
@@ -40,10 +41,10 @@ const SELECT_THEME = {
       gap: 1,
       paddingLeft: isFocused ? 0 : 2,
     }),
-    focusIndicator: () => ({ color: ui.amber }),
+    focusIndicator: () => ({ color: ui.accent }),
     selectedIndicator: () => ({ color: ui.ok }),
     label: ({ isFocused, isSelected }: { isFocused?: boolean; isSelected?: boolean }) => ({
-      color: isFocused ? ui.amberSoft : isSelected ? ui.ok : ui.ivory,
+      color: isFocused ? ui.accentSoft : isSelected ? ui.ok : ui.frost,
     }),
     highlightedText: () => ({ bold: true }),
   },
@@ -53,8 +54,8 @@ export const inkUiTheme = extendTheme(defaultTheme, {
   components: {
     Spinner: {
       styles: {
-        frame: () => ({ color: ui.amber }),
-        label: () => ({ color: ui.ivory }),
+        frame: () => ({ color: ui.accent }),
+        label: () => ({ color: ui.frost }),
       },
     },
     StatusMessage: {

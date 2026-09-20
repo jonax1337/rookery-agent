@@ -188,7 +188,7 @@ export async function memoryStatsCommand(options: MemoryStatsOptions = {}): Prom
       for (const memory of recent) {
         process.stdout.write(
           theme.dim(memory.importance.toFixed(2) + '  ') +
-            theme.ivory(shorten(memory.content, 74)) +
+            theme.frost(shorten(memory.content, 74)) +
             theme.dim('  ' + relativeTime(memory.updatedAt)) +
             '\n',
         );

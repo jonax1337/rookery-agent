@@ -405,7 +405,6 @@ const scrollback = renderToString(
         kind: 'banner',
         id: 'b1',
         banner: {
-          wordmark: 'Rookery',
           assistantName: 'jarvis',
           ready: ['claude', 'codex'],
           offline: [],
@@ -480,7 +479,8 @@ const scrollback = renderToString(
 
 show('Scrollback - a whole exchange', scrollback);
 expect(scrollback, '❯ rebuild the terminal as a TUI', 'user turn');
-expect(scrollback, '█▀▄ █▀█ █▀█', 'the wordmark is set in the block face');
+expect(scrollback, '███   █████▀', 'the banner draws the Atrium mark');
+expect(scrollback, '██▄█▄ ██▀██ ██▀██', 'the wordmark is set beside it, in lowercase');
 expect(scrollback, 'claude + codex ready', 'the banner names the logged-in providers');
 expect(scrollback, '⏺ Read src/repl.ts', 'a finished tool call');
 expect(scrollback, '✗ Edit src/tui/theme.ts', 'a failed tool call');

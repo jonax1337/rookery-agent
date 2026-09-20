@@ -72,7 +72,7 @@ export function ToolCallRow({ call, width, frame = 0, now }: ToolCallRowProps): 
       <Box flexDirection="row">
         <Text color={markColor(call)}>{mark(call, frame) + ' '}</Text>
         <Box marginRight={1}>
-          <Text color={call.status === 'failed' ? ui.danger : ui.ivory} bold>
+          <Text color={call.status === 'failed' ? ui.danger : ui.frost} bold>
             {cut(call.name, width).padEnd(width)}
           </Text>
         </Box>
@@ -114,7 +114,7 @@ function mark(call: ToolCall, frame: number): string {
 }
 
 function markColor(call: ToolCall): string {
-  if (call.status === 'running') return ui.amber;
+  if (call.status === 'running') return ui.accent;
   return call.status === 'failed' ? ui.danger : ui.ok;
 }
 

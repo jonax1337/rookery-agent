@@ -46,7 +46,7 @@ export async function serveCommand(options: ServeOptions = {}): Promise<number> 
   const url = 'http://' + (host === '0.0.0.0' ? 'localhost' : host) + ':' + port;
 
   process.stdout.write(theme.dim(glyph.dot + ' starting server ' + entry) + '\n');
-  process.stdout.write(theme.amber(glyph.bullet + ' ' + url) + '\n');
+  process.stdout.write(theme.accent(glyph.bullet + ' ' + url) + '\n');
 
   const child = spawn(process.execPath, [entry], {
     stdio: 'inherit',

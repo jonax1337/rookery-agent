@@ -42,10 +42,10 @@ export function WatchView({ assignmentId, feed, verbose }: WatchViewProps): Reac
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row">
-        <Text color={state.ended ? ui.ok : ui.amber}>
+        <Text color={state.ended ? ui.ok : ui.accent}>
           {(state.ended ? glyph.ok : PULSE_FRAMES[frame % PULSE_FRAMES.length] ?? glyph.dot) + ' '}
         </Text>
-        <Text color={ui.amber} bold>
+        <Text color={ui.accent} bold>
           {'watching ' + shortId(assignmentId)}
         </Text>
         <Text color={ui.faint}>{'  ' + formatDuration(elapsed)}</Text>
@@ -80,7 +80,7 @@ export function WatchView({ assignmentId, feed, verbose }: WatchViewProps): Reac
           return (
             <Box key={'m' + index} flexDirection="column">
               <Markdown trailing={segment.streaming && caret
-                ? <Text color={ui.amber}>{STREAM_CURSOR}</Text>
+                ? <Text color={ui.accent}>{STREAM_CURSOR}</Text>
                 : null}
               >
                 {segment.text}

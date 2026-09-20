@@ -82,7 +82,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
   switch (command) {
     case 'help':
     case '?': {
-      const lines: NoticeLine[] = [{ text: 'Commands', color: ui.amber, bold: true }];
+      const lines: NoticeLine[] = [{ text: 'Commands', color: ui.accent, bold: true }];
       for (const entry of SLASH_COMMANDS) {
         const label = entry.name + (entry.args ? ' ' + entry.args : '');
         lines.push({ text: '  ' + label.padEnd(24) + entry.description, dim: true });
@@ -234,7 +234,7 @@ export async function runSlashCommand(input: string, ctx: SlashContext): Promise
       const lines: NoticeLine[] = [
         {
           text: session.provider + (quota.plan ? '  ' + quota.plan : '') + '  ' + glyph.dot + '  subscription usage',
-          color: ui.amber,
+          color: ui.accent,
           bold: true,
         },
       ];

@@ -449,7 +449,7 @@ function promptText(state: ReplState): string {
   if (state.projectName) bits.push(state.projectName);
   if (state.voice) bits.push('voice');
   // Single line on purpose: readline's cursor math breaks on multi-line prompts.
-  return theme.amberBold(bits.join(glyph.dot) + ' ' + glyph.prompt + ' ');
+  return theme.accentBold(bits.join(glyph.dot) + ' ' + glyph.prompt + ' ');
 }
 
 function note(text: string): void {
@@ -466,11 +466,11 @@ function note(text: string): void {
 function printQuestion(event: QuestionEvent): void {
   if (isTty) process.stdout.write('\r\x1B[2K');
   note('');
-  note(theme.amberBold(glyph.prompt + ' ' + event.header));
-  note('  ' + theme.ivory(event.question));
+  note(theme.accentBold(glyph.prompt + ' ' + event.header));
+  note('  ' + theme.frost(event.question));
   event.options.forEach((option, index) => {
     note(
-      '  ' + theme.amber(String(index + 1) + '.') + ' ' + theme.ivory(option.label) +
+      '  ' + theme.accent(String(index + 1) + '.') + ' ' + theme.frost(option.label) +
         (option.description ? theme.dim('  ' + glyph.dot + ' ' + option.description) : ''),
     );
   });
@@ -523,7 +523,7 @@ function answerEcho(answer: { selected: number[]; text?: string }, event: Questi
 async function printBanner(assistant: Assistant, state: ReplState): Promise<void> {
   const out = process.stdout;
   out.write(
-    '\n' + theme.amberBold('Rookery') +
+    '\n' + theme.accentBold('Rookery') +
       theme.dim((state.agentId ? '  with ' + state.counterpart : '') + '  via ' + state.provider) +
       '\n',
   );
@@ -568,7 +568,7 @@ async function handleSlash(
       note('');
       note(heading('Commands'));
       for (const [name, description] of SLASH_HELP) {
-        note(theme.amber('  ' + name.padEnd(24)) + theme.dim(description));
+        note(theme.accent('  ' + name.padEnd(24)) + theme.dim(description));
       }
       return false;
     }
@@ -587,7 +587,7 @@ async function handleSlash(
       }
       note('');
       for (const session of sessions) {
-        const marker = session.id === state.sessionId ? theme.amber(glyph.bullet + ' ') : '  ';
+        const marker = session.id === state.sessionId ? theme.accent(glyph.bullet + ' ') : '  ';
         note(marker + sessionLine(session, counterpartLabel(assistant, session.agentId)));
       }
       note(theme.dim('/switch <id> to continue one'));
@@ -663,7 +663,7 @@ async function handleSlash(
 
     case 'usage': {
       const quota = await providerQuota(state.provider);
-      note(theme.amber(state.provider + (quota.plan ? '  ' + quota.plan : '') + '  subscription usage'));
+      note(theme.accent(state.provider + (quota.plan ? '  ' + quota.plan : '') + '  subscription usage'));
       for (const window of quota.windows) {
         const filled = Math.round(window.percent / 5);
         const bar = '█'.repeat(filled) + '░'.repeat(20 - filled);
@@ -742,8 +742,8 @@ async function handleSlash(
       for (const agent of agents) {
         const manager = agent.managerId ? byId.get(agent.managerId) : undefined;
         note(
-          '  ' + theme.amber(shorten(agent.slug, 17).padEnd(18)) +
-            theme.ivory(shorten(agent.title, 27).padEnd(28)) +
+          '  ' + theme.accent(shorten(agent.slug, 17).padEnd(18)) +
+            theme.frost(shorten(agent.title, 27).padEnd(28)) +
             theme.dim('reports to ' + (manager ? manager.slug : 'the assistant')),
         );
       }
@@ -843,8 +843,8 @@ async function handleSlash(
           ? (agents.get(message.fromAgentId)?.slug ?? shortId(message.fromAgentId))
           : 'the assistant';
         note(
-          '  ' + theme.amber(shorten(from, 15).padEnd(16)) +
-            theme.ivory(shorten(message.content, 70)) +
+          '  ' + theme.accent(shorten(from, 15).padEnd(16)) +
+            theme.frost(shorten(message.content, 70)) +
             theme.dim('  ' + relativeTime(message.createdAt)),
         );
       }
@@ -916,7 +916,7 @@ async function handleSlash(
               ? theme.yellow(glyph.warn)
               : theme.red(glyph.fail);
         note(
-          '  ' + mark + ' ' + theme.amber(status.id.padEnd(8)) +
+          '  ' + mark + ' ' + theme.accent(status.id.padEnd(8)) +
             theme.dim(
               (status.version ?? 'unknown') + '  ' +
                 (status.authenticated ? 'authenticated' : status.detail ?? 'not ready'),

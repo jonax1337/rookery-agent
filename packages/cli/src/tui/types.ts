@@ -250,8 +250,6 @@ export type Entry =
 
 /** Everything the boot banner shows. */
 export interface BannerState {
-  /** Product name, set in the block face. */
-  wordmark: string;
   /** Who answers in this conversation. */
   assistantName: string;
   /** Providers that are logged in and usable. */

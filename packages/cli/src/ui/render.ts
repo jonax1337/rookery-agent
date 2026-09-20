@@ -334,9 +334,9 @@ export function taskLine(task: Task, assignee = 'unassigned'): string {
           ? theme.yellow
           : theme.dim;
   return (
-    theme.amber(shortId(task.id).padEnd(9)) +
+    theme.accent(shortId(task.id).padEnd(9)) +
     paint(task.status.padEnd(10)) +
-    theme.ivory(shorten(task.title, 48).padEnd(50)) +
+    theme.frost(shorten(task.title, 48).padEnd(50)) +
     theme.dim(shorten(assignee, 16))
   );
 }
@@ -357,8 +357,8 @@ export function messageNote(
  */
 export function sessionLine(session: Session, counterpart = 'assistant'): string {
   return (
-    theme.amber(shortId(session.id).padEnd(9)) +
-    theme.ivory(shorten(session.title, 38).padEnd(40)) +
+    theme.accent(shortId(session.id).padEnd(9)) +
+    theme.frost(shorten(session.title, 38).padEnd(40)) +
     theme.cyan(shorten(counterpart, 15).padEnd(16)) +
     theme.dim(
       String(session.messageCount).padStart(3) +
@@ -374,10 +374,10 @@ export function memoryLine(memory: MemoryRecord | ScoredMemory): string {
   const tags = memory.tags.length ? theme.dim(' #' + memory.tags.join(' #')) : '';
   const reason = 'reason' in memory && memory.reason ? theme.dim('  (' + memory.reason + ')') : '';
   return (
-    theme.amber(shortId(memory.id).padEnd(9)) +
+    theme.accent(shortId(memory.id).padEnd(9)) +
     score +
     theme.dim(memory.kind.padEnd(11)) +
-    theme.ivory(shorten(memory.content, 76)) +
+    theme.frost(shorten(memory.content, 76)) +
     tags +
     reason
   );
@@ -387,7 +387,7 @@ export function transcriptBlock(message: Message): string {
   const stamp = new Date(message.createdAt).toLocaleString('en-GB');
   const who =
     message.role === 'user'
-      ? theme.amberBold('you')
+      ? theme.accentBold('you')
       : message.role === 'assistant'
         ? theme.cyan(message.agent ?? 'rookery')
         : theme.dim('system');
@@ -397,7 +397,7 @@ export function transcriptBlock(message: Message): string {
 }
 
 export function heading(text: string): string {
-  return theme.amberBold(text);
+  return theme.accentBold(text);
 }
 
 export function keyValue(key: string, value: string, width = 18): string {

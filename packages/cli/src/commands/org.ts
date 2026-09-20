@@ -75,8 +75,8 @@ export async function orgAgentsCommand(options: OrgViewOptions = {}): Promise<nu
     for (const agent of agents) {
       const manager = agent.managerId ? byId.get(agent.managerId) : undefined;
       out.write(
-        theme.amber(shorten(agent.slug, 17).padEnd(18)) +
-          theme.ivory(shorten(agent.name, 19).padEnd(20)) +
+        theme.accent(shorten(agent.slug, 17).padEnd(18)) +
+          theme.frost(shorten(agent.name, 19).padEnd(20)) +
           theme.dim(
             shorten(agent.title, 25).padEnd(26) +
               (agent.teamId ? shorten(teams.get(agent.teamId) ?? '?', 13) : '-').padEnd(14) +
@@ -175,8 +175,8 @@ export async function orgTeamsCommand(options: OrgViewOptions = {}): Promise<num
       const lead = team.leadId ? agents.get(team.leadId) : undefined;
       const members = [...agents.values()].filter((agent) => agent.teamId === team.id).length;
       out.write(
-        theme.amber(shorten(team.name, 21).padEnd(22)) +
-          theme.ivory(shorten(team.purpose ?? '', 44).padEnd(46)) +
+        theme.accent(shorten(team.name, 21).padEnd(22)) +
+          theme.frost(shorten(team.purpose ?? '', 44).padEnd(46)) +
           theme.dim(
             (lead ? 'lead ' + shorten(lead.slug, 16) : 'no lead').padEnd(24) +
               members +
@@ -239,8 +239,8 @@ export async function orgProjectsCommand(options: OrgViewOptions = {}): Promise<
     out.write('\n' + heading('Projects') + theme.dim('  (' + projects.length + ')') + '\n\n');
     for (const project of projects) {
       out.write(
-        theme.amber(shorten(project.name, 21).padEnd(22)) +
-          theme.ivory(shorten(project.description ?? '', 38).padEnd(40)) +
+        theme.accent(shorten(project.name, 21).padEnd(22)) +
+          theme.frost(shorten(project.description ?? '', 38).padEnd(40)) +
           theme.dim(project.path ?? 'no directory') +
           '\n',
       );
@@ -370,10 +370,10 @@ export async function orgMessagesCommand(options: MessagesOptions = {}): Promise
     for (const message of messages) {
       out.write(
         theme.dim(new Date(message.createdAt).toISOString().slice(0, 16).replace('T', ' ') + '  ') +
-          theme.amber(shorten(who(message.fromAgentId), 15).padEnd(16)) +
+          theme.accent(shorten(who(message.fromAgentId), 15).padEnd(16)) +
           theme.dim(glyph.prompt + ' ') +
           theme.cyan(shorten(who(message.toAgentId), 15).padEnd(16)) +
-          theme.ivory(shorten(message.content, 60)) +
+          theme.frost(shorten(message.content, 60)) +
           (message.readAt ? '' : theme.dim('  new')) +
           '\n',
       );
@@ -528,11 +528,11 @@ function assignmentLine(assignment: Assignment, agent: Agent | undefined): strin
           ? theme.yellow
           : theme.dim;
   return (
-    theme.amber(shortId(assignment.id).padEnd(9)) +
+    theme.accent(shortId(assignment.id).padEnd(9)) +
     theme.cyan(shorten(agent?.slug ?? assignment.agentId, 15).padEnd(16)) +
     paint(assignment.status.padEnd(10)) +
     theme.dim((assignment.durationMs === undefined ? '' : formatDuration(assignment.durationMs)).padStart(7) + '  ') +
-    theme.ivory(shorten(assignment.title, 48))
+    theme.frost(shorten(assignment.title, 48))
   );
 }
 
