@@ -608,33 +608,6 @@ export function dormantToolsHint(config: RookeryConfig, who: 'assistant' | 'agen
 }
 
 /**
- * Run every active server's `ensure` hook for one audience before a turn:
- * a shared browser comes up here. Failures are logged by the caller's
- * silence; a server that cannot prepare simply behaves as before.
- */
-export async function ensureToolServers(
-  config: RookeryConfig,
-  who: 'assistant' | 'agent',
-  provider?: ProviderId,
-  projectId?: string,
-  onError?: (id: string, error: Error) => void,
-): Promise<void> {
-  const jobs = toolServerStates(config)
-    .filter(
-      (state) => state.active && serves(state.audience, who) && scoped(state.projectIds, projectId) && state.entry?.ensure,
-    )
-    .map(async (state) => {
-      const stored = toolServerConfig(config, state.id);
-      try {
-        await state.entry?.ensure?.({ config, options: state.options, env: stored.env, provider });
-      } catch (error) {
-        onError?.(state.id, error as Error);
-      }
-    });
-  await Promise.all(jobs);
-}
-
-/**
  * A config patch with one server changed; pure, so callers decide how to
  * persist it. Which block it lands in depends on the server: a catalogue or
  * custom entry lives under `tools`, a server discovered in Claude Code

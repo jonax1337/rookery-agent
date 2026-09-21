@@ -405,12 +405,10 @@ export {
   type CatalogOption,
   type ToolCatalogEntry,
 } from './tools/catalog.js';
-export { BROWSER_DEBUG_PORT, browserAlive, browserExecutable, ensureBrowser } from './tools/browser.js';
 export {
   PERMISSION_DENY_BASELINE,
   customToolId,
   dormantToolsHint,
-  ensureToolServers,
   externalAgentStates,
   externalHookStates,
   externalPluginStates,

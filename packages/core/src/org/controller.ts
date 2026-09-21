@@ -62,7 +62,6 @@ import { buildTaskWaves, planTask, type TaskPlan } from './planner.js';
 import { toolsFor, type ToolAudience } from './tools.js';
 import type { QuestionCloseReason, QuestionRegistry } from './questions.js';
 import {
-  ensureToolServers,
   externalTurnExtras,
   renderToolServers,
   toolServerStates,
@@ -2240,9 +2239,6 @@ export class OrgController extends EventEmitter {
 
           finish({ status: 'running', provider: pid, model: usedModel, startedAt: started });
 
-          await ensureToolServers(this.#config, 'agent', pid, project?.id, (id, error) =>
-            this.#log.warn('Tool server could not prepare', { id, error: error.message }),
-          );
           const extra = toolServersFor(this.#config, 'agent', pid, project?.id);
           const toolHints = [...extra.hints];
           if (projectMcp?.servers.length && projectMcpState !== 'trusted') {
@@ -2280,11 +2276,12 @@ export class OrgController extends EventEmitter {
           });
 
           // A switch discards the dead attempt's partial text: an assignment
-          // has no resume, so it starts over rather than stitching.
+          // has no resume, so it starts over rather than stitching. The live
+          // log is cleared at the switch itself, below, so the switch notice
+          // is pushed after the reset and no watcher can lose it.
           text = '';
           let sinceProgress = 0;
           fatal = null;
-          this.#logReset(assignment.id);
 
           try {
             const mcp = await this.#bridge.spec(token);
@@ -2360,6 +2357,7 @@ export class OrgController extends EventEmitter {
             label: 'provider',
             detail: pid + ' hit its usage limit, continuing on ' + alternate,
           };
+          this.#logReset(assignment.id);
           this.#logPush(assignment.id, switchEvent);
           input.emit(switchEvent);
           announce({ lastActivity: { kind: 'status', label: 'provider', at: Date.now() } });

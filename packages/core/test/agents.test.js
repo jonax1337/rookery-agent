@@ -157,14 +157,16 @@ test('the tool hub resolves catalogue and custom servers per audience', () => {
   const assistant = toolServersFor(config, 'assistant', 'codex');
   assert.deepEqual(assistant.specs.map((spec) => spec.name), ['computer', 'playwright']);
   assert.equal(assistant.specs[0].env.COMPUTER_USE_PROFILE, 'core');
-  // The bundled Playwright attaches to the shared browser by default...
+  // The bundled Playwright launches the browser itself, on its own saved
+  // profile - and only when a browser tool is called, never up front.
   assert.match(assistant.specs[1].args[0], /@playwright[\\/]mcp[\\/]cli\.js$/, 'bundled, not npx');
-  assert.ok(assistant.specs[1].args.join(' ').includes('--cdp-endpoint http://127.0.0.1:9333'));
-  // ...and launches its own only when asked for a fresh one per turn.
+  assert.ok(assistant.specs[1].args.join(' ').includes('--browser chrome'));
+  assert.ok(assistant.specs[1].args.includes('--user-data-dir'));
+  // A fresh profile per turn drops the saved one.
   const fresh = withToolServer(config, 'playwright', { options: { persistent: 'no', headless: 'yes' } });
   const freshSpec = toolServersFor({ ...base, ...fresh }, 'assistant', 'claude').specs[1];
   assert.ok(freshSpec.args.join(' ').includes('--browser chrome --headless'));
-  assert.ok(!freshSpec.args.join(' ').includes('--cdp-endpoint'));
+  assert.ok(!freshSpec.args.includes('--user-data-dir'));
   assert.equal(assistant.hints.length, 2);
   assert.match(assistant.hints[1], /browser_snapshot/);
 

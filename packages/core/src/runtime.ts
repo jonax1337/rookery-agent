@@ -45,7 +45,7 @@ import { BridgeServer } from './org/bridge.js';
 import { OrgController } from './org/controller.js';
 import { QuestionRegistry } from './org/questions.js';
 import { assistantOrgBlock } from './org/prompts.js';
-import { dormantToolsHint, ensureToolServers, externalTurnExtras, toolServersFor } from './tools/hub.js';
+import { dormantToolsHint, externalTurnExtras, toolServersFor } from './tools/hub.js';
 import { SkillStore, renderSkillsIndex } from './skills/store.js';
 import { renderExternalSkillsHint } from './skills/shelf.js';
 import { matchSkills, renderSkillMatches } from './skills/suggest.js';
@@ -815,9 +815,6 @@ export class Assistant extends EventEmitter {
       // The hub decides which extra MCP servers this attempt gets, and the
       // prompt carries one paragraph per server plus the index of skills to
       // open. Provider-scoped, so a switch attaches its own set.
-      await ensureToolServers(this.config, who, pid, project?.id, (id, error) =>
-        this.log.warn('Tool server could not prepare', { id, error: error.message }),
-      );
       const extra = toolServersFor(this.config, who, pid, project?.id);
       // The assistant also hears about the servers it could attach but has not:
       // a switch it does not know about is a wall it cannot climb.
@@ -994,9 +991,6 @@ export class Assistant extends EventEmitter {
         const fresh = next.specs.map((spec) => spec.name).filter((name) => !attached.has(name));
         if (!fresh.length) break;
 
-        await ensureToolServers(this.config, who, pid, project?.id, (id, error) =>
-          this.log.warn('Tool server could not prepare', { id, error: error.message }),
-        );
         passExtra = next;
         attached = new Set(next.specs.map((spec) => spec.name));
         passSystemPrompt = buildSystemPrompt({

@@ -3,7 +3,6 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServerSpec, ProviderId, RookeryConfig, ToolServerAudience } from '../types.js';
 import { computerEngine, computerPromptBlock, computerServerSpec, zavoraServerPath } from '../computer/tools.js';
-import { BROWSER_DEBUG_PORT, ensureBrowser } from './browser.js';
 
 /**
  * The catalogue of MCP servers Rookery knows how to run.
@@ -52,8 +51,6 @@ export interface ToolCatalogEntry {
   env: CatalogEnv[];
   /** A one-off preparation step, e.g. a browser download. */
   prepare?: { label: string; command: string; args: string[] };
-  /** Runs before every turn that gets this server, e.g. to start a shared browser. */
-  ensure?(context: SpecContext): Promise<void>;
   /** The process to start; null when something required is missing. */
   spec(context: SpecContext): McpServerSpec | null;
   /** The paragraph the model gets about these tools. */
@@ -154,18 +151,18 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
       },
       {
         key: 'persistent',
-        label: 'Window',
-        hint: 'Persistent: Rookery starts Edge or Chrome once with its own profile; each turn reconnects, keeping tabs and logins. Fresh: a new browser opens for each turn and closes afterwards.',
+        label: 'Profile',
+        hint: 'Saved: the browser keeps its own profile, so logins and cookies survive between turns. Fresh: a clean profile each turn. Either way the window only opens when a browser tool is actually used.',
         type: 'select',
         choices: [
-          { value: 'yes', label: 'Keep open between turns' },
-          { value: 'no', label: 'Fresh each turn' },
+          { value: 'yes', label: 'Keep logins between turns' },
+          { value: 'no', label: 'Fresh profile each turn' },
         ],
         default: 'yes',
       },
       {
         key: 'headless',
-        label: 'Visibility (fresh each turn only)',
+        label: 'Visibility',
         type: 'select',
         choices: [
           { value: 'no', label: 'Visible window' },
@@ -180,18 +177,17 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
       command: 'npx',
       args: ['-y', 'playwright', 'install', 'chromium'],
     },
-    ensure: async ({ config, options }) => {
-      const kind = options.browser === 'chrome' ? 'chrome' : options.browser === 'msedge' ? 'msedge' : null;
-      if (options.persistent === 'no' || !kind) return;
-      await ensureBrowser(kind, join(config.home, 'browser-profile'));
-    },
-    spec: ({ options }) => {
+    // No `ensure`: the browser starts when Playwright first needs it, not at
+    // the top of every turn. A conversation that never touches the web never
+    // sees a browser window.
+    spec: ({ config, options }) => {
       const kind = options.browser || 'msedge';
-      const shared = options.persistent !== 'no' && kind !== 'chromium';
       return bundledOrNpx('playwright', playwrightCliPath(), '@playwright/mcp', [
-        ...(shared
-          ? ['--cdp-endpoint', 'http://127.0.0.1:' + BROWSER_DEBUG_PORT]
-          : ['--browser', kind, ...(options.headless === 'yes' ? ['--headless'] : [])]),
+        '--browser',
+        kind,
+        // One profile folder of its own, so logins survive the turn that made them.
+        ...(options.persistent !== 'no' ? ['--user-data-dir', join(config.home, 'browser-profile')] : []),
+        ...(options.headless === 'yes' ? ['--headless'] : []),
       ]);
     },
     hint: (options) =>
@@ -202,7 +198,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
         'from the snapshot. browser_take_screenshot only when layout matters. For anything on a web page',
         'use these before the computer tools; the computer tools are for everything outside the browser.',
         options.persistent !== 'no'
-          ? 'The browser window stays open between turns: reuse the tab that is there, and never call browser_close unless the user asks.'
+          ? 'The browser opens on your first browser call and closes with the turn, but it keeps its profile: logins from earlier turns are still there.'
           : '',
         'Never submit a purchase, a message or a form with consequences without asking once.',
       ]
