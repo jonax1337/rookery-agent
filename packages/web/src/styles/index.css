@@ -2,24 +2,34 @@
 @import 'tw-animate-css';
 @import 'shadcn/tailwind.css';
 @import 'tw-shimmer';
+@import '@fontsource-variable/geist';
 @import '@fontsource-variable/geist-mono';
+@import '@fontsource-variable/bricolage-grotesque';
 @import '../../../../branding/colors.css';
-
-@font-face {
-  font-family: 'Manrope';
-  src: url('/fonts/Manrope-Variable.ttf') format('truetype');
-  font-style: normal;
-  font-weight: 200 800;
-  font-display: swap;
-}
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Data, not prose: timestamps, counts, percentages, versions and IDs.
+ *
+ * The sans carries sentences; anything the reader compares down a column or
+ * scans for a change belongs in the mono, which is the same family the code
+ * blocks and the logo's wordmark already use. `tabular-nums` on its own only
+ * stops the digits from jittering - it does not stop a figure from reading as
+ * prose, which is what made the dense tables feel soft.
+ */
+@utility numeric {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+
 /* Rookery palette, shared with the logo assets. */
 @theme inline {
-  --font-sans: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', ui-monospace, monospace;
-  --font-heading: var(--font-sans);
+  --font-heading: 'Bricolage Grotesque Variable', 'Geist Variable', ui-sans-serif, sans-serif;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

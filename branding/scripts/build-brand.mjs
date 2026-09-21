@@ -13,14 +13,14 @@ const group = (body, transform) => `<g transform="${transform}">${body}</g>`;
 const contour = (d, fill) => `<path fill="${fill}" d="${d}"/>`;
 const mark = ink => reference.paths.map(d => contour(d, ink)).join('');
 const wordmark = ink => contour(word.path, ink);
-const lockup = ink => group(mark(ink), 'translate(8 7) scale(.53)') + group(wordmark(ink), 'translate(172 104)');
+const lockup = ink => group(mark(ink), 'translate(8 7) scale(.53)') + group(wordmark(ink), 'translate(160 104)');
 const stacked = ink => group(mark(ink), 'translate(90 12) scale(.859375)') + group(wordmark(ink), `translate(${(400 - word.width * .8) / 2} 290) scale(.8)`);
 const assets = {};
 for (const [suffix, ink] of [
   ['', colors.evergreen], ['-light', colors.frost],
   ['-mono', 'currentColor'], ['-white', colors.white],
 ]) {
-  assets[`logo${suffix}.svg`] = svg(Math.round(word.width + 196), 150, lockup(ink));
+  assets[`logo${suffix}.svg`] = svg(Math.round(word.width + 184), 150, lockup(ink));
   assets[`mark${suffix}.svg`] = svg(256, 256, mark(ink));
   if (suffix === '' || suffix === '-light') {
     assets[`mark-small${suffix}.svg`] = svg(256, 256, mark(ink));
@@ -80,8 +80,4 @@ const publicFiles = [...Object.keys(assets), 'favicon.ico', 'favicon-16.png', 'f
 const publicRoot = path.join(root, '../packages/web/public');
 await fs.mkdir(publicRoot, { recursive: true });
 for (const name of publicFiles) await fs.copyFile(path.join(root, name), path.join(publicRoot, name));
-for (const name of ['Manrope-Variable.ttf', 'Manrope-OFL.txt']) {
-  await fs.mkdir(path.join(publicRoot, 'fonts'), { recursive: true });
-  await fs.copyFile(path.join(root, 'source', name), path.join(publicRoot, 'fonts', name));
-}
-console.log(JSON.stringify({ status: 'ok', concept: reference.name, publicFiles: publicFiles.length + 2 }));
+console.log(JSON.stringify({ status: 'ok', concept: reference.name, publicFiles: publicFiles.length }));

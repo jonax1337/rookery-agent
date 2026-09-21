@@ -335,7 +335,7 @@ export function AgentDetailPage() {
           <DataTableColumnHeader column={head} title="Duration" align="end" />
         ),
         cell: ({ row }) => (
-          <span className="block text-right tabular-nums text-muted-foreground">
+          <span className="numeric block text-right text-muted-foreground">
             {formatDuration(row.original.durationMs) || EMPTY_CELL}
           </span>
         ),
@@ -345,7 +345,7 @@ export function AgentDetailPage() {
           <DataTableColumnHeader column={head} title="Characters" align="end" />
         ),
         cell: ({ row }) => (
-          <span className="block text-right tabular-nums text-muted-foreground">
+          <span className="numeric block text-right text-muted-foreground">
             {row.original.chars > 0 ? formatNumber(row.original.chars) : EMPTY_CELL}
           </span>
         ),
@@ -892,7 +892,7 @@ function PerformanceCard({ performance }: { performance: AgentDetail['performanc
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="flex items-baseline gap-3">
-          <span className="text-3xl font-semibold tabular-nums">
+          <span className="numeric text-3xl font-semibold">
             {performance.average !== null ? (
               <CountingNumber number={performance.average} decimalPlaces={1} />
             ) : (
@@ -907,7 +907,7 @@ function PerformanceCard({ performance }: { performance: AgentDetail['performanc
         ) : null}
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">Failure rate (last 20)</span>
-          <span className="tabular-nums">
+          <span className="numeric">
             <CountingNumber number={Math.round(performance.failureRate * 100)} />%
           </span>
         </div>

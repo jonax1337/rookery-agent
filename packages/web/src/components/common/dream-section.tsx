@@ -471,7 +471,7 @@ export function DreamSection({ owner }: DreamSectionProps) {
           header: ({ column: col }) => <DataTableColumnHeader column={col} title="Promoted" />,
           enableHiding: false,
           cell: ({ row }) => (
-            <span className="whitespace-nowrap tabular-nums">
+            <span className="numeric whitespace-nowrap">
               {formatDateTime(row.original.promotedAt)}
             </span>
           ),
@@ -487,7 +487,7 @@ export function DreamSection({ owner }: DreamSectionProps) {
             <DataTableColumnHeader column={col} title="Version" align="end" />
           ),
           cell: ({ row }) => (
-            <div className="text-right tabular-nums">v{row.original.version}</div>
+            <div className="numeric text-right">v{row.original.version}</div>
           ),
         }),
         column.accessor((version) => version.replayScore ?? 0, {
@@ -496,7 +496,7 @@ export function DreamSection({ owner }: DreamSectionProps) {
             <DataTableColumnHeader column={col} title="Holdout score" align="end" />
           ),
           cell: ({ row }) => (
-            <div className="text-right tabular-nums">{score(row.original.replayScore)}</div>
+            <div className="numeric text-right">{score(row.original.replayScore)}</div>
           ),
         }),
         column.accessor((version) => version.baselineScore ?? 0, {
@@ -505,7 +505,7 @@ export function DreamSection({ owner }: DreamSectionProps) {
             <DataTableColumnHeader column={col} title="Baseline" align="end" />
           ),
           cell: ({ row }) => (
-            <div className="text-right tabular-nums">{score(row.original.baselineScore)}</div>
+            <div className="numeric text-right">{score(row.original.baselineScore)}</div>
           ),
         }),
         column.accessor((version) => version.auditCiLow ?? 0, {
@@ -514,7 +514,7 @@ export function DreamSection({ owner }: DreamSectionProps) {
             <DataTableColumnHeader column={col} title="audit_ci_low" align="end" />
           ),
           cell: ({ row }) => (
-            <div className="text-right tabular-nums">{signed(row.original.auditCiLow)}</div>
+            <div className="numeric text-right">{signed(row.original.auditCiLow)}</div>
           ),
         }),
         column.accessor((version) => version.rationale ?? '', {
@@ -920,12 +920,12 @@ export function DreamSection({ owner }: DreamSectionProps) {
                   <TableBody>
                     {diff.map((row) => (
                       <TableRow key={row.field} className={row.changed ? undefined : 'opacity-60'}>
-                        <TableCell className="font-mono text-xs">{row.field}</TableCell>
-                        <TableCell className="tabular-nums">
+                        <TableCell className="numeric text-xs">{row.field}</TableCell>
+                        <TableCell className="numeric">
                           {previous ? paramText(row.before) : EMPTY_CELL}
                         </TableCell>
-                        <TableCell className="tabular-nums">{paramText(row.after)}</TableCell>
-                        <TableCell className="text-right tabular-nums">
+                        <TableCell className="numeric">{paramText(row.after)}</TableCell>
+                        <TableCell className="numeric text-right">
                           {previous && row.delta !== undefined && row.changed
                             ? signed(row.delta)
                             : EMPTY_CELL}

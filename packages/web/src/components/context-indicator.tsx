@@ -95,7 +95,7 @@ export function ContextIndicator({ context }: ContextIndicatorProps) {
           <div className="flex items-baseline justify-between gap-3">
             <PopoverTitle className="text-sm font-semibold">Context</PopoverTitle>
             {percent !== null && (
-              <span className={cn('text-sm font-medium tabular-nums', valueTone)}>
+              <span className={cn('numeric text-sm font-medium', valueTone)}>
                 {percent}% used
               </span>
             )}
@@ -109,7 +109,7 @@ export function ContextIndicator({ context }: ContextIndicatorProps) {
             />
           )}
 
-          <PopoverDescription className="text-xs tabular-nums">
+          <PopoverDescription className="numeric text-xs">
             {context ? (
               <>
                 <span className="font-medium text-foreground">{formatNumber(context.tokens)}</span>

@@ -161,7 +161,7 @@ export function buildSessionColumns(
         <DataTableColumnHeader column={col} title="Messages" align="end" />
       ),
       cell: ({ row }) => (
-        <div className="text-right text-sm tabular-nums">
+        <div className="numeric text-right text-sm">
           {formatNumber(row.original.messageCount)}
         </div>
       ),

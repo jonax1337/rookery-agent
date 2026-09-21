@@ -113,7 +113,7 @@ export function LiveRunList({
       <Card className={cn('py-3', className)} aria-label="Runs for this turn">
         <CardHeader className="flex flex-wrap items-center gap-2 border-b px-3!">
           <CardTitle className="text-sm">{title}</CardTitle>
-          <Badge variant="secondary" className="tabular-nums">
+          <Badge variant="secondary" className="numeric">
             {/* One inline wrapper so the animated count and its label stay a
                 single flex item: the badge's own gap must not widen the space. */}
             <span>
@@ -122,7 +122,7 @@ export function LiveRunList({
             </span>
           </Badge>
 
-          <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+          <span className="numeric ml-auto text-xs text-muted-foreground">
             {running > 0 && (
               <>
                 <SlidingNumber number={running} fromNumber={0} /> running ·{' '}
@@ -188,7 +188,7 @@ function RunRow({
         </ItemDescription>
 
         {meta.length > 0 && (
-          <span className="text-xs tabular-nums text-muted-foreground">{meta.join(' · ')}</span>
+          <span className="numeric text-xs text-muted-foreground">{meta.join(' · ')}</span>
         )}
 
         {/* The tail of what the run is printing right now, rendered like

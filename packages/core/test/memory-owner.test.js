@@ -78,6 +78,14 @@ test('a memory revived by an identical condensation carries the night id and sur
   // A later night condenses a cluster into a sentence that byte-exactly hits
   // the dormant row, which is therefore reinforced rather than inserted.
   const condensingNight = store.createSleepRun({ owner: ASSISTANT_MEMORY_OWNER, trigger: 'manual' });
+  // A night starts strictly after everything that already exists. That is what
+  // stops undo's "written by this run" from swallowing a row created in the
+  // same millisecond the night began - without it the assertion below is a
+  // coin toss rather than a test (store.ts, `sleepRunStart`).
+  assert.ok(
+    condensingNight.startedAt > memory.createdAt,
+    'the night starts after the memory it is about to revive',
+  );
   const revived = store.upsertMemory({
     kind: 'fact',
     content: 'The user cuts releases from main.',
@@ -94,6 +102,25 @@ test('a memory revived by an identical condensation carries the night id and sur
   assert.ok(undo, 'the condensing night can be undone');
   assert.equal(undo.removed, 0, 'undo deletes only what the night itself created');
   assert.ok(store.getMemory(memory.id), 'a memory that predates the night survives its undo');
+  store.close();
+});
+
+test('a night starts strictly after everything that already exists', () => {
+  const store = makeStore();
+  // The boundary above, checked tightly enough that it cannot pass on a lucky
+  // millisecond: `undoSleepRun` reads every row stamped at or after the run's
+  // start as one the run wrote, so a row written in the tick the night begins
+  // would be deleted by an undo that has nothing to do with it. Back to back,
+  // a row and the night after it land in the same millisecond nearly every
+  // time, which is what made the undo test above a coin toss.
+  for (let i = 0; i < 20; i += 1) {
+    const before = store.upsertMemory({ kind: 'fact', content: `The user owns bicycle ${i}.` });
+    const night = store.createSleepRun({ owner: ASSISTANT_MEMORY_OWNER, trigger: 'manual' });
+    assert.ok(
+      night.startedAt > before.createdAt,
+      `a night must not share its starting millisecond with an older row (round ${i})`,
+    );
+  }
   store.close();
 });
 

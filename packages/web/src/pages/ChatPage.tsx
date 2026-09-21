@@ -347,7 +347,7 @@ export function ChatPage() {
         <Fade asChild>
           <EmptyState className="mx-auto mb-8 max-w-none gap-4">
             <Fade asChild>
-              <div className="flex items-center gap-3 text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
+              <div className="flex items-center gap-3 font-mono text-xs font-medium tracking-[0.16em] text-muted-foreground uppercase">
                 <span aria-hidden="true" className="h-px w-6 bg-border" />
                 {assistantName}
                 <span aria-hidden="true" className="h-px w-6 bg-border" />

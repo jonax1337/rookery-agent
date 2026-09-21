@@ -226,7 +226,7 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
             Code)") is the part that may be cut. */}
         <span className="shrink-0">{PROVIDER_LABEL[provider.id] ?? provider.displayName}</span>
         {provider.version && (
-          <span className="ml-auto min-w-0 truncate text-xs text-muted-foreground tabular-nums">
+          <span className="numeric ml-auto min-w-0 truncate text-xs text-muted-foreground">
             {provider.version}
           </span>
         )}
@@ -246,7 +246,7 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
             <div key={window.kind} className="mb-3 space-y-1 last:mb-0">
               <div className="flex items-baseline justify-between gap-2 text-xs">
                 <span className="truncate">{window.label}</span>
-                <span className="tabular-nums text-muted-foreground">
+                <span className="numeric text-muted-foreground">
                   {/* Counts up when the submenu opens; at rest this is
                       `formatPercent`'s "42%" again - en-GB percent puts no
                       space before the sign. */}

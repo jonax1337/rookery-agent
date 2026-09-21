@@ -59,10 +59,10 @@ for (let index = 0; index < 4; index++) {
   const metadata = await sharp(ico.subarray(offset, offset + size)).metadata();
   assert.equal(metadata.width, [16, 32, 48, 256][index]);
 }
-for (const name of ['Manrope-Variable.ttf', 'Manrope-OFL.txt']) {
-  assert.deepEqual(await fs.readFile(path.join(root, 'source', name)),
-    await fs.readFile(path.join(root, '../packages/web/public/fonts', name)), `${name}: bundled typeface`);
-}
+// The wordmark ships as outlines, so the face it was cut from only has to be
+// reachable for `outline-wordmark.mjs` - never at runtime.
+assert.ok(await fs.stat(path.join(root, 'node_modules/@fontsource/geist-mono/files',
+  `geist-mono-latin-${source.wordmark.weight}-normal.woff2`)), 'wordmark source face');
 
 // Check actual theme pairs, so future palette edits cannot quietly lose contrast.
 const css = await fs.readFile(path.join(root, '../packages/web/src/styles/index.css'), 'utf8');
@@ -96,4 +96,4 @@ for (const [name, theme] of [['light', light], ['dark', dark]]) {
     assert.ok(ratio >= minimum, `${name} ${foreground}/${background}: ${ratio.toFixed(2)} < ${minimum}`);
   }
 }
-console.log(`Brand checks passed: ${svgNames.length} SVGs, approved Atrium silhouette, bundled font, theme contrast, public copies and platform icons.`);
+console.log(`Brand checks passed: ${svgNames.length} SVGs, approved Atrium silhouette, wordmark face, theme contrast, public copies and platform icons.`);

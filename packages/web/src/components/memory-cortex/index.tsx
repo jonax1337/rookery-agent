@@ -313,7 +313,7 @@ export function MemoryCortex({
               <span className="line-clamp-2">{hover.label}</span>
             </>
           )}
-          <span className="mt-0.5 block text-[10px] tracking-wide text-[var(--graph-muted)] uppercase">{hover.region}</span>
+          <span className="mt-0.5 block font-mono text-[10px] tracking-wide text-[var(--graph-muted)] uppercase">{hover.region}</span>
         </div>
       ) : null}
     </>

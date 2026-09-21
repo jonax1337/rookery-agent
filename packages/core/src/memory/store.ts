@@ -1575,10 +1575,10 @@ export class Store {
   createSleepRun(input: { owner: string; trigger: CronTrigger }): SleepRun {
     const run: SleepRun = {
       id: randomUUID(),
+      startedAt: sleepRunStart(this.db),
       owner: input.owner,
       trigger: input.trigger,
       status: 'running',
-      startedAt: Date.now(),
       readCount: 0,
       replayedCount: 0,
       learnedCount: 0,
@@ -1723,7 +1723,8 @@ export class Store {
         // have written a memory older than itself: a row that carries this
         // run's id but predates it is one the run revived (see `upsertMemory`)
         // or one somebody woke again, never one it created, so undo must not
-        // delete it.
+        // delete it. `sleepRunStart` is what keeps that comparison honest at
+        // millisecond resolution.
         .prepare(
           `SELECT id FROM memories
             WHERE sleep_run_id = ? AND origin IN ('sleep', 'extract') AND dormant_at IS NULL
@@ -3139,4 +3140,39 @@ function mergeTags(a: string[], b: string[]): string[] {
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+/**
+ * When a night starts, taken so that the stamp falls strictly after every row
+ * that already exists.
+ *
+ * `undoSleepRun` tells the rows a run wrote from the rows it merely touched by
+ * comparing `created_at` against this stamp: a memory that carries the run's
+ * id but predates it was revived by the run (see `upsertMemory`), a policy
+ * version likewise re-promoted, and neither may be deleted when the night is
+ * taken back. `Date.now()` moves in whole milliseconds, so a memory written in
+ * the same tick a night starts compares equal and reads as the night's own -
+ * that is an undo deleting a memory that is older than the night it undoes.
+ * So the boundary is taken from the data rather than from the clock: one past
+ * the newest row in the three tables the undo compares. Nothing is waited for,
+ * and everything the run writes from here on still lands on or after it,
+ * because those rows are stamped `Date.now()` and this is never below it.
+ *
+ * ponytail: the ceiling is that the boundary is a timestamp, not an identity.
+ * A row inserted with a `created_at` in the future - a test fixture, a clock
+ * that jumped and came back - pushes the start past rows the run then writes,
+ * and the undo leaves them behind. The upgrade path is to record on the row
+ * which run created it instead of inferring it from time.
+ */
+function sleepRunStart(db: Db): number {
+  const row = db
+    .prepare(
+      `SELECT MAX(at) AS at FROM (
+         SELECT MAX(created_at) AS at FROM memories
+         UNION ALL SELECT MAX(created_at) FROM policy_versions
+         UNION ALL SELECT MAX(created_at) FROM dream_evals
+       )`,
+    )
+    .get() as { at: number | null } | undefined;
+  return Math.max(Date.now(), Number(row?.at ?? 0) + 1);
 }

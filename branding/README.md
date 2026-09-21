@@ -16,7 +16,7 @@ The UI derives its surfaces, borders and muted text from this palette. Dark mode
 
 ## Typography and shape
 
-The wordmark is **rookery**, in Manrope Medium with close, balanced lowercase spacing, exported as vector outlines. The app also uses locally bundled Manrope Variable; Geist Mono remains the code font. No font provider is contacted at runtime. The Manrope OFL licence is included beside the font.
+The wordmark is **rookery**, in Geist Mono SemiBold at -4 % tracking, exported as vector outlines by `scripts/outline-wordmark.mjs`. The mono matches the mark: flat terminals and an even stroke against the same orthogonal geometry. The interface sets text in Geist, headings in Bricolage Grotesque and code, timestamps and metrics in Geist Mono. All three arrive as @fontsource packages and are bundled by the web build, so no font provider is contacted at runtime.
 
 The interface uses 2 px small details, 4 px buttons and fields, 6 px containers, and 8 px cards and chat composers. Badges and chips use capsule shapes. Composer controls follow the standard 4 px button radius. Composer menus share a 4 px corner radius, including the model picker. Radio buttons, switches and status dots retain their functional circular forms. The logo's 45-degree cuts belong to the artwork rather than clipping controls or focus rings.
 
@@ -38,10 +38,10 @@ Use the regular logo on light surfaces and the Frost inverse on dark surfaces. M
 
 ## Build and verification
 
-`source/atrium.json` contains the geometry, outlined wordmark and palette. `source/atrium-approved.svg` preserves the selected mark for regression checks. `source/Manrope-Variable.ttf` and `source/Manrope-OFL.txt` supply the interface font.
+`source/atrium.json` contains the geometry, outlined wordmark and palette. `source/atrium-approved.svg` preserves the selected mark for regression checks. Re-cut the wordmark with `npm run wordmark` after changing its face, weight, size or tracking in `source/atrium.json`; the outlines are generated from the @fontsource copy of the face, never from a system font.
 
 The repository tracks the current brand source, generated assets and verification scripts. Local design explorations (`concepts/`), superseded artwork (`archive/`) and ZIP handoffs are kept outside version control.
 
-From `branding/`, run `npm ci --ignore-scripts`, `npm run build`, then `npm test`. The build copies logos, icons, the manifest and the local font to `packages/web/public/`. Run `npm run build -w @rookery/web` from the repository root to update the served UI.
+From `branding/`, run `npm ci --ignore-scripts`, `npm run build`, then `npm test`. The build copies logos, icons and the manifest to `packages/web/public/`. Run `npm run build -w @rookery/web` from the repository root to update the served UI.
 
-Checks cover vector rendering, exact agreement with the approved Atrium silhouette at multiple sizes, unclipped edges, matching public copies, platform icons, the bundled font and accessible text/control contrast in both themes.
+Checks cover vector rendering, exact agreement with the approved Atrium silhouette at multiple sizes, unclipped edges, matching public copies, platform icons, the wordmark's source face and accessible text/control contrast in both themes.

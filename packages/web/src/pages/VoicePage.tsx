@@ -485,7 +485,7 @@ export function VoicePage() {
             that the 4,5:1 minimum breaks, and the orb behind the text is not a
             constant ground to borrow contrast from. */}
         <Blur>
-          <div className="flex items-center gap-2 text-xs uppercase tracking-[0.28em] text-white/55">
+          <div className="flex items-center gap-2 font-mono text-xs uppercase tracking-[0.28em] text-white/55">
             {/* The equaliser dances only under the pointer, not forever: the
                 orb is this screen's one steady motion. */}
             <AudioLinesIcon className="size-4" />

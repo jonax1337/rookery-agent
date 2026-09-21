@@ -144,7 +144,7 @@ export function buildMemoryColumns(
         return (
           <div className="flex items-center justify-end gap-2">
             <Progress value={percent} aria-hidden="true" className="h-1 w-16 shrink-0" />
-            <span className="w-12 text-right text-sm tabular-nums">{formatPercent(percent)}</span>
+            <span className="numeric w-12 text-right text-sm">{formatPercent(percent)}</span>
           </div>
         );
       },
@@ -177,7 +177,7 @@ export function buildMemoryColumns(
           <DataTableColumnHeader column={col} title="Accesses" align="end" />
         ),
         cell: ({ row }) => (
-          <div className="text-right tabular-nums">{formatNumber(row.original.accessCount)}</div>
+          <div className="numeric text-right">{formatNumber(row.original.accessCount)}</div>
         ),
       }),
 
@@ -213,7 +213,7 @@ export function buildMemoryColumns(
           if (!hit) return emptyCell('end');
           return (
             <div className="flex flex-col items-end">
-              <span className="text-sm tabular-nums">{hit.value.toFixed(2)}</span>
+              <span className="numeric text-sm">{hit.value.toFixed(2)}</span>
               <span className="max-w-[20ch] truncate text-xs text-muted-foreground">
                 {hit.reason}
               </span>

@@ -210,7 +210,7 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
           if (children.length === 0) return emptyCell('end');
           const done = children.filter((child) => child.status === 'done').length;
           return (
-            <div className="text-right tabular-nums">
+            <div className="numeric text-right">
               {done}/{children.length}
             </div>
           );

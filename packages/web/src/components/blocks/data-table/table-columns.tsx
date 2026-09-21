@@ -140,7 +140,8 @@ export interface RelativeTimeCellOptions {
  * the bare span `relativeTime` gives it - and puts the exact date in the title,
  * which is what four of the ten hand-written copies did and six forgot.
  *
- * `tabular-nums` keeps a column of spans from jittering; a missing timestamp
+ * `numeric` keeps a column of spans from jittering and sets it in the mono; a
+ * missing timestamp
  * gets the fallback word and no title, because there is no date to reveal.
  */
 export function relativeTimeCell(
@@ -149,7 +150,7 @@ export function relativeTimeCell(
 ): ReactNode {
   const { fallback = 'never', align = 'start' } = options;
   const className = cn(
-    'whitespace-nowrap text-muted-foreground tabular-nums',
+    'numeric whitespace-nowrap text-muted-foreground',
     align === 'end' && 'block text-right',
   );
 

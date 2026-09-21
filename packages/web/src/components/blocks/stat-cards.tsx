@@ -50,8 +50,8 @@ export function StatCard({ label, value, badge, headline, footnote, to, classNam
   return (
     <Card size="sm" className={cn('@container/card min-w-0', to && 'relative', className)}>
       <CardHeader className="flex flex-col gap-1">
-        <CardDescription>{label}</CardDescription>
-        <CardTitle className="max-w-full break-words font-semibold tabular-nums group-data-[size=sm]/card:text-2xl">
+        <CardDescription className="font-mono text-xs tracking-[0.08em] uppercase">{label}</CardDescription>
+        <CardTitle className="numeric max-w-full break-words font-semibold group-data-[size=sm]/card:text-2xl">
           {value}
         </CardTitle>
         {badge ? (
