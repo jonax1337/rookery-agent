@@ -315,14 +315,21 @@ export async function taskDoneCommand(ref: string, options: TaskDoneOptions = {}
     refuseWhileRunning(task);
 
     const result = options.result?.trim();
-    assistant.store.org.updateTask(task.id, {
-      status: 'done',
-      finishedAt: Date.now(),
-      ...(result ? { result } : {}),
-    });
-
-    out.write(theme.green(glyph.ok + ' Task ' + shortId(task.id) + ' done  ') + theme.dim(shorten(task.title, 56)) + '\n');
-    return 0;
+    // Through the one writer, so closing a task from the terminal reaches
+    // its mail thread and any open browser. This used to write the column
+    // straight and tell nobody at all.
+    return assistant.org
+      .setTaskStatus({ task, to: 'done', by: 'user', ...(result ? { result } : {}) })
+      .then((moved) => {
+        if (!moved.ok) {
+          out.write(theme.red(glyph.fail + ' ' + moved.reason) + '\n');
+          return 1;
+        }
+        out.write(
+          theme.green(glyph.ok + ' Task ' + shortId(task.id) + ' done  ') + theme.dim(shorten(task.title, 56)) + '\n',
+        );
+        return 0;
+      });
   });
 }
 
@@ -332,10 +339,17 @@ export async function taskCancelCommand(ref: string): Promise<number> {
     const task = resolveTask(assistant, ref);
     refuseWhileRunning(task);
 
-    assistant.store.org.updateTask(task.id, { status: 'cancelled', finishedAt: Date.now() });
-
-    out.write(theme.yellow(glyph.warn + ' Task ' + shortId(task.id) + ' cancelled  ') + theme.dim(shorten(task.title, 56)) + '\n');
-    return 0;
+    return assistant.org.setTaskStatus({ task, to: 'cancelled', by: 'user' }).then((moved) => {
+      if (!moved.ok) {
+        out.write(theme.red(glyph.fail + ' ' + moved.reason) + '\n');
+        return 1;
+      }
+      out.write(
+        theme.yellow(glyph.warn + ' Task ' + shortId(task.id) + ' cancelled  ') +
+          theme.dim(shorten(task.title, 56)) + '\n',
+      );
+      return 0;
+    });
   });
 }
 

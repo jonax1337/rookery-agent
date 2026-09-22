@@ -24,7 +24,7 @@ import { ApiError, api } from '@/lib/api';
 import { failureMessage, reportFailure } from '@/lib/errors';
 import {
   formatDuration,
-  REQUESTER_LABEL,
+  taskOriginLabel,
   TASK_STATUS_LABEL,
   timeAgo,
 } from '@/lib/format';
@@ -684,11 +684,14 @@ export function TaskDetailPage() {
               {
                 label: 'Created by',
                 value:
-                  REQUESTER_LABEL[task.createdBy] +
+                  taskOriginLabel(task) +
                   (task.createdByAgentId
                     ? ' · ' + (org.agentById(task.createdByAgentId)?.name ?? 'Unknown')
                     : ''),
                 icon: PencilLineIcon,
+                // A card a schedule produced links back to the schedule, so
+                // "why does this exist?" is one click rather than a guess.
+                ...(task.scheduleId ? { to: '/cron/' + task.scheduleId } : {}),
               },
               {
                 label: 'Dependencies',

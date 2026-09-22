@@ -29,7 +29,33 @@ export interface ToolDefinition {
 export interface ToolAvailability {
   /** A schedule started this run; nobody is present. */
   scheduled?: boolean;
+  /**
+   * The board watcher is running. It reads the board and writes at most one
+   * mail; see {@link WATCH_TOOLS} for why that is an allowlist.
+   */
+  watching?: boolean;
 }
+
+/**
+ * Everything the board watcher may call - an allowlist, not a set of
+ * exclusions, and deliberately so. The watcher runs unattended, on a clock,
+ * with nobody reading along, so a tool added to this file later must be
+ * argued onto this list rather than silently inherited by it. Nothing here
+ * starts work, moves a card, or changes the company: the watcher's whole job
+ * is to look at the board and, when something genuinely needs a person, say
+ * so once. Acting on what it finds is the person's call, not its own.
+ */
+const WATCH_TOOLS = new Set([
+  'org_overview',
+  'list_tasks',
+  'list_assignments',
+  'assignment_status',
+  'agent_performance',
+  'read_mail',
+  'read_mail_thread',
+  'send_mail',
+  'notify',
+]);
 
 const BOTH: ToolAudience[] = ['assistant', 'agent'];
 const ASSISTANT_ONLY: ToolAudience[] = ['assistant'];
@@ -916,11 +942,16 @@ export const ORG_TOOLS: ToolDefinition[] = [
 /**
  * The tools one audience may call. The second argument narrows it further:
  * an unattended run drops everything marked `needsPerson`, so the model is
- * never offered a way to wait for an answer that cannot come.
+ * never offered a way to wait for an answer that cannot come, and the board
+ * watcher is cut down to {@link WATCH_TOOLS} - the one caller whose limits
+ * are a list of what it may do rather than a list of what it may not.
  */
 export function toolsFor(audience: ToolAudience, availability: ToolAvailability = {}): ToolDefinition[] {
   return ORG_TOOLS.filter(
-    (tool) => tool.audience.includes(audience) && !(availability.scheduled && tool.needsPerson),
+    (tool) =>
+      tool.audience.includes(audience) &&
+      !(availability.scheduled && tool.needsPerson) &&
+      !(availability.watching && !WATCH_TOOLS.has(tool.name)),
   );
 }
 

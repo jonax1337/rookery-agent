@@ -106,7 +106,13 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/tasks/:id', label: 'Task', parent: '/tasks', hidden: true },
   { path: '/tasks/:id/edit', label: 'Edit task', parent: '/tasks', hidden: true },
 
-  { path: '/assignments', label: 'Runs', icon: AssignmentsIcon, group: 'operations' },
+  // Runs are not a place you browse. You browse work and go down into the
+  // attempts it took, which is what the task page's "Runs" tab already
+  // does - a sibling entry beside Tasks made one thing look like two, and
+  // neither list was ever complete on its own (decision E3 of
+  // docs/concepts/work-as-one-surface.md). The routes stay: old links,
+  // bookmarks and every `/assignments/:id` the app links to still resolve.
+  { path: '/assignments', label: 'Runs', icon: AssignmentsIcon, parent: '/tasks', hidden: true },
   { path: '/assignments/:id', label: 'Run', parent: '/assignments', hidden: true },
 
   { path: '/cron', label: 'Schedules', icon: SchedulesIcon, group: 'operations' },

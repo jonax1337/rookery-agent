@@ -180,3 +180,88 @@ test('a subtask whose dependency failed is failed with the reason, not run blind
   assert.match(finished.result ?? '', /FAILED: Dependency did not finish: Parser/, 'and its report says why');
   assistant.close();
 });
+
+test('a stuck subtask can be cancelled on its own, and a throw never leaves a card running', async () => {
+  // Two subtasks, one of which hangs. Cancelling the hanging child used to
+  // be impossible: only the parent was registered as cancellable, so
+  // `cancelTask(childId)` returned false, every writer refused to edit a
+  // running card, and the card sat there until the server was restarted.
+  const fake = createFakeProvider({ delay: 20 });
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara', slug: 'mara' });
+
+  let release = () => {};
+  const hanging = new Promise((resolve) => {
+    release = resolve;
+  });
+  fake.provider.run = async function* (opts) {
+    if ((opts.prompt ?? '').includes('Slow')) {
+      await hanging;
+      yield { type: 'done', text: 'never mind' };
+      return;
+    }
+    yield { type: 'done', text: 'OUTPUT' };
+  };
+
+  const parent = store.org.createTask({ orgId: org.id, title: 'Split', createdBy: 'user' });
+  const slow = store.org.createTask({
+    orgId: org.id,
+    parentId: parent.id,
+    title: 'Slow child',
+    description: 'Slow',
+    assigneeId: mara.id,
+    createdBy: 'user',
+  });
+
+  const run = assistant.org.runTask(
+    { orgId: org.id, audience: 'assistant', depth: -1, emit() {} },
+    parent,
+  );
+
+  // Wait until the child is really going, then stop that child alone.
+  const deadline = Date.now() + 3000;
+  while (store.org.getTask(slow.id).status !== 'running' && Date.now() < deadline) await sleep(5);
+  assert.equal(store.org.getTask(slow.id).status, 'running');
+
+  assert.equal(assistant.org.cancelTask(slow.id), true, 'the child is cancellable in its own right');
+  release();
+  await run;
+
+  assert.notEqual(
+    store.org.getTask(slow.id).status,
+    'running',
+    'no card is left claiming to run once nothing is',
+  );
+  assert.notEqual(store.org.getTask(parent.id).status, 'running');
+  assistant.close();
+});
+
+test('a task whose run throws ends failed with the reason, not stuck on running', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara', slug: 'mara' });
+
+  const task = store.org.createTask({
+    orgId: org.id,
+    title: 'Explodes',
+    description: 'Explodes',
+    assigneeId: mara.id,
+    createdBy: 'user',
+  });
+
+  // A failure inside the machinery rather than inside the model: the kind
+  // that used to escape `#runTask` entirely and leave the card frozen.
+  fake.provider.run = function () {
+    throw new Error('the bridge fell over');
+  };
+
+  const finished = await assistant.org.runTask(
+    { orgId: org.id, audience: 'assistant', depth: -1, emit() {} },
+    task,
+  );
+  assert.notEqual(finished.status, 'running', 'the card does not stay frozen');
+  assert.equal(store.org.getTask(task.id).status, finished.status);
+  assistant.close();
+});

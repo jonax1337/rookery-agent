@@ -674,6 +674,9 @@ export const api = {
     const query = params.toString();
     return request<AgentReview[]>('/api/org/agents/' + id + '/reviews' + (query ? '?' + query : ''));
   },
+  /** Stage 2: the user accepting a drafted instruction rewrite the escalation did not apply. */
+  applyReconfig: (id: string, actionId: string) =>
+    request<Agent>('/api/org/agents/' + id + '/reconfig/' + actionId, { method: 'POST' }),
   /** Stage 4: the user approving a pending replacement proposal. */
   replaceAgent: (id: string, input: ReplaceAgentInput) =>
     request<{ predecessor: Agent; successor: Agent }>('/api/org/agents/' + id + '/replace', {

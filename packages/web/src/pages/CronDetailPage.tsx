@@ -30,6 +30,7 @@ import {
   DEFAULT_EVENT_COOLDOWN_MS,
   cronRunReport,
   cronRunTrigger,
+  isBoardWatch,
 } from '@/lib/cron';
 import {
   CRON_JOB_KIND_LABEL,
@@ -229,6 +230,10 @@ export function CronDetailPage() {
   // `sleep` is the system's own schedule: `ensureSleepSchedule` recreates it
   // and the memory settings own its timetable, so editing and deleting are off.
   const managed = job?.kind === 'sleep';
+  // The board watcher stays editable - the timing and the brief are yours -
+  // but deleting it was never real: `ensureBoardWatchSchedule` seeded the
+  // row again on the next start. Switching it off is what actually sticks.
+  const permanent = managed || (job ? isBoardWatch(job) : false);
 
   usePageMeta(
     {
@@ -273,7 +278,7 @@ export function CronDetailPage() {
             <DropdownMenuContent align="end" className="w-52">
               <DropdownMenuItem
                 variant="destructive"
-                disabled={managed}
+                disabled={permanent}
                 onSelect={() => void remove()}
               >
                 <Trash2Icon data-icon="inline-start" />
@@ -284,7 +289,7 @@ export function CronDetailPage() {
         </div>
       ) : undefined,
     },
-    [busy, job, managed, running, remove, runNow, toggle, scriptNeedsReview, exhausted],
+    [busy, job, managed, permanent, running, remove, runNow, toggle, scriptNeedsReview, exhausted],
   );
 
   /* -------------------------------- Spalten ------------------------------- */

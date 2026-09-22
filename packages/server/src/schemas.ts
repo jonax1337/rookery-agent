@@ -383,7 +383,14 @@ const orgConfigSchema = z
     maxConcurrentAssignments: z.number().int().min(1).max(16),
     maxDelegationDepth: z.number().int().min(1).max(6),
     assignmentTimeoutMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000),
+    maxTaskRuns: z.number().int().min(1).max(20),
     lazyCoding: z.boolean(),
+    // Both of these were settable in code and nowhere else, which left two
+    // background behaviours - judging every finished run, and rewriting an
+    // agent's instructions off the back of that judgment - with no switch
+    // anywhere a person would look for one.
+    autoReview: z.boolean(),
+    autoReconfig: z.boolean(),
     roleplay: z.boolean(),
     activeOrganizationId: z.string().min(1),
   })

@@ -53,7 +53,7 @@ import { CronScheduler, type CronRunOutcome } from './cron/scheduler.js';
 import { describeCron } from './cron/parse.js';
 import { runCronScript } from './cron/script.js';
 import { EventQueue, titleFromBrief } from './util/queue.js';
-import { formatNow } from './util/time.js';
+import { formatAge, formatNow } from './util/time.js';
 import { TurnBlocks } from './util/blocks.js';
 
 /**
@@ -105,16 +105,26 @@ function boardWatchJobId(orgId: string): string {
 /** Wide enough that the clock rarely fires it: the event path is the fast one, this is its backstop. */
 const BOARD_WATCH_SCHEDULE = '*/30 * * * *';
 
-/** What the watcher is told to look at and, just as importantly, what it may not do (E8, F3). */
+/**
+ * What the watcher is told to look at (E8, F3). It reports; it does not act.
+ *
+ * The earlier wording told it to "do whatever actually helps - reassign it,
+ * follow up with a fresh run on the same task, or restart it". That made the
+ * watcher the unattended caller with the widest reach in the system, and it
+ * fired hardest on `blocked` - the one status that means a person was asked
+ * something. The right answer to an open question is to wait for it, so the
+ * watcher now only says what it found. `WATCH_TOOLS` in org/tools.ts is what
+ * enforces that; this prompt only explains it.
+ */
 const BOARD_WATCH_PROMPT =
-  'Watch the board for what needs a person. Check list_tasks for anything failed or blocked, and ' +
-  'for anything running far longer than it should. For each one, do whatever actually helps - ' +
-  'reassign it, follow up with a fresh run on the same task, or restart it - and mail the user, at ' +
-  'most once per pass, only when something truly needs a human decision. Never close a blocked task ' +
-  "yourself: it is waiting on a person's answer, not on you, and only that person, or a reply in its " +
-  'own thread, ends the wait - the most you may do is mention that it has waited a long time. If the ' +
-  'board is healthy and none of this applies, do not report that everything is fine - answer with ' +
-  'exactly [SILENT] instead.';
+  'Watch the board and report what needs a person. Check list_tasks for anything failed, and for ' +
+  'anything running far longer than it should. You are a backstop, not a worker: you cannot start, ' +
+  'reassign, restart or close anything, and that is deliberate - deciding what to do about what you ' +
+  'find belongs to the user. Mail the user at most once per pass, and only when something truly ' +
+  'needs a human decision: say what you saw, how long it has been that way, and what you would ' +
+  'suggest. A task waiting on an answer is working as intended, not a fault, and never a reason to ' +
+  'write. If none of what you were shown is worth interrupting somebody over, do not report that ' +
+  'everything is fine - answer with exactly [SILENT] instead.';
 
 /** Add up what two passes of one turn cost; the last pass owns the context gauge. */
 function mergeUsage(base: TurnUsage | undefined, next: TurnUsage | undefined): TurnUsage | undefined {
@@ -247,6 +257,12 @@ export interface ChatInput {
    * `schedule` and `mail` carry the flag on their own.
    */
   scheduled?: boolean;
+  /**
+   * Set only by the board watcher's own firing. It narrows the turn's tools
+   * to `WATCH_TOOLS` (org/tools.ts): read the board, write one mail. Nothing
+   * else may set it - a turn that can act is not a watcher.
+   */
+  watching?: boolean;
   signal?: AbortSignal;
 }
 
@@ -278,6 +294,13 @@ export interface AssignInput {
    * fill the agent's bank with echoes of its own job description.
    */
   scheduled?: boolean;
+  /**
+   * The schedule that fired, recorded on the card so the board can say why
+   * a piece of work exists. Set alongside `scheduled`; the two answer
+   * different questions - whether to learn from the run, and what to show
+   * the person looking at the card.
+   */
+  scheduleId?: string;
 }
 
 export interface AssistantOptions {
@@ -330,10 +353,15 @@ export class Assistant extends EventEmitter {
   notifyProbe?: () => boolean;
   /**
    * The last status seen for a task, by id - only so the board-watch
-   * subscriber can tell a fresh landing in `failed`/`blocked` apart from an
-   * unrelated edit to a task that was already sitting there. Never read for
-   * anything else; a task this process never saw simply fires on its first
-   * qualifying event, which is the right answer after a restart too.
+   * subscriber can tell a fresh landing in `failed` apart from an unrelated
+   * edit to a task that was already sitting there. Never read for anything
+   * else.
+   *
+   * Filled from the board when the clock starts, not left empty: a map that
+   * starts empty makes every already-failed task look like a fresh landing,
+   * so the first harmless edit to any of them after a restart - a priority,
+   * a title - would wake the watcher for a state it had already reported.
+   * Edge-triggered has to mean edge-triggered across a restart as well.
    */
   readonly #taskStatusSeen = new Map<string, TaskStatus>();
 
@@ -601,6 +629,13 @@ export class Assistant extends EventEmitter {
   ensureBoardWatchSchedule(): CronJob | null {
     try {
       const organization = this.org.activeOrganization();
+      // Seed the edge detector before the subscriber can fire: every task
+      // already on the board counts as "seen in this state", so only a real
+      // transition from here on wakes the watcher. Without this the first
+      // unrelated edit to an old failed task would look like a new failure.
+      for (const task of this.store.org.listTasks(organization.id, { anyLevel: true, limit: 5000 })) {
+        this.#taskStatusSeen.set(task.id, task.status);
+      }
       const id = boardWatchJobId(organization.id);
       const existing = this.cron.get(id);
       if (existing && existing.orgId === organization.id) return existing;
@@ -625,17 +660,90 @@ export class Assistant extends EventEmitter {
   }
 
   /**
-   * A task crossed into `failed` or `blocked` - the two transitions the
-   * watcher cares about (E8, section 5). The clock behind it fires every
-   * thirty minutes regardless; this is only the fast path, and it is
-   * edge-triggered on purpose: a task that merely stays blocked while its
-   * title or priority changes must not re-fire the watcher on every one of
-   * those unrelated edits, only on actually landing in the state.
+   * What the board watcher would have something to say about, decided in
+   * SQL rather than by a model.
+   *
+   * The watcher used to be a full turn every thirty minutes plus one per
+   * event - roughly fifty model runs a day whose usual answer was
+   * `[SILENT]`. "Is anything wrong" is a query; only "is this worth
+   * interrupting somebody over, and how do I put it" needs judgment. So the
+   * clock runs this first, the model is never started unless this finds
+   * something, and when it does the findings go into the prompt: the turn
+   * begins already knowing what it is there for.
+   *
+   * Nothing is reported twice. Everything that went wrong before the
+   * watcher last actually said something was covered by that report, so
+   * only what became true since then is news. That is what stops a board
+   * with one permanently broken task on it from mailing about it
+   * forty-eight times a day.
+   */
+  #boardAttention(orgId: string, jobId: string): string[] {
+    const now = Date.now();
+    // The mark is stored, not reconstructed from the run history.
+    //
+    // Reading "the newest run that produced a result" out of the last N
+    // runs looked equivalent and was not, in three ways. A quiet board
+    // writes a silent run every half hour, so after ten hours the speaking
+    // run had fallen out of any fixed window and every old failure became
+    // news again. A pass the model ended with `[SILENT]` left no result at
+    // all, so a finding it had deliberately judged not worth reporting came
+    // back every thirty minutes for ever. And both readings confused two
+    // different questions: what the model chose to say, and what it was
+    // shown. This answers the second - the mark moves when the findings are
+    // handed over, whatever the model then decides to do with them.
+    const markKey = 'board-watch:seen:' + jobId;
+    const since = Number(this.store.getMeta(markKey) ?? 0);
+    // A run that has outlived twice its own hard stop is not slow: either
+    // its timer never fired or the row was orphaned by a crash.
+    const stuckAfter = this.config.org.assignmentTimeoutMs * 2;
+    const lines: string[] = [];
+    // An explicit ceiling, and a high one. `listTasks` defaults to 100
+    // ordered by priority then oldest-first, so on a board that has built up
+    // history the newest failure - the one that matters - is exactly the row
+    // that falls off the end and is never seen.
+    for (const task of this.store.org.listTasks(orgId, { anyLevel: true, status: ['failed', 'running'], limit: 5000 })) {
+      const label = '[' + task.id.slice(0, 8) + '] ' + task.title;
+      if (task.status === 'failed') {
+        const landed = task.finishedAt ?? task.updatedAt;
+        if (landed <= since) continue;
+        const runs = this.store.org.taskRunCount(task.id);
+        lines.push(
+          label + ' failed' + (runs > 1 ? ' on run ' + runs : '') +
+            (task.error ? ': ' + task.error : '') + ' (' + formatAge(landed, now, 'minute') + ' ago)',
+        );
+        continue;
+      }
+      const started = task.startedAt ?? task.updatedAt;
+      // The moment it became stuck, not the moment we noticed: a task that
+      // crossed that line before the last report was in that report.
+      const crossed = started + stuckAfter;
+      if (crossed > now || crossed <= since) continue;
+      lines.push(label + ' has been running ' + formatAge(started, now, 'minute') + ' with no end');
+    }
+    // Only a pass that actually found something moves the mark: a quiet
+    // look must not silently swallow a failure that lands a second later.
+    if (lines.length) this.store.setMeta(markKey, String(now));
+    return lines;
+  }
+
+  /**
+   * A task crossed into `failed` - the one transition the watcher cares
+   * about (E8, section 5). The clock behind it fires every thirty minutes
+   * regardless; this is only the fast path, and it is edge-triggered on
+   * purpose: a task that merely stays failed while its title or priority
+   * changes must not re-fire the watcher on every one of those unrelated
+   * edits, only on actually landing in the state.
+   *
+   * `blocked` used to wake it too, and that was backwards. Blocked means an
+   * agent asked a person something and the board is correctly waiting for
+   * the answer. Waking a watcher on it meant the system's reaction to being
+   * asked a question was to go and do something instead - within a minute,
+   * while the person was still reading it.
    */
   #onTaskEvent(event: AgentEvent): void {
     if (event.type !== 'task') return;
     const { task } = event;
-    const attention = task.status === 'failed' || task.status === 'blocked';
+    const attention = task.status === 'failed';
     const before = this.#taskStatusSeen.get(task.id);
     this.#taskStatusSeen.set(task.id, task.status);
     if (!attention || before === task.status) return;
@@ -664,8 +772,25 @@ export class Assistant extends EventEmitter {
     const turnId = input.turnId ?? randomUUID();
     const startedAt = Date.now();
     const journal: TurnJournalState = { begun: false };
+    // The backstop a turn never had. A run and a schedule both stop
+    // themselves; a turn ran until its provider process did, and over
+    // `POST /api/chat` - which passes no signal - nobody could interrupt
+    // it. The caller's own signal still works and still wins; this only
+    // adds an end to turns that would otherwise not have one.
+    const guard = new AbortController();
+    const onCallerAbort = (): void => guard.abort();
+    // A signal that was already aborted never fires the event again, so
+    // forwarding only through the listener would start a turn the caller
+    // had already given up on.
+    if (input.signal?.aborted) guard.abort();
+    else input.signal?.addEventListener('abort', onCallerAbort, { once: true });
+    const timer = setTimeout(() => guard.abort(), this.config.turns.timeoutMs);
+    // Node keeps the process alive for a pending timer; this one must never
+    // be the reason a CLI command refuses to exit.
+    timer.unref?.();
+    const guarded: ChatInput = { ...input, signal: guard.signal };
     try {
-      for await (const event of this.#chatTurn(input, turnId, journal)) {
+      for await (const event of this.#chatTurn(guarded, turnId, journal)) {
         if (journal.begun) this.store.turns.append(turnId, event as unknown as Record<string, unknown>);
         yield event;
       }
@@ -680,6 +805,9 @@ export class Assistant extends EventEmitter {
       // record of it - it stays, marked, rather than vanishing whole.
       if (journal.begun) this.store.turns.settle(turnId, 'interrupted', Date.now());
       throw error;
+    } finally {
+      clearTimeout(timer);
+      input.signal?.removeEventListener('abort', onCallerAbort);
     }
   }
 
@@ -876,6 +1004,7 @@ export class Assistant extends EventEmitter {
           // not be offered `ask_user` - there is no screen to answer on.
           scheduled:
             input.scheduled === true || session.kind === 'schedule' || session.kind === 'mail',
+          watching: input.watching === true,
           emit: (event) => queue.push(event),
           signal: input.signal,
         });
@@ -1090,7 +1219,15 @@ export class Assistant extends EventEmitter {
 
   /**
    * Give one agent a task directly, outside a conversation. Streams the
-   * assignment's events and ends with `done` carrying the report.
+   * run's events and ends with `done` carrying the report.
+   *
+   * Like every other way of handing out work, this puts a card on the board
+   * first (decision E9). It used to call `org.run()` straight, and it is the
+   * entrance the web UI, the websocket, the CLI and every agent schedule all
+   * come through - so the single biggest source of "sometimes there is a
+   * card and sometimes there is only a run" was this one method. The
+   * `assign` tool had already been moved onto the board; this is the same
+   * move for everything that is not a tool call.
    */
   async *assign(input: AssignInput): AsyncGenerator<AgentEvent, void, unknown> {
     const task = input.task.trim();
@@ -1109,32 +1246,59 @@ export class Assistant extends EventEmitter {
       return;
     }
 
+    // The card comes first and the run hangs off it, so this work is on the
+    // board from the moment it is handed over rather than only visible as a
+    // row under "runs". `createdBy: 'user'` is the truth here: every caller
+    // of this method is a person acting directly, or a schedule they set up.
+    const card = this.store.org.createTask({
+      orgId: organization.id,
+      title: input.title?.trim() || titleFromBrief(task),
+      description: task,
+      projectId: input.projectId,
+      assigneeId: agent.id,
+      createdBy: 'user',
+      // A card that appeared at three in the morning can say why. The work
+      // is still the user's - they set the schedule up - so `createdBy`
+      // stays `user` and this only names the arrangement that fired.
+      scheduleId: input.scheduleId,
+    });
+    this.org.announceTask(card);
+
     const queue = new EventQueue<AgentEvent>();
     const run = this.org
-      .run({
-        orgId: organization.id,
-        agent,
-        title: input.title?.trim() || titleFromBrief(task),
-        task,
-        projectId: input.projectId,
-        sessionId: input.sessionId,
-        requesterKind: 'user',
-        depth: 0,
-        scheduled: input.scheduled,
-        emit: (event) => queue.push(event),
-        signal: input.signal,
-      })
+      .runTask(
+        {
+          orgId: organization.id,
+          audience: 'assistant',
+          depth: -1,
+          projectId: input.projectId,
+          // The conversation this was started from, when there was one. It
+          // is what links the run back into that chat's journal; dropping
+          // it left `turns.session_id` null and the run unfindable from the
+          // conversation that asked for it.
+          sessionId: input.sessionId,
+          scheduled: input.scheduled,
+          emit: (event) => queue.push(event),
+          signal: input.signal,
+        },
+        card,
+      )
       .finally(() => queue.close());
 
     for await (const event of queue.drain()) yield event;
-    const assignment = await run;
+    const finished = await run;
 
-    if (assignment.status === 'done') {
-      yield { type: 'done', text: assignment.result ?? '', usage: { durationMs: assignment.durationMs } };
+    if (finished.status === 'done') {
+      yield { type: 'done', text: finished.result ?? '' };
+    } else if (finished.status === 'blocked') {
+      // Not a failure: somebody was asked something and the board is
+      // waiting for them. Saying "the run blocked" as an error made a
+      // perfectly good question read as a breakage.
+      yield { type: 'done', text: finished.result ?? 'Waiting for an answer.' };
     } else {
       yield {
         type: 'error',
-        message: 'The run ' + assignment.status + (assignment.error ? ': ' + assignment.error : '.'),
+        message: 'The run ' + finished.status + (finished.error ? ': ' + finished.error : '.'),
         fatal: true,
       };
     }
@@ -1265,6 +1429,7 @@ export class Assistant extends EventEmitter {
         projectId: job.projectId,
         signal,
         scheduled: true,
+        scheduleId: job.id,
       })) {
         if (event.type === 'assignment' && !assignmentId) assignmentId = event.assignment.id;
         else if (event.type === 'done') text = event.text;
@@ -1272,6 +1437,13 @@ export class Assistant extends EventEmitter {
       }
       return error ? { status: 'failed', error, assignmentId } : { status: 'done', result: text, assignmentId };
     }
+
+    // The board watcher checks before it thinks. Nothing on the board that
+    // needs saying means no session, no provider process and no model call -
+    // which is what the overwhelming majority of its firings are.
+    const watching = job.id === boardWatchJobId(job.orgId);
+    const attention = watching ? this.#boardAttention(job.orgId, job.id) : [];
+    if (watching && !attention.length) return { status: 'done', result: '', silent: true };
 
     // `job.sessionId` here only ever means "pinned at creation" - a one-off
     // follow-up the user asked to land in a chat they already had open.
@@ -1296,10 +1468,29 @@ export class Assistant extends EventEmitter {
       'for the user to read later. If carrying it out already delivers the result to the user by ' +
       'itself (for example you send_mail them the thing this job exists to send), that mail is the ' +
       'delivery - reply with exactly [SILENT] and nothing else, so a second "schedule completed" ' +
-      'notification is not posted on top of it.\n\n' + job.prompt;
+      'notification is not posted on top of it.\n\n' + job.prompt +
+      // The watcher arrives knowing what it was woken for, so the turn is
+      // about judging those findings rather than going to look for them.
+      // Everything here is new since its last report by construction.
+      (attention.length
+        ? '\n\nThe board was checked before this run. These are new since you last reported, ' +
+          'and they are the whole reason you were woken:\n- ' + attention.join('\n- ')
+        : '');
     let text = '';
     let error: string | undefined;
-    for await (const event of this.chat({ text: prompt, sessionId, projectId: job.projectId, permission: job.permission, signal, scheduled: true })) {
+    for await (const event of this.chat({
+      text: prompt,
+      sessionId,
+      projectId: job.projectId,
+      permission: job.permission,
+      signal,
+      scheduled: true,
+      // The board watcher is the one schedule that gets a cut-down toolset:
+      // it looks and it mails, it does not act. Keyed off the job's fixed id
+      // so a user-made job that merely happens to be named "Board watch" is
+      // an ordinary assistant schedule with ordinary reach.
+      watching,
+    })) {
       if (event.type === 'done') text = event.text;
       else if (event.type === 'error' && event.fatal) error = event.message;
     }

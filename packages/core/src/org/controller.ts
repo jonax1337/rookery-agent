@@ -147,6 +147,14 @@ export interface ToolContext {
    */
   scheduled?: boolean;
   /**
+   * Set for the board watcher's own run. It is the strictest context there
+   * is: the watcher may read the board and write one mail, nothing else. A
+   * watcher that could reassign, restart or close what it finds would answer
+   * a person's open question by guessing at it, which is the one thing a
+   * backstop must never do.
+   */
+  watching?: boolean;
+  /**
    * The bridge token of the calling turn, stamped in by `register`. `ask_user`
    * files it with the question so the turn can take its questions with it on
    * every exit, not only on an abort.
@@ -415,7 +423,7 @@ export class OrgController extends EventEmitter {
     // than passed: it is what `ask_user` files with a question and what the
     // runtime retires when the turn ends, on every exit.
     const token = this.#bridge.register(
-      toolsFor(context.audience, { scheduled: context.scheduled }),
+      toolsFor(context.audience, { scheduled: context.scheduled, watching: context.watching }),
       this.handler(context),
     );
     context.questionOwner = token;
@@ -1699,6 +1707,19 @@ export class OrgController extends EventEmitter {
     if (!task || task.status === 'running') return;
     const agent = task.assigneeId ? this.#store.org.getAgent(task.assigneeId) : null;
     if (!agent) return;
+    // A person writing in the thread always gets their run: they can see
+    // what came back and are deciding to try again. A machine writing in it
+    // cannot, so it gets a ceiling - without one, two agents mailing each
+    // other in a task thread re-run the same task until something else
+    // stops them, and a task that fails the same way every time costs a
+    // full model run per repetition.
+    if (from.kind !== 'user' && this.#store.org.taskRunCount(task.id) >= this.#config.org.maxTaskRuns) {
+      this.#log.warn('Task continuation refused: run ceiling reached', {
+        task: task.id,
+        runs: this.#store.org.taskRunCount(task.id),
+      });
+      return;
+    }
 
     void this.runTask(
       {
@@ -1742,6 +1763,15 @@ export class OrgController extends EventEmitter {
   async #ensureTaskThread(task: Task, emit: (event: AgentEvent) => void): Promise<void> {
     if (this.#store.org.getMailThreadForTask(task.orgId, task.id)) return;
     if (!task.assigneeId || !this.#store.org.getAgent(task.assigneeId)) return;
+    // A schedule has nobody to write to. The thread exists so a task can be
+    // negotiated - questions asked, results returned, an ending explained -
+    // and all of that presumes a counterpart who is waiting. A job that
+    // fires at three in the morning has none: its outcome is delivered by
+    // the schedule's own inbox mail. Opening a thread here meant every
+    // nightly run wrote a work order to the agent and, at the end, a "was
+    // marked as done" note to the user - two mails a night per job, for
+    // work nobody was following.
+    if (task.scheduleId) return;
     const from: MailWho =
       task.createdBy === 'user'
         ? { kind: 'user' }
@@ -2440,7 +2470,14 @@ export class OrgController extends EventEmitter {
         log.end();
         this.#logs.delete(assignment.id);
       }
-      this.#store.turns.settle(assignment.id, 'done', Date.now());
+      // What the journal says has to match what happened. It used to write
+      // `done` for every run that reached this line - a run that timed out,
+      // was cancelled or died on a fatal provider error settled as an
+      // orderly end, so a client rebuilding the run from the journal after
+      // a reload saw a clean finish where the assignment row said `failed`.
+      // `done` is reserved for a run that actually ended in `done`.
+      const settled = this.#store.org.getAssignment(assignment.id) ?? assignment;
+      this.#store.turns.settle(assignment.id, settled.status === 'done' ? 'done' : 'interrupted', Date.now());
       this.#active.delete(assignment.id);
       input.signal?.removeEventListener('abort', onAbort);
       this.#release();
@@ -2702,16 +2739,37 @@ export class OrgController extends EventEmitter {
         patch.assigneeId = agent.id;
       }
     }
+    // The status goes through `setTaskStatus`, which is what makes this tool
+    // tell the task's mail thread what it did - closing a task from here
+    // used to leave whoever was waiting in that thread waiting for good.
+    //
+    // It runs *first*. Writing the fields first meant a refused status left
+    // the other edits standing and unannounced: the caller read "that is not
+    // allowed", believed nothing had happened, and the card had quietly lost
+    // its assignee in an open browser that was never told.
+    const fields = Object.keys(patch);
     const status = text('status');
-    if (status === 'open' || status === 'done' || status === 'cancelled' || status === 'blocked') {
-      patch.status = status;
-      if (status !== 'open') patch.finishedAt = Date.now();
-      if (text('result')) patch.result = text('result');
+    const settable = status === 'open' || status === 'done' || status === 'cancelled' || status === 'blocked';
+    if (!settable && !fields.length) return fail('Nothing to change.');
+
+    if (settable) {
+      const moved = await this.setTaskStatus({
+        task,
+        to: status,
+        by: context.audience === 'agent' ? 'agent' : 'assistant',
+        ...(text('result') ? { result: text('result') } : {}),
+        emit: context.emit,
+      });
+      if (!moved.ok) return fail(moved.reason);
     }
-    this.#store.org.updateTask(task.id, patch);
-    const updated = this.#store.org.getTask(task.id) ?? task;
-    this.#announceTask(updated, context.emit);
-    return { text: 'Updated task "' + updated.title + '": ' + Object.keys(patch).join(', ') + '.' };
+    if (fields.length) this.#store.org.updateTask(task.id, patch);
+    const edited = this.#store.org.getTask(task.id) ?? task;
+    this.#announceTask(edited, context.emit);
+    return {
+      text:
+        'Updated task "' + edited.title + '": ' +
+        [...fields, ...(settable ? ['status'] : [])].join(', ') + '.',
+    };
   }
 
   /**
@@ -2803,40 +2861,95 @@ export class OrgController extends EventEmitter {
     const org = this.#store.org;
     const reload = (): Task => org.getTask(task.id) ?? task;
 
-    let children = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
-    if (!children.length && !reload().assigneeId) {
-      await this.planTask(context, reload());
-      children = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
-    }
-
-    // Every task is negotiated in a thread, whichever way it got here: one
-    // that was not born as mail has its work order written before it runs,
-    // so its result, its questions and its ending all have somewhere to go.
-    await this.#ensureTaskThread(reload(), context.emit);
-
     const started = Date.now();
-    org.updateTask(task.id, { status: 'running', startedAt: started, error: null });
-    this.#announceTask(reload(), context.emit);
 
     // How a run ends is the thread's business, not an HTTP route's: every
     // ending passes here, and `notifyTaskStatus` decides for itself whether
     // the thread still needs to be told (decision E7).
-    const finish = (status: TaskStatus, patch: { result?: string; error?: string }): Task => {
-      org.updateTask(task.id, { status, finishedAt: Date.now(), ...patch });
-      const done = reload();
-      this.#announceTask(done, context.emit);
-      if (status !== 'open' && status !== 'planned' && status !== 'running') {
-        void this.notifyTaskStatus(done, status, started);
-      }
-      return done;
+    // Through the one writer like everyone else. `fromRun` is what lets it
+    // move a card that is `running`: this loop owns that card for the
+    // duration, and it is the only writer that may decide the outcome from
+    // inside rather than having to cancel first. `started` keeps the
+    // thread's "has it already heard about this ending" check pinned to
+    // this run, not to the task's first one.
+    const finish = async (status: TaskStatus, patch: { result?: string; error?: string }): Promise<Task> => {
+      const moved = await this.setTaskStatus({
+        task: reload(),
+        to: status,
+        by: task.createdBy,
+        fromRun: true,
+        since: started,
+        emit: context.emit,
+        ...patch,
+      });
+      return moved.ok ? moved.task : reload();
     };
+
+    try {
+      // Planning and opening the thread belong inside the guard. They ran
+      // before it, so a failure in either escaped `#runTask` entirely - and
+      // `Runtime.assign` had already put the card on the board by then,
+      // leaving it sitting at `open` with no run, no error and no
+      // explanation. The claim below is what makes the card `running`, and
+      // it is atomic: a status write that slips in between the read above
+      // and this line loses, rather than being silently overwritten.
+      let children = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
+      if (!children.length && !reload().assigneeId) {
+        await this.planTask(context, reload());
+        children = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
+      }
+
+      // Every task is negotiated in a thread, whichever way it got here: one
+      // that was not born as mail has its work order written before it runs,
+      // so its result, its questions and its ending all have somewhere to go.
+      await this.#ensureTaskThread(reload(), context.emit);
+
+      if (!org.claimTaskForRun(task.id, started)) {
+        // Somebody finished or cancelled it while this was getting ready.
+        return reload();
+      }
+      this.#announceTask(reload(), context.emit);
+
+      return await this.#runTaskBody(context, task, children, finish, started);
+    } catch (error) {
+      // The card claims to be running and nothing is. Left like that it can
+      // be neither cancelled (no controller any more) nor edited (every
+      // writer refuses a running task), so only a restart would clear it -
+      // and the restart sweep would then report it as a failure nobody
+      // could explain. It ends here instead, with the reason on it.
+      const message = (error as Error).message;
+      this.#log.warn('Task run failed', { task: task.id, error: message });
+      try {
+        return await finish('failed', { error: message });
+      } catch {
+        // Even the status write failed. The column is the last thing that
+        // can still be made true, so it is written directly.
+        org.updateTask(task.id, { status: 'failed', error: message, finishedAt: Date.now() });
+        return reload();
+      }
+    }
+  }
+
+  /**
+   * The body of one task run, split out only so `#runTask` can wrap the
+   * whole of it - planning, waves and all - in a single catch.
+   */
+  async #runTaskBody(
+    context: ToolContext,
+    task: Task,
+    children: Task[],
+    finish: (status: TaskStatus, patch: { result?: string; error?: string }) => Promise<Task>,
+    started: number,
+  ): Promise<Task> {
+    const org = this.#store.org;
+    const reload = (): Task => org.getTask(task.id) ?? task;
 
     if (!children.length) {
       const current = reload();
       const agent = current.assigneeId ? org.getAgent(current.assigneeId) : null;
-      if (!agent) return finish('failed', { error: 'Nobody is assigned and nobody could be found to do it.' });
+      if (!agent) return await finish('failed', { error: 'Nobody is assigned and nobody could be found to do it.' });
       const outcome = await this.#runTaskLeaf(context, current, agent);
-      return finish(taskStatusFor(outcome), { result: outcome.result, error: outcome.error });
+      return await finish(taskStatusFor(outcome), { result: outcome.result, error: outcome.error });
     }
 
     const waves = buildTaskWaves(children.filter((c) => c.status !== 'done'));
@@ -2895,16 +3008,44 @@ export class OrgController extends EventEmitter {
         });
       }
     }
-    return finish(outcome.status, { result: outcome.result, error: outcome.error });
+    return await finish(outcome.status, { result: outcome.result, error: outcome.error });
   }
 
   /** One subtask inside a wave: mark it, run its leaf, record the outcome. */
-  async #runSubtask(context: ToolContext, child: Task): Promise<void> {
+  async #runSubtask(outer: ToolContext, child: Task): Promise<void> {
+    const org = this.#store.org;
+    // A subtask gets its own controller in `#activeTasks`, exactly like the
+    // task above it. Without one, `cancelTask(childId)` found nothing and
+    // returned false, so a single stuck child of a five-way split could not
+    // be stopped from the UI, the tool or the CLI - all three refuse to
+    // edit a running card - and the only way out was restarting the server.
+    const controller = new AbortController();
+    const onAbort = (): void => controller.abort();
+    outer.signal?.addEventListener('abort', onAbort, { once: true });
+    this.#activeTasks.set(child.id, controller);
+    const context: ToolContext = { ...outer, signal: controller.signal };
+    try {
+      await this.#runSubtaskBody(context, child);
+    } catch (error) {
+      // Same rule as the parent: a child must never be left claiming to run.
+      const message = (error as Error).message;
+      this.#log.warn('Subtask run failed', { task: child.id, error: message });
+      org.updateTask(child.id, { status: 'failed', error: message, finishedAt: Date.now() });
+      this.#announceTask(org.getTask(child.id) ?? child, context.emit);
+    } finally {
+      this.#activeTasks.delete(child.id);
+      outer.signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  async #runSubtaskBody(context: ToolContext, child: Task): Promise<void> {
     const org = this.#store.org;
     const agent = child.assigneeId ? org.getAgent(child.assigneeId) : null;
     org.updateTask(child.id, { status: 'running', startedAt: Date.now() });
     this.#announceTask(org.getTask(child.id) ?? child, context.emit);
-    if (!agent) {
+    if (context.signal?.aborted) {
+      org.updateTask(child.id, { status: 'cancelled', finishedAt: Date.now() });
+    } else if (!agent) {
       org.updateTask(child.id, { status: 'failed', error: 'No assignee.', finishedAt: Date.now() });
     } else {
       const deps = child.dependsOn.map((id) => org.getTask(id)).filter((t): t is Task => Boolean(t));
@@ -2964,12 +3105,26 @@ export class OrgController extends EventEmitter {
       // this is comes from the chain, not from a second title (decision E17).
       title: task.title,
       taskId: task.id,
-      task: prior + 'TASK: ' + task.title + '\n\n' + task.description + note,
+      // A title that was derived from the brief is the brief's own first
+      // line, so heading the brief with it says the same thing twice - and
+      // the agent reads the repetition as emphasis that was never meant.
+      // Only a title that adds something gets a heading.
+      task: prior + briefFor(task) + note,
       projectId: task.projectId ?? context.projectId,
       sessionId: context.sessionId,
       parentId: context.parentAssignmentId,
-      requesterKind: context.audience === 'agent' ? 'agent' : 'assistant',
-      requesterAgentId: context.agentId,
+      // Who is waiting for this comes off the card, not off the audience
+      // that happens to be driving the run. They are not the same thing: a
+      // task the user put on the board is carried out by the assistant, so
+      // reading the audience said "assistant" and the agent's question went
+      // looking for an answer from a party that was never asked. Then
+      // `askedRequester` saw nobody waiting and the task closed as `done`
+      // with a real question still open in the user's inbox.
+      //
+      // `notifyTaskStatus` and `partyToTask` already answer this question
+      // from `task.createdBy`; this is the third place agreeing with them.
+      requesterKind: task.createdBy,
+      requesterAgentId: task.createdBy === 'agent' ? task.createdByAgentId : undefined,
       depth: context.depth + 1,
       emit: context.emit,
       signal: context.signal,
@@ -2988,6 +3143,121 @@ export class OrgController extends EventEmitter {
       assignmentId: assignment.id,
       askedRequester,
     };
+  }
+
+  /**
+   * The one place a task's status changes.
+   *
+   * There used to be six: the HTTP route, the `update_task` tool, the CLI,
+   * the run loop, the planner and the startup sweep - each with its own
+   * idea of what else has to happen. The route checked for a conflicting
+   * run and wrote a note into the task's mail thread; the tool did neither;
+   * the CLI did not even emit an event, so an open browser never heard that
+   * the card had moved. Whether the thread learned a task was finished
+   * depended on which process happened to finish it, and that is what made
+   * the board feel arbitrary.
+   *
+   * Three things belong together and now cannot come apart: the guard, the
+   * write, and telling everyone. `by` is who is asking, which decides
+   * whether a running task may be touched at all.
+   *
+   * Reopening clears what the previous life left behind. A card moved back
+   * to `open` kept its old `finishedAt` and `result`, so every duration on
+   * the page - and the watcher's "running far longer than it should" - did
+   * arithmetic with a timestamp from a run that had ended days ago.
+   */
+  async setTaskStatus(input: {
+    task: Task;
+    to: TaskStatus;
+    /** Who is asking. The run loop passes `fromRun` instead. */
+    by: RequesterKind;
+    result?: string;
+    error?: string;
+    /**
+     * The run loop writing its own outcome. It owns the task for the
+     * duration of the run, so it is the one writer allowed to move a
+     * `running` card - everybody else has to cancel it first.
+     */
+    fromRun?: boolean;
+    /** When this ending began, for the thread's "has it heard yet" check. */
+    since?: number;
+    emit?: (event: AgentEvent) => void;
+  }): Promise<{ ok: true; task: Task } | { ok: false; reason: string }> {
+    const org = this.#store.org;
+    const current = org.getTask(input.task.id);
+    if (!current) return { ok: false, reason: 'The task no longer exists.' };
+    if (current.status === input.to && !input.fromRun) {
+      return { ok: true, task: current };
+    }
+    // A run in flight owns its card. Cancelling is the way to interrupt it;
+    // anything else would have two writers deciding the same outcome.
+    if (current.status === 'running' && !input.fromRun && input.to !== 'cancelled') {
+      return { ok: false, reason: 'The task is running. Cancel it first, or wait for it to finish.' };
+    }
+    // An agent reports; the person who asked decides it is finished
+    // (decision O3). `update_task` is offered to agents and checked nothing,
+    // so an agent could close or drop a card the user had put on the board
+    // themselves - and the user found out by noticing it was gone. Marking
+    // it `blocked` or handing back a result stays open to them, and a run
+    // recording its own outcome passes `fromRun`.
+    if (
+      input.by === 'agent' &&
+      !input.fromRun &&
+      current.createdBy === 'user' &&
+      (input.to === 'done' || input.to === 'cancelled')
+    ) {
+      return {
+        ok: false,
+        reason: 'This task belongs to the user. Report what you found and let them close it.',
+      };
+    }
+
+    const now = Date.now();
+    const terminal = input.to === 'done' || input.to === 'failed' || input.to === 'cancelled';
+    const patch: Parameters<OrgStore['updateTask']>[1] = { status: input.to };
+    if (terminal) {
+      patch.finishedAt = now;
+      if (input.result !== undefined) patch.result = input.result;
+      if (input.error !== undefined) patch.error = input.error;
+    } else if (input.to === 'blocked') {
+      // Waiting is not a new life. A blocked card is mid-question: it
+      // carries what the run produced so far and the reason it stopped,
+      // and clearing those - as "back into play" does - threw away the
+      // very thing the person is being asked about.
+      patch.finishedAt = null;
+      if (input.result !== undefined) patch.result = input.result;
+      if (input.error !== undefined) patch.error = input.error;
+    } else {
+      // Back into play: nothing from the last attempt may survive as if it
+      // described this one.
+      patch.finishedAt = null;
+      patch.result = input.result ?? null;
+      patch.error = input.error ?? null;
+      if (input.to === 'running') patch.startedAt = now;
+    }
+    org.updateTask(current.id, patch);
+    const updated = org.getTask(current.id) ?? current;
+    this.#announceTask(updated, input.emit ?? ((): void => undefined));
+    // A card from a schedule has no thread and no counterpart waiting in
+    // one - the schedule's own inbox mail is its delivery. Telling it how
+    // the work ended would put a second notification on top of that, every
+    // firing, for ever.
+    if (
+      !updated.scheduleId &&
+      (input.to === 'done' || input.to === 'failed' || input.to === 'cancelled' || input.to === 'blocked')
+    ) {
+      await this.notifyTaskStatus(updated, input.to, input.since ?? now);
+    }
+    return { ok: true, task: updated };
+  }
+
+  /**
+   * Tell everyone about a card created outside a turn - `Runtime.assign`,
+   * which has listeners but no turn to emit into. The board should show the
+   * card the moment the work is handed over, not once planning is done.
+   */
+  announceTask(task: Task): void {
+    this.#announceTask(task, () => undefined);
   }
 
   #announceTask(task: Task, emit: (event: AgentEvent) => void): void {
@@ -3187,13 +3457,20 @@ export class OrgController extends EventEmitter {
     if (performance.stage === 2) {
       const drafted = await draftReconfig(provider, { roleTitle: agent.title, instructions: agent.instructions, reviews: weak });
       if (!drafted) return;
+      // Propose by default, apply only where the user has said it may
+      // (`org.autoReconfig`). Standing instructions are something a person
+      // wrote, and stage 2 is reached by one model's judgment of another
+      // model's output - a chain with nobody in it. Filed as a proposal,
+      // the same text is one click away on the agent's page and the agent
+      // keeps working to its current instructions until then.
+      const applying = this.#config.org.autoReconfig;
       // Protocol before effect (decision E1): the action and the instruction
       // change happen together, or not at all - `updateAgent` never runs
       // ahead of a personnel-file entry that justifies it.
       this.#store.org.createAction({
         orgId,
         agentId: agent.id,
-        kind: 'reconfig',
+        kind: applying ? 'reconfig' : 'reconfig-proposal',
         stage: 2,
         reason: drafted.reason,
         beforeText: agent.instructions,
@@ -3202,7 +3479,7 @@ export class OrgController extends EventEmitter {
         reviewIds: reviews.slice(0, 5).map((review) => review.id),
         decidedBy: 'assistant',
       });
-      this.#store.org.updateAgent(agent.id, { instructions: drafted.newInstructions });
+      if (applying) this.#store.org.updateAgent(agent.id, { instructions: drafted.newInstructions });
       this.emit('changed', { kind: 'agent', id: agent.id });
       return;
     }
@@ -3232,6 +3509,45 @@ export class OrgController extends EventEmitter {
       });
       this.emit('changed', { kind: 'agent', id: agent.id });
     }
+  }
+
+  /**
+   * Stage 2, the half the machine does not do: the user accepts a drafted
+   * instruction rewrite that `#develop` filed rather than applied.
+   *
+   * The proposal keeps both texts, so accepting it is a single write plus
+   * the record that justifies it - and the record is a real `reconfig`,
+   * decided by the user, which is what opens the probation window in
+   * `stageFromReviews`. Rejecting one needs no call at all: an unapproved
+   * proposal simply never takes effect, and the agent's next good stretch
+   * drops the stage back to zero on its own.
+   */
+  applyReconfig(actionId: string): Agent | null {
+    const action = this.#store.org.getAction(actionId);
+    if (!action || action.kind !== 'reconfig-proposal' || !action.afterText) return null;
+    const agent = this.#store.org.getAgent(action.agentId);
+    if (!agent || agent.archived) return null;
+    // Protocol before effect (decision E1), the same order the automatic
+    // path uses: the entry that justifies the change is written first.
+    this.#store.org.createAction({
+      orgId: action.orgId,
+      agentId: agent.id,
+      kind: 'reconfig',
+      stage: action.stage,
+      reason: action.reason,
+      // `beforeText` is read off the agent as it stands now, not copied from
+      // the proposal: the user may have edited the instructions by hand
+      // since it was drafted, and the record has to say what was actually
+      // replaced.
+      beforeText: agent.instructions,
+      afterText: action.afterText,
+      agentNote: action.agentNote,
+      reviewIds: action.reviewIds,
+      decidedBy: 'user',
+    });
+    this.#store.org.updateAgent(agent.id, { instructions: action.afterText });
+    this.emit('changed', { kind: 'agent', id: agent.id });
+    return this.#store.org.getAgent(agent.id);
   }
 
   /**
@@ -3460,6 +3776,26 @@ function asPriority(value: string): TaskPriority | undefined {
 }
 
 /** The status note itself: one sentence a person can read without the board. */
+/**
+ * The work order an agent reads for one task.
+ *
+ * A card made from a one-line instruction has a title taken from that very
+ * line (`titleFromBrief`), so heading the brief with the title repeats it
+ * word for word. A card someone wrote deliberately has a title that says
+ * something the description does not, and there the heading earns its
+ * place. Repeating it is not merely untidy: an agent reads a doubled
+ * instruction as emphasis nobody intended.
+ */
+function briefFor(task: Task): string {
+  const description = task.description.trim();
+  if (!description) return 'TASK: ' + task.title;
+  const first = description.split('\n', 1)[0]?.trim() ?? '';
+  // `titleFromBrief` shortens, so the title is a prefix of the line it came
+  // from rather than equal to it.
+  const derived = first === task.title || first.startsWith(task.title) || task.title.startsWith(first);
+  return derived ? description : 'TASK: ' + task.title + '\n\n' + description;
+}
+
 function statusNote(task: Task, status: 'done' | 'failed' | 'cancelled' | 'blocked'): string {
   const name = 'The task "' + task.title + '"';
   if (status === 'done') return name + ' was marked as done.';

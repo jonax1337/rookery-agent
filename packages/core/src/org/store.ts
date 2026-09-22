@@ -837,6 +837,8 @@ export class OrgStore {
     assigneeId?: string;
     createdBy: RequesterKind;
     createdByAgentId?: string;
+    /** The schedule whose firing made this card, when one did. */
+    scheduleId?: string;
     dependsOn?: string[];
     planNote?: string;
     status?: TaskStatus;
@@ -854,6 +856,7 @@ export class OrgStore {
       assigneeId: blank(input.assigneeId),
       createdBy: input.createdBy,
       createdByAgentId: blank(input.createdByAgentId),
+      scheduleId: blank(input.scheduleId),
       dependsOn: [...new Set(input.dependsOn ?? [])],
       planNote: blank(input.planNote),
       createdAt: now,
@@ -866,8 +869,9 @@ export class OrgStore {
       .prepare(
         `INSERT INTO tasks
            (id, org_id, project_id, parent_id, title, description, status, priority, assignee_id,
-            created_by, created_by_agent_id, depends_on, plan_note, created_at, updated_at, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            created_by, created_by_agent_id, schedule_id, depends_on, plan_note, created_at,
+            updated_at, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         task.id,
@@ -881,6 +885,7 @@ export class OrgStore {
         task.assigneeId ?? null,
         task.createdBy,
         task.createdByAgentId ?? null,
+        task.scheduleId ?? null,
         JSON.stringify(task.dependsOn),
         task.planNote ?? null,
         now,
@@ -888,6 +893,31 @@ export class OrgStore {
         task.sortOrder,
       );
     return task;
+  }
+
+  /**
+   * Take a task for a run, atomically. True when this caller got it.
+   *
+   * The in-memory `#activeTasks` claim stops two invocations inside one
+   * process; it cannot see a second process, and it cannot see a status
+   * write that lands between the read and the write - so two processes
+   * sharing this database could both decide a task was free and both start
+   * a run of it. The condition is the guard, and it is exactly one rule:
+   * a task that is already running cannot be taken again.
+   *
+   * Deliberately not stricter. A finished task is claimable, because a
+   * reply in its thread is allowed to set it going again with that reply as
+   * its brief (`#continueTask`) - excluding `done` here quietly broke that,
+   * and the card simply never moved.
+   */
+  claimTaskForRun(id: string, startedAt: number): boolean {
+    const result = this.#db
+      .prepare(
+        `UPDATE tasks SET status = 'running', started_at = ?, error = NULL, updated_at = ?
+          WHERE id = ? AND status != 'running'`,
+      )
+      .run(startedAt, Date.now(), id);
+    return Number(result.changes) > 0;
   }
 
   getTask(id: string): Task | null {
@@ -982,19 +1012,26 @@ export class OrgStore {
   }
 
   /**
-   * Tasks still marked planned/running from a previous process are failed on
+   * Tasks still marked running from a previous process are failed on
    * startup, mirroring `failStaleAssignments` above. Returns the rows it
    * changed so the caller can announce them.
+   *
+   * `planned` is deliberately left alone. A planned task has a plan and no
+   * run: nothing about it died with the process, and failing it asserted
+   * something untrue - "the server restarted while this was running" - about
+   * work the user had knowingly not started yet. Worse, `failed` is what
+   * wakes the board watcher, so every boot used to hand it a pile of
+   * fabricated failures to act on.
    */
   failStaleTasks(reason: string): Task[] {
     const now = Date.now();
     const rows = this.#db
-      .prepare("SELECT * FROM tasks WHERE status IN ('planned', 'running')")
+      .prepare("SELECT * FROM tasks WHERE status = 'running'")
       .all() as Row[];
     if (!rows.length) return [];
     this.#db
       .prepare(
-        "UPDATE tasks SET status = 'failed', error = ?, finished_at = ? WHERE status IN ('planned', 'running')",
+        "UPDATE tasks SET status = 'failed', error = ?, finished_at = ? WHERE status = 'running'",
       )
       .run(reason, now);
     return rows.map((row) =>
@@ -1038,6 +1075,25 @@ export class OrgStore {
       )
       .get(assignmentId) as { position: number } | undefined;
     return row ? Number(row.position) : null;
+  }
+
+  /**
+   * How many runs a task has had. Derived from `task_assignments`, which
+   * already keeps every run rather than only the latest, so this needs no
+   * column of its own and survives a restart the way the rows do.
+   *
+   * It exists so nothing re-runs a task forever without anyone noticing: a
+   * deterministic failure - a project directory that is gone, an assignee
+   * that was archived - fails identically every time, and the cost of
+   * finding that out again is a whole model run. Callers that restart work
+   * on their own initiative check this first; a person asking for another
+   * run is not subject to it.
+   */
+  taskRunCount(taskId: string): number {
+    const row = this.#db
+      .prepare('SELECT COUNT(*) AS runs FROM task_assignments WHERE task_id = ?')
+      .get(taskId) as { runs: number } | undefined;
+    return row ? Number(row.runs) : 0;
   }
 
   /** The task an assignment belongs to, even one a later rerun's assignment_id overwrote. */
@@ -1323,6 +1379,12 @@ export class OrgStore {
     return action;
   }
 
+  /** One personnel-record entry by id, for the paths that act on a specific one. */
+  getAction(id: string): AgentAction | null {
+    const row = this.#db.prepare('SELECT * FROM agent_actions WHERE id = ?').get(id) as Row | undefined;
+    return row ? mapAction(row) : null;
+  }
+
   /** An agent's personnel record, newest first. */
   listActions(agentId: string, options: { limit?: number } = {}): AgentAction[] {
     const rows = this.#db
@@ -1535,6 +1597,11 @@ function stageFromReviews(quality: AgentReview[], actions: AgentAction[]): 0 | 1
   const avgLast5 = mean(recent5.map((review) => review.overall));
   const weak = weakLast3 || oneStarUser || (avgLast5 !== null && avgLast5 < 3.0);
 
+  // Only an applied `reconfig` opens the probation window; a pending
+  // `reconfig-proposal` deliberately does not. Nothing about the agent has
+  // changed yet, so there is nothing to give it probation for - it stays at
+  // stage 2 until somebody accepts or rejects the draft, and an unapproved
+  // proposal can never escalate on its own to a replacement.
   const lastReconfig = actions.find((action) => action.kind === 'reconfig');
   const lastNote = actions.find((action) => action.kind === 'note');
 
@@ -1681,6 +1748,7 @@ function mapTask(row: Row): Task {
     assignmentId: optional(row.assignment_id),
     createdBy: row.created_by as RequesterKind,
     createdByAgentId: optional(row.created_by_agent_id),
+    scheduleId: optional(row.schedule_id),
     dependsOn,
     planNote: optional(row.plan_note),
     result: optional(row.result),

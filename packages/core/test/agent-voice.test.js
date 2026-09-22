@@ -45,7 +45,7 @@ test('an agent hired before schema 23 reads back with a null voice', (t) => {
   const after = new Store(path);
   const stamp = after.db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
   assert.equal(stamp.value, String(SCHEMA_VERSION), 'the file is stamped with this build');
-  assert.equal(SCHEMA_VERSION, 24);
+  assert.equal(SCHEMA_VERSION, 25);
 
   const read = after.org.getAgent(agent.id);
   assert.equal(read.voice, undefined, 'an old agent reads back with no voice at all');

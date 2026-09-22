@@ -1,6 +1,22 @@
-import type { CronRun, CronRunStatus, CronTrigger, CronTriggerMode } from './types';
+import type { CronJob, CronRun, CronRunStatus, CronTrigger, CronTriggerMode } from './types';
 
 /** Labels and presets for the schedule pages. */
+
+/**
+ * The board watcher, told apart by the fixed id the server seeds it under
+ * (`board-watch:<orgId>`) rather than by its name, which a user may change.
+ *
+ * It is a visible, editable schedule on purpose - the timing and the brief
+ * are yours - but it is not one anybody created, and it is the only thing
+ * that speaks up about a task nobody is watching. Deleting it never worked
+ * anyway: the row was seeded again on the next start.
+ */
+export function isBoardWatch(job: Pick<CronJob, 'id'>): boolean {
+  return job.id.startsWith('board-watch:');
+}
+
+/** Why the board watcher has no delete. */
+export const BOARD_WATCH_HINT = 'Part of the board. Switch it off to stop it.';
 
 /**
  * What a run has to say for itself: its error, else its result.

@@ -15,7 +15,7 @@ import {
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import { cronRunReport, cronRunTrigger } from '@/lib/cron';
+import { BOARD_WATCH_HINT, cronRunReport, cronRunTrigger, isBoardWatch } from '@/lib/cron';
 import { reportFailure } from '@/lib/errors';
 import { CRON_JOB_KIND_LABEL, formatDateTime, formatDuration } from '@/lib/format';
 import { daysAgo, formatNumber } from '@/lib/stats';
@@ -108,12 +108,20 @@ export function CronPage() {
 
   const jobs = useMemo(
     () =>
-      cron.jobs.map((job) => {
-        const pending = optimistic[job.id];
-        return pending === undefined || pending === job.enabled
-          ? job
-          : { ...job, enabled: pending };
-      }),
+      cron.jobs
+        // The board watcher is part of the board, not a standing order
+        // somebody wrote. A row here claimed the user had created it, which
+        // was untrue and read as clutter in their own list; the board says
+        // it is being watched instead (decision E5 of
+        // docs/concepts/work-as-one-surface.md). The job itself is
+        // untouched - only this page stops presenting it as a peer.
+        .filter((job) => !isBoardWatch(job))
+        .map((job) => {
+          const pending = optimistic[job.id];
+          return pending === undefined || pending === job.enabled
+            ? job
+            : { ...job, enabled: pending };
+        }),
     [cron.jobs, optimistic],
   );
 
@@ -193,7 +201,17 @@ export function CronPage() {
   const active = own.filter((job) => job.enabled).length;
   const paused = own.length - active;
   const since = daysAgo(1);
-  const failed = cron.runs.filter((run) => run.status === 'failed' && run.startedAt >= since).length;
+  // The board watcher is not on this page's job list, so its runs do not
+  // belong in this page's run list either. It fires at least forty-eight
+  // times a day - the cheap pre-check still records each look - and left in,
+  // it pushed the user's own runs out of a fifty-row window and skewed every
+  // number derived from it: a table full of a schedule that, one section
+  // above, does not exist.
+  const runs = useMemo(() => {
+    const watchers = new Set(cron.jobs.filter(isBoardWatch).map((job) => job.id));
+    return cron.runs.filter((run) => !watchers.has(run.jobId));
+  }, [cron.jobs, cron.runs]);
+  const failed = runs.filter((run) => run.status === 'failed' && run.startedAt >= since).length;
   // Fifty is the server's ceiling for the shared run list; at exactly fifty
   // there may be more that nobody can reach.
   const runsCapped = cron.runs.length >= 50;
@@ -316,6 +334,11 @@ export function CronPage() {
         actionsColumn<CronJob>((job) => {
           const running = cron.running.has(job.id);
           const managed = job.kind === 'sleep';
+          // The board watcher stays editable - its schedule and its brief
+          // are meant to be yours - but deleting it was a lie: the row came
+          // straight back on the next start. Switching it off is the honest
+          // way to stop it, and that already sticks.
+          const permanent = managed || isBoardWatch(job);
           return (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -347,10 +370,10 @@ export function CronPage() {
                   Run now
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <ManagedHint show={managed}>
+                <ManagedHint show={permanent} reason={managed ? undefined : BOARD_WATCH_HINT}>
                   <DropdownMenuItem
                     variant="destructive"
-                    disabled={managed}
+                    disabled={permanent}
                     onSelect={() => void remove(job)}
                   >
                     <Trash2Icon data-icon="inline-start" />
@@ -517,7 +540,7 @@ export function CronPage() {
       <Fade delay={100}>
         <SectionHeading title="Recent runs" hint="The latest 50 runs across all schedules.">
           <DataTable
-            data={cron.runs}
+            data={runs}
             columns={runColumns}
             getRowId={(run) => run.id}
             idPrefix="laeufe"
@@ -637,7 +660,16 @@ function RotatingHeadline({ text }: { text: string }) {
  * A disabled `DropdownMenuItem` carries `pointer-events: none`, so the
  * tooltip has to hang on a wrapper around it, not on the item itself.
  */
-function ManagedHint({ show, children }: { show: boolean; children: ReactNode }) {
+function ManagedHint({
+  show,
+  reason,
+  children,
+}: {
+  show: boolean;
+  /** What is managing it, if not the Memory setting. */
+  reason?: string;
+  children: ReactNode;
+}) {
   if (!show) return <>{children}</>;
   return (
     <Tooltip>
@@ -646,7 +678,7 @@ function ManagedHint({ show, children }: { show: boolean; children: ReactNode })
       </TooltipTrigger>
       <TooltipContent side="left">
         <ClockAlertIcon className="size-3.5" aria-hidden="true" />
-        Managed by the Memory setting
+        {reason ?? 'Managed by the Memory setting'}
       </TooltipContent>
     </Tooltip>
   );

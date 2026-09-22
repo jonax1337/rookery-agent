@@ -396,8 +396,18 @@ test('cron: an agent job runs as an assignment', async () => {
   const assignment = store.org.getAssignment(run.assignmentId);
   assert.equal(assignment.status, 'done');
   assert.equal(assignment.agentId, agent.id);
-  assert.equal(assignment.task, 'Prüfe die Builds.');
+  assert.match(assignment.task, /Prüfe die Builds\./);
   assert.equal(run.sessionId, undefined, 'no conversation for an agent run');
+
+  // A nightly agent job is work like any other, so it leaves a card. It
+  // used to leave only a run: night after night of assignments that no
+  // board showed and the watcher could never see.
+  const taskId = store.org.getTaskIdForAssignment(assignment.id);
+  assert.ok(taskId, 'the run hangs on a card');
+  const card = store.org.getTask(taskId);
+  assert.equal(card.title, 'Nachtlauf', "the schedule's name names the card");
+  assert.equal(card.assigneeId, agent.id);
+  assert.equal(card.status, 'done');
   assistant.close();
 });
 

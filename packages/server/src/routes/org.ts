@@ -192,6 +192,14 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
       reports: store.listAgents(agent.orgId, { managerId: agent.id }),
       performance: store.performance(agent.id),
       actions: store.listActions(agent.id, { limit: 30 }),
+      // A drafted instruction rewrite waiting for the user. It is pending
+      // exactly while it is the newest entry: applying it writes a
+      // `reconfig` on top, and any later action means the record moved on
+      // without it.
+      pendingReconfig: (() => {
+        const latest = store.listActions(agent.id, { limit: 1 })[0];
+        return latest?.kind === 'reconfig-proposal' ? latest : null;
+      })(),
       predecessor: predecessor ? { id: predecessor.id, name: predecessor.name, slug: predecessor.slug } : null,
       successor: successorId ? (() => {
         const successor = store.getAgent(successorId);
@@ -228,6 +236,29 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     const successor = await context.assistant.org.replaceAgent(agent.orgId, agent.id, input);
     return { predecessor: store.getAgent(agent.id), successor };
   });
+
+  /**
+   * Stage 2 (section 4): the user accepts an instruction rewrite that the
+   * escalation drafted but did not apply. Addressed by the proposal's own
+   * id, not the agent's, so a stale page cannot accept a draft that a newer
+   * one has already replaced. Rejecting needs no call: an unapproved
+   * proposal simply never takes effect.
+   */
+  app.post(
+    '/api/org/agents/:id/reconfig/:actionId',
+    async (request: FastifyRequest<IdParams & { Params: { id: string; actionId: string } }>, reply: FastifyReply) => {
+      const agent = store.getAgent(request.params.id);
+      if (!agent) return notFound(reply, 'No agent ' + request.params.id);
+      const action = store.getAction(request.params.actionId);
+      if (!action || action.agentId !== agent.id) return notFound(reply, 'No proposal ' + request.params.actionId);
+      if (action.kind !== 'reconfig-proposal') {
+        return badRequest(reply, 'That personnel entry is not a pending instruction proposal.');
+      }
+      const updated = context.assistant.org.applyReconfig(action.id);
+      if (!updated) return badRequest(reply, 'The proposal could no longer be applied.');
+      return updated;
+    },
+  );
 
   app.patch('/api/org/agents/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
     if (!store.getAgent(request.params.id)) return notFound(reply, 'No agent ' + request.params.id);
@@ -442,21 +473,29 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
         };
       }
     }
-    const { force: _force, ...rest } = patch;
-    store.updateTask(task.id, {
-      ...rest,
-      finishedAt: patch.status && patch.status !== 'open' ? Date.now() : undefined,
-    });
-    const updated = store.getTask(task.id);
-    if (updated) context.assistant.emit('task', { type: 'task', task: updated });
-    // An assignment thread is told how its work ended - the note rides along
-    // after the patch succeeded and must never fail the patch itself. A run
-    // that ends by itself tells its own thread from inside the run; this is
-    // the hand change, where nobody else would.
-    if (updated && patch.status && patch.status !== 'open') {
-      await context.assistant.org.notifyTaskStatus(updated, patch.status).catch(() => undefined);
+    const { force: _force, status, ...rest } = patch;
+    // The status goes through the one writer, which clears what a previous
+    // life left on the card, announces it, and tells the task's mail thread.
+    // This route used to do all three by hand and was the only writer that
+    // did - the tool and the CLI moved the same card in silence.
+    //
+    // It goes first, so a refused status cannot leave the other edits
+    // standing behind a 409 the caller reads as "nothing happened".
+    if (status) {
+      const moved = await context.assistant.org.setTaskStatus({
+        task,
+        to: status,
+        by: 'user',
+      });
+      if (!moved.ok) {
+        reply.code(409);
+        return { error: 'Conflict', message: moved.reason };
+      }
     }
-    return updated;
+    if (Object.keys(rest).length) store.updateTask(task.id, rest);
+    const edited = store.getTask(task.id);
+    if (edited) context.assistant.emit('task', { type: 'task', task: edited });
+    return edited;
   });
 
   /** Plan a task from the board: returns the plan; the subtasks land on the board. */

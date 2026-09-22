@@ -22,7 +22,11 @@ import {
   NO_PROJECT,
   TASK_STATUS_LABEL,
   TASK_STATUS_ORDER,
+  timeAgo,
 } from '@/lib/format';
+import { isBoardWatch } from '@/lib/cron';
+import { useCron } from '@/hooks/useCron';
+import type { RookerySocket } from '@/lib/socket';
 import { countSince, formatNumber } from '@/lib/stats';
 import type { Mail, Task, TaskStatus } from '@/lib/types';
 import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-provider';
@@ -463,6 +467,8 @@ export function TasksPage() {
       {dialog}
       {bulk.dialog}
 
+      <BoardWatchLine socket={socket} />
+
       <Fade>
         <StatCards
           items={[
@@ -849,4 +855,41 @@ function dayKeyOf(value: number): string {
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return date.getFullYear() + '-' + month + '-' + day;
+}
+
+/**
+ * That the board is being watched, said on the board.
+ *
+ * The watcher used to be a row in the schedules list, where it looked like
+ * something the user had set up and could be switched off by accident. It
+ * belongs here: it is a property of this page, not a standing order
+ * (decision E5 of docs/concepts/work-as-one-surface.md). Nothing is claimed
+ * when the job is missing - a line saying "not watched" would be noise on a
+ * page whose job is to show work.
+ */
+function BoardWatchLine({ socket }: { socket: RookerySocket }) {
+  const cron = useCron(socket);
+  const job = cron.jobs.find(isBoardWatch);
+  if (!job) return null;
+  const last = cron.runs.find((run) => run.jobId === job.id);
+  return (
+    <div className="px-4 text-sm text-muted-foreground lg:px-6">
+      {job.enabled ? (
+        <>
+          Watching this board for failed and stuck work
+          {last ? <> · last checked {timeAgo(last.startedAt)}</> : null} ·{' '}
+          <NavLink to={'/cron/' + job.id} className="hover:underline">
+            Settings
+          </NavLink>
+        </>
+      ) : (
+        <>
+          Nobody is watching this board.{' '}
+          <NavLink to={'/cron/' + job.id} className="text-foreground hover:underline">
+            Turn the watcher back on
+          </NavLink>
+        </>
+      )}
+    </div>
+  );
 }

@@ -280,8 +280,10 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     maxConcurrentAssignments: 4,
     maxDelegationDepth: 3,
     assignmentTimeoutMs: 45 * 60 * 1000,
+    maxTaskRuns: 3,
     lazyCoding: true,
     autoReview: true,
+    autoReconfig: false,
     roleplay: true,
   },
   // Nothing is watched until somebody adds a mailbox on the settings page: a
@@ -349,6 +351,17 @@ export const DEFAULT_CONFIG: RookeryConfig = {
   // and far under Claude Code's own six-hour MCP tool timeout, which is what
   // the waiting call is actually sitting in.
   questions: { timeoutMs: 10 * 60 * 1000 },
+  // Wide on purpose, and wider than it first looks it needs to be. A turn's
+  // signal reaches everything its tool calls start, and a split task runs
+  // its waves one after another with `org.assignmentTimeoutMs` (45 minutes)
+  // applying to each wave separately - so an hour would have cut off a
+  // perfectly lawful three-wave run in which no single assignment came near
+  // its own limit. Keep this at several times `assignmentTimeoutMs`. It is
+  // a backstop for turns that are never coming back, not a work limit: a
+  // run and a schedule stop themselves, a conversation had nothing at all,
+  // and over `POST /api/chat` - which passes no signal - one stuck in a
+  // tool loop could not be stopped from outside at all.
+  turns: { timeoutMs: 4 * 60 * 60 * 1000 },
   skillsDir: join(DEFAULT_HOME, 'skills'),
 };
 

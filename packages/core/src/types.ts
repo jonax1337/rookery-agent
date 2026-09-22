@@ -1321,7 +1321,12 @@ export interface AgentReview {
   createdAt: number;
 }
 
-export type AgentActionKind = 'note' | 'reconfig' | 'probation' | 'replace';
+/**
+ * `reconfig-proposal` is a drafted instruction rewrite that has not been
+ * applied: stage 2 files one whenever `autoReconfig` is off, and approving
+ * it on the agent's page is what turns it into a `reconfig`.
+ */
+export type AgentActionKind = 'note' | 'reconfig' | 'reconfig-proposal' | 'probation' | 'replace';
 
 /**
  * The personnel record behind a review trail: what actually changed about an
@@ -1494,6 +1499,16 @@ export interface Task {
   assignmentId?: string;
   createdBy: RequesterKind;
   createdByAgentId?: string;
+  /**
+   * The schedule whose firing made this card, when one did.
+   *
+   * `createdBy` stays `user` for these: a schedule is not a fourth kind of
+   * party, it is an arrangement the user made, and the work it produces is
+   * theirs. This is what lets the board answer "why does this exist?" for a
+   * card that appeared at three in the morning (decision E1 of
+   * docs/concepts/work-as-one-surface.md).
+   */
+  scheduleId?: string;
   /** Sibling task ids that must finish first. */
   dependsOn: string[];
   /** Why the planner decided what it decided. */
@@ -1917,6 +1932,8 @@ export interface RookeryConfig {
   external: ExternalConfig;
   /** How long the assistant waits when it asks the user something. */
   questions: QuestionsConfig;
+  /** Hard stop for one conversational turn. */
+  turns: TurnsConfig;
   /** Where skills live, one folder per skill. Defaults to `<home>/skills`. */
   skillsDir: string;
   /** Alternative backends for the `claude` binary. Empty by default: opt-in per provider. */
@@ -2279,6 +2296,20 @@ export interface QuestionsConfig {
   timeoutMs: number;
 }
 
+/** One conversational turn: the ceiling nothing else was giving it. */
+export interface TurnsConfig {
+  /**
+   * Milliseconds one turn may run before it is stopped.
+   *
+   * Runs and schedules both had a hard stop; a turn had none, so one that
+   * got into a tool loop ran until the provider process ended by itself.
+   * Over `POST /api/chat` there was not even a way to interrupt it - that
+   * route passes no abort signal. Set wide: this is a backstop for turns
+   * that are never coming back, not a limit on how long a person may think.
+   */
+  timeoutMs: number;
+}
+
 export interface OrgConfig {
   /** Provider processes that may run assignments at the same time. */
   maxConcurrentAssignments: number;
@@ -2286,6 +2317,15 @@ export interface OrgConfig {
   maxDelegationDepth: number;
   /** Hard stop for a single assignment, in milliseconds. */
   assignmentTimeoutMs: number;
+  /**
+   * How many times work may re-run one task on the machine's own
+   * initiative - an agent's reply in the task's own thread being the only
+   * such path today. A person asking for another run is never counted
+   * against it: the limit exists so a deterministic failure cannot cost a
+   * model run every time it recurs, not to stop anyone from retrying
+   * something.
+   */
+  maxTaskRuns: number;
   /**
    * Put the Ponytail ruleset (org/ponytail.ts) into every agent's system
    * prompt: understand the problem, then stop at the first rung of the
@@ -2301,6 +2341,19 @@ export interface OrgConfig {
    * with no model call at all.
    */
   autoReview: boolean;
+  /**
+   * Whether a stage-2 escalation may rewrite an agent's standing
+   * instructions by itself, or only propose the rewrite and wait.
+   *
+   * Off by default, and that is the deliberate answer to the open question
+   * in agent-performance-management O2: a role description is something the
+   * user wrote, and having it replaced overnight by a model's judgment of
+   * another model's output is the kind of change that has to be seen before
+   * it takes effect. Off, the drafted text is filed as a
+   * `reconfig-proposal` the agent's page offers for approval; the agent
+   * keeps working to its current instructions until somebody accepts it.
+   */
+  autoReconfig: boolean;
   /**
    * On, a mail-born run writes its result as a letter in the agent's own
    * voice instead of a report (decision E10, section 6.3). Off restores

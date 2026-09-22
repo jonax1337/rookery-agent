@@ -377,6 +377,20 @@ export const REQUESTER_LABEL: Record<RequesterKind, string> = {
 };
 
 /**
+ * Why a card exists, in one phrase.
+ *
+ * `createdBy` alone cannot answer this. A schedule firing at three in the
+ * morning produces work that belongs to the user - they set the schedule up
+ * - so the card says `user`, and a card the user asked for in chat says
+ * `user` too. Those look identical and are not: one of them appeared while
+ * nobody was there. `scheduleId` is what tells them apart (decision E1 of
+ * docs/concepts/work-as-one-surface.md).
+ */
+export function taskOriginLabel(task: { createdBy: RequesterKind; scheduleId?: string }): string {
+  return task.scheduleId ? 'By a schedule' : REQUESTER_LABEL[task.createdBy];
+}
+
+/**
  * An agent's escalation stage (agent-performance-management). Four pages
  * show this badge - the agents list, the agent's own page, the hierarchy,
  * the Performance overview - so it is stated once, the same way `ASSIGNMENT_STATUS_*`

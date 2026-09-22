@@ -1572,6 +1572,46 @@ function OrgSection({
           />
         </Field>
 
+        <NumberField
+          id="set-max-task-runs"
+          label="Automatic retries per task"
+          value={draft.org.maxTaskRuns}
+          min={1}
+          max={20}
+          suffix="runs"
+          description="How often work may re-run one task on its own initiative. Running a task yourself is never counted against this."
+          onChange={(value) => setOrg({ maxTaskRuns: value })}
+        />
+
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="set-auto-review">Judge finished runs</FieldLabel>
+            <FieldDescription>
+              After a run finishes, the assistant rates it in the background and files the rating in that agent's record. One model call per run. Off leaves only the note a hard failure writes by itself, which costs nothing.
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="set-auto-review"
+            checked={draft.org.autoReview}
+            onCheckedChange={(on) => setOrg({ autoReview: on })}
+          />
+        </Field>
+
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="set-auto-reconfig">Rewrite instructions without asking</FieldLabel>
+            <FieldDescription>
+              When an agent's ratings stay weak, the assistant drafts new standing instructions for it. Off, the draft waits on the agent's page for you to accept, and the agent keeps working to its current instructions. On, it takes effect the moment it is written.
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="set-auto-reconfig"
+            checked={draft.org.autoReconfig}
+            disabled={!draft.org.autoReview}
+            onCheckedChange={(on) => setOrg({ autoReconfig: on })}
+          />
+        </Field>
+
         <Field orientation="horizontal">
           <FieldContent>
             <FieldLabel htmlFor="set-roleplay">Roleplay in mail</FieldLabel>

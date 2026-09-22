@@ -233,7 +233,9 @@ test('an assign tool call from inside a turn runs the agent and streams its assi
   }
   const done = events.find((event) => event.type === 'done');
   assert.match(done.text, /DELEGATED: Report from Mara \(mara\)/);
-  assert.match(done.text, /OUTPUT\(TASK: write the parser/);
+  // No `TASK:` heading here: the card's title was taken from this very
+  // brief, so heading the brief with it would say the same thing twice.
+  assert.match(done.text, /OUTPUT\(write the parser/);
   assert.match(done.text, /Report from Ben \(ben\)/);
   const views = events.filter((event) => event.type === 'assignment').map((event) => event.assignment);
   assert.ok(views.some((view) => view.agentSlug === 'mara' && view.status === 'done'));
@@ -242,7 +244,7 @@ test('an assign tool call from inside a turn runs the agent and streams its assi
   const stored = store.org.listAssignments(mara.orgId);
   assert.equal(stored.length, 2);
   assert.ok(stored.every((a) => a.status === 'done' && a.requesterKind === 'assistant'));
-  const agentRun = fake.runs.find((run) => run.prompt.startsWith('TASK: write the parser'));
+  const agentRun = fake.runs.find((run) => run.prompt.startsWith('write the parser'));
   assert.match(agentRun.systemPrompt, /You are Mara, Engineer/);
   assert.ok(agentRun.mcp.env.ROOKERY_BRIDGE_TOKEN !== fake.runs[0].mcp.env.ROOKERY_BRIDGE_TOKEN);
   assistant.close();
@@ -508,6 +510,116 @@ test('folders route reports, and archiving moves a thread whole', async () => {
     'the report moved - the reply, addressed to Mara, was never in this inbox',
   );
   assert.equal(store.org.unreadMailFor(org.id, who).length, 0, 'archived mail never counts as waiting');
+  assistant.close();
+});
+
+test('every writer moves a task the same way: the tool tells the thread, and reopening clears the last life', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const task = store.org.createTask({
+    orgId: org.id,
+    title: 'Fix the gate',
+    description: 'Please fix it.',
+    assigneeId: mara.id,
+    createdBy: 'user',
+  });
+  const order = store.org.sendMail({
+    orgId: org.id,
+    from: { kind: 'user' },
+    to: [{ kind: 'agent', id: mara.id }],
+    subject: 'Fix the gate',
+    body: 'Please fix it.',
+    kind: 'assignment',
+  });
+  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
+
+  // Closing it through the tool. This is the writer that used to move the
+  // card in silence: no event, and nothing said in the thread, so whoever
+  // was waiting there waited for good.
+  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+  const closed = await assistant.org.handle(ctx, 'update_task', {
+    id: task.id,
+    status: 'done',
+    result: 'The hinge was loose.',
+  });
+  assert.equal(closed.isError, undefined);
+
+  const note = store.org.thread(org.id, order.threadId).at(-1);
+  assert.match(note.body, /marked as done/, 'the thread hears it from the tool too');
+
+  const done = store.org.getTask(task.id);
+  assert.equal(done.status, 'done');
+  assert.ok(done.finishedAt, 'a finished card is stamped');
+  assert.equal(done.result, 'The hinge was loose.');
+
+  // Reopening is a new life. The old stamp and the old result must not
+  // survive it: every duration on the page, and the watcher's "running far
+  // longer than it should", would otherwise do arithmetic with a timestamp
+  // from a run that ended days ago.
+  const reopened = await assistant.org.setTaskStatus({ task: done, to: 'open', by: 'user' });
+  assert.equal(reopened.ok, true);
+  assert.equal(reopened.task.status, 'open');
+  assert.equal(reopened.task.finishedAt, undefined, 'the old ending is gone');
+  assert.equal(reopened.task.result, undefined, 'and so is the old result');
+
+  // A running card belongs to its run. Everyone but the run loop has to
+  // cancel it rather than decide its outcome from outside.
+  store.org.updateTask(task.id, { status: 'running' });
+  const refused = await assistant.org.setTaskStatus({
+    task: store.org.getTask(task.id),
+    to: 'done',
+    by: 'user',
+  });
+  assert.equal(refused.ok, false);
+  assert.match(refused.reason, /running/);
+  assistant.close();
+});
+
+test('an agent reports, the user closes: an agent cannot finish a card the user put up', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const mine = store.org.createTask({
+    orgId: org.id,
+    title: 'Fix the gate',
+    assigneeId: mara.id,
+    createdBy: 'user',
+  });
+  const hers = store.org.createTask({
+    orgId: org.id,
+    title: 'Her own errand',
+    assigneeId: mara.id,
+    createdBy: 'agent',
+    createdByAgentId: mara.id,
+  });
+
+  for (const to of ['done', 'cancelled']) {
+    const refused = await assistant.org.setTaskStatus({ task: mine, to, by: 'agent' });
+    assert.equal(refused.ok, false, 'an agent may not ' + to + " the user's card");
+    assert.match(refused.reason, /belongs to the user/);
+  }
+  assert.equal(store.org.getTask(mine.id).status, 'open', 'and nothing moved');
+
+  // Reporting a problem is not closing: blocked stays open to them.
+  const blocked = await assistant.org.setTaskStatus({ task: mine, to: 'blocked', by: 'agent' });
+  assert.equal(blocked.ok, true);
+
+  // Its own errand is its own business.
+  const own = await assistant.org.setTaskStatus({ task: hers, to: 'done', by: 'agent' });
+  assert.equal(own.ok, true);
+
+  // And the user is never blocked on their own card.
+  const mineAgain = await assistant.org.setTaskStatus({
+    task: store.org.getTask(mine.id),
+    to: 'done',
+    by: 'user',
+  });
+  assert.equal(mineAgain.ok, true);
   assistant.close();
 });
 
@@ -994,6 +1106,21 @@ test('a direct assignment streams events, records the result, and fails cleanly'
   assert.equal(record.requesterKind, 'user');
   assert.equal(record.status, 'done');
   assert.ok(record.durationMs >= 0);
+
+  // Handing work to an agent directly is still handing out work, so it is
+  // on the board. This entrance - the one the web UI, the websocket, the
+  // CLI and every agent schedule come through - used to leave a run with no
+  // card anywhere, which is why "what is running?" had no honest answer.
+  const cardId = store.org.getTaskIdForAssignment(record.id);
+  assert.ok(cardId, 'the run hangs on a card');
+  const card = store.org.getTask(cardId);
+  assert.equal(card.status, 'done');
+  assert.equal(card.assigneeId, mara.id);
+  assert.equal(card.createdBy, 'user', 'the person who asked is on the card, not the machinery');
+  assert.ok(
+    store.org.listTasks(mara.orgId, { anyLevel: true }).some((task) => task.id === cardId),
+    'and the board can find it',
+  );
 
   const failed = [];
   for await (const event of assistant.assign({ agent: 'mara', task: 'FAIL now' })) failed.push(event);
@@ -1545,7 +1672,7 @@ test('an assign-born run keeps the plain report register, no letter', async () =
   await assistant.org.handle(ctx, 'assign', { agent: mara.slug, task: 'Write the parser', title: 'Write the parser' });
   await sleep(200);
 
-  const run = fake.runs.find((entry) => entry.prompt.startsWith('TASK: Write the parser'));
+  const run = fake.runs.find((entry) => entry.prompt.startsWith('Write the parser'));
   assert.ok(run, 'the assign-born run happened');
   assert.match(run.systemPrompt, /lead with the result, then what you changed or found/);
   assert.doesNotMatch(run.systemPrompt, /a short salutation, one sentence of context/);

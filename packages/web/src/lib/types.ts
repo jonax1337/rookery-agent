@@ -646,6 +646,13 @@ export interface Task {
   assignmentId?: string;
   createdBy: RequesterKind;
   createdByAgentId?: string;
+  /**
+   * The schedule whose firing made this card, when one did. `createdBy`
+   * stays `user` for these - the person set the schedule up - so this is
+   * the only thing that tells a card made overnight apart from one the
+   * user asked for in chat.
+   */
+  scheduleId?: string;
   /** Sibling task ids that must finish first. */
   dependsOn: string[];
   /** Why the planner decided what it decided. */
@@ -824,6 +831,11 @@ export interface AgentDetail {
   reports: Agent[];
   performance: AgentPerformance;
   actions: AgentAction[];
+  /**
+   * A drafted instruction rewrite waiting for the user, or null. Pending
+   * exactly while it is the newest personnel entry.
+   */
+  pendingReconfig: AgentAction | null;
   /** Set when this agent was hired to replace another one. */
   predecessor: AgentRef | null;
   /** Set when this agent was replaced by another one. */
@@ -864,7 +876,12 @@ export interface AgentPerformance {
   lastReviewAt?: number;
 }
 
-export type AgentActionKind = 'note' | 'reconfig' | 'probation' | 'replace';
+/**
+ * `reconfig-proposal` is a drafted instruction rewrite that has not been
+ * applied: stage 2 files one unless `autoReconfig` is on, and approving it
+ * on the agent's page is what turns it into a `reconfig`.
+ */
+export type AgentActionKind = 'note' | 'reconfig' | 'reconfig-proposal' | 'probation' | 'replace';
 
 /** One entry in an agent's personnel record. */
 export interface AgentAction {
@@ -1151,8 +1168,14 @@ export interface OrgConfig {
   maxConcurrentAssignments: number;
   maxDelegationDepth: number;
   assignmentTimeoutMs: number;
+  /** How often work may re-run one task on its own initiative; a person is never counted against it. */
+  maxTaskRuns: number;
   /** Agents get the Ponytail ruleset in their system prompt. */
   lazyCoding: boolean;
+  /** Jarvis judges every finished run in the background, one model call each. */
+  autoReview: boolean;
+  /** Off, a stage-2 escalation proposes an instruction rewrite instead of applying it. */
+  autoReconfig: boolean;
   /** On, a mail-born run answers as a letter in the agent's own voice instead of a report. */
   roleplay: boolean;
   activeOrganizationId?: string;

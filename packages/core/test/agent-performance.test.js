@@ -213,7 +213,7 @@ test('update_agent needs a reason to change instructions once the agent is flagg
 
 /* ----------------------------- end to end cycle ----------------------------- */
 
-test('a weak streak escalates note -> reconfig -> replacement proposal, and hire_agent(replaces) completes it', async () => {
+test('a weak streak escalates note -> proposed reconfig -> replacement proposal, and hire_agent(replaces) completes it', async () => {
   const { assistant, store } = createAssistant();
   const org = assistant.org.activeOrganization();
   const mara = store.org.createAgent({ orgId: org.id, name: 'Mara', title: 'Engineer', instructions: 'Do the work.' });
@@ -243,19 +243,38 @@ test('a weak streak escalates note -> reconfig -> replacement proposal, and hire
   assert.equal(note.kind, 'note');
   assert.ok(note.agentNote, 'the agent gets a qualitative note, not a number');
 
-  // Three more weak runs since the note: stage 2, a `reconfig` executes on
-  // its own (decision E1) - instructions actually change, with a full
-  // before/after pair on record.
+  // Three more weak runs since the note: stage 2 drafts new instructions -
+  // but with `autoReconfig` off (the default) it proposes them and stops.
+  // The agent keeps working to the text the user wrote.
   await runWeak(2);
   await runWeak(2);
   await runWeak(2);
-  await waitFor(() => store.org.listActions(mara.id).some((a) => a.kind === 'reconfig'));
+  await waitFor(() => store.org.listActions(mara.id).some((a) => a.kind === 'reconfig-proposal'));
+  const proposal = store.org.listActions(mara.id).find((a) => a.kind === 'reconfig-proposal');
+  assert.equal(store.org.getAgent(mara.id).instructions, 'Do the work.', 'nothing changes until a person says so');
+  assert.equal(proposal.beforeText, 'Do the work.');
+  assert.ok(proposal.afterText, 'the draft is on record, ready to read');
+  assert.equal(proposal.decidedBy, 'assistant');
+  assert.equal(store.org.performance(mara.id).stage, 2);
+
+  // An unapproved proposal can never escalate on its own: no probation
+  // window opens, so further weak runs leave the stage where it is.
+  await runWeak(2);
+  await runWeak(2);
+  assert.equal(store.org.performance(mara.id).stage, 2, 'a pending proposal holds the escalation, it does not advance it');
+
+  // The user accepts it. Protocol before effect (decision E1): a real
+  // `reconfig` is filed, decided by the user, and that is what opens the
+  // probation window.
+  const applied = assistant.org.applyReconfig(proposal.id);
   const afterFirstReconfig = store.org.getAgent(mara.id).instructions;
+  assert.equal(applied.instructions, afterFirstReconfig);
+  assert.equal(afterFirstReconfig, proposal.afterText);
   assert.notEqual(afterFirstReconfig, 'Do the work.');
   const reconfig = store.org.listActions(mara.id).find((a) => a.kind === 'reconfig');
   assert.equal(reconfig.beforeText, 'Do the work.');
   assert.equal(reconfig.afterText, afterFirstReconfig);
-  assert.equal(reconfig.decidedBy, 'assistant');
+  assert.equal(reconfig.decidedBy, 'user');
 
   // Ten more weak runs after the reconfig (minData >= 10, probation window
   // filled and still weak): stage 3, a replacement is proposed but nothing

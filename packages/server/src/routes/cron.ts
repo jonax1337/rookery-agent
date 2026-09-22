@@ -13,6 +13,20 @@ function isInternal(job: CronJob): boolean {
 }
 
 /**
+ * Jobs that may be edited and switched off, but not deleted.
+ *
+ * The board watcher is a visible, editable row on purpose - its timing and
+ * its brief belong to the user - but `Assistant.ensureBoardWatchSchedule`
+ * seeds it again on the next start, so accepting a delete only pretended to
+ * do something and the row came back unexplained. Refusing it says the true
+ * thing; disabling it is honoured for good, and that is the control that
+ * was actually being reached for.
+ */
+function isPermanent(job: CronJob): boolean {
+  return isInternal(job) || job.id.startsWith('board-watch:');
+}
+
+/**
  * Schedules: the clock's REST surface. The web UI manages jobs here; the
  * assistant manages the same records through its tools. Runs started by hand
  * return at once - the outcome arrives as a `cron` broadcast on the socket,
@@ -118,6 +132,12 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
     // The nightly memory run is machinery, not a row somebody deletes: from
     // here it does not exist, and the memory page is where it is managed.
     if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
+    // The board watcher does exist and is editable - it just cannot be
+    // deleted, so it says so rather than reporting a success the next
+    // restart would undo.
+    if (isPermanent(job)) {
+      throw new BadRequestError('The board watcher belongs to the board. Switch it off instead of deleting it.');
+    }
     if (!cron.remove(request.params.id)) return notFound(reply, 'No schedule ' + request.params.id);
     return { ok: true };
   });

@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 export type Db = DatabaseSync;
 
@@ -1091,6 +1091,18 @@ function migrate(db: Db): void {
   db.prepare(
     "UPDATE turns SET status = 'interrupted', ended_at = ? WHERE status = 'running'",
   ).run(Date.now());
+
+  // Schema 24 -> 25: a card says what set it going. `created_by` answers
+  // "what kind of party made this" and cannot answer "a schedule fired" - a
+  // schedule is not a party, it is an arrangement the user made, and adding
+  // it to `RequesterKind` would invent a sender that mail can never have. So
+  // the job's id sits on the card instead and `created_by` stays `user`: the
+  // person set the schedule up, and the work is theirs. Nullable, and null
+  // for every card made any other way (decision E1 of
+  // docs/concepts/work-as-one-surface.md).
+  if (!hasColumn(db, 'tasks', 'schedule_id')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN schedule_id TEXT');
+  }
 
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',

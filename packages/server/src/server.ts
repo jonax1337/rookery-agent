@@ -220,7 +220,15 @@ export async function buildServer(
   const onTask = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'task', event });
   };
+  // The nightly memory run is machinery the schedules page does not serve:
+  // `CronScheduler.list` filters it out of the REST fetch and `routes/cron.ts`
+  // 404s it by id, but the scheduler announces every job including that one.
+  // Sent here unfiltered it was merged straight into an open page's table - a
+  // row the API insists does not exist, appearing live and staying until a
+  // reload. `gateways/push.ts` already drops it at exactly this point; this
+  // is the other broadcast finally agreeing with it.
   const onCron = (event: AgentEvent): void => {
+    if (event.type === 'cron' && event.job?.kind === 'sleep') return;
     for (const socket of context.sockets) sendFrame(socket, { type: 'cron', event });
   };
   // The brain falling asleep and waking up again: the memory page follows a

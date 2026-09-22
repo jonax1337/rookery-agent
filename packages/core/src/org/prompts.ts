@@ -543,7 +543,8 @@ export function renderBoard(tasks: Task[], snapshot: OrgSnapshot, store: OrgStor
     const assignee = task.assigneeId ? (byId.get(task.assigneeId)?.slug ?? '?') : 'unassigned';
     lines.push(
       '- [' + task.id.slice(0, 8) + '] ' + task.status.toUpperCase() + ' ' + task.priority + ' — ' + task.title +
-        ' (' + assignee + ')' + (task.planNote ? ' · ' + shorten(task.planNote, 80) : '') + waitingOn(task, store),
+        ' (' + assignee + ')' + (task.planNote ? ' · ' + shorten(task.planNote, 80) : '') +
+        waitingOn(task, store) + attemptsOn(task, store),
     );
     for (const child of store.listTasks(task.orgId, { parentId: task.id })) {
       if (child.status === 'cancelled' || listed.has(child.id)) continue;
@@ -563,6 +564,19 @@ export function renderBoard(tasks: Task[], snapshot: OrgSnapshot, store: OrgStor
  * watcher gets to read, and "BLOCKED normal — Fix the gate (mara)" says
  * neither what was asked nor for how long.
  */
+/**
+ * How often a failed task has already been tried. The board watcher reports
+ * rather than retries, and "failed" on its own does not say whether this is
+ * the first attempt or the fourth - which is the difference between "worth
+ * another go" and "something here is broken and no amount of running it
+ * again will help". Only shown where it changes the reading.
+ */
+function attemptsOn(task: Task, store: OrgStore): string {
+  if (task.status !== 'failed') return '';
+  const runs = store.taskRunCount(task.id);
+  return runs > 1 ? ' · failed on run ' + runs : '';
+}
+
 function waitingOn(task: Task, store: OrgStore): string {
   if (task.status !== 'blocked') return '';
   const thread = store.getMailThreadForTask(task.orgId, task.id);
