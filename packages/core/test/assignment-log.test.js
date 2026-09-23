@@ -147,18 +147,21 @@ test('a running assignment exposes an ordered live log that watchers follow and 
 
   assert.deepEqual(
     seen.map((entry) => entry.event.type),
-    ['text', 'tool'],
-    'the listener saw the post-attach events in order',
+    // The closing `status` is the run saying how it ended, written into the
+    // transcript itself: a log that stopped at the last streamed line left
+    // a timeout or a dead provider as an account breaking off mid-sentence.
+    ['text', 'tool', 'status'],
+    'the listener saw the post-attach events in order, ending with the outcome',
   );
   assert.deepEqual(
     frames.map((frame) => frame.assignmentId),
-    [assignmentId, assignmentId],
-    'the runtime forwards each push as a frame for this assignment',
+    [assignmentId, assignmentId, assignmentId],
+    'the runtime forwards each push as a frame for this assignment, the outcome included',
   );
   assert.deepEqual(
     followed.map((entry) => entry.event.type),
-    ['text', 'thinking', 'tool', 'text', 'tool'],
-    'the generator replayed the buffer and then followed live',
+    ['text', 'thinking', 'tool', 'text', 'tool', 'status'],
+    'the generator replayed the buffer, followed live, and ended on the outcome',
   );
   assert.ok(
     followed.every((entry, index) => index === 0 || entry.seq > followed[index - 1].seq),
@@ -169,8 +172,8 @@ test('a running assignment exposes an ordered live log that watchers follow and 
   assert.equal(after.active, false, 'the run is over');
   assert.deepEqual(
     after.events.map((entry) => entry.event.type),
-    ['text', 'thinking', 'tool', 'text', 'tool'],
-    'the journal keeps the whole transcript after the end; the result is not all that remains',
+    ['text', 'thinking', 'tool', 'text', 'tool', 'status'],
+    'the journal keeps the whole transcript after the end, outcome included; the result is not all that remains',
   );
 });
 
@@ -256,15 +259,15 @@ test('a provider switch clears the buffered transcript but keeps the sequence co
 
   assert.deepEqual(
     followed.map((entry) => entry.event.type),
-    ['text', 'error', 'status', 'text'],
-    'the dead attempt, its fatal end, the switch notice and the restart all show up, in order',
+    ['text', 'error', 'status', 'text', 'status'],
+    'the dead attempt, its fatal end, the switch notice, the restart and the outcome, in order',
   );
   const status = followed[2].event;
   assert.equal(status.label, 'provider');
   assert.match(status.detail, /continuing on codex/);
   assert.deepEqual(
     followed.map((entry) => entry.seq),
-    [1, 2, 3, 4],
+    [1, 2, 3, 4, 5],
     'seq stays monotone across the reset instead of restarting',
   );
   assert.equal(store.org.getAssignment(assignmentId).status, 'done', 'the run itself finished on the alternate');

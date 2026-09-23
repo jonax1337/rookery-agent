@@ -115,11 +115,12 @@ import type { IconComponent } from "@/components/icons";
  * this page tracking it. The fetched `TaskDetail` fills in what the broadcast
  * does not carry - the assignee record and the assignment the task ran as.
  *
- * What a reload cannot bring back is the streamed text of a run in flight:
- * nothing persists it (see serverGaps). So the "Runs" tab rehydrates the
- * *status* of every open run from `TaskDetail.assignment` and `org.live` and
- * says plainly that the text is gone, rather than showing an empty box that
- * looks like a run producing nothing.
+ * A reload does bring the transcript back. `run()` journals every event
+ * under the assignment's own id, so `GET /api/org/assignments/:id/log`
+ * serves it during the run and long after it - this page used to say the
+ * opposite, from a time before the journal existed. What the "Runs" tab
+ * rehydrates from `TaskDetail.assignment` and `org.live` is the *status*
+ * of open runs; the text itself lives one click away, on the run.
  */
 
 type TabValue = 'ueberblick' | 'thread' | 'teilaufgaben' | 'laeufe' | 'ergebnis';
@@ -881,11 +882,11 @@ export function TaskDetailPage() {
                 ) : null}
                 {rehydrated && !watched ? (
                   // Honest about the gap instead of showing an empty box: the
-                  // text deltas of a stream are not persisted anywhere, so
-                  // after a reload only the status of the run survives.
+                  // The transcript is journalled and outlives the run; it
+                  // is just not streamed into this page after a reload.
                   <p className="text-xs text-muted-foreground">
-                    After a reload, only the running assignment’s status is available;
-                    previously streamed text is not stored.
+                    Live text appears here while a run is going. Open the run to read its
+                    full transcript, during or after.
                   </p>
                 ) : null}
               </div>

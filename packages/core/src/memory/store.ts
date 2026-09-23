@@ -210,6 +210,17 @@ export class Store {
   }
 
   deleteSession(id: string): void {
+    // A run's transcript is not part of the conversation that ordered it.
+    //
+    // `turns.session_id` cascades on session delete, which is right for the
+    // chat turns of that conversation - they are the conversation. It is
+    // wrong for the runs started from it: deleting a chat silently took the
+    // transcripts of every agent run it had launched, while the assignment
+    // rows (which have no foreign key) stayed behind holding results whose
+    // working record had just been thrown away. Cutting the link first
+    // keeps the transcript and loses only what it was - a pointer back to a
+    // conversation that no longer exists.
+    this.db.prepare("UPDATE turns SET session_id = NULL WHERE session_id = ? AND kind = 'assign'").run(id);
     this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
   }
 

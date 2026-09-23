@@ -548,7 +548,9 @@ test('every writer moves a task the same way: the tool tells the thread, and reo
   assert.equal(closed.isError, undefined);
 
   const note = store.org.thread(org.id, order.threadId).at(-1);
-  assert.match(note.body, /marked as done/, 'the thread hears it from the tool too');
+  // The note carries the work now, not just the fact that something moved.
+  assert.match(note.body, /is done/, 'the thread hears it from the tool too');
+  assert.match(note.body, /The hinge was loose\./, 'and it carries the result, not a pointer to it');
 
   const done = store.org.getTask(task.id);
   assert.equal(done.status, 'done');
@@ -652,7 +654,7 @@ test('marking a task done by hand tells a thread that heard nothing, and wakes n
 
   const note = store.org.thread(org.id, order.threadId).at(-1);
   assert.equal(note.fromKind, 'assistant', 'the status note is a system mail');
-  assert.match(note.body, /marked as done/);
+  assert.match(note.body, /is done/);
   assert.equal(
     store.org.listAssignments(org.id, { agentId: mara.id }).length,
     0,

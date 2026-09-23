@@ -2461,6 +2461,26 @@ export class OrgController extends EventEmitter {
       this.#log.warn('Assignment failed', { id: assignment.id, error: (error as Error).message });
       return fail((error as Error).message, started);
     } finally {
+      // How it ended, written into the transcript itself.
+      //
+      // The journal used to stop at the last streamed line, so a run that
+      // timed out, found no provider, produced nothing or died on an
+      // exception left a transcript that simply broke off - and the reason
+      // existed only in `assignments.error`, which the log view does not
+      // read. Anyone opening the transcript afterwards saw an account that
+      // ends mid-sentence with no explanation. Now the last thing in the
+      // record is what happened.
+      const outcome = this.#store.org.getAssignment(assignment.id) ?? assignment;
+      this.#logPush(
+        assignment.id,
+        outcome.status === 'done'
+          ? {
+              type: 'status',
+              label: 'Done',
+              ...(outcome.durationMs ? { detail: Math.round(outcome.durationMs / 1000) + ' s' } : {}),
+            }
+          : { type: 'error', message: outcome.status + (outcome.error ? ': ' + outcome.error : ''), fatal: true },
+      );
       const log = this.#logs.get(assignment.id);
       if (log) {
         // The run is over: live watchers hear it from the `assignment`
@@ -3242,10 +3262,18 @@ export class OrgController extends EventEmitter {
     // one - the schedule's own inbox mail is its delivery. Telling it how
     // the work ended would put a second notification on top of that, every
     // firing, for ever.
-    if (
-      !updated.scheduleId &&
-      (input.to === 'done' || input.to === 'failed' || input.to === 'cancelled' || input.to === 'blocked')
-    ) {
+    // Who still needs telling, once the card itself has moved.
+    //
+    // Not a schedule's card - its own inbox mail is the delivery. Not
+    // `blocked`, because being blocked *is* an agent's question sitting in
+    // the thread already, and a note saying "this is waiting for an answer"
+    // underneath the answer it is waiting for is pure noise. And not a
+    // cancellation the person just performed: they know, they did it.
+    const silent =
+      Boolean(updated.scheduleId) ||
+      input.to === 'blocked' ||
+      (input.to === 'cancelled' && input.by === 'user' && !input.fromRun);
+    if (!silent && (input.to === 'done' || input.to === 'failed' || input.to === 'cancelled')) {
       await this.notifyTaskStatus(updated, input.to, input.since ?? now);
     }
     return { ok: true, task: updated };
@@ -3796,9 +3824,24 @@ function briefFor(task: Task): string {
   return derived ? description : 'TASK: ' + task.title + '\n\n' + description;
 }
 
+/**
+ * What the thread is told when a task ends - the work, not the bookkeeping.
+ *
+ * This used to say "The task X was marked as done." and nothing else, which
+ * is the worst of both worlds: a mail that interrupts somebody and then
+ * makes them go somewhere else to find the thing it is about. If a note is
+ * worth sending at all it carries the result; if the result is not worth
+ * reading, the note was not worth sending.
+ *
+ * Clipped rather than whole: the full text is on the card and on the run,
+ * and a mail is a notification, not an archive.
+ */
 function statusNote(task: Task, status: 'done' | 'failed' | 'cancelled' | 'blocked'): string {
   const name = 'The task "' + task.title + '"';
-  if (status === 'done') return name + ' was marked as done.';
+  if (status === 'done') {
+    const result = task.result?.trim();
+    return result ? name + ' is done.\n\n' + clip(result, 4000) : name + ' is done.';
+  }
   if (status === 'cancelled') return name + ' was cancelled.';
   if (status === 'blocked') return name + ' is waiting for an answer.';
   return name + ' failed' + (task.error ? ': ' + task.error : '.');
