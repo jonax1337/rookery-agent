@@ -24,7 +24,8 @@ const schemas = {
     button: z.enum(['left', 'right', 'middle']).default('left'), count: z.number().int().min(1).max(2).default(1), observe,
   }).strict()
     .refine((args) => (args.text === undefined) !== (args.x === undefined && args.y === undefined), 'click needs x and y, or text.')
-    .refine((args) => args.text !== undefined || (args.x !== undefined && args.y !== undefined), 'click needs both x and y.'),
+    .refine((args) => args.text !== undefined || (args.x !== undefined && args.y !== undefined), 'click needs both x and y.')
+    .refine((args) => args.index === undefined || args.text !== undefined, 'index picks among text matches; pass text.'),
   move_mouse: z.object({ ...point, observe }).strict(),
   drag: z.object({ fromX: coordinate, fromY: coordinate, toX: coordinate, toY: coordinate, observe }).strict(),
   draw: z.object({
@@ -45,7 +46,8 @@ const schemas = {
   scroll: z.object({ ...point, direction: z.enum(['up', 'down', 'left', 'right']).default('down'), amount: z.number().int().min(1).max(20).default(3), observe }).strict(),
   type_text: z.object({ text: text.min(1), observe }).strict(),
   press_keys: z.object({ keys: z.string().min(1).max(200), observe }).strict(),
-  focus_window: z.object({ title: z.string().min(1).max(500), observe }).strict(),
+  focus_window: z.object({ title: z.string().min(1).max(500).optional(), window: window.optional(), observe }).strict()
+    .refine((args) => (args.title === undefined) !== (args.window === undefined), 'focus_window needs title or window.'),
   open: z.object({ target: z.string().min(1).max(2000), observe }).strict(),
   read_screen: z.object({}).strict(),
   find_text: z.object({ text: needle }).strict(),
@@ -66,6 +68,14 @@ export type ComputerCall = {
 
 const foregroundTools = new Set(['click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'focus_window', 'open']);
 
+/**
+ * What a batch returns when it names no observation: the window it worked on,
+ * else the desktop, which background-only mode may not capture.
+ */
+export function batchObservation(window: number | undefined, background: boolean): 'snapshot' | 'screenshot' | 'none' {
+  return window ? 'snapshot' : background ? 'none' : 'screenshot';
+}
+
 /** Validate once at the boundary; handlers receive typed arguments with defaults. */
 export function validateComputerCall(name: string, args: unknown, background = false): ComputerCall {
   if (!Object.hasOwn(schemas, name)) throw new Error('Unknown tool ' + name + '.');
@@ -85,7 +95,7 @@ export function validateComputerCall(name: string, args: unknown, background = f
       const action = validateComputerCall(step.tool, step.arguments, background);
       if (action.name === 'wait' && action.args.ms > 2000) throw new Error('Batch waits are limited to 2000 ms.');
     }
-    const observation = observe ?? (window ? 'snapshot' : 'screenshot');
+    const observation = observe ?? batchObservation(window, background);
     if (observation !== 'none') validateComputerCall(observation, window ? { window } : {}, background);
   }
   return command;

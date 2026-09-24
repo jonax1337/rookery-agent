@@ -48,12 +48,12 @@ const TOOLS: ComputerToolDefinition[] = [
   },
   {
     name: 'snapshot',
-    description: 'Read a window accessibility tree without focusing it. Returns fresh element refs and supported actions. Password values are omitted; refs expire on the next snapshot.',
+    description: 'Read a window accessibility tree without focusing it: one line per control, indented as a tree, with a fresh ref, role, name, value, supported actions in [], and @x,y, its centre in desktop screenshot pixels (usable with click after a desktop screenshot when no action fits). Password values are omitted; refs expire on the next snapshot.',
     inputSchema: { type: 'object', properties: { window: windowProperty, maxNodes: { type: 'integer', minimum: 1, maximum: 300 }, depth: { type: 'integer', minimum: 1, maximum: 12 } }, required: ['window'], additionalProperties: false },
   },
   {
     name: 'act',
-    description: 'Act on a fresh snapshot ref via UI Automation (or a targeted native message for standard text fields), without physical input. The persistent Rookery cursor marks visible targets; covered windows keep their marker in screenshots. App providers may activate their own window; focusChanged reports this and background-only mode stops. Unsupported actions fail. Read a fresh snapshot to verify.',
+    description: 'Act on a fresh snapshot ref via UI Automation (or a targeted native message for standard text fields), without physical input. The persistent Rookery cursor marks visible targets; covered windows keep their marker in screenshots. App providers may activate their own window; the result says so and background-only mode stops. Unsupported actions fail. Read a fresh snapshot to verify.',
     inputSchema: { type: 'object', properties: { ref: str('Fresh element ref.'), action: { type: 'string', enum: [...UI_ACTIONS] }, value: str('Required for set_value; empty clears the field.') }, required: ['ref', 'action'], additionalProperties: false },
   },
   {
@@ -61,7 +61,7 @@ const TOOLS: ComputerToolDefinition[] = [
     description: 'Run up to 12 already-grounded actions sequentially in one call; stop on the first failure. All arguments are checked before starting. Observe once at the end. Do not batch across unknown UI states or irreversible confirmation steps.',
     inputSchema: { type: 'object', properties: {
       actions: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', properties: { tool: { type: 'string', enum: ['act', 'click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'wait'] }, arguments: { type: 'object' } }, required: ['tool', 'arguments'], additionalProperties: false } },
-      observe: { type: 'string', enum: ['snapshot', 'screenshot', 'none'], description: 'Default snapshot when window is supplied, otherwise screenshot.' },
+      observe: { type: 'string', enum: ['snapshot', 'screenshot', 'none'], description: 'Default snapshot when window is supplied, otherwise screenshot (none in background-only mode).' },
       window: windowProperty,
     }, required: ['actions'], additionalProperties: false },
   },
@@ -223,16 +223,15 @@ const TOOLS: ComputerToolDefinition[] = [
   },
   {
     name: 'list_windows',
-    description: 'Open windows with title, program and position, the active one first.',
+    description: 'Open windows with handle, title, program and position, the active one first, then front to back.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'focus_window',
-    description: 'Bring a window to the front by a part of its title or its program name.',
+    description: 'Bring a window to the front by its handle from list_windows, or by a part of its title or its program name. Fails when Windows keeps another window in front.',
     inputSchema: {
       type: 'object',
-      properties: { title: str('Part of the window title, or the program name, case-insensitive.') },
-      required: ['title'],
+      properties: { window: windowProperty, title: str('Instead of window: part of the window title, or the program name, case-insensitive.') },
       additionalProperties: false,
     },
   },
@@ -382,7 +381,7 @@ export function computerPromptBlock(engine: ComputerEngine = 'builtin'): string 
     'Read use_skill("computer-use") for the method. list_windows returns window handles;',
     'snapshot(window) reads controls without focusing, act(ref, action) uses supported automation',
     'patterns or native edit messages without mouse or keyboard injection. App providers can still',
-    'change focus themselves; results report focusChanged. There is no physical-input fallback for act.',
+    'change focus themselves; the result says so. There is no physical-input fallback for act.',
     'batch runs up to 12 known actions with one final observation, reducing model round trips.',
     'For physical input: one screenshot to start; every action then returns the screen once it has',
     'settled, so do not take another. Pass observe "text" when words are enough, "none" when the next',

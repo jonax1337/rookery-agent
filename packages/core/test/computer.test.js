@@ -8,6 +8,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { validateComputerCall } from '../dist/computer/validation.js';
+import { describeSnapshot } from '../dist/computer/accessibility.js';
+import { describeScreen } from '../dist/computer/screen-text.js';
 import { PowerShellSession, powershellBinary } from '../dist/computer/powershell.js';
 import { builtinSkill } from '../dist/skills/builtin.js';
 import { playwrightCliPath } from '../dist/tools/catalog.js';
@@ -56,6 +58,36 @@ test('computer validates every batch step and enforces background boundaries', (
     { tool: 'wait', arguments: {} }, { tool: 'press_keys', arguments: { keys: 'ctrl+unknown' } },
   ] }), /Unknown key/, 'all steps are checked before dispatch');
   assert.match(builtinSkill('computer-use').body, /not rolled back/);
+});
+
+test('computer prints a breadth-first snapshot as a tree and OCR rows left to right', () => {
+  const element = (id, parent, role, name, extra = {}) => ({ id, parent, ref: 'r:' + id, role, name, automationId: '', enabled: true, offscreen: false, actions: [], ...extra });
+  // Walked breadth first: both panes before their children.
+  const text = describeSnapshot({
+    window: 7, foreground: 9, title: 'Editor', truncated: true, screen: { left: -1920, top: 0, width: 3840 },
+    elements: [
+      element(1, 0, 'Window', 'Editor'),
+      element(2, 1, 'Pane', ''),
+      element(3, 1, 'Pane', 'Side'),
+      element(4, 2, 'Edit', 'Draft', { value: '', actions: ['set_value'], bounds: [0, 100, 200, 20] }),
+      element(5, 3, 'ListItem', 'One', { value: 'One', actions: ['select'], offscreen: true }),
+    ],
+  }, 1280);
+  assert.equal(text, [
+    'window=7 "Editor" (background)',
+    'r:1 Window "Editor"',
+    '  r:4 Edit "Draft" value="" [set_value] @673,37',
+    '  r:3 Pane "Side"',
+    '    r:5 ListItem "One" [select] offscreen',
+    '(truncated: raise maxNodes or depth, or snapshot a smaller window)',
+  ].join('\n'), 'the nameless pane is dropped and its child moves up; coordinates are desktop screenshot pixels');
+
+  const screen = { left: 0, top: 0, width: 1280, height: 720, foreground: 1, window: [0, 0, 1280, 720], lines: [
+    [['right', 400, 101, 40, 12]], [['left', 10, 100, 30, 12]], [['below', 10, 130, 40, 12]],
+  ] };
+  assert.deepEqual(describeScreen(screen, 1).split('\n'), ['25,106 left', '420,107 right', '30,136 below'], 'a pixel of jitter does not reorder a row');
+  assert.throws(() => validateComputerCall('click', { x: 1, y: 1, index: 2 }), /pass text/);
+  assert.throws(() => validateComputerCall('focus_window', { title: 'x', window: 5 }), /title or window/);
 });
 
 test('native cursor glides to an exact point and returns without clicking', {
@@ -199,28 +231,28 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
     assert.notEqual(before.foreground, handle, 'test window must be unfocused');
     const snapshot = await mcp.call('snapshot', { window: handle });
     assert.equal(snapshot.isError, false, JSON.stringify(snapshot));
-    const tree = JSON.parse(snapshot.content[0].text);
-    const editor = tree.elements.find((e) => e.name === 'Draft');
-    const button = tree.elements.find((e) => e.name === 'Apply' && e.actions.includes('invoke'));
-    assert.ok(editor?.actions.includes('set_value'), JSON.stringify(tree));
-    assert.ok(button, JSON.stringify(tree));
+    const control = (text, role, name) => {
+      const line = text.split('\n').find((row) => row.trimStart().split(' ')[1] === role && row.includes(' "' + name + '"'));
+      assert.ok(line, role + ' "' + name + '" in:\n' + text);
+      return { ref: line.trim().split(' ')[0], line, at: line.match(/@(\d+),(\d+)/)?.slice(1).map(Number) };
+    };
+    const editor = control(snapshot.content[0].text, 'Edit', 'Draft');
+    assert.match(editor.line, /\[[^\]]*set_value/);
+    assert.match(control(snapshot.content[0].text, 'Button', 'Apply').line, /\[[^\]]*invoke/);
     const result = await mcp.call('batch', { actions: [
       { tool: 'act', arguments: { ref: editor.ref, action: 'set_value', value: 'Background editing works.' } },
       { tool: 'act', arguments: { ref: editor.ref, action: 'set_value', value: 'Fast. Visible. In the background.' } },
     ], window: handle, observe: 'snapshot' });
     assert.equal(result.isError, false, JSON.stringify(result));
-    const actions = JSON.parse(result.content[0].text).completed;
-    for (const action of actions) {
-      const feedback = JSON.parse(action.content[0].text);
-      assert.equal(feedback.cursor.error, undefined, 'native cursor overlay must initialize');
-      assert.equal(feedback.cursor.visible, true, 'native cursor is visible over the unfocused test window');
-    }
-    const overlayHandle = JSON.parse(actions.at(-1).content[0].text).cursor.overlayHandle;
+    assert.match(result.content[0].text, /^1\. act: Set the value of Edit "Draft" .*\n2\. act: Set the value of Edit "Draft" /);
+    const observed = JSON.parse((await mcp.call('screen_info')).content[0].text.split('Observer: ')[1]);
+    assert.equal(observed.visible, true, 'native cursor is visible over the unfocused test window');
+    const overlayHandle = observed.overlayHandle;
     const overlay = await shell.run(`@{ visible = [RkNative]::IsWindowVisible([IntPtr]${overlayHandle}); styles = [RkNative]::GetWindowLong([IntPtr]${overlayHandle}, -20) }`);
     assert.equal(overlay.visible, true, 'the OS reports a real visible overlay window');
     assert.equal(overlay.styles & 0x08000020, 0x08000020, 'overlay cannot activate and passes input through');
-    const updated = JSON.parse(result.content[1].text);
-    assert.equal(updated.elements.find((e) => e.name === 'Draft').value, 'Fast. Visible. In the background.');
+    const updated = result.content[1].text;
+    assert.match(control(updated, 'Edit', 'Draft').line, /value="Fast\. Visible\. In the background\."/);
     const after = await shell.run('@{ foreground = [long][RkNative]::GetForegroundWindow(); cursor = (Rk-Cursor) }');
     assert.deepEqual(after, before, 'neither foreground nor physical cursor changed');
     await sleep(2200);
@@ -252,10 +284,9 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
     console.log(JSON.stringify({ screenshot: output, foregroundUnchanged: true, cursorUnchanged: true, batchTiming: result.content.at(-1).text }));
     // InvokePattern may activate an app through its own provider; verify its
     // effect separately from the focus-preserving set_value path above.
-    const invoked = await mcp.call('act', { ref: updated.elements.find((e) => e.name === 'Apply' && e.actions.includes('invoke')).ref, action: 'invoke' });
-    const dispatch = JSON.parse(invoked.content[0].text);
-    assert.equal(dispatch.dispatched, true);
-    if (dispatch.focusChanged) {
+    const invoked = await mcp.call('act', { ref: control(updated, 'Button', 'Apply').ref, action: 'invoke' });
+    assert.match(invoked.content[0].text, /^Invoked Button "Apply"/);
+    if (/moved the foreground/.test(invoked.content[0].text)) {
       assert.equal(invoked.isError, true, 'background mode reports provider-driven focus changes');
       assert.equal((await mcp.call('wait', { ms: 1 })).isError, true, 'remaining actions are stopped');
     } else assert.equal(invoked.isError, false);
@@ -269,9 +300,8 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
       try {
         await desktop.call('focus_window', { title: 'Rookery Computer Use Test' });
         assert.equal(await shell.run('[long][RkNative]::GetForegroundWindow()'), handle, 'only inject into the disposable test app');
-        const screen = await shell.run('Rk-ScreenInfo');
-        const scale = Math.min(1, 1280 / screen.width);
-        const point = { x: (editor.bounds.x + editor.bounds.width / 2 - screen.left) * scale, y: (editor.bounds.y + editor.bounds.height / 2 - screen.top) * scale };
+        const [x, y] = editor.at;
+        const point = { x, y };
         assert.equal((await desktop.call('screenshot')).isError, false);
         for (const [tool, args, state] of [
           ['click', point, 'Clicking'],

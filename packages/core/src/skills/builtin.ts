@@ -214,12 +214,15 @@ servers with set_tool_server. Agents must report missing access to their owner.
   Saved logins belong to Rookery's browser profile, not the user's normal browser.
   When the user wants to watch, keep its Visibility setting on Visible window
   (headless=no). External browser servers do not automatically get this overlay.
-- Windows controls: list_windows gives exact handles. snapshot(window) returns
-  fresh refs, values, bounds and supported actions. act(ref, action, value) uses
-  UI Automation or targeted native edit messages without injecting input. Prefer set_value for text,
-  invoke for buttons, select for list items and toggle for checkboxes. A provider
-  can still activate its own app or open a dialog in response to an action.
-  Native results expose focusChanged; in Background only, a detected focus change
+- Windows controls: list_windows gives exact handles, front to back. snapshot(window)
+  returns an indented tree, one control per line: ref, role, name, value=,
+  supported actions in [], and @x,y, the centre in desktop screenshot pixels.
+  act(ref, action, value) uses UI Automation or targeted native edit messages
+  without injecting input. Prefer set_value for text, invoke for buttons, select
+  for list items and toggle for checkboxes. When a control lists no fitting action
+  (desktop mode only), take a desktop screenshot and click its @x,y. A provider can still
+  activate its own app or open a dialog in response to an action.
+  Native results say when the app moved the foreground; in Background only, that
   stops remaining actions. The reported action may already have happened.
 - Any app on the desktop: start with one screenshot or read_screen. click takes
   text ("Speichern") as well as coordinates: OCR finds it, the active window wins,
@@ -229,7 +232,7 @@ servers with set_tool_server. Agents must report missing access to their owner.
   with a screenshot. observe "text" returns the OCR lines instead of an image,
   much cheaper; "none" when the next step is certain. Physical actions reject a
   changed foreground window. Never use window-capture coordinates with desktop
-  click tools.
+  click tools. focus_window takes a handle from list_windows or a title.
 - Things only the user may do: UAC prompts, Windows Hello, PINs, sign-ins and
   CAPTCHAs. Software cannot and must not answer them; call hand_over with a
   short reason and continue from the screenshot it returns.
@@ -267,10 +270,11 @@ Compose first, then paint in layers, one draw call per colour and brush:
 
 Read the relevant window once. Use refs from that snapshot; the next snapshot
 invalidates them. batch accepts up to 12 {tool, arguments} steps and one final
-observation: snapshot with window, screenshot, or none. Batch only known controls,
-for example filling two fields and then reading them back. A failed step stops
-the batch and reports exactly what completed; it is not rolled back. Never retry
-the whole batch blindly. Do not batch across navigation or unknown dialogs.
+observation: snapshot with window, screenshot, or none. act and physical steps
+mix freely. Batch only known controls, for example filling two fields and then
+reading them back. A failed step stops the batch and reports exactly what
+completed; it is not rolled back. Never retry the whole batch blindly. Do not
+batch across navigation or unknown dialogs.
 Tools report measured durationMs; avoid fixed sleeps and redundant screenshots.
 The native worker stays warm during the turn; its first call includes startup.
 
@@ -295,7 +299,8 @@ clipboard writes or app launching. Unsupported UIA actions fail explicitly;
 never silently switch to physical input. If the app exposes no useful controls,
 report that limitation. There is no universal background desktop clicking.
 stop cancels current and queued actions and latches until a new MCP session.
-Actions already dispatched to an app cannot be undone by cancelling the worker.
+Actions already dispatched to an app cannot be undone by cancelling the worker;
+buttons and keys it was holding are released.
 The top-left screen corner is the physical emergency brake, and moving the mouse
 while Rookery's pointer travels takes over: it stops before anything further is sent. Respect a user stop
 immediately. Honour the user's authorised scope; get missing authorisation before

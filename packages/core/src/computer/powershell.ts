@@ -55,8 +55,11 @@ public static class RkNative {
   [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr h);
   [StructLayout(LayoutKind.Sequential)] public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT pos; }
   [StructLayout(LayoutKind.Sequential)] public struct ICONINFO { public bool fIcon; public uint xHotspot; public uint yHotspot; public IntPtr hbmMask; public IntPtr hbmColor; }
-  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextLength(IntPtr h);
+  [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint type);
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
+  [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attribute, out int value, int size);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint attach, uint to, bool on);
@@ -98,10 +101,38 @@ public static class RkNative {
       throw new InvalidOperationException("Typing was blocked after about " + sent / 2 + " characters (the target may run elevated). Check the field before retrying.");
     return inputs.Length;
   }
-  public static void Tap(byte vk) { keybd_event(vk, 0, 0, UIntPtr.Zero); keybd_event(vk, 0, 2, UIntPtr.Zero); }
+  // Navigation, Win and media keys carry the E0 prefix; without it Windows reads them as the
+  // numpad twin, and with NumLock on shift+arrow stops selecting.
+  static bool Extended(int vk) {
+    return (vk >= 0x21 && vk <= 0x28) || vk == 0x2C || vk == 0x2D || vk == 0x2E || vk == 0x5B || vk == 0x5C || vk == 0x5D ||
+      vk == 0x6F || vk == 0x90 || vk == 0xA3 || vk == 0xA5 || (vk >= 0xAD && vk <= 0xB3);
+  }
+  static void KeyEvent(int vk, bool up) {
+    var input = new[] { Key((ushort)vk, (ushort)MapVirtualKey((uint)vk, 0), (up ? 0x0002u : 0u) | (Extended(vk) ? 0x0001u : 0u)) };
+    if (SendInput(1, input, Marshal.SizeOf(typeof(INPUT))) != 1)
+      throw new InvalidOperationException("Windows refused the key input (the target may run elevated). Check the window before retrying.");
+  }
+  // Held in order, released in reverse; whatever went down comes back up even if a press fails.
   public static void Combo(int[] keys) {
-    foreach (int k in keys) { keybd_event((byte)k, 0, 0, UIntPtr.Zero); System.Threading.Thread.Sleep(15); }
-    for (int i = keys.Length - 1; i >= 0; i--) { keybd_event((byte)keys[i], 0, 2, UIntPtr.Zero); System.Threading.Thread.Sleep(15); }
+    int down = 0;
+    try {
+      foreach (int k in keys) { KeyEvent(k, false); down++; System.Threading.Thread.Sleep(15); }
+    } finally {
+      for (int i = down - 1; i >= 0; i--) { KeyEvent(keys[i], true); if (i > 0) System.Threading.Thread.Sleep(15); }
+    }
+  }
+  // Release buttons and modifiers a killed worker left down; only what is actually held.
+  public static string[] Release() {
+    var released = new System.Collections.Generic.List<string>();
+    int[][] buttons = { new[] { 0x01, 0x0004 }, new[] { 0x02, 0x0010 }, new[] { 0x04, 0x0040 } };
+    string[] buttonNames = { "left button", "right button", "middle button" };
+    for (int i = 0; i < buttons.Length; i++)
+      if ((GetAsyncKeyState(buttons[i][0]) & 0x8000) != 0) { mouse_event((uint)buttons[i][1], 0, 0, 0, UIntPtr.Zero); released.Add(buttonNames[i]); }
+    int[] keys = { 0x10, 0x11, 0x12, 0x5B, 0x5C };
+    string[] keyNames = { "shift", "ctrl", "alt", "win", "win" };
+    for (int i = 0; i < keys.Length; i++)
+      if ((GetAsyncKeyState(keys[i]) & 0x8000) != 0) { KeyEvent(keys[i], true); released.Add(keyNames[i]); }
+    return released.ToArray();
   }
   public static string Title(IntPtr h) {
     int n = GetWindowTextLength(h); if (n == 0) return "";
@@ -125,11 +156,22 @@ public static class RkNative {
     IntPtr result;
     if (SendMessageTimeout(h, 0x000C, IntPtr.Zero, value, 2, 2000, out result) == IntPtr.Zero || result == IntPtr.Zero)
       throw new InvalidOperationException("The edit control did not accept background text. Inspect its value before retrying.");
+    // WM_SETTEXT clears the modified flag; set it, so the app still asks before discarding the text.
+    SendMessageTimeout(h, 0x00B9, new IntPtr(1), null, 2, 2000, out result);
     return true;
+  }
+  // Windows a user could act on: visible, titled, not cloaked (suspended UWP frames, other
+  // virtual desktops) and not click-through overlays, which no input can reach.
+  public static bool Listed(IntPtr h) {
+    if (!IsWindowVisible(h) || GetWindowTextLength(h) == 0) return false;
+    int ex = GetWindowLong(h, -20);
+    if ((ex & 0x20) != 0 && (ex & 0x80000) != 0) return false; // WS_EX_TRANSPARENT | WS_EX_LAYERED
+    int cloaked;
+    return DwmGetWindowAttribute(h, 14, out cloaked, 4) != 0 || cloaked == 0; // DWMWA_CLOAKED
   }
   public static System.Collections.Generic.List<IntPtr> Windows() {
     var list = new System.Collections.Generic.List<IntPtr>();
-    EnumWindows(delegate(IntPtr h, IntPtr l) { if (IsWindowVisible(h) && GetWindowTextLength(h) > 0) list.Add(h); return true; }, IntPtr.Zero);
+    EnumWindows(delegate(IntPtr h, IntPtr l) { if (Listed(h)) list.Add(h); return true; }, IntPtr.Zero);
     return list;
   }
   public static bool Focus(IntPtr h) {
@@ -289,12 +331,9 @@ ${SCREEN_TEXT}
 
 function Rk-Screenshot($maxWidth, $path, $handle = 0, $observe = $true) {
   if (-not $handle -and [RkNative]::SecureDesktop()) { throw $script:rkSecurePrompt }
-  if ($observe) {
-    if ($null -eq $script:rkCursorFeedback -and -not $handle) {
-      $point = Rk-Cursor
-      Rk-ShowPointer 0 $point.x $point.y 'Reading' | Out-Null
-    } else { Rk-CursorStatus 'Reading' }
-  }
+  # A window capture never contains the overlay; a desktop capture hides it, so the
+  # overlay appears only afterwards instead of flashing in, out and in again.
+  if ($observe -and $handle) { Rk-CursorStatus 'Reading' }
   $b = Rk-Bounds
   if ($handle) {
     $h = Rk-Window $handle
@@ -317,6 +356,12 @@ function Rk-Screenshot($maxWidth, $path, $handle = 0, $observe = $true) {
     try { $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size) } finally { Rk-CursorCapture $false }
     $dc = $g.GetHdc()
     try { [RkNative]::DrawCursor($dc, $b.Left, $b.Top) } finally { $g.ReleaseHdc($dc) }
+  }
+  if ($observe -and -not $handle) {
+    if ($null -eq $script:rkCursorFeedback) {
+      $point = Rk-Cursor
+      Rk-ShowPointer 0 $point.x $point.y 'Reading' | Out-Null
+    } else { Rk-CursorStatus 'Reading' }
   }
   $g.Dispose()
   $scale = 1.0
@@ -396,50 +441,60 @@ function Rk-Keys($combos) {
   @{ ok = $true }
 }
 
+function Rk-ProcessName($h) {
+  $procId = [uint32]0
+  [RkNative]::GetWindowThreadProcessId($h, [ref]$procId) | Out-Null
+  try { [System.Diagnostics.Process]::GetProcessById([int]$procId).ProcessName } catch { '' }
+}
+
+# In z-order, the active window first: the order a user sees them stacked.
 function Rk-Windows {
   Rk-CursorStatus 'Finding window'
   $fg = [RkNative]::GetForegroundWindow()
-  $rows = @()
+  $active = @(); $rest = @()
   foreach ($h in [RkNative]::Windows()) {
     $r = New-Object RkNative+RECT
     [RkNative]::GetWindowRect($h, [ref]$r) | Out-Null
-    $procId = [uint32]0
-    [RkNative]::GetWindowThreadProcessId($h, [ref]$procId) | Out-Null
-    $proc = ''
-    try { $proc = (Get-Process -Id $procId -ErrorAction Stop).ProcessName } catch { }
-    $rows += @{ handle = [int64]$h; title = [RkNative]::Title($h); process = $proc; active = ($h -eq $fg);
-      x = $r.Left; y = $r.Top; width = ($r.Right - $r.Left); height = ($r.Bottom - $r.Top) }
+    $row = @{ handle = [int64]$h; title = [RkNative]::Title($h); process = (Rk-ProcessName $h); active = ($h -eq $fg);
+      minimized = [RkNative]::IsIconic($h); x = $r.Left; y = $r.Top; width = ($r.Right - $r.Left); height = ($r.Bottom - $r.Top) }
+    if ($row.active) { $active += $row } else { $rest += $row }
   }
-  ,@($rows | Sort-Object -Property @{ Expression = { $_.active }; Descending = $true })
+  ,@($active + $rest)
 }
 
-# Best match wins, not the first: the exact program name, then a title that ends
-# with the name (Windows apps title windows "Document - App"), then any title
+# By exact handle, or best match, not the first: the exact program name, then a title
+# that ends with the name (Windows apps title windows "Document - App"), then any title
 # containing it. Otherwise "Paint" finds a chat window that mentions Paint.
-function Rk-Focus($needle) {
-  $needle = $needle.ToLowerInvariant()
+function Rk-Focus($needle, $handle = 0) {
   $match = $null
-  $matchTitle = ''
-  $best = 0
-  foreach ($h in [RkNative]::Windows()) {
-    $title = [RkNative]::Title($h)
-    $lower = $title.ToLowerInvariant()
-    $procId = [uint32]0
-    [RkNative]::GetWindowThreadProcessId($h, [ref]$procId) | Out-Null
-    $proc = ''
-    try { $proc = (Get-Process -Id $procId -ErrorAction Stop).ProcessName.ToLowerInvariant() } catch { }
-    $score = 0
-    if ($proc -eq $needle) { $score = 3 }
-    elseif ($lower -eq $needle -or $lower.EndsWith(' - ' + $needle) -or $lower.EndsWith(' – ' + $needle)) { $score = 2 }
-    elseif ($lower.Contains($needle)) { $score = 1 }
-    if ($score -gt $best) { $best = $score; $match = $h; $matchTitle = $title }
+  if ($handle) {
+    $match = Rk-Window $handle
+  } else {
+    $needle = $needle.ToLowerInvariant()
+    $best = 0
+    foreach ($h in [RkNative]::Windows()) {
+      $lower = [RkNative]::Title($h).ToLowerInvariant()
+      $proc = (Rk-ProcessName $h).ToLowerInvariant()
+      $score = 0
+      if ($proc -eq $needle) { $score = 3 }
+      elseif ($lower -eq $needle -or $lower.EndsWith(' - ' + $needle) -or $lower.EndsWith(' – ' + $needle)) { $score = 2 }
+      elseif ($lower.Contains($needle)) { $score = 1 }
+      if ($score -gt $best) { $best = $score; $match = $h }
+    }
+    if ($null -eq $match) { throw "No window matches '$needle'. Call list_windows." }
   }
-  if ($null -eq $match) { throw "No window matches '$needle'." }
-  $ok = [RkNative]::Focus($match)
+  $title = [RkNative]::Title($match)
+  [RkNative]::Focus($match) | Out-Null
   Start-Sleep -Milliseconds 150
+  if ([RkNative]::GetForegroundWindow() -ne $match) {
+    throw ('Windows kept "' + [RkNative]::Title([RkNative]::GetForegroundWindow()) + '" in front; "' + $title + '" did not come forward.')
+  }
   Rk-InputPointer 'Ready'
-  @{ ok = $ok; title = $matchTitle }
+  @{ title = $title; handle = [long]$match }
 }
+
+# After a worker died mid-action: let go of whatever it held down.
+function Rk-Release { @{ released = @([RkNative]::Release()) } }
 
 function Rk-Open($target) {
   Start-Process $target

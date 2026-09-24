@@ -12,12 +12,13 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
+import { describeAct, describeSnapshot, type ActResult, type Snapshot } from './accessibility.js';
 import { parseKeySequence } from './keys.js';
 import { PowerShellSession, psQuote } from './powershell.js';
 import { COMPUTER_SERVER_NAME, COMPUTER_TOOLS } from './tools.js';
 import { describeScreen, findText, pickMatch, type ScreenText, type TextMatch } from './screen-text.js';
 import { clipStrokes, fitViewBox, multiply, svgStrokes, svgViewBox, type Matrix, type Stroke } from './sketch.js';
-import { validateComputerCall, type ComputerCall } from './validation.js';
+import { batchObservation, validateComputerCall, type ComputerCall } from './validation.js';
 
 const PROTOCOL_FALLBACK = '2025-06-18';
 const MAX_WIDTH = Math.min(3840, Math.max(320, Number(process.env.ROOKERY_COMPUTER_MAX_WIDTH) || 1280));
@@ -75,6 +76,18 @@ function toScreen(x: number, y: number): [number, number] {
   return [Math.round(view.left + x / view.scale), Math.round(view.top + y / view.scale)];
 }
 
+/** Physical actions currently dispatched to the worker. */
+let inputInFlight = 0;
+
+/**
+ * A worker killed mid-action (stop, timeout, end of turn) cannot run its own
+ * cleanup, so a drag's button or a shortcut's modifier would stay down for the
+ * user. A fresh worker lets go of whatever is still held.
+ */
+async function releaseHeld(timeoutMs = 10_000): Promise<void> {
+  await shell.run('Rk-Release', timeoutMs).catch(() => undefined);
+}
+
 /** Refuse stale desktop targets and serialize physical input across Rookery processes. */
 async function physical(expression: string, timeoutMs = 30_000): Promise<void> {
   if (!view) throw new Error('Take a desktop screenshot before physical input.');
@@ -82,10 +95,18 @@ async function physical(expression: string, timeoutMs = 30_000): Promise<void> {
     ' -or $b.Left -ne ' + view.left + ' -or $b.Top -ne ' + view.top +
     ' -or $b.Width -ne ' + Math.round(view.width / view.scale) +
     ') { throw "Desktop target changed. Take a fresh screenshot." }; ';
-  await shell.run('$mutex = New-Object System.Threading.Mutex($false, "Local\\RookeryComputerInput"); ' +
-    '$locked = $false; try { try { $locked = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $locked = $true }; ' +
-    'if (-not $locked) { throw "Another Rookery session is using desktop input." }; ' + guard + expression +
-    ' } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }', timeoutMs);
+  inputInFlight++;
+  try {
+    await shell.run('$mutex = New-Object System.Threading.Mutex($false, "Local\\RookeryComputerInput"); ' +
+      '$locked = $false; try { try { $locked = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $locked = $true }; ' +
+      'if (-not $locked) { throw "Another Rookery session is using desktop input." }; ' + guard + expression +
+      ' } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }', timeoutMs);
+  } catch (error) {
+    if (!shell.running && !closing) await releaseHeld();
+    throw error;
+  } finally {
+    inputInFlight--;
+  }
 }
 
 type DrawArgs = Extract<ComputerCall, { name: 'draw' }>['args'];
@@ -161,7 +182,7 @@ function planDrawing(args: DrawArgs): { packed: string; strokes: number; points:
  * physical input maps through, so its coordinates can be clicked directly.
  */
 async function readScreen(): Promise<{ screen: ScreenText; scale: number }> {
-  const screen = await shell.run<ScreenText>('Rk-ReadScreen', 20_000);
+  const screen = await shell.run<ScreenText>('Rk-ReadScreen ' + (stopped ? '$false' : '$true'), 20_000);
   const scale = Math.min(1, MAX_WIDTH / screen.width);
   view = { scale, left: screen.left, top: screen.top, width: Math.round(screen.width * scale), height: Math.round(screen.height * scale), foreground: screen.foreground };
   return { screen, scale };
@@ -200,18 +221,18 @@ async function perform(command: ComputerCall): Promise<Content[]> {
       shell.close();
       return [{ type: 'text', text: 'Computer use stopped. Current and queued actions cancelled.' }];
     case 'snapshot': {
-      const result = await shell.run('Rk-Snapshot ' + args.window + ' ' + args.maxNodes + ' ' + args.depth + ' ' + (stopped ? '$false' : '$true'), 15_000);
-      return [{ type: 'text', text: JSON.stringify(result) }];
+      const result = await shell.run<Snapshot>('Rk-Snapshot ' + args.window + ' ' + args.maxNodes + ' ' + args.depth + ' ' + (stopped ? '$false' : '$true'), 15_000);
+      return [{ type: 'text', text: describeSnapshot(result, MAX_WIDTH) }];
     }
     case 'act': {
-      view = null;
-      const result = await shell.run<{ focusChanged: boolean }>('Rk-Act ' + psQuote(args.ref) + ' ' + psQuote(args.action) + ' ' + psQuote(args.value ?? ''), 15_000);
+      // The desktop view stays: physical input re-checks foreground and bounds before it moves.
+      const result = await shell.run<ActResult>('Rk-Act ' + psQuote(args.ref) + ' ' + psQuote(args.action) + ' ' + psQuote(args.value ?? ''), 15_000);
       if (BACKGROUND && result.focusChanged) {
         stopped = true;
         shell.close();
-        throw new Error(JSON.stringify({ ...result, error: 'The app changed foreground through its UI Automation provider. The action was dispatched; remaining actions are stopped. Inspect the result before retrying.' }));
+        throw new Error(describeAct(result) + ' Background-only mode stopped all further actions; inspect the result before retrying in a new turn.');
       }
-      return [{ type: 'text', text: JSON.stringify(result) }];
+      return [{ type: 'text', text: describeAct(result) }];
     }
     case 'batch': {
       // Steps run blind; the batch observes once at its end.
@@ -220,22 +241,29 @@ async function perform(command: ComputerCall): Promise<Content[]> {
         if ('observe' in action.args) action.args.observe = 'none';
         return action;
       });
-      const results: { tool: string; durationMs: number; content: Content[] }[] = [];
+      const done: string[] = [];
       for (const action of actions) {
         const started = performance.now();
         try {
           const content = await call(action);
-          results.push({ tool: action.name, durationMs: Math.round(performance.now() - started), content });
+          const said = content.map((part) => (part.type === 'text' ? part.text : '')).join(' ').trim();
+          done.push((done.length + 1) + '. ' + action.name + ': ' + said + ' (' + Math.round(performance.now() - started) + ' ms)');
         } catch (error) {
-          throw new Error(JSON.stringify({ completed: results, failedAt: results.length, error: (error as Error).message, remainingSkipped: actions.length - results.length - 1 }));
+          const step = done.length + 1;
+          const skipped = actions.length - step;
+          throw new Error('Step ' + step + ' of ' + actions.length + ' (' + action.name + ') failed: ' + (error as Error).message +
+            (done.length ? '\nCompleted before it:\n' + done.join('\n') : '') +
+            (skipped ? '\nSkipped: step' + (skipped > 1 ? 's ' + (step + 1) + '-' + actions.length : ' ' + actions.length) + '.' : '') +
+            '\nNothing was rolled back.');
         }
       }
-      const observe = args.observe ?? (args.window ? 'snapshot' : 'screenshot');
-      const report: Content = { type: 'text', text: JSON.stringify({ completed: results }) };
+      const report: Content = { type: 'text', text: done.join('\n') };
+      const observe = args.observe ?? batchObservation(args.window, BACKGROUND);
+      if (observe === 'none') return [report];
       try {
-        return [report, ...(observe === 'none' ? [] : await call(validateComputerCall(observe, args.window ? { window: args.window } : {}, BACKGROUND)))];
+        return [report, ...(await call(validateComputerCall(observe, args.window ? { window: args.window } : {}, BACKGROUND)))];
       } catch (error) {
-        throw new Error(JSON.stringify({ completed: results, observationError: (error as Error).message }));
+        throw new Error(done.join('\n') + '\nAll steps completed; the final ' + observe + ' failed: ' + (error as Error).message);
       }
     }
     case 'screenshot': {
@@ -290,7 +318,9 @@ async function perform(command: ComputerCall): Promise<Content[]> {
       view = null;
       const timeout = args.timeoutSec * 1000;
       const result = await shell.run<{ outcome: string; waitedMs: number }>('Rk-HandOver ' + psQuote(args.reason) + ' ' + timeout, timeout + 15_000);
-      return [{ type: 'text', text: result.outcome + ' Waited ' + Math.round(result.waitedMs / 1000) + ' s.' }, ...(await settled('screenshot'))];
+      const outcome: Content = { type: 'text', text: result.outcome + ' Waited ' + Math.round(result.waitedMs / 1000) + ' s.' };
+      // Background-only mode may not capture the desktop; the model snapshots its window instead.
+      return BACKGROUND ? [outcome] : [outcome, ...(await settled('screenshot'))];
     }
     case 'click': {
       const { button, count } = args;
@@ -311,7 +341,7 @@ async function perform(command: ComputerCall): Promise<Content[]> {
       }
       const [sx, sy] = toScreen(x, y);
       await physical('Rk-Click ' + sx + ' ' + sy + ' ' + psQuote(button) + ' ' + count);
-      return [{ type: 'text', text: (count === 2 ? 'Double-clicked' : 'Clicked') + ' ' + button + ' ' + what + '.' }];
+      return [{ type: 'text', text: (count === 2 ? 'Double-clicked ' : 'Clicked ') + (button === 'left' ? '' : 'with the ' + button + ' button ') + what + '.' }];
     }
     case 'move_mouse': {
       const [x, y] = toScreen(args.x, args.y);
@@ -346,22 +376,23 @@ async function perform(command: ComputerCall): Promise<Content[]> {
       return [{ type: 'text', text: 'Pressed ' + args.keys + '.' }];
     }
     case 'list_windows': {
-      const rows = await shell.run<{ handle: number; title: string; process: string; active: boolean; x: number; y: number; width: number; height: number }[]>('Rk-Windows');
+      const rows = await shell.run<{ handle: number; title: string; process: string; active: boolean; minimized: boolean; x: number; y: number; width: number; height: number }[]>('Rk-Windows');
       const list = Array.isArray(rows) ? rows : [rows];
       if (!list.length) return [{ type: 'text', text: 'No windows.' }];
       return [
         {
           type: 'text',
           text: list
-            .map((w) => '- window=' + w.handle + ' ' + (w.active ? '[active] ' : '') + w.title + ' (' + w.process + ') ' + w.width + 'x' + w.height + ' at ' + w.x + ',' + w.y)
+            .map((w) => '- window=' + w.handle + ' ' + (w.active ? '[active] ' : '') + JSON.stringify(w.title) + ' (' + w.process + ') ' +
+              (w.minimized ? 'minimized' : w.width + 'x' + w.height + ' at ' + w.x + ',' + w.y))
             .join('\n'),
         },
       ];
     }
     case 'focus_window': {
       view = null;
-      const result = await shell.run<{ ok: boolean; title: string }>('Rk-Focus ' + psQuote(args.title));
-      return [{ type: 'text', text: (result.ok ? 'Focused ' : 'Tried to focus ') + '"' + result.title + '".' }];
+      const result = await shell.run<{ title: string; handle: number }>('Rk-Focus ' + psQuote(args.title ?? '') + ' ' + (args.window ?? 0));
+      return [{ type: 'text', text: 'Focused window=' + result.handle + ' ' + JSON.stringify(result.title) + '.' }];
     }
     case 'open': {
       view = null;
@@ -476,8 +507,9 @@ input.on('line', (line) => {
 });
 /**
  * The turn is over when the CLI closes our stdin. The cursor fades out
- * first, bounded so a stuck action cannot hold the exit; a hard kill skips
- * this, and the worker then ends itself with this process instead.
+ * first, bounded so a stuck action cannot hold the exit, and a drag or
+ * shortcut cut off mid-way lets go of what it held; a hard kill skips this,
+ * and the worker then ends itself with this process instead.
  */
 let closing = false;
 async function shutdown(): Promise<void> {
@@ -489,6 +521,9 @@ async function shutdown(): Promise<void> {
       delay(700),
     ]);
   }
+  const held = inputInFlight > 0;
+  shell.close();
+  if (held) await releaseHeld(3000);
   shell.close();
   process.exit(0);
 }

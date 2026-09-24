@@ -129,21 +129,31 @@ export function pickMatch(matches: TextMatch[], phrase: string, index?: number):
 }
 
 /**
- * The screen as text lines with their centres in screenshot pixels, top to
- * bottom: enough to click by coordinates without an image.
+ * The screen as text lines with their centres in screenshot pixels, in
+ * reading order. OCR splits a row into several lines whose centres differ by
+ * a pixel or two; those are ordered left to right, not by that jitter.
  */
 export function describeScreen(screen: ScreenText, scale: number, limit = 300): string {
-  const rows = screen.lines.filter((line) => line.length).map((line) => {
+  const lines = screen.lines.filter((line) => line.length).map((line) => {
     const b = box(line);
-    return {
-      x: Math.round((b.x + b.width / 2 - screen.left) * scale),
-      y: Math.round((b.y + b.height / 2 - screen.top) * scale),
-      text: line.map((word) => word[0]).join(' '),
-    };
-  }).sort((a, b) => a.y - b.y || a.x - b.x);
-  if (!rows.length) return '(no text recognised on screen)';
-  return rows.slice(0, limit).map((row) => row.x + ',' + row.y + ' ' + row.text).join('\n') +
-    (rows.length > limit ? '\n... ' + (rows.length - limit) + ' more lines' : '');
+    return { b, text: line.map((word) => word[0]).join(' ') };
+  }).sort((a, b) => (a.b.y + a.b.height / 2) - (b.b.y + b.b.height / 2));
+  if (!lines.length) return '(no text recognised on screen)';
+  const rows: (typeof lines)[] = [];
+  let bottom = -Infinity;
+  for (const line of lines) {
+    const middle = line.b.y + line.b.height / 2;
+    // A line whose middle sits inside the current row's band belongs to that row.
+    if (middle < bottom) rows.at(-1)!.push(line);
+    else {
+      rows.push([line]);
+      bottom = line.b.y + line.b.height;
+    }
+  }
+  const ordered = rows.flatMap((row) => row.sort((a, b) => a.b.x - b.b.x));
+  return ordered.slice(0, limit).map(({ b, text }) =>
+    Math.round((b.x + b.width / 2 - screen.left) * scale) + ',' + Math.round((b.y + b.height / 2 - screen.top) * scale) + ' ' + text,
+  ).join('\n') + (ordered.length > limit ? '\n... ' + (ordered.length - limit) + ' more lines' : '');
 }
 
 /* ------------------------------ worker side ------------------------------- */
@@ -183,7 +193,7 @@ function Rk-Await($operation, [Type]$type) {
 }
 
 # The whole desktop as recognised words, boxes in physical pixels.
-function Rk-ReadScreen {
+function Rk-ReadScreen($observe = $true) {
   if ([RkNative]::SecureDesktop()) { throw $script:rkSecurePrompt }
   $engine = Rk-OcrEngine
   $b = Rk-Bounds
@@ -193,6 +203,7 @@ function Rk-ReadScreen {
   $g = [System.Drawing.Graphics]::FromImage($bmp)
   Rk-CursorCapture $true
   try { $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size) } finally { Rk-CursorCapture $false; $g.Dispose() }
+  if ($observe) { Rk-CursorStatus 'Reading' }
   if ($scale -lt 1) {
     $small = New-Object System.Drawing.Bitmap $w, $h
     $sg = [System.Drawing.Graphics]::FromImage($small)
