@@ -346,6 +346,29 @@ namespace Rookery {
       }));
     }
 
+    /** The turn is over: fade out and stay hidden until an action reveals it again. Returns once it is gone. */
+    public static void Dismiss() {
+      if (ui == null || pointer == null) return;
+      var gone = new ManualResetEvent(false);
+      ui.Invoke(new Action(delegate { pointer.FadeOut(gone); }));
+      gone.WaitOne(500);
+    }
+
+    /** UI thread. */
+    void FadeOut(ManualResetEvent gone) {
+      idle.Stop();
+      shouldShow = false;
+      if (!IsVisible || !Animations()) { Hide(); gone.Set(); return; }
+      label.Text = "Rookery · Done";
+      var fade = new DoubleAnimation(0, TimeSpan.FromMilliseconds(260)) { BeginTime = TimeSpan.FromMilliseconds(120), EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseIn } };
+      fade.Completed += delegate {
+        // A reveal during the fade already took the animation off and wants the pointer shown.
+        if (!shouldShow) { Hide(); BeginAnimation(OpacityProperty, null); Opacity = 1; }
+        gone.Set();
+      };
+      BeginAnimation(OpacityProperty, fade);
+    }
+
     public static void Capture(bool hide) {
       if (ui == null || pointer == null) return;
       ui.Invoke(new Action(delegate {
@@ -406,10 +429,17 @@ namespace Rookery {
       press.BeginAnimation(ScaleTransform.ScaleYProperty, squeeze);
     }
 
+    /** Show the pointer; from hidden it fades in instead of popping up. */
     static void Reveal() {
       ui.Invoke(new Action(delegate {
         pointer.shouldShow = true;
-        if (!pointer.capturing) pointer.Show();
+        bool appearing = !pointer.IsVisible;
+        pointer.BeginAnimation(OpacityProperty, null);
+        pointer.Opacity = 1;
+        if (pointer.capturing) return;
+        pointer.Show();
+        if (appearing && Animations())
+          pointer.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)) { EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut } });
       }));
     }
 
@@ -655,6 +685,10 @@ function Rk-CursorCapture($hide) {
 
 function Rk-CursorDone {
   if ($script:rkOverlay) { [Rookery.AgentPointer]::Complete() }
+}
+
+function Rk-CursorDismiss {
+  if ($script:rkOverlay) { [Rookery.AgentPointer]::Dismiss() }
 }
 
 function Rk-ObserverState {

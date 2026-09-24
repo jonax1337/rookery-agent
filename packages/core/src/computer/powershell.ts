@@ -209,6 +209,20 @@ public static class RkNative {
     } finally { CloseDesktop(desk); }
   }
 
+  /**
+   * End this worker once the process that owns it is gone, however it ended:
+   * a hard kill at the end of a turn skips every cleanup, and the cursor
+   * overlay must never outlive its turn.
+   */
+  public static void ExitWith(int pid) {
+    System.Diagnostics.Process owner;
+    try { owner = System.Diagnostics.Process.GetProcessById(pid); }
+    catch (ArgumentException) { Environment.Exit(0); return; }
+    var thread = new System.Threading.Thread(delegate() { owner.WaitForExit(); Environment.Exit(0); });
+    thread.IsBackground = true;
+    thread.Start();
+  }
+
   [StructLayout(LayoutKind.Sequential)] struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
   [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
 
@@ -243,6 +257,7 @@ Add-Type -AssemblyName System.Drawing
 ${ASSEMBLY_LOADER}
 Rk-Assembly ${psQuote(NATIVE_FILES.assembly)} ${psQuote(NATIVE_FILES.source)} 'RkNative' @('System.dll', [System.Drawing.Bitmap].Assembly.Location, [System.Windows.Forms.Form].Assembly.Location)
 [RkNative]::SetProcessDPIAware() | Out-Null
+if ($env:ROOKERY_COMPUTER_OWNER) { [RkNative]::ExitWith([int]$env:ROOKERY_COMPUTER_OWNER) }
 
 function Rk-Bounds { [System.Windows.Forms.SystemInformation]::VirtualScreen }
 
@@ -486,7 +501,12 @@ export class PowerShellSession {
     const child = spawn(
       powershellBinary(),
       ['-NoProfile', '-NonInteractive', '-STA', '-Command', 'Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())))'],
-      { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' },
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+        detached: process.platform !== 'win32',
+        env: { ...process.env, ROOKERY_COMPUTER_OWNER: String(process.pid) },
+      },
     );
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk: string) => {
@@ -504,6 +524,11 @@ export class PowerShellSession {
     });
     this.#child = child;
     child.stdin!.write(Buffer.from(PRELUDE, 'utf8').toString('base64') + '\n');
+  }
+
+  /** Whether a worker is alive; a call on a stopped session would start a fresh one. */
+  get running(): boolean {
+    return this.#child !== null;
   }
 
   /** Evaluate one expression and parse the JSON it prints. Calls are serialised. */

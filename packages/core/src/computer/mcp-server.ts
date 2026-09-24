@@ -11,6 +11,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { setTimeout as delay } from 'node:timers/promises';
 import { parseKeySequence } from './keys.js';
 import { PowerShellSession, psQuote } from './powershell.js';
 import { COMPUTER_SERVER_NAME, COMPUTER_TOOLS } from './tools.js';
@@ -473,10 +474,24 @@ input.on('line', (line) => {
   }
   void handle(message);
 });
-function shutdown(): void {
+/**
+ * The turn is over when the CLI closes our stdin. The cursor fades out
+ * first, bounded so a stuck action cannot hold the exit; a hard kill skips
+ * this, and the worker then ends itself with this process instead.
+ */
+let closing = false;
+async function shutdown(): Promise<void> {
+  if (closing) return;
+  closing = true;
+  if (shell.running) {
+    await Promise.race([
+      shell.run('Rk-CursorDismiss; @{}', 2000).catch(() => undefined),
+      delay(700),
+    ]);
+  }
   shell.close();
   process.exit(0);
 }
-input.on('close', shutdown);
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+input.on('close', () => void shutdown());
+process.on('SIGINT', () => void shutdown());
+process.on('SIGTERM', () => void shutdown());
