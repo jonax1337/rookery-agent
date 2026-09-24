@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { ACCESSIBILITY } from './accessibility.js';
-import { WINDOWS_CURSOR } from './windows-cursor.js';
+import { ASSEMBLY_LOADER, compiledSource, writeSource } from './assemblies.js';
+import { SCREEN_TEXT } from './screen-text.js';
+import { OVERLAY, OVERLAY_FILES, WINDOWS_CURSOR } from './windows-cursor.js';
 
 /**
  * One long-lived Windows PowerShell with the screen, mouse and keyboard
@@ -57,6 +59,9 @@ public static class RkNative {
   [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint attach, uint to, bool on);
+  [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+  [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
   public delegate bool EnumProc(IntPtr h, IntPtr l);
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
@@ -68,16 +73,30 @@ public static class RkNative {
   [StructLayout(LayoutKind.Sequential)] public struct INPUT { public uint type; public INPUTUNION u; }
 
   // Text goes in as Unicode key events, so umlauts and symbols arrive whatever the layout.
+  // Sent in short batches: one SendInput per character with a sleep cost ~15 ms each.
   public static void TypeText(string text) {
+    var batch = new System.Collections.Generic.List<INPUT>();
+    int sent = 0;
     foreach (char c in text) {
       if (c == '\\r') continue;
-      if (c == '\\n') { Tap(0x0D); continue; }
-      INPUT[] pair = new INPUT[2];
-      pair[0].type = 1; pair[0].u.ki.wScan = (ushort)c; pair[0].u.ki.dwFlags = 0x0004;
-      pair[1].type = 1; pair[1].u.ki.wScan = (ushort)c; pair[1].u.ki.dwFlags = 0x0004 | 0x0002;
-      SendInput(2, pair, Marshal.SizeOf(typeof(INPUT)));
-      System.Threading.Thread.Sleep(4);
+      if (c == '\\n') { batch.Add(Key(0x0D, 0, 0)); batch.Add(Key(0x0D, 0, 2)); }
+      else { batch.Add(Key(0, c, 0x0004)); batch.Add(Key(0, c, 0x0004 | 0x0002)); }
+      if (batch.Count >= 32) { sent += Send(batch, sent); System.Threading.Thread.Sleep(1); }
     }
+    Send(batch, sent);
+  }
+  static INPUT Key(ushort vk, ushort scan, uint flags) {
+    INPUT input = new INPUT(); input.type = 1;
+    input.u.ki.wVk = vk; input.u.ki.wScan = scan; input.u.ki.dwFlags = flags;
+    return input;
+  }
+  static int Send(System.Collections.Generic.List<INPUT> batch, int sent) {
+    if (batch.Count == 0) return 0;
+    INPUT[] inputs = batch.ToArray();
+    batch.Clear();
+    if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT))) != inputs.Length)
+      throw new InvalidOperationException("Typing was blocked after about " + sent / 2 + " characters (the target may run elevated). Check the field before retrying.");
+    return inputs.Length;
   }
   public static void Tap(byte vk) { keybd_event(vk, 0, 0, UIntPtr.Zero); keybd_event(vk, 0, 2, UIntPtr.Zero); }
   public static void Combo(int[] keys) {
@@ -115,12 +134,104 @@ public static class RkNative {
   }
   public static bool Focus(IntPtr h) {
     if (IsIconic(h)) ShowWindow(h, 9);
-    // A synthetic Alt tap lifts the foreground lock so SetForegroundWindow is honoured.
-    keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero);
-    return SetForegroundWindow(h);
+    // Sharing the foreground thread's input state lifts the foreground lock without a key press.
+    // (A synthetic Alt tap does too, but ribbon apps like Paint then show their access-key tips.)
+    uint pid, me = GetCurrentThreadId(), owner = GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+    bool attached = owner != 0 && owner != me && AttachThreadInput(me, owner, true);
+    try { BringWindowToTop(h); SetForegroundWindow(h); }
+    finally { if (attached) AttachThreadInput(me, owner, false); }
+    if (GetForegroundWindow() == h) return true;
+    // Fallback: Alt held only around the switch, so its release is not a lone Alt tap in the target.
+    keybd_event(0x12, 0, 0, UIntPtr.Zero);
+    try { return SetForegroundWindow(h); } finally { keybd_event(0x12, 0, 2, UIntPtr.Zero); }
+  }
+
+  [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+  [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+  [DllImport("gdi32.dll")] static extern bool StretchBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, int sw, int sh, uint rop);
+  [DllImport("gdi32.dll")] static extern int SetStretchBltMode(IntPtr dc, int mode);
+  [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+  [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr h);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr h, int index, StringBuilder info, int length, out int needed);
+
+  /** A 160x90 thumbnail of the screen: a few milliseconds, enough to see whether anything moved. */
+  static int[] Thumbnail(int left, int top, int width, int height) {
+    using (var bmp = new System.Drawing.Bitmap(160, 90, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+    using (var g = System.Drawing.Graphics.FromImage(bmp)) {
+      IntPtr dst = g.GetHdc(), src = GetDC(IntPtr.Zero);
+      try { SetStretchBltMode(dst, 3); StretchBlt(dst, 0, 0, 160, 90, src, left, top, width, height, 0x00CC0020); }
+      finally { ReleaseDC(IntPtr.Zero, src); g.ReleaseHdc(dst); }
+      var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, 160, 90), System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+      var pixels = new int[160 * 90];
+      try { Marshal.Copy(data.Scan0, pixels, 0, pixels.Length); } finally { bmp.UnlockBits(data); }
+      return pixels;
+    }
+  }
+
+  /**
+   * Wait until the screen stops changing, instead of guessing a sleep: at
+   * least minMs, then 150 ms without visible change, at most maxMs. A caret
+   * or a small spinner stays under the threshold. Returns the time waited.
+   */
+  public static int Settle(int left, int top, int width, int height, int minMs, int maxMs) {
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+    int[] last = Thumbnail(left, top, width, height);
+    long changedAt = 0;
+    while (clock.ElapsedMilliseconds < maxMs) {
+      System.Threading.Thread.Sleep(30);
+      int[] now = Thumbnail(left, top, width, height);
+      int changed = 0;
+      for (int i = 0; i < now.Length; i++) {
+        int a = last[i], b = now[i];
+        if (Math.Abs((a & 0xFF) - (b & 0xFF)) + Math.Abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF)) + Math.Abs(((a >> 16) & 0xFF) - ((b >> 16) & 0xFF)) > 48) changed++;
+      }
+      last = now;
+      // More than 0.3 % of the thumbnail is a real change, not a caret.
+      if (changed > 43) changedAt = clock.ElapsedMilliseconds;
+      if (clock.ElapsedMilliseconds >= minMs && clock.ElapsedMilliseconds - changedAt >= 150) break;
+    }
+    return (int)clock.ElapsedMilliseconds;
+  }
+
+  /**
+   * Whether a secure desktop (UAC consent, sign-in, lock screen) has the
+   * input. Nothing a normal process sends reaches it, by design; the agent
+   * has to hand over to the user.
+   */
+  public static bool SecureDesktop() {
+    IntPtr desk = OpenInputDesktop(0, false, 0x0001); // DESKTOP_READOBJECTS
+    if (desk == IntPtr.Zero) return true; // Winlogon's desktop refuses ordinary processes.
+    try {
+      var name = new StringBuilder(64);
+      int needed;
+      GetUserObjectInformation(desk, 2, name, name.Capacity * 2, out needed); // UOI_NAME
+      return !name.ToString().Equals("Default", StringComparison.OrdinalIgnoreCase);
+    } finally { CloseDesktop(desk); }
+  }
+
+  [StructLayout(LayoutKind.Sequential)] struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+  [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
+
+  /** Milliseconds since the last input of any kind; while the agent sends none, that is the user's. */
+  public static uint IdleMs() {
+    var info = new LASTINPUTINFO(); info.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
+    GetLastInputInfo(ref info);
+    return unchecked((uint)Environment.TickCount - info.dwTime);
+  }
+
+  /** Screenshots as JPEG at the given quality: UI text stays crisp at a fifth of the PNG size. */
+  public static byte[] Jpeg(System.Drawing.Bitmap image, long quality) {
+    var codec = Array.Find(System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders(), c => c.MimeType == "image/jpeg");
+    using (var parameters = new System.Drawing.Imaging.EncoderParameters(1))
+    using (var stream = new System.IO.MemoryStream()) {
+      parameters.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, quality);
+      image.Save(stream, codec, parameters);
+      return stream.ToArray();
+    }
   }
 }
 `;
+const NATIVE_FILES = compiledSource('native', NATIVE);
 
 /** The PowerShell side: the helpers the Node process calls by name. */
 const PRELUDE = `
@@ -129,9 +240,8 @@ $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-Add-Type -TypeDefinition @'
-${NATIVE}
-'@
+${ASSEMBLY_LOADER}
+Rk-Assembly ${psQuote(NATIVE_FILES.assembly)} ${psQuote(NATIVE_FILES.source)} 'RkNative' @('System.dll', [System.Drawing.Bitmap].Assembly.Location, [System.Windows.Forms.Form].Assembly.Location)
 [RkNative]::SetProcessDPIAware() | Out-Null
 
 function Rk-Bounds { [System.Windows.Forms.SystemInformation]::VirtualScreen }
@@ -160,7 +270,10 @@ function Rk-ScreenInfo {
 
 ${WINDOWS_CURSOR}
 
+${SCREEN_TEXT}
+
 function Rk-Screenshot($maxWidth, $path, $handle = 0, $observe = $true) {
+  if (-not $handle -and [RkNative]::SecureDesktop()) { throw $script:rkSecurePrompt }
   if ($observe) {
     if ($null -eq $script:rkCursorFeedback -and -not $handle) {
       $point = Rk-Cursor
@@ -204,54 +317,26 @@ function Rk-Screenshot($maxWidth, $path, $handle = 0, $observe = $true) {
     $bmp.Dispose()
     $bmp = $small
   }
-  $ms = New-Object System.IO.MemoryStream
-  $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-  $bytes = $ms.ToArray()
-  $ms.Dispose()
+  # Every screenshot stays in the transcript and is sent again with each model request, so bytes are latency.
+  $bytes = [RkNative]::Jpeg($bmp, 85)
   if ($path) { [System.IO.File]::WriteAllBytes($path, $bytes) }
   $c = Rk-Cursor
   $result = @{ width = $bmp.Width; height = $bmp.Height; scale = $scale; left = $b.Left; top = $b.Top;
     cursorX = [int](($c.x - $b.Left) * $scale); cursorY = [int](($c.y - $b.Top) * $scale);
     foreground = [long][RkNative]::GetForegroundWindow(); window = [long]$handle;
-    png = [Convert]::ToBase64String($bytes) }
+    jpeg = [Convert]::ToBase64String($bytes) }
   $bmp.Dispose()
   $result
 }
 
-function Rk-Glide($x, $y, $duration, $action = 'Moving') {
-  Rk-Failsafe
-  $from = Rk-Cursor
-  $feedback = Rk-ShowPointer 0 $from.x $from.y $action $true
-  if ($feedback.error) { throw ('Cannot show the computer-use cursor. No input sent: ' + $feedback.error) }
-  $clock = [System.Diagnostics.Stopwatch]::StartNew()
-  while ($clock.Elapsed.TotalMilliseconds -lt $duration) {
-    Rk-Failsafe
-    $t = $clock.Elapsed.TotalMilliseconds / $duration
-    $ease = $t * $t * (3 - 2 * $t)
-    $px = [int]($from.x + ($x - $from.x) * $ease)
-    $py = [int]($from.y + ($y - $from.y) * $ease)
-    [RkNative]::SetCursorPos($px, $py) | Out-Null
-    Rk-ShowPointer 0 $px $py $action $true | Out-Null
-    Start-Sleep -Milliseconds 8
-  }
-  [RkNative]::SetCursorPos([int]$x, [int]$y) | Out-Null
-  $script:rkPointer = @{ window = [long][RkNative]::GetForegroundWindow(); x = $x; y = $y }
-  Rk-ShowPointer 0 $x $y $action $true | Out-Null
-}
-
 function Rk-Move($x, $y) {
-  $from = Rk-Cursor
-  $distance = [Math]::Sqrt([Math]::Pow($x - $from.x, 2) + [Math]::Pow($y - $from.y, 2))
-  $animate = $false
-  [RkNative]::SystemParametersInfo(0x1042, 0, [ref]$animate, 0) | Out-Null # SPI_GETCLIENTAREAANIMATION
-  $duration = if ($distance -lt 2 -or -not $animate) { 0 } else { [Math]::Min(160, [Math]::Max(70, $distance * 0.18)) }
-  Rk-Glide $x $y $duration
+  Rk-Glide $x $y
   @{ ok = $true }
 }
 
 function Rk-Click($x, $y, $button, $count) {
   Rk-Move $x $y | Out-Null
-  Rk-ShowPointer 0 $x $y 'Clicking' $true | Out-Null
+  Rk-CursorPulse 'Clicking'
   $down = 0x0002; $up = 0x0004
   if ($button -eq 'right') { $down = 0x0008; $up = 0x0010 }
   elseif ($button -eq 'middle') { $down = 0x0020; $up = 0x0040 }
@@ -265,19 +350,12 @@ function Rk-Click($x, $y, $button, $count) {
 }
 
 function Rk-Drag($x1, $y1, $x2, $y2) {
-  Rk-Move $x1 $y1 | Out-Null
-  [RkNative]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
-  try {
-    Rk-Glide $x2 $y2 280 'Dragging'
-  } finally {
-    [RkNative]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
-  }
-  @{ ok = $true }
+  Rk-Draw @(1, 2, $x1, $y1, $x2, $y2) 'left' 'Dragging'
 }
 
 function Rk-Scroll($x, $y, $direction, $amount) {
   Rk-Move $x $y | Out-Null
-  Rk-ShowPointer 0 $x $y 'Scrolling' $true | Out-Null
+  Rk-CursorStatus 'Scrolling'
   $delta = 120 * $amount
   if ($direction -eq 'down') { [RkNative]::mouse_event(0x0800, 0, 0, -$delta, [UIntPtr]::Zero) }
   elseif ($direction -eq 'up') { [RkNative]::mouse_event(0x0800, 0, 0, $delta, [UIntPtr]::Zero) }
@@ -320,17 +398,26 @@ function Rk-Windows {
   ,@($rows | Sort-Object -Property @{ Expression = { $_.active }; Descending = $true })
 }
 
+# Best match wins, not the first: the exact program name, then a title that ends
+# with the name (Windows apps title windows "Document - App"), then any title
+# containing it. Otherwise "Paint" finds a chat window that mentions Paint.
 function Rk-Focus($needle) {
   $needle = $needle.ToLowerInvariant()
   $match = $null
   $matchTitle = ''
+  $best = 0
   foreach ($h in [RkNative]::Windows()) {
     $title = [RkNative]::Title($h)
+    $lower = $title.ToLowerInvariant()
     $procId = [uint32]0
     [RkNative]::GetWindowThreadProcessId($h, [ref]$procId) | Out-Null
     $proc = ''
-    try { $proc = (Get-Process -Id $procId -ErrorAction Stop).ProcessName } catch { }
-    if ($title.ToLowerInvariant().Contains($needle) -or $proc.ToLowerInvariant() -eq $needle) { $match = $h; $matchTitle = $title; break }
+    try { $proc = (Get-Process -Id $procId -ErrorAction Stop).ProcessName.ToLowerInvariant() } catch { }
+    $score = 0
+    if ($proc -eq $needle) { $score = 3 }
+    elseif ($lower -eq $needle -or $lower.EndsWith(' - ' + $needle) -or $lower.EndsWith(' – ' + $needle)) { $score = 2 }
+    elseif ($lower.Contains($needle)) { $score = 1 }
+    if ($score -gt $best) { $best = $score; $match = $h; $matchTitle = $title }
   }
   if ($null -eq $match) { throw "No window matches '$needle'." }
   $ok = [RkNative]::Focus($match)
@@ -393,6 +480,9 @@ export class PowerShellSession {
   /** Spawn the shell with the prelude loaded; the first call waits for the compile. */
   start(): void {
     if (this.#child) return;
+    // The worker compiles these files; see assemblies.ts for why they are not inline.
+    writeSource(NATIVE_FILES, NATIVE);
+    writeSource(OVERLAY_FILES, OVERLAY);
     const child = spawn(
       powershellBinary(),
       ['-NoProfile', '-NonInteractive', '-STA', '-Command', 'Invoke-Expression ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())))'],

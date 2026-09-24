@@ -13,11 +13,15 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-/** Lucide's pointer with softened outer corners, shared by every renderer. */
+/**
+ * Lucide's pointer, redrawn with round corners (tip, both wings and the inner
+ * notch), shared by every renderer. hotspot is the tip in pixels at this size:
+ * where the rounded tip's curve peaks, (4.72, 4.72) in the 24-unit path.
+ */
 export const CURSOR = {
-  path: 'M4.4 5.6Q3.6 3.6 5.6 4.4L19.4 10Q22 11.1 19.3 11.8L14.5 13.1A2 2 0 0 0 13.1 14.5L11.8 19.3Q11.1 22 10 19.4Z',
-  size: 32,
-  hotspot: 5.6,
+  path: 'M4.85 6.03Q4 4 6.03 4.85L17.55 9.66Q20.5 10.9 17.48 11.96L15.66 12.6Q13.4 13.4 12.6 15.66L11.96 17.48Q10.9 20.5 9.66 17.55Z',
+  size: 26,
+  hotspot: (4.72 * 26) / 24,
   fill: '#f2fffc',
   outline: '#31534e',
   glow: '#83e3d1',

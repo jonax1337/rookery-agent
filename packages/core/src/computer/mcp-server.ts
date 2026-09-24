@@ -14,6 +14,8 @@ import { createInterface } from 'node:readline';
 import { parseKeySequence } from './keys.js';
 import { PowerShellSession, psQuote } from './powershell.js';
 import { COMPUTER_SERVER_NAME, COMPUTER_TOOLS } from './tools.js';
+import { describeScreen, findText, pickMatch, type ScreenText, type TextMatch } from './screen-text.js';
+import { clipStrokes, fitViewBox, multiply, svgStrokes, svgViewBox, type Matrix, type Stroke } from './sketch.js';
 import { validateComputerCall, type ComputerCall } from './validation.js';
 
 const PROTOCOL_FALLBACK = '2025-06-18';
@@ -48,15 +50,18 @@ interface Shot {
   top: number;
   cursorX: number;
   cursorY: number;
-  png: string;
+  jpeg: string;
   foreground: number;
 }
 
 const shell = new PowerShellSession();
+// Warm the worker and its cursor while the model is still writing its first call;
+// the first action then finds everything loaded. A failure here surfaces on that call.
+if (process.platform === 'win32') shell.run('Rk-Overlay; @{}').catch(() => undefined);
 let stopped = false;
 let queue: Promise<unknown> = Promise.resolve();
 const pending = new Set<number | string>();
-const observations = new Set(['screenshot', 'screen_info', 'list_windows', 'snapshot', 'stop']);
+const observations = new Set(['screenshot', 'screen_info', 'list_windows', 'snapshot', 'read_screen', 'find_text', 'stop']);
 
 /* --------------------------------- mapping -------------------------------- */
 
@@ -70,21 +75,121 @@ function toScreen(x: number, y: number): [number, number] {
 }
 
 /** Refuse stale desktop targets and serialize physical input across Rookery processes. */
-async function physical(expression: string): Promise<void> {
+async function physical(expression: string, timeoutMs = 30_000): Promise<void> {
   if (!view) throw new Error('Take a desktop screenshot before physical input.');
-  const guard = '$b = Rk-Bounds; if ([long][RkNative]::GetForegroundWindow() -ne ' + view.foreground +
+  const guard = 'if ([RkNative]::SecureDesktop()) { throw $script:rkSecurePrompt }; $b = Rk-Bounds; if ([long][RkNative]::GetForegroundWindow() -ne ' + view.foreground +
     ' -or $b.Left -ne ' + view.left + ' -or $b.Top -ne ' + view.top +
     ' -or $b.Width -ne ' + Math.round(view.width / view.scale) +
     ') { throw "Desktop target changed. Take a fresh screenshot." }; ';
   await shell.run('$mutex = New-Object System.Threading.Mutex($false, "Local\\RookeryComputerInput"); ' +
     '$locked = $false; try { try { $locked = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $locked = $true }; ' +
     'if (-not $locked) { throw "Another Rookery session is using desktop input." }; ' + guard + expression +
-    ' } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }');
+    ' } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }', timeoutMs);
+}
+
+type DrawArgs = Extract<ComputerCall, { name: 'draw' }>['args'];
+/** After smoothing; the SVG input is bounded by size, not by what it expands to. */
+const DRAWN_POINTS = 60_000;
+/** Physical pixels one pen-down may cover before it is continued as a new stroke. */
+const MAX_STROKE = 2000;
+
+/**
+ * The draw tool's strokes in physical pixels, clipped to the area (or the
+ * whole screenshot), rounded and packed the way the native Draw reads them:
+ * stroke count, then per stroke its point count and x, y pairs.
+ */
+function planDrawing(args: DrawArgs): { packed: string; strokes: number; points: number; timeoutMs: number } {
+  if (!view) throw new Error('Take a desktop screenshot before physical input.');
+  const { scale, left, top, width, height } = view;
+  const area = args.area ?? { x: 0, y: 0, width: width - 1, height: height - 1 };
+  if (area.x + area.width > width || area.y + area.height > height) throw new Error('The area reaches outside the last desktop screenshot.');
+  const toPhysical: Matrix = [1 / scale, 0, 0, 1 / scale, left, top];
+  const strokes: Stroke[] = (args.strokes ?? []).map((stroke) => stroke.flatMap(([x, y]) => [left + x / scale, top + y / scale]));
+  if (args.svg) {
+    strokes.push(...svgStrokes(args.svg, {
+      transform: multiply(toPhysical, fitViewBox(svgViewBox(args.svg), area)),
+      tolerance: 0.35,
+      hatch: args.hatch && { spacing: args.hatch.spacing / scale, angle: args.hatch.angle, cross: args.hatch.cross },
+    }));
+  }
+  const clip = { x: left + area.x / scale, y: top + area.y / scale, width: area.width / scale, height: area.height / scale };
+  const packed = [0];
+  let points = 0;
+  let ink = 0;
+  const emit = (rounded: number[]): void => {
+    packed[0]!++;
+    packed.push(rounded.length / 2);
+    for (const value of rounded) packed.push(value);
+    points += rounded.length / 2;
+  };
+  for (const stroke of clipStrokes(strokes, clip)) {
+    let rounded: number[] = [];
+    let length = 0;
+    for (let i = 0; i + 1 < stroke.length; i += 2) {
+      const x = Math.round(stroke[i]!), y = Math.round(stroke[i + 1]!);
+      const n = rounded.length;
+      if (n && rounded[n - 2] === x && rounded[n - 1] === y) continue;
+      const step = n ? Math.hypot(x - rounded[n - 2]!, y - rounded[n - 1]!) : 0;
+      // Some brushes keep only the tail of a very long stroke; continue it as a new one instead.
+      if (length + step > MAX_STROKE && n >= 4) {
+        emit(rounded);
+        rounded = [rounded[n - 2]!, rounded[n - 1]!];
+        length = 0;
+      }
+      ink += step;
+      length += step;
+      rounded.push(x, y);
+    }
+    emit(rounded);
+  }
+  if (!packed[0]) throw new Error('Nothing to draw: every shape has stroke="none" or lies outside the area.');
+  if (points > DRAWN_POINTS) throw new Error('Too detailed: ' + points + ' points after smoothing (limit ' + DRAWN_POINTS + '). Split the picture into several draw calls.');
+  return {
+    packed: Buffer.from(new Int32Array(packed).buffer).toString('base64'),
+    strokes: packed[0]!,
+    points,
+    // Ink runs at about 3.5 px/ms; each stroke adds a hop and two short holds.
+    timeoutMs: 30_000 + ink / 2.5 + packed[0]! * 250,
+  };
 }
 
 /* ---------------------------------- tools --------------------------------- */
 
+/**
+ * Recognise the screen's text. Like a screenshot, it becomes the view that
+ * physical input maps through, so its coordinates can be clicked directly.
+ */
+async function readScreen(): Promise<{ screen: ScreenText; scale: number }> {
+  const screen = await shell.run<ScreenText>('Rk-ReadScreen', 20_000);
+  const scale = Math.min(1, MAX_WIDTH / screen.width);
+  view = { scale, left: screen.left, top: screen.top, width: Math.round(screen.width * scale), height: Math.round(screen.height * scale), foreground: screen.foreground };
+  return { screen, scale };
+}
+
+/** A match's centre in screenshot pixels. */
+function centre(match: TextMatch, screen: ScreenText, scale: number): [number, number] {
+  return [Math.round((match.x + match.width / 2 - screen.left) * scale), Math.round((match.y + match.height / 2 - screen.top) * scale)];
+}
+
+/**
+ * What a physical action returns: the screen once it has stopped changing,
+ * so the model sees the result without a second round trip, and never a
+ * half-drawn frame from a fixed sleep.
+ */
+async function settled(observe: 'screenshot' | 'text'): Promise<Content[]> {
+  const ms = await shell.run<number>('Rk-Settle');
+  const seen = await perform(validateComputerCall(observe === 'text' ? 'read_screen' : 'screenshot', {}, BACKGROUND));
+  return [{ type: 'text', text: 'Screen settled after ' + ms + ' ms.' }, ...seen];
+}
+
 async function call(command: ComputerCall): Promise<Content[]> {
+  const content = await perform(command);
+  // A batch observes once at its own end.
+  const observe = command.name !== 'batch' && 'observe' in command.args ? command.args.observe : 'none';
+  return observe === 'none' ? content : [...content, ...(await settled(observe))];
+}
+
+async function perform(command: ComputerCall): Promise<Content[]> {
   const { name, args } = command;
   if (stopped && !observations.has(name)) throw new Error('Computer use stopped. Start a new turn to resume.');
   switch (name) {
@@ -108,7 +213,12 @@ async function call(command: ComputerCall): Promise<Content[]> {
       return [{ type: 'text', text: JSON.stringify(result) }];
     }
     case 'batch': {
-      const actions = args.actions.map((action) => validateComputerCall(action.tool, action.arguments, BACKGROUND));
+      // Steps run blind; the batch observes once at its end.
+      const actions = args.actions.map((step) => {
+        const action = validateComputerCall(step.tool, step.arguments, BACKGROUND);
+        if ('observe' in action.args) action.args.observe = 'none';
+        return action;
+      });
       const results: { tool: string; durationMs: number; content: Content[] }[] = [];
       for (const action of actions) {
         const started = performance.now();
@@ -129,11 +239,11 @@ async function call(command: ComputerCall): Promise<Content[]> {
     }
     case 'screenshot': {
       if (RUN_DIR) mkdirSync(RUN_DIR, { recursive: true });
-      const path = RUN_DIR ? join(RUN_DIR, 'computer-' + process.pid + '.png') : '';
+      const path = RUN_DIR ? join(RUN_DIR, 'computer-' + process.pid + '.jpg') : '';
       const shot = await shell.run<Shot>('Rk-Screenshot ' + MAX_WIDTH + ' ' + psQuote(path) + ' ' + (args.window ?? 0) + ' ' + (stopped ? '$false' : '$true'), 15_000);
       view = args.window ? null : { scale: shot.scale, left: shot.left, top: shot.top, width: shot.width, height: shot.height, foreground: shot.foreground };
       return [
-        { type: 'image', data: shot.png, mimeType: 'image/png' },
+        { type: 'image', data: shot.jpeg, mimeType: 'image/jpeg' },
         {
           type: 'text',
           text:
@@ -159,11 +269,48 @@ async function call(command: ComputerCall): Promise<Content[]> {
         },
       ];
     }
+    case 'read_screen': {
+      const { screen, scale } = await readScreen();
+      return [{ type: 'text', text: 'Screen text (OCR), centre x,y in screenshot pixels:\n' + describeScreen(screen, scale) }];
+    }
+    case 'find_text': {
+      const { screen, scale } = await readScreen();
+      const matches = findText(screen, args.text);
+      if (!matches.length) return [{ type: 'text', text: 'No text "' + args.text + '" on screen. Visible text:\n' + describeScreen(screen, scale, 40) }];
+      return [{
+        type: 'text',
+        text: matches.map((m, i) => {
+          const [x, y] = centre(m, screen, scale);
+          return (i + 1) + '. ' + x + ',' + y + ' "' + m.text + '"' + (m.approximate ? ' (approximate)' : '') + (m.foreground ? '' : ' (outside the active window)');
+        }).join('\n'),
+      }];
+    }
+    case 'hand_over': {
+      view = null;
+      const timeout = args.timeoutSec * 1000;
+      const result = await shell.run<{ outcome: string; waitedMs: number }>('Rk-HandOver ' + psQuote(args.reason) + ' ' + timeout, timeout + 15_000);
+      return [{ type: 'text', text: result.outcome + ' Waited ' + Math.round(result.waitedMs / 1000) + ' s.' }, ...(await settled('screenshot'))];
+    }
     case 'click': {
-      const [x, y] = toScreen(args.x, args.y);
       const { button, count } = args;
-      await physical('Rk-Click ' + x + ' ' + y + ' ' + psQuote(button) + ' ' + count);
-      return [{ type: 'text', text: (count === 2 ? 'Double-clicked' : 'Clicked') + ' ' + button + ' at ' + args.x + ',' + args.y + '.' }];
+      let x: number, y: number, what: string;
+      if (args.text !== undefined) {
+        const { screen, scale } = await readScreen();
+        const matches = findText(screen, args.text);
+        const picked = pickMatch(matches, args.text, args.index);
+        if (typeof picked === 'string') {
+          const listed = matches.map((m, i) => (i + 1) + '. ' + centre(m, screen, scale).join(',') + ' "' + m.text + '"').join('\n');
+          throw new Error(picked + '\n' + (listed || 'Visible text:\n' + describeScreen(screen, scale, 40)));
+        }
+        [x, y] = centre(picked, screen, scale);
+        what = '"' + picked.text + '" at ' + x + ',' + y;
+      } else {
+        [x, y] = [args.x!, args.y!];
+        what = x + ',' + y;
+      }
+      const [sx, sy] = toScreen(x, y);
+      await physical('Rk-Click ' + sx + ' ' + sy + ' ' + psQuote(button) + ' ' + count);
+      return [{ type: 'text', text: (count === 2 ? 'Double-clicked' : 'Clicked') + ' ' + button + ' ' + what + '.' }];
     }
     case 'move_mouse': {
       const [x, y] = toScreen(args.x, args.y);
@@ -175,6 +322,11 @@ async function call(command: ComputerCall): Promise<Content[]> {
       const [x2, y2] = toScreen(args.toX, args.toY);
       await physical('Rk-Drag ' + x1 + ' ' + y1 + ' ' + x2 + ' ' + y2);
       return [{ type: 'text', text: 'Dragged from ' + args.fromX + ',' + args.fromY + ' to ' + args.toX + ',' + args.toY + '.' }];
+    }
+    case 'draw': {
+      const plan = planDrawing(args);
+      await physical('Rk-Draw ' + psQuote(plan.packed) + ' ' + psQuote(args.button), plan.timeoutMs);
+      return [{ type: 'text', text: 'Drew ' + plan.strokes + (plan.strokes === 1 ? ' stroke' : ' strokes') + ' through ' + plan.points + ' points.' }];
     }
     case 'scroll': {
       const [x, y] = toScreen(args.x, args.y);

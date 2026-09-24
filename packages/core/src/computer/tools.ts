@@ -36,8 +36,8 @@ export interface ComputerToolDefinition {
 export const UI_ACTIONS = ['invoke', 'set_value', 'toggle', 'select', 'expand', 'collapse', 'scroll_up', 'scroll_down'] as const;
 const windowProperty = { type: 'integer', minimum: 1, description: 'Exact window handle returned by list_windows.' };
 
-/** The built-in server's tools. The zavora engine publishes its own list. */
-export const COMPUTER_TOOLS: ComputerToolDefinition[] = [
+/** The built-in server's tools, before observe is attached. The zavora engine publishes its own list. */
+const TOOLS: ComputerToolDefinition[] = [
   {
     name: 'screenshot',
     description:
@@ -60,7 +60,7 @@ export const COMPUTER_TOOLS: ComputerToolDefinition[] = [
     name: 'batch',
     description: 'Run up to 12 already-grounded actions sequentially in one call; stop on the first failure. All arguments are checked before starting. Observe once at the end. Do not batch across unknown UI states or irreversible confirmation steps.',
     inputSchema: { type: 'object', properties: {
-      actions: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', properties: { tool: { type: 'string', enum: ['act', 'click', 'move_mouse', 'drag', 'scroll', 'type_text', 'press_keys', 'wait'] }, arguments: { type: 'object' } }, required: ['tool', 'arguments'], additionalProperties: false } },
+      actions: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', properties: { tool: { type: 'string', enum: ['act', 'click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'wait'] }, arguments: { type: 'object' } }, required: ['tool', 'arguments'], additionalProperties: false } },
       observe: { type: 'string', enum: ['snapshot', 'screenshot', 'none'], description: 'Default snapshot when window is supplied, otherwise screenshot.' },
       window: windowProperty,
     }, required: ['actions'], additionalProperties: false },
@@ -76,17 +76,48 @@ export const COMPUTER_TOOLS: ComputerToolDefinition[] = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'read_screen',
+    description:
+      'The whole screen as text (OCR): each line with its centre x,y in screenshot pixels, top to bottom. ' +
+      'Much cheaper than a screenshot and enough to click by coordinates; use a screenshot for layout, ' +
+      'icons and images.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'find_text',
+    description: 'Where a word or phrase is on screen (OCR, case-insensitive, tolerant of small OCR errors): centres in screenshot pixels, active window first.',
+    inputSchema: { type: 'object', properties: { text: str('The word or phrase as it appears on screen.') }, required: ['text'], additionalProperties: false },
+  },
+  {
+    name: 'hand_over',
+    description:
+      'Let the user do what software must not: approve a UAC prompt, confirm Windows Hello or a PIN, solve ' +
+      'a CAPTCHA, sign in. The cursor shows "Your turn" with the reason and a sound plays; the call returns ' +
+      'when a secure prompt closes, or when the user has acted and then been idle for 4 s, with a fresh ' +
+      'screenshot. Never try to answer such prompts yourself.',
+    inputSchema: {
+      type: 'object',
+      properties: { reason: str('Short, for the user: "Please approve the installer".'), timeoutSec: num('How long to wait, 5 to 600. Default 180.') },
+      required: ['reason'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'click',
-    description: 'Click at a point. Double-click with count 2; right-click with button "right".',
+    description:
+      'Click at a point, or on text: text finds it on screen by OCR and clicks its centre, no screenshot ' +
+      'coordinates needed ("Speichern", "Sign in"). If the text is on screen more than once, the error lists ' +
+      'the places; pass index. Double-click with count 2; right-click with button "right".',
     inputSchema: {
       type: 'object',
       properties: {
         x: num('Horizontal position in screenshot pixels.'),
         y: num('Vertical position in screenshot pixels.'),
+        text: str('Instead of x and y: the visible text to click.'),
+        index: num('Which match when the text appears several times (1 = first as listed).'),
         button: str('left, right or middle. Default left.'),
         count: num('1 or 2. Default 1.'),
       },
-      required: ['x', 'y'],
       additionalProperties: false,
     },
   },
@@ -102,7 +133,7 @@ export const COMPUTER_TOOLS: ComputerToolDefinition[] = [
   },
   {
     name: 'drag',
-    description: 'Press the left button at one point, move to another, release.',
+    description: 'Press the left button at one point, move straight to another, release.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -112,6 +143,41 @@ export const COMPUTER_TOOLS: ComputerToolDefinition[] = [
         toY: num('End, screenshot pixels.'),
       },
       required: ['fromX', 'fromY', 'toX', 'toY'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'draw',
+    description:
+      'Paint with the mouse in Paint, whiteboards or any canvas; the pen colour and brush are whatever ' +
+      'the app has selected. Best: pass svg, line art the pen traces smoothly into area (the canvas ' +
+      'rectangle in screenshot pixels). Supported: path (all commands incl. arcs and curves), circle, ' +
+      'ellipse, rect (rx for rounded), line, polyline, polygon, g, and transform. Every shape is ' +
+      'outlined unless stroke="none"; colours, gradients and text are ignored, so draw one colour per ' +
+      'call. With hatch, filled shapes (fill not "none") are shaded with parallel strokes. Everything ' +
+      'is clipped to area, so nothing touches the toolbar. strokes takes raw [x, y] point lists instead. ' +
+      'The call returns the finished canvas.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        svg: str('An <svg> document with a viewBox; it is scaled into area keeping its aspect ratio, centred.'),
+        area: {
+          type: 'object', description: 'The drawing rectangle in screenshot pixels; required with svg, and clips strokes too.',
+          properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } },
+          required: ['x', 'y', 'width', 'height'], additionalProperties: false,
+        },
+        hatch: {
+          type: 'object', description: 'Shade filled shapes. spacing in screenshot pixels (default 6), angle in degrees (default 45), cross for cross-hatching.',
+          properties: { spacing: { type: 'number' }, angle: { type: 'number' }, cross: { type: 'boolean' } },
+          additionalProperties: false,
+        },
+        strokes: {
+          type: 'array', minItems: 1, maxItems: 100,
+          description: 'Raw strokes, each a list of [x, y] points in screenshot pixels; a single point is a dot.',
+          items: { type: 'array', minItems: 1, items: { type: 'array', minItems: 2, maxItems: 2, items: { type: 'number', minimum: 0 } } },
+        },
+        button: str('left (primary colour in Paint) or right (secondary colour). Default left.'),
+      },
       additionalProperties: false,
     },
   },
@@ -205,6 +271,18 @@ export const COMPUTER_TOOLS: ComputerToolDefinition[] = [
     },
   },
 ];
+
+/** Physical actions return the screen once it has settled, so the model needs no second call to look. */
+const OBSERVED = ['click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'focus_window', 'open'];
+const observeProperty = {
+  type: 'string',
+  enum: ['screenshot', 'text', 'none'],
+  description: 'What the call returns once the screen stops changing: a screenshot (default), the screen text (read_screen, cheaper), or nothing when the next step is already known.',
+};
+
+export const COMPUTER_TOOLS: ComputerToolDefinition[] = TOOLS.map((tool) => OBSERVED.includes(tool.name)
+  ? { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...(tool.inputSchema.properties as Record<string, unknown>), observe: observeProperty } } }
+  : tool);
 
 /* --------------------------------- engines -------------------------------- */
 
@@ -306,13 +384,19 @@ export function computerPromptBlock(engine: ComputerEngine = 'builtin'): string 
     'patterns or native edit messages without mouse or keyboard injection. App providers can still',
     'change focus themselves; results report focusChanged. There is no physical-input fallback for act.',
     'batch runs up to 12 known actions with one final observation, reducing model round trips.',
-    'For physical input: screenshot first, act, screenshot again. Coordinates are pixels of the last',
-    'desktop screenshot, and its foreground window must still match. Window screenshots are observation only.',
+    'For physical input: one screenshot to start; every action then returns the screen once it has',
+    'settled, so do not take another. Pass observe "text" when words are enough, "none" when the next',
+    'step is already known. Coordinates are pixels of the last desktop screenshot (or read_screen), and',
+    'its foreground window must still match. Window screenshots are observation only. Prefer click with',
+    'text over coordinates, read_screen over screenshots for reading, and keyboard shortcuts over both.',
     'The background-only mode refuses all foreground input. Use Playwright for browser work.',
     'stop cancels current and queued work for this session. Verify results; sending input is not success.',
-    'Prefer open, focus_window and keyboard shortcuts over hunting for pixels; put long text on',
-    'the clipboard and paste it. If every action is refused because the pointer sits in the',
-    'top-left corner, the user pulled the emergency brake: stop, do not work around it.',
+    'Prefer open and focus_window over hunting for pixels; put very long text on the clipboard and',
+    'paste it. UAC prompts, Windows Hello, PINs, sign-ins and CAPTCHAs are the user\'s: call hand_over',
+    'with a short reason, never try to answer them. If every action is refused because the pointer sits',
+    'in the top-left corner, the user pulled the emergency brake: stop, do not work around it.',
+    'An action stopped because "the user moved the mouse" means the user took over: do not retry',
+    'until the user hands control back.',
     ...shared,
   ].join(' ');
 }

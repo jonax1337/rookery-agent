@@ -6,7 +6,11 @@ const window = z.number().int().positive().safe();
 const coordinate = z.number().finite().nonnegative();
 const point = { x: coordinate, y: coordinate };
 const text = z.string().max(20_000);
-const steps = ['act', 'click', 'move_mouse', 'drag', 'scroll', 'type_text', 'press_keys', 'wait'] as const;
+const steps = ['act', 'click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'wait'] as const;
+const DRAW_LIMITS = { strokes: 100, points: 4000 } as const;
+/** What a physical action returns once the screen has settled. */
+const observe = z.enum(['screenshot', 'text', 'none']).default('screenshot');
+const needle = z.string().trim().min(1).max(200);
 const schemas = {
   screenshot: z.object({ window: window.optional() }).strict(),
   screen_info: z.object({}).strict(),
@@ -15,14 +19,37 @@ const schemas = {
   snapshot: z.object({ window, maxNodes: z.number().int().min(1).max(300).default(150), depth: z.number().int().min(1).max(12).default(8) }).strict(),
   act: z.object({ ref: z.string().min(1).max(80), action: z.enum(UI_ACTIONS), value: text.optional() }).strict()
     .refine((args) => args.action !== 'set_value' || args.value !== undefined, 'set_value requires value.'),
-  click: z.object({ ...point, button: z.enum(['left', 'right', 'middle']).default('left'), count: z.number().int().min(1).max(2).default(1) }).strict(),
-  move_mouse: z.object(point).strict(),
-  drag: z.object({ fromX: coordinate, fromY: coordinate, toX: coordinate, toY: coordinate }).strict(),
-  scroll: z.object({ ...point, direction: z.enum(['up', 'down', 'left', 'right']).default('down'), amount: z.number().int().min(1).max(20).default(3) }).strict(),
-  type_text: z.object({ text: text.min(1) }).strict(),
-  press_keys: z.object({ keys: z.string().min(1).max(200) }).strict(),
-  focus_window: z.object({ title: z.string().min(1).max(500) }).strict(),
-  open: z.object({ target: z.string().min(1).max(2000) }).strict(),
+  click: z.object({
+    x: coordinate.optional(), y: coordinate.optional(), text: needle.optional(), index: z.number().int().min(1).max(50).optional(),
+    button: z.enum(['left', 'right', 'middle']).default('left'), count: z.number().int().min(1).max(2).default(1), observe,
+  }).strict()
+    .refine((args) => (args.text === undefined) !== (args.x === undefined && args.y === undefined), 'click needs x and y, or text.')
+    .refine((args) => args.text !== undefined || (args.x !== undefined && args.y !== undefined), 'click needs both x and y.'),
+  move_mouse: z.object({ ...point, observe }).strict(),
+  drag: z.object({ fromX: coordinate, fromY: coordinate, toX: coordinate, toY: coordinate, observe }).strict(),
+  draw: z.object({
+    strokes: z.array(z.array(z.tuple([coordinate, coordinate])).min(1).max(DRAW_LIMITS.points)).min(1).max(DRAW_LIMITS.strokes).optional(),
+    svg: z.string().min(1).max(200_000).optional(),
+    area: z.object({ x: coordinate, y: coordinate, width: z.number().finite().positive(), height: z.number().finite().positive() }).strict().optional(),
+    hatch: z.object({
+      spacing: z.number().finite().min(2).max(100).default(6),
+      angle: z.number().finite().default(45),
+      cross: z.boolean().default(false),
+    }).strict().optional(),
+    button: z.enum(['left', 'right']).default('left'),
+    observe,
+  }).strict()
+    .refine((args) => args.strokes || args.svg, 'draw needs strokes or svg.')
+    .refine((args) => !args.svg || args.area, 'svg needs an area: the canvas rectangle in screenshot pixels.')
+    .refine((args) => (args.strokes ?? []).reduce((sum, stroke) => sum + stroke.length, 0) <= DRAW_LIMITS.points, 'draw takes at most ' + DRAW_LIMITS.points + ' points per call; split the picture.'),
+  scroll: z.object({ ...point, direction: z.enum(['up', 'down', 'left', 'right']).default('down'), amount: z.number().int().min(1).max(20).default(3), observe }).strict(),
+  type_text: z.object({ text: text.min(1), observe }).strict(),
+  press_keys: z.object({ keys: z.string().min(1).max(200), observe }).strict(),
+  focus_window: z.object({ title: z.string().min(1).max(500), observe }).strict(),
+  open: z.object({ target: z.string().min(1).max(2000), observe }).strict(),
+  read_screen: z.object({}).strict(),
+  find_text: z.object({ text: needle }).strict(),
+  hand_over: z.object({ reason: z.string().trim().min(1).max(200), timeoutSec: z.number().int().min(5).max(600).default(180) }).strict(),
   clipboard: z.object({ action: z.enum(['get', 'set']), text: text.optional() }).strict()
     .refine((args) => args.action !== 'set' || args.text !== undefined, 'clipboard set requires text.'),
   wait: z.object({ ms: z.number().int().min(0).max(30_000).default(1000) }).strict(),
@@ -37,7 +64,7 @@ export type ComputerCall = {
   [Name in ToolName]: { name: Name; args: z.infer<(typeof schemas)[Name]> }
 }[ToolName];
 
-const foregroundTools = new Set(['click', 'move_mouse', 'drag', 'scroll', 'type_text', 'press_keys', 'focus_window', 'open']);
+const foregroundTools = new Set(['click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'focus_window', 'open']);
 
 /** Validate once at the boundary; handlers receive typed arguments with defaults. */
 export function validateComputerCall(name: string, args: unknown, background = false): ComputerCall {
@@ -50,6 +77,7 @@ export function validateComputerCall(name: string, args: unknown, background = f
     throw new Error('Background-only mode refuses physical input, focus changes, launching and clipboard writes. Use snapshot and act, or Playwright.');
   }
   if (background && command.name === 'screenshot' && !command.args.window) throw new Error('Background screenshots require a window handle.');
+  if (background && (command.name === 'read_screen' || command.name === 'find_text')) throw new Error('Background-only mode reads windows through snapshot, not the desktop.');
   if (command.name === 'press_keys' && !parseKeySequence(command.args.keys).length) throw new Error('Which keys?');
   if (command.name === 'batch') {
     const { actions, observe, window } = command.args;

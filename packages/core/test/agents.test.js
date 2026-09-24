@@ -14,7 +14,6 @@ import {
   DEFAULT_CONFIG as BUILTIN_CONFIG,
   COMPUTER_TOOLS,
   computerEngine,
-  computerPromptBlock,
   computerServerSpec,
   SkillStore,
   SKILL_SOURCES,
@@ -102,16 +101,7 @@ test('the hub tells the assistant what it could attach and what only the user ca
   }
 });
 
-test('computer control: prompt block, server spec and key combos', () => {
-  const builtinPrompt = buildSystemPrompt({
-    config: { ...DEFAULT_CONFIG, assistantName: 'Rookery' },
-    memories: [], resumed: true, toolHints: [computerPromptBlock('builtin')],
-  });
-  assert.match(builtinPrompt, /screenshot first, act, screenshot again/);
-  const zavoraPrompt = buildSystemPrompt({ config: DEFAULT_CONFIG, memories: [], resumed: true, toolHints: [computerPromptBlock('zavora')] });
-  assert.match(zavoraPrompt, /click_element/);
-  assert.match(zavoraPrompt, /pass target_app/);
-
+test('computer control: server spec and key combos', () => {
   assert.equal(computerEngine(), process.platform === 'win32' ? 'builtin' : 'zavora');
   const native = computerServerSpec(DEFAULT_CONFIG, 'codex', 'ax', 'builtin', 'background');
   assert.match(native.args[0], /computer[\\/]mcp-server\.js$/);

@@ -221,11 +221,47 @@ servers with set_tool_server. Agents must report missing access to their owner.
   can still activate its own app or open a dialog in response to an action.
   Native results expose focusChanged; in Background only, a detected focus change
   stops remaining actions. The reported action may already have happened.
-- Pixel-only apps: desktop screenshot, then click, move_mouse, drag, scroll,
-  type_text or press_keys. The real cursor moves visibly. Physical actions require
-  a desktop screenshot and reject a changed foreground window. focus_window is
-  explicit; take a fresh screenshot after focusing. Never use window-capture
-  coordinates with desktop click tools.
+- Any app on the desktop: start with one screenshot or read_screen. click takes
+  text ("Speichern") as well as coordinates: OCR finds it, the active window wins,
+  and an ambiguous match lists its places for index. Every physical action
+  (click, type_text, press_keys, scroll, drag, draw, move_mouse, focus_window,
+  open) returns the screen once it has stopped changing, so never follow one
+  with a screenshot. observe "text" returns the OCR lines instead of an image,
+  much cheaper; "none" when the next step is certain. Physical actions reject a
+  changed foreground window. Never use window-capture coordinates with desktop
+  click tools.
+- Things only the user may do: UAC prompts, Windows Hello, PINs, sign-ins and
+  CAPTCHAs. Software cannot and must not answer them; call hand_over with a
+  short reason and continue from the screenshot it returns.
+- Drawing and painting: see "Paint well" below.
+
+## Paint well
+
+Compose first, then paint in layers, one draw call per colour and brush:
+
+1. Screenshot, find the canvas rectangle, and use it as area. Write the picture as
+   SVG in a viewBox with the canvas's aspect ratio, e.g. 0 0 1600 900. Plan a real
+   composition: a focal subject off-centre, foreground, middle ground, background.
+2. Draw with curves, not corners: cubic C/S and arc A commands for organic forms,
+   rounded rect rx, transform for repeats (rotate() petals, rays, scales). Avoid
+   stiff polygons unless the style is geometric.
+3. Order: sky or background first (the fill bucket on the empty canvas tints
+   it all), then large shapes, the subject, details, highlights last. Before
+   each layer pick colour and brush in the app (in Paint the Brushes menu has
+   calligraphy, oil, watercolour, crayon, marker, natural pencil; the slider on
+   the left sets size). Soft brushes for masses and shading, a solid pen for
+   contours and detail: varied line weight is what makes it look hand-drawn.
+4. Colour areas two ways. Solid: outline with a solid brush (Pinsel, pencil;
+   soft brushes leave gaps the bucket leaks through), make every panel border
+   end on the outline, then click the fill bucket inside each panel. Painterly:
+   pass hatch (spacing 4-6 so strokes overlap, angle 30-60, cross for shadow)
+   with stroke="none" on the shape and a watercolour or oil brush. Shade only
+   the side away from the light.
+5. Custom colours in Paint: the colour wheel next to the palette opens a picker
+   with a hex field. A small, harmonious palette beats many bright colours.
+6. Check the canvas each draw call returns and correct with new strokes; undo (ctrl+z) a bad
+   layer instead of painting over it. Keep a call below about 20 000 points; split
+   dense pictures into several calls.
 
 ## Keep it fast and grounded
 
@@ -260,7 +296,8 @@ never silently switch to physical input. If the app exposes no useful controls,
 report that limitation. There is no universal background desktop clicking.
 stop cancels current and queued actions and latches until a new MCP session.
 Actions already dispatched to an app cannot be undone by cancelling the worker.
-The top-left screen corner is the physical emergency brake. Respect a user stop
+The top-left screen corner is the physical emergency brake, and moving the mouse
+while Rookery's pointer travels takes over: it stops before anything further is sent. Respect a user stop
 immediately. Honour the user's authorised scope; get missing authorisation before
 sending, purchasing, deleting or other consequential actions. Previously granted
 authorisation need not be requested again. Report results, not every click.

@@ -105,6 +105,10 @@ function Rk-Act($ref, $action, $value) {
     $label = switch ($action) { 'set_value' { 'Typing' }; 'scroll_up' { 'Scrolling' }; 'scroll_down' { 'Scrolling' }; default { 'Clicking' } }
     $cursor = Rk-ShowPointer $entry.window $script:rkPointer.x $script:rkPointer.y $label
     if ($cursor.error) { throw ('Cannot show the computer-use cursor. No input sent: ' + $cursor.error) }
+    if ($cursor.visible) {
+      Rk-CursorSettle
+      if ($label -eq 'Clicking') { Rk-CursorPulse 'Clicking' }
+    }
   }
   switch ($action) {
     'invoke' { ([System.Windows.Automation.InvokePattern]$element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke() }

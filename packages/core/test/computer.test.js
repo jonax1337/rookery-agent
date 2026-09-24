@@ -40,14 +40,18 @@ function server(mode = 'background', script = fileURLToPath(new URL('../dist/com
 test('computer validates every batch step and enforces background boundaries', () => {
   for (const [name, args] of [
     ['click', { x: 2, y: 3 }], ['type_text', { text: 'no' }], ['focus_window', { title: 'x' }],
-    ['clipboard', { action: 'set', text: 'x' }], ['open', { target: 'notepad' }],
+    ['clipboard', { action: 'set', text: 'x' }], ['open', { target: 'notepad' }], ['draw', { strokes: [[[1, 1]]] }],
   ]) assert.throws(() => validateComputerCall(name, args, true), /Background-only/);
+  assert.throws(() => validateComputerCall('draw', { strokes: [Array.from({ length: 4001 }, () => [1, 1])] }), /Invalid/);
+  assert.throws(() => validateComputerCall('draw', { strokes: [[[1, -1]]] }), /Invalid/);
   assert.throws(() => validateComputerCall('click', { x: null, y: 5 }), /Invalid/);
   assert.throws(() => validateComputerCall('click', { x: -1, y: 5 }), /Invalid/);
   assert.throws(() => validateComputerCall('act', { ref: 'a', action: 'set_value' }), /requires value/);
   assert.throws(() => validateComputerCall('batch', { actions: [{ tool: 'act', arguments: { ref: 'a', action: 'toggle' } }, { tool: 'click', arguments: { x: 0, y: 0 } }] }, true), /Background-only/);
   validateComputerCall('batch', { actions: [{ tool: 'act', arguments: { ref: 'a', action: 'set_value', value: '' } }], window: 123 }, true);
-  assert.deepEqual(validateComputerCall('click', { x: 2, y: 3 }).args, { x: 2, y: 3, button: 'left', count: 1 });
+  assert.deepEqual(validateComputerCall('click', { x: 2, y: 3 }).args, { x: 2, y: 3, button: 'left', count: 1, observe: 'screenshot' });
+  assert.throws(() => validateComputerCall('click', { x: 2, y: 3, text: 'OK' }), /x and y, or text/);
+  assert.throws(() => validateComputerCall('read_screen', {}, true), /Background-only/);
   assert.throws(() => validateComputerCall('batch', { actions: [
     { tool: 'wait', arguments: {} }, { tool: 'press_keys', arguments: { keys: 'ctrl+unknown' } },
   ] }), /Unknown key/, 'all steps are checked before dispatch');
@@ -243,7 +247,7 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
     assert.match(stale.content[0].text, /Stale/);
     const shot = await mcp.call('screenshot', { window: handle });
     assert.equal(shot.isError, false, JSON.stringify(shot.content.filter((c) => c.type !== 'image')));
-    const output = join(dir, 'background-proof.png');
+    const output = join(dir, 'background-proof.jpg');
     writeFileSync(output, Buffer.from(shot.content.find((c) => c.type === 'image').data, 'base64'));
     console.log(JSON.stringify({ screenshot: output, foregroundUnchanged: true, cursorUnchanged: true, batchTiming: result.content.at(-1).text }));
     // InvokePattern may activate an app through its own provider; verify its
@@ -275,13 +279,23 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
           ['type_text', { text: 'Visible through native mouse and keyboard.' }, 'Typing'],
           ['scroll', { ...point, direction: 'down', amount: 1 }, 'Scrolling'],
         ]) {
-          const response = await desktop.call(tool, args);
+          // observe: none, so the label is the action's, not the follow-up screenshot's.
+          const response = await desktop.call(tool, { ...args, observe: 'none' });
           assert.equal(response.isError, false, JSON.stringify(response));
           const details = await desktop.call('screen_info');
           const observer = JSON.parse(details.content[0].text.split('Observer: ')[1]);
           assert.equal(observer.visible, true, tool + ' must show the custom cursor');
           assert.equal(observer.label, 'Rookery · ' + state);
         }
+        // Click by what the screen says: OCR finds "Apply" (the active window's wins), and the
+        // click returns the settled screen instead of needing a second call.
+        const byText = await desktop.call('click', { text: 'Apply' });
+        assert.equal(byText.isError, false, JSON.stringify(byText.content.filter((c) => c.type === 'text')));
+        assert.ok(byText.content.some((c) => c.type === 'image' && c.mimeType === 'image/jpeg'), 'the click returns the settled screen');
+        // A single-line WinForms box ignores ctrl+a, so the typed text was appended; what matters is that Apply ran.
+        assert.match(JSON.stringify(await desktop.call('snapshot', { window: handle })), /Applied: [^"]*Visible through native mouse and keyboard\./);
+        const text = await desktop.call('read_screen');
+        assert.match(text.content[0].text, /Rookery \/ Background computer use/);
         const details = await desktop.call('screen_info');
         const observer = JSON.parse(details.content[0].text.split('Observer: ')[1]);
         await desktop.call('stop');
