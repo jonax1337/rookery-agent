@@ -43,8 +43,19 @@ const TOOLS: ComputerToolDefinition[] = [
     description:
       'Capture the desktop including its real cursor, or an unfocused window with a virtual cursor at ' +
       'the last automation target. Only desktop screenshot coordinates can be used for physical input. ' +
+      'region zooms: it captures that part of the last screenshot at full resolution for small text or ' +
+      'precise targets, and coordinates then refer to the zoomed image until the next desktop capture ' +
+      '(screenshot, read_screen, find_text, wait_for). screen captures one display of several. ' +
       'Window capture is app-dependent; use snapshot if pixels are blank or the window is minimized.',
-    inputSchema: { type: 'object', properties: { window: windowProperty }, additionalProperties: false },
+    inputSchema: { type: 'object', properties: {
+      window: windowProperty,
+      region: {
+        type: 'object', description: 'Zoom: a rectangle in pixels of the last desktop screenshot.',
+        properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } },
+        required: ['x', 'y', 'width', 'height'], additionalProperties: false,
+      },
+      screen: { type: 'integer', minimum: 1, description: 'One display only, numbered as in screen_info.' },
+    }, additionalProperties: false },
   },
   {
     name: 'snapshot',
@@ -58,10 +69,10 @@ const TOOLS: ComputerToolDefinition[] = [
   },
   {
     name: 'batch',
-    description: 'Run up to 12 already-grounded actions sequentially in one call; stop on the first failure. All arguments are checked before starting. Observe once at the end. Do not batch across unknown UI states or irreversible confirmation steps.',
+    description: 'Run up to 12 already-grounded actions sequentially in one call; stop on the first failure. All arguments are checked before starting. Each step waits for the screen to settle, so a dialog one step opens is ready for the next; the batch observes once at the end. Do not batch across unknown UI states or irreversible confirmation steps.',
     inputSchema: { type: 'object', properties: {
       actions: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', properties: { tool: { type: 'string', enum: ['act', 'click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'wait'] }, arguments: { type: 'object' } }, required: ['tool', 'arguments'], additionalProperties: false } },
-      observe: { type: 'string', enum: ['snapshot', 'screenshot', 'none'], description: 'Default snapshot when window is supplied, otherwise screenshot (none in background-only mode).' },
+      observe: { type: 'string', enum: ['snapshot', 'screenshot', 'text', 'none'], description: 'Default snapshot when window is supplied, otherwise screenshot (none in background-only mode). text is the screen as OCR lines, cheaper than an image.' },
       window: windowProperty,
     }, required: ['actions'], additionalProperties: false },
   },
@@ -85,8 +96,31 @@ const TOOLS: ComputerToolDefinition[] = [
   },
   {
     name: 'find_text',
-    description: 'Where a word or phrase is on screen (OCR, case-insensitive, tolerant of small OCR errors): centres in screenshot pixels, active window first.',
-    inputSchema: { type: 'object', properties: { text: str('The word or phrase as it appears on screen.') }, required: ['text'], additionalProperties: false },
+    description:
+      'Where a word or phrase is on screen (OCR, case-insensitive, tolerant of small OCR errors): centres in ' +
+      'screenshot pixels, active window first. When no text shows it, controls whose accessible name is ' +
+      'exactly the phrase are listed instead (icon buttons, menu items), each with a ref that act accepts. ' +
+      'With window, that window is searched by name as well; in background-only mode that is the only search.',
+    inputSchema: { type: 'object', properties: { text: str('The word or phrase as it appears on screen, or a control\'s full name.'), window: windowProperty }, required: ['text'], additionalProperties: false },
+  },
+  {
+    name: 'wait_for',
+    description:
+      'Wait until a word or phrase appears on screen (or, with gone, disappears): for pages loading, installers, ' +
+      '"Download complete", a "Loading" indicator vanishing. Polls OCR every 0.4 s, or the accessible names of ' +
+      'one window when window is given. Returns where the text is and, by default, a screenshot. ' +
+      'Prefer this over wait and repeated screenshots.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: str('The text to wait for.'),
+        window: windowProperty,
+        gone: { type: 'boolean', description: 'Wait for the text to disappear instead. Default false.' },
+        timeoutSec: num('How long to wait, 1 to 300. Default 30.'),
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
   },
   {
     name: 'hand_over',
@@ -106,8 +140,9 @@ const TOOLS: ComputerToolDefinition[] = [
     name: 'click',
     description:
       'Click at a point, or on text: text finds it on screen by OCR and clicks its centre, no screenshot ' +
-      'coordinates needed ("Speichern", "Sign in"). If the text is on screen more than once, the error lists ' +
-      'the places; pass index. Double-click with count 2; right-click with button "right".',
+      'coordinates needed ("Speichern", "Sign in"); when nothing shows the text, a control of the active window ' +
+      'named exactly that is clicked instead (icon buttons). If the text is on screen more than once, the error ' +
+      'lists the places; pass index. Double-click with count 2; right-click with button "right".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -239,7 +274,8 @@ const TOOLS: ComputerToolDefinition[] = [
     name: 'open',
     description:
       'Start a program, open a file or a URL, the way the Start menu or a double-click would: ' +
-      '"notepad", "https://example.com", "C:/Users/me/report.docx", "ms-settings:".',
+      '"notepad", "https://example.com", "C:/Users/me/report.docx", "ms-settings:". Brings the new window ' +
+      'to the front and names it; when none came forward within 3 s it fails and nothing is typed.',
     inputSchema: {
       type: 'object',
       properties: { target: str('Program name, path or URL.') },
@@ -262,7 +298,7 @@ const TOOLS: ComputerToolDefinition[] = [
   },
   {
     name: 'wait',
-    description: 'Pause, for a program or page that is still loading.',
+    description: 'Pause for a fixed time. Prefer wait_for, which returns as soon as the expected text is there.',
     inputSchema: {
       type: 'object',
       properties: { ms: num('Milliseconds, up to 30000. Default 1000.') },
@@ -272,11 +308,11 @@ const TOOLS: ComputerToolDefinition[] = [
 ];
 
 /** Physical actions return the screen once it has settled, so the model needs no second call to look. */
-const OBSERVED = ['click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'focus_window', 'open'];
+const OBSERVED = ['click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'focus_window', 'open', 'wait_for'];
 const observeProperty = {
   type: 'string',
   enum: ['screenshot', 'text', 'none'],
-  description: 'What the call returns once the screen stops changing: a screenshot (default), the screen text (read_screen, cheaper), or nothing when the next step is already known.',
+  description: 'What the call returns once the screen stops changing: a screenshot (default), the screen text (read_screen, cheaper), or nothing when the next step is already known. Even with none the call says whether anything changed and which window is in front.',
 };
 
 export const COMPUTER_TOOLS: ComputerToolDefinition[] = TOOLS.map((tool) => OBSERVED.includes(tool.name)
@@ -385,9 +421,12 @@ export function computerPromptBlock(engine: ComputerEngine = 'builtin'): string 
     'batch runs up to 12 known actions with one final observation, reducing model round trips.',
     'For physical input: one screenshot to start; every action then returns the screen once it has',
     'settled, so do not take another. Pass observe "text" when words are enough, "none" when the next',
-    'step is already known. Coordinates are pixels of the last desktop screenshot (or read_screen), and',
-    'its foreground window must still match. Window screenshots are observation only. Prefer click with',
-    'text over coordinates, read_screen over screenshots for reading, and keyboard shortcuts over both.',
+    'step is already known; either way the result says whether anything changed and what is in front.',
+    'Coordinates are pixels of the last desktop capture (screenshot, zoomed screenshot or read_screen).',
+    'Zoom with screenshot region when text is small or a target is tiny. Physical input is refused',
+    'only when a window you did not bring up came to the front. Window screenshots are observation only.',
+    'Prefer click with text over coordinates, read_screen over screenshots for reading, wait_for over',
+    'wait, and keyboard shortcuts over all of them. open brings its window to the front and names it.',
     'The background-only mode refuses all foreground input. Use Playwright for browser work.',
     'stop cancels current and queued work for this session. Verify results; sending input is not success.',
     'Prefer open and focus_window over hunting for pixels; put very long text on the clipboard and',

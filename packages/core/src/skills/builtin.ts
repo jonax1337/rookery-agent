@@ -226,13 +226,30 @@ servers with set_tool_server. Agents must report missing access to their owner.
   stops remaining actions. The reported action may already have happened.
 - Any app on the desktop: start with one screenshot or read_screen. click takes
   text ("Speichern") as well as coordinates: OCR finds it, the active window wins,
-  and an ambiguous match lists its places for index. Every physical action
-  (click, type_text, press_keys, scroll, drag, draw, move_mouse, focus_window,
-  open) returns the screen once it has stopped changing, so never follow one
-  with a screenshot. observe "text" returns the OCR lines instead of an image,
-  much cheaper; "none" when the next step is certain. Physical actions reject a
-  changed foreground window. Never use window-capture coordinates with desktop
-  click tools. focus_window takes a handle from list_windows or a title.
+  and an ambiguous match lists its places for index. When nothing on screen shows
+  the text, click looks for a control of the active window with exactly that
+  accessible name, so icon buttons and menu items work by name too; find_text
+  lists both kinds. Every physical action (click, type_text, press_keys, scroll,
+  drag, draw, move_mouse, focus_window, open) returns the screen once it has
+  stopped changing, so never follow one with a screenshot. observe "text" returns
+  the OCR lines instead of an image, much cheaper; "none" when the next step is
+  certain. Even with "none" the result says whether anything visibly changed and
+  which window is in front: "Nothing visible changed" means the click missed or
+  the app ignored it, so look before repeating it. Coordinates are pixels of the
+  last desktop capture: a screenshot, a zoomed screenshot or read_screen. When
+  text is small or a target is tiny, screenshot with region zooms into that part
+  of the last screenshot at full resolution, and its coordinates click directly.
+  Physical input is refused only when a window you did not bring up came to the
+  front (the user switched, or something popped up): a dialog your own click
+  opened is expected and needs no new screenshot. Never use window-capture
+  coordinates with desktop click tools. focus_window takes a handle from
+  list_windows or a title. open brings the program's window to the front and
+  names it; when no window came forward it fails and nothing has been typed.
+  After focus_window or open, keys work at once, but coordinates need the fresh
+  screenshot their default observation returns.
+  wait_for waits until a text appears or, with gone, disappears, polling OCR;
+  use it for loading pages, installers and progress dialogs instead of wait and
+  repeated screenshots.
 - Things only the user may do: UAC prompts, Windows Hello, PINs, sign-ins and
   CAPTCHAs. Software cannot and must not answer them; call hand_over with a
   short reason and continue from the screenshot it returns.
@@ -269,14 +286,18 @@ Compose first, then paint in layers, one draw call per colour and brush:
 ## Keep it fast and grounded
 
 Read the relevant window once. Use refs from that snapshot; the next snapshot
-invalidates them. batch accepts up to 12 {tool, arguments} steps and one final
-observation: snapshot with window, screenshot, or none. act and physical steps
-mix freely. Batch only known controls, for example filling two fields and then
-reading them back. A failed step stops the batch and reports exactly what
-completed; it is not rolled back. Never retry the whole batch blindly. Do not
-batch across navigation or unknown dialogs.
-Tools report measured durationMs; avoid fixed sleeps and redundant screenshots.
-The native worker stays warm during the turn; its first call includes startup.
+invalidates them (refs from find_text last until the next snapshot or find_text). batch accepts up
+to 12 {tool, arguments} steps and one final observation: snapshot with window,
+screenshot, text, or none. act and physical steps mix freely. Each step waits
+for the screen to settle before the next, so "click File, click Save As, type
+the name, press enter" is one batch when every target is known. Batch only known
+controls. A failed step stops the batch and reports exactly what completed; it
+is not rolled back. Never retry the whole batch blindly. Do not batch across
+navigation or unknown dialogs.
+A good turn on the desktop looks like: one screenshot or read_screen; a batch of
+the steps that are certain; the returned screen; the next batch. Tools report
+measured durationMs; avoid fixed sleeps and redundant screenshots. The native
+worker stays warm during the turn; its first call includes startup.
 
 ## Observe and stop
 

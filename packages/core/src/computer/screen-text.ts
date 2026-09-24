@@ -19,8 +19,37 @@ export interface ScreenText {
   width: number;
   height: number;
   foreground: number;
+  active: WindowInfo;
   /** The foreground window as [left, top, right, bottom]. */
   window: [number, number, number, number];
+}
+
+/** A top-level window as the worker names it. */
+export interface WindowInfo {
+  handle: number;
+  title: string;
+  process: string;
+}
+
+/** What Rk-Settle reports after an action: how long the screen took to come to rest and what is in front now. */
+export interface SettleResult {
+  ms: number;
+  /** Anything beyond a caret blink changed while waiting. */
+  changed: boolean;
+  active: WindowInfo;
+  /** A different window came to the front during the action. */
+  foregroundChanged: boolean;
+}
+
+/** One line for the model about a window: its title, program and handle. */
+export function describeWindow(info: WindowInfo): string {
+  return JSON.stringify(info.title) + ' (' + (info.process || 'unknown') + ', window=' + info.handle + ')';
+}
+
+/** What an action's settle tells the model, in one line. */
+export function describeSettle(result: SettleResult): string {
+  return (result.changed ? 'Screen settled after ' + result.ms + ' ms.' : 'Nothing visible changed on screen (' + result.ms + ' ms).') +
+    (result.foregroundChanged ? ' Active window is now ' + describeWindow(result.active) + '.' : '');
 }
 
 export interface TextMatch {
@@ -133,7 +162,7 @@ export function pickMatch(matches: TextMatch[], phrase: string, index?: number):
  * reading order. OCR splits a row into several lines whose centres differ by
  * a pixel or two; those are ordered left to right, not by that jitter.
  */
-export function describeScreen(screen: ScreenText, scale: number, limit = 300): string {
+export function describeScreen(screen: ScreenText, scale: number, limit = 300, origin: { left: number; top: number } = screen): string {
   const lines = screen.lines.filter((line) => line.length).map((line) => {
     const b = box(line);
     return { b, text: line.map((word) => word[0]).join(' ') };
@@ -152,7 +181,7 @@ export function describeScreen(screen: ScreenText, scale: number, limit = 300): 
   }
   const ordered = rows.flatMap((row) => row.sort((a, b) => a.b.x - b.b.x));
   return ordered.slice(0, limit).map(({ b, text }) =>
-    Math.round((b.x + b.width / 2 - screen.left) * scale) + ',' + Math.round((b.y + b.height / 2 - screen.top) * scale) + ' ' + text,
+    Math.round((b.x + b.width / 2 - origin.left) * scale) + ',' + Math.round((b.y + b.height / 2 - origin.top) * scale) + ' ' + text,
   ).join('\n') + (ordered.length > limit ? '\n... ' + (ordered.length - limit) + ' more lines' : '');
 }
 
@@ -166,9 +195,15 @@ export const SECURE_PROMPT =
 export const SCREEN_TEXT = `
 $script:rkSecurePrompt = '${SECURE_PROMPT.replace(/'/g, "''")}'
 
-function Rk-Settle($min = 120, $max = 2000) {
+# Every action ends here: wait for the screen to stop changing, then record
+# what is in front so the next action's guard measures against it.
+function Rk-Settle($min = 120, $max = 2000, $quiet = 150) {
   $b = Rk-Bounds
-  [RkNative]::Settle($b.Left, $b.Top, $b.Width, $b.Height, $min, $max)
+  $before = $script:rkForeground
+  $r = [RkNative]::Settle($b.Left, $b.Top, $b.Width, $b.Height, $min, $max, $quiet)
+  Rk-Seen
+  $fg = $script:rkForeground
+  @{ ms = $r[0]; changed = ($r[1] -eq 1); active = (Rk-WindowInfo $fg); foregroundChanged = ($null -ne $before -and $before -ne $fg) }
 }
 
 $script:rkOcr = $null
@@ -196,6 +231,7 @@ function Rk-Await($operation, [Type]$type) {
 function Rk-ReadScreen($observe = $true) {
   if ([RkNative]::SecureDesktop()) { throw $script:rkSecurePrompt }
   $engine = Rk-OcrEngine
+  $fgBefore = [RkNative]::GetForegroundWindow()
   $b = Rk-Bounds
   $scale = [Math]::Min(1.0, [Windows.Media.Ocr.OcrEngine]::MaxImageDimension / [double][Math]::Max($b.Width, $b.Height))
   $w = [int]($b.Width * $scale); $h = [int]($b.Height * $scale)
@@ -224,9 +260,11 @@ function Rk-ReadScreen($observe = $true) {
     })
   })
   $fg = [RkNative]::GetForegroundWindow()
+  if ($fg -ne $fgBefore) { throw 'The active window changed while reading the screen. Read it again.' }
+  Rk-Seen
   $wr = New-Object RkNative+RECT
   [RkNative]::GetWindowRect($fg, [ref]$wr) | Out-Null
-  @{ lines = $lines; left = $b.Left; top = $b.Top; width = $b.Width; height = $b.Height; foreground = [long]$fg; window = @($wr.Left, $wr.Top, $wr.Right, $wr.Bottom) }
+  @{ lines = $lines; left = $b.Left; top = $b.Top; width = $b.Width; height = $b.Height; foreground = [long]$fg; active = (Rk-WindowInfo $fg); window = @($wr.Left, $wr.Top, $wr.Right, $wr.Bottom) }
 }
 
 # Wait for the user to do what software must not: a secure prompt closing, or
@@ -241,14 +279,17 @@ function Rk-HandOver($reason, $timeoutMs) {
   [System.Media.SystemSounds]::Asterisk.Play()
   $clock = [System.Diagnostics.Stopwatch]::StartNew()
   $secureSeen = $false; $touched = $false
+  $outcome = 'Timed out; the user did not act.'
   while ($clock.ElapsedMilliseconds -lt $timeoutMs) {
     Start-Sleep -Milliseconds 150
     if ([RkNative]::SecureDesktop()) { $secureSeen = $true; continue }
-    if ($secureSeen) { return @{ outcome = 'The secure prompt closed.'; waitedMs = $clock.ElapsedMilliseconds } }
+    if ($secureSeen) { $outcome = 'The secure prompt closed.'; break }
     $idle = [RkNative]::IdleMs()
     if ($idle -lt $clock.ElapsedMilliseconds) { $touched = $true }
-    if ($touched -and $idle -ge 4000) { return @{ outcome = 'The user acted and has been idle for 4 s.'; waitedMs = $clock.ElapsedMilliseconds } }
+    if ($touched -and $idle -ge 4000) { $outcome = 'The user acted and has been idle for 4 s.'; break }
   }
-  @{ outcome = 'Timed out; the user did not act.'; waitedMs = $clock.ElapsedMilliseconds }
+  # Whatever the user left in front is the new baseline.
+  if (-not [RkNative]::SecureDesktop()) { Rk-Seen }
+  @{ outcome = $outcome; waitedMs = $clock.ElapsedMilliseconds }
 }
 `;

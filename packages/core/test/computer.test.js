@@ -58,6 +58,14 @@ test('computer validates every batch step and enforces background boundaries', (
     { tool: 'wait', arguments: {} }, { tool: 'press_keys', arguments: { keys: 'ctrl+unknown' } },
   ] }), /Unknown key/, 'all steps are checked before dispatch');
   assert.match(builtinSkill('computer-use').body, /not rolled back/);
+  assert.throws(() => validateComputerCall('screenshot', { window: 5, region: { x: 0, y: 0, width: 10, height: 10 } }), /not several/);
+  assert.throws(() => validateComputerCall('screenshot', { region: { x: 0, y: 0, width: 0, height: 10 } }), /Invalid/);
+  assert.deepEqual(validateComputerCall('wait_for', { text: ' Done ' }).args, { text: 'Done', gone: false, timeoutSec: 30, observe: 'screenshot' });
+  assert.throws(() => validateComputerCall('wait_for', { text: 'Done' }, true), /pass window/);
+  assert.equal(validateComputerCall('wait_for', { text: 'Done', window: 7 }, true).args.observe, 'none', 'background waits observe nothing');
+  assert.throws(() => validateComputerCall('find_text', { text: 'Done' }, true), /pass window/);
+  validateComputerCall('find_text', { text: 'Done', window: 7 }, true);
+  assert.equal(validateComputerCall('batch', { actions: [{ tool: 'wait', arguments: {} }], observe: 'text' }).args.observe, 'text');
 });
 
 test('computer prints a breadth-first snapshot as a tree and OCR rows left to right', () => {
@@ -72,7 +80,7 @@ test('computer prints a breadth-first snapshot as a tree and OCR rows left to ri
       element(4, 2, 'Edit', 'Draft', { value: '', actions: ['set_value'], bounds: [0, 100, 200, 20] }),
       element(5, 3, 'ListItem', 'One', { value: 'One', actions: ['select'], offscreen: true }),
     ],
-  }, 1280);
+  }, { left: -1920, top: 0, scale: 1280 / 3840 });
   assert.equal(text, [
     'window=7 "Editor" (background)',
     'r:1 Window "Editor"',
@@ -185,6 +193,9 @@ test('computer UIA edits an unfocused window, with a visible virtual cursor', {
   skip: process.platform !== 'win32' || process.env.ROOKERY_COMPUTER_TEST_UI !== '1', timeout: 60_000,
 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'rookery-computer-test-'));
+  // Names no editor on the desktop can be showing: OCR must miss them, so the accessibility paths are what gets tested.
+  const boxName = 'Field' + Math.random().toString(36).slice(2, 8);
+  const absent = 'Zq' + Math.random().toString(36).slice(2, 10);
   const handlePath = join(dir, 'window.txt');
   const appPath = join(dir, 'app.ps1');
   writeFileSync(appPath, `
@@ -207,7 +218,7 @@ $heading.Text = 'Rookery / Background computer use'; $heading.AutoSize = $true
 $heading.Location = New-Object System.Drawing.Point 24, 24
 $window.Controls.Add($heading)
 $editor = New-Object System.Windows.Forms.TextBox
-$editor.AccessibleName = 'Draft'; $editor.Text = 'Waiting for background input'
+$editor.AccessibleName = '${boxName}'; $editor.Text = 'Waiting for background input'
 $editor.Location = New-Object System.Drawing.Point 24, 80; $editor.Width = 560
 $window.Controls.Add($editor)
 $button = New-Object System.Windows.Forms.Button
@@ -236,7 +247,7 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
       assert.ok(line, role + ' "' + name + '" in:\n' + text);
       return { ref: line.trim().split(' ')[0], line, at: line.match(/@(\d+),(\d+)/)?.slice(1).map(Number) };
     };
-    const editor = control(snapshot.content[0].text, 'Edit', 'Draft');
+    const editor = control(snapshot.content[0].text, 'Edit', boxName);
     assert.match(editor.line, /\[[^\]]*set_value/);
     assert.match(control(snapshot.content[0].text, 'Button', 'Apply').line, /\[[^\]]*invoke/);
     const result = await mcp.call('batch', { actions: [
@@ -244,7 +255,7 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
       { tool: 'act', arguments: { ref: editor.ref, action: 'set_value', value: 'Fast. Visible. In the background.' } },
     ], window: handle, observe: 'snapshot' });
     assert.equal(result.isError, false, JSON.stringify(result));
-    assert.match(result.content[0].text, /^1\. act: Set the value of Edit "Draft" .*\n2\. act: Set the value of Edit "Draft" /);
+    assert.match(result.content[0].text, new RegExp('^1\\. act: Set the value of Edit "' + boxName + '" .*\\n2\\. act: Set the value of Edit "' + boxName + '" '));
     const observed = JSON.parse((await mcp.call('screen_info')).content[0].text.split('Observer: ')[1]);
     assert.equal(observed.visible, true, 'native cursor is visible over the unfocused test window');
     const overlayHandle = observed.overlayHandle;
@@ -252,7 +263,7 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
     assert.equal(overlay.visible, true, 'the OS reports a real visible overlay window');
     assert.equal(overlay.styles & 0x08000020, 0x08000020, 'overlay cannot activate and passes input through');
     const updated = result.content[1].text;
-    assert.match(control(updated, 'Edit', 'Draft').line, /value="Fast\. Visible\. In the background\."/);
+    assert.match(control(updated, 'Edit', boxName).line, /value="Fast\. Visible\. In the background\."/);
     const after = await shell.run('@{ foreground = [long][RkNative]::GetForegroundWindow(); cursor = (Rk-Cursor) }');
     assert.deepEqual(after, before, 'neither foreground nor physical cursor changed');
     await sleep(2200);
@@ -274,6 +285,12 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
     const livePath = join(dir, 'live-observer.png');
     writeFileSync(livePath, Buffer.from(liveView.png, 'base64'));
     console.log('Actual Windows overlay capture: ' + livePath);
+    // Background mode finds controls by accessible name without a full snapshot, and their refs act.
+    const named = await mcp.call('find_text', { text: 'apply', window: handle });
+    assert.equal(named.isError, false, JSON.stringify(named));
+    const namedRef = named.content[0].text.match(/Button "Apply" \((\w+:\d+)\) \[[^\]]*invoke[^\]]*\] @\d+,\d+/)?.[1];
+    assert.ok(namedRef, named.content[0].text);
+    assert.match((await mcp.call('find_text', { text: 'no such control', window: handle })).content[0].text, /No text or control named/);
     const stale = await mcp.call('act', { ref: editor.ref, action: 'set_value', value: 'stale' });
     assert.equal(stale.isError, true);
     assert.match(stale.content[0].text, /Stale/);
@@ -322,6 +339,53 @@ $window.Add_Shown({ [System.IO.File]::WriteAllText('${handlePath.replaceAll("'",
         const byText = await desktop.call('click', { text: 'Apply' });
         assert.equal(byText.isError, false, JSON.stringify(byText.content.filter((c) => c.type === 'text')));
         assert.ok(byText.content.some((c) => c.type === 'image' && c.mimeType === 'image/jpeg'), 'the click returns the settled screen');
+        const texts = (result) => result.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+        assert.match(texts(byText), /Screen settled after \d+ ms\.|Nothing visible changed/, 'every action reports how the screen settled');
+        assert.match(texts(byText), /Active window: "Rookery Computer Use Test"/, 'the screenshot names the active window');
+        // The text box has an accessible name but no visible label: OCR misses it, UI Automation finds it.
+        const byName = await desktop.call('click', { text: boxName, observe: 'none' });
+        assert.equal(byName.isError, false, texts(byName));
+        assert.match(texts(byName), new RegExp('^Clicked Edit "' + boxName + '" at \\d+,\\d+\\.'), texts(byName));
+        const nowhere = await desktop.call('click', { text: absent, observe: 'none' });
+        assert.equal(nowhere.isError, true);
+        assert.match(texts(nowhere), new RegExp('No text "' + absent + '" on screen'));
+        // Zoom: a region of the last screenshot at full resolution, whose coordinates click directly.
+        const zoom = await desktop.call('screenshot', { region: { x: Math.max(0, x - 100), y: Math.max(0, y - 40), width: 200, height: 80 } });
+        assert.equal(zoom.isError, false, texts(zoom));
+        assert.match(texts(zoom), /Zoomed \d+\.\dx into the region/);
+        const zoomed = await desktop.call('click', { x: 100, y: 40, observe: 'none' });
+        assert.equal(zoomed.isError, false, texts(zoomed));
+        assert.match(texts(zoomed), /^Clicked 100,40\./);
+        const zoomWidth = Number(texts(zoom).match(/Screenshot (\d+)x\d+ px/)[1]);
+        assert.match(texts(await desktop.call('click', { x: zoomWidth + 1, y: 40, observe: 'none' })), /outside the last desktop screenshot \(\d+x\d+\)/);
+        assert.equal((await desktop.call('screenshot')).isError, false, 'back to the whole desktop');
+        // wait_for returns as soon as the text is there, and times out honestly.
+        const waited = await desktop.call('wait_for', { text: 'Applied', timeoutSec: 5, observe: 'none' });
+        assert.equal(waited.isError, false, texts(waited));
+        assert.match(texts(waited), /^"Applied" is on screen after \d+(\.\d)? s\./);
+        const expired = await desktop.call('wait_for', { text: absent, timeoutSec: 1 });
+        assert.equal(expired.isError, true);
+        assert.match(texts(expired), /Timed out after 1 s/);
+        // Somebody else bringing a window forward is refused; the model's own focus change is not.
+        await shell.run(`[RkNative]::Focus([IntPtr]${before.foreground}) | Out-Null; Start-Sleep -Milliseconds 200; @{ ok = $true }`);
+        const refused = await desktop.call('press_keys', { keys: 'shift', observe: 'none' });
+        assert.equal(refused.isError, true, texts(refused));
+        assert.match(texts(refused), /The active window changed since the last action/);
+        assert.equal((await desktop.call('focus_window', { window: handle, observe: 'none' })).isError, false);
+        const allowed = await desktop.call('press_keys', { keys: 'shift', observe: 'none' });
+        assert.equal(allowed.isError, false, texts(allowed));
+        assert.match(texts(await desktop.call('click', { ...point, observe: 'none' })), /Take a desktop screenshot or read_screen before using coordinates/, 'coordinates predate the window that came forward');
+        assert.equal((await desktop.call('screenshot')).isError, false);
+        // open brings the launched program forward itself and names its window (Character Map: classic, stateless).
+        const opened = await desktop.call('open', { target: 'charmap', observe: 'none' });
+        try {
+          assert.equal(opened.isError, false, texts(opened));
+          assert.match(texts(opened), /^Opened charmap\. Active window is now ".*" \(charmap, window=\d+\)\./, texts(opened));
+        } finally {
+          const pid = Number((await shell.run(`$p = [uint32]0; [RkNative]::GetWindowThreadProcessId([IntPtr]${Number(texts(opened).match(/window=(\d+)/)?.[1] ?? 0)}, [ref]$p) | Out-Null; @{ pid = $p }`)).pid);
+          if (pid) await shell.run(`Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue; @{ ok = $true }`);
+          await desktop.call('focus_window', { window: handle, observe: 'none' });
+        }
         // A single-line WinForms box ignores ctrl+a, so the typed text was appended; what matters is that Apply ran.
         assert.match(JSON.stringify(await desktop.call('snapshot', { window: handle })), /Applied: [^"]*Visible through native mouse and keyboard\./);
         const text = await desktop.call('read_screen');

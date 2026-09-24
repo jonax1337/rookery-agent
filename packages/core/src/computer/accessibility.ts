@@ -55,8 +55,7 @@ const tidy = (text: string): string => text.replace(/\r/g, '').replace(/[ \t]+$/
  * action are left out and their children move up a level: they carry no
  * information and cannot be acted on.
  */
-export function describeSnapshot(snapshot: Snapshot, maxWidth: number): string {
-  const scale = Math.min(1, maxWidth / snapshot.screen.width);
+export function describeSnapshot(snapshot: Snapshot, view: View): string {
   const children = new Map<number, SnapshotElement[]>();
   for (const element of snapshot.elements) {
     const siblings = children.get(element.parent);
@@ -81,7 +80,7 @@ export function describeSnapshot(snapshot: Snapshot, maxWidth: number): string {
       if (element.offscreen) line += ' offscreen';
       else if (element.bounds) {
         const [x, y, width, height] = element.bounds;
-        line += ' @' + Math.round((x + width / 2 - snapshot.screen.left) * scale) + ',' + Math.round((y + height / 2 - snapshot.screen.top) * scale);
+        line += ' ' + at(x + width / 2, y + height / 2, view);
       }
       lines.push(line);
     }
@@ -90,6 +89,41 @@ export function describeSnapshot(snapshot: Snapshot, maxWidth: number): string {
   for (const root of children.get(0) ?? []) visit(root, 0);
   if (snapshot.truncated) lines.push('(truncated: raise maxNodes or depth, or snapshot a smaller window)');
   return lines.join('\n');
+}
+
+/** A control found by name: ref, role, actions and centre, in physical pixels until described. */
+export interface FoundControl {
+  ref: string;
+  role: string;
+  name: string;
+  enabled: boolean;
+  actions: string[];
+  /** x, y, width, height in physical pixels. */
+  bounds: [number, number, number, number];
+}
+
+/** One line per found control, its centre in screenshot pixels of the given view. */
+export function describeControl(control: FoundControl, view: View): string {
+  const [x, y, width, height] = control.bounds;
+  return control.role + ' ' + quote(control.name, 80) + ' (' + control.ref + ')' +
+    (control.actions.length ? ' [' + control.actions.join(' ') + ']' : '') + (control.enabled ? '' : ' disabled') +
+    ' ' + at(x + width / 2, y + height / 2, view);
+}
+
+/** The view a centre is printed in: the desktop, or a zoomed region of it with a size. */
+export interface View {
+  left: number;
+  top: number;
+  scale: number;
+  width?: number;
+  height?: number;
+}
+
+/** A physical point as "@x,y" in the view, or "@off-view" when a zoomed view does not contain it. */
+function at(px: number, py: number, view: View): string {
+  const x = Math.round((px - view.left) * view.scale), y = Math.round((py - view.top) * view.scale);
+  if (x < 0 || y < 0 || (view.width !== undefined && x >= view.width) || (view.height !== undefined && y >= view.height)) return '@off-view';
+  return '@' + x + ',' + y;
 }
 
 const DONE: Record<string, string> = {
@@ -205,6 +239,39 @@ function Rk-Snapshot($handle, $maxNodes, $maxDepth, $observe = $true) {
     truncated = ($truncated -or $queue.Count -gt 0); screen = @{ left = $screen.Left; top = $screen.Top; width = $screen.Width } }
 }
 
+# Controls whose accessible name is exactly the phrase (case-insensitive), in
+# one window: an icon-only button still has a name, which OCR cannot see. Each
+# match gets a ref that act accepts; the refs of the last snapshot stay valid.
+function Rk-FindControls($handle, $name, $limit = 20) {
+  $h = Rk-Window $handle
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
+  $byName = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::NameProperty), $name, ([System.Windows.Automation.PropertyConditionFlags]::IgnoreCase)
+  $found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $byName)
+  # Only the latest search's refs live on, so polling cannot pile them up; a snapshot's refs stay.
+  foreach ($key in @($script:rkRefs.Keys)) { if ($key.StartsWith('f')) { $script:rkRefs.Remove($key) } }
+  $processId = $root.Current.ProcessId
+  $prefix = 'f' + [Guid]::NewGuid().ToString('N').Substring(0, 5)
+  $rows = New-Object System.Collections.ArrayList
+  $n = 0
+  foreach ($element in $found) {
+    if ($rows.Count -ge $limit) { break }
+    try {
+      $c = $element.Current
+      if ($c.IsOffscreen) { continue }
+      $rect = $c.BoundingRectangle
+      if ($rect.IsEmpty) { continue }
+      $n++
+      $ref = $prefix + ':' + $n
+      $role = $c.ControlType.ProgrammaticName.Replace('ControlType.', '')
+      $script:rkRefs[$ref] = @{ element = $element; window = [long]$handle; pid = $processId; role = $role; name = $c.Name }
+      [void]$rows.Add(@{ ref = $ref; role = $role; name = $c.Name; enabled = $c.IsEnabled; actions = @(Rk-ElementActions $element);
+        bounds = @($rect.X, $rect.Y, $rect.Width, $rect.Height) })
+    } catch { }
+  }
+  $screen = Rk-Bounds
+  @{ controls = @($rows.ToArray()); screen = @{ left = $screen.Left; top = $screen.Top; width = $screen.Width } }
+}
+
 function Rk-Act($ref, $action, $value) {
   Rk-Failsafe
   $before = [long][RkNative]::GetForegroundWindow()
@@ -243,7 +310,10 @@ function Rk-Act($ref, $action, $value) {
     'scroll_up' { ([System.Windows.Automation.ScrollPattern]$element.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)).Scroll([System.Windows.Automation.ScrollAmount]::NoAmount, [System.Windows.Automation.ScrollAmount]::SmallDecrement) }
     'scroll_down' { ([System.Windows.Automation.ScrollPattern]$element.GetCurrentPattern([System.Windows.Automation.ScrollPattern]::Pattern)).Scroll([System.Windows.Automation.ScrollAmount]::NoAmount, [System.Windows.Automation.ScrollAmount]::SmallIncrement) }
   }
+  $after = [long][RkNative]::GetForegroundWindow()
+  # A provider that activated its own window did so for this action; the guard must not blame the user.
+  if ($after -ne $before -and $null -ne $script:rkForeground) { Rk-Seen }
   @{ ref = $ref; action = $action; role = $entry.role; name = $entry.name; input = $input;
-    cursor = $cursor; focusChanged = ($before -ne [long][RkNative]::GetForegroundWindow()) }
+    cursor = $cursor; focusChanged = ($before -ne $after) }
 }
 `;

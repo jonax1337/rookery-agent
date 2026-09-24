@@ -12,7 +12,12 @@ const DRAW_LIMITS = { strokes: 100, points: 4000 } as const;
 const observe = z.enum(['screenshot', 'text', 'none']).default('screenshot');
 const needle = z.string().trim().min(1).max(200);
 const schemas = {
-  screenshot: z.object({ window: window.optional() }).strict(),
+  screenshot: z.object({
+    window: window.optional(),
+    region: z.object({ x: coordinate, y: coordinate, width: z.number().finite().positive(), height: z.number().finite().positive() }).strict().optional(),
+    screen: z.number().int().min(1).max(16).optional(),
+  }).strict()
+    .refine((args) => [args.window, args.region, args.screen].filter((v) => v !== undefined).length <= 1, 'screenshot takes window, region or screen, not several.'),
   screen_info: z.object({}).strict(),
   list_windows: z.object({}).strict(),
   stop: z.object({}).strict(),
@@ -50,14 +55,15 @@ const schemas = {
     .refine((args) => (args.title === undefined) !== (args.window === undefined), 'focus_window needs title or window.'),
   open: z.object({ target: z.string().min(1).max(2000), observe }).strict(),
   read_screen: z.object({}).strict(),
-  find_text: z.object({ text: needle }).strict(),
+  find_text: z.object({ text: needle, window: window.optional() }).strict(),
+  wait_for: z.object({ text: needle, window: window.optional(), gone: z.boolean().default(false), timeoutSec: z.number().int().min(1).max(300).default(30), observe }).strict(),
   hand_over: z.object({ reason: z.string().trim().min(1).max(200), timeoutSec: z.number().int().min(5).max(600).default(180) }).strict(),
   clipboard: z.object({ action: z.enum(['get', 'set']), text: text.optional() }).strict()
     .refine((args) => args.action !== 'set' || args.text !== undefined, 'clipboard set requires text.'),
   wait: z.object({ ms: z.number().int().min(0).max(30_000).default(1000) }).strict(),
   batch: z.object({
     actions: z.array(z.object({ tool: z.enum(steps), arguments: z.record(z.unknown()) }).strict()).min(1).max(12),
-    observe: z.enum(['snapshot', 'screenshot', 'none']).optional(), window: window.optional(),
+    observe: z.enum(['snapshot', 'screenshot', 'text', 'none']).optional(), window: window.optional(),
   }).strict().refine((args) => args.observe !== 'snapshot' || args.window !== undefined, 'snapshot observation requires window.'),
 };
 
@@ -72,7 +78,7 @@ const foregroundTools = new Set(['click', 'move_mouse', 'drag', 'draw', 'scroll'
  * What a batch returns when it names no observation: the window it worked on,
  * else the desktop, which background-only mode may not capture.
  */
-export function batchObservation(window: number | undefined, background: boolean): 'snapshot' | 'screenshot' | 'none' {
+export function batchObservation(window: number | undefined, background: boolean): 'snapshot' | 'screenshot' | 'text' | 'none' {
   return window ? 'snapshot' : background ? 'none' : 'screenshot';
 }
 
@@ -87,7 +93,9 @@ export function validateComputerCall(name: string, args: unknown, background = f
     throw new Error('Background-only mode refuses physical input, focus changes, launching and clipboard writes. Use snapshot and act, or Playwright.');
   }
   if (background && command.name === 'screenshot' && !command.args.window) throw new Error('Background screenshots require a window handle.');
-  if (background && (command.name === 'read_screen' || command.name === 'find_text')) throw new Error('Background-only mode reads windows through snapshot, not the desktop.');
+  if (background && command.name === 'read_screen') throw new Error('Background-only mode reads windows through snapshot and find_text with a window, not the desktop.');
+  if (background && (command.name === 'find_text' || command.name === 'wait_for') && !command.args.window) throw new Error('Background-only mode searches controls by name in a window; pass window.');
+  if (background && command.name === 'wait_for') command.args.observe = 'none';
   if (command.name === 'press_keys' && !parseKeySequence(command.args.keys).length) throw new Error('Which keys?');
   if (command.name === 'batch') {
     const { actions, observe, window } = command.args;
@@ -96,7 +104,7 @@ export function validateComputerCall(name: string, args: unknown, background = f
       if (action.name === 'wait' && action.args.ms > 2000) throw new Error('Batch waits are limited to 2000 ms.');
     }
     const observation = observe ?? batchObservation(window, background);
-    if (observation !== 'none') validateComputerCall(observation, window ? { window } : {}, background);
+    if (observation !== 'none') validateComputerCall(observation === 'text' ? 'read_screen' : observation, window && observation === 'snapshot' ? { window } : {}, background);
   }
   return command;
 }

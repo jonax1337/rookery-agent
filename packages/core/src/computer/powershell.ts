@@ -196,15 +196,16 @@ public static class RkNative {
   [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr h);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr h, int index, StringBuilder info, int length, out int needed);
 
-  /** A 160x90 thumbnail of the screen: a few milliseconds, enough to see whether anything moved. */
+  /** A 320x180 thumbnail of the screen: a few milliseconds, enough to see whether anything moved. */
+  const int ThumbW = 320, ThumbH = 180;
   static int[] Thumbnail(int left, int top, int width, int height) {
-    using (var bmp = new System.Drawing.Bitmap(160, 90, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
+    using (var bmp = new System.Drawing.Bitmap(ThumbW, ThumbH, System.Drawing.Imaging.PixelFormat.Format32bppRgb))
     using (var g = System.Drawing.Graphics.FromImage(bmp)) {
       IntPtr dst = g.GetHdc(), src = GetDC(IntPtr.Zero);
-      try { SetStretchBltMode(dst, 3); StretchBlt(dst, 0, 0, 160, 90, src, left, top, width, height, 0x00CC0020); }
+      try { SetStretchBltMode(dst, 3); StretchBlt(dst, 0, 0, ThumbW, ThumbH, src, left, top, width, height, 0x00CC0020); }
       finally { ReleaseDC(IntPtr.Zero, src); g.ReleaseHdc(dst); }
-      var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, 160, 90), System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
-      var pixels = new int[160 * 90];
+      var data = bmp.LockBits(new System.Drawing.Rectangle(0, 0, ThumbW, ThumbH), System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+      var pixels = new int[ThumbW * ThumbH];
       try { Marshal.Copy(data.Scan0, pixels, 0, pixels.Length); } finally { bmp.UnlockBits(data); }
       return pixels;
     }
@@ -212,13 +213,16 @@ public static class RkNative {
 
   /**
    * Wait until the screen stops changing, instead of guessing a sleep: at
-   * least minMs, then 150 ms without visible change, at most maxMs. A caret
-   * or a small spinner stays under the threshold. Returns the time waited.
+   * least minMs, then quietMs without visible change, at most maxMs. A caret
+   * or a small spinner stays under the threshold. Returns the time waited and
+   * whether anything at all changed (a toggled checkbox counts, a caret does
+   * not), so the model learns when an action had no visible effect.
    */
-  public static int Settle(int left, int top, int width, int height, int minMs, int maxMs) {
+  public static int[] Settle(int left, int top, int width, int height, int minMs, int maxMs, int quietMs) {
     var clock = System.Diagnostics.Stopwatch.StartNew();
     int[] last = Thumbnail(left, top, width, height);
     long changedAt = 0;
+    bool any = false;
     while (clock.ElapsedMilliseconds < maxMs) {
       System.Threading.Thread.Sleep(30);
       int[] now = Thumbnail(left, top, width, height);
@@ -228,11 +232,13 @@ public static class RkNative {
         if (Math.Abs((a & 0xFF) - (b & 0xFF)) + Math.Abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF)) + Math.Abs(((a >> 16) & 0xFF) - ((b >> 16) & 0xFF)) > 48) changed++;
       }
       last = now;
-      // More than 0.3 % of the thumbnail is a real change, not a caret.
-      if (changed > 43) changedAt = clock.ElapsedMilliseconds;
-      if (clock.ElapsedMilliseconds >= minMs && clock.ElapsedMilliseconds - changedAt >= 150) break;
+      // A caret blink touches a pixel or two of the thumbnail; anything more is a change.
+      if (changed > 3) any = true;
+      // More than 0.3 % of the thumbnail is a real change worth waiting out, not a caret.
+      if (changed > 173) changedAt = clock.ElapsedMilliseconds;
+      if (clock.ElapsedMilliseconds >= minMs && clock.ElapsedMilliseconds - changedAt >= quietMs) break;
     }
-    return (int)clock.ElapsedMilliseconds;
+    return new[] { (int)clock.ElapsedMilliseconds, any ? 1 : 0 };
   }
 
   /**
@@ -317,6 +323,41 @@ function Rk-Failsafe {
   }
 }
 
+# What the worker last saw in front, at the end of its own last action or
+# desktop observation. Physical input is refused when the front has changed
+# since: coordinates and keystrokes would land in a window the model never saw.
+# A change the worker's own action caused (a dialog it opened) is recorded by
+# the settle that ends every action, so only somebody else's change trips it.
+$script:rkForeground = $null
+$script:rkScreen = $null
+
+function Rk-WindowInfo($h) {
+  $h = [IntPtr][long]$h
+  if ($h -eq [IntPtr]::Zero) { return @{ handle = 0; title = ''; process = '' } }
+  @{ handle = [long]$h; title = [RkNative]::Title($h); process = (Rk-ProcessName $h) }
+}
+
+function Rk-Seen {
+  $script:rkForeground = [long][RkNative]::GetForegroundWindow()
+  $script:rkScreen = Rk-Bounds
+}
+
+function Rk-Guard {
+  if ([RkNative]::SecureDesktop()) { throw $script:rkSecurePrompt }
+  if ($null -eq $script:rkForeground) { throw 'Take a desktop screenshot or read_screen before physical input.' }
+  $b = Rk-Bounds
+  $s = $script:rkScreen
+  if ($b.Left -ne $s.Left -or $b.Top -ne $s.Top -or $b.Width -ne $s.Width -or $b.Height -ne $s.Height) {
+    throw 'The screen layout changed (a display was added, removed or rescaled). Take a fresh screenshot.'
+  }
+  $fg = [long][RkNative]::GetForegroundWindow()
+  if ($fg -ne $script:rkForeground) {
+    $w = Rk-WindowInfo $fg
+    throw ('The active window changed since the last action: now "' + $w.title + '" (' + $w.process + ', window=' + $fg + '). ' +
+      'If the user switched windows, wait or ask; otherwise take a fresh screenshot before continuing.')
+  }
+}
+
 function Rk-ScreenInfo {
   $b = Rk-Bounds
   $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
@@ -329,12 +370,20 @@ ${WINDOWS_CURSOR}
 
 ${SCREEN_TEXT}
 
-function Rk-Screenshot($maxWidth, $path, $handle = 0, $observe = $true) {
+function Rk-Screenshot($maxWidth, $path, $handle = 0, $observe = $true, $region = $null, $screen = 0) {
   if (-not $handle -and [RkNative]::SecureDesktop()) { throw $script:rkSecurePrompt }
   # A window capture never contains the overlay; a desktop capture hides it, so the
   # overlay appears only afterwards instead of flashing in, out and in again.
   if ($observe -and $handle) { Rk-CursorStatus 'Reading' }
+  $fgBefore = [RkNative]::GetForegroundWindow()
   $b = Rk-Bounds
+  if ($screen) {
+    $all = @([System.Windows.Forms.Screen]::AllScreens)
+    if ($screen -gt $all.Count) { throw ('There are only ' + $all.Count + ' displays; see screen_info.') }
+    $b = $all[$screen - 1].Bounds
+  } elseif ($region) {
+    $b = New-Object System.Drawing.Rectangle ([int]$region[0]), ([int]$region[1]), ([int]$region[2]), ([int]$region[3])
+  }
   if ($handle) {
     $h = Rk-Window $handle
     if ([RkNative]::IsIconic($h)) { throw 'Minimized windows cannot be captured reliably. Use snapshot for background observation.' }
@@ -381,9 +430,15 @@ function Rk-Screenshot($maxWidth, $path, $handle = 0, $observe = $true) {
   $bytes = [RkNative]::Jpeg($bmp, 85)
   if ($path) { [System.IO.File]::WriteAllBytes($path, $bytes) }
   $c = Rk-Cursor
+  $fg = [RkNative]::GetForegroundWindow()
+  if (-not $handle) {
+    # A window that came forward during the capture makes the image stale before the model sees it.
+    if ($fg -ne $fgBefore) { $bmp.Dispose(); throw 'The active window changed while capturing the screen. Take the screenshot again.' }
+    Rk-Seen
+  }
   $result = @{ width = $bmp.Width; height = $bmp.Height; scale = $scale; left = $b.Left; top = $b.Top;
-    cursorX = [int](($c.x - $b.Left) * $scale); cursorY = [int](($c.y - $b.Top) * $scale);
-    foreground = [long][RkNative]::GetForegroundWindow(); window = [long]$handle;
+    cursorX = [int][Math]::Floor(($c.x - $b.Left) * $scale); cursorY = [int][Math]::Floor(($c.y - $b.Top) * $scale);
+    foreground = [long]$fg; active = (Rk-WindowInfo $fg); window = [long]$handle;
     jpeg = [Convert]::ToBase64String($bytes) }
   $bmp.Dispose()
   $result
@@ -490,16 +545,49 @@ function Rk-Focus($needle, $handle = 0) {
     throw ('Windows kept "' + [RkNative]::Title([RkNative]::GetForegroundWindow()) + '" in front; "' + $title + '" did not come forward.')
   }
   Rk-InputPointer 'Ready'
-  @{ title = $title; handle = [long]$match }
+  Rk-Seen
+  @{ title = $title; handle = [long]$match; process = (Rk-ProcessName $match) }
 }
 
 # After a worker died mid-action: let go of whatever it held down.
 function Rk-Release { @{ released = @([RkNative]::Release()) } }
 
-function Rk-Open($target) {
+# Launch, then bring the new window forward ourselves: while the user is
+# working, Windows keeps a freshly started program behind the active window,
+# and typing would go to the wrong app. The baseline for the input guard is
+# only moved when a window really came to the front, so a launch that stayed
+# behind leaves the next physical action refused rather than misdirected.
+function Rk-Open($target, $waitMs = 3000) {
+  $before = [long][RkNative]::GetForegroundWindow()
+  $known = @{}
+  foreach ($h in [RkNative]::Windows()) { $known[[long]$h] = $true }
+  $name = [System.IO.Path]::GetFileNameWithoutExtension($target).ToLowerInvariant()
   Start-Process $target
-  Start-Sleep -Milliseconds 400
-  @{ ok = $true }
+  $clock = [System.Diagnostics.Stopwatch]::StartNew()
+  $fg = $before
+  $fresh = [long]0
+  while ($clock.ElapsedMilliseconds -lt $waitMs) {
+    Start-Sleep -Milliseconds 50
+    $fg = [long][RkNative]::GetForegroundWindow()
+    if ($fg -ne $before -and $fg -ne 0 -and [RkNative]::GetWindowTextLength([IntPtr]$fg) -gt 0) { break }
+    # A new titled window that stayed behind: the launched program's if its name says so, else any.
+    $candidate = [long]0
+    foreach ($h in [RkNative]::Windows()) {
+      if ($known.ContainsKey([long]$h)) { continue }
+      if ((Rk-ProcessName $h).ToLowerInvariant() -eq $name) { $candidate = [long]$h; break }
+      if (-not $candidate -and $clock.ElapsedMilliseconds -gt 1500) { $candidate = [long]$h }
+    }
+    if ($candidate) {
+      [RkNative]::Focus([IntPtr]$candidate) | Out-Null
+      Start-Sleep -Milliseconds 150
+      $fg = [long][RkNative]::GetForegroundWindow()
+      if ($fg -eq $candidate) { break }
+      $fresh = $candidate
+    }
+  }
+  $changed = ($fg -ne $before -and $fg -ne 0)
+  if ($changed) { Rk-Seen }
+  @{ changed = $changed; active = (Rk-WindowInfo $fg); behind = $(if ($fresh -and -not $changed) { Rk-WindowInfo $fresh } else { $null }); waitedMs = $clock.ElapsedMilliseconds }
 }
 
 function Rk-ClipGet { @{ text = [string](Get-Clipboard -Raw) } }
@@ -546,6 +634,7 @@ export class PowerShellSession {
   #lines: ((line: string) => void) | null = null;
   #stderr = '';
   #requestId = 0;
+  #restarts = 0;
 
   /** Spawn the shell with the prelude loaded; the first call waits for the compile. */
   start(): void {
@@ -584,6 +673,11 @@ export class PowerShellSession {
   /** Whether a worker is alive; a call on a stopped session would start a fresh one. */
   get running(): boolean {
     return this.#child !== null;
+  }
+
+  /** How often a timed-out worker was killed; the fresh one has seen nothing of the screen. */
+  get restarts(): number {
+    return this.#restarts;
   }
 
   /** Evaluate one expression and parse the JSON it prints. Calls are serialised. */
@@ -653,6 +747,7 @@ export class PowerShellSession {
   /** Stop the worker, preserving user apps launched with the open tool. */
   #kill(child: ChildProcess): void {
     if (this.#child === child) this.#child = null;
+    this.#restarts++;
     child.kill('SIGKILL');
   }
 
