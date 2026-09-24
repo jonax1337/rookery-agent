@@ -14,10 +14,10 @@ import { COMPUTER_PROFILES } from '../types.js';
  *
  *   zavora   `@zavora-ai/computer-use-mcp`: screenshots plus the Windows
  *            accessibility tree, so the model clicks controls by label
- *            instead of hunting pixels. The default when it is installed.
- *   builtin  Rookery's own PowerShell server: no dependencies, pixels only.
- *            The fallback when the package is missing.
- *   custom   whatever `computer.command` names in the config.
+ *            instead of hunting pixels. Kept as an explicit alternative.
+ *   builtin  Rookery's persistent Windows worker: UI Automation, targeted
+ *            edit messages, screenshots and physical input. The Windows default.
+ *   custom   a custom server configured in the tool hub.
  */
 
 export const COMPUTER_SERVER_NAME = 'computer';
@@ -33,18 +33,46 @@ export interface ComputerToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+export const UI_ACTIONS = ['invoke', 'set_value', 'toggle', 'select', 'expand', 'collapse', 'scroll_up', 'scroll_down'] as const;
+const windowProperty = { type: 'integer', minimum: 1, description: 'Exact window handle returned by list_windows.' };
+
 /** The built-in server's tools. The zavora engine publishes its own list. */
 export const COMPUTER_TOOLS: ComputerToolDefinition[] = [
   {
     name: 'screenshot',
     description:
-      'A picture of the whole screen as it is right now. Coordinates you pass to the other tools ' +
-      'are pixels in this image. Take one before acting and another after, to see what happened.',
+      'Capture the desktop including its real cursor, or an unfocused window with a virtual cursor at ' +
+      'the last automation target. Only desktop screenshot coordinates can be used for physical input. ' +
+      'Window capture is app-dependent; use snapshot if pixels are blank or the window is minimized.',
+    inputSchema: { type: 'object', properties: { window: windowProperty }, additionalProperties: false },
+  },
+  {
+    name: 'snapshot',
+    description: 'Read a window accessibility tree without focusing it. Returns fresh element refs and supported actions. Password values are omitted; refs expire on the next snapshot.',
+    inputSchema: { type: 'object', properties: { window: windowProperty, maxNodes: { type: 'integer', minimum: 1, maximum: 300 }, depth: { type: 'integer', minimum: 1, maximum: 12 } }, required: ['window'], additionalProperties: false },
+  },
+  {
+    name: 'act',
+    description: 'Act on a fresh snapshot ref via UI Automation (or a targeted native message for standard text fields), without physical input. The persistent Rookery cursor marks visible targets; covered windows keep their marker in screenshots. App providers may activate their own window; focusChanged reports this and background-only mode stops. Unsupported actions fail. Read a fresh snapshot to verify.',
+    inputSchema: { type: 'object', properties: { ref: str('Fresh element ref.'), action: { type: 'string', enum: [...UI_ACTIONS] }, value: str('Required for set_value; empty clears the field.') }, required: ['ref', 'action'], additionalProperties: false },
+  },
+  {
+    name: 'batch',
+    description: 'Run up to 12 already-grounded actions sequentially in one call; stop on the first failure. All arguments are checked before starting. Observe once at the end. Do not batch across unknown UI states or irreversible confirmation steps.',
+    inputSchema: { type: 'object', properties: {
+      actions: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', properties: { tool: { type: 'string', enum: ['act', 'click', 'move_mouse', 'drag', 'scroll', 'type_text', 'press_keys', 'wait'] }, arguments: { type: 'object' } }, required: ['tool', 'arguments'], additionalProperties: false } },
+      observe: { type: 'string', enum: ['snapshot', 'screenshot', 'none'], description: 'Default snapshot when window is supplied, otherwise screenshot.' },
+      window: windowProperty,
+    }, required: ['actions'], additionalProperties: false },
+  },
+  {
+    name: 'stop',
+    description: 'Immediately cancel current and queued actions and disable further actions for this MCP session. Observations remain available. A new turn creates a fresh session.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'screen_info',
-    description: 'Screen size in screenshot pixels, the scale to real pixels, and the monitors.',
+    description: 'Screen size, coordinate scale, monitors and observer visibility/status.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
@@ -209,21 +237,25 @@ export function zavoraServerPath(): string | null {
   return null;
 }
 
-/** Which engine this machine has: the zavora package when installed, the PowerShell server otherwise. */
-export function computerEngine(): ComputerEngine {
-  return zavoraServerPath() ? 'zavora' : 'builtin';
+/** Rookery owns the Windows engine; retain the bundled alternative on other hosts. */
+export function computerEngine(requested?: string): ComputerEngine {
+  if (requested === 'builtin' || requested === 'zavora') return requested;
+  return process.platform === 'win32' || !zavoraServerPath() ? 'builtin' : 'zavora';
 }
 
 /**
  * The MCP server for this turn. `provider` picks the screenshot sizing the
  * model likes; `profile` is the zavora authority level.
  */
-export function computerServerSpec(config: RookeryConfig, provider?: ProviderId, profile = 'ax'): McpServerSpec {
-  if (computerEngine() === 'zavora') {
+export function computerServerSpec(config: RookeryConfig, provider?: ProviderId, profile = 'ax', engine?: string, mode = 'desktop'): McpServerSpec {
+  if (!['desktop', 'background'].includes(mode)) throw new Error('Unknown computer interaction mode: ' + mode);
+  if (computerEngine(engine) === 'zavora') {
+    const script = zavoraServerPath();
+    if (!script) throw new Error('The Zavora engine is not installed. Select Rookery native on Windows.');
     return {
       name: COMPUTER_SERVER_NAME,
       command: process.execPath,
-      args: [zavoraServerPath() as string],
+      args: [script],
       env: {
         COMPUTER_USE_PROFILE: (COMPUTER_PROFILES as readonly string[]).includes(profile) ? profile : 'ax',
         COMPUTER_USE_PROVIDER: provider === 'codex' ? 'openai' : 'anthropic',
@@ -238,6 +270,7 @@ export function computerServerSpec(config: RookeryConfig, provider?: ProviderId,
     env: {
       ROOKERY_COMPUTER_MAX_WIDTH: '1280',
       ROOKERY_COMPUTER_DIR: config.home,
+      ROOKERY_COMPUTER_MODE: mode === 'background' ? 'background' : 'desktop',
     },
   };
 }
@@ -267,10 +300,16 @@ export function computerPromptBlock(engine: ComputerEngine = 'builtin'): string 
     ].join(' ');
   }
   return [
-    'You can see and operate this computer through the computer tools: screenshot, click,',
-    'move_mouse, drag, scroll, type_text, press_keys, list_windows, focus_window, open,',
-    'clipboard, wait. Method: screenshot first, act, screenshot again to verify; never report an',
-    'action as done because you sent it. Coordinates are pixels of the last screenshot.',
+    'You can see and operate this computer through Rookery\'s embedded computer tools.',
+    'Read use_skill("computer-use") for the method. list_windows returns window handles;',
+    'snapshot(window) reads controls without focusing, act(ref, action) uses supported automation',
+    'patterns or native edit messages without mouse or keyboard injection. App providers can still',
+    'change focus themselves; results report focusChanged. There is no physical-input fallback for act.',
+    'batch runs up to 12 known actions with one final observation, reducing model round trips.',
+    'For physical input: screenshot first, act, screenshot again. Coordinates are pixels of the last',
+    'desktop screenshot, and its foreground window must still match. Window screenshots are observation only.',
+    'The background-only mode refuses all foreground input. Use Playwright for browser work.',
+    'stop cancels current and queued work for this session. Verify results; sending input is not success.',
     'Prefer open, focus_window and keyboard shortcuts over hunting for pixels; put long text on',
     'the clipboard and paste it. If every action is refused because the pointer sits in the',
     'top-left corner, the user pulled the emergency brake: stop, do not work around it.',

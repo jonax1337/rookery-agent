@@ -21,6 +21,7 @@ export interface AnthropicBlock {
   tool_use_id?: string;
   content?: unknown;
   is_error?: boolean;
+  source?: { type?: string; media_type?: string; data?: string; url?: string };
 }
 
 export interface AnthropicMessage {
@@ -50,16 +51,30 @@ function textOf(system: string | AnthropicBlock[] | undefined): string | undefin
   return joined || undefined;
 }
 
-/** A tool result's content is either a string or a list of blocks; flatten it. */
-function resultText(content: unknown): string {
+/** Images must reach the vision input, never the text tokenizer. */
+function imageContent(block: AnthropicBlock): ResponsesItem {
+  const source = block.source;
+  let url: string;
+  if (source?.type === 'base64' && source.data && /^image\/(png|jpeg|webp|gif)$/.test(source.media_type ?? '')) {
+    url = 'data:' + source.media_type + ';base64,' + source.data;
+  } else if (source?.type === 'url' && source.url) {
+    url = source.url;
+  } else {
+    throw new Error('Unsupported image source in the ChatGPT bridge.');
+  }
+  return { type: 'input_image', image_url: url, detail: 'auto' };
+}
+
+/** Keep plain results as strings and multimodal results as typed content. */
+function resultOutput(content: unknown): string | ResponsesItem[] {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
-    return content
-      .map((entry) => {
-        const block = entry as AnthropicBlock;
-        return typeof block?.text === 'string' ? block.text : JSON.stringify(entry);
-      })
-      .join('\n');
+    const parts = content.map((entry): ResponsesItem => {
+      const block = entry as AnthropicBlock | null;
+      if (block?.type === 'image') return imageContent(block);
+      return { type: 'input_text', text: typeof block?.text === 'string' ? block.text : JSON.stringify(entry) ?? '' };
+    });
+    return parts.some((part) => part.type === 'input_image') ? parts : parts.map((part) => part.text).join('\n');
   }
   return content === undefined ? '' : JSON.stringify(content);
 }
@@ -112,6 +127,10 @@ export function toResponsesRequest(
     for (const block of blocks) {
       if (block.type === 'text' && block.text) {
         pendingText.push(block.text);
+      } else if (block.type === 'image') {
+        flush();
+        if (role !== 'user') throw new Error('Images in assistant messages are not supported by the ChatGPT bridge.');
+        input.push({ type: 'message', role, content: [imageContent(block)] });
       } else if (block.type === 'tool_use') {
         flush();
         input.push({
@@ -125,7 +144,7 @@ export function toResponsesRequest(
         input.push({
           type: 'function_call_output',
           call_id: block.tool_use_id ?? '',
-          output: resultText(block.content),
+          output: resultOutput(block.content),
         });
       }
     }

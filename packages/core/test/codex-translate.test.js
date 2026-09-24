@@ -94,6 +94,34 @@ test('assistant text is output_text, user text is input_text', () => {
   assert.equal(request.input[1].content[0].type, 'input_text');
 });
 
+test('screenshots remain image content instead of becoming base64 text in tool results', () => {
+  const data = 'a'.repeat(610_236);
+  const image = { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data } };
+  const request = toResponsesRequest({ messages: [{ role: 'user', content: [
+    { type: 'tool_result', tool_use_id: 'shot', content: [{ type: 'text', text: 'Desktop' }, image] },
+    image,
+  ] }] }, options);
+  assert.ok(Array.isArray(request.input[0].output), 'image tool results must not become a base64 text string');
+  assert.deepEqual(request.input[0], {
+    type: 'function_call_output', call_id: 'shot', output: [
+      { type: 'input_text', text: 'Desktop' },
+      { type: 'input_image', image_url: 'data:image/jpeg;base64,' + data, detail: 'auto' },
+    ],
+  });
+  assert.deepEqual(request.input[1], {
+    type: 'message', role: 'user', content: [
+      { type: 'input_image', image_url: 'data:image/jpeg;base64,' + data, detail: 'auto' },
+    ],
+  });
+  const remote = toResponsesRequest({ messages: [{ role: 'user', content: [
+    { type: 'image', source: { type: 'url', url: 'https://example.com/image.png' } },
+  ] }] }, options);
+  assert.equal(remote.input[0].content[0].image_url, 'https://example.com/image.png');
+  assert.throws(() => toResponsesRequest({ messages: [{ role: 'user', content: [
+    { type: 'tool_result', tool_use_id: 'bad', content: [{ type: 'image', source: { type: 'base64', media_type: 'text/plain', data } }] },
+  ] }] }, options), /Unsupported image source/);
+});
+
 /** Collect the Anthropic events a scripted backend stream produces. */
 function translate(events) {
   const translator = new TurnTranslator('gpt-5.6-sol');

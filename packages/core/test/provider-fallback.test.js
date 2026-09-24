@@ -1,6 +1,6 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -307,6 +307,40 @@ test('when every provider is out of quota the assignment fails once, with one sy
 });
 
 /* -------------------------------- chat retry -------------------------------- */
+
+test('a quota switch before the first attempt remaps the model in chat and assignments', async () => {
+  const previousHome = process.env.CODEX_HOME;
+  const cache = mkdtempSync(join(tmpdir(), 'rookery-fallback-model-'));
+  writeFileSync(join(cache, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'gpt-test', priority: 1, visibility: 'list' }] }));
+  process.env.CODEX_HOME = cache;
+  rememberUsageRecovered('claude');
+  rememberUsageRecovered('codex');
+  rememberQuota({ provider: 'claude', fetchedAt: Date.now(), windows: [window(97)] });
+  const claude = createFake('claude');
+  const codex = createFake('codex');
+  try {
+    const { assistant, store } = createAssistant([claude.provider, codex.provider], { defaultProvider: 'claude', defaultModel: 'sonnet' });
+    const events = await collect(assistant.chat({ text: 'hello' }));
+    const session = events.find((event) => event.type === 'session');
+    assert.equal(session.provider, 'codex');
+    assert.equal(session.model, 'gpt-test');
+    assert.equal(codex.runs[0].model, 'gpt-test');
+    assert.equal(store.getSession(session.sessionId).model, 'gpt-test');
+    const agent = hire(assistant, { name: 'Mara', provider: 'claude', model: 'sonnet' });
+    const assignment = await collect(assistant.assign({ agent: agent.id, task: 'check the window' }));
+    assert.equal(codex.runs.at(-1).model, 'gpt-test');
+    const view = assignment.filter((event) => event.type === 'assignment').at(-1).assignment;
+    assert.equal(store.org.getAssignment(view.id).model, 'gpt-test');
+    assert.equal(claude.runs.length, 0);
+  } finally {
+    if (previousHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousHome;
+    rememberUsageRecovered('claude');
+    rememberUsageRecovered('codex');
+    rememberQuota({ provider: 'claude', fetchedAt: Date.now(), windows: [window(0)] });
+    rememberQuota({ provider: 'codex', fetchedAt: Date.now(), windows: [window(0)] });
+  }
+});
 
 test('a chat turn whose provider dies on quota finishes on the next one and stays there', async () => {
   // Both ids carry parked state from the assignment tests above.

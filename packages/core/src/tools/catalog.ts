@@ -56,7 +56,7 @@ export interface ToolCatalogEntry {
   /** The paragraph the model gets about these tools. */
   hint(options: Record<string, string>): string;
   /** Whether the server can run on this machine right now. */
-  installed(): boolean;
+  installed(options?: Record<string, string>): boolean;
 }
 
 /** `npx` on Windows is a .cmd shim; a spawned server has to go through cmd. */
@@ -101,16 +101,27 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     id: 'computer',
     name: 'Computer control',
     description:
-      'View the screen, operate the mouse and keyboard, and read controls through the accessibility tree. ' +
-      'For everything outside the browser.',
-    homepage: 'https://github.com/zavora-ai/computer-use-mcp',
+      'Rookery\'s embedded Windows computer control: visible cursor, fast action batches and background ' +
+      'interaction through supported accessibility controls. Use Playwright for websites.',
+    homepage: 'https://github.com/jonax1337/rookery-agent',
     install: 'bundled',
     defaultAudience: 'assistant',
     options: [
       {
+        key: 'engine', label: 'Engine', type: 'select',
+        choices: [{ value: 'builtin', label: 'Rookery native (Windows)' }, { value: 'zavora', label: 'Zavora (legacy)' }],
+        default: computerEngine(),
+      },
+      {
+        key: 'mode', label: 'Native interaction mode', type: 'select',
+        hint: 'Background only blocks physical input and focus changes. Apps must expose UI Automation actions; some app actions can open or activate their own windows.',
+        choices: [{ value: 'desktop', label: 'Desktop and background' }, { value: 'background', label: 'Background only' }],
+        default: 'desktop',
+      },
+      {
         key: 'profile',
-        label: 'Permissions',
-        hint: 'Viewing and interacting cover most tasks; scripts and administration reach deeper into the system.',
+        label: 'Legacy engine permissions',
+        hint: 'Applies to Zavora only. Rookery native exposes fixed tools, without arbitrary scripts or administration.',
         type: 'select',
         choices: [
           { value: 'core', label: 'View and interact' },
@@ -123,9 +134,10 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
       },
     ],
     env: [],
-    spec: ({ config, options, provider }) => computerServerSpec(config, provider, options.profile),
-    hint: () => computerPromptBlock(computerEngine()),
-    installed: () => process.platform === 'win32' || zavoraServerPath() !== null,
+    spec: ({ config, options, provider }) => computerServerSpec(config, provider, options.profile, options.engine, options.mode),
+    hint: (options) => computerPromptBlock(computerEngine(options.engine)) +
+      (computerEngine(options.engine) === 'builtin' && options.mode === 'background' ? ' Background-only mode is enforced: no physical input, clipboard writes, launching or focus changes.' : ''),
+    installed: (options) => computerEngine(options?.engine) === 'builtin' ? process.platform === 'win32' : zavoraServerPath() !== null,
   },
   {
     id: 'playwright',
@@ -188,6 +200,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
         // One profile folder of its own, so logins survive the turn that made them.
         ...(options.persistent !== 'no' ? ['--user-data-dir', join(config.home, 'browser-profile')] : []),
         ...(options.headless === 'yes' ? ['--headless'] : []),
+        '--init-page', fileURLToPath(new URL('../computer/browser-init.js', import.meta.url)),
       ]);
     },
     hint: (options) =>
@@ -197,6 +210,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
         'browser_click, browser_type, browser_fill_form and browser_select_option with the element refs',
         'from the snapshot. browser_take_screenshot only when layout matters. For anything on a web page',
         'use these before the computer tools; the computer tools are for everything outside the browser.',
+        'The browser has its own visible pointer overlay and works without desktop focus, including in headless mode.',
+        'Use the headless option for background-only browser work; do not use desktop clicks on that browser.',
         options.persistent !== 'no'
           ? 'The browser opens on your first browser call and closes with the turn, but it keeps its profile: logins from earlier turns are still there.'
           : '',

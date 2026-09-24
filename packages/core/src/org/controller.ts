@@ -2265,7 +2265,7 @@ export class OrgController extends EventEmitter {
           // A different backend serves different names; the fallback
           // provider's own default stands in for a model it has never
           // heard of.
-          usedModel = attempt === 1 ? agent.model : remapModel(pid, agent.model);
+          usedModel = attempt === 1 && pid === preferred ? agent.model : remapModel(pid, agent.model);
 
           finish({ status: 'running', provider: pid, model: usedModel, startedAt: started });
 

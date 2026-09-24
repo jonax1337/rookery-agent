@@ -938,7 +938,7 @@ export class Assistant extends EventEmitter {
       const pid = usedProvider;
       // A different backend serves different names; the fallback provider's
       // own default stands in for a model it has never heard of.
-      usedModel = attempt === 1 ? model : remapModel(pid, model);
+      usedModel = attempt === 1 && pid === wanted ? model : remapModel(pid, model);
 
       // The hub decides which extra MCP servers this attempt gets, and the
       // prompt carries one paragraph per server plus the index of skills to

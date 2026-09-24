@@ -101,7 +101,7 @@ export function toolServerStates(config: RookeryConfig): ToolServerState[] {
     if (!entry && !stored.custom) continue;
     const options = optionsWithDefaults(entry, stored.options);
     const missing = missingEnv(entry, stored.env);
-    const installed = entry ? entry.installed() : true;
+    const installed = entry ? entry.installed(options) : true;
     states.push({
       id,
       name: entry?.name ?? stored.custom?.name ?? id,

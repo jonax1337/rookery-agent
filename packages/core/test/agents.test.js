@@ -112,15 +112,17 @@ test('computer control: prompt block, server spec and key combos', () => {
   assert.match(zavoraPrompt, /click_element/);
   assert.match(zavoraPrompt, /pass target_app/);
 
-  // The package is a dependency of core, so the engine is zavora with the profile in its env.
-  assert.equal(computerEngine(), 'zavora');
-  const zavora = computerServerSpec(DEFAULT_CONFIG, 'claude', 'scripting');
+  assert.equal(computerEngine(), process.platform === 'win32' ? 'builtin' : 'zavora');
+  const native = computerServerSpec(DEFAULT_CONFIG, 'codex', 'ax', 'builtin', 'background');
+  assert.match(native.args[0], /computer[\\/]mcp-server\.js$/);
+  assert.equal(native.env.ROOKERY_COMPUTER_MODE, 'background');
+  const zavora = computerServerSpec(DEFAULT_CONFIG, 'claude', 'scripting', 'zavora');
   assert.equal(zavora.name, 'computer');
   assert.match(zavora.args[0], /computer-use-mcp[\\/]dist[\\/]server\.js$/);
   assert.equal(zavora.env.COMPUTER_USE_PROFILE, 'scripting');
   assert.equal(zavora.env.COMPUTER_USE_PROVIDER, 'anthropic');
-  assert.equal(computerServerSpec(DEFAULT_CONFIG, 'codex').env.COMPUTER_USE_PROVIDER, 'openai');
-  assert.equal(computerServerSpec(DEFAULT_CONFIG, 'claude', 'bogus').env.COMPUTER_USE_PROFILE, 'ax', 'unknown profiles fall back');
+  assert.equal(computerServerSpec(DEFAULT_CONFIG, 'codex', 'ax', 'zavora').env.COMPUTER_USE_PROVIDER, 'openai');
+  assert.equal(computerServerSpec(DEFAULT_CONFIG, 'claude', 'bogus', 'zavora').env.COMPUTER_USE_PROFILE, 'ax', 'unknown profiles fall back');
 
   assert.deepEqual(parseKeyCombo('ctrl+l'), [0x11, 0x4c]);
   assert.deepEqual(parseKeyCombo('shift+ctrl+t'), [0x10, 0x11, 0x54], 'modifiers first, written order kept');
@@ -156,12 +158,14 @@ test('the tool hub resolves catalogue and custom servers per audience', () => {
 
   const assistant = toolServersFor(config, 'assistant', 'codex');
   assert.deepEqual(assistant.specs.map((spec) => spec.name), ['computer', 'playwright']);
-  assert.equal(assistant.specs[0].env.COMPUTER_USE_PROFILE, 'core');
+  if (process.platform === 'win32') assert.equal(assistant.specs[0].env.ROOKERY_COMPUTER_MODE, 'desktop');
+  else assert.equal(assistant.specs[0].env.COMPUTER_USE_PROFILE, 'core');
   // The bundled Playwright launches the browser itself, on its own saved
   // profile - and only when a browser tool is called, never up front.
   assert.match(assistant.specs[1].args[0], /@playwright[\\/]mcp[\\/]cli\.js$/, 'bundled, not npx');
   assert.ok(assistant.specs[1].args.join(' ').includes('--browser chrome'));
   assert.ok(assistant.specs[1].args.includes('--user-data-dir'));
+  assert.ok(assistant.specs[1].args.includes('--init-page'), 'browser includes the native pointer overlay');
   // A fresh profile per turn drops the saved one.
   const fresh = withToolServer(config, 'playwright', { options: { persistent: 'no', headless: 'yes' } });
   const freshSpec = toolServersFor({ ...base, ...fresh }, 'assistant', 'claude').specs[1];
