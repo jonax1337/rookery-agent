@@ -84,7 +84,7 @@ An update backs up `~/.rookery/rookery.db` to `~/.rookery/backups/`, installs th
 
 ```bash
 npm version 0.2.0 --workspaces --include-workspace-root --no-git-tag-version
-git commit -am "release: 0.2.0" && git tag v0.2.0 && git push --follow-tags
+git commit -am "release: 0.2.0" && git tag -a v0.2.0 -m v0.2.0 && git push --follow-tags
 ```
 
 ### From source

@@ -52,7 +52,7 @@ ausschliesslich ueber den Rookery-MCP-Server (`packages/core/src/org/`), nie dir
 | `npm run doctor` | Provider-Diagnose (Anmeldungen und Bruecke), ohne Server |
 | `npm run clean` | `scripts/clean.mjs` |
 | `npm run package` | eigenstaendiges npm-Paket nach `dist/npm` bauen und packen |
-| `git tag vX.Y.Z && git push --follow-tags` | Release: `.github/workflows/release.yml` baut, testet und veroeffentlicht auf npm (Ablauf in `docs/updates.md`) |
+| `git tag -a vX.Y.Z -m vX.Y.Z && git push --follow-tags` | Release: `.github/workflows/release.yml` baut, testet und veroeffentlicht auf npm (Ablauf in `docs/updates.md`) |
 
 Node.js >= 22.5 ist Pflicht (`node:sqlite`, keine native Abhaengigkeit fuer die
 Datenbank).

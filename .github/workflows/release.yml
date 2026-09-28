@@ -1,7 +1,7 @@
 # Publishes a release to npm when a version tag is pushed.
 #
 #   npm version 0.2.0 --workspaces --include-workspace-root --no-git-tag-version
-#   git commit -am "release: 0.2.0" && git tag v0.2.0 && git push --follow-tags
+#   git commit -am "release: 0.2.0" && git tag -a v0.2.0 -m v0.2.0 && git push --follow-tags
 #
 # A tag with a pre-release suffix (v0.2.0-beta.1) goes to the `next` dist-tag,
 # which only installations on the "next" update channel follow; everything
