@@ -139,7 +139,11 @@ test('nobody answers: the call comes back saying so instead of hanging', async (
   const assistant = createAssistant({ questions: { timeoutMs: 40 } });
   const { context, events } = turnContext(assistant);
 
-  const result = await assistant.org.handle(context, 'ask_user', ASK);
+  // The expiry timer is unref'd on purpose - a question nobody answers must
+  // not keep a process alive. In a server the socket holds the event loop
+  // open; here nothing would, and Node 22 ends the run before the timer fires.
+  const keepAlive = setInterval(() => {}, 1000);
+  const result = await assistant.org.handle(context, 'ask_user', ASK).finally(() => clearInterval(keepAlive));
 
   assert.ok(!result.isError, 'a silence is not an error - the turn carries on');
   assert.match(result.text, /No answer within/);

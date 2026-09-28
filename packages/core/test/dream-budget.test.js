@@ -185,6 +185,15 @@ function count(store, table) {
  * can differ by a borderline second-hop query without anything being wrong.
  * A frozen clock alone does not close that hole; a shared snapshot does.
  */
+/**
+ * `DatabaseSync#serialize` arrived in a later Node than the 22.5 Rookery
+ * supports. The two counted runs need it for their shared bank; on an older
+ * Node they are skipped rather than rebuilt on a weaker footing.
+ */
+const SNAPSHOT_SKIP = typeof new Store(':memory:').db.serialize === 'function'
+  ? false
+  : 'node:sqlite serialize() is not available in this Node version';
+
 function bankSnapshot() {
   const template = new Store(':memory:');
   withFrozenClock(() => buildBank(template, { memories: 300, entities: 50, linksPerEntity: 4, edges: 100 }, mulberry32(71)));
@@ -283,7 +292,7 @@ test('possibleSeeds is capped when the lower weight bounds approach zero, and th
   store.close();
 });
 
-test('the recorder costs at most 40 additional prepared statements per turn', async () => {
+test('the recorder costs at most 40 additional prepared statements per turn', { skip: SNAPSHOT_SKIP }, async () => {
   const texts = [
     'What does the harbor report say about the ledger, item 1?',
     'Remind me what we decided about the ferry and the archive in round 2.',
@@ -309,7 +318,7 @@ test('the recorder costs at most 40 additional prepared statements per turn', as
   assert.ok(diffs.every((diff) => diff > 0), 'a framed turn really did extra work: ' + diffs.join(', '));
 });
 
-test('turns outside the sample pay nothing: reads equal the dream-off baseline', async () => {
+test('turns outside the sample pay nothing: reads equal the dream-off baseline', { skip: SNAPSHOT_SKIP }, async () => {
   const texts = [
     'What does the harbor report say about the ledger, item 1?',
     'Remind me what we decided about the ferry and the archive in round 2.',
