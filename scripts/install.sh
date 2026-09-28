@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Installs the released npm package for this user. ROOKERY_VERSION pins a version
+# or dist-tag; ROOKERY_FROM_SOURCE=1 builds the repository archive instead (for
+# trying main before a release).
 set -euo pipefail
 
 if [[ $(uname -s) != Linux ]]; then
@@ -9,7 +12,10 @@ if [[ $EUID == 0 ]]; then
   echo 'Run this installer as your normal user, without sudo, to reuse your provider login.' >&2
   exit 1
 fi
-for command in node npm curl tar; do
+from_source=${ROOKERY_FROM_SOURCE:-0}
+required=(node npm)
+[[ $from_source == 1 ]] && required+=(curl tar)
+for command in "${required[@]}"; do
   command -v "$command" >/dev/null || { echo "Install $command first (Node.js 22.5 or newer is required)." >&2; exit 1; }
 done
 node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a>22||(a===22&&b>=5)?0:1)' || {
@@ -17,19 +23,28 @@ node -e 'const [a,b]=process.versions.node.split(".").map(Number);process.exit(a
   exit 1
 }
 
-install_temp=$(mktemp -d)
-trap 'rm -rf -- "$install_temp"' EXIT
-curl --fail --silent --show-error --location https://github.com/jonax1337/rookery-agent/archive/refs/heads/main.tar.gz -o "$install_temp/source.tar.gz"
-mkdir "$install_temp/source"
-tar -xzf "$install_temp/source.tar.gz" --strip-components=1 -C "$install_temp/source"
-cd "$install_temp/source"
-npm ci --ignore-scripts
-npm run package
-packages=(dist/*.tgz)
-[[ ${#packages[@]} == 1 && -f ${packages[0]} ]] || { echo 'Expected one release package.' >&2; exit 1; }
+if [[ $from_source == 1 ]]; then
+  install_temp=$(mktemp -d)
+  trap 'rm -rf -- "$install_temp"' EXIT
+  curl --fail --silent --show-error --location https://github.com/jonax1337/rookery-agent/archive/refs/heads/main.tar.gz -o "$install_temp/source.tar.gz"
+  mkdir "$install_temp/source"
+  tar -xzf "$install_temp/source.tar.gz" --strip-components=1 -C "$install_temp/source"
+  cd "$install_temp/source"
+  npm ci --ignore-scripts
+  npm run package
+  packages=(dist/*.tgz)
+  [[ ${#packages[@]} == 1 && -f ${packages[0]} ]] || { echo 'Expected one release package.' >&2; exit 1; }
+  spec=${packages[0]}
+else
+  version=${ROOKERY_VERSION:-latest}
+  [[ $version =~ ^[0-9A-Za-z.-]+$ ]] || { echo 'ROOKERY_VERSION must be a version or dist-tag.' >&2; exit 1; }
+  echo "Installing rookery-agent@$version from npm..."
+  spec="rookery-agent@$version"
+fi
 # Per-user installation avoids sudo and leaves the system Node installation alone.
+# Install scripts stay off: the dependencies ship compiled artifacts.
 prefix="$HOME/.local"
-npm install --global --prefix "$prefix" --ignore-scripts "${packages[0]}"
+npm install --global --prefix "$prefix" --ignore-scripts --no-audit --no-fund "$spec"
 export PATH="$prefix/bin:$PATH"
 
 if ! command -v codex >/dev/null && ! command -v claude >/dev/null; then
