@@ -12,6 +12,7 @@ import {
   MailboxIcon,
   PaletteIcon,
   RadioTowerIcon,
+  RefreshCwIcon,
   SlidersHorizontalIcon,
   UserIcon as UserRoundIcon,
   VolumeIcon as Volume2Icon,
@@ -27,6 +28,7 @@ import { SliderField } from '@/components/forms/form-kit';
 import { VoiceKeys } from '@/components/forms/voice-keys';
 import { AssistantProfile } from '@/components/forms/assistant-profile';
 import { AssistantMigration } from '@/components/forms/assistant-migration';
+import { AppUpdates } from '@/components/forms/app-updates';
 import { ProviderIcon } from '@/components/provider-icon';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -122,6 +124,7 @@ import type {
   PublicConfig,
   TtsCatalogue,
   TtsVoice,
+  UpdatesConfig,
   VoiceConfig,
 } from '@/lib/types';
 import { useConfig, useCronState, useSpeechState } from '@/providers/rookery-provider';
@@ -272,11 +275,20 @@ const GROUPS: readonly SectionGroup[] = [
         description: 'Bring your assistant from OpenClaw or Hermes.',
         icon: ImportIcon,
       },
+      {
+        slug: 'updates',
+        label: 'Updates',
+        description: 'Which version runs here, and how new versions are installed.',
+        icon: RefreshCwIcon,
+      },
     ],
   },
 ];
 
 const SECTIONS: readonly SectionMeta[] = GROUPS.flatMap((group) => group.sections);
+
+/** What a server from before the updates setting sends nothing for. */
+const DEFAULT_UPDATES: UpdatesConfig = { mode: 'notify', channel: 'latest' };
 
 /** Where `/settings` alone lands. */
 export const FIRST_SECTION_SLUG = 'profile';
@@ -388,6 +400,11 @@ export function SettingsDialog({ section, onSectionChange, onNavigate, onClose }
   const setOrg = useCallback(
     (patch: Partial<OrgConfig>) =>
       update((currentDraft) => ({ ...currentDraft, org: { ...currentDraft.org, ...patch } })),
+    [update],
+  );
+  const setUpdates = useCallback(
+    (patch: Partial<UpdatesConfig>) =>
+      update((currentDraft) => ({ ...currentDraft, updates: { ...DEFAULT_UPDATES, ...currentDraft.updates, ...patch } })),
     [update],
   );
   // The whole list, every time: `listeners.imap` is an array, and a deep merge
@@ -629,6 +646,11 @@ export function SettingsDialog({ section, onSectionChange, onNavigate, onClose }
                           <ListenersSection draft={draft} setListeners={setListeners} />
                         ) : null}
                         {current.slug === 'appearance' ? <ViewSection /> : null}
+                        {current.slug === 'updates' ? (
+                          <Fade>
+                            <AppUpdates settings={draft.updates ?? DEFAULT_UPDATES} onChange={setUpdates} />
+                          </Fade>
+                        ) : null}
                         {current.slug === 'import' ? (
                           <Fade>
                             <AssistantMigration />

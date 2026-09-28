@@ -17,7 +17,9 @@ for (const name of ['core', 'server', 'cli', 'web']) {
   const target = resolve(out, 'packages', name);
   await cp(resolve(source, 'dist'), resolve(target, 'dist'), { recursive: true });
   const pkg = await readJson(resolve(source, 'package.json'));
-  await writeFile(resolve(target, 'package.json'), JSON.stringify({ name: pkg.name, version: pkg.version, type: 'module' }));
+  // One version for the whole release: the server reports it, and the updater
+  // checks the restarted server against what npm installed.
+  await writeFile(resolve(target, 'package.json'), JSON.stringify({ name: pkg.name, version: manifest.version, type: 'module' }));
   if (name !== 'web') Object.assign(dependencies, pkg.dependencies);
 }
 for (const key of Object.keys(dependencies)) if (key.startsWith('@rookery/')) delete dependencies[key];
@@ -33,8 +35,8 @@ for (const entry of await readdir(resolve(out, 'packages'), { recursive: true, w
   }));
 }
 await mkdir(resolve(out, 'scripts'), { recursive: true });
-await cp(resolve(root, 'scripts/rookery.mjs'), resolve(out, 'scripts/rookery.mjs'));
-for (const file of ['README.md', 'LICENSE', 'docs/migration.md']) {
+for (const script of ['rookery.mjs', 'updater.mjs']) await cp(resolve(root, 'scripts', script), resolve(out, 'scripts', script));
+for (const file of ['README.md', 'LICENSE', 'docs/migration.md', 'docs/updates.md']) {
   await mkdir(dirname(resolve(out, file)), { recursive: true });
   await cp(resolve(root, file), resolve(out, file));
 }
@@ -45,7 +47,7 @@ await writeFile(resolve(out, 'package.json'), JSON.stringify({
   homepage: 'https://github.com/jonax1337/rookery-agent#readme',
   bugs: { url: 'https://github.com/jonax1337/rookery-agent/issues' },
   bin: { rookery: 'scripts/rookery.mjs', rk: 'scripts/rookery.mjs' },
-  files: ['packages/*/dist', 'packages/*/package.json', 'scripts/rookery.mjs', 'docs/migration.md'],
+  files: ['packages/*/dist', 'packages/*/package.json', 'scripts/rookery.mjs', 'scripts/updater.mjs', 'docs/migration.md', 'docs/updates.md'],
   dependencies,
 }, null, 2) + '\n');
 console.log(`Standalone package ready: ${out}`);

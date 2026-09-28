@@ -4,6 +4,7 @@ import type { WebSocket } from '@fastify/websocket';
 import type { GatewayHandle } from './gateways/telegram.js';
 import type { ListenerRegistry } from './listeners/registry.js';
 import type { TurnHub } from './services/turns.js';
+import type { UpdateService } from './services/updates.js';
 
 /**
  * Everything a route needs, handed down explicitly instead of through Fastify
@@ -40,6 +41,8 @@ export interface ServerContext {
    * needs the context to send anything, so the context cannot wait for it.
    */
   readonly gateways: GatewayHandle[];
+  /** Looking for, and installing, new releases from npm. */
+  readonly updates: UpdateService;
   /**
    * Connections held open so a schedule can react instead of poll.
    *
@@ -52,17 +55,23 @@ export interface ServerContext {
   listeners: ListenerRegistry;
 }
 
-/** Package version, read once from our own package.json. */
+/**
+ * The release version: the root package.json's, which is what npm installs
+ * and what the updater checks the restarted server against. The workspace's
+ * own package.json is the fallback for a server embedded somewhere else.
+ */
 export const VERSION: string = readVersion();
 
 function readVersion(): string {
-  try {
-    const url = new URL('../package.json', import.meta.url);
-    const pkg = JSON.parse(readFileSync(url, 'utf8')) as { version?: string };
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
+  for (const path of ['../../../package.json', '../package.json']) {
+    try {
+      const pkg = JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8')) as { name?: string; version?: string };
+      if (pkg.version && (path === '../package.json' || pkg.name === 'rookery-agent')) return pkg.version;
+    } catch {
+      // Try the next one.
+    }
   }
+  return '0.0.0';
 }
 
 /** Every gateway block with its secrets blanked, structure otherwise intact. */
@@ -109,5 +118,6 @@ export function publicConfig(config: RookeryConfig): Record<string, unknown> {
     // keep it" safe to offer. Whether one is actually set, and whether the
     // connection is up, is what GET /api/listeners answers.
     listeners: redactListeners(config.listeners),
+    updates: config.updates,
   };
 }

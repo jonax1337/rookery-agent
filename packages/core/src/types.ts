@@ -1991,6 +1991,8 @@ export interface RookeryConfig {
   router: RouterConfig;
   /** Switching providers when one runs low on quota. */
   providerFallback: ProviderFallbackConfig;
+  /** Whether Rookery looks for, and installs, new releases from npm. */
+  updates: UpdatesConfig;
   /** Name the assistant answers to, used in the persona and as wake word base. */
   assistantName: string;
   userName?: string;
@@ -2335,6 +2337,17 @@ export interface ExternalConfig {
 }
 
 /** The `ask_user` tool: how long a question stays open. */
+/**
+ * Self-updating from the npm registry. `notify` only says a release exists;
+ * `auto` also installs it, but only while nothing is running - no turn, no
+ * agent run, no schedule - because installing restarts the server.
+ */
+export interface UpdatesConfig {
+  mode: 'off' | 'notify' | 'auto';
+  /** npm dist-tag to follow: `latest` for releases, `next` for pre-releases. */
+  channel: 'latest' | 'next';
+}
+
 export interface QuestionsConfig {
   /**
    * Milliseconds a question waits before it resolves itself as unanswered

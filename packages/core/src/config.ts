@@ -341,6 +341,9 @@ export const DEFAULT_CONFIG: RookeryConfig = {
   // switch, not a failed run. The threshold stays just under the wall because
   // windows lag a little behind the turns that fill them.
   providerFallback: { enabled: true, thresholdPercent: 95, order: [] },
+  // Say that a release exists, never install on its own: an update restarts
+  // the server, and that is a choice a person makes once, in Settings.
+  updates: { mode: 'notify', channel: 'latest' },
   // Looking is free and always on; what is found stays out of the way until
   // a person switches it on. See `ExternalConfig`. The three newer shelves -
   // subagents, hook sets, whole plugins - start empty, which means off: a

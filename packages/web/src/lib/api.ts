@@ -66,6 +66,7 @@ import type {
   TaskStatus,
   Team,
   TtsCatalogue,
+  UpdateStatus,
 } from './types';
 
 /**
@@ -292,6 +293,10 @@ export const api = {
     request<{ ok: boolean; version: string; providers: ProviderStatus[] }>('/api/health'),
 
   getConfig: () => request<PublicConfig>('/api/config'),
+  updates: () => request<UpdateStatus>('/api/updates'),
+  checkUpdates: () => request<UpdateStatus>('/api/updates/check', { method: 'POST' }),
+  installUpdate: (force: boolean) =>
+    request<{ from: string; to: string }>('/api/updates/install', { method: 'POST', ...json({ force }) }),
   getProfile: () => request<AssistantProfile>('/api/profile'),
   saveProfileFile: (name: string, content: string) =>
     request<{ ok: true }>('/api/profile/' + encodeURIComponent(name), { method: 'PATCH', ...json({ content }) }),

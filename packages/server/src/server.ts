@@ -12,13 +12,15 @@ import {
   type MemoryLearnedEvent,
   type TuiSessionInfo,
 } from '@rookery/core';
-import type { ServerContext } from './context.js';
+import { VERSION, type ServerContext } from './context.js';
 import { createAuthHook, createSameOriginHook } from './auth.js';
 import { BadRequestError } from './schemas.js';
 import { sendFrame } from './services/stream.js';
 import { TurnHub } from './services/turns.js';
+import { UpdateService } from './services/updates.js';
 import { registerStatic } from './static.js';
 import { registerHealthRoutes } from './routes/health.js';
+import { registerUpdateRoutes } from './routes/updates.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerConfigRoutes } from './routes/config.js';
 import { registerProfileRoutes } from './routes/profile.js';
@@ -57,6 +59,12 @@ function redactUrl(url: string | undefined): string | undefined {
 export interface BuildServerOptions {
   /** Silence Fastify's own request logging - handy in tests. */
   quiet?: boolean;
+  /**
+   * End the process cleanly. Given by the entrypoint, which owns shutdown;
+   * without it an update cannot be installed from the app, because nothing
+   * would stop this server for the updater.
+   */
+  requestShutdown?: () => void;
 }
 
 /**
@@ -80,6 +88,7 @@ export async function buildServer(
   // before the context does, and the context's own field cannot be filled
   // in until the gateway does.
   const gateways: GatewayHandle[] = [];
+  const turns = new TurnHub(log, { events: (id) => assistant.store.turns.events(id) });
   const context: ServerContext = {
     assistant,
     config,
@@ -87,8 +96,9 @@ export async function buildServer(
     sockets: new Set<WebSocket>(),
     assignmentWatchers: new Map(),
     tuiWatchers: new Map(),
-    turns: new TurnHub(log, { events: (id) => assistant.store.turns.events(id) }),
+    turns,
     gateways,
+    updates: new UpdateService({ assistant, turns, log, version: VERSION, requestShutdown: options.requestShutdown }),
     // Replaced on the next line. A listener fires a schedule through the
     // context, so it cannot be built before the context it fires through.
     listeners: undefined as never,
@@ -149,6 +159,7 @@ export async function buildServer(
   app.addHook('preHandler', createSameOriginHook());
 
   await registerHealthRoutes(app, context);
+  await registerUpdateRoutes(app, context);
   await registerStatsRoutes(app, context);
   await registerConfigRoutes(app, context);
   await registerProfileRoutes(app, context);
@@ -384,8 +395,11 @@ export async function buildServer(
   }, HEARTBEAT_MS);
   heartbeat.unref?.();
 
+  context.updates.start();
+
   app.addHook('onClose', async () => {
     clearInterval(heartbeat);
+    context.updates.stop();
     assistant.cron.stop();
     assistant.off('memory', onMemory);
     assistant.off('assignment', onAssignment);

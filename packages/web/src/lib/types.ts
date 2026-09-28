@@ -1387,6 +1387,44 @@ export interface PublicConfig {
   listeners: ListenersConfig;
   router?: RouterConfig;
   providerFallback?: ProviderFallbackConfig;
+  updates: UpdatesConfig;
+}
+
+/* ------------------------------- updates ------------------------------- */
+
+export interface UpdatesConfig {
+  mode: 'off' | 'notify' | 'auto';
+  /** npm dist-tag followed: `latest` for releases, `next` for pre-releases. */
+  channel: 'latest' | 'next';
+}
+
+export interface UpdateResult {
+  ok: boolean;
+  from: string;
+  to: string;
+  at: string;
+  error?: string;
+  rolledBack?: boolean;
+}
+
+/** GET /api/updates. */
+export interface UpdateStatus {
+  current: string;
+  latest: string | null;
+  available: boolean;
+  checkedAt: string | null;
+  error: string | null;
+  checking: boolean;
+  installing: boolean;
+  mode: UpdatesConfig['mode'];
+  channel: UpdatesConfig['channel'];
+  installable: boolean;
+  /** Why this installation cannot replace itself; null when it can. */
+  reason: string | null;
+  /** What is running and would be cut off by an install. */
+  busy: string[];
+  lastResult: UpdateResult | null;
+  releaseNotesUrl: string | null;
 }
 
 /* ------------------------------ tool hub ------------------------------ */

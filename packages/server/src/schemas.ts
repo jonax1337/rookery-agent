@@ -546,6 +546,9 @@ export const patchConfigSchema = z
         order: z.array(providerIdSchema).max(20),
       })
       .partial(),
+    updates: z
+      .object({ mode: z.enum(['off', 'notify', 'auto']), channel: z.enum(['latest', 'next']) })
+      .partial(),
   })
   .partial();
 

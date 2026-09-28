@@ -383,6 +383,11 @@ export class OrgController extends EventEmitter {
     return this.#bridge;
   }
 
+  /** Assignments and tasks queued or running in this process. */
+  get activeCount(): number {
+    return this.#active.size + this.#activeTasks.size;
+  }
+
   /* ------------------------------ structure ------------------------------ */
 
   /** The company the assistant runs. Created on first use so there is always one. */
