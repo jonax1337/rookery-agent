@@ -7,6 +7,7 @@ import { AssignmentTerminal } from '@/components/common/assignment-terminal';
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 import { useConnection } from '@/providers/rookery-provider';
 import type { AssignmentStatus, TuiSessionInfo } from '@/lib/types';
 import { cn } from '@/lib/utils';
@@ -45,7 +46,25 @@ export interface RunTerminalProps {
   showHeader?: boolean;
   /** Called with the terminal's state whenever it changes; `null` once it is gone. */
   onInfo?: (info: TuiSessionInfo | null) => void;
+  /**
+   * Put the keyboard in the terminal as soon as it is there - and again
+   * whenever this turns true, e.g. when its tab is picked.
+   */
+  autoFocus?: boolean;
   className?: string;
+}
+
+const ESC = String.fromCharCode(27);
+
+/** Whether output carries anything a person can see, not only control sequences. */
+function hasVisibleText(data: string): boolean {
+  return /[^\s]/.test(
+    data
+      .split(ESC)
+      .join('')
+      .replace(/\][^\x07]*\x07/g, '')
+      .replace(/\[[0-9;?>]*[ -/]*[@-~]/g, ''),
+  );
 }
 
 export function RunTerminal({
@@ -54,6 +73,7 @@ export function RunTerminal({
   fallback,
   showHeader = true,
   onInfo,
+  autoFocus = false,
   className,
 }: RunTerminalProps) {
   const { socket } = useConnection();
@@ -64,12 +84,22 @@ export function RunTerminal({
   // `undefined` while the server has not answered yet, `null` when the run
   // has no open terminal - headless, or already killed.
   const [info, setInfo] = useState<TuiSessionInfo | null | undefined>(undefined);
+  // Claude Code needs a second or two before it paints anything; until then
+  // the box says it is starting instead of standing there black.
+  const [painted, setPainted] = useState(false);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     // Another run on the same page: ask again instead of trusting the last answer.
     setInfo(undefined);
+    setPainted(false);
+    let seen = false;
+    const note = (data: string): void => {
+      if (seen || !hasVisibleText(data)) return;
+      seen = true;
+      setPainted(true);
+    };
     const term = new Terminal({
       fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim() || 'monospace',
       fontSize: 13,
@@ -90,10 +120,14 @@ export function RunTerminal({
         // A snapshot is the whole screen history: start from a clean slate,
         // or a reconnect would paint it twice.
         term.reset();
-        if (frame.data) term.write(frame.data);
+        if (frame.data) {
+          term.write(frame.data);
+          note(frame.data);
+        }
         setInfo(frame.info);
       } else if (frame.type === 'tui-data') {
         term.write(frame.data);
+        note(frame.data);
       } else {
         setInfo(frame.info.state === 'exited' ? null : frame.info);
       }
@@ -139,8 +173,27 @@ export function RunTerminal({
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(host);
-    return () => observer.disconnect();
-  }, [live, socket, assignmentId]);
+    // xterm measures its character cell once, and a first measurement taken
+    // before the monospace web font arrived left the process at half the
+    // width it had. Measure again once the fonts are in, and once the TUI
+    // starts drawing - resetting the font family makes xterm re-measure.
+    let disposed = false;
+    void document.fonts?.ready.then(() => {
+      if (disposed) return;
+      term.options.fontFamily = term.options.fontFamily;
+      apply();
+    });
+    const settle = setTimeout(apply, 400);
+    return () => {
+      disposed = true;
+      clearTimeout(settle);
+      observer.disconnect();
+    };
+  }, [live, painted, socket, assignmentId]);
+
+  useEffect(() => {
+    if (autoFocus && live) termRef.current?.focus();
+  }, [autoFocus, live, painted]);
 
   const close = async (): Promise<void> => {
     if (info?.state === 'running') {
@@ -175,14 +228,21 @@ export function RunTerminal({
       {/* Mounted from the start so no output is lost while the server answers;
           hidden until there is a terminal to show. */}
       <div
-        ref={hostRef}
         className={cn(
-          'min-h-[320px] overflow-hidden rounded-lg border p-2',
+          'relative min-h-[320px] overflow-hidden rounded-lg border',
           showHeader ? 'h-[560px]' : 'flex-1',
           !live && 'hidden',
         )}
         style={{ background: THEME.background }}
-      />
+      >
+        <div ref={hostRef} className="absolute inset-0 p-2" />
+        {live && !painted ? (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
+            Starting Claude Code…
+          </div>
+        ) : null}
+      </div>
       {info === null
         ? (fallback ?? <AssignmentTerminal assignmentId={assignmentId} {...(status ? { status } : {})} />)
         : null}

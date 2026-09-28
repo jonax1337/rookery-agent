@@ -195,6 +195,19 @@ export class TuiSessionRegistry extends EventEmitter {
     }
   }
 
+  /**
+   * Work started (again): a person typed into a conversation terminal. The
+   * countdown a finished turn set is off while Claude is working.
+   */
+  markRunning(key: string): void {
+    const session = this.#sessions.get(key);
+    if (!session) return;
+    clearTimeout(session.lingerTimer);
+    if (session.info.state === 'running') return;
+    session.info.state = 'running';
+    this.emit('state', { ...session.info });
+  }
+
   /** The work is over: the terminal stays open, then goes. */
   linger(key: string): void {
     const session = this.#sessions.get(key);
@@ -722,6 +735,9 @@ export async function startConversationTerminal(
   handlers: TuiConversationHandlers,
 ): Promise<void> {
   const watch = await spawnTerminal({ ...spec, lingerMs: CONVERSATION_IDLE_MS }, resumed);
+  // A conversation terminal waits for its person first - idle, not working,
+  // and closed by itself after an hour of nobody typing.
+  tuiSessions.linger(spec.key);
   void (async () => {
     let prompts: string[] = [];
     let events: AgentEvent[] = [];
@@ -730,6 +746,7 @@ export async function startConversationTerminal(
       if (event.type === 'status' && event.label === 'input' && event.detail) {
         if (prompts.length === 0 && events.length === 0) turnStarted = Date.now();
         prompts.push(event.detail);
+        tuiSessions.markRunning(spec.key);
       } else if (event.type === 'text' || event.type === 'thinking' || event.type === 'tool') {
         events.push(event);
       }
@@ -762,6 +779,8 @@ export async function startConversationTerminal(
           }
           prompts = [];
           events = [];
+          // Answered: waiting for the person again.
+          tuiSessions.linger(spec.key);
         }
         if (Date.now() - watch.lastActivity > CONVERSATION_IDLE_MS) tuiSessions.kill(spec.key);
       }

@@ -15,6 +15,7 @@ import { EmptyState } from '@/components/common/empty-state';
 import { RunTerminal } from '@/components/common/run-terminal';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { api } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
@@ -61,6 +62,8 @@ export function WorkspacePage() {
     readStored('rookery.workspace.layout') === 'grid' ? 'grid' : 'tabs',
   );
   const [opening, setOpening] = React.useState(false);
+  /** The terminal the keyboard should go to: the one just picked or opened. */
+  const [focusKey, setFocusKey] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -74,7 +77,8 @@ export function WorkspacePage() {
   React.useEffect(() => {
     void load();
     return socket.onChanged((change) => {
-      if (change.kind === 'terminals') void load();
+      // A conversation's title arrives after its first answer, as a session change.
+      if (change.kind === 'terminals' || change.kind === 'session') void load();
     });
   }, [load, socket]);
 
@@ -83,6 +87,7 @@ export function WorkspacePage() {
 
   const select = (key: string): void => {
     setActive(key);
+    setFocusKey(key);
     writeStored('rookery.workspace.active', key);
   };
 
@@ -90,13 +95,20 @@ export function WorkspacePage() {
     setOpening(true);
     try {
       const opened = await socket.openTui({
-        provider: turn.provider,
-        ...(turn.model ? { model: turn.model } : {}),
-        ...(turn.effort ? { effort: turn.effort } : {}),
-        permission: turn.permission,
+        // Before the composer has loaded, its values are placeholders; the
+        // server's saved defaults are the right answer then.
+        ...(turn.ready
+          ? {
+              provider: turn.provider,
+              ...(turn.model ? { model: turn.model } : {}),
+              ...(turn.effort ? { effort: turn.effort } : {}),
+              permission: turn.permission,
+            }
+          : {}),
         ...(turn.projectId ? { projectId: turn.projectId } : {}),
       });
       setActive(opened.key);
+      setFocusKey(opened.key);
       writeStored('rookery.workspace.active', opened.key);
       await load();
     } catch (caught) {
@@ -104,7 +116,7 @@ export function WorkspacePage() {
     } finally {
       setOpening(false);
     }
-  }, [load, socket, turn.effort, turn.model, turn.permission, turn.projectId, turn.provider]);
+  }, [load, socket, turn.effort, turn.model, turn.permission, turn.projectId, turn.provider, turn.ready]);
 
   const close = React.useCallback(
     async (terminal: TerminalView) => {
@@ -158,8 +170,8 @@ export function WorkspacePage() {
             </ToggleGroupItem>
           </ToggleGroup>
           <Button type="button" size="sm" disabled={opening} onClick={() => void openNew()}>
-            <PlusIcon />
-            New terminal
+            {opening ? <Spinner /> : <PlusIcon />}
+            {opening ? 'Opening…' : 'New terminal'}
           </Button>
         </div>
       ),
@@ -203,7 +215,9 @@ export function WorkspacePage() {
       <div
         className={cn(
           'min-h-0 flex-1',
-          layout === 'grid' ? 'grid auto-rows-[minmax(420px,1fr)] gap-3 overflow-y-auto lg:grid-cols-2' : 'flex flex-col',
+          layout === 'grid'
+            ? cn('grid auto-rows-[minmax(420px,1fr)] gap-3 overflow-y-auto', terminals.length > 1 && 'lg:grid-cols-2')
+            : 'flex flex-col',
         )}
       >
         {terminals.map((terminal) => {
@@ -219,6 +233,7 @@ export function WorkspacePage() {
               <RunTerminal
                 assignmentId={terminal.key}
                 showHeader={false}
+                autoFocus={layout === 'tabs' ? terminal.key === current?.key : terminal.key === focusKey}
                 className="min-h-0 flex-1"
                 fallback={<p className="m-auto text-sm text-muted-foreground">This terminal has closed.</p>}
               />
@@ -231,11 +246,21 @@ export function WorkspacePage() {
   );
 }
 
-function StateDot({ state }: { state: TerminalView['state'] }) {
+/**
+ * Working, or not: a conversation terminal that answered is waiting for its
+ * person, a run that answered is done and only lingering.
+ */
+function StateDot({ state, kind }: { state: TerminalView['state']; kind: TerminalView['kind'] }) {
+  const label = state === 'running' ? 'Working' : kind === 'chat' ? 'Waiting for you' : 'Done';
   return (
     <span
-      aria-label={state === 'running' ? 'Working' : 'Idle'}
-      className={cn('size-2 shrink-0 rounded-full', state === 'running' ? 'bg-primary' : 'bg-muted-foreground/50')}
+      role="img"
+      aria-label={label}
+      title={label}
+      className={cn(
+        'size-2 shrink-0 rounded-full',
+        state === 'running' ? 'animate-pulse bg-primary' : 'bg-muted-foreground/50',
+      )}
     />
   );
 }
@@ -270,7 +295,7 @@ function TerminalTab({ terminal, selected, onSelect, onClose }: TerminalTabProps
         onClick={onSelect}
         className="flex min-w-0 items-center gap-2 text-left outline-none"
       >
-        <StateDot state={terminal.state} />
+        <StateDot state={terminal.state} kind={terminal.kind} />
         <KindIcon kind={terminal.kind} />
         <span className="min-w-0 truncate">{terminal.title}</span>
         {terminal.subtitle ? <span className="shrink-0 text-xs text-muted-foreground">{terminal.subtitle}</span> : null}
@@ -291,7 +316,7 @@ function TerminalHeader({ terminal, onClose }: { terminal: TerminalView; onClose
   const link = terminal.kind === 'chat' ? '/c/' + terminal.id : '/assignments/' + terminal.id;
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">
-      <StateDot state={terminal.state} />
+      <StateDot state={terminal.state} kind={terminal.kind} />
       <KindIcon kind={terminal.kind} />
       <span className="min-w-0 truncate font-medium">{terminal.title}</span>
       {terminal.subtitle ? <span className="shrink-0 text-xs text-muted-foreground">{terminal.subtitle}</span> : null}

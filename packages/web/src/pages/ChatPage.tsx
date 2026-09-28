@@ -269,16 +269,40 @@ export function ChatPage() {
   const [mode, setMode] = React.useState<ChatMode>(() => readChatMode(activeId));
   const [opening, setOpening] = React.useState(false);
   React.useEffect(() => setMode(readChatMode(activeId)), [activeId]);
+  // A terminal opened elsewhere - the workspace, another tab - is this
+  // conversation's terminal too; showing the chat beside it would pretend
+  // the conversation were not in the terminal at all.
+  React.useEffect(() => {
+    if (!activeId) return;
+    let live = true;
+    void api
+      .terminals()
+      .then((open) => {
+        if (!live || !open.some((entry) => entry.key === 'chat:' + activeId)) return;
+        writeChatMode(activeId, 'terminal');
+        setMode('terminal');
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [activeId]);
 
   const openTerminal = React.useCallback(async (): Promise<void> => {
     setOpening(true);
     try {
       const opened = await socket.openTui({
         ...(activeId ? { sessionId: activeId } : {}),
-        provider: turn.provider,
-        ...(turn.model ? { model: turn.model } : {}),
-        ...(turn.effort ? { effort: turn.effort } : {}),
-        permission: turn.permission,
+        // Before the composer has loaded, its values are placeholders; the
+        // server's saved defaults are the right answer then.
+        ...(turn.ready
+          ? {
+              provider: turn.provider,
+              ...(turn.model ? { model: turn.model } : {}),
+              ...(turn.effort ? { effort: turn.effort } : {}),
+              permission: turn.permission,
+            }
+          : {}),
         ...(turn.projectId ? { projectId: turn.projectId } : {}),
       });
       writeChatMode(opened.sessionId, 'terminal');
@@ -291,7 +315,7 @@ export function ChatPage() {
     } finally {
       setOpening(false);
     }
-  }, [activeId, allSessions, openConversation, socket, turn.effort, turn.model, turn.permission, turn.projectId, turn.provider]);
+  }, [activeId, allSessions, openConversation, socket, turn.effort, turn.model, turn.permission, turn.projectId, turn.provider, turn.ready]);
 
   const loadSession = sessions.load;
   const setMessages = chat.setMessages;
@@ -520,6 +544,7 @@ export function ChatPage() {
             key={activeId}
             assignmentId={'chat:' + activeId}
             showHeader={false}
+            autoFocus
             className="min-h-0 flex-1"
             fallback={
               <EmptyStateCard
