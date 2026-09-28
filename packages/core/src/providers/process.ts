@@ -121,7 +121,7 @@ export function spawnCli(binary: ResolvedBinary, options: SpawnOptions): SpawnHa
 }
 
 /** Quote an argv for cmd.exe verbatim mode. */
-function quoteForCmd(argv: string[]): string {
+export function quoteForCmd(argv: string[]): string {
   return argv
     .map((arg) => {
       if (arg === '') return '""';

@@ -1778,6 +1778,20 @@ function OrgSection({
             onCheckedChange={(on) => setOrg({ roleplay: on })}
           />
         </Field>
+
+        <Field orientation="horizontal">
+          <FieldContent>
+            <FieldLabel htmlFor="set-interactive-runs">Visible Claude Code terminal</FieldLabel>
+            <FieldDescription>
+              Agents work in Claude Code's full terminal, which you can watch and type into from the run page. When the work is done it stays open for ten minutes, then only the transcript remains. Off runs them headless.
+            </FieldDescription>
+          </FieldContent>
+          <Switch
+            id="set-interactive-runs"
+            checked={draft.org.interactiveRuns}
+            onCheckedChange={(on) => setOrg({ interactiveRuns: on })}
+          />
+        </Field>
       </FieldSet>
     </Fade>
   );

@@ -1821,6 +1821,14 @@ export interface ProviderTurnOptions {
    * the same shelf would stand there twice.
    */
   pluginDirs?: string[];
+  /**
+   * Run Claude Code with its full TUI in a pseudo terminal instead of as a
+   * headless print run (`providers/claude-tui.ts`). `key` names the terminal
+   * - an assignment id - so the server can stream it to whoever watches.
+   * Providers without a terminal, or a system without the pty binding,
+   * ignore it and run headless.
+   */
+  tui?: { key: string; lingerMs?: number };
   signal?: AbortSignal;
 }
 
@@ -2361,6 +2369,13 @@ export interface OrgConfig {
    * per-agent (decision E6/F6): the tone is a property of the company.
    */
   roleplay: boolean;
+  /**
+   * Agents work in a visible Claude Code terminal (the full TUI in a pseudo
+   * terminal, watchable and typeable from the run page) rather than as a
+   * headless print run. The result is the same either way; off saves the
+   * terminal's memory and the minutes it stays open after the work.
+   */
+  interactiveRuns: boolean;
   /** Explicitly chosen company; the newest one otherwise. */
   activeOrganizationId?: string;
 }

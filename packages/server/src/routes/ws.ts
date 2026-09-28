@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { WebSocket } from '@fastify/websocket';
+import { tuiSessions } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import { isAuthorized, requireSameOrigin } from '../auth.js';
 import { clientFrameSchema, formatIssues } from '../schemas.js';
@@ -100,6 +101,52 @@ export async function registerWebsocketRoutes(
             return;
           }
 
+          // A run's Claude Code terminal. Subscribing first, snapshot
+          // second: output that arrives in between is sent twice at worst,
+          // never lost.
+          case 'tui-watch': {
+            const { assignmentId } = frame.data;
+            let watched = context.tuiWatchers.get(socket);
+            if (!watched) {
+              watched = new Set();
+              context.tuiWatchers.set(socket, watched);
+            }
+            watched.add(assignmentId);
+            const snapshot = tuiSessions.snapshot(assignmentId);
+            sendFrame(socket, {
+              type: 'tui-snapshot',
+              assignmentId,
+              info: snapshot?.info ?? null,
+              data: snapshot?.data ?? '',
+            });
+            return;
+          }
+
+          case 'tui-unwatch': {
+            const watched = context.tuiWatchers.get(socket);
+            if (!watched) return;
+            watched.delete(frame.data.assignmentId);
+            if (watched.size === 0) context.tuiWatchers.delete(socket);
+            return;
+          }
+
+          // Keystrokes into the agent's terminal - the person taking over.
+          // The socket is authorised and same-origin, which is the same bar
+          // every other write frame on it clears.
+          case 'tui-input':
+            tuiSessions.write(frame.data.assignmentId, frame.data.data);
+            return;
+
+          case 'tui-resize':
+            tuiSessions.resize(frame.data.assignmentId, frame.data.cols, frame.data.rows);
+            return;
+
+          // Closing the terminal ends the process; a run that was still
+          // working fails the same way it would if Claude Code crashed.
+          case 'tui-kill':
+            tuiSessions.kill(frame.data.assignmentId);
+            return;
+
           // An answer to a question the assistant asked. Deliberately not
           // looked up in the hub: the id is the question's, and the turn
           // blocked on it may have been started on another connection, in
@@ -181,6 +228,7 @@ export async function registerWebsocketRoutes(
         context.sockets.delete(socket);
         // A terminal window closing stops the watching, never the run.
         context.assignmentWatchers.delete(socket);
+        context.tuiWatchers.delete(socket);
         context.log.debug('Websocket closed', { open: context.sockets.size });
       });
 

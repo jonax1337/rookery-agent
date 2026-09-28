@@ -20,6 +20,7 @@ import { sharedRouterManager } from './router.js';
 import { sharedCodexBridge } from './codex-bridge.js';
 import { codexContextWindow } from './provider-catalog.js';
 import { TOOL_INPUT_LIMIT, canonicalJson, hashCanonicalJson } from '../memory/dream/trajectory.js';
+import { loadPty, runTui, stopHookCommand, tuiSessions } from './claude-tui.js';
 
 /** The built-in `claude` provider: OAuth login, no endpoint override. */
 const BUILTIN_PROFILE: ProviderProfile = {
@@ -218,13 +219,20 @@ export class ClaudeCodeProvider implements Provider {
       return;
     }
 
-    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+    // A terminal run is the same command line minus the print-mode flags:
+    // the TUI paints for a person, the transcript and a Stop hook tell
+    // Rookery what happened (see claude-tui.ts). Without the pty binding it
+    // quietly stays a print run.
+    const tui = options.tui && (await loadPty()) ? options.tui : undefined;
+    const args = tui ? [] : ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
 
+    // Pinned up front so the caller can resume even if the turn is cut short,
+    // and so a terminal run knows which transcript file is its own.
+    const pinnedSessionId = options.providerSessionId ?? randomUUID();
     if (options.providerSessionId) {
       args.push('--resume', options.providerSessionId);
     } else {
-      // Pin the id up front so the caller can resume even if the turn is cut short.
-      args.push('--session-id', randomUUID());
+      args.push('--session-id', pinnedSessionId);
     }
     const model = options.model ?? this.#profile.defaultModel;
     if (model) args.push('--model', model);
@@ -269,12 +277,77 @@ export class ClaudeCodeProvider implements Provider {
     // `--settings` carries Rookery's own `permissions.deny` floor even when
     // nobody approved a single hook, so a `full` turn finally has limits
     // between it and `--dangerously-skip-permissions`.
-    const handoff = await writeHandoffDir(options);
+    //
+    // A terminal run adds its Stop hook here, into the same settings file:
+    // the hook is how it learns that the agent is done.
+    let tuiDir: string | undefined;
+    let markerFile: string | undefined;
+    let turnOptions = options;
+    if (tui) {
+      tuiDir = await mkdtemp(join(tmpdir(), 'rookery-tui-'));
+      markerFile = join(tuiDir, 'stop.json');
+      await writeFile(markerFile, '');
+      turnOptions = { ...options, settings: withStopHook(options.settings, stopHookCommand(markerFile)) };
+    }
+    const handoff = await writeHandoffDir(turnOptions);
     if (handoff.settingsFile) args.push('--settings', handoff.settingsFile);
     // A plugin trusted outright comes in whole, folder and all; the curated
     // skills, agents and hooks of that same source are left out upstream.
     for (const dir of [...(options.pluginDirs ?? []), ...(handoff.dir ? [handoff.dir] : [])]) {
       args.push('--plugin-dir', dir);
+    }
+
+    const env: NodeJS.ProcessEnv = {
+      CLAUDE_CODE_ENTRYPOINT: 'rookery',
+      // An assignment can run for many minutes; the default tool timeout
+      // would cut the assistant's `assign` call off long before that.
+      MCP_TOOL_TIMEOUT: String(6 * 60 * 60 * 1000),
+      MCP_TIMEOUT: String(60 * 1000),
+      ...(await this.#resolveEnv(model)),
+    };
+
+    if (tui && tuiDir && markerFile) {
+      yield {
+        type: 'session',
+        sessionId: pinnedSessionId,
+        providerSessionId: pinnedSessionId,
+        provider: this.id,
+        ...(model ? { model } : {}),
+      };
+      const dir = tuiDir;
+      // The terminal outlives this generator, so its files do too: they go
+      // when the process exits, not when the work is reported done.
+      const cleanup = (): void => {
+        handoff.cleanup();
+        void rm(dir, { recursive: true, force: true }).catch(() => {});
+      };
+      let failed = false;
+      try {
+        yield* runTui({
+          key: tui.key,
+          binary,
+          args,
+          prompt: options.prompt,
+          ...(options.cwd ? { cwd: options.cwd } : {}),
+          env,
+          ...(options.signal ? { signal: options.signal } : {}),
+          sessionId: pinnedSessionId,
+          workDir: dir,
+          markerFile,
+          mapEntry: transcriptMapper(),
+          cleanup,
+          ...(tui.lingerMs !== undefined ? { lingerMs: tui.lingerMs } : {}),
+        });
+      } catch (error) {
+        failed = true;
+        cleanup();
+        yield { type: 'error', message: (error as Error).message, fatal: true };
+      } finally {
+        // Walked away from before the terminal existed: nobody else will
+        // ever remove these folders. Once it exists, its exit does.
+        if (!failed && tuiSessions.info(tui.key)?.providerSessionId !== pinnedSessionId) cleanup();
+      }
+      return;
     }
 
     const handle = spawnCli(binary, {
@@ -283,14 +356,7 @@ export class ClaudeCodeProvider implements Provider {
       // The prompt travels over stdin so a long turn never hits the OS argv limit.
       stdin: options.prompt,
       signal: options.signal,
-      env: {
-        CLAUDE_CODE_ENTRYPOINT: 'rookery',
-        // An assignment can run for many minutes; the default tool timeout
-        // would cut the assistant's `assign` call off long before that.
-        MCP_TOOL_TIMEOUT: String(6 * 60 * 60 * 1000),
-        MCP_TIMEOUT: String(60 * 1000),
-        ...(await this.#resolveEnv(model)),
-      },
+      env,
     });
 
     const started = Date.now();
@@ -524,6 +590,76 @@ export function mcpConfig(servers: McpServerSpec[]): Record<string, unknown> {
           };
   }
   return { mcpServers };
+}
+
+/** Rookery's settings for the turn, with one more Stop handler appended. */
+function withStopHook(
+  settings: ProviderTurnOptions['settings'],
+  command: string,
+): NonNullable<ProviderTurnOptions['settings']> {
+  const base = settings ?? {};
+  const hooks = (base.hooks && typeof base.hooks === 'object' ? base.hooks : {}) as Record<string, unknown[]>;
+  const stop = Array.isArray(hooks.Stop) ? hooks.Stop : [];
+  return {
+    ...base,
+    hooks: { ...hooks, Stop: [...stop, { hooks: [{ type: 'command', command }] }] },
+  };
+}
+
+/**
+ * Transcript entries to the events a print run streams. The transcript holds
+ * whole content blocks rather than deltas, so each text block arrives as one
+ * `text` event; blocks after the first get a paragraph break in front, where
+ * the stream would have started a new message.
+ */
+function transcriptMapper(): (entry: Record<string, unknown>) => AgentEvent[] {
+  const toolNames = new Map<string, string>();
+  let hadText = false;
+  return (entry) => {
+    const events: AgentEvent[] = [];
+    const message = entry.message as Record<string, unknown> | undefined;
+    if (entry.type === 'assistant') {
+      for (const block of asArray(message?.content)) {
+        if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+          events.push({ type: 'text', delta: (hadText ? '\n\n' : '') + block.text });
+          hadText = true;
+        } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
+          events.push({ type: 'thinking', delta: block.thinking });
+        } else if (block.type === 'tool_use') {
+          const name = String(block.name ?? 'tool');
+          const id = block.id as string | undefined;
+          if (id) toolNames.set(id, name);
+          events.push({
+            type: 'tool',
+            name,
+            status: 'start',
+            id,
+            detail: summariseInput(block.input),
+            ...recordedInput(block.input),
+          });
+        }
+      }
+    } else if (entry.type === 'user') {
+      for (const block of asArray(message?.content)) {
+        if (block.type !== 'tool_result') continue;
+        const id = block.tool_use_id as string | undefined;
+        const name = (id !== undefined ? toolNames.get(id) : undefined) ?? 'tool';
+        if (id !== undefined) toolNames.delete(id);
+        events.push({
+          type: 'tool',
+          name,
+          status: 'end',
+          id,
+          result:
+            typeof block.content === 'string'
+              ? block.content.slice(0, 16000)
+              : JSON.stringify(block.content)?.slice(0, 16000),
+          isError: block.is_error === true,
+        });
+      }
+    }
+    return events;
+  };
 }
 
 function asArray(value: unknown): Record<string, unknown>[] {

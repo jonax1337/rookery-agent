@@ -2328,6 +2328,9 @@ export class OrgController extends EventEmitter {
               // Approved subagents and hooks out of the Claude Code
               // installation, plus Rookery's own permission floor.
               ...externalTurnExtras(this.#config, 'agent'),
+              // A visible Claude Code terminal per run, keyed by the run so
+              // the server can stream it to whoever opens the run's page.
+              ...(this.#config.org.interactiveRuns ? { tui: { key: assignment.id } } : {}),
               signal: controller.signal,
             })) {
               if (event.type === 'text') {

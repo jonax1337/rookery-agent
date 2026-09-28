@@ -392,6 +392,7 @@ const orgConfigSchema = z
     autoReview: z.boolean(),
     autoReconfig: z.boolean(),
     roleplay: z.boolean(),
+    interactiveRuns: z.boolean(),
     activeOrganizationId: z.string().min(1),
   })
   .partial();
@@ -609,6 +610,19 @@ export const clientFrameSchema = z.discriminatedUnion('type', [
   // `unwatch` frame is the whole lifecycle.
   z.object({ type: z.literal('watch'), assignmentId: z.string().min(1) }),
   z.object({ type: z.literal('unwatch'), assignmentId: z.string().min(1) }),
+  // The Claude Code terminal of a run, when it runs as one: `tui-watch`
+  // replies with the screen so far and then streams it; input, resize and
+  // kill act on the terminal itself, never on the run's bookkeeping.
+  z.object({ type: z.literal('tui-watch'), assignmentId: z.string().min(1) }),
+  z.object({ type: z.literal('tui-unwatch'), assignmentId: z.string().min(1) }),
+  z.object({ type: z.literal('tui-input'), assignmentId: z.string().min(1), data: z.string().min(1).max(64_000) }),
+  z.object({
+    type: z.literal('tui-resize'),
+    assignmentId: z.string().min(1),
+    cols: z.number().int().min(20).max(400),
+    rows: z.number().int().min(5).max(200),
+  }),
+  z.object({ type: z.literal('tui-kill'), assignmentId: z.string().min(1) }),
   // An answer to a question the assistant asked. The id is the question's,
   // not a turn's: the turn waiting on it may have been started on another
   // connection entirely, so this frame carries no request id and gets no

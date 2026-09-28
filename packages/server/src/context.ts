@@ -26,6 +26,8 @@ export interface ServerContext {
    * never keeps it alive, and leaving never stops it).
    */
   readonly assignmentWatchers: Map<WebSocket, Set<string>>;
+  /** Same shape for the Claude Code terminals of runs (`tui-watch`). */
+  readonly tuiWatchers: Map<WebSocket, Set<string>>;
   /**
    * The turns in flight, drained server-side and fanned out to whichever
    * sockets attached to their conversation. Routing only - the journal in

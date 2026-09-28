@@ -275,6 +275,13 @@ export {
 } from './memory/extractor.js';
 
 export { ClaudeCodeProvider } from './providers/claude-code.js';
+export {
+  tuiSessions,
+  TuiSessionRegistry,
+  TUI_LINGER_MS,
+  type TuiSessionInfo,
+  type TuiState,
+} from './providers/claude-tui.js';
 export { ProviderRegistry } from './providers/registry.js';
 export {
   providerQuota,
