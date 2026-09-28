@@ -1760,6 +1760,20 @@ export interface TuiSessionInfo {
   rows: number;
 }
 
+/** One open Claude Code terminal, as the workspace lists it (`GET /api/terminals`). */
+export interface TerminalView {
+  /** What `tui-watch` takes: a run's assignment id, or `chat:<session id>`. */
+  key: string;
+  kind: 'chat' | 'run';
+  /** The conversation's session id, or the run's assignment id. */
+  id: string;
+  title: string;
+  /** The agent's name for a run; empty for a conversation. */
+  subtitle: string;
+  state: TuiSessionInfo['state'];
+  startedAt: number;
+}
+
 /** One structural change somewhere in the company. */
 export interface OrgChange {
   kind: string;

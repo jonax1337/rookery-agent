@@ -39,6 +39,7 @@ import { ToolDetailPage } from './pages/ToolDetailPage';
 import { ToolFormPage } from './pages/ToolFormPage';
 import { ToolsPage } from './pages/ToolsPage';
 import { VoicePage } from './pages/VoicePage';
+import { WorkspacePage } from './pages/WorkspacePage';
 
 /**
  * The route table, and nothing else.
@@ -99,6 +100,7 @@ export default function App() {
               itself writes into it too, so it sits beside Conversations rather
               than under /org. See `InboxPage`'s own comment. */}
           <Route path="/inbox" element={<InboxPage />} />
+          <Route path="/workspace" element={<WorkspacePage />} />
           <Route path="/dashboard" element={<DashboardPage />} />
 
           {/* ------------------------------- betrieb ---------------------- */}

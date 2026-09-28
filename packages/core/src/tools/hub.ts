@@ -372,6 +372,11 @@ export function withExternalApproval(
  * documents - `Tool(prefix:*)` for a command, a gitignore-style path for a
  * file - because a rule it cannot parse would take the whole settings
  * document, hooks included, down with it.
+ *
+ * File writes are denied with `Edit(path)` alone: Claude Code matches every
+ * file-editing tool (Write included) against Edit rules, and reports a
+ * `Write(path)` rule as never matched - a wall of warnings on every
+ * terminal start, and no protection the Edit rule did not already give.
  */
 export const PERMISSION_DENY_BASELINE: readonly string[] = [
   'Bash(rm -rf:*)',
@@ -387,17 +392,11 @@ export const PERMISSION_DENY_BASELINE: readonly string[] = [
   // Outside any project: keys, the CLI's own rules, the shell's own startup.
   'Read(~/.ssh/**)',
   'Edit(~/.ssh/**)',
-  'Write(~/.ssh/**)',
   'Edit(~/.aws/**)',
-  'Write(~/.aws/**)',
   'Edit(~/.claude/**)',
-  'Write(~/.claude/**)',
   'Edit(~/.bashrc)',
-  'Write(~/.bashrc)',
   'Edit(~/.profile)',
-  'Write(~/.profile)',
   'Edit(//etc/**)',
-  'Write(//etc/**)',
   // Rookery's own bookkeeping, for the same reason as the CLI's: config.json
   // holds the external approval table, so a turn that may write it can enable
   // a plugin - hooks included - without anybody clicking a switch. The
@@ -405,12 +404,9 @@ export const PERMISSION_DENY_BASELINE: readonly string[] = [
   // design, and the memory bank is not writable through these tools anyway.
   'Read(~/.rookery/config.json)',
   'Edit(~/.rookery/config.json)',
-  'Write(~/.rookery/config.json)',
   'Read(~/.rookery/voice-keys.json)',
   'Edit(~/.rookery/voice-keys.json)',
-  'Write(~/.rookery/voice-keys.json)',
   'Edit(~/.rookery/rookery.db)',
-  'Write(~/.rookery/rookery.db)',
 ];
 
 /** The plugin folder a `hooks/hooks.json` belongs to. */

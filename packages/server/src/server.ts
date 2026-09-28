@@ -29,6 +29,7 @@ import { registerSleepRoutes } from './routes/sleep.js';
 import { registerDreamRoutes } from './routes/dream.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerOrgRoutes } from './routes/org.js';
+import { registerTerminalRoutes } from './routes/terminals.js';
 import { registerCronRoutes } from './routes/cron.js';
 import { registerTtsRoutes } from './routes/tts.js';
 import { registerToolRoutes } from './routes/tools.js';
@@ -158,6 +159,7 @@ export async function buildServer(
   await registerDreamRoutes(app, context);
   await registerChatRoutes(app, context);
   await registerOrgRoutes(app, context);
+  await registerTerminalRoutes(app, context);
   await registerCronRoutes(app, context);
   await registerTtsRoutes(app, context);
   await registerToolRoutes(app, context);
@@ -213,6 +215,11 @@ export async function buildServer(
   const onTuiState = (info: TuiSessionInfo): void => {
     for (const [socket, ids] of context.tuiWatchers) {
       if (ids.has(info.key)) sendFrame(socket, { type: 'tui-state', assignmentId: info.key, info });
+    }
+    // A terminal opening, finishing or going away changes the workspace's
+    // list of tabs, wherever that page is open.
+    for (const socket of context.sockets) {
+      sendFrame(socket, { type: 'changed', change: { kind: 'terminals', id: info.key } });
     }
   };
   tuiSessions.on('data', onTuiData);

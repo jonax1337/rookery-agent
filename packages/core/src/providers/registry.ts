@@ -22,6 +22,8 @@ const BUILTIN_IDS = new Set<ProviderId>(['claude', 'codex']);
 export class ProviderRegistry {
   #providers = new Map<ProviderId, Provider>();
   #cache = new Map<ProviderId, { status: ProviderStatus; at: number }>();
+  /** Probes in flight, so a burst of callers shares one instead of starting several. */
+  #probing = new Map<ProviderId, Promise<ProviderStatus>>();
   #ttlMs: number;
   /** Set from config by `sync`; the default matches DEFAULT_CONFIG so a registry asked before its first sync switches too. */
   #fallback: ProviderFallbackConfig = { enabled: true, thresholdPercent: 95, order: [] };
@@ -53,7 +55,15 @@ export class ProviderRegistry {
   }
 
   /**
-   * Health for one provider, cached for the registry TTL.
+   * Health for one provider, cached for the registry TTL - and past it too.
+   *
+   * A probe is a real print run and takes seconds; with three providers a
+   * cold `statuses()` cost 8-9 s, paid by whichever chat turn or terminal
+   * happened to come first after five quiet minutes. So a stale answer is
+   * returned at once and refreshed in the background; only a provider never
+   * probed at all, or an explicit `force`, waits for the probe. A login that
+   * lapsed in between shows up one call late - the turn it affects fails
+   * over the usual way, and the refresh is already under way.
    *
    * An adapter that throws instead of answering is reported as unavailable
    * rather than propagated: `statuses()` fans out over every provider, and one
@@ -62,23 +72,36 @@ export class ProviderRegistry {
    */
   async status(id: ProviderId, force = false): Promise<ProviderStatus> {
     const cached = this.#cache.get(id);
-    if (!force && cached && Date.now() - cached.at < this.#ttlMs) return cached.status;
-    const provider = this.get(id);
-    let status: ProviderStatus;
-    try {
-      status = await provider.status();
-    } catch (error) {
-      status = {
-        id,
-        displayName: provider.displayName,
-        available: false,
-        binary: '',
-        authenticated: false,
-        detail: (error as Error).message,
-      };
+    if (!force && cached) {
+      if (Date.now() - cached.at >= this.#ttlMs) void this.#probe(id);
+      return cached.status;
     }
-    this.#cache.set(id, { status, at: Date.now() });
-    return status;
+    return this.#probe(id);
+  }
+
+  #probe(id: ProviderId): Promise<ProviderStatus> {
+    const running = this.#probing.get(id);
+    if (running) return running;
+    const provider = this.get(id);
+    const probe = (async (): Promise<ProviderStatus> => {
+      let status: ProviderStatus;
+      try {
+        status = await provider.status();
+      } catch (error) {
+        status = {
+          id,
+          displayName: provider.displayName,
+          available: false,
+          binary: '',
+          authenticated: false,
+          detail: (error as Error).message,
+        };
+      }
+      this.#cache.set(id, { status, at: Date.now() });
+      return status;
+    })().finally(() => this.#probing.delete(id));
+    this.#probing.set(id, probe);
+    return probe;
   }
 
   /** Health for every provider, probed in parallel. */

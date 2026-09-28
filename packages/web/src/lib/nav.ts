@@ -5,6 +5,7 @@ import {
   BrainIcon,
   BriefcaseBusinessIcon as Building2Icon,
   ConnectIcon,
+  TerminalIcon,
 } from "@/components/icons";
 
 import {
@@ -99,6 +100,9 @@ export const ROUTE_META: RouteMeta[] = [
   // Chat/Tasks says what it actually is. Same route both nav and the route
   // table in `App.tsx` use, so the two stay congruent.
   { path: '/inbox', label: 'Inbox', icon: InboxIcon, group: 'work' },
+  // Every open Claude Code terminal - conversations and agents at work - as
+  // tabs or side by side.
+  { path: '/workspace', label: 'Workspace', icon: TerminalIcon, group: 'work' },
 
   /* -------------------------------- betrieb ------------------------------- */
   { path: '/tasks', label: 'Tasks', icon: TasksIcon, group: 'operations' },
