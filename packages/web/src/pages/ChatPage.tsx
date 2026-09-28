@@ -288,6 +288,33 @@ export function ChatPage() {
     };
   }, [activeId]);
 
+  // One conversation, one model choice: whatever `/model` picked inside the
+  // terminal is what the composer shows - and sends - when the chat takes
+  // over again. The terminal reports the model that answered with every
+  // turn; an alias and its full name (`opus`, `claude-opus-5-5`) count as
+  // the same pick, so an unchanged model does not jump in the composer.
+  const chooseModel = turn.chooseModel;
+  const composerProvider = turn.provider;
+  const composerModel = turn.model;
+  React.useEffect(() => {
+    if (!activeId || mode !== 'terminal') return;
+    return socket.onChanged((change) => {
+      if (change.kind !== 'session' || change.id !== activeId) return;
+      void api
+        .session(activeId)
+        .then(({ session: current }) => {
+          if (!current.provider) return;
+          const sameModel =
+            current.model === composerModel ||
+            (!current.model && !composerModel) ||
+            (current.provider === 'claude' && Boolean(composerModel) && Boolean(current.model?.includes(composerModel ?? '')));
+          if (current.provider === composerProvider && sameModel) return;
+          chooseModel(current.provider, current.model || undefined);
+        })
+        .catch(() => undefined);
+    });
+  }, [activeId, chooseModel, composerModel, composerProvider, mode, socket]);
+
   const openTerminal = React.useCallback(async (): Promise<void> => {
     setOpening(true);
     try {

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 
 import type { AgentEvent } from '../types.js';
 import { quoteForCmd, type ResolvedBinary } from './process.js';
+import { userSettingsGuard } from './user-settings-guard.js';
 
 /**
  * Claude Code as a real terminal program instead of a headless print run.
@@ -567,9 +568,18 @@ async function spawnTerminal(spec: TuiSpawnSpec, resumed: boolean): Promise<Term
     ...(spec.cwd ? { cwd: spec.cwd } : {}),
     env,
   };
-  const child = spec.binary.isShim
-    ? pty.spawn(env.COMSPEC ?? 'cmd.exe', '/d /s /c ' + quoteForCmd([spec.binary.path, ...argv]), options)
-    : pty.spawn(spec.binary.path, argv, options);
+  // This is Rookery's terminal, not the person's own `claude`: a model picked
+  // here with Enter must not become their global default.
+  const release = userSettingsGuard.acquire(configDir(spec.env));
+  let child: PtyProcess;
+  try {
+    child = spec.binary.isShim
+      ? pty.spawn(env.COMSPEC ?? 'cmd.exe', '/d /s /c ' + quoteForCmd([spec.binary.path, ...argv]), options)
+      : pty.spawn(spec.binary.path, argv, options);
+  } catch (error) {
+    release();
+    throw error;
+  }
 
   const watch = new TerminalWatch(spec, resumed);
   let screen = '';
@@ -592,7 +602,16 @@ async function spawnTerminal(spec: TuiSpawnSpec, resumed: boolean): Promise<Term
       }, 150);
     }
   });
-  tuiSessions.attach(spec.key, child, spec.sessionId, spec.cleanup, spec.lingerMs);
+  tuiSessions.attach(
+    spec.key,
+    child,
+    spec.sessionId,
+    () => {
+      release();
+      spec.cleanup();
+    },
+    spec.lingerMs,
+  );
   return watch;
 }
 
