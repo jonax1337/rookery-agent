@@ -5,6 +5,7 @@ import type {
   ProviderModel,
   ProviderStatus,
   RookeryConfig,
+  ProviderProfile,
 } from '../types.js';
 import { ClaudeCodeProvider } from './claude-code.js';
 import { CODEX_PROFILE, codexModels, profileWithCatalog, providerCatalogEntry } from './provider-catalog.js';
@@ -27,6 +28,8 @@ export class ProviderRegistry {
   #ttlMs: number;
   /** Set from config by `sync`; the default matches DEFAULT_CONFIG so a registry asked before its first sync switches too. */
   #fallback: ProviderFallbackConfig = { enabled: true, thresholdPercent: 95, order: [] };
+  /** The profiles from the last `sync`, catalogue defaults filled in. */
+  #profiles: ProviderProfile[] = [];
 
   constructor(providers?: Provider[], ttlMs = 5 * 60 * 1000) {
     // Both built-ins are the same adapter now: the plain `claude` login, and
@@ -158,6 +161,11 @@ export class ProviderRegistry {
     return ids;
   }
 
+  /** The configured provider profiles, as the adapters were built from them. */
+  profiles(): ProviderProfile[] {
+    return [...this.#profiles];
+  }
+
   /** Drop cached probes, e.g. after the user logs in from the UI. */
   invalidate(): void {
     this.#cache.clear();
@@ -172,6 +180,7 @@ export class ProviderRegistry {
     // Tests hand in partial configs; the fallback default then simply stays.
     this.#fallback = config.providerFallback ?? this.#fallback;
     const configured = config.providerProfiles.map(profileWithCatalog);
+    this.#profiles = configured;
     // A profile's usage is read with the same key and against the same
     // backend its turns run on, so the quota reader is handed the same list,
     // at the same moment, as the adapters below.

@@ -1828,6 +1828,18 @@ export interface ProviderTurnOptions {
    * Providers without a terminal, or a system without the pty binding,
    * ignore it and run headless.
    */
+  /**
+   * Point Claude Code at Rookery's model gateway instead of one backend
+   * (`providers/model-gateway.ts`): every model Rookery knows becomes
+   * reachable from the same process, and `picker` adds the ones that are not
+   * Claude's to the TUI's `/model` menu. The Claude login still travels, so
+   * Claude models stay on the person's own plan.
+   */
+  gateway?: {
+    baseUrl: string;
+    token: string;
+    picker: { model: string; label: string; description?: string }[];
+  };
   tui?: {
     key: string;
     lingerMs?: number;
@@ -1925,6 +1937,8 @@ export interface ProviderTerminalHandlers {
     answer: string;
     /** Text, thinking and tool events of the turn, in order. */
     events: AgentEvent[];
+    /** The model that answered, as the transcript names it - `/model` may have changed it. */
+    model?: string;
     providerSessionId: string;
     usage: TurnUsage;
   }): void;

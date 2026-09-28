@@ -22,6 +22,7 @@ import { sharedCodexBridge } from './codex-bridge.js';
 import { codexContextWindow } from './provider-catalog.js';
 import { TOOL_INPUT_LIMIT, canonicalJson, hashCanonicalJson } from '../memory/dream/trajectory.js';
 import { loadPty, runTui, startConversationTerminal, stopHookCommand, tuiSessions } from './claude-tui.js';
+import { BRIDGE_TOKEN_HEADER } from './codex-bridge.js';
 
 /** The built-in `claude` provider: OAuth login, no endpoint override. */
 const BUILTIN_PROFILE: ProviderProfile = {
@@ -296,6 +297,18 @@ export class ClaudeCodeProvider implements Provider {
       await writeFile(markerFile, '');
       turnOptions = { ...options, settings: withStopHook(options.settings, stopHookCommand(markerFile)) };
     }
+    if (options.gateway?.picker.length) {
+      // The TUI's `/model` menu: Claude's own entries stay, the gateway's
+      // other models are appended. `--settings` is one of the sources this
+      // key is read from even with every settings file switched off.
+      turnOptions = {
+        ...turnOptions,
+        settings: {
+          ...(turnOptions.settings ?? {}),
+          modelPicker: { options: options.gateway.picker, replaceBuiltInOptions: false },
+        },
+      };
+    }
     const handoff = await writeHandoffDir(turnOptions);
     if (handoff.settingsFile) args.push('--settings', handoff.settingsFile);
     // A plugin trusted outright comes in whole, folder and all; the curated
@@ -312,6 +325,15 @@ export class ClaudeCodeProvider implements Provider {
       MCP_TIMEOUT: String(60 * 1000),
       ...(await this.#resolveEnv(model)),
     };
+    if (options.gateway) {
+      // One endpoint for every model. No credential of our own: Claude Code
+      // then keeps sending the person's Claude login, which the gateway
+      // passes on for Claude models; its own token rides in a header.
+      env.ANTHROPIC_BASE_URL = options.gateway.baseUrl;
+      delete env.ANTHROPIC_AUTH_TOKEN;
+      delete env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
+      env.ANTHROPIC_CUSTOM_HEADERS = BRIDGE_TOKEN_HEADER + ': ' + options.gateway.token;
+    }
 
 
     return {

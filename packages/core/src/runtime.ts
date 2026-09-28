@@ -32,6 +32,8 @@ import { remapModel } from './providers/provider-catalog.js';
 import { isUsageLimitError, providerBlocked, providerLow, rememberUsageFailure } from './providers/quota.js';
 import { sharedCodexBridge } from './providers/codex-bridge.js';
 import { tuiSessions } from './providers/claude-tui.js';
+import { ModelGateway } from './providers/model-gateway.js';
+import type { ProviderProfile } from './types.js';
 import { Store } from './memory/store.js';
 import { byScoreThenId, coreProfile, dropContradicted, recall } from './memory/recall.js';
 import { fetchFrame } from './memory/dream/frame.js';
@@ -1824,12 +1826,42 @@ export class Assistant extends EventEmitter {
     const wanted = input.provider ?? session.provider;
     const providerId = await this.providers.resolveUsable(wanted);
     if (!providerId) throw new Error('No AI provider is ready.');
-    const provider = this.providers.get(providerId);
+    // Always the plain Claude Code adapter: the gateway, not a profile's
+    // environment, decides where each model goes.
+    const provider = this.providers.get('claude');
     if (!provider.openTerminal) throw new Error(provider.displayName + ' has no terminal of its own.');
 
-    // Resuming the provider's own thread only works on the same provider.
-    const resumed = Boolean(session.providerSessionId) && session.provider === providerId;
-    const model = input.model ?? session.model ?? this.config.defaultModel;
+    // Every model Rookery can reach, for the gateway's routing and the TUI's
+    // `/model` menu - Claude's own entries are already in that menu.
+    const picker: { model: string; label: string; description?: string }[] = [];
+    const direct: { profile: ProviderProfile; models: string[] }[] = [];
+    for (const status of await this.providers.statuses()) {
+      if (status.id === 'claude' || !status.available || !status.authenticated) continue;
+      const profile = this.providers.profiles().find((entry) => entry.id === status.id);
+      // The gateway speaks to ChatGPT and to Anthropic-compatible endpoints;
+      // a router-backed profile stays reachable from the chat only.
+      if (status.id !== 'codex' && profile?.via !== 'direct') continue;
+      const models = await this.providers.models(status.id).catch(() => []);
+      if (profile) direct.push({ profile, models: models.map((entry) => entry.id) });
+      for (const entry of models) {
+        picker.push({ model: entry.id, label: entry.name || entry.id, description: status.displayName });
+      }
+    }
+    this.#gatewayProfiles = direct;
+    this.#gateway ??= new ModelGateway({ profiles: () => this.#gatewayProfiles });
+    const gateway = await this.#gateway.start();
+    const ownerOf = (name: string | undefined): ProviderId => {
+      const route = this.#gateway?.route(name) ?? { kind: 'anthropic' as const };
+      return route.kind === 'codex' ? 'codex' : route.kind === 'profile' ? route.profile.id : 'claude';
+    };
+
+    // One gateway serves every model, so the session resumes whichever
+    // provider it last ran on - Claude Code's transcript is the same format.
+    const resumed = Boolean(session.providerSessionId);
+    const requested = input.model ?? session.model ?? this.config.defaultModel;
+    // A name another provider owns (the chat's `sonnet` on a GPT terminal)
+    // becomes that provider's own default instead of silently going to Claude.
+    const model = requested && ownerOf(requested) === providerId ? requested : remapModel(providerId, requested);
     const organization = this.org.activeOrganization();
     const snapshot = this.org.snapshot(organization.id);
     const project = session.projectId ? (this.store.org.getProject(session.projectId) ?? undefined) : undefined;
@@ -1883,6 +1915,7 @@ export class Assistant extends EventEmitter {
           mcp,
           ...(extra.specs.length ? { mcpExtra: extra.specs } : {}),
           ...externalTurnExtras(this.config, who),
+          gateway: { ...gateway, picker },
           tui: { key },
         },
         {
@@ -1898,12 +1931,16 @@ export class Assistant extends EventEmitter {
               turnBlocks.apply(event);
             }
             turnBlocks.reconcile(turn.answer);
+            // Whoever actually answered: `/model` in the terminal may have
+            // moved the conversation to another provider since it opened.
+            const answeredBy = turn.model ?? model;
+            const answeredOn = ownerOf(answeredBy);
             this.store.addMessage({
               sessionId: session.id,
               role: 'assistant',
               content: turn.answer,
-              provider: providerId,
-              ...(model ? { model } : {}),
+              provider: answeredOn,
+              ...(answeredBy ? { model: answeredBy } : {}),
               usage: turn.usage,
               toolCalls,
               ...(turnBlocks.blocks.length ? { blocks: turnBlocks.blocks } : {}),
@@ -1912,10 +1949,14 @@ export class Assistant extends EventEmitter {
             if (current && current.title === 'New conversation' && turn.prompt) {
               this.store.updateSession(session.id, { title: deriveTitle(turn.prompt) });
             }
-            this.store.updateSession(session.id, { provider: providerId, model, providerSessionId: turn.providerSessionId });
+            this.store.updateSession(session.id, {
+              provider: answeredOn,
+              ...(answeredBy ? { model: answeredBy } : {}),
+              providerSessionId: turn.providerSessionId,
+            });
             this.emit('changed', { kind: 'session', id: session.id });
             if (this.config.memory.enabled && this.config.memory.autoExtract && turn.prompt) {
-              void this.#learn(session.id, turn.prompt, turn.answer, providerId, ASSISTANT_MEMORY_OWNER);
+              void this.#learn(session.id, turn.prompt, turn.answer, answeredOn, ASSISTANT_MEMORY_OWNER);
             }
           },
           onExit: () => {
@@ -1934,6 +1975,11 @@ export class Assistant extends EventEmitter {
     this.emit('changed', { kind: 'session', id: session.id });
     return { sessionId: session.id, key };
   }
+
+  /** The model gateway conversation terminals share, started with the first one. */
+  #gateway: ModelGateway | undefined;
+  /** The directly reachable profiles and their models, refreshed with every terminal. */
+  #gatewayProfiles: { profile: ProviderProfile; models: string[] }[] = [];
 
   /** Back to chat: ends the conversation's terminal. False when it had none. */
   closeConversationTerminal(sessionId: string): boolean {

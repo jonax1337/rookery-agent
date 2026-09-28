@@ -324,7 +324,7 @@ function resolveModel(requested: string | undefined): string {
  * account's own slugs, with no fallback. A name this does not know is somebody
  * else's - which, in passthrough mode, means Anthropic's.
  */
-function isCodexModel(requested: string | undefined): boolean {
+export function isCodexModel(requested: string | undefined): boolean {
   return requested !== undefined && codexModels().some((model) => model.id === requested);
 }
 
@@ -378,13 +378,31 @@ async function forwardToAnthropic(
   raw: string,
   response: ServerResponse,
 ): Promise<void> {
+  await relayRequest(request, raw, response, ANTHROPIC_URL);
+}
+
+/**
+ * Relay one request to another Anthropic-Messages endpoint and stream the
+ * answer back. `rewrite` may change the outgoing headers - swap the
+ * credential for a backend with its own key - and is the only thing that
+ * differs from the byte-for-byte Anthropic forward above. Hop-by-hop headers
+ * and the bridge's own token never travel on.
+ */
+export async function relayRequest(
+  request: IncomingMessage,
+  raw: string,
+  response: ServerResponse,
+  target: string,
+  rewrite?: (headers: Headers) => void,
+): Promise<void> {
   const headers = new Headers();
   for (const [name, value] of Object.entries(request.headers)) {
     if (value === undefined || DROP_FROM_REQUEST.has(name)) continue;
     headers.set(name, Array.isArray(value) ? value.join(', ') : value);
   }
+  rewrite?.(headers);
 
-  const upstream = await fetch(ANTHROPIC_URL + (request.url ?? '/'), {
+  const upstream = await fetch(target.replace(/\/+$/, '') + (request.url ?? '/'), {
     method: request.method ?? 'GET',
     headers,
     body: raw === '' ? undefined : raw,

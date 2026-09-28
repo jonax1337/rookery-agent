@@ -442,6 +442,8 @@ class TerminalWatch {
   assistantEntries = 0;
   apiError: string | null = null;
   contextTokens: number | undefined;
+  /** The model of the newest assistant entry - `/model` can change it mid-session. */
+  model: string | undefined;
   #tail: TranscriptTail | null = null;
   readonly #root: string;
 
@@ -477,6 +479,7 @@ class TerminalWatch {
       if (entry.type === 'assistant') {
         this.assistantEntries += 1;
         const message = entry.message as Record<string, unknown> | undefined;
+        if (typeof message?.model === 'string' && message.model !== '<synthetic>') this.model = message.model;
         const usage = message?.usage as Record<string, unknown> | undefined;
         if (usage) {
           const parts = [usage.input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens].filter(
@@ -708,6 +711,8 @@ export interface TuiTurn {
    * turn with its tool calls rather than as bare text.
    */
   events: AgentEvent[];
+  /** The model that answered. */
+  model?: string;
   providerSessionId: string;
   usage: { durationMs: number; contextTokens?: number };
 }
@@ -770,6 +775,7 @@ export async function startConversationTerminal(
               prompt: prompts.join('\n\n'),
               answer,
               events,
+              ...(watch.model ? { model: watch.model } : {}),
               providerSessionId: spec.sessionId,
               usage: {
                 durationMs: Date.now() - turnStarted,
