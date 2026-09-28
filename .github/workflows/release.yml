@@ -1,0 +1,57 @@
+# Publishes a release to npm when a version tag is pushed.
+#
+#   npm version 0.2.0 --workspaces --include-workspace-root --no-git-tag-version
+#   git commit -am "release: 0.2.0" && git tag v0.2.0 && git push --follow-tags
+#
+# A tag with a pre-release suffix (v0.2.0-beta.1) goes to the `next` dist-tag,
+# which only installations on the "next" update channel follow; everything
+# else goes to `latest`. Publishing uses npm trusted publishing (OIDC), so no
+# npm token is stored here - the package's settings on npmjs.com name this
+# repository and workflow as its trusted publisher.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # the GitHub release
+  id-token: write # npm trusted publishing and provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - run: npm install --global npm@latest
+
+      - name: Tag matches package.json
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            exit 1
+          fi
+          case "$version" in *-*) echo "DIST_TAG=next" >> "$GITHUB_ENV" ;; *) echo "DIST_TAG=latest" >> "$GITHUB_ENV" ;; esac
+
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm test
+      - run: node scripts/package.mjs
+
+      - run: npm publish ./dist/npm --access public --provenance --tag "$DIST_TAG"
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags="--generate-notes"
+          if [ "$DIST_TAG" = "next" ]; then flags="$flags --prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" $flags
