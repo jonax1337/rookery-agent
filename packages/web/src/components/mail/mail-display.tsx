@@ -12,9 +12,8 @@ import {
   UndoIcon as ReplyAllIcon,
 } from "@/components/icons";
 
-import type { Mail } from '@/lib/types';
-import { formatDateTime } from '@/lib/format';
-import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import type { Mail, TaskStatus } from '@/lib/types';
+import { baseSubject } from '@/lib/mail';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -23,14 +22,18 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { EmptyState } from '@/components/common/empty-state';
-import { ResultMarkdown } from '@/components/result-markdown';
+import { MailThreadView } from '@/components/common/mail-thread';
+import { StatusBadge } from '@/components/common/status-badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 /**
- * The reading pane: an action bar, one mail in full, and a reply box.
+ * The reading pane: an action bar, the open mail's whole thread, and a reply
+ * box. The thread, not the single mail, because a reply without what it
+ * answers is half a conversation - and a task thread's status notes only make
+ * sense between the messages they sit between.
  *
  * The action bar is shadcn's, with one archive of our own: the thread is the
  * unit that gets filed away, because what a thread *is* is what the folders
@@ -49,16 +52,6 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
  *
  * Every mailbox but the user's own is read-only: same pane, no bar.
  */
-
-/** Initials for the avatar, the way shadcn's mail example builds them. */
-function initials(name: string): string {
-  const chunks = name.trim().split(/\s+/).filter(Boolean);
-  if (chunks.length === 0) return '?';
-  return chunks
-    .slice(0, 2)
-    .map((chunk) => chunk[0]?.toUpperCase() ?? '')
-    .join('');
-}
 
 interface ReplyBoxProps {
   replyTargetName: string;
@@ -113,12 +106,12 @@ function ReplyBox({ replyTargetName, onReply, sending, inputRef }: ReplyBoxProps
 
 interface MailDisplayProps {
   mail: Mail | null;
-  senderLabel(mail: Mail): string;
-  /** The sender's job title, when the sender is an agent. */
-  senderRole(mail: Mail): string | null;
-  /** Full "To: …" line, and "Cc: …" when there is one. */
-  toLine(mail: Mail): string;
-  ccLine(mail: Mail): string | null;
+  /** Whose mailbox the thread is read as. */
+  mailboxId: string;
+  /** Changes when the thread may have grown, so the pane refetches it. */
+  reloadKey?: unknown;
+  /** The board status of the thread's task, when it has one. */
+  taskStatus?: TaskStatus | null;
   /** Only the "You" mailbox may write. */
   interactive: boolean;
   replyTargetName: string | null;
@@ -138,10 +131,9 @@ interface MailDisplayProps {
 
 export function MailDisplay({
   mail,
-  senderLabel,
-  senderRole,
-  toLine,
-  ccLine,
+  mailboxId,
+  reloadKey,
+  taskStatus,
   interactive,
   replyTargetName,
   onReply,
@@ -155,7 +147,6 @@ export function MailDisplay({
   const replyRef = useRef<HTMLTextAreaElement | null>(null);
 
   const canReply = interactive && mail !== null && replyTargetName !== null;
-  const cc = mail ? ccLine(mail) : null;
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
@@ -241,42 +232,37 @@ export function MailDisplay({
         />
       ) : (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex min-w-0 shrink-0 items-start gap-4 p-4">
-            <Avatar>
-              <AvatarFallback>{initials(senderLabel(mail))}</AvatarFallback>
-            </Avatar>
-            <div className="grid min-w-0 flex-1 gap-1 text-sm">
-              {/* shadcn's header puts a "Reply-To" line under the name; ours
-                  puts what a company actually needs to know about a sender. */}
-              <div className="flex min-w-0 items-baseline gap-2">
-                <span className="shrink-0 truncate font-semibold">{senderLabel(mail)}</span>
-                {senderRole(mail) && (
-                  <span className="min-w-0 truncate text-xs text-muted-foreground">{senderRole(mail)}</span>
-                )}
+          <div className="flex min-w-0 shrink-0 flex-col gap-2 p-4">
+            <h2 className="line-clamp-2 text-base font-semibold">
+              {baseSubject(mail.subject) || '(No subject)'}
+            </h2>
+            {mail.taskId && (
+              <div className="flex min-w-0 items-center gap-2">
+                {taskStatus && <StatusBadge kind="task" status={taskStatus} className="shrink-0" />}
+                <NavLink
+                  to={'/tasks/' + mail.taskId}
+                  className="min-w-0 max-w-full truncate rounded-full border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                >
+                  {/* The heading already says the title when the two agree. */}
+                  {mail.taskTitle && mail.taskTitle !== baseSubject(mail.subject) ? mail.taskTitle : 'Open on the board'}
+                </NavLink>
               </div>
-              <div className="line-clamp-1 text-xs">{mail.subject || '(No subject)'}</div>
-              {mail.taskId && (
-                <div className="flex min-w-0">
-                  <NavLink
-                    to={'/tasks/' + mail.taskId}
-                    className="min-w-0 max-w-full truncate rounded-full border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  >
-                    {mail.taskTitle || 'Task on the board'}
-                  </NavLink>
-                </div>
-              )}
-              <div className="line-clamp-1 text-xs text-muted-foreground">{toLine(mail)}</div>
-              {cc && <div className="line-clamp-1 text-xs text-muted-foreground">{cc}</div>}
-            </div>
-            <div className="shrink-0 text-xs text-muted-foreground">{formatDateTime(mail.createdAt)}</div>
+            )}
           </div>
 
           <Separator />
 
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="p-4 text-sm">
-              <ResultMarkdown text={mail.body} />
-            </div>
+          {/* `block!` for the same reason as the list: radix's inline
+              `display: table` lets a long code line widen every card past
+              the pane. */}
+          <ScrollArea className="min-h-0 flex-1 [&>[data-slot=scroll-area-viewport]>div]:block!">
+            <MailThreadView
+              threadId={mail.threadId}
+              mailbox={mailboxId}
+              highlightId={mail.id}
+              reloadKey={reloadKey}
+              className="p-4"
+            />
           </ScrollArea>
 
           {canReply && replyTargetName && (

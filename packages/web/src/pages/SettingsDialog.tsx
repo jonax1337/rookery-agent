@@ -1,5 +1,4 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { NavLink, Navigate, useNavigate, useParams } from 'react-router';
+import { forwardRef, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   AudioLinesIcon,
   BanIcon as SquareIcon,
@@ -7,18 +6,21 @@ import {
   BriefcaseBusinessIcon as Building2Icon,
   ChevronDownIcon,
   ChevronUpIcon,
+  CpuIcon,
   DownloadIcon as ImportIcon,
+  ExternalLinkIcon,
   MailboxIcon,
   PaletteIcon,
+  RadioTowerIcon,
   SlidersHorizontalIcon,
   UserIcon as UserRoundIcon,
   VolumeIcon as Volume2Icon,
+  XIcon,
 } from "@/components/icons";
 
 import { ThemeTogglerButton } from '@/components/animate-ui/components/buttons/theme-toggler';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
-import { FormPage } from '@/components/blocks/form-page';
-import { PageBody } from '@/components/blocks/page-body';
+import { useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState } from '@/components/common/empty-state';
 import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
 import { SliderField } from '@/components/forms/form-kit';
@@ -26,10 +28,10 @@ import { VoiceKeys } from '@/components/forms/voice-keys';
 import { AssistantProfile } from '@/components/forms/assistant-profile';
 import { AssistantMigration } from '@/components/forms/assistant-migration';
 import { ProviderIcon } from '@/components/provider-icon';
-import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,6 +46,7 @@ import {
   FieldContent,
   FieldDescription,
   FieldError,
+  FieldGroup,
   FieldLabel,
   FieldLegend,
   FieldSet,
@@ -70,10 +73,24 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarProvider,
+} from '@/components/ui/sidebar';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
@@ -112,24 +129,24 @@ import { cn } from '@/lib/utils';
 import type { IconComponent } from "@/components/icons";
 
 /**
- * Everything the server-side config holds, as six addressable sections.
+ * Everything the server-side config holds, in one large dialog (sidebar-13).
  *
- * The page used to be four `Tabs` plus two switches hanging below them, one
- * hand-rolled `Row` component and a footer that scrolled away exactly when a
- * person wanted to save. Three things changed with the rebuild:
+ * Settings used to be a page of its own. They are a dialog now because a
+ * person opens them *from* somewhere - the chat, the inbox - and wants to land
+ * back there, not on a settings screen that replaced what they were doing.
+ * The address still says `/settings/:section`: `App` keeps the page that was
+ * open behind the dialog and renders this on top, so a link from anywhere in
+ * the app (or a bookmark) still opens exactly the section it names.
  *
- * - the sections live in the URL (`/settings/:section`), so a hint elsewhere
- *   in the app can link straight at the one it means;
- * - the action pair moved into the page header via `usePageMeta`, where it is
- *   always visible, and "Speichern" is gated on a deep comparison of draft
- *   against config rather than on "something was typed";
- * - two new sections appeared. `memory` was fully editable on the server and
- *   had no UI at all, and the local-only preferences (appearance)
- *   are now named as local instead of sitting next to server settings.
+ * The sections are grouped by what a person is looking for rather than by
+ * config key: the assistant itself, the models it runs on, the company's
+ * limits, the outside channels, and this browser. One-off actions (the
+ * OpenClaw/Hermes import) sit last, where they do not push the everyday
+ * settings down.
  *
  * What is deliberately *not* here: `memory.gate`, `memory.graph` and
  * `memory.sleep`. `PATCH /api/config` is a deep merge, so leaving them out of
- * the patch leaves them untouched - and this page has no honest labels for
+ * the patch leaves them untouched - and this dialog has no honest labels for
  * numbers whose effect is only visible in the nightly run.
  */
 
@@ -138,18 +155,23 @@ import type { IconComponent } from "@/components/icons";
 interface SectionMeta {
   slug: string;
   label: string;
-  /** One line under the card title. Says what the section decides. */
+  /** One line under the section title. Says what the section decides. */
   description: string;
   icon: IconComponent;
+  /** Set for an entry that leaves the dialog for a page of its own. */
+  href?: string;
+}
+
+interface SectionGroup {
+  label: string;
+  sections: readonly SectionMeta[];
 }
 
 /*
-  Drei der sieben Abschnitts-Icons gibt es als animate-ui-Fassung; sie spielen
-  ihre kleine Geste beim Hover der Navigation ab. Der Rest bleibt Lucide, weil
-  die Bibliothek kein Gegenstueck hat (Migration, Memory, Organization,
-  Appearance). Der forwardRef-Mantel ist noetig, weil `SectionMeta.icon` als
-  IconComponent getypt ist und prop-los gerendert wird - derselbe Trick wie
-  AnimatedPlugZapIcon im EmptyState.
+  Drei der Abschnitts-Icons gibt es als animate-ui-Fassung; sie spielen ihre
+  kleine Geste beim Hover der Navigation ab. Der forwardRef-Mantel ist noetig,
+  weil `SectionMeta.icon` als IconComponent getypt ist und prop-los gerendert
+  wird - derselbe Trick wie AnimatedPlugZapIcon im EmptyState.
 */
 const AnimatedUserRoundIcon = forwardRef<SVGSVGElement>(function AnimatedUserRoundIcon() {
   return <UserRoundIcon />;
@@ -165,75 +187,126 @@ const AnimatedAudioLinesIcon = forwardRef<SVGSVGElement>(function AnimatedAudioL
   return <AudioLinesIcon />;
 });
 
-const SECTIONS = [
+const GROUPS: readonly SectionGroup[] = [
   {
-    slug: 'identity',
-    label: 'Identity',
-    description: 'The assistant name and how it addresses the user.',
-    icon: AnimatedUserRoundIcon,
+    label: 'Assistant',
+    sections: [
+      {
+        slug: 'profile',
+        label: 'Profile',
+        description: 'The assistant name, how it addresses you, and its profile files.',
+        icon: AnimatedUserRoundIcon,
+      },
+      {
+        slug: 'behavior',
+        label: 'Behavior',
+        description: 'How much effort a new conversation spends, and what it may do.',
+        icon: AnimatedSlidersHorizontalIcon,
+      },
+      {
+        slug: 'voice',
+        label: 'Voice',
+        description: 'How spoken replies are generated and how they sound.',
+        icon: AnimatedAudioLinesIcon,
+      },
+      {
+        slug: 'memory',
+        label: 'Memory',
+        description: 'What is remembered and how much context the assistant recalls.',
+        icon: BrainIcon,
+      },
+    ],
   },
   {
-    slug: 'migration',
-    label: 'Migration',
-    description: 'Bring your assistant from OpenClaw or Hermes.',
-    icon: ImportIcon,
+    label: 'Models',
+    sections: [
+      {
+        slug: 'providers',
+        label: 'Providers',
+        description: 'Who answers by default, who takes over when quota runs out, and more providers.',
+        icon: CpuIcon,
+      },
+    ],
   },
   {
-    slug: 'defaults',
-    label: 'Defaults',
-    description: 'How conversations start when no other options are selected.',
-    icon: AnimatedSlidersHorizontalIcon,
+    label: 'Work',
+    sections: [
+      {
+        slug: 'org',
+        label: 'Organization',
+        description: 'Limits for agent work and delegation.',
+        icon: Building2Icon,
+      },
+    ],
   },
   {
-    slug: 'voice',
-    label: 'Voice',
-    description: 'How spoken replies are generated and how they sound.',
-    icon: AnimatedAudioLinesIcon,
+    label: 'Connections',
+    sections: [
+      {
+        slug: 'mailboxes',
+        label: 'Mailboxes',
+        description: 'Mailboxes Rookery watches, and the schedule each one fires.',
+        icon: MailboxIcon,
+      },
+      {
+        slug: 'gateways',
+        label: 'Telegram & gateways',
+        description: 'Chat channels outside this app.',
+        icon: RadioTowerIcon,
+        href: '/gateways',
+      },
+    ],
   },
   {
-    slug: 'memory',
-    label: 'Memory',
-    description: 'What is remembered and how much context the assistant recalls.',
-    icon: BrainIcon,
+    label: 'App',
+    sections: [
+      {
+        slug: 'appearance',
+        label: 'Appearance',
+        description: 'Display and detail preferences for this browser only.',
+        icon: PaletteIcon,
+      },
+      {
+        slug: 'import',
+        label: 'Import',
+        description: 'Bring your assistant from OpenClaw or Hermes.',
+        icon: ImportIcon,
+      },
+    ],
   },
-  {
-    slug: 'org',
-    label: 'Organization',
-    description: 'Limits for agent work and delegation.',
-    icon: Building2Icon,
-  },
-  {
-    slug: 'listeners',
-    label: 'Listeners',
-    description: 'Mailboxes Rookery watches, and the schedule each one fires.',
-    icon: MailboxIcon,
-  },
-  {
-    slug: 'appearance',
-    label: 'Appearance',
-    description: 'Display and detail preferences for this browser only.',
-    icon: PaletteIcon,
-  },
-] as const satisfies readonly SectionMeta[];
+];
 
-const FIRST_SECTION = SECTIONS[0];
+const SECTIONS: readonly SectionMeta[] = GROUPS.flatMap((group) => group.sections);
+
+/** Where `/settings` alone lands. */
+export const FIRST_SECTION_SLUG = 'profile';
 
 /**
- * Die Abschnitte hiessen bis zum Umbau deutsch, mit ASCII-Umschrift der
- * Umlaute - als einzige Routen der App. Routen sind englisch, Beschriftungen
- * deutsch; die alten Adressen leiten weiter, damit ein Lesezeichen oder ein
- * aelterer Link nicht auf der Identitaet landet, sondern dort, wo er hinwollte.
+ * Addresses that existed before the regrouping, and the German ones before
+ * that. A bookmark or an older link lands where it meant to go instead of on
+ * the first section.
  */
 const LEGACY_SLUGS: Record<string, string> = {
-  identitaet: 'identity',
-  standardwerte: 'defaults',
+  identity: 'profile',
+  defaults: 'providers',
+  listeners: 'mailboxes',
+  migration: 'import',
+  identitaet: 'profile',
+  standardwerte: 'providers',
   sprache: 'voice',
   gedaechtnis: 'memory',
   firma: 'org',
   ansicht: 'appearance',
 };
 
-/** Die id des Formulars - der Speichern-Knopf steht im Kopf, ausserhalb davon. */
+/** Resolves any slug the dialog was opened with to one it can show. */
+export function resolveSettingsSection(slug: string | undefined): string {
+  if (!slug) return FIRST_SECTION_SLUG;
+  const moved = LEGACY_SLUGS[slug] ?? slug;
+  return SECTIONS.some((entry) => entry.slug === moved && !entry.href) ? moved : FIRST_SECTION_SLUG;
+}
+
+/** Die id des Formulars - der Speichern-Knopf steht im Fuss, ausserhalb davon. */
 const FORM_ID = 'einstellungen';
 
 /** Radix' radio groups have no empty value, so the provider default needs one. */
@@ -253,16 +326,32 @@ const ELEVEN_MODEL_LABEL: Record<VoiceConfig['elevenLabsModel'], string> = {
   eleven_v3: 'v3 · Expression',
 };
 
-/* -------------------------------- the page ------------------------------- */
+/* ------------------------------- the dialog ------------------------------ */
 
-export function SettingsPage() {
-  const { section } = useParams<{ section: string }>();
-  const navigate = useNavigate();
+export interface SettingsDialogProps {
+  /** The section in the address; unknown and legacy slugs are resolved here. */
+  section: string | undefined;
+  /** Move to another section (changes the address). */
+  onSectionChange(slug: string): void;
+  /** Leave the dialog for another route, e.g. a section that is a page. */
+  onNavigate(path: string): void;
+  /** Close the dialog and return to the page behind it. */
+  onClose(): void;
+}
+
+export function SettingsDialog({ section, onSectionChange, onNavigate, onClose }: SettingsDialogProps) {
   const { config, providers, save } = useConfig();
   const speech = useSpeechState();
+  const { confirm, dialog: confirmDialog } = useConfirm();
 
-  const active = SECTIONS.find((entry) => entry.slug === section);
-  const current: SectionMeta = active ?? FIRST_SECTION;
+  const slug = resolveSettingsSection(section);
+  const current: SectionMeta = SECTIONS.find((entry) => entry.slug === slug) ?? SECTIONS[0]!;
+
+  // An old or unknown address is rewritten rather than shown as-is, so the
+  // address bar always names the section on screen.
+  useEffect(() => {
+    if (section !== slug) onSectionChange(slug);
+  }, [section, slug, onSectionChange]);
 
   /* ------------------------------- the draft ------------------------------ */
 
@@ -310,7 +399,7 @@ export function SettingsPage() {
   );
 
   // The deep comparison, not the "was touched" flag: typing a character and
-  // deleting it again leaves nothing to save, and the header should say so.
+  // deleting it again leaves nothing to save, and the footer should say so.
   const dirty = draft !== null && config !== null && !deepEqual(draft, config);
 
   const discard = useCallback(() => {
@@ -318,19 +407,20 @@ export function SettingsPage() {
     setDraft(config);
   }, [config]);
 
-  // Read through a ref so the callback keeps its identity while typing: it
-  // goes into the header's action row, and a new identity per keystroke would
-  // republish the page meta - and with it re-render the whole frame.
+  // Read through a ref so a save that is still out can tell whether the
+  // person kept typing meanwhile - that edit must stay "touched", or the next
+  // config refetch would overwrite it.
   const draftRef = useRef(draft);
   draftRef.current = draft;
 
-  const submit = useCallback(async (): Promise<void> => {
+  const submit = useCallback(async (event?: FormEvent<HTMLFormElement>): Promise<void> => {
+    event?.preventDefault();
     const pending = draftRef.current;
     if (!pending) return;
     setSaving(true);
     try {
       // The whole draft goes out: `PATCH /api/config` merges deeply, so the
-      // sub-objects this page never shows survive untouched.
+      // sub-objects this dialog never shows survive untouched.
       if (await save(pending)) {
         if (draftRef.current === pending) touched.current = false;
       }
@@ -339,47 +429,23 @@ export function SettingsPage() {
     }
   }, [save]);
 
-  usePageMeta(
-    {
-      breadcrumb: [
-        { label: 'Settings', to: '/settings/' + FIRST_SECTION.slug },
-        { label: current.label },
-      ],
-      actions: (
-        <div className="flex items-center gap-2">
-          {dirty ? (
-            <Badge variant="outline" className="hidden font-normal text-muted-foreground sm:inline-flex">
-              Unsaved changes
-            </Badge>
-          ) : null}
-          {/*
-            Keine ButtonGroup: die verschweisst ihre Kinder zu einem Bauteil,
-            und ein randloser Ghost-Knopf an einem gefuellten sieht aus wie ein
-            Schalter, dem eine Kante fehlt. Der Abstand des Elterncontainers
-            trennt die beiden.
-          */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            disabled={!dirty || saving}
-            onClick={discard}
-          >
-            Discard
-          </Button>
-          {/*
-            Ein echter Submit-Knopf, per `form` an das Formular im Inhalt
-            gebunden: so speichert auch die Eingabetaste im Feld, und der
-            Kopf bleibt der einzige Ort der Aktion.
-          */}
-          <Button type="submit" form={FORM_ID} size="sm" disabled={!dirty || saving}>
-            {saving ? <Spinner aria-label="Saving" /> : null}
-            Save
-          </Button>
-        </div>
-      ),
+  // The draft spans every section, so switching sections keeps it - only
+  // leaving the dialog altogether can lose it, and that asks first.
+  const leave = useCallback(
+    async (then: () => void) => {
+      if (dirty) {
+        const ok = await confirm({
+          title: 'Discard unsaved changes?',
+          description: 'The changes in these settings have not been saved yet.',
+          confirmLabel: 'Discard',
+          destructive: true,
+        });
+        if (!ok) return;
+        discard();
+      }
+      then();
     },
-    [dirty, saving, discard, submit],
+    [confirm, dirty, discard],
   );
 
   /* ------------------------------ the catalogue ---------------------------- */
@@ -401,156 +467,228 @@ export function SettingsPage() {
     void loadCatalogue();
   }, [loadCatalogue]);
 
-  // Preview speaks the *draft*, which is the whole point of a preview: until
-  // this rebuild it synthesised the saved settings, so trying a voice out
-  // meant saving it first and listening to the old one on the way.
+  // Preview speaks the *draft*, which is the whole point of a preview: trying
+  // a voice out must not mean saving it first.
   const preview = useVoiceOutput(draft?.voice);
+
+  // Each section starts at its top, not wherever the previous one was scrolled to.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0 });
+  }, [slug]);
+
+  const select = (entry: SectionMeta): void => {
+    if (entry.href) {
+      const target = entry.href;
+      void leave(() => onNavigate(target));
+      return;
+    }
+    onSectionChange(entry.slug);
+  };
 
   /* -------------------------------- render -------------------------------- */
 
-  // Hooks first, redirect after. Eine alte deutsche Adresse geht auf ihren
-  // englischen Abschnitt, alles andere (auch `/settings` selbst) auf den
-  // ersten - lieber eine Weiterleitung als eine leere Karte.
-  if (!active) {
-    const moved = section ? LEGACY_SLUGS[section] : undefined;
-    return <Navigate to={'/settings/' + (moved ?? FIRST_SECTION.slug)} replace />;
-  }
+  /*
+    Every way out is intercepted *before* radix hears of it. The animate-ui
+    Dialog flips its own open state on the first close request even while it
+    is controlled, so a close that the discard question then refuses would
+    leave the dialog gone and the address still on /settings.
+  */
+  const requestClose = (event?: Event): void => {
+    event?.preventDefault();
+    void leave(onClose);
+  };
 
-  return (
-    // 5xl statt 3xl: bei 1440 px blieb neben der 220-px-Navigation eine rund
-    // 470 px schmale Karte stehen, waehrend rechts ueber 200 px tot lagen. In
-    // dieser Breite kommt die Karte auf gut 730 px und die Felder landen in
-    // der Lesebreite, die ein Formular vertraegt.
-    <PageBody width="5xl">
-      <div className="grid gap-6 md:grid-cols-[220px_minmax(0,1fr)]">
-        <SectionNav
-          current={current}
-          onChange={(slug) => void navigate('/settings/' + slug)}
-        />
-
-        {/*
-          Der Rahmen kommt aus dem Template, nicht von Hand: FormPage bringt
-          Karte, Kopf und die `FieldGroup`-Klammer mit - und vor allem ein
-          echtes `<form>`, weshalb die Eingabetaste jetzt speichert. Die
-          Aktionen stehen im Seitenkopf (`showActions={false}`), der
-          Speichern-Knopf dort ist per `form={FORM_ID}` angebunden.
-
-          `error` bleibt bewusst leer: `saveConfig` faengt den Fehlschlag
-          selbst ab und meldet ihn als Toast. Ihn zusaetzlich inline zu zeigen,
-          hiesse erst den Provider umzubauen.
-        */}
-        <FormPage
-          formId={FORM_ID}
-          showActions={false}
-          onSubmit={submit}
-          title={current.label}
-          description={current.description}
-        >
-          {draft === null ? (
-            <SectionSkeleton />
-          ) : (
-            <>
-              {current.slug === 'identity' ? (
-                <>
-                  <IdentitySection draft={draft} set={set} />
-                  <Fade delay={50}>
-                    <AssistantProfile />
-                  </Fade>
-                </>
-              ) : null}
-              {current.slug === 'migration' ? (
-                <Fade>
-                  <AssistantMigration />
-                </Fade>
-              ) : null}
-              {current.slug === 'defaults' ? (
-                <>
-                  <DefaultsSection draft={draft} providers={providers} set={set} />
-                  <Fade delay={200}>
-                    <ProviderFallbackSection draft={draft} providers={providers} set={set} />
-                  </Fade>
-                  <Fade delay={250}>
-                    <ProviderProfilesSection providers={providers} />
-                  </Fade>
-                </>
-              ) : null}
-              {current.slug === 'voice' ? (
-                <VoiceSection
-                  draft={draft}
-                  catalogue={catalogue}
-                  failed={catalogueFailed}
-                  onRetry={() => void loadCatalogue()}
-                  browserVoices={speech.voices}
-                  setVoice={setVoice}
-                  preview={preview}
-                />
-              ) : null}
-              {current.slug === 'memory' ? (
-                <MemorySection draft={draft} setMemory={setMemory} />
-              ) : null}
-              {current.slug === 'org' ? <OrgSection draft={draft} setOrg={setOrg} /> : null}
-              {current.slug === 'listeners' ? (
-                <ListenersSection draft={draft} setListeners={setListeners} />
-              ) : null}
-              {current.slug === 'appearance' ? <ViewSection /> : null}
-            </>
-          )}
-        </FormPage>
-      </div>
-    </PageBody>
-  );
-}
-
-/* ------------------------------ section nav ------------------------------ */
-
-/**
- * The left column. A list of `Item`s on a wide screen, a `Select` on a
- * phone - a six-entry rail would eat the whole first screen there.
- */
-function SectionNav({
-  current,
-  onChange,
-}: {
-  current: SectionMeta;
-  onChange(slug: string): void;
-}) {
   return (
     <>
-      <Select value={current.slug} onValueChange={onChange}>
-        <SelectTrigger className="w-full md:hidden" aria-label="Settings section"><SelectValue /></SelectTrigger>
-        <SelectContent>{SECTIONS.map((entry) => <SelectItem key={entry.slug} value={entry.slug}>{entry.label}</SelectItem>)}</SelectContent>
-      </Select>
+      <Dialog open>
+        <DialogContent
+          showCloseButton={false}
+          onEscapeKeyDown={requestClose}
+          onInteractOutside={requestClose}
+          // Focus the dialog itself: radix would put it on the first nav entry,
+          // whose focus ring then reads as a second selected section.
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            (event.currentTarget as HTMLElement | null)?.focus();
+          }}
+          className="h-[min(760px,calc(100dvh-2rem))] gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] md:max-w-[880px] lg:max-w-[1040px]"
+        >
+          <DialogTitle className="sr-only">Settings</DialogTitle>
+          <DialogDescription className="sr-only">
+            Configure the assistant, its providers and connections.
+          </DialogDescription>
+          <SidebarProvider className="min-h-0 items-stretch">
+            <Sidebar collapsible="none" className="hidden w-60 border-r md:flex">
+              <SidebarHeader className="px-4 pt-5 pb-1">
+                <span className="text-base font-semibold">Settings</span>
+              </SidebarHeader>
+              <SidebarContent>
+                {GROUPS.map((group) => (
+                  <SidebarGroup key={group.label} className="py-1">
+                    <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+                    <SidebarGroupContent>
+                      <SidebarMenu>
+                        {group.sections.map((entry) => (
+                          <SidebarMenuItem key={entry.slug}>
+                            <SidebarMenuButton
+                              isActive={entry.slug === current.slug}
+                              onClick={() => select(entry)}
+                            >
+                              <entry.icon />
+                              <span>{entry.label}</span>
+                              {entry.href ? (
+                                <ExternalLinkIcon className="ml-auto size-3.5 text-muted-foreground" />
+                              ) : null}
+                            </SidebarMenuButton>
+                          </SidebarMenuItem>
+                        ))}
+                      </SidebarMenu>
+                    </SidebarGroupContent>
+                  </SidebarGroup>
+                ))}
+              </SidebarContent>
+            </Sidebar>
 
-      <Fade asChild>
-        <ItemGroup className="hidden gap-1 self-start md:sticky md:top-6 md:flex">
-          {SECTIONS.map((entry) => {
-            const selected = entry.slug === current.slug;
-            return (
-              <Item
-                key={entry.slug}
-                asChild
-                size="sm"
-                variant={selected ? 'muted' : 'default'}
-                className={cn(selected && 'font-medium text-foreground')}
+            <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              <header className="flex shrink-0 flex-col gap-3 border-b px-6 pt-5 pb-4 pr-14">
+                {/* The sidebar is hidden on a phone; the select takes its place. */}
+                <Select
+                  value={current.slug}
+                  onValueChange={(value) => {
+                    const entry = SECTIONS.find((item) => item.slug === value);
+                    if (entry) select(entry);
+                  }}
+                >
+                  <SelectTrigger className="w-full md:hidden" aria-label="Settings section"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {GROUPS.map((group) => (
+                      <SelectGroup key={group.label}>
+                        <SelectLabel>{group.label}</SelectLabel>
+                        {group.sections.map((entry) => (
+                          <SelectItem key={entry.slug} value={entry.slug}>{entry.label}</SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="flex flex-col gap-1">
+                  <h2 className="text-lg font-semibold leading-none">{current.label}</h2>
+                  <p className="text-sm text-muted-foreground">{current.description}</p>
+                </div>
+              </header>
+
+              <form
+                id={FORM_ID}
+                noValidate
+                onSubmit={(event) => void submit(event)}
+                className="flex min-h-0 flex-1 flex-col"
               >
-                <NavLink to={'/settings/' + entry.slug}>
-                  <ItemMedia variant="icon">
-                    <entry.icon />
-                  </ItemMedia>
-                  <ItemContent>
-                    <ItemTitle>{entry.label}</ItemTitle>
-                  </ItemContent>
-                </NavLink>
-              </Item>
-            );
-          })}
-        </ItemGroup>
-      </Fade>
+                <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+                  <FieldGroup key={current.slug} className="max-w-2xl">
+                    {draft === null ? (
+                      <SectionSkeleton />
+                    ) : (
+                      <>
+                        {current.slug === 'profile' ? (
+                          <>
+                            <IdentitySection draft={draft} set={set} />
+                            <Fade delay={50}>
+                              <AssistantProfile />
+                            </Fade>
+                          </>
+                        ) : null}
+                        {current.slug === 'behavior' ? <BehaviorSection draft={draft} set={set} /> : null}
+                        {current.slug === 'voice' ? (
+                          <VoiceSection
+                            draft={draft}
+                            catalogue={catalogue}
+                            failed={catalogueFailed}
+                            onRetry={() => void loadCatalogue()}
+                            browserVoices={speech.voices}
+                            setVoice={setVoice}
+                            preview={preview}
+                          />
+                        ) : null}
+                        {current.slug === 'memory' ? (
+                          <MemorySection draft={draft} setMemory={setMemory} />
+                        ) : null}
+                        {current.slug === 'providers' ? (
+                          <>
+                            <DefaultProviderSection draft={draft} providers={providers} set={set} />
+                            <Fade delay={100}>
+                              <ProviderFallbackSection draft={draft} providers={providers} set={set} />
+                            </Fade>
+                            <Fade delay={150}>
+                              <ProviderProfilesSection providers={providers} />
+                            </Fade>
+                          </>
+                        ) : null}
+                        {current.slug === 'org' ? <OrgSection draft={draft} setOrg={setOrg} /> : null}
+                        {current.slug === 'mailboxes' ? (
+                          <ListenersSection draft={draft} setListeners={setListeners} />
+                        ) : null}
+                        {current.slug === 'appearance' ? <ViewSection /> : null}
+                        {current.slug === 'import' ? (
+                          <Fade>
+                            <AssistantMigration />
+                          </Fade>
+                        ) : null}
+                      </>
+                    )}
+                  </FieldGroup>
+                </div>
+
+                {/*
+                  Always visible, below the scrolling area. Save and discard act
+                  on the whole draft, whichever section it was typed in - the
+                  badge says so before a section switch hides an edit.
+                */}
+                <footer className="flex shrink-0 items-center gap-2 border-t px-6 py-3">
+                  {dirty ? (
+                    <Badge variant="outline" className="font-normal text-muted-foreground">
+                      Unsaved changes
+                    </Badge>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">All changes saved</span>
+                  )}
+                  <div className="ml-auto flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={!dirty || saving}
+                      onClick={discard}
+                    >
+                      Discard
+                    </Button>
+                    <Button type="submit" size="sm" disabled={!dirty || saving}>
+                      {saving ? <Spinner aria-label="Saving" /> : null}
+                      Save
+                    </Button>
+                  </div>
+                </footer>
+              </form>
+            </main>
+          </SidebarProvider>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="absolute top-4 right-4"
+            onClick={() => requestClose()}
+          >
+            <XIcon />
+            <span className="sr-only">Close</span>
+          </Button>
+        </DialogContent>
+      </Dialog>
+      {confirmDialog}
     </>
   );
 }
 
-/** Steht in der `FieldGroup` von `FormPage`, bringt also keine eigene mit. */
+/** Steht in der `FieldGroup` des Dialogs, bringt also keine eigene mit. */
 function SectionSkeleton() {
   return (
     <FieldSet>
@@ -629,9 +767,9 @@ function IdentitySection({
   );
 }
 
-/* -------------------------------- defaults ------------------------------- */
+/* ---------------------------- default provider ---------------------------- */
 
-function DefaultsSection({
+function DefaultProviderSection({
   draft,
   providers,
   set,
@@ -718,7 +856,22 @@ function DefaultsSection({
         </FieldSet>
       </Fade>
 
-      <Fade delay={100}>
+    </>
+  );
+}
+
+/* -------------------------------- behavior ------------------------------- */
+
+function BehaviorSection({
+  draft,
+  set,
+}: {
+  draft: PublicConfig;
+  set(patch: Partial<PublicConfig>): void;
+}) {
+  return (
+    <>
+      <Fade>
         <FieldSet>
           <FieldLegend variant="label">Effort</FieldLegend>
           <FieldDescription>How much reasoning effort the model uses before responding.</FieldDescription>
@@ -754,7 +907,7 @@ function DefaultsSection({
         </FieldSet>
       </Fade>
 
-      <Fade delay={150}>
+      <Fade delay={50}>
         <FieldSet>
           <FieldLegend variant="label">Permissions</FieldLegend>
           <FieldDescription>

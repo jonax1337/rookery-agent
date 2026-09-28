@@ -46,7 +46,7 @@ for (const succeeds of [false, true]) {
   });
 }
 
-for (const page of ['SettingsPage', 'GatewayDetailPage']) {
+for (const page of ['SettingsDialog', 'GatewayDetailPage']) {
   for (const succeeds of [false, true]) {
     for (const editDuringSave of [false, true]) {
       test(`${page}: success=${succeeds}, edit during save=${editDuringSave}`, async () => {
@@ -61,7 +61,7 @@ for (const page of ['SettingsPage', 'GatewayDetailPage']) {
           draftRef, touched,
           setSaving: (value) => saving.push(value),
           save: async (patch) => {
-            assert.equal(page === 'SettingsPage' ? patch : patch.gateways.telegram, pending);
+            assert.equal(page === 'SettingsDialog' ? patch : patch.gateways.telegram, pending);
             return saveResult;
           },
           refresh: async () => { refreshed += 1; },

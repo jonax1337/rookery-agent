@@ -174,7 +174,7 @@ export const ROUTE_META: RouteMeta[] = [
     label: 'Settings',
     icon: SettingsIcon,
     group: 'secondary',
-    redirect: '/settings/identity',
+    redirect: '/settings/profile',
   },
   { path: '/settings/:section', label: 'Settings', parent: '/settings', hidden: true },
 ];
