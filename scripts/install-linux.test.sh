@@ -34,6 +34,17 @@ for test_manager in yes no; do
   if [[ $test_manager == yes ]]; then expected=setup; else expected='setup --no-autostart'; fi
   [[ $(cat "$test_root/launcher") == "$expected" ]]
 done
+# Default: the released package from npm, no source build.
+grep -q '^install --global --prefix .* --ignore-scripts --no-audit --no-fund rookery-agent@latest$' "$test_root/commands"
+if grep -q '^ci ' "$test_root/commands"; then echo 'FAIL: default install built from source'; exit 1; fi
+
+: >"$test_root/commands"
+ROOKERY_VERSION=0.2.0-beta.1 bash "$installer" >/dev/null
+grep -q ' rookery-agent@0.2.0-beta.1$' "$test_root/commands"
+if ROOKERY_VERSION='1.0.0; rm -rf ~' bash "$installer" >/dev/null 2>&1; then echo 'FAIL: unsafe ROOKERY_VERSION accepted'; exit 1; fi
+
+: >"$test_root/commands"
+ROOKERY_FROM_SOURCE=1 bash "$installer" >/dev/null
 grep -q '^ci --ignore-scripts$' "$test_root/commands"
-grep -q '^install --global --prefix .* --ignore-scripts dist/rookery-agent-0.1.0.tgz$' "$test_root/commands"
-echo 'PASS: Linux installer uses per-user installation and selects setup with/without systemd.'
+grep -q '^install --global --prefix .* --ignore-scripts --no-audit --no-fund dist/rookery-agent-0.1.0.tgz$' "$test_root/commands"
+echo 'PASS: Linux installer installs from npm (or source), per user, and selects setup with/without systemd.'

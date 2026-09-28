@@ -51,9 +51,25 @@ ausschliesslich ueber den Rookery-MCP-Server (`packages/core/src/org/`), nie dir
 | `npm run typecheck` | `tsc -b` ueber core, server, cli |
 | `npm run doctor` | Provider-Diagnose (Anmeldungen und Bruecke), ohne Server |
 | `npm run clean` | `scripts/clean.mjs` |
+| `npm run package` | eigenstaendiges npm-Paket nach `dist/npm` bauen und packen |
+| `git tag vX.Y.Z && git push --follow-tags` | Release: `.github/workflows/release.yml` baut, testet und veroeffentlicht auf npm (Ablauf in `docs/updates.md`) |
 
 Node.js >= 22.5 ist Pflicht (`node:sqlite`, keine native Abhaengigkeit fuer die
 Datenbank).
+
+## Updates und Releases
+
+Ausgeliefert wird das npm-Paket `rookery-agent`; eine Installation aktualisiert sich selbst
+(`packages/server/src/services/updates.ts` entscheidet, `scripts/updater.mjs` tauscht aus).
+Zwei Regeln, die leicht kaputtgehen:
+
+- `scripts/updater.mjs` importiert nichts aus Rookery. Er laeuft als Kopie unter
+  `~/.rookery/run`, waehrend npm das Paketverzeichnis ersetzt.
+- Eine Version fuer alles: Der Server meldet die Version aus dem Root-`package.json`, und
+  der Updater vergleicht nach dem Neustart genau diese. Versionen immer mit
+  `npm version X --workspaces --include-workspace-root` anheben.
+
+Nutzer- und Maintainer-Doku: `docs/updates.md`.
 
 ## Konventionen
 

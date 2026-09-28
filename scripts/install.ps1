@@ -1,6 +1,11 @@
 # Windows bootstrap. No Git, .env, or administrator shell required when Node is installed.
+# Installs the released npm package; -FromSource builds the repository archive instead
+# (for trying main before a release). $env:ROOKERY_VERSION pins a version or dist-tag.
 [CmdletBinding()]
-param([string]$ArchiveUrl = 'https://github.com/jonax1337/rookery-agent/archive/refs/heads/main.zip')
+param(
+    [switch]$FromSource,
+    [string]$ArchiveUrl = 'https://github.com/jonax1337/rookery-agent/archive/refs/heads/main.zip'
+)
 $ErrorActionPreference = 'Stop'
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
@@ -15,20 +20,30 @@ if ($LASTEXITCODE -ne 0) { throw 'Node.js 22.5 or newer is required. Update Node
 $installTemp = Join-Path ([IO.Path]::GetTempPath()) ('rookery-install-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $installTemp | Out-Null
 try {
-    Write-Host 'Downloading Rookery...'
-    Invoke-WebRequest -Uri $ArchiveUrl -OutFile (Join-Path $installTemp 'source.zip')
-    Expand-Archive -LiteralPath (Join-Path $installTemp 'source.zip') -DestinationPath $installTemp
-    $source = @(Get-ChildItem -LiteralPath $installTemp -Directory)
-    if ($source.Count -ne 1) { throw 'Expected one source directory in the archive.' }
-    Push-Location $source[0].FullName
+    Push-Location $installTemp
     try {
-        npm.cmd ci --ignore-scripts
-        if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
-        npm.cmd run package
-        if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
-        $package = @(Get-ChildItem -LiteralPath 'dist' -Filter '*.tgz')
-        if ($package.Count -ne 1) { throw 'Expected one release package.' }
-        npm.cmd install --global --ignore-scripts $package[0].FullName
+        if ($FromSource) {
+            Write-Host 'Downloading and building Rookery from source...'
+            Invoke-WebRequest -Uri $ArchiveUrl -OutFile (Join-Path $installTemp 'source.zip')
+            Expand-Archive -LiteralPath (Join-Path $installTemp 'source.zip') -DestinationPath $installTemp
+            $source = @(Get-ChildItem -LiteralPath $installTemp -Directory)
+            if ($source.Count -ne 1) { throw 'Expected one source directory in the archive.' }
+            Set-Location $source[0].FullName
+            npm.cmd ci --ignore-scripts
+            if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+            npm.cmd run package
+            if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+            $package = @(Get-ChildItem -LiteralPath 'dist' -Filter '*.tgz')
+            if ($package.Count -ne 1) { throw 'Expected one release package.' }
+            $spec = $package[0].FullName
+        } else {
+            $version = if ($env:ROOKERY_VERSION) { $env:ROOKERY_VERSION } else { 'latest' }
+            if ($version -notmatch '^[0-9A-Za-z.\-]+$') { throw 'ROOKERY_VERSION must be a version or dist-tag.' }
+            Write-Host "Installing rookery-agent@$version from npm..."
+            $spec = "rookery-agent@$version"
+        }
+        # Install scripts stay off: the dependencies ship compiled artifacts.
+        npm.cmd install --global --ignore-scripts --no-audit --no-fund $spec
         if ($LASTEXITCODE -ne 0) { throw 'Package installation failed.' }
         $prefix = (npm.cmd prefix --global).Trim()
         if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the installed package.' }

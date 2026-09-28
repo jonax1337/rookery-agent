@@ -1,3 +1,5 @@
+import { rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { loadDotEnv } from './env.js';
 import { Assistant, createLogger, type RookeryConfig } from '@rookery/core';
 import { buildServer } from './server.js';
@@ -34,13 +36,19 @@ async function main(): Promise<void> {
   const config = assistant.config;
   const log = createLogger({ level: config.logLevel, home: config.home, scope: 'main' });
 
-  const app = await buildServer(assistant);
+  // `shutdown` is defined below, once the app it closes exists; an update
+  // only ever asks for it long after both are there.
+  const app = await buildServer(assistant, { requestShutdown: () => shutdown('update') });
+  // Who holds the port: the updater stops a new version that came up broken
+  // by this, since a hung server would not answer a request to leave.
+  const pidFile = join(config.home, 'run', 'server.pid');
 
   let closing = false;
   const shutdown = (signal: string): void => {
     if (closing) return;
     closing = true;
     log.info('Shutting down', { signal });
+    rmSync(pidFile, { force: true });
     app
       .close()
       .catch((error: unknown) => log.error('Close failed', { error: String(error) }))
@@ -62,6 +70,12 @@ async function main(): Promise<void> {
     log.error('Failed to listen', { error: (error as Error).message });
     assistant.close();
     process.exit(1);
+  }
+
+  try {
+    writeFileSync(pidFile, String(process.pid));
+  } catch (error) {
+    log.warn('Could not write the PID file', { error: (error as Error).message });
   }
 
   const providers = await assistant.providers.statuses();

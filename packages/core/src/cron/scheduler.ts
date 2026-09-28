@@ -226,6 +226,11 @@ export class CronScheduler extends EventEmitter {
     return this.#running.has(jobId);
   }
 
+  /** How many runs are in flight right now, the nightly memory run included. */
+  get runningCount(): number {
+    return this.#running.size;
+  }
+
   /** Create a job. Throws CronSyntaxError for a bad expression, Error for a bad kind. */
   create(input: CronJobInput): CronJob {
     const triggerMode = input.triggerMode ?? 'schedule';

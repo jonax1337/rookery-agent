@@ -45,6 +45,11 @@ export class TurnHub {
     return this.#turns.has(id);
   }
 
+  /** Turns still being drained. */
+  get size(): number {
+    return this.#turns.size;
+  }
+
   /**
    * Take over a generator: drain it to the end, whatever happens to the
    * sockets along the way. The caller keeps the AbortController and hands it

@@ -18,13 +18,13 @@ The application and database run on your machine. Model requests still go to the
 
 ### Easy Windows installation
 
-Run this in PowerShell. The installer downloads the public repository and sets up Rookery for your Windows user:
+Run this in PowerShell. The installer installs the released `rookery-agent` package from npm and sets up Rookery for your Windows user:
 
 ```powershell
 irm https://raw.githubusercontent.com/jonax1337/rookery-agent/main/scripts/install.ps1 | iex
 ```
 
-The installer installs Node.js LTS through winget if Node is missing, downloads and builds Rookery, installs its npm package, starts the server, opens the migration/start-fresh choice in Settings, and enables startup after Windows sign-in. Node installation may show the standard Windows approval dialog. No Git or `.env` editing is needed. An existing Node older than 22.5 must be updated first.
+The installer installs Node.js LTS through winget if Node is missing, installs the Rookery npm package (nothing is built on your machine), starts the server, opens the migration/start-fresh choice in Settings, and enables startup after Windows sign-in. Node installation may show the standard Windows approval dialog. No Git or `.env` editing is needed. An existing Node older than 22.5 must be updated first. `$env:ROOKERY_VERSION = '0.2.0'` before the command pins a version; to build the current `main` branch instead of a release, run `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/jonax1337/rookery-agent/main/scripts/install.ps1))) -FromSource`.
 
 If the Claude Code CLI is not installed, the installer offers it and opens its login flow; you can also skip this step. Existing installations and logins are reused. Select your provider in **Settings**. Configure your name, assistant, models, and voice there; configure Telegram in **Gateways**. Default voice needs no key. Add optional OpenAI/ElevenLabs speech keys directly under **Settings → Voice → Speech service keys**.
 
@@ -34,19 +34,20 @@ rookery start           # start in the background (safe to repeat)
 rookery autostart off   # disable future automatic starts; keep data/current server
 rookery autostart on    # enable again
 rookery doctor          # check installed provider CLIs and logins
+rookery update          # install the newest release (see Updates below)
 ```
 
 Autostart runs as your Windows user **after sign-in**, not before login, and does not keep a sleeping or powered-off PC online. Background startup output goes to `~/.rookery/server.log`. Settings and data stay in `~/.rookery` when the package is upgraded. Disable autostart before `npm uninstall -g rookery-agent`. Re-run setup after moving Node or the installation. On macOS use `rookery setup --no-autostart` or `rookery serve`.
 
 ### Linux installation
 
-Requirements: Node.js **22.5+**, npm, curl, and tar. Run as your normal user, without sudo. From a checkout, run `bash scripts/install.sh`. The one-liner is:
+Requirements: Node.js **22.5+** and npm (plus curl for the one-liner). Run as your normal user, without sudo. From a checkout, run `bash scripts/install.sh`. The one-liner is:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jonax1337/rookery-agent/main/scripts/install.sh | bash
 ```
 
-The installer builds and installs the package under `~/.local`, offers a provider CLI and login if needed, and opens the migration/start-fresh choice in Settings. No Git or `.env` editing is needed. If `rookery` is not found in a new shell, add `~/.local/bin` to your shell's PATH; the absolute command is `~/.local/bin/rookery`.
+The installer installs the released npm package under `~/.local` (`ROOKERY_VERSION=0.2.0` pins a version; `ROOKERY_FROM_SOURCE=1` builds `main` instead, which also needs tar), offers a provider CLI and login if needed, and opens the migration/start-fresh choice in Settings. No Git or `.env` editing is needed. If `rookery` is not found in a new shell, add `~/.local/bin` to your shell's PATH; the absolute command is `~/.local/bin/rookery`.
 
 With a systemd user session, setup enables `rookery.service` for the **next login**. The initial server runs in the background immediately. The service runs as your user, retaining access to provider logins and the PATH captured during setup. Its unit is stored under `${XDG_CONFIG_HOME:-~/.config}/systemd/user/rookery.service`. After the next login, inspect it with:
 
@@ -59,13 +60,32 @@ For a headless machine that should start the service at boot before login and ke
 
 ### npm distribution
 
-The standalone package includes the built web app, server, core, and CLI. No build tools or repository checkout are needed by people installing a release tarball:
+The `rookery-agent` package on npm includes the built web app, server, core, and CLI. No build tools or repository checkout are needed:
 
 ```powershell
-npm install -g --ignore-scripts ./rookery-agent-0.1.0.tgz; if ($LASTEXITCODE -eq 0) { rookery setup }
+npm install -g --ignore-scripts rookery-agent; if ($LASTEXITCODE -eq 0) { rookery setup }
 ```
 
-Maintainers create it with `npm run package` (output: `dist/rookery-agent-0.1.0.tgz`). It is **not yet published to the npm registry**; use a locally built tarball or one shared by the maintainer. The dependencies ship compiled artifacts; skipping install scripts avoids `msedge-tts`'s upstream pnpm-only check. Use a persistent installation for autostart, not an `npx` cache directory.
+The dependencies ship compiled artifacts; skipping install scripts avoids `msedge-tts`'s upstream pnpm-only check. Use a persistent installation for autostart, not an `npx` cache directory. Maintainers can still build a local tarball with `npm run package` (output: `dist/rookery-agent-<version>.tgz`).
+
+### Updates
+
+Rookery checks the npm registry every few hours. **Settings → Updates** shows the installed and the newest version and installs it with one click. The same page chooses how updates arrive: *Off*, *Tell me* (default), or *Install automatically*, which installs only while no conversation, agent run, schedule, or terminal is active. The *Pre-releases* channel follows the npm `next` tag instead of `latest`.
+
+```powershell
+rookery update --check   # show installed and newest version
+rookery update           # install it; a running server restarts itself
+rookery update --force   # install even while work is running
+```
+
+An update backs up `~/.rookery/rookery.db` to `~/.rookery/backups/`, installs the new version with npm, restarts the server (or the systemd user service), and checks that the new version answers. If it does not, the previous version and the database backup are restored. The log is `~/.rookery/logs/update.log`. Installations from a source checkout are not updated this way; use `git pull`, `npm install`, and `npm run build`. Details, troubleshooting, and manual recovery: [docs/updates.md](docs/updates.md).
+
+**Releasing** (maintainers): bump the version everywhere, then push a tag. `.github/workflows/release.yml` builds, tests, publishes to npm with provenance, and creates the GitHub release. A tag with a suffix such as `v0.2.0-beta.1` is published to the `next` channel. One-time npm setup and local update testing are described in [docs/updates.md](docs/updates.md#for-maintainers-releasing).
+
+```bash
+npm version 0.2.0 --workspaces --include-workspace-root --no-git-tag-version
+git commit -am "release: 0.2.0" && git tag v0.2.0 && git push --follow-tags
+```
 
 ### From source
 

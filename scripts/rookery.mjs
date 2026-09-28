@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, closeSync, unlinkSync, writeFileSync, realpathSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, writeFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const entry = fileURLToPath(new URL('../packages/server/dist/main.js', import.meta.url));
@@ -84,17 +84,90 @@ export function autostart(enabled, home, startupFolder) {
   console.log('Autostart enabled: Rookery starts after Windows sign-in. Run rookery autostart off to disable.');
 }
 
+const serverUrl = (config) => {
+  const host = ['0.0.0.0', '::'].includes(config.host) ? '127.0.0.1' : config.host;
+  return `http://${host.includes(':') ? '[' + host + ']' : host}:${config.port}`;
+};
+const authHeaders = (config) => (config.token ? { Authorization: `Bearer ${config.token}` } : {});
+
+async function isReady(config) {
+  try {
+    const response = await fetch(serverUrl(config) + '/api/config', { headers: authHeaders(config), signal: AbortSignal.timeout(1500) });
+    const body = await response.json();
+    return response.ok && typeof body.assistantName === 'string' && typeof body.defaultProvider === 'string';
+  } catch { return false; }
+}
+
+/** `a` newer than `b`, semver-ish; a pre-release sorts before its release. */
+export function isNewer(a, b) {
+  const split = (value) => { const [core, pre = ''] = value.split(/-(.*)/s); return [core.split('.').map(Number), pre]; };
+  const [left, leftPre] = split(a);
+  const [right, rightPre] = split(b);
+  for (let i = 0; i < 3; i++) if ((left[i] ?? 0) !== (right[i] ?? 0)) return (left[i] ?? 0) > (right[i] ?? 0);
+  if (!leftPre || !rightPre) return !leftPre && Boolean(rightPre);
+  return leftPre.localeCompare(rightPre, undefined, { numeric: true }) > 0;
+}
+
+/**
+ * `rookery update [--check] [--force]`. With a server running, the server
+ * does the update - it knows whether work would be cut off, and it restarts
+ * itself through the updater. Without one, the updater runs right here and
+ * leaves the server stopped, as it found it.
+ */
+async function update(config, options) {
+  const root = dirname(dirname(launcher));
+  const current = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+  const registry = (process.env.ROOKERY_NPM_REGISTRY || 'https://registry.npmjs.org').replace(/\/+$/, '');
+  const channel = config.updates?.channel ?? 'latest';
+  const response = await fetch(`${registry}/rookery-agent/${channel}`, { signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error(`The npm registry answered ${response.status}.`);
+  const latest = (await response.json()).version;
+  console.log(`Installed: ${current}  ${channel}: ${latest}`);
+  if (!isNewer(latest, current)) return console.log('Rookery is up to date.');
+  if (options.includes('--check')) return console.log('Run rookery update to install it.');
+
+  if (await isReady(config)) {
+    const url = serverUrl(config);
+    await fetch(url + '/api/updates/check', { method: 'POST', headers: authHeaders(config) });
+    const install = await fetch(url + '/api/updates/install', {
+      method: 'POST',
+      headers: { ...authHeaders(config), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: options.includes('--force') }),
+    });
+    const body = await install.json();
+    if (!install.ok) throw new Error(body.message + (install.status === 409 && !options.includes('--force') ? ' (rookery update --force)' : ''));
+    return console.log(`Updating ${body.from} -> ${body.to}. Rookery restarts on its own; the log is ${join(config.home, 'logs', 'update.log')}.`);
+  }
+
+  if (existsSync(join(root, 'packages', 'server', 'src'))) throw new Error('This is a source checkout. Update it with git pull, npm install and npm run build.');
+  const modules = dirname(root);
+  if (basename(modules) !== 'node_modules') throw new Error('Rookery is not installed as a global npm package here.');
+  const parent = dirname(modules);
+  const prefix = process.platform !== 'win32' && basename(parent) === 'lib' ? dirname(parent) : parent;
+  const run = join(config.home, 'run');
+  mkdirSync(run, { recursive: true });
+  // Run from a copy: npm is about to replace the original.
+  const updater = join(run, 'updater.mjs');
+  copyFileSync(join(root, 'scripts', 'updater.mjs'), updater);
+  const plan = join(run, 'update-plan.json');
+  const { databasePath } = await import('../packages/core/dist/config.js');
+  writeFileSync(plan, JSON.stringify({
+    packageName: 'rookery-agent', from: current, to: latest, home: config.home, prefix, root,
+    database: databasePath(config), restart: 'none', waitPid: 0,
+    registry: process.env.ROOKERY_NPM_REGISTRY || undefined,
+  }, null, 2), { mode: 0o600 });
+  const child = spawn(process.execPath, [updater, plan], { stdio: 'inherit' });
+  const code = await new Promise((resolve) => child.on('exit', resolve));
+  if (code !== 0 || !JSON.parse(readFileSync(join(run, 'update-status.json'), 'utf8')).ok) {
+    throw new Error('Update failed. See ' + join(config.home, 'logs', 'update.log'));
+  }
+  console.log('Run rookery start to start the new version.');
+}
+
 async function start(config) {
   if (!existsSync(entry)) throw new Error('Server is not built. Run npm run build first.');
-  const host = ['0.0.0.0', '::'].includes(config.host) ? '127.0.0.1' : config.host;
-  const url = `http://${host.includes(':') ? '[' + host + ']' : host}:${config.port}`;
-  const ready = async () => {
-    try {
-      const response = await fetch(url + '/api/config', { headers: config.token ? { Authorization: `Bearer ${config.token}` } : {}, signal: AbortSignal.timeout(1500) });
-      const body = await response.json();
-      return response.ok && typeof body.assistantName === 'string' && typeof body.defaultProvider === 'string';
-    } catch { return false; }
-  };
+  const url = serverUrl(config);
+  const ready = () => isReady(config);
   if (await ready()) return url;
   mkdirSync(config.home, { recursive: true });
   const log = openSync(join(config.home, 'server.log'), 'a');
@@ -148,8 +221,17 @@ async function main() {
     console.log('Open Settings → Identity to review your agent. Start a new conversation for the cleanest transition.');
     return;
   }
+  if (command === 'update') {
+    const options = process.argv.slice(3);
+    if (options.some((flag) => !['--check', '--force'].includes(flag))) throw new Error('Usage: rookery update [--check] [--force]');
+    const { loadConfig } = await import('../packages/core/dist/config.js');
+    const { loadDotEnv } = await import('../packages/server/dist/env.js');
+    loadDotEnv();
+    await update(loadConfig(), options);
+    return;
+  }
   if (!['setup', 'start', 'autostart'].includes(command)) {
-    if (command === '--help' || command === '-h') console.log('Installation: rookery setup [--no-autostart] | start | autostart on|off\nMigration: rookery migrate <hermes|openclaw> [--from <path>] [--file <target-path>] [--job <source-id>] [--apply]\n');
+    if (command === '--help' || command === '-h') console.log('Installation: rookery setup [--no-autostart] | start | autostart on|off | update [--check] [--force]\nMigration: rookery migrate <hermes|openclaw> [--from <path>] [--file <target-path>] [--job <source-id>] [--apply]\n');
     await import('../packages/cli/dist/index.js');
     return;
   }

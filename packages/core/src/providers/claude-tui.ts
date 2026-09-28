@@ -157,6 +157,11 @@ export class TuiSessionRegistry extends EventEmitter {
     this.emit('state', { ...session.info });
   }
 
+  /** Terminals currently attached, whether their run is working or waiting. */
+  get size(): number {
+    return this.#sessions.size;
+  }
+
   info(key: string): TuiSessionInfo | null {
     const session = this.#sessions.get(key);
     return session ? { ...session.info } : null;
