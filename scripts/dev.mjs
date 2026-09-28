@@ -7,7 +7,7 @@
  * worse than no dev environment.
  */
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -76,4 +76,10 @@ process.on('SIGTERM', () => shutdown(0));
 start('server', 33, process.execPath, [serverEntry], { shell: false });
 start('web', 36, 'npm', ['run', 'dev', '-w', '@rookery/web']);
 
-console.log('\nRookery dev: API on http://127.0.0.1:4317, UI on http://localhost:5317\n');
+// The server reads ROOKERY_PORT from the repo's .env itself; this only reports it.
+const envFile = join(root, '.env');
+const port =
+  process.env.ROOKERY_PORT ??
+  (existsSync(envFile) && readFileSync(envFile, 'utf8').match(/^\s*ROOKERY_PORT\s*=\s*["']?(\d+)/m)?.[1]) ??
+  '4317';
+console.log(`\nRookery dev: API on http://127.0.0.1:${port}, UI on http://localhost:5317\n`);
