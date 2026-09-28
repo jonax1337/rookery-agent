@@ -623,6 +623,20 @@ export const clientFrameSchema = z.discriminatedUnion('type', [
     rows: z.number().int().min(5).max(200),
   }),
   z.object({ type: z.literal('tui-kill'), assignmentId: z.string().min(1) }),
+  // A conversation switching to Claude Code's own terminal, and back. `id`
+  // pairs the `tui-opened` reply with this request; no session id opens a
+  // new conversation straight into the terminal.
+  z.object({
+    type: z.literal('tui-open'),
+    id: z.string().min(1),
+    sessionId: z.string().min(1).optional(),
+    provider: providerIdSchema.optional(),
+    model: z.string().min(1).optional(),
+    effort: effortSchema.optional(),
+    permission: permissionSchema.optional(),
+    projectId: z.string().min(1).optional(),
+  }),
+  z.object({ type: z.literal('tui-close'), sessionId: z.string().min(1) }),
   // An answer to a question the assistant asked. The id is the question's,
   // not a turn's: the turn waiting on it may have been started on another
   // connection entirely, so this frame carries no request id and gets no

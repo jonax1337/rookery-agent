@@ -1828,7 +1828,12 @@ export interface ProviderTurnOptions {
    * Providers without a terminal, or a system without the pty binding,
    * ignore it and run headless.
    */
-  tui?: { key: string; lingerMs?: number };
+  tui?: {
+    key: string;
+    lingerMs?: number;
+    /** What a person does in the terminal after the work was reported done. */
+    onLateEvent?: (event: AgentEvent) => void;
+  };
   signal?: AbortSignal;
 }
 
@@ -1903,6 +1908,21 @@ export interface Provider {
   run(options: ProviderTurnOptions): AsyncGenerator<AgentEvent, void, unknown>;
   /** Models this provider accepts, for UI pickers. */
   models(): string[] | Promise<ProviderModel[]>;
+  /**
+   * Open a conversation in the provider's own interactive terminal instead
+   * of running one turn: no prompt, no end, every answer reported through
+   * `handlers`. `options.tui.key` names the terminal; `options.prompt` is
+   * ignored. Absent on providers without a terminal.
+   */
+  openTerminal?(options: ProviderTurnOptions, handlers: ProviderTerminalHandlers): Promise<{ providerSessionId: string }>;
+}
+
+/** What a conversation terminal reports while it is open. */
+export interface ProviderTerminalHandlers {
+  /** After every answer: what was typed since the last one, and the answer. */
+  onTurn(turn: { prompt: string; answer: string; providerSessionId: string; usage: TurnUsage }): void;
+  /** The process is gone, however it ended. */
+  onExit(): void;
 }
 
 /* ------------------------------------------------------------------ *

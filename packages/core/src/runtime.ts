@@ -31,6 +31,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { remapModel } from './providers/provider-catalog.js';
 import { isUsageLimitError, providerBlocked, providerLow, rememberUsageFailure } from './providers/quota.js';
 import { sharedCodexBridge } from './providers/codex-bridge.js';
+import { tuiSessions } from './providers/claude-tui.js';
 import { Store } from './memory/store.js';
 import { byScoreThenId, coreProfile, dropContradicted, recall } from './memory/recall.js';
 import { fetchFrame } from './memory/dream/frame.js';
@@ -313,6 +314,11 @@ export interface AssistantOptions {
 export interface MemoryLearnedEvent {
   sessionId: string;
   stored: MemoryRecord[];
+}
+
+/** The terminal registry's key for a conversation - runs use their assignment id. */
+export function conversationTerminalKey(sessionId: string): string {
+  return 'chat:' + sessionId;
 }
 
 export class Assistant extends EventEmitter {
@@ -1775,6 +1781,151 @@ export class Assistant extends EventEmitter {
       this.store.finishTrace(trace.id, { degraded: frame.degraded });
     });
     return memories;
+  }
+
+  /* ------------------------- conversation terminal ------------------------ */
+
+  /**
+   * Carries a conversation on in Claude Code's own terminal instead of the
+   * chat: the full TUI, typed into directly, on the same provider session a
+   * chat turn resumes - so switching back and forth loses nothing. Claude
+   * Code keeps its own context across the switch; Rookery keeps the
+   * conversation's history by storing every exchange the terminal reports.
+   *
+   * What a chat turn rebuilds every time is built once here: the system
+   * prompt, the company block, the tool servers. A terminal has one prompt
+   * for its whole life, so the per-turn memory recall is the one thing it
+   * goes without - the memories still come back on the next chat turn.
+   *
+   * Returns at once if the conversation already has an open terminal.
+   */
+  async openConversationTerminal(input: {
+    sessionId?: string;
+    provider?: ProviderId;
+    model?: string;
+    effort?: EffortLevel;
+    permission?: PermissionLevel;
+    projectId?: string;
+  }): Promise<{ sessionId: string; key: string }> {
+    const session = this.#resolveSession({
+      text: '',
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.provider ? { provider: input.provider } : {}),
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+    });
+    const key = conversationTerminalKey(session.id);
+    if (tuiSessions.info(key)) return { sessionId: session.id, key };
+    if (input.projectId && input.projectId !== session.projectId) {
+      this.store.updateSession(session.id, { projectId: input.projectId });
+      session.projectId = input.projectId;
+    }
+
+    const wanted = input.provider ?? session.provider;
+    const providerId = await this.providers.resolveUsable(wanted);
+    if (!providerId) throw new Error('No AI provider is ready.');
+    const provider = this.providers.get(providerId);
+    if (!provider.openTerminal) throw new Error(provider.displayName + ' has no terminal of its own.');
+
+    // Resuming the provider's own thread only works on the same provider.
+    const resumed = Boolean(session.providerSessionId) && session.provider === providerId;
+    const model = input.model ?? session.model ?? this.config.defaultModel;
+    const organization = this.org.activeOrganization();
+    const snapshot = this.org.snapshot(organization.id);
+    const project = session.projectId ? (this.store.org.getProject(session.projectId) ?? undefined) : undefined;
+    const who = 'assistant';
+    const extra = toolServersFor(this.config, who, providerId, project?.id);
+    const ownSkills = this.skills.for(who);
+    const systemPrompt = buildSystemPrompt({
+      config: this.config,
+      query: '',
+      memories: [],
+      history: resumed ? [] : this.store.getMessages(session.id, this.config.memory.workingWindow),
+      resumed,
+      voice: false,
+      orgBlock: assistantOrgBlock(this.config, snapshot, [], project, this.cron.list(organization.id), this.store),
+      toolHints: [...extra.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean),
+      skillsIndex: [renderSkillsIndex(ownSkills), renderExternalSkillsHint(this.config, who)].filter(Boolean).join('\n\n'),
+      store: this.store,
+    });
+
+    // The token lives as long as the terminal: the MCP bridge answers the
+    // assistant's own tools for exactly that long.
+    const token = this.org.register({
+      orgId: organization.id,
+      audience: 'assistant',
+      agentId: undefined,
+      sessionId: session.id,
+      projectId: session.projectId,
+      depth: -1,
+      scheduled: false,
+      watching: false,
+      emit: () => undefined,
+      signal: undefined,
+    });
+    const release = (): void => {
+      this.org.unregister(token);
+      this.questions.cancelForOwner(token);
+    };
+
+    try {
+      const mcp = await this.org.bridge.spec(token);
+      const opened = await provider.openTerminal(
+        {
+          prompt: '',
+          systemPrompt,
+          systemPromptMode: 'replace',
+          ...(resumed && session.providerSessionId ? { providerSessionId: session.providerSessionId } : {}),
+          ...(model ? { model } : {}),
+          effort: input.effort ?? this.config.defaultEffort,
+          cwd: this.config.workspace,
+          permission: input.permission ?? this.config.defaultPermission,
+          mcp,
+          ...(extra.specs.length ? { mcpExtra: extra.specs } : {}),
+          ...externalTurnExtras(this.config, who),
+          tui: { key },
+        },
+        {
+          onTurn: (turn) => {
+            if (turn.prompt) this.store.addMessage({ sessionId: session.id, role: 'user', content: turn.prompt });
+            this.store.addMessage({
+              sessionId: session.id,
+              role: 'assistant',
+              content: turn.answer,
+              provider: providerId,
+              ...(model ? { model } : {}),
+              usage: turn.usage,
+            });
+            const current = this.store.getSession(session.id);
+            if (current && current.title === 'New conversation' && turn.prompt) {
+              this.store.updateSession(session.id, { title: deriveTitle(turn.prompt) });
+            }
+            this.store.updateSession(session.id, { provider: providerId, model, providerSessionId: turn.providerSessionId });
+            this.emit('changed', { kind: 'session', id: session.id });
+            if (this.config.memory.enabled && this.config.memory.autoExtract && turn.prompt) {
+              void this.#learn(session.id, turn.prompt, turn.answer, providerId, ASSISTANT_MEMORY_OWNER);
+            }
+          },
+          onExit: () => {
+            release();
+            this.emit('changed', { kind: 'session', id: session.id });
+          },
+        },
+      );
+      // Stored at once, so switching back to chat resumes this very session
+      // even if nothing was said in the terminal yet.
+      this.store.updateSession(session.id, { provider: providerId, model, providerSessionId: opened.providerSessionId });
+    } catch (error) {
+      release();
+      throw error;
+    }
+    this.emit('changed', { kind: 'session', id: session.id });
+    return { sessionId: session.id, key };
+  }
+
+  /** Back to chat: ends the conversation's terminal. False when it had none. */
+  closeConversationTerminal(sessionId: string): boolean {
+    return tuiSessions.kill(conversationTerminalKey(sessionId));
   }
 
   #resolveSession(input: ChatInput): Session {

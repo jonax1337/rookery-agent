@@ -8,6 +8,7 @@ import {
   MessageSquareIcon as MessagesSquareIcon,
   PenToolIcon as PencilIcon,
   RotateCcwIcon,
+  TerminalIcon,
 } from "@/components/icons";
 import { toast } from 'sonner';
 
@@ -34,12 +35,14 @@ import { EmptyState, EmptyStateGreeting } from '@/components/assistant-ui/elemen
 import { MemoryRecallToolUI } from '@/components/assistant-ui/elements/memory-call';
 import { useCancelAssignment } from '@/components/common/entity-actions';
 import { AssignmentTerminal } from '@/components/common/assignment-terminal';
+import { RunTerminal } from '@/components/common/run-terminal';
 import { LiveRunList } from '@/components/common/live-run-list';
 import { QuestionCard } from '@/components/common/question-card';
 import { RowMenuButton } from '@/components/common/row-menu-button';
 import { collectErrors, FormField } from '@/components/forms/form-kit';
 
 import { Button } from '@/components/ui/button';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Dialog,
   DialogClose,
@@ -81,7 +84,7 @@ import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/comp
 
 export function ChatPage() {
   const navigate = useNavigate();
-  const { chat, turn } = useChatSession();
+  const { chat, turn, openConversation } = useChatSession();
   const { assistantName, config } = useConfig();
   const org = useOrgState();
   const { socket } = useConnection();
@@ -257,6 +260,76 @@ export function ChatPage() {
     return () => socket.detachConversation(activeId);
   }, [activeId, attach, socket]);
 
+  /* ------------------------------ terminal ------------------------------ */
+
+  // Chat or Claude Code's own terminal, per conversation. Both carry on the
+  // same provider session, so the switch loses nothing: the terminal resumes
+  // what the chat said, and every exchange in the terminal is stored in the
+  // conversation, where the chat finds it when it takes over again.
+  const [mode, setMode] = React.useState<ChatMode>(() => readChatMode(activeId));
+  const [opening, setOpening] = React.useState(false);
+  React.useEffect(() => setMode(readChatMode(activeId)), [activeId]);
+
+  const openTerminal = React.useCallback(async (): Promise<void> => {
+    setOpening(true);
+    try {
+      const opened = await socket.openTui({
+        ...(activeId ? { sessionId: activeId } : {}),
+        provider: turn.provider,
+        ...(turn.model ? { model: turn.model } : {}),
+        ...(turn.effort ? { effort: turn.effort } : {}),
+        permission: turn.permission,
+        ...(turn.projectId ? { projectId: turn.projectId } : {}),
+      });
+      writeChatMode(opened.sessionId, 'terminal');
+      setMode('terminal');
+      // A terminal opened on the start screen made its own conversation.
+      if (opened.sessionId !== activeId) openConversation(opened.sessionId);
+      void allSessions.refresh();
+    } catch (caught) {
+      reportFailure('Open terminal', caught);
+    } finally {
+      setOpening(false);
+    }
+  }, [activeId, allSessions, openConversation, socket, turn.effort, turn.model, turn.permission, turn.projectId, turn.provider]);
+
+  const loadSession = sessions.load;
+  const setMessages = chat.setMessages;
+  const backToChat = React.useCallback(async (): Promise<void> => {
+    setMode('chat');
+    if (!activeId) return;
+    writeChatMode(activeId, 'chat');
+    socket.closeTui(activeId);
+    // What was said in the terminal is in the conversation now; the thread on
+    // screen still shows how it looked before the switch.
+    const loaded = await loadSession(activeId);
+    if (loaded) setMessages(loaded.messages);
+  }, [activeId, loadSession, setMessages, socket]);
+
+  const modeSwitch = (
+    <ToggleGroup
+      type="single"
+      variant="outline"
+      size="sm"
+      value={mode}
+      disabled={opening}
+      onValueChange={(value) => {
+        if (value === 'terminal' && mode !== 'terminal') void openTerminal();
+        else if (value === 'chat' && mode !== 'chat') void backToChat();
+      }}
+      aria-label="Conversation mode"
+    >
+      <ToggleGroupItem value="chat" aria-label="Chat" className="data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
+        <MessagesSquareIcon />
+        Chat
+      </ToggleGroupItem>
+      <ToggleGroupItem value="terminal" aria-label="Claude Code terminal" className="data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
+        <TerminalIcon />
+        Terminal
+      </ToggleGroupItem>
+    </ToggleGroup>
+  );
+
   /* -------------------------------- meta --------------------------------- */
 
   // Without an open conversation there is nothing to rename, reset or delete,
@@ -264,7 +337,10 @@ export function ChatPage() {
   usePageMeta(
     {
       breadcrumb: [{ label: 'Conversations', to: '/chats' }, { label: title }],
-      actions: activeId ? (
+      actions: (
+        <div className="flex items-center gap-2">
+        {modeSwitch}
+        {activeId ? (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <RowMenuButton tone="header" label="More actions" />
@@ -324,9 +400,15 @@ export function ChatPage() {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-      ) : null,
+        ) : null}
+        </div>
+      ),
     },
     [
+      mode,
+      opening,
+      openTerminal,
+      backToChat,
       activeId,
       session?.kind,
       turn.projectId,
@@ -432,12 +514,32 @@ export function ChatPage() {
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {/* Draws nothing itself: it registers who renders the memories a turn
-            was given, which the transcript carries as a part of its own. */}
-        <MemoryRecallToolUI />
-        <Thread components={components} />
-      </div>
+      {mode === 'terminal' && activeId ? (
+        <div className="flex min-h-0 flex-1 flex-col p-4">
+          <RunTerminal
+            key={activeId}
+            assignmentId={'chat:' + activeId}
+            showHeader={false}
+            className="min-h-0 flex-1"
+            fallback={
+              <EmptyStateCard
+                title="The terminal is closed"
+                description="It was closed or sat unused for an hour. Everything said in it is in this conversation."
+                onReopen={() => void openTerminal()}
+                onChat={() => void backToChat()}
+                busy={opening}
+              />
+            }
+          />
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {/* Draws nothing itself: it registers who renders the memories a turn
+              was given, which the transcript carries as a part of its own. */}
+          <MemoryRecallToolUI />
+          <Thread components={components} />
+        </div>
+      )}
 
       <RenameDialog
         open={renameOpen}
@@ -450,6 +552,56 @@ export function ChatPage() {
       />
 
       <span className="sr-only">Conversation with {assistantName}</span>
+    </div>
+  );
+}
+
+/* ------------------------------- chat mode -------------------------------- */
+
+type ChatMode = 'chat' | 'terminal';
+
+/** Remembered per conversation in this browser - a convenience, not state the server needs. */
+function readChatMode(sessionId: string | null | undefined): ChatMode {
+  if (!sessionId) return 'chat';
+  try {
+    return localStorage.getItem('rookery.chatMode.' + sessionId) === 'terminal' ? 'terminal' : 'chat';
+  } catch {
+    return 'chat';
+  }
+}
+
+function writeChatMode(sessionId: string, mode: ChatMode): void {
+  try {
+    if (mode === 'chat') localStorage.removeItem('rookery.chatMode.' + sessionId);
+    else localStorage.setItem('rookery.chatMode.' + sessionId, mode);
+  } catch {
+    // Private window or blocked storage: the mode is simply not remembered.
+  }
+}
+
+interface EmptyStateCardProps {
+  title: string;
+  description: string;
+  onReopen(): void;
+  onChat(): void;
+  busy: boolean;
+}
+
+/** Where the terminal was, once it is gone: open it again, or carry on in chat. */
+function EmptyStateCard({ title, description, onReopen, onChat, busy }: EmptyStateCardProps) {
+  return (
+    <div className="m-auto flex max-w-sm flex-col items-center gap-3 text-center">
+      <TerminalIcon className="size-6 text-muted-foreground" />
+      <p className="text-sm font-medium">{title}</p>
+      <p className="text-sm text-muted-foreground">{description}</p>
+      <div className="flex items-center gap-2">
+        <Button type="button" size="sm" disabled={busy} onClick={onReopen}>
+          Open terminal again
+        </Button>
+        <Button type="button" size="sm" variant="outline" onClick={onChat}>
+          Back to chat
+        </Button>
+      </div>
     </div>
   );
 }

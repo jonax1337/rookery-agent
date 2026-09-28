@@ -147,6 +147,23 @@ export async function registerWebsocketRoutes(
             tuiSessions.kill(frame.data.assignmentId);
             return;
 
+          // A conversation into Claude Code's own terminal. The terminal
+          // itself is then watched like any other, under the returned key.
+          case 'tui-open': {
+            const { id, type: _type, ...input } = frame.data;
+            void context.assistant
+              .openConversationTerminal(input)
+              .then((opened) => sendFrame(socket, { type: 'tui-opened', id, ...opened }))
+              .catch((error: Error) => sendFrame(socket, { type: 'error', id, message: error.message }));
+            return;
+          }
+
+          // Back to chat: the terminal goes, every exchange in it is already
+          // in the conversation's history.
+          case 'tui-close':
+            context.assistant.closeConversationTerminal(frame.data.sessionId);
+            return;
+
           // An answer to a question the assistant asked. Deliberately not
           // looked up in the hub: the id is the question's, and the turn
           // blocked on it may have been started on another connection, in

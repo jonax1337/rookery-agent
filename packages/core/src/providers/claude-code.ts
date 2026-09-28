@@ -10,6 +10,7 @@ import type {
   ProviderProfile,
   ProviderQuota,
   ProviderStatus,
+  ProviderTerminalHandlers,
   ProviderTurnOptions,
   TurnUsage,
 } from '../types.js';
@@ -20,7 +21,7 @@ import { sharedRouterManager } from './router.js';
 import { sharedCodexBridge } from './codex-bridge.js';
 import { codexContextWindow } from './provider-catalog.js';
 import { TOOL_INPUT_LIMIT, canonicalJson, hashCanonicalJson } from '../memory/dream/trajectory.js';
-import { loadPty, runTui, stopHookCommand, tuiSessions } from './claude-tui.js';
+import { loadPty, runTui, startConversationTerminal, stopHookCommand, tuiSessions } from './claude-tui.js';
 
 /** The built-in `claude` provider: OAuth login, no endpoint override. */
 const BUILTIN_PROFILE: ProviderProfile = {
@@ -212,22 +213,28 @@ export class ClaudeCodeProvider implements Provider {
     };
   }
 
-  async *run(options: ProviderTurnOptions): AsyncGenerator<AgentEvent, void, unknown> {
-    const binary = this.#resolve();
-    if (!binary) {
-      yield { type: 'error', message: 'The claude CLI is not on PATH.', fatal: true };
-      return;
-    }
-
-    // A terminal run is the same command line minus the print-mode flags:
-    // the TUI paints for a person, the transcript and a Stop hook tell
-    // Rookery what happened (see claude-tui.ts). Without the pty binding it
-    // quietly stays a print run.
-    const tui = options.tui && (await loadPty()) ? options.tui : undefined;
-    const args = tui ? [] : ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+  /**
+   * The command line and environment of one Claude Code process, shared by a
+   * print run, a terminal run and a conversation terminal. `withTui` leaves
+   * out the print-mode flags and adds the Stop hook the terminal modes read.
+   */
+  async #commandLine(
+    options: ProviderTurnOptions,
+    withTui: boolean,
+  ): Promise<{
+    args: string[];
+    env: NodeJS.ProcessEnv;
+    model: string | undefined;
+    pinnedSessionId: string;
+    handoff: Handoff;
+    tuiDir?: string;
+    markerFile?: string;
+  }> {
+    const args = withTui ? [] : ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
 
     // Pinned up front so the caller can resume even if the turn is cut short,
-    // and so a terminal run knows which transcript file is its own.
+    // and so a terminal knows which transcript file is its own. An
+    // interactive `--resume` keeps writing to that same session.
     const pinnedSessionId = options.providerSessionId ?? randomUUID();
     if (options.providerSessionId) {
       args.push('--resume', options.providerSessionId);
@@ -283,7 +290,7 @@ export class ClaudeCodeProvider implements Provider {
     let tuiDir: string | undefined;
     let markerFile: string | undefined;
     let turnOptions = options;
-    if (tui) {
+    if (withTui) {
       tuiDir = await mkdtemp(join(tmpdir(), 'rookery-tui-'));
       markerFile = join(tuiDir, 'stop.json');
       await writeFile(markerFile, '');
@@ -305,6 +312,79 @@ export class ClaudeCodeProvider implements Provider {
       MCP_TIMEOUT: String(60 * 1000),
       ...(await this.#resolveEnv(model)),
     };
+
+
+    return {
+      args,
+      env,
+      model,
+      pinnedSessionId,
+      handoff,
+      ...(tuiDir ? { tuiDir } : {}),
+      ...(markerFile ? { markerFile } : {}),
+    };
+  }
+
+  /**
+   * A conversation in Claude Code's own terminal (see `startConversationTerminal`).
+   * The same command line a turn of that conversation would get, minus the
+   * prompt: the person types into the terminal instead.
+   */
+  async openTerminal(
+    options: ProviderTurnOptions,
+    handlers: ProviderTerminalHandlers,
+  ): Promise<{ providerSessionId: string }> {
+    const binary = this.#resolve();
+    if (!binary) throw new Error('The claude CLI is not on PATH.');
+    if (!options.tui) throw new Error('A terminal needs a key.');
+    if (!(await loadPty())) throw new Error('Terminal support is not available on this system.');
+
+    const { args, env, pinnedSessionId, handoff, tuiDir, markerFile } = await this.#commandLine(options, true);
+    const dir = tuiDir as string;
+    const cleanup = (): void => {
+      handoff.cleanup();
+      void rm(dir, { recursive: true, force: true }).catch(() => {});
+    };
+    try {
+      await startConversationTerminal(
+        {
+          key: options.tui.key,
+          binary,
+          args,
+          ...(options.cwd ? { cwd: options.cwd } : {}),
+          env,
+          sessionId: pinnedSessionId,
+          workDir: dir,
+          markerFile: markerFile as string,
+          mapEntry: transcriptMapper(),
+          cleanup,
+        },
+        Boolean(options.providerSessionId),
+        handlers,
+      );
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
+    return { providerSessionId: pinnedSessionId };
+  }
+
+  async *run(options: ProviderTurnOptions): AsyncGenerator<AgentEvent, void, unknown> {
+    const binary = this.#resolve();
+    if (!binary) {
+      yield { type: 'error', message: 'The claude CLI is not on PATH.', fatal: true };
+      return;
+    }
+
+    // A terminal run is the same command line minus the print-mode flags:
+    // the TUI paints for a person, the transcript and a Stop hook tell
+    // Rookery what happened (see claude-tui.ts). Without the pty binding it
+    // quietly stays a print run.
+    const tui = options.tui && (await loadPty()) ? options.tui : undefined;
+    const { args, env, model, pinnedSessionId, handoff, tuiDir, markerFile } = await this.#commandLine(
+      options,
+      Boolean(tui),
+    );
 
     if (tui && tuiDir && markerFile) {
       yield {
@@ -337,6 +417,7 @@ export class ClaudeCodeProvider implements Provider {
           mapEntry: transcriptMapper(),
           cleanup,
           ...(tui.lingerMs !== undefined ? { lingerMs: tui.lingerMs } : {}),
+          ...(tui.onLateEvent ? { onLateEvent: tui.onLateEvent } : {}),
         });
       } catch (error) {
         failed = true;

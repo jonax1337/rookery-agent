@@ -502,6 +502,7 @@ export * from './gateway/policy.js';
 
 export {
   Assistant,
+  conversationTerminalKey,
   type AssignInput,
   type AssistantOptions,
   type ChatInput,

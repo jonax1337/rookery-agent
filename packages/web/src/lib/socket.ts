@@ -5,9 +5,12 @@ import type {
   AssignPayload,
   ChatPayload,
   ClientFrame,
+  EffortLevel,
   Mail,
   MemoryRecord,
   OrgChange,
+  PermissionLevel,
+  ProviderId,
   ProviderQuota,
   RunTaskPayload,
   ServerFrame,
@@ -97,6 +100,8 @@ export class RookerySocket {
   #tuiListeners = new Set<(frame: TuiFrame) => void>();
   /** Terminals this socket has open; re-armed on reconnect like the watches. */
   #watchedTuis = new Set<string>();
+  /** `tui-open` requests waiting for their `tui-opened` reply. */
+  #tuiOpens = new Map<string, { resolve(value: { sessionId: string; key: string }): void; reject(error: Error): void }>();
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #pingTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -258,6 +263,44 @@ export class RookerySocket {
   /** Ends the terminal's process; only the transcript remains. */
   killTui(id: string): void {
     this.#send({ type: 'tui-kill', assignmentId: id });
+  }
+
+  /**
+   * Carry a conversation on in Claude Code's own terminal. Resolves with the
+   * conversation (a new one when none was given) and the key its terminal
+   * streams under - watch that with `watchTui`.
+   */
+  openTui(payload: {
+    sessionId?: string;
+    provider?: ProviderId;
+    model?: string;
+    effort?: EffortLevel;
+    permission?: PermissionLevel;
+    projectId?: string;
+  }): Promise<{ sessionId: string; key: string }> {
+    const id = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#tuiOpens.delete(id);
+        reject(new Error('The terminal did not open in time.'));
+      }, 60_000);
+      this.#tuiOpens.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.#send({ type: 'tui-open', id, ...payload });
+    });
+  }
+
+  /** Back to chat: the conversation's terminal ends. */
+  closeTui(sessionId: string): void {
+    this.#send({ type: 'tui-close', sessionId });
   }
 
   connect(): void {
@@ -530,12 +573,25 @@ export class RookerySocket {
       return;
     }
 
+    if (frame.type === 'tui-opened') {
+      const pending = this.#tuiOpens.get(frame.id);
+      this.#tuiOpens.delete(frame.id);
+      pending?.resolve({ sessionId: frame.sessionId, key: frame.key });
+      return;
+    }
+
     if (frame.type === 'tui-snapshot' || frame.type === 'tui-data' || frame.type === 'tui-state') {
       for (const listener of this.#tuiListeners) listener(frame);
       return;
     }
 
     if (frame.type === 'error') {
+      const opening = frame.id ? this.#tuiOpens.get(frame.id) : undefined;
+      if (frame.id && opening) {
+        this.#tuiOpens.delete(frame.id);
+        opening.reject(new Error(frame.message));
+        return;
+      }
       if (frame.id) {
         const turn = this.#pending.get(frame.id);
         this.#pending.delete(frame.id);

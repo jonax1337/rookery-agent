@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
@@ -33,12 +33,29 @@ const THEME = {
 };
 
 export interface RunTerminalProps {
+  /** The terminal's key: a run's assignment id, or a conversation's `chat:<id>`. */
   assignmentId: string;
   status?: AssignmentStatus;
+  /**
+   * What stands in for the terminal once there is none. A run falls back to
+   * its transcript; a conversation brings its own.
+   */
+  fallback?: ReactNode;
+  /** The Working/Done bar with the close button - a run's, not a conversation's. */
+  showHeader?: boolean;
+  /** Called with the terminal's state whenever it changes; `null` once it is gone. */
+  onInfo?: (info: TuiSessionInfo | null) => void;
   className?: string;
 }
 
-export function RunTerminal({ assignmentId, status, className }: RunTerminalProps) {
+export function RunTerminal({
+  assignmentId,
+  status,
+  fallback,
+  showHeader = true,
+  onInfo,
+  className,
+}: RunTerminalProps) {
   const { socket } = useConnection();
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -95,6 +112,14 @@ export function RunTerminal({ assignmentId, status, className }: RunTerminalProp
 
   const live = info != null;
 
+  // Read through a ref: a new callback identity every render must not
+  // re-run the effect that reports.
+  const onInfoRef = useRef(onInfo);
+  onInfoRef.current = onInfo;
+  useEffect(() => {
+    if (info !== undefined) onInfoRef.current?.(info);
+  }, [info]);
+
   // The terminal follows its box; the process on the server follows the
   // terminal, so the TUI lays itself out for what is actually visible.
   useEffect(() => {
@@ -132,7 +157,7 @@ export function RunTerminal({ assignmentId, status, className }: RunTerminalProp
 
   return (
     <div className={cn('flex flex-col gap-2', className)}>
-      {live ? (
+      {live && showHeader ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Badge variant={info.state === 'running' ? 'default' : 'secondary'}>
             {info.state === 'running' ? 'Working' : 'Done'}
@@ -151,12 +176,16 @@ export function RunTerminal({ assignmentId, status, className }: RunTerminalProp
           hidden until there is a terminal to show. */}
       <div
         ref={hostRef}
-        className={cn('h-[560px] overflow-hidden rounded-lg border p-2', !live && 'hidden')}
+        className={cn(
+          'min-h-[320px] overflow-hidden rounded-lg border p-2',
+          showHeader ? 'h-[560px]' : 'flex-1',
+          !live && 'hidden',
+        )}
         style={{ background: THEME.background }}
       />
-      {info === null ? (
-        <AssignmentTerminal assignmentId={assignmentId} {...(status ? { status } : {})} />
-      ) : null}
+      {info === null
+        ? (fallback ?? <AssignmentTerminal assignmentId={assignmentId} {...(status ? { status } : {})} />)
+        : null}
       {dialog}
     </div>
   );
