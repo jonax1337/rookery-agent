@@ -689,6 +689,12 @@ export async function* runTui(spec: TuiRunSpec): AsyncGenerator<AgentEvent, void
 export interface TuiTurn {
   prompt: string;
   answer: string;
+  /**
+   * What happened in between, as a print run would have streamed it - text,
+   * thinking and tool calls in order - so the conversation can store the
+   * turn with its tool calls rather than as bare text.
+   */
+  events: AgentEvent[];
   providerSessionId: string;
   usage: { durationMs: number; contextTokens?: number };
 }
@@ -718,31 +724,35 @@ export async function startConversationTerminal(
   const watch = await spawnTerminal({ ...spec, lingerMs: CONVERSATION_IDLE_MS }, resumed);
   void (async () => {
     let prompts: string[] = [];
+    let events: AgentEvent[] = [];
     let turnStarted = Date.now();
+    const take = (event: AgentEvent): void => {
+      if (event.type === 'status' && event.label === 'input' && event.detail) {
+        if (prompts.length === 0 && events.length === 0) turnStarted = Date.now();
+        prompts.push(event.detail);
+      } else if (event.type === 'text' || event.type === 'thinking' || event.type === 'tool') {
+        events.push(event);
+      }
+    };
     try {
       while (stillOpen(watch)) {
         await sleep(POLL_MS);
-        for (const event of await watch.read()) {
-          if (event.type === 'status' && event.label === 'input' && event.detail) {
-            if (prompts.length === 0) turnStarted = Date.now();
-            prompts.push(event.detail);
-          }
-        }
+        for (const event of await watch.read()) take(event);
         const payload = await watch.marker();
         if (payload) {
           const reported =
             typeof payload.last_assistant_message === 'string' ? payload.last_assistant_message.trim() : '';
-          const { events, holds } = await watch.settle(reported);
-          for (const event of events) {
-            if (event.type === 'status' && event.label === 'input' && event.detail) prompts.push(event.detail);
-          }
+          const settled = await watch.settle(reported);
+          for (const event of settled.events) take(event);
           await watch.clearMarker();
+          const holds = settled.holds;
           if (!holds) continue;
           const answer = reported || watch.lastBlock;
           if (prompts.length || answer) {
             handlers.onTurn({
               prompt: prompts.join('\n\n'),
               answer,
+              events,
               providerSessionId: spec.sessionId,
               usage: {
                 durationMs: Date.now() - turnStarted,
@@ -751,6 +761,7 @@ export async function startConversationTerminal(
             });
           }
           prompts = [];
+          events = [];
         }
         if (Date.now() - watch.lastActivity > CONVERSATION_IDLE_MS) tuiSessions.kill(spec.key);
       }

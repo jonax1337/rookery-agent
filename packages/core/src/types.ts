@@ -1920,7 +1920,14 @@ export interface Provider {
 /** What a conversation terminal reports while it is open. */
 export interface ProviderTerminalHandlers {
   /** After every answer: what was typed since the last one, and the answer. */
-  onTurn(turn: { prompt: string; answer: string; providerSessionId: string; usage: TurnUsage }): void;
+  onTurn(turn: {
+    prompt: string;
+    answer: string;
+    /** Text, thinking and tool events of the turn, in order. */
+    events: AgentEvent[];
+    providerSessionId: string;
+    usage: TurnUsage;
+  }): void;
   /** The process is gone, however it ended. */
   onExit(): void;
 }

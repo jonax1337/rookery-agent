@@ -1888,6 +1888,16 @@ export class Assistant extends EventEmitter {
         {
           onTurn: (turn) => {
             if (turn.prompt) this.store.addMessage({ sessionId: session.id, role: 'user', content: turn.prompt });
+            // Stored the way a chat turn stores itself: the tool calls, and
+            // the ordered transcript the thread renders them from - or the
+            // chat would show a terminal turn as bare text.
+            const toolCalls: Extract<AgentEvent, { type: 'tool' }>[] = [];
+            const turnBlocks = new TurnBlocks();
+            for (const event of turn.events) {
+              if (event.type === 'tool') toolCalls.push(event);
+              turnBlocks.apply(event);
+            }
+            turnBlocks.reconcile(turn.answer);
             this.store.addMessage({
               sessionId: session.id,
               role: 'assistant',
@@ -1895,6 +1905,8 @@ export class Assistant extends EventEmitter {
               provider: providerId,
               ...(model ? { model } : {}),
               usage: turn.usage,
+              toolCalls,
+              ...(turnBlocks.blocks.length ? { blocks: turnBlocks.blocks } : {}),
             });
             const current = this.store.getSession(session.id);
             if (current && current.title === 'New conversation' && turn.prompt) {
