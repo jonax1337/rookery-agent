@@ -58,6 +58,7 @@ import type {
   SleepStatusView,
   SessionKind,
   StatsSnapshot,
+  TerminalView,
   Task,
   TaskDetail,
   TaskPlanResult,
@@ -312,6 +313,9 @@ export const api = {
    * The series leaves empty days out - `fillDayGaps` from `lib/stats.ts` closes
    * them for the window a chart actually means to draw.
    */
+  /** Every Claude Code terminal open right now - conversations and runs. */
+  terminals: () => request<TerminalView[]>('/api/terminals'),
+
   stats: (options: { days?: number; since?: number | string; owner?: string } = {}) => {
     const params = new URLSearchParams();
     if (options.since !== undefined) params.set('since', String(options.since));

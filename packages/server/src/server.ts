@@ -5,10 +5,12 @@ import {
   createLogger,
   silentLogger,
   toView,
+  tuiSessions,
   type AgentEvent,
   type Assistant,
   type AssignmentLogFrame,
   type MemoryLearnedEvent,
+  type TuiSessionInfo,
 } from '@rookery/core';
 import type { ServerContext } from './context.js';
 import { createAuthHook, createSameOriginHook } from './auth.js';
@@ -27,6 +29,7 @@ import { registerSleepRoutes } from './routes/sleep.js';
 import { registerDreamRoutes } from './routes/dream.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerOrgRoutes } from './routes/org.js';
+import { registerTerminalRoutes } from './routes/terminals.js';
 import { registerCronRoutes } from './routes/cron.js';
 import { registerTtsRoutes } from './routes/tts.js';
 import { registerToolRoutes } from './routes/tools.js';
@@ -83,6 +86,7 @@ export async function buildServer(
     log,
     sockets: new Set<WebSocket>(),
     assignmentWatchers: new Map(),
+    tuiWatchers: new Map(),
     turns: new TurnHub(log, { events: (id) => assistant.store.turns.events(id) }),
     gateways,
     // Replaced on the next line. A listener fires a schedule through the
@@ -155,6 +159,7 @@ export async function buildServer(
   await registerDreamRoutes(app, context);
   await registerChatRoutes(app, context);
   await registerOrgRoutes(app, context);
+  await registerTerminalRoutes(app, context);
   await registerCronRoutes(app, context);
   await registerTtsRoutes(app, context);
   await registerToolRoutes(app, context);
@@ -200,6 +205,25 @@ export async function buildServer(
       }
     }
   };
+  // A run's terminal is the same kind of feed, and heavier still: raw screen
+  // bytes go only to the sockets that opened that terminal.
+  const onTuiData = (assignmentId: string, data: string): void => {
+    for (const [socket, ids] of context.tuiWatchers) {
+      if (ids.has(assignmentId)) sendFrame(socket, { type: 'tui-data', assignmentId, data });
+    }
+  };
+  const onTuiState = (info: TuiSessionInfo): void => {
+    for (const [socket, ids] of context.tuiWatchers) {
+      if (ids.has(info.key)) sendFrame(socket, { type: 'tui-state', assignmentId: info.key, info });
+    }
+    // A terminal opening, finishing or going away changes the workspace's
+    // list of tabs, wherever that page is open.
+    for (const socket of context.sockets) {
+      sendFrame(socket, { type: 'changed', change: { kind: 'terminals', id: info.key } });
+    }
+  };
+  tuiSessions.on('data', onTuiData);
+  tuiSessions.on('state', onTuiState);
   const onMessage = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'message', event });
   };
@@ -366,6 +390,10 @@ export async function buildServer(
     assistant.off('memory', onMemory);
     assistant.off('assignment', onAssignment);
     assistant.off('assignment-log', onAssignmentLog);
+    tuiSessions.off('data', onTuiData);
+    tuiSessions.off('state', onTuiState);
+    // No terminal outlives the server that streams it.
+    tuiSessions.killAll();
     assistant.off('message', onMessage);
     assistant.off('mail', onMail);
     assistant.off('changed', onChanged);

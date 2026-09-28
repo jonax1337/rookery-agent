@@ -1,4 +1,5 @@
-import { Navigate, Route, Routes } from 'react-router';
+import { useCallback, useRef } from 'react';
+import { Route, Routes, matchPath, useLocation, useNavigate, type Location } from 'react-router';
 import { AppShell } from '@/components/shell/app-shell';
 import { AgentDetailPage } from './pages/AgentDetailPage';
 import { AgentFormPage } from './pages/AgentFormPage';
@@ -25,7 +26,7 @@ import { OrgLayout } from './pages/OrgLayout';
 import { OrgProjectsPage } from './pages/OrgProjectsPage';
 import { OrgTeamsPage } from './pages/OrgTeamsPage';
 import { ProjectFormPage } from './pages/ProjectFormPage';
-import { SettingsPage } from './pages/SettingsPage';
+import { SettingsDialog } from './pages/SettingsDialog';
 import { SkillDetailPage } from './pages/SkillDetailPage';
 import { SkillFormPage } from './pages/SkillFormPage';
 import { SkillImportPage } from './pages/SkillImportPage';
@@ -38,6 +39,7 @@ import { ToolDetailPage } from './pages/ToolDetailPage';
 import { ToolFormPage } from './pages/ToolFormPage';
 import { ToolsPage } from './pages/ToolsPage';
 import { VoicePage } from './pages/VoicePage';
+import { WorkspacePage } from './pages/WorkspacePage';
 
 /**
  * The route table, and nothing else.
@@ -56,92 +58,127 @@ import { VoicePage } from './pages/VoicePage';
  * above a parameter, so `/skills/new` wins over `/skills/:name` wherever it
  * stands. The literal routes are written first anyway, because the next reader
  * should not have to know that rule to believe the table.
+ *
+ * Settings are the one address that is not a page: `/settings/:section` opens
+ * a dialog *over* the page that was open before, so the table is rendered
+ * against that remembered location while the dialog sits on top. A settings
+ * link opened cold (a bookmark, a reload) has nothing behind it and shows the
+ * start page there instead.
  */
+const HOME = { pathname: '/', search: '', hash: '', state: null, key: 'default' } as Location;
+
 export default function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const settings = matchPath('/settings/:section?', location.pathname);
+
+  // Updated during render on purpose: the value must already be right in the
+  // render that first shows the dialog, one effect later would be too late.
+  const behind = useRef<Location>(HOME);
+  if (!settings) behind.current = location;
+  const background = behind.current;
+
+  const changeSection = useCallback(
+    (slug: string) => void navigate('/settings/' + slug, { replace: true }),
+    [navigate],
+  );
+  const closeSettings = useCallback(() => {
+    const { pathname, search, hash } = behind.current;
+    void navigate(pathname + search + hash);
+  }, [navigate]);
+  const leaveSettings = useCallback((path: string) => void navigate(path), [navigate]);
+
   return (
-    <Routes>
-      <Route element={<AppShell />}>
-        {/* ------------------------------ arbeiten ---------------------- */}
-        <Route path="/" element={<ChatPage />} />
-        <Route path="/c/:sessionId" element={<ChatPage />} />
-        <Route path="/chats" element={<ConversationsPage />} />
-        {/* A personal mailbox, not an org-management screen: the assistant
-            itself writes into it too, so it sits beside Conversations rather
-            than under /org. See `InboxPage`'s own comment. */}
-        <Route path="/inbox" element={<InboxPage />} />
-        <Route path="/dashboard" element={<DashboardPage />} />
+    <>
+      <Routes location={settings ? background : location}>
+        <Route element={<AppShell />}>
+          {/* ------------------------------ arbeiten ---------------------- */}
+          <Route path="/" element={<ChatPage />} />
+          <Route path="/c/:sessionId" element={<ChatPage />} />
+          <Route path="/chats" element={<ConversationsPage />} />
+          {/* A personal mailbox, not an org-management screen: the assistant
+              itself writes into it too, so it sits beside Conversations rather
+              than under /org. See `InboxPage`'s own comment. */}
+          <Route path="/inbox" element={<InboxPage />} />
+          <Route path="/workspace" element={<WorkspacePage />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
 
-        {/* ------------------------------- betrieb ---------------------- */}
-        <Route path="/tasks" element={<TasksPage />} />
-        <Route path="/tasks/new" element={<TaskFormPage />} />
-        <Route path="/tasks/:id" element={<TaskDetailPage />} />
-        <Route path="/tasks/:id/edit" element={<TaskFormPage />} />
+          {/* ------------------------------- betrieb ---------------------- */}
+          <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/tasks/new" element={<TaskFormPage />} />
+          <Route path="/tasks/:id" element={<TaskDetailPage />} />
+          <Route path="/tasks/:id/edit" element={<TaskFormPage />} />
 
-        <Route path="/assignments" element={<AssignmentsPage />} />
-        <Route path="/assignments/:id" element={<AssignmentDetailPage />} />
+          <Route path="/assignments" element={<AssignmentsPage />} />
+          <Route path="/assignments/:id" element={<AssignmentDetailPage />} />
 
-        <Route path="/cron" element={<CronPage />} />
-        <Route path="/cron/new" element={<CronFormPage />} />
-        <Route path="/cron/:id" element={<CronDetailPage />} />
-        <Route path="/cron/:id/edit" element={<CronFormPage />} />
+          <Route path="/cron" element={<CronPage />} />
+          <Route path="/cron/new" element={<CronFormPage />} />
+          <Route path="/cron/:id" element={<CronDetailPage />} />
+          <Route path="/cron/:id/edit" element={<CronFormPage />} />
 
-        <Route path="/gateways" element={<GatewaysPage />} />
-        <Route path="/gateways/:id" element={<GatewayDetailPage />} />
+          <Route path="/gateways" element={<GatewaysPage />} />
+          <Route path="/gateways/:id" element={<GatewayDetailPage />} />
 
-        {/* --------------------------------- firma ---------------------- */}
-        {/* The layout renders the overview at its index and frames the three tables. */}
-        <Route path="/org" element={<OrgLayout />}>
-          <Route index element={null} />
-          <Route path="agents" element={<OrgAgentsPage />} />
-          <Route path="teams" element={<OrgTeamsPage />} />
-          <Route path="projects" element={<OrgProjectsPage />} />
-          <Route path="hierarchy" element={<OrgHierarchyPage />} />
-          <Route path="performance" element={<OrgPerformancePage />} />
+          {/* --------------------------------- firma ---------------------- */}
+          {/* The layout renders the overview at its index and frames the three tables. */}
+          <Route path="/org" element={<OrgLayout />}>
+            <Route index element={null} />
+            <Route path="agents" element={<OrgAgentsPage />} />
+            <Route path="teams" element={<OrgTeamsPage />} />
+            <Route path="projects" element={<OrgProjectsPage />} />
+            <Route path="hierarchy" element={<OrgHierarchyPage />} />
+            <Route path="performance" element={<OrgPerformancePage />} />
+          </Route>
+          {/* Siblings, not children: these bring their own header and would sit
+              crookedly inside the tab frame. */}
+          <Route path="/org/agents/new" element={<AgentFormPage />} />
+          <Route path="/org/agents/:id" element={<AgentDetailPage />} />
+          <Route path="/org/agents/:id/edit" element={<AgentFormPage />} />
+          <Route path="/org/teams/new" element={<TeamFormPage />} />
+          <Route path="/org/teams/:id/edit" element={<TeamFormPage />} />
+          <Route path="/org/projects/new" element={<ProjectFormPage />} />
+          <Route path="/org/projects/:id/edit" element={<ProjectFormPage />} />
+          {/* ----------------------------- gedächtnis --------------------- */}
+          {/* The layout renders the overview and shares the save-memory dialog. */}
+          <Route path="/memory" element={<MemoryLayout />}>
+            <Route index element={null} />
+            <Route path="memories" element={<MemoryListPage />} />
+            <Route path="graph" element={<MemoryGraphPage />} />
+            <Route path="sleep" element={<MemorySleepPage />} />
+          </Route>
+
+          {/* ------------------------------ werkzeuge --------------------- */}
+          <Route path="/tools" element={<ToolsPage />} />
+          <Route path="/tools/new" element={<ToolFormPage />} />
+          <Route path="/tools/:id" element={<ToolDetailPage />} />
+
+          <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/skills/new" element={<SkillFormPage />} />
+          <Route path="/skills/import" element={<SkillImportPage />} />
+          <Route path="/skills/:name" element={<SkillDetailPage />} />
+          <Route path="/skills/:name/edit" element={<SkillFormPage />} />
+
+          {/* A mistyped link keeps its address and says so, inside the frame -
+              the header and the rail are the two ways back. */}
+          <Route path="*" element={<NotFoundPage />} />
         </Route>
-        {/* Siblings, not children: these bring their own header and would sit
-            crookedly inside the tab frame. */}
-        <Route path="/org/agents/new" element={<AgentFormPage />} />
-        <Route path="/org/agents/:id" element={<AgentDetailPage />} />
-        <Route path="/org/agents/:id/edit" element={<AgentFormPage />} />
-        <Route path="/org/teams/new" element={<TeamFormPage />} />
-        <Route path="/org/teams/:id/edit" element={<TeamFormPage />} />
-        <Route path="/org/projects/new" element={<ProjectFormPage />} />
-        <Route path="/org/projects/:id/edit" element={<ProjectFormPage />} />
-        {/* ----------------------------- gedächtnis --------------------- */}
-        {/* The layout renders the overview and shares the save-memory dialog. */}
-        <Route path="/memory" element={<MemoryLayout />}>
-          <Route index element={null} />
-          <Route path="memories" element={<MemoryListPage />} />
-          <Route path="graph" element={<MemoryGraphPage />} />
-          <Route path="sleep" element={<MemorySleepPage />} />
-        </Route>
 
-        {/* ------------------------------ werkzeuge --------------------- */}
-        <Route path="/tools" element={<ToolsPage />} />
-        <Route path="/tools/new" element={<ToolFormPage />} />
-        <Route path="/tools/:id" element={<ToolDetailPage />} />
+        {/* Hands-free has no sidebar and no header: a sibling, not a child.
+            A literal segment outranks the catch-all above, so this still wins. */}
+        <Route path="/voice" element={<VoicePage />} />
+      </Routes>
 
-        <Route path="/skills" element={<SkillsPage />} />
-        <Route path="/skills/new" element={<SkillFormPage />} />
-        <Route path="/skills/import" element={<SkillImportPage />} />
-        <Route path="/skills/:name" element={<SkillDetailPage />} />
-        <Route path="/skills/:name/edit" element={<SkillFormPage />} />
-
-        {/* --------------------------- einstellungen -------------------- */}
-        {/* `/settings` has no content of its own. The redirect names the first
-            section here so the address bar never shows a page that is only a
-            forwarding step; `SettingsPage` still catches an unknown section. */}
-        <Route path="/settings" element={<Navigate to="/settings/identity" replace />} />
-        <Route path="/settings/:section" element={<SettingsPage />} />
-
-        {/* A mistyped link keeps its address and says so, inside the frame -
-            the header and the rail are the two ways back. */}
-        <Route path="*" element={<NotFoundPage />} />
-      </Route>
-
-      {/* Hands-free has no sidebar and no header: a sibling, not a child.
-          A literal segment outranks the catch-all above, so this still wins. */}
-      <Route path="/voice" element={<VoicePage />} />
-    </Routes>
+      {/* `/settings` alone and unknown or pre-regrouping sections are resolved
+          inside the dialog, which rewrites the address to what it shows. */}
+      {settings ? (
+        <SettingsDialog
+          section={settings.params.section}
+          onSectionChange={changeSection}
+          onNavigate={leaveSettings}
+          onClose={closeSettings}
+        />
+      ) : null}
+    </>
   );
 }

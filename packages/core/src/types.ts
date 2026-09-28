@@ -1821,6 +1821,31 @@ export interface ProviderTurnOptions {
    * the same shelf would stand there twice.
    */
   pluginDirs?: string[];
+  /**
+   * Run Claude Code with its full TUI in a pseudo terminal instead of as a
+   * headless print run (`providers/claude-tui.ts`). `key` names the terminal
+   * - an assignment id - so the server can stream it to whoever watches.
+   * Providers without a terminal, or a system without the pty binding,
+   * ignore it and run headless.
+   */
+  /**
+   * Point Claude Code at Rookery's model gateway instead of one backend
+   * (`providers/model-gateway.ts`): every model Rookery knows becomes
+   * reachable from the same process, and `picker` adds the ones that are not
+   * Claude's to the TUI's `/model` menu. The Claude login still travels, so
+   * Claude models stay on the person's own plan.
+   */
+  gateway?: {
+    baseUrl: string;
+    token: string;
+    picker: { model: string; label: string; description?: string }[];
+  };
+  tui?: {
+    key: string;
+    lingerMs?: number;
+    /** What a person does in the terminal after the work was reported done. */
+    onLateEvent?: (event: AgentEvent) => void;
+  };
   signal?: AbortSignal;
 }
 
@@ -1895,6 +1920,30 @@ export interface Provider {
   run(options: ProviderTurnOptions): AsyncGenerator<AgentEvent, void, unknown>;
   /** Models this provider accepts, for UI pickers. */
   models(): string[] | Promise<ProviderModel[]>;
+  /**
+   * Open a conversation in the provider's own interactive terminal instead
+   * of running one turn: no prompt, no end, every answer reported through
+   * `handlers`. `options.tui.key` names the terminal; `options.prompt` is
+   * ignored. Absent on providers without a terminal.
+   */
+  openTerminal?(options: ProviderTurnOptions, handlers: ProviderTerminalHandlers): Promise<{ providerSessionId: string }>;
+}
+
+/** What a conversation terminal reports while it is open. */
+export interface ProviderTerminalHandlers {
+  /** After every answer: what was typed since the last one, and the answer. */
+  onTurn(turn: {
+    prompt: string;
+    answer: string;
+    /** Text, thinking and tool events of the turn, in order. */
+    events: AgentEvent[];
+    /** The model that answered, as the transcript names it - `/model` may have changed it. */
+    model?: string;
+    providerSessionId: string;
+    usage: TurnUsage;
+  }): void;
+  /** The process is gone, however it ended. */
+  onExit(): void;
 }
 
 /* ------------------------------------------------------------------ *
@@ -2361,6 +2410,13 @@ export interface OrgConfig {
    * per-agent (decision E6/F6): the tone is a property of the company.
    */
   roleplay: boolean;
+  /**
+   * Agents work in a visible Claude Code terminal (the full TUI in a pseudo
+   * terminal, watchable and typeable from the run page) rather than as a
+   * headless print run. The result is the same either way; off saves the
+   * terminal's memory and the minutes it stays open after the work.
+   */
+  interactiveRuns: boolean;
   /** Explicitly chosen company; the newest one otherwise. */
   activeOrganizationId?: string;
 }

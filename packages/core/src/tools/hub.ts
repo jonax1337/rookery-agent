@@ -8,6 +8,7 @@ import type {
   ToolServerAudience,
   ToolServerConfig,
 } from '../types.js';
+import { basename, dirname } from 'node:path';
 import { TOOL_CATALOG, catalogEntry, type ToolCatalogEntry } from './catalog.js';
 import { externalScan } from '../external/discovery.js';
 import {
@@ -371,6 +372,11 @@ export function withExternalApproval(
  * documents - `Tool(prefix:*)` for a command, a gitignore-style path for a
  * file - because a rule it cannot parse would take the whole settings
  * document, hooks included, down with it.
+ *
+ * File writes are denied with `Edit(path)` alone: Claude Code matches every
+ * file-editing tool (Write included) against Edit rules, and reports a
+ * `Write(path)` rule as never matched - a wall of warnings on every
+ * terminal start, and no protection the Edit rule did not already give.
  */
 export const PERMISSION_DENY_BASELINE: readonly string[] = [
   'Bash(rm -rf:*)',
@@ -386,17 +392,11 @@ export const PERMISSION_DENY_BASELINE: readonly string[] = [
   // Outside any project: keys, the CLI's own rules, the shell's own startup.
   'Read(~/.ssh/**)',
   'Edit(~/.ssh/**)',
-  'Write(~/.ssh/**)',
   'Edit(~/.aws/**)',
-  'Write(~/.aws/**)',
   'Edit(~/.claude/**)',
-  'Write(~/.claude/**)',
   'Edit(~/.bashrc)',
-  'Write(~/.bashrc)',
   'Edit(~/.profile)',
-  'Write(~/.profile)',
   'Edit(//etc/**)',
-  'Write(//etc/**)',
   // Rookery's own bookkeeping, for the same reason as the CLI's: config.json
   // holds the external approval table, so a turn that may write it can enable
   // a plugin - hooks included - without anybody clicking a switch. The
@@ -404,13 +404,48 @@ export const PERMISSION_DENY_BASELINE: readonly string[] = [
   // design, and the memory bank is not writable through these tools anyway.
   'Read(~/.rookery/config.json)',
   'Edit(~/.rookery/config.json)',
-  'Write(~/.rookery/config.json)',
   'Read(~/.rookery/voice-keys.json)',
   'Edit(~/.rookery/voice-keys.json)',
-  'Write(~/.rookery/voice-keys.json)',
   'Edit(~/.rookery/rookery.db)',
-  'Write(~/.rookery/rookery.db)',
 ];
+
+/** The plugin folder a `hooks/hooks.json` belongs to. */
+function pluginRootOf(hooksFile: string): string {
+  const folder = dirname(hooksFile);
+  return (basename(folder) === 'hooks' ? dirname(folder) : folder).replace(/\\/g, '/');
+}
+
+/**
+ * One source's hook groups, ready to run from somewhere else.
+ *
+ * Approved hooks travel in a generated plugin folder of Rookery's own, and
+ * inside it `${CLAUDE_PLUGIN_ROOT}` names that folder - not the plugin the
+ * scripts actually live in. Every handler failed with "No such file or
+ * directory" for it, silently in a print run and in plain sight in a
+ * terminal. The variable is spelled out as the source's real folder here, and
+ * the keys Claude Code does not know (`id`, `description`) are left behind so
+ * it stops warning about them on every start.
+ */
+function rebaseHookGroups(groups: unknown[], root: string): unknown[] {
+  const rebase = (command: string): string =>
+    command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}|\$CLAUDE_PLUGIN_ROOT/g, root);
+  return groups.map((group) => {
+    if (!group || typeof group !== 'object') return group;
+    const { matcher, hooks } = group as { matcher?: unknown; hooks?: unknown };
+    return {
+      ...(matcher !== undefined ? { matcher } : {}),
+      hooks: (Array.isArray(hooks) ? hooks : []).map((handler) => {
+        if (!handler || typeof handler !== 'object') return handler;
+        const { type, command, timeout } = handler as { type?: unknown; command?: unknown; timeout?: unknown };
+        return {
+          ...(type !== undefined ? { type } : {}),
+          ...(typeof command === 'string' ? { command: rebase(command) } : {}),
+          ...(timeout !== undefined ? { timeout } : {}),
+        };
+      }),
+    };
+  });
+}
 
 /**
  * What a turn gets from the Claude Code installation beyond MCP servers:
@@ -474,9 +509,10 @@ export function externalTurnExtras(
     if (!state.active || !serves(state.audience, who) || loadedWhole.has(state.sourceId)) continue;
     const doc = readHookDocument(state.path);
     if (!doc || doc.fingerprint !== state.fingerprint) continue;
+    const root = pluginRootOf(state.path);
     for (const [event, value] of Object.entries(doc.table)) {
       if (!Array.isArray(value)) continue;
-      hooks[event] = [...(hooks[event] ?? []), ...value];
+      hooks[event] = [...(hooks[event] ?? []), ...rebaseHookGroups(value, root)];
     }
   }
 

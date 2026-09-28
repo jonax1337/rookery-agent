@@ -285,6 +285,7 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     autoReview: true,
     autoReconfig: false,
     roleplay: true,
+    interactiveRuns: true,
   },
   // Nothing is watched until somebody adds a mailbox on the settings page: a
   // listener holds a credential and an open socket, which is not something a

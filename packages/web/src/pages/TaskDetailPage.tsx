@@ -51,7 +51,7 @@ import { DataTable } from '@/components/blocks/data-table/data-table';
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
-import { AssignmentTerminal } from '@/components/common/assignment-terminal';
+import { RunTerminal } from '@/components/common/run-terminal';
 import { LiveRunList } from '@/components/common/live-run-list';
 import { MailThreadView } from '@/components/common/mail-thread';
 import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
@@ -878,7 +878,7 @@ export function TaskDetailPage() {
                   // The rehydrated-status caveat above does not apply here:
                   // the terminal attaches to the server's own live buffer of
                   // the still-running assignment, so the text is current.
-                  <AssignmentTerminal assignmentId={watched.id} status={watched.status} />
+                  <RunTerminal assignmentId={watched.id} status={watched.status} />
                 ) : null}
                 {rehydrated && !watched ? (
                   // Honest about the gap instead of showing an empty box: the

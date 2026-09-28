@@ -1178,6 +1178,8 @@ export interface OrgConfig {
   autoReconfig: boolean;
   /** On, a mail-born run answers as a letter in the agent's own voice instead of a report. */
   roleplay: boolean;
+  /** Agents work in a visible Claude Code terminal instead of headless. */
+  interactiveRuns: boolean;
   activeOrganizationId?: string;
 }
 
@@ -1709,6 +1711,27 @@ export type ClientFrame =
   | { type: 'watch'; assignmentId: string }
   /** Opt back out. Watching never affects the run itself. */
   | { type: 'unwatch'; assignmentId: string }
+  /** Open a run's Claude Code terminal: a snapshot, then its live output. */
+  | { type: 'tui-watch'; assignmentId: string }
+  | { type: 'tui-unwatch'; assignmentId: string }
+  /** Keystrokes into that terminal. */
+  | { type: 'tui-input'; assignmentId: string; data: string }
+  | { type: 'tui-resize'; assignmentId: string; cols: number; rows: number }
+  /** Close the terminal - the process ends, the transcript stays. */
+  | { type: 'tui-kill'; assignmentId: string }
+  /** Carry a conversation on in Claude Code's own terminal; no session id starts one. */
+  | {
+      type: 'tui-open';
+      id: string;
+      sessionId?: string;
+      provider?: ProviderId;
+      model?: string;
+      effort?: EffortLevel;
+      permission?: PermissionLevel;
+      projectId?: string;
+    }
+  /** Back to chat: the conversation's terminal ends. */
+  | { type: 'tui-close'; sessionId: string }
   /**
    * An answer to a question the assistant asked. `id` is the question's, not
    * a request id: the waiting turn may have been started elsewhere, so this
@@ -1722,6 +1745,34 @@ export type ClientFrame =
    */
   | { type: 'attach'; sessionId: string }
   | { type: 'ping' };
+
+/**
+ * A run's Claude Code terminal as the server reports it: `running` while the
+ * agent works, `idle` once it is done but the terminal is still open,
+ * `exited` when the process is gone and only the transcript is left.
+ */
+export interface TuiSessionInfo {
+  key: string;
+  providerSessionId: string;
+  state: 'running' | 'idle' | 'exited';
+  startedAt: number;
+  cols: number;
+  rows: number;
+}
+
+/** One open Claude Code terminal, as the workspace lists it (`GET /api/terminals`). */
+export interface TerminalView {
+  /** What `tui-watch` takes: a run's assignment id, or `chat:<session id>`. */
+  key: string;
+  kind: 'chat' | 'run';
+  /** The conversation's session id, or the run's assignment id. */
+  id: string;
+  title: string;
+  /** The agent's name for a run; empty for a conversation. */
+  subtitle: string;
+  state: TuiSessionInfo['state'];
+  startedAt: number;
+}
 
 /** One structural change somewhere in the company. */
 export interface OrgChange {
@@ -1762,6 +1813,12 @@ export type ServerFrame =
    * frames onto a REST snapshot without assuming continuity.
    */
   | { type: 'assignment-log'; assignmentId: string; seq: number; event: AgentEvent }
+  /** Reply to `tui-watch`; `info: null` means the run has no open terminal. */
+  | { type: 'tui-snapshot'; assignmentId: string; info: TuiSessionInfo | null; data: string }
+  | { type: 'tui-data'; assignmentId: string; data: string }
+  | { type: 'tui-state'; assignmentId: string; info: TuiSessionInfo }
+  /** Reply to `tui-open`: the conversation, and the key its terminal streams under. */
+  | { type: 'tui-opened'; id: string; sessionId: string; key: string }
   | { type: 'changed'; change: OrgChange }
   | { type: 'pong' }
   | { type: 'error'; id?: string; message: string };

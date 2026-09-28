@@ -156,6 +156,11 @@ interface MailNavProps {
   onFolderChange(folder: MailFolder): void;
   /** Unread in the open mailbox's inbox, or `null` when it is not known. */
   unread: number | null;
+  /**
+   * Unread per folder, when known. Reports and task threads are not in the
+   * inbox list, so they carry their own count instead of hiding it there.
+   */
+  folderUnread?: Partial<Record<MailFolder, number | null>>;
   collapsed: boolean;
   onCollapsedChange(collapsed: boolean): void;
 }
@@ -170,6 +175,7 @@ export function MailNav({
   folder,
   onFolderChange,
   unread,
+  folderUnread,
   collapsed,
   onCollapsedChange,
 }: MailNavProps) {
@@ -310,7 +316,7 @@ export function MailNav({
                 key={id}
                 icon={icon}
                 label={label}
-                badge={id === 'inbox' ? unread : null}
+                badge={folderUnread?.[id] ?? (id === 'inbox' ? unread : null)}
                 active={folder === id}
                 collapsed={collapsed}
                 onClick={() => onFolderChange(id)}

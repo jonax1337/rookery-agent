@@ -5,8 +5,9 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
 import { formatDateTime } from '@/lib/format';
-import type { Mail, MailFolder, MailRecipient, RequesterKind } from '@/lib/types';
-import { useConfig, useConnection, useMailState, useOrgState } from '@/providers/rookery-provider';
+import { groupThreads, type MailThreadSummary } from '@/lib/mail';
+import type { Mail, MailFolder, MailRecipient, RequesterKind, TaskStatus } from '@/lib/types';
+import { useConfig, useConnection, useMailState, useOrgState, useTasksState } from '@/providers/rookery-provider';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { ServerOffline } from '@/components/common/empty-state';
@@ -60,6 +61,7 @@ interface ComposePrefill {
 
 export function InboxPage() {
   const org = useOrgState();
+  const tasksState = useTasksState();
   const { assistantName } = useConfig();
   const { socket } = useConnection();
   const mailBadge = useMailState();
@@ -83,6 +85,8 @@ export function InboxPage() {
   const [sending, setSending] = useState(false);
   /** Unread in this mailbox's inbox, remembered while the outbox is open. */
   const [inboxUnread, setInboxUnread] = useState<number | null>(null);
+  /** Unread report threads - they are not in the inbox list, so they get their own count. */
+  const [reportsUnread, setReportsUnread] = useState<number | null>(null);
 
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeTo, setComposeTo] = useState<EntityOption[]>([]);
@@ -142,13 +146,6 @@ export function InboxPage() {
   );
 
   const toLine = useCallback((mail: Mail): string => 'To: ' + (namesFor(mail, 'to').join(', ') || '—'), [namesFor]);
-  const ccLine = useCallback(
-    (mail: Mail): string | null => {
-      const cc = namesFor(mail, 'cc');
-      return cc.length > 0 ? 'Cc: ' + cc.join(', ') : null;
-    },
-    [namesFor],
-  );
 
   /* ------------------------------ ownership -------------------------------- */
 
@@ -332,10 +329,17 @@ export function InboxPage() {
 
   // The rail's unread count comes from the inbox itself, so it also counts for
   // mailboxes that are not the user's - and it survives a look in the outbox.
-  useEffect(() => setInboxUnread(null), [mailboxId]);
+  // Counted in threads, like the rows: a task thread with three unread
+  // replies is one thing to read, not three.
+  useEffect(() => {
+    setInboxUnread(null);
+    setReportsUnread(null);
+  }, [mailboxId]);
   useEffect(() => {
     if (folder !== 'inbox' || mails === null) return;
-    setInboxUnread(mails.filter(isUnread).length);
+    const unreadThreads = groupThreads(mails, isUnread).filter((thread) => thread.unread);
+    setInboxUnread(unreadThreads.filter((thread) => thread.latest.threadKind !== 'report').length);
+    setReportsUnread(unreadThreads.filter((thread) => thread.latest.threadKind === 'report').length);
   }, [folder, mails, isUnread]);
 
   const filtered = useMemo(() => {
@@ -355,7 +359,42 @@ export function InboxPage() {
     if (selectedId && !filtered.some((mail) => mail.id === selectedId)) setSelectedId(null);
   }, [filtered, selectedId]);
 
-  const selected = useMemo(() => filtered.find((mail) => mail.id === selectedId) ?? null, [filtered, selectedId]);
+  /*
+    The list reads as conversations. Reports - the evening briefing, a cron
+    result - have their own folder; in the inbox they buried the mail somebody
+    actually wrote to you under a daily pile of bookkeeping. And every thread
+    is one row, its newest written message, instead of one card per reply and
+    per status note. The outbox stays per mail: it is a log of what you sent.
+  */
+  const visible = useMemo(
+    () => (folder === 'inbox' ? filtered.filter((mail) => mail.threadKind !== 'report') : filtered),
+    [filtered, folder],
+  );
+  const threadOf = useMemo(() => {
+    if (box === 'outbox') return null;
+    return new Map(groupThreads(visible, isUnread).map((thread) => [thread.threadId, thread]));
+  }, [visible, box, isUnread]);
+  const rows = useMemo(
+    () => (threadOf ? [...threadOf.values()].map((thread) => thread.latestMessage) : visible),
+    [threadOf, visible],
+  );
+  const threadFor = useCallback(
+    (mail: Mail): MailThreadSummary | undefined => threadOf?.get(mail.threadId),
+    [threadOf],
+  );
+
+  // The open mail is the thread's newest written message, whichever row or
+  // deep link opened it: that is the one a reply answers.
+  const selected = useMemo(() => {
+    const opened = filtered.find((mail) => mail.id === selectedId) ?? null;
+    return opened ? (threadFor(opened)?.latestMessage ?? opened) : null;
+  }, [filtered, selectedId, threadFor]);
+
+  const taskStatusOf = useCallback(
+    (mail: Mail): TaskStatus | null =>
+      mail.taskId ? (tasksState.tasks.find((task) => task.id === mail.taskId)?.status ?? null) : null,
+    [tasksState.tasks],
+  );
 
   /* -------------------------------- actions -------------------------------- */
 
@@ -414,13 +453,32 @@ export function InboxPage() {
     [interactive, box, ownRecipient, mailBadge, patchReadAt],
   );
 
+  /** Opening a thread reads all of it, not only the row it was opened by. */
+  const markThreadRead = useCallback(
+    (mail: Mail): void => {
+      if (!interactive || box === 'outbox' || !mails) return;
+      const unreadRows = mails
+        .filter((entry) => entry.threadId === mail.threadId)
+        .map((entry) => ({ mail: entry, own: ownRecipient(entry) }))
+        .filter((entry): entry is { mail: Mail; own: MailRecipient } => entry.own != null && entry.own.readAt == null);
+      if (unreadRows.length === 0) return;
+      const now = Date.now();
+      for (const entry of unreadRows) patchReadAt(entry.mail.id, entry.own.id, now);
+      void api
+        .markMailRead(unreadRows.map((entry) => entry.own.id))
+        .then(() => void mailBadge.refresh())
+        .catch(() => undefined);
+    },
+    [interactive, box, mails, ownRecipient, patchReadAt, mailBadge],
+  );
+
   const select = useCallback(
     (id: string): void => {
       setSelectedId(id);
       const mail = mails?.find((entry) => entry.id === id);
-      if (mail) markOpenedRead(mail);
+      if (mail) markThreadRead(mail);
     },
-    [mails, markOpenedRead],
+    [mails, markThreadRead],
   );
 
   /** The open mail's own row, when it is read and so can be put back. */
@@ -655,6 +713,7 @@ export function InboxPage() {
           folder={folder}
           onFolderChange={setFolder}
           unread={inboxUnread}
+          folderUnread={{ reports: reportsUnread }}
           collapsed={navCollapsed}
           onCollapsedChange={setNavCollapsed}
         />
@@ -671,8 +730,8 @@ export function InboxPage() {
                 the full panel it sat in directly until now. */}
             <Fade className="h-full min-h-0 w-full min-w-0" delay={50}>
               <MailList
-                mails={filtered}
-                selectedId={selectedId}
+                mails={rows}
+                selectedId={selected?.id ?? null}
                 onSelect={select}
                 title={mailboxLabel(mailboxId)}
                 folder={folder}
@@ -686,6 +745,13 @@ export function InboxPage() {
                 primaryRole={primaryRole}
                 recipientChips={recipientChips}
                 isUnread={isUnread}
+                {...(threadOf
+                  ? {
+                      threadCount: (mail: Mail) => threadFor(mail)?.count ?? 1,
+                      threadUnread: (mail: Mail) => threadFor(mail)?.unread ?? isUnread(mail),
+                    }
+                  : {})}
+                taskStatus={taskStatusOf}
               />
             </Fade>
           </ResizablePanel>
@@ -695,10 +761,9 @@ export function InboxPage() {
             <Fade className="h-full min-h-0 w-full min-w-0" delay={100}>
               <MailDisplay
                 mail={selected}
-                senderLabel={senderLabel}
-                senderRole={senderRole}
-                toLine={toLine}
-                ccLine={ccLine}
+                mailboxId={mailboxId}
+                reloadKey={selected ? threadFor(selected)?.latest.id : undefined}
+                taskStatus={selected ? taskStatusOf(selected) : null}
                 interactive={interactive}
                 replyTargetName={selected ? replyTargetLabel(selected) : null}
                 onReply={reply}

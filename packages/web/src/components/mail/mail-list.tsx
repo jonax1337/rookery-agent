@@ -9,12 +9,14 @@ import {
   SquarePenIcon as PenSquareIcon,
 } from "@/components/icons";
 
-import type { Mail, MailFolder } from '@/lib/types';
+import type { Mail, MailFolder, TaskStatus } from '@/lib/types';
 import { relativeTime } from '@/lib/format';
+import { baseSubject, plainSnippet, statusNoteDetail, statusNoteKind } from '@/lib/mail';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState, NoResults } from '@/components/common/empty-state';
+import { StatusBadge } from '@/components/common/status-badge';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -51,9 +53,17 @@ const FOLDER_ICONS: Record<MailFolder, typeof InboxIcon> = {
   archiv: ArchiveIcon,
 };
 
-/** The body on one line, for the row's snippet. */
-function snippet(body: string): string {
-  return body.replace(/\s+/g, ' ').trim();
+/**
+ * The row's snippet: the body on one line without Markdown, and for a status
+ * note only what it reports - the "The task … is done." sentence repeats the
+ * subject the row already shows.
+ */
+function snippet(mail: Mail): string {
+  if (statusNoteKind(mail)) {
+    const detail = statusNoteDetail(mail);
+    return detail ? plainSnippet(detail) : plainSnippet(mail.body);
+  }
+  return plainSnippet(mail.body);
 }
 
 interface MailListEmptyProps {
@@ -150,6 +160,15 @@ interface MailListProps {
   /** To and Cc as separate chips, in that order. */
   recipientChips(mail: Mail): string[];
   isUnread(mail: Mail): boolean;
+  /**
+   * Set when every row stands for a whole thread (its newest mail): how many
+   * mails the thread has in this folder. A count above one shows on the row.
+   */
+  threadCount?(mail: Mail): number;
+  /** With `threadCount`: whether anything in the thread is unread. */
+  threadUnread?(mail: Mail): boolean;
+  /** The board status of the task an assignment thread belongs to. */
+  taskStatus?(mail: Mail): TaskStatus | null;
 }
 
 export function MailList({
@@ -168,6 +187,9 @@ export function MailList({
   primaryRole,
   recipientChips,
   isUnread,
+  threadCount,
+  threadUnread,
+  taskStatus,
 }: MailListProps) {
   // Read state belongs to the mailbox owner, and only the owner's own mailbox
   // is ever open for writing - so unread is a thing the inbox of "You" has.
@@ -238,9 +260,13 @@ export function MailList({
           <ScrollArea className="h-full [&>[data-slot=scroll-area-viewport]>div]:block!">
             <div className="flex flex-col gap-2 px-4 pb-4">
               {mails.map((mail) => {
-                const unread = showsUnread && isUnread(mail);
+                const unread = showsUnread && (threadUnread ? threadUnread(mail) : isUnread(mail));
                 const selected = mail.id === selectedId;
                 const chips = recipientChips(mail);
+                const count = threadCount?.(mail) ?? 1;
+                const status = taskStatus?.(mail) ?? null;
+                // A thread row names the conversation, not its latest "Re: Re:".
+                const subject = threadCount ? baseSubject(mail.subject) : mail.subject;
                 return (
                   <button
                     key={mail.id}
@@ -271,9 +297,20 @@ export function MailList({
                           {relativeTime(mail.createdAt)}
                         </span>
                       </div>
-                      <div className="min-w-0 truncate text-xs font-medium">{mail.subject || '(No subject)'}</div>
+                      <div className="flex w-full min-w-0 items-center gap-2">
+                        <span className="min-w-0 truncate text-xs font-medium">{subject || '(No subject)'}</span>
+                        {count > 1 && (
+                          <span
+                            className="shrink-0 rounded-full bg-muted px-1.5 text-[11px] leading-4 text-muted-foreground tabular-nums"
+                            aria-label={count + ' mails in this thread'}
+                          >
+                            {count}
+                          </span>
+                        )}
+                        {status && <StatusBadge kind="task" status={status} className="ml-auto shrink-0" />}
+                      </div>
                     </div>
-                    <div className="line-clamp-2 w-full text-xs text-muted-foreground">{snippet(mail.body)}</div>
+                    <div className="line-clamp-2 w-full text-xs text-muted-foreground">{snippet(mail)}</div>
                     {chips.length > 0 && (
                       <div className="flex w-full min-w-0 flex-wrap items-center gap-1.5">
                         {chips.map((chip) => (

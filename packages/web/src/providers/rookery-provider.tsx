@@ -103,6 +103,12 @@ export interface TurnSettings {
   permission: PermissionLevel;
   /** The project the conversation is filed under, or undefined. */
   projectId: string | undefined;
+  /**
+   * Whether provider, model, effort and permission are the person's own yet.
+   * Until the config has loaded they are placeholders ("read" on "claude"),
+   * and a caller that sends them would override the saved defaults.
+   */
+  ready: boolean;
   setPermission(level: PermissionLevel): void;
   /** Provider and model change together, so a name never outlives its provider. */
   chooseModel(provider: ProviderId, model: string | undefined): void;
@@ -510,6 +516,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       effort: activeEffort,
       permission,
       projectId: activeProjectId,
+      ready: config !== null,
       setPermission,
       chooseModel,
       chooseProject,
@@ -522,6 +529,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       buildVoicePayload,
       chooseModel,
       chooseProject,
+      config,
       permission,
       provider,
     ],

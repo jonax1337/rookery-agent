@@ -5,9 +5,12 @@ import type {
   AssignPayload,
   ChatPayload,
   ClientFrame,
+  EffortLevel,
   Mail,
   MemoryRecord,
   OrgChange,
+  PermissionLevel,
+  ProviderId,
   ProviderQuota,
   RunTaskPayload,
   ServerFrame,
@@ -41,6 +44,9 @@ export type QuestionClosedEvent = Extract<AgentEvent, { type: 'question-closed' 
 
 /** One live-log entry of a running assignment this socket watches. */
 export type AssignmentLogFrame = Extract<ServerFrame, { type: 'assignment-log' }>;
+
+/** What a run's terminal sends: its snapshot, screen output, or a state change. */
+export type TuiFrame = Extract<ServerFrame, { type: 'tui-snapshot' | 'tui-data' | 'tui-state' }>;
 
 export interface TurnHandlers {
   onEvent(event: AgentEvent): void;
@@ -91,6 +97,11 @@ export class RookerySocket {
   #assignmentLogListeners = new Set<(frame: AssignmentLogFrame) => void>();
   /** Assignments this socket should be watching, so a reconnect can re-arm them. */
   #watchedAssignments = new Set<string>();
+  #tuiListeners = new Set<(frame: TuiFrame) => void>();
+  /** Terminals this socket has open; re-armed on reconnect like the watches. */
+  #watchedTuis = new Set<string>();
+  /** `tui-open` requests waiting for their `tui-opened` reply. */
+  #tuiOpens = new Map<string, { resolve(value: { sessionId: string; key: string }): void; reject(error: Error): void }>();
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #pingTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -219,6 +230,79 @@ export class RookerySocket {
     this.#send({ type: 'unwatch', assignmentId: id });
   }
 
+  /** Frames of the run terminals this socket has open (`watchTui`). */
+  onTui(listener: (frame: TuiFrame) => void): () => void {
+    this.#tuiListeners.add(listener);
+    return () => this.#tuiListeners.delete(listener);
+  }
+
+  /**
+   * Open a run's Claude Code terminal. The server answers with a snapshot -
+   * the screen so far, or `info: null` when there is no terminal - and then
+   * streams. A reconnect re-arms it, and the fresh snapshot redraws.
+   */
+  watchTui(id: string): void {
+    this.#watchedTuis.add(id);
+    this.#send({ type: 'tui-watch', assignmentId: id });
+  }
+
+  unwatchTui(id: string): void {
+    this.#watchedTuis.delete(id);
+    this.#send({ type: 'tui-unwatch', assignmentId: id });
+  }
+
+  /** Keystrokes into the terminal, exactly as the terminal emulator encoded them. */
+  sendTuiInput(id: string, data: string): void {
+    this.#send({ type: 'tui-input', assignmentId: id, data });
+  }
+
+  resizeTui(id: string, cols: number, rows: number): void {
+    this.#send({ type: 'tui-resize', assignmentId: id, cols, rows });
+  }
+
+  /** Ends the terminal's process; only the transcript remains. */
+  killTui(id: string): void {
+    this.#send({ type: 'tui-kill', assignmentId: id });
+  }
+
+  /**
+   * Carry a conversation on in Claude Code's own terminal. Resolves with the
+   * conversation (a new one when none was given) and the key its terminal
+   * streams under - watch that with `watchTui`.
+   */
+  openTui(payload: {
+    sessionId?: string;
+    provider?: ProviderId;
+    model?: string;
+    effort?: EffortLevel;
+    permission?: PermissionLevel;
+    projectId?: string;
+  }): Promise<{ sessionId: string; key: string }> {
+    const id = crypto.randomUUID();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#tuiOpens.delete(id);
+        reject(new Error('The terminal did not open in time.'));
+      }, 60_000);
+      this.#tuiOpens.set(id, {
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.#send({ type: 'tui-open', id, ...payload });
+    });
+  }
+
+  /** Back to chat: the conversation's terminal ends. */
+  closeTui(sessionId: string): void {
+    this.#send({ type: 'tui-close', sessionId });
+  }
+
   connect(): void {
     if (this.#ws && (this.#status === 'open' || this.#status === 'connecting')) return;
     this.#closedByUs = false;
@@ -255,6 +339,7 @@ export class RookerySocket {
       // The server's watcher sets died with the old socket: every live
       // terminal re-arms its watch here, before any frames could be missed.
       for (const id of this.#watchedAssignments) this.#send({ type: 'watch', assignmentId: id });
+      for (const id of this.#watchedTuis) this.#send({ type: 'tui-watch', assignmentId: id });
       // Same for the conversations being followed: the turn kept running
       // while the connection was down, and its journal has the part missed.
       for (const sessionId of this.#attachedConversations) this.#send({ type: 'attach', sessionId });
@@ -488,7 +573,25 @@ export class RookerySocket {
       return;
     }
 
+    if (frame.type === 'tui-opened') {
+      const pending = this.#tuiOpens.get(frame.id);
+      this.#tuiOpens.delete(frame.id);
+      pending?.resolve({ sessionId: frame.sessionId, key: frame.key });
+      return;
+    }
+
+    if (frame.type === 'tui-snapshot' || frame.type === 'tui-data' || frame.type === 'tui-state') {
+      for (const listener of this.#tuiListeners) listener(frame);
+      return;
+    }
+
     if (frame.type === 'error') {
+      const opening = frame.id ? this.#tuiOpens.get(frame.id) : undefined;
+      if (frame.id && opening) {
+        this.#tuiOpens.delete(frame.id);
+        opening.reject(new Error(frame.message));
+        return;
+      }
       if (frame.id) {
         const turn = this.#pending.get(frame.id);
         this.#pending.delete(frame.id);

@@ -35,7 +35,7 @@ import { StatCards, StatCardsSkeleton, type StatCardProps } from '@/components/b
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
-import { AssignmentTerminal } from '@/components/common/assignment-terminal';
+import { RunTerminal } from '@/components/common/run-terminal';
 import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
 import { ProviderCell } from '@/components/common/provider-cell';
 import { ResultCard } from '@/components/common/result-card';
@@ -386,7 +386,7 @@ export function AssignmentDetailPage() {
               // The run as it happens, above the result it is heading for -
               // and past its end too, because the journal it reads outlives
               // the run: the transcript stays where the buffer used to vanish.
-              <AssignmentTerminal assignmentId={id} status={status} />
+              <RunTerminal assignmentId={id} status={status} />
             ) : null}
             {result ? (
               <ResultCard

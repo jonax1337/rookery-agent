@@ -60,7 +60,9 @@ Datenbank).
 - Identifier, Kommentare und Commit-Messages auf Englisch; UI-Strings und Nutzertexte
   auf Englisch.
 - UI: Stock assistant-ui + shadcn (radix-vega), echte Seiten statt Modals, moeglichst
-  kein Customizing. Eine Seite baut kein Template nach — fehlt etwas, bekommt das
+  kein Customizing. Einzige Ausnahme sind die Einstellungen: ein grosser Dialog
+  (shadcn `sidebar-13`, `pages/SettingsDialog.tsx`), den `App.tsx` unter
+  `/settings/:section` ueber der zuletzt offenen Seite rendert. Eine Seite baut kein Template nach — fehlt etwas, bekommt das
   Template unter `src/components/blocks/` bzw. `/common/` eine rueckwaertskompatible
   Prop. `ButtonGroup` nur fuer Knoepfe **derselben** Variante; gefuellt neben Outline
   verschweisst zu einem Bauteil, dem sichtbar eine Kante fehlt.

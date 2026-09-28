@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { AgentEvent } from '@rookery/core';
+import type { AgentEvent, TuiSessionInfo } from '@rookery/core';
 import type { WebSocket } from '@fastify/websocket';
 
 /**
@@ -111,6 +111,18 @@ export type ServerFrame =
    * frames onto a REST snapshot without assuming continuity.
    */
   | { type: 'assignment-log'; assignmentId: string; seq: number; event: AgentEvent }
+  /**
+   * Reply to `tui-watch`: the terminal as it stands, or `info: null` when the
+   * run has none (headless, or already killed) - then the transcript is all
+   * there is.
+   */
+  | { type: 'tui-snapshot'; assignmentId: string; info: TuiSessionInfo | null; data: string }
+  /** To terminal watchers only: raw screen output, in order. */
+  | { type: 'tui-data'; assignmentId: string; data: string }
+  /** To terminal watchers only: the terminal went idle (work done) or exited. */
+  | { type: 'tui-state'; assignmentId: string; info: TuiSessionInfo }
+  /** Reply to `tui-open`: the conversation, and the key its terminal streams under. */
+  | { type: 'tui-opened'; id: string; sessionId: string; key: string }
   /** Broadcast: a message between agents or to the assistant was posted. */
   | { type: 'message'; event: AgentEvent }
   /** Broadcast: mail was sent - a new mail in someone's inbox or outbox. */
