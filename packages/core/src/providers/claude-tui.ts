@@ -107,6 +107,8 @@ interface ScreenMirror {
   write(data: string, done?: () => void): void;
   resize(cols: number, rows: number): void;
   serialize(): string;
+  /** The visible screen as plain text, one line per row. */
+  text(): string;
   dispose(): void;
 }
 
@@ -136,6 +138,13 @@ function loadMirror(): Promise<((cols: number, rows: number) => ScreenMirror) | 
           resize(cols: number, rows: number): void;
           loadAddon(addon: unknown): void;
           dispose(): void;
+          rows: number;
+          buffer: {
+            active: {
+              viewportY: number;
+              getLine(y: number): { translateToString(trimRight?: boolean): string } | undefined;
+            };
+          };
         };
         const SerializeClass = SerializeAddon as new () => { serialize(): string };
         const term = new TerminalClass({ cols, rows, scrollback: 5000, allowProposedApi: true });
@@ -143,8 +152,19 @@ function loadMirror(): Promise<((cols: number, rows: number) => ScreenMirror) | 
         term.loadAddon(addon);
         return {
           write: (data, done) => term.write(data, done),
-          resize: (c, r) => term.resize(c, r),
+          // Queued behind what is still waiting to be parsed: a write is
+          // processed later, a resize at once, and bytes painted for the old
+          // width then landed on the new one - overlapping, skewed lines.
+          resize: (c, r) => term.write('', () => term.resize(c, r)),
           serialize: () => addon.serialize(),
+          text: () => {
+            const buffer = term.buffer.active;
+            const lines: string[] = [];
+            for (let y = buffer.viewportY; y < buffer.viewportY + term.rows; y += 1) {
+              lines.push(buffer.getLine(y)?.translateToString(true) ?? '');
+            }
+            return lines.join('\n');
+          },
           dispose: () => term.dispose(),
         };
       };
@@ -152,6 +172,12 @@ function loadMirror(): Promise<((cols: number, rows: number) => ScreenMirror) | 
     .catch(() => null);
   return mirrorModule;
 }
+
+// Loaded up front, not with the first terminal. The mirror replays what was
+// painted before it existed, at the size it is created with; if the module
+// took its time on first use, a browser could resize the process in between,
+// and the early bytes were then replayed at the wrong width.
+void loadMirror();
 
 const PASTE_ON = String.fromCharCode(27) + '[?2004h';
 const PASTE_OFF = String.fromCharCode(27) + '[?2004l';
@@ -265,6 +291,11 @@ export class TuiSessionRegistry extends EventEmitter {
     return { info: { ...session.info }, data: mirror.serialize() };
   }
 
+  /** What the screen shows right now as plain text, or null without an emulator. */
+  screenText(key: string): string | null {
+    return this.#sessions.get(key)?.mirror?.text() ?? null;
+  }
+
   /** Whether the TUI takes pasted text as one paste right now. */
   pasteMode(key: string): boolean {
     return this.#sessions.get(key)?.pasteMode ?? false;
@@ -290,6 +321,9 @@ export class TuiSessionRegistry extends EventEmitter {
       session.mirror?.resize(c, r);
       session.info.cols = c;
       session.info.rows = r;
+      // Every other viewer of this terminal follows the new size instead of
+      // fighting it with its own (run-terminal.tsx).
+      this.emit('state', { ...session.info });
     } catch {
       // A pty that is exiting refuses a resize; nothing to keep.
     }
@@ -862,6 +896,33 @@ const READY_QUIET_MS = 800;
 const READY_LIMIT_MS = 30_000;
 /** How long a typed message may take to show up in the transcript. */
 const ACCEPT_LIMIT_MS = 15_000;
+/** How often an unconfirmed message is looked after: Enter again, or typed again. */
+const ACCEPT_RETRY_MS = 3000;
+/**
+ * A panel or menu is open and waiting for Esc. Not the first-run dialogs:
+ * Esc there declines the folder and Claude Code quits.
+ */
+function hasOpenPanel(screen: string): boolean {
+  const lower = screen.toLowerCase();
+  if (lower.includes('trust this folder') || lower.includes('yes, i accept')) return false;
+  return lower.includes('esc to cancel') || lower.includes('esc to close') || lower.includes('esc to exit');
+}
+
+/** The screen a command left, as text for the chat: without the hint lines and the empty tail. */
+function commandOutput(screen: string, command: string): string {
+  const lines = screen.split('\n');
+  // Only what came after the command line itself, not the conversation above it.
+  const at = lines.map((line) => line.includes(command)).lastIndexOf(true);
+  return lines
+    .slice(at + 1)
+    .filter((line) => !/esc to (cancel|close|exit)/i.test(line))
+    .join('\n')
+    .replace(/\s+$/, '')
+    .replace(/^\s*\n/, '');
+}
+
+/** Lines Claude Code draws under its input box, and only there. */
+const INPUT_FOOTERS = ['shift+tab to cycle', '? for shortcuts', 'for shortcuts'];
 /** How long an interrupted turn gets to write what it had before it is read as is. */
 const INTERRUPT_SETTLE_MS = 1500;
 
@@ -1033,21 +1094,41 @@ export class ConversationTerminal {
         while (this.#pending === mine && !mine.accepted && Date.now() - typedAt < ACCEPT_LIMIT_MS) {
           await sleep(POLL_MS * 2);
           if (Date.now() - typedAt > 2500 && Date.now() - this.watch.lastScreen > 1500 && !mine.accepted) {
-            this.#settle(mine, { answer: '' });
+            // What the command put on the screen is its answer - the chat
+            // cannot see the terminal, so `/cost` there shows the costs. A
+            // panel it opened is closed again, or the next message would be
+            // typed into it.
+            const screen = tuiSessions.screenText(this.key) ?? '';
+            const output = commandOutput(screen, input.prompt.trim());
+            // Fenced: a panel is laid out in columns, and markdown would reflow it.
+            this.#settle(mine, { answer: output ? '```\n' + output + '\n```' : '' });
+            if (hasOpenPanel(screen)) tuiSessions.write(this.key, ESC);
             return;
           }
         }
+        // Still running past the limit (a command that started real work
+        // settles through the Stop hook instead): never leave it hanging.
+        if (this.#pending === mine && !mine.accepted) this.#settle(mine, { answer: '' });
       })();
     }
 
-    // The message has to arrive. A paste the TUI sat on gets one more Enter;
-    // after that it is an error, not a turn waiting for ever.
+    // The message has to arrive. Every few seconds without it in the
+    // transcript, the screen says why: the text sits in the input box (a
+    // paste the TUI held on to) and gets another Enter, or it is not there at
+    // all (keys swallowed while the TUI was still setting up) and is typed
+    // again. Past the limit it is an error, not a turn waiting for ever.
     void (async (): Promise<void> => {
       if (command) return;
-      await sleep(ACCEPT_LIMIT_MS / 2);
-      if (this.#pending !== mine || mine.accepted) return;
-      tuiSessions.write(this.key, '\r');
-      await sleep(ACCEPT_LIMIT_MS / 2);
+      const typedAt = Date.now();
+      const snippet = input.prompt.replace(/\s+/g, ' ').trim().slice(0, 24);
+      while (Date.now() - typedAt < ACCEPT_LIMIT_MS * 2) {
+        await sleep(ACCEPT_RETRY_MS);
+        if (this.#pending !== mine || mine.accepted) return;
+        const screen = tuiSessions.screenText(this.key);
+        const waiting = screen === null || screen.includes('[Pasted text') || screen.replace(/\s+/g, ' ').includes(snippet);
+        if (waiting) tuiSessions.write(this.key, '\r');
+        else this.#type(input.prompt);
+      }
       if (this.#pending !== mine || mine.accepted) return;
       this.#settle(mine, { error: 'The terminal did not take the message.' });
     })();
@@ -1059,13 +1140,29 @@ export class ConversationTerminal {
     }
   }
 
-  /** Wait until the TUI sits at its prompt: not working, and quiet for a moment. */
+  /**
+   * Wait until the TUI sits at its prompt: not working, quiet for a moment,
+   * and - where the screen can be read - showing the footer Claude Code only
+   * draws under a live input box. Quiet alone was not enough: a fresh
+   * terminal pauses while its startup hooks run, and keys typed into that
+   * pause are swallowed.
+   */
   async #ready(signal?: AbortSignal): Promise<void> {
     const deadline = Date.now() + READY_LIMIT_MS;
+    let closed = 0;
     while (Date.now() < deadline && !signal?.aborted && this.alive()) {
       const working = tuiSessions.info(this.key)?.state === 'running' || this.#typed.length > 0;
       const quiet = Date.now() - this.#spawned > 1500 && Date.now() - this.watch.lastScreen > READY_QUIET_MS;
-      if (!working && quiet) return;
+      const screen = tuiSessions.screenText(this.key);
+      const prompt = screen === null || INPUT_FOOTERS.some((footer) => screen.includes(footer));
+      if (!working && quiet && prompt) return;
+      // A panel left open - by a command typed in the terminal, say - sits
+      // where the input box would be. Esc closes it, as a person would.
+      if (!working && quiet && screen !== null && hasOpenPanel(screen) && closed < 3) {
+        closed += 1;
+        tuiSessions.write(this.key, ESC);
+        await sleep(READY_QUIET_MS);
+      }
       await sleep(POLL_MS);
     }
   }

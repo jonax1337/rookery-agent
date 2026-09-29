@@ -319,7 +319,7 @@ export function reportBackNotice(task: Task, agent: Agent | null): string {
       return head + 'was cancelled' + took + '.\n\n' + system + ' Tell the user briefly, unless they cancelled it themselves just now.';
     default:
       return (
-        head + 'failed' + took + ': ' + (task.error ?? 'no reason given') + '.' +
+        head + 'failed' + took + ': ' + (task.error ?? 'no reason given').replace(/[.\s]+$/, '') + '.' +
         (task.result ? '\n\nWhat it had so far:\n' + clip(task.result, 4000) : '') + '\n\n' + system + ' ' +
         'Tell the user what went wrong and what you suggest - retrying, handing it to someone else, or dropping it.'
       );

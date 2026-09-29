@@ -357,8 +357,15 @@ export type TurnRunner = (turn: {
 /** A conversation's Claude Code process, and what it was started with. */
 interface ChatTerminal {
   handle: ConversationTerminalHandle;
-  /** Model, effort, rights, project and tool servers - a change restarts it (T3). */
+  /** Effort, rights, project and tool servers - a change restarts it (T3). */
   signature: string;
+  /**
+   * Every name its model has gone by: the one it was started with, the one
+   * that was asked for, the full id the transcript reports. A turn asking
+   * for any of them is asking for the model it already runs - comparing one
+   * spelling restarted the terminal on every other turn.
+   */
+  models: Set<string>;
   /** The tool servers it was started with, for the continuation check. */
   servers: string[];
   /** The context its bridge token answers with; `emit` points at the current turn. */
@@ -1516,6 +1523,7 @@ export class Assistant extends EventEmitter {
       }
       const result = await submitted;
       answeredBy = result.model ?? answeredBy;
+      if (result.model) terminal.models.add(result.model);
       usage = mergeUsage(usage, result.usage);
       if (result.answer) answer = answer ? answer + '\n\n' + result.answer : result.answer;
       if (result.error) {
@@ -2268,10 +2276,12 @@ export class Assistant extends EventEmitter {
     const who = 'assistant';
     const extra = toolServersFor(this.config, who, want.providerId, project?.id);
     const servers = extra.specs.map((spec) => spec.name).sort();
-    const signature = JSON.stringify([model ?? '', want.effort ?? '', want.permission, project?.id ?? '', servers]);
+    const signature = JSON.stringify([want.effort ?? '', want.permission, project?.id ?? '', servers]);
 
     const open = this.#chatTerminals.get(session.id);
-    if (open && open.handle.alive() && open.signature === signature) return open;
+    const sameModel = (entry: ChatTerminal): boolean =>
+      !model || entry.models.has(model) || (want.model !== undefined && entry.models.has(want.model));
+    if (open && open.handle.alive() && open.signature === signature && sameModel(open)) return open;
     // Whatever a person is doing in it right now finishes first; a restart
     // must not cut off a turn somebody typed into the terminal view.
     if (open?.handle.alive()) await open.handle.whenIdle();
@@ -2340,7 +2350,12 @@ export class Assistant extends EventEmitter {
         {
           // Something a person typed into the terminal itself. What Rookery
           // types comes back to the turn that typed it and is stored there.
-          onTurn: (typed) => this.#storeTypedTurn(session.id, typed, model),
+          onTurn: (typed) => {
+            // A model picked with `/model` in the terminal is this terminal's
+            // model from now on; the chat asking for it must not restart it.
+            if (entry && typed.model) entry.models.add(typed.model);
+            this.#storeTypedTurn(session.id, typed, model);
+          },
           onExit: () => {
             release();
             if (entry && this.#chatTerminals.get(session.id) === entry) this.#chatTerminals.delete(session.id);
@@ -2348,7 +2363,8 @@ export class Assistant extends EventEmitter {
           },
         },
       );
-      entry = { handle: opened.terminal, signature, servers, context, model };
+      const models = new Set<string>([model, want.model].filter((name): name is string => Boolean(name)));
+      entry = { handle: opened.terminal, signature, models, servers, context, model };
       this.#chatTerminals.set(session.id, entry);
       // Stored at once, so the next message - or a headless turn - resumes
       // this very session even if nothing was said in the terminal yet.

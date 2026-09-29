@@ -47,6 +47,17 @@ Vorlaeufer: `work-as-one-surface.md` (die Karte ist der Vorgang) und
   (`whenIdle`); Rueckmelde-Turns laufen mit den zuletzt benutzten Rechten des
   Gespraechs (`meta session:permission:<id>`); ein Tab meldet das Verlassen
   eines Gespraechs (`detach`).
+- **Aus dem Durchtest in der Dev-Instanz (2026-09-29) nachgezogen:** Getippt
+  wird erst, wenn der Spiegel Claude Codes Fusszeile unter dem Eingabefeld
+  zeigt (ein frisches Terminal verschluckte sonst die erste Nachricht
+  waehrend seiner Startup-Hooks); eine nicht angekommene Nachricht bekommt
+  Enter oder wird neu getippt. `/`-Befehle liefern ihren Bildschirm als
+  Antwort (Codeblock) und ein offenes Panel wird mit Esc geschlossen. Das
+  Terminal kennt alle Namen seines Modells (Alias und volle ID) - vorher
+  startete es jeden zweiten Turn neu. Der Chat springt nicht mehr von selbst
+  in die Terminal-Ansicht. Die Groesse eines Terminals bestimmt, wer es
+  zuletzt oeffnet oder hineintippt; alle anderen Zuschauer uebernehmen sie.
+  Der Spiegel stellt Groessenwechsel hinter noch nicht geparste Bytes.
 - **Bildschirm-Spiegel:** Neben jedem pty laeuft ein `@xterm/headless` mit
   Serialize-Addon; ein spaeter Zuschauer bekommt den serialisierten
   Bildschirm statt des rohen Byte-Verlaufs, und der Client misst sich, bevor
