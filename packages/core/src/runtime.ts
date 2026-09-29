@@ -10,7 +10,6 @@ import type {
   AssignmentLogSnapshot,
   CronJob,
   CronRun,
-  Mail,
   MemoryRecord,
   NotifyEvent,
   PermissionLevel,
@@ -49,7 +48,7 @@ import { admitCandidates, linkEntities } from './memory/gate.js';
 import { SleepRunner, type PromotionNotice } from './memory/sleep.js';
 import { buildSystemPrompt, deriveTitle } from './agents/persona.js';
 import { BridgeServer } from './org/bridge.js';
-import { OrgController } from './org/controller.js';
+import { OrgController, taskNotification } from './org/controller.js';
 import { QuestionRegistry } from './org/questions.js';
 import { assistantOrgBlock } from './org/prompts.js';
 import { dormantToolsHint, externalTurnExtras, toolServersFor } from './tools/hub.js';
@@ -127,11 +126,13 @@ const BOARD_WATCH_PROMPT =
   'Watch the board and report what needs a person. Check list_tasks for anything failed, and for ' +
   'anything running far longer than it should. You are a backstop, not a worker: you cannot start, ' +
   'reassign, restart or close anything, and that is deliberate - deciding what to do about what you ' +
-  'find belongs to the user. Mail the user at most once per pass, and only when something truly ' +
-  'needs a human decision: say what you saw, how long it has been that way, and what you would ' +
-  'suggest. A task waiting on an answer is working as intended, not a fault, and never a reason to ' +
-  'write. If none of what you were shown is worth interrupting somebody over, do not report that ' +
-  'everything is fine - answer with exactly [SILENT] instead.';
+  'find belongs to the user. Leave the user one report with report_to_user at most once per pass, ' +
+  'and only when something truly needs a human decision: say what you saw, how long it has been ' +
+  'that way, and what you would suggest. Once you have, answer with exactly [SILENT], so the same ' +
+  'thing does not reach them a second time as this run\'s outcome. A task waiting on an answer is ' +
+  'working as intended, not a fault, and never a reason to write. If none of what you were shown ' +
+  'is worth interrupting somebody over, do not report that everything is fine - answer with ' +
+  'exactly [SILENT] instead.';
 
 /** Add up what two passes of one turn cost; the last pass owns the context gauge. */
 function mergeUsage(base: TurnUsage | undefined, next: TurnUsage | undefined): TurnUsage | undefined {
@@ -464,9 +465,14 @@ export class Assistant extends EventEmitter {
       runner: (job, run, signal) => this.#runScheduled(job, run, signal),
       logger: this.log,
       timeoutMs: this.config.org.assignmentTimeoutMs,
+      // A run's outcome goes the one road to the user. A closure, because
+      // the controller is built below; no run can end before it exists.
+      notify: (input) => {
+        this.org.notifyUser(input);
+      },
     });
     // Before the controller: the `sleep_now` tool needs it at construction.
-    // The promotion hook is a closure rather than `this.org.sendUserMail`
+    // The promotion hook is a closure rather than `this.org.notifyUser`
     // itself for exactly that reason - the controller does not exist yet
     // here, and it does by the time a night can promote anything.
     this.sleep = new SleepRunner({
@@ -474,7 +480,7 @@ export class Assistant extends EventEmitter {
       registry: this.providers,
       config: this.config,
       logger: this.log,
-      onPromotion: (notice) => this.#announcePromotion(notice),
+      onPromotion: (notice) => this.announcePromotion(notice),
     });
     // Before the controller, like the night shift: the `ask_user` tool needs
     // it at construction. Its own emitter is what the Assistant re-broadcasts:
@@ -501,11 +507,12 @@ export class Assistant extends EventEmitter {
       // a channel that drops the message. Whoever hosts the runtime sets
       // `notifyProbe` to the honest test.
       canNotify: () => (this.notifyProbe ? this.notifyProbe() : this.listenerCount('notify') > 0),
-      runAssistantMail: (input) => this.#answerMail(input.mail, input.senderLabel, input.thread),
     });
     this.cron.on('cron', (event: AgentEvent) => this.emit('cron', event));
     this.cron.on('message', (event: AgentEvent) => this.emit('message', event));
-    this.cron.on('mail', (event: AgentEvent) => this.emit('mail', event));
+    // Only a scheduler without the `notify` hook emits this itself; wired
+    // anyway so an outcome can never be written without being announced.
+    this.cron.on('notification', (event: AgentEvent) => this.emit('notification', event));
     // Every client watches the brain fall asleep and wake up again.
     this.sleep.on('sleep', (event: AgentEvent) => this.emit('sleep', event));
     // Anything an agent does is interesting to every client, not only the
@@ -516,7 +523,11 @@ export class Assistant extends EventEmitter {
     // sockets, never a blanket fan-out.
     this.org.on('assignment-log', (frame: AssignmentLogFrame) => this.emit('assignment-log', frame));
     this.org.on('message', (event: AgentEvent) => this.emit('message', event));
-    this.org.on('mail', (event: AgentEvent) => this.emit('mail', event));
+    // Everything that reaches the user outside a conversation, and every
+    // line added to a card's activity - the two carriers that replaced mail
+    // (docs/concepts/mail-removal-notifications-and-task-activity.md).
+    this.org.on('notification', (event: AgentEvent) => this.emit('notification', event));
+    this.org.on('task-event', (event: AgentEvent) => this.emit('task-event', event));
     this.org.on('task', (event: AgentEvent) => this.emit('task', event));
     // The watcher's fast path (section 5): a task landing in `failed` or
     // `blocked` wakes it through the same event machinery a webhook or an
@@ -536,10 +547,20 @@ export class Assistant extends EventEmitter {
 
   #onReportBack(event: ReportBackEvent): void {
     const session = this.store.getSession(event.sessionId);
-    // A scheduled run or a mail answer has nobody reading along; its task
-    // thread and the push already carry the ending.
+    // A scheduled run has nobody reading along, and a conversation that was
+    // deleted has nobody at all. The ending still belongs to somebody, and
+    // the only one left is the user: it goes to them as a notification
+    // instead of a turn nobody would see - a question most of all.
     if (!session || (session.kind !== 'chat' && session.kind !== 'voice')) {
-      this.log.debug('Report-back without a conversation to go to', { task: event.taskId, session: event.sessionId });
+      const task = this.store.org.getTask(event.taskId);
+      if (!task) return;
+      const agent = task.assigneeId ? this.store.org.getAgent(task.assigneeId) : null;
+      const question = task.status === 'blocked' ? this.store.org.lastTaskEvent(task.id, 'question') : null;
+      this.org.notifyUser({
+        orgId: task.orgId,
+        ...taskNotification(task, agent, question?.text),
+        ...(session ? { sessionId: session.id } : {}),
+      });
       return;
     }
     // Archived while the work ran: bringing it back is better than burying
@@ -1069,13 +1090,10 @@ export class Assistant extends EventEmitter {
     const turnHistory = this.store.getMessages(session.id, this.config.memory.workingWindow);
     const history = resumed ? [] : turnHistory;
 
-    // The company block: who works here, what is running, what arrived in
-    // the mail. Read once per turn; the mail is then marked as read.
+    // The company block: who works here and what is running.
     const organization = this.org.activeOrganization();
     const snapshot = this.org.snapshot(organization.id);
-    const mail = this.store.org.unreadMailFor(organization.id, { kind: 'assistant' });
     const project = session.projectId ? (this.store.org.getProject(session.projectId) ?? undefined) : undefined;
-    if (mail.length) this.store.org.markMailReadFor(mail, { kind: 'assistant' });
 
     // Who is asking: the assistant. The tool servers and the prompt built on
     // them are per provider attempt, because each provider attaches its own.
@@ -1112,7 +1130,6 @@ export class Assistant extends EventEmitter {
         session,
         prompt,
         memories,
-        mail,
         project,
         snapshotOrgId: organization.id,
         providerId,
@@ -1171,7 +1188,7 @@ export class Assistant extends EventEmitter {
         resumed: attempt === 1 && resumed,
         // A voice session speaks whichever surface the turn came from.
         voice: input.voice ?? session.kind === 'voice',
-        orgBlock: assistantOrgBlock(this.config, snapshot, mail, project, this.cron.list(organization.id), this.store),
+        orgBlock: assistantOrgBlock(this.config, snapshot, project, this.cron.list(organization.id), this.store),
         toolHints,
         skillsIndex,
         // Lets the memory block group itself by entity.
@@ -1212,8 +1229,9 @@ export class Assistant extends EventEmitter {
           // assignment: it may read memory and open skills, but nothing it
           // does lands back in the bank - no extraction, no tools that write.
           // That covers every run with nobody in front of it: a session of
-          // kind `schedule`, the mail-answer turn (`kind: 'mail'`), and a
-          // schedule pinned to an ordinary conversation, which arrives with
+          // kind `schedule`, the old mail-answer turn (`kind: 'mail'`, no
+          // longer created), and a schedule pinned to an ordinary
+          // conversation, which arrives with
           // `input.scheduled` set. All three are exactly the runs that must
           // not be offered `ask_user` - there is no screen to answer on.
           scheduled:
@@ -1342,7 +1360,7 @@ export class Assistant extends EventEmitter {
           memories,
           resumed: true,
           voice: input.voice ?? session.kind === 'voice',
-          orgBlock: assistantOrgBlock(this.config, snapshot, [], project, this.cron.list(organization.id), this.store),
+          orgBlock: assistantOrgBlock(this.config, snapshot, project, this.cron.list(organization.id), this.store),
           toolHints: [...next.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean),
           skillsIndex,
           store: this.store,
@@ -1396,8 +1414,7 @@ export class Assistant extends EventEmitter {
     // Scheduled runs stay out of the memory: the "user" side of that
     // exchange is Rookery's own boilerplate plus the job's prompt, not
     // something the user said today, and quoting it would file the job
-    // description again on every firing. Mail answers are deliberately
-    // still extracted - a person wrote in, and what they wrote stands.
+    // description again on every firing.
     if (
       this.config.memory.enabled &&
       this.config.memory.autoExtract &&
@@ -1430,7 +1447,6 @@ export class Assistant extends EventEmitter {
     session: Session;
     prompt: string;
     memories: ScoredMemory[];
-    mail: Mail[];
     project: Project | undefined;
     snapshotOrgId: string;
     providerId: ProviderId;
@@ -1467,12 +1483,12 @@ export class Assistant extends EventEmitter {
 
     // What a headless turn rebuilds into its system prompt every time goes
     // in through the prompt hook here (T2): the recall, the company as it is
-    // right now with its unread mail, the skills that look like this message.
+    // right now, the skills that look like this message.
     const budget = this.config.memory.contextBudget;
     const snapshot = this.org.snapshot(turn.snapshotOrgId);
     const context = [
       renderMemoryBlock(turn.memories, Math.floor(budget * 0.4), 'this user', this.store),
-      assistantOrgBlock(this.config, snapshot, turn.mail, turn.project, this.cron.list(turn.snapshotOrgId), this.store),
+      assistantOrgBlock(this.config, snapshot, turn.project, this.cron.list(turn.snapshotOrgId), this.store),
       renderSkillMatches(matchSkills(this.config, 'assistant', turn.ownSkills, turn.prompt)),
       'It is now ' + formatNow() + '.',
     ]
@@ -1875,7 +1891,7 @@ export class Assistant extends EventEmitter {
       (job.schedule ? describeCron(job.schedule) : 'fired by an event') + '), ' + when + '. ' +
       'Nobody is following live: carry out the assignment now and finish with a short report ' +
       'for the user to read later. If carrying it out already delivers the result to the user by ' +
-      'itself (for example you send_mail them the thing this job exists to send), that mail is the ' +
+      'itself (for example you notify them of the thing this job exists to send), that is the ' +
       'delivery - reply with exactly [SILENT] and nothing else, so a second "schedule completed" ' +
       'notification is not posted on top of it.\n\n' + job.prompt +
       // The watcher arrives knowing what it was woken for, so the turn is
@@ -1908,43 +1924,11 @@ export class Assistant extends EventEmitter {
     // sometimes reasons out loud first and tacks the sentinel on as its
     // last line instead of replying with only it, which used to defeat the
     // match and let the explanation (sentinel and all) straight into the
-    // inbox mail. Matching it as a trailing token - not anywhere in the
+    // outcome notification. Matching it as a trailing token - not anywhere in the
     // text - still catches that case without firing on a report that
     // merely quotes or explains the convention somewhere in its middle.
     if (/\[SILENT\]\s*$/.test(text)) return { status: 'done', result: '', silent: true, sessionId };
     return { status: 'done', result: text, sessionId };
-  }
-
-  /**
-   * One assistant turn for a mail addressed to it, answered by mail.
-   * Same shape as a scheduled run: its own conversation, nobody watching
-   * live, the answer read later - except the answer goes back as a reply.
-   */
-  async #answerMail(mail: Mail, senderLabel: string, thread: Mail[]): Promise<string> {
-    // `kind: 'mail'` keeps this out of the conversations list: it is the
-    // transcript of one answered mail, not a thread anyone continues.
-    const session = this.createSession({ title: 'Mail: ' + mail.subject, kind: 'mail' });
-    // Subjects only: the thread can be long, and most mail is answerable
-    // without it. `read_mail_thread` fetches the text if this one is not.
-    const history = thread.length
-      ? 'Earlier in this thread (' + thread.length + ' mail(s)), subjects only:\n' +
-        thread.map((entry) => '- ' + entry.subject).join('\n') +
-        '\nRead the full text with read_mail_thread("' + mail.threadId + '") if the answer depends on it.\n\n'
-      : '';
-    const prompt =
-      'Mail ' + mail.id + ' arrived for you from ' + senderLabel + '. Nobody is following this ' +
-      'conversation live: answer it now, and write the answer as the body of your reply mail - no ' +
-      'chat pleasantries, no report framing. It is sent back to them as a reply automatically. Do ' +
-      'not send_mail the answer to them as well: this text is the reply, and doing both delivers ' +
-      'it twice. send_mail here is only for bringing somebody else in.\n\n' +
-      history + 'Subject: ' + mail.subject + '\n\n' + mail.body;
-
-    let text = '';
-    for await (const event of this.chat({ text: prompt, sessionId: session.id })) {
-      if (event.type === 'done') text = event.text;
-      else if (event.type === 'error' && event.fatal) throw new Error(event.message);
-    }
-    return text;
   }
 
   /* ---------------------------- internals --------------------------- */
@@ -2017,7 +2001,7 @@ export class Assistant extends EventEmitter {
   /**
    * A retrieval policy went in force, so the user hears about it (S26,
    * concept 9.6). This is the one place that can say so: the night owns the
-   * promotion and knows nothing about mail, the controller owns the mail and
+   * promotion and knows nothing about notifications, the controller owns them and
    * knows nothing about the night, and the runtime holds both.
    *
    * Everything quoted is a number, an id or the promotion's own stored
@@ -2026,9 +2010,9 @@ export class Assistant extends EventEmitter {
    *
    * A failing send costs the message, never the night: `#announcePromotion`
    * in sleep.ts catches whatever comes back out of here, and this catches
-   * first so the warning names the mail rather than the hook.
+   * first so the warning names the notice rather than the hook.
    */
-  async #announcePromotion(notice: PromotionNotice): Promise<void> {
+  async announcePromotion(notice: PromotionNotice): Promise<void> {
     const version = notice.version;
     const evaluation = notice.evaluation;
     const body = [
@@ -2051,14 +2035,18 @@ export class Assistant extends EventEmitter {
       'Take the whole night back: undo sleep run ' + notice.runId + '.',
     ].join('\n');
     try {
-      await this.org.sendUserMail({
+      // A `sleep` notification, from Rookery itself. It used to be a mail
+      // from the user to the user, which no push filter ever let through -
+      // the promotion reached the web inbox and never the phone.
+      this.org.notifyUser({
         orgId: this.org.activeOrganization().id,
-        to: ['user'],
-        subject: 'Retrieval policy ' + notice.slot + ' v' + version.version + ' is in force',
+        kind: 'sleep',
+        title: 'Retrieval policy ' + notice.slot + ' v' + version.version + ' is in force',
         body,
+        fromKind: 'system',
       });
     } catch (error) {
-      this.log.warn('Could not mail the promotion notice', {
+      this.log.warn('Could not post the promotion notice', {
         owner: notice.owner,
         slot: notice.slot,
         policy: version.id,
@@ -2300,7 +2288,7 @@ export class Assistant extends EventEmitter {
       history: resumed ? [] : this.store.getMessages(session.id, this.config.memory.workingWindow),
       resumed,
       voice: false,
-      orgBlock: assistantOrgBlock(this.config, snapshot, [], project, this.cron.list(organization.id), this.store),
+      orgBlock: assistantOrgBlock(this.config, snapshot, project, this.cron.list(organization.id), this.store),
       toolHints: [...extra.hints, dormantToolsHint(this.config, who, project?.id)].filter(Boolean),
       skillsIndex: [renderSkillsIndex(ownSkills), renderExternalSkillsHint(this.config, who)].filter(Boolean).join('\n\n'),
       store: this.store,

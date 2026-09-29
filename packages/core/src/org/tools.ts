@@ -3,7 +3,7 @@
  *
  * Two audiences share one vocabulary. The assistant gets everything; an
  * agent gets the subset a member of staff would have - it can hand work to
- * its own reports and write to its manager, but it cannot hire anyone or
+ * its own reports and ask whoever gave it the work, but it cannot hire anyone or
  * restructure the company.
  */
 
@@ -23,6 +23,12 @@ export interface ToolDefinition {
    * with a tool it can see.
    */
   needsPerson?: boolean;
+  /**
+   * For the assistant audience, offered only to the board watcher. An
+   * ordinary assistant turn reaches the user through its own answer and
+   * `notify`; the watcher, running with nobody reading along, has neither.
+   */
+  assistantOnlyWhenWatching?: boolean;
 }
 
 /** Whether the caller is a person's conversation or an unattended run. */
@@ -30,8 +36,8 @@ export interface ToolAvailability {
   /** A schedule started this run; nobody is present. */
   scheduled?: boolean;
   /**
-   * The board watcher is running. It reads the board and writes at most one
-   * mail; see {@link WATCH_TOOLS} for why that is an allowlist.
+   * The board watcher is running. It reads the board and leaves at most one
+   * report; see {@link WATCH_TOOLS} for why that is an allowlist.
    */
   watching?: boolean;
 }
@@ -51,9 +57,8 @@ const WATCH_TOOLS = new Set([
   'list_assignments',
   'assignment_status',
   'agent_performance',
-  'read_mail',
-  'read_mail_thread',
-  'send_mail',
+  'task_activity',
+  'report_to_user',
   'notify',
 ]);
 
@@ -180,51 +185,76 @@ export const ORG_TOOLS: ToolDefinition[] = [
     audience: ASSISTANT_ONLY,
   },
   {
-    name: 'send_mail',
+    name: 'ask_requester',
     description:
-      'Send company mail: a subject, a body, To and optionally Cc. Addressing an agent\'s To starts a ' +
-      'real run of that agent with the mail as its task, and its finished result comes back to you ' +
-      'automatically as a reply. Cc only delivers to the mailbox - it never starts anything, so loop ' +
-      'someone in on Cc when they should just know. Address "user" to write to the user directly, or ' +
-      '"assistant" for the assistant. Not for handing out work you need to wait on - use assign for that.',
+      'Ask whoever gave you this task a question you cannot answer yourself and that changes what you ' +
+      'do next. The question goes on the task card, the task waits for the answer (status "blocked"), ' +
+      'and you are started again with the answer once it comes. After calling it, end your run with a ' +
+      'short summary of where the work stands - do not keep working on a guess. Only inside a task; ' +
+      'for anything you can decide, look up or state as an assumption, do that instead.',
+    inputSchema: {
+      type: 'object',
+      properties: { question: str('The question, self-contained: what you need to know and why.') },
+      required: ['question'],
+      additionalProperties: false,
+    },
+    audience: ['agent'],
+  },
+  {
+    name: 'answer_task',
+    description:
+      'Answer the question a task is waiting on. The answer goes on the card and the task runs again ' +
+      'with it, as the same task. The assistant may answer any task; an agent only the tasks it handed ' +
+      'out itself. Use task_activity first when you need to see what exactly was asked.',
     inputSchema: {
       type: 'object',
       properties: {
-        to: str('Comma-separated agent slugs/names, "user" and/or "assistant".'),
-        cc: str('Comma-separated agent slugs/names, "user" and/or "assistant". Optional.'),
-        subject: str('Subject line.'),
-        body: str('The mail body.'),
-        inReplyTo: str('Id of the mail this replies to, to keep the thread together. Optional.'),
+        id: str('Task id or prefix.'),
+        answer: str('The answer, self-contained.'),
       },
-      required: ['to', 'subject', 'body'],
+      required: ['id', 'answer'],
       additionalProperties: false,
     },
     audience: BOTH,
   },
   {
-    name: 'read_mail',
-    description: 'Unread mail addressed to you, by To or Cc. Reading marks it as read.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    audience: BOTH,
-  },
-  {
-    name: 'read_mail_thread',
+    name: 'report_to_user',
     description:
-      'The full text of one mail conversation, oldest first - only the mails you sent or were To or ' +
-      'Cc on. A mail that opens a task names its thread; call this when the answer depends on ' +
-      'what was already said, and skip it when the mail stands on its own.',
+      'Leave the user a notification: a title and a short body they read on the web and, depending ' +
+      'on their settings, on their phone. Use it sparingly, for something they genuinely need to know ' +
+      'that does not belong in your result - your result already reaches whoever asked for the work. ' +
+      'Never a running commentary, never a thank-you.',
     inputSchema: {
       type: 'object',
-      properties: { thread: str('Thread id, or the id of any mail in it.') },
-      required: ['thread'],
+      properties: {
+        title: str('One short line: what this is about.'),
+        body: str('The message itself. Say the thing and stop.'),
+      },
+      required: ['title', 'body'],
+      additionalProperties: false,
+    },
+    audience: BOTH,
+    // The assistant has `notify` and the conversation itself; only its board
+    // watcher, which has neither, is offered this one.
+    assistantOnlyWhenWatching: true,
+  },
+  {
+    name: 'task_activity',
+    description:
+      "One task's activity, oldest first: its brief, every run and how it ended, questions and " +
+      'answers, status changes. Call it when what you do depends on what already happened on the card.',
+    inputSchema: {
+      type: 'object',
+      properties: { id: str('Task id or prefix.') },
+      required: ['id'],
       additionalProperties: false,
     },
     audience: BOTH,
   },
   // ASSISTANT_ONLY on purpose: an agent that thinks something deserves the
-  // user's attention mails its manager, same as any other report, or the
-  // user directly (send_mail allows that). Only the assistant decides
-  // whether that is also worth a push to the phone.
+  // user's attention writes it into its result, or - when it truly cannot
+  // wait - uses report_to_user, whose push the user's own settings govern.
+  // Only the assistant decides that a line has to arrive right now.
   {
     name: 'notify',
     description:
@@ -695,7 +725,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
       '...", "every Friday at 17:00, have Mara ...", or a single later run (once=true) for ' +
       '"tomorrow at 15:00 remind me ...". By default you run the prompt yourself, as a turn of ' +
       'your own in a conversation dedicated to the job, with all your tools; name an agent to ' +
-      'have an agent run it instead. The outcome of every run lands in your inbox; a ' +
+      'have an agent run it instead. The outcome of every run reaches the user as a notification; a ' +
       'one-time run you do yourself (once=true, no agent) also replies directly in the ' +
       'conversation you are having right now, so "I\'ll get back to you here" actually happens - ' +
       'a recurring job, or one handed to an agent, keeps its own dedicated conversation. The ' +
@@ -774,8 +804,8 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'run_schedule',
     description:
-      'Fire a schedule right now, in the background; returns at once. The result appears in ' +
-      'your inbox and on the Schedules page when the run is over.',
+      'Fire a schedule right now, in the background; returns at once. The result reaches the user as a ' +
+      'notification and appears on the Schedules page when the run is over.',
     inputSchema: {
       type: 'object',
       properties: { id: str('Schedule id, prefix, or exact name.') },
@@ -952,6 +982,7 @@ export function toolsFor(audience: ToolAudience, availability: ToolAvailability 
     (tool) =>
       tool.audience.includes(audience) &&
       !(availability.scheduled && tool.needsPerson) &&
+      !(audience === 'assistant' && tool.assistantOnlyWhenWatching && !availability.watching) &&
       !(availability.watching && !WATCH_TOOLS.has(tool.name)),
   );
 }

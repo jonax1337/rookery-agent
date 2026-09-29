@@ -5,9 +5,11 @@ import type {
   EffortLevel,
   ExternalConfig,
   GatewaysConfig,
+  Notification,
   PermissionLevel,
   ProviderId,
   RookeryConfig,
+  TelegramPushConfig,
 } from './types.js';
 import { ensureProfile } from './profile.js';
 
@@ -320,7 +322,15 @@ export const DEFAULT_CONFIG: RookeryConfig = {
         assignments: false,
         cron: false,
         sleep: false,
-        tasks: false,
+        // On: a card the user put up themselves ending is exactly what
+        // they are waiting to hear.
+        tasks: true,
+        // What mail used to carry, per kind of notification: schedule
+        // outcomes and the watcher's reports on, questions always, agents
+        // only through their leads.
+        schedules: true,
+        questions: true,
+        agents: 'leads',
         mail: true,
         mailFrom: 'leads',
         // Both off: they are the two switches that turn a phone into a log
@@ -449,6 +459,76 @@ const OVERRIDES = new WeakMap<RookeryConfig, Partial<RookeryConfig>>();
  * A malformed config.json is reported rather than silently ignored, so a
  * typo never quietly reverts the assistant to defaults.
  */
+/**
+ * Carry an old file's mail push settings over to the per-kind switches that
+ * replaced them (schema 27, docs/concepts/mail-removal-notifications-and-task-activity.md).
+ * Read, never written back: the file keeps what it says until somebody saves
+ * the push settings, and every load until then maps it the same way.
+ *
+ *   schedules  <- mail                  a schedule's outcome was a mail to the user
+ *   agents     <- mail ? mailFrom : off 'assistant' meant no agent at all -> 'off'
+ *   tasks      <- tasks || mail         a card's status note was a mail too
+ *
+ * Only keys the file does not set are touched: a file that already has the
+ * new switches was written by a build that knows them. `questions` is always
+ * on, whatever any file says - a question is never silent.
+ */
+export function upgradePushConfig(push: TelegramPushConfig, fileConfig: unknown): void {
+  const raw = (fileConfig as { gateways?: { telegram?: { push?: Record<string, unknown> } } } | null)?.gateways?.telegram
+    ?.push;
+  const has = (key: string): boolean => Boolean(raw) && Object.prototype.hasOwnProperty.call(raw, key);
+  const hadMail = has('mail') || has('mailFrom');
+  if (hadMail && !has('schedules')) {
+    push.schedules = push.mail;
+    push.tasks = push.tasks || push.mail;
+  }
+  if (hadMail && !has('agents')) {
+    push.agents = !push.mail || push.mailFrom === 'assistant' ? 'off' : push.mailFrom === 'all' ? 'all' : 'leads';
+  }
+  push.questions = true;
+}
+
+/**
+ * Whether one notification is pushed to the phone, by the per-kind switches.
+ * Transport-free - the push gateway decides how and when (quiet hours, the
+ * hourly cap); this only says whether the user asked to hear about it at all.
+ *
+ *   question        always
+ *   schedule, watch push.schedules
+ *   task            push.tasks
+ *   sleep           push.sleep
+ *   agent           push.agents: 'all', 'leads' (when `isLead` says so), 'off'
+ *   system          never here - `notify` pushes on its own `notify` event,
+ *                   and the notification is only its record
+ *
+ * `enabled` is the master switch and wins over everything, a question
+ * included - the same rule the `ask_user` push has always followed: push
+ * switched off means the phone stays quiet, and the web still has it all.
+ */
+export function notificationPushAllowed(
+  push: TelegramPushConfig,
+  notification: Pick<Notification, 'kind' | 'fromAgentId'>,
+  isLead: (agentId: string) => boolean = () => false,
+): boolean {
+  if (!push.enabled) return false;
+  if (notification.kind === 'question') return true;
+  switch (notification.kind) {
+    case 'schedule':
+    case 'watch':
+      return push.schedules;
+    case 'task':
+      return push.tasks;
+    case 'sleep':
+      return push.sleep;
+    case 'agent':
+      if (push.agents === 'all') return true;
+      if (push.agents === 'off') return false;
+      return Boolean(notification.fromAgentId) && isLead(notification.fromAgentId as string);
+    default:
+      return false;
+  }
+}
+
 export function loadConfig(overrides: Partial<RookeryConfig> = {}): RookeryConfig {
   const envPatch = envOverrides();
   const home = (overrides.home ?? envPatch.home ?? DEFAULT_CONFIG.home) as string;
@@ -508,6 +588,8 @@ export function loadConfig(overrides: Partial<RookeryConfig> = {}): RookeryConfi
     if (!(key in servers)) servers[key] = decided;
   }
   config.external.servers = servers;
+
+  upgradePushConfig(config.gateways.telegram.push, fileConfig);
 
   // Clearing a setting from the UI stores an empty string, because the merge
   // skips undefined; downstream an empty model or effort must mean "unset".

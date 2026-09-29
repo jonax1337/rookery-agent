@@ -461,15 +461,25 @@ export function classifyCallback(update: unknown, config: TelegramGatewayConfig)
  */
 const MAIL_READ = 'mail:read:';
 const MAIL_READ_DONE = 'mail:read-done';
+const NOTIFICATION_READ = 'notif:read:';
+const NOTIFICATION_READ_DONE = 'notif:read-done';
 const QUESTION = 'question:';
 const QUESTION_DONE = 'question:done';
 
 /** What a tap turned out to mean. */
 export type GatewayCallbackAction =
-  /** Mark this mail as read - the read receipt the Bot API does not have. */
+  /**
+   * Mark this mail as read - a button drawn before mail was removed. Still
+   * read back, because the phone keeps old messages: the migration gave each
+   * mail's notification the mail's own id, so the id may still find one.
+   */
   | { kind: 'mail-read'; mailId: string }
   /** A tap on a read button that has already been spent. */
   | { kind: 'mail-read-done' }
+  /** Mark this notification as read - the read receipt the Bot API does not have. */
+  | { kind: 'notification-read'; notificationId: string }
+  /** A tap on a notification's read button that has already been spent. */
+  | { kind: 'notification-read-done' }
   /** Answer the open question with the option at this index. */
   | { kind: 'question'; questionId: string; option: number }
   /** A tap on a question that has already been answered, or has expired. */
@@ -487,14 +497,24 @@ export function questionDoneCallbackData(): string {
   return QUESTION_DONE;
 }
 
-/** The data under a fresh mail's read button. */
+/** The data under a fresh mail's read button. @deprecated Mail was removed; use `notificationReadCallbackData`. */
 export function mailReadCallbackData(mailId: string): string {
   return MAIL_READ + mailId;
 }
 
-/** The data under a read button that has been pressed. */
+/** The data under a read button that has been pressed. @deprecated Mail was removed. */
 export function mailReadDoneCallbackData(): string {
   return MAIL_READ_DONE;
+}
+
+/** The data under a fresh notification's read button. */
+export function notificationReadCallbackData(notificationId: string): string {
+  return NOTIFICATION_READ + notificationId;
+}
+
+/** The data under a notification's read button that has been pressed. */
+export function notificationReadDoneCallbackData(): string {
+  return NOTIFICATION_READ_DONE;
 }
 
 /**
@@ -507,11 +527,17 @@ export function mailReadDoneCallbackData(): string {
 export function readCallbackData(data: string | undefined): GatewayCallbackAction {
   if (!data) return { kind: 'unknown' };
   if (data === MAIL_READ_DONE) return { kind: 'mail-read-done' };
+  if (data === NOTIFICATION_READ_DONE) return { kind: 'notification-read-done' };
   if (data === QUESTION_DONE) return { kind: 'question-done' };
 
   if (data.startsWith(MAIL_READ)) {
     const mailId = data.slice(MAIL_READ.length);
     return mailId ? { kind: 'mail-read', mailId } : { kind: 'unknown' };
+  }
+
+  if (data.startsWith(NOTIFICATION_READ)) {
+    const notificationId = data.slice(NOTIFICATION_READ.length);
+    return notificationId ? { kind: 'notification-read', notificationId } : { kind: 'unknown' };
   }
 
   if (data.startsWith(QUESTION)) {

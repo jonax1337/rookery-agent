@@ -14,6 +14,8 @@ import type {
   MailThread,
   MailThreadKind,
   MailWho,
+  Notification,
+  NotificationKind,
   Organization,
   PermissionLevel,
   Project,
@@ -21,6 +23,9 @@ import type {
   RequesterKind,
   ReviewSource,
   Task,
+  TaskEvent,
+  TaskEventActor,
+  TaskEventKind,
   TaskPriority,
   TaskStatus,
   Team,
@@ -561,6 +566,12 @@ export class OrgStore {
 
   /* ----------------------------------- mail ------------------------------------ */
 
+  // Retired in schema 27. Nothing in the runtime writes mail any more - what
+  // reached the user is a notification now, a task's thread is its activity
+  // (both further up) - but the tables and these readers stay, so the old
+  // mail can still be read and whoever still calls them compiles until it
+  // has moved over (docs/concepts/mail-removal-notifications-and-task-activity.md).
+
   /**
    * Send mail: one `mail` row plus one `mail_recipients` row per to/cc
    * target. Delivery only - the auto-trigger rule (a To agent gets a real
@@ -825,6 +836,217 @@ export class OrgStore {
     this.markMailRead(ids);
   }
 
+  /* ------------------------------- notifications ------------------------------ */
+
+  /**
+   * Store one notification for the user. Pure write - the controller's
+   * `notifyUser` is what announces it; anything that bypasses that (the
+   * scheduler without a controller, a migration) stays silent on purpose.
+   */
+  createNotification(input: {
+    orgId: string;
+    kind: NotificationKind;
+    title: string;
+    body?: string;
+    fromKind?: Notification['fromKind'];
+    fromAgentId?: string;
+    taskId?: string;
+    cronJobId?: string;
+    cronRunId?: string;
+    sessionId?: string;
+  }): Notification {
+    const notification: Notification = {
+      id: randomUUID(),
+      orgId: input.orgId,
+      kind: input.kind,
+      title: input.title.trim() || '(untitled)',
+      body: input.body ?? '',
+      fromKind: input.fromKind ?? 'system',
+      fromAgentId: input.fromKind === 'agent' ? blank(input.fromAgentId) : undefined,
+      taskId: blank(input.taskId),
+      cronJobId: blank(input.cronJobId),
+      cronRunId: blank(input.cronRunId),
+      sessionId: blank(input.sessionId),
+      createdAt: Date.now(),
+    };
+    this.#db
+      .prepare(
+        `INSERT INTO notifications
+           (id, org_id, kind, title, body, from_kind, from_agent_id, task_id, cron_job_id, cron_run_id, session_id,
+            read_at, archived_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
+      )
+      .run(
+        notification.id,
+        notification.orgId,
+        notification.kind,
+        notification.title,
+        notification.body,
+        notification.fromKind,
+        notification.fromAgentId ?? null,
+        notification.taskId ?? null,
+        notification.cronJobId ?? null,
+        notification.cronRunId ?? null,
+        notification.sessionId ?? null,
+        notification.createdAt,
+      );
+    return notification;
+  }
+
+  getNotification(id: string): Notification | null {
+    const row = this.#db.prepare('SELECT * FROM notifications WHERE id = ?').get(id) as Row | undefined;
+    return row ? mapNotification(row) : null;
+  }
+
+  /**
+   * Notifications, newest first. `archived` picks the shelf: the live list by
+   * default, the archive when true. `unread` narrows either to what has not
+   * been read; `kind` to one or several kinds.
+   */
+  listNotifications(
+    opts: {
+      orgId?: string;
+      unread?: boolean;
+      kind?: NotificationKind | NotificationKind[];
+      archived?: boolean;
+      limit?: number;
+    } = {},
+  ): Notification[] {
+    const where: string[] = [opts.archived ? 'archived_at IS NOT NULL' : 'archived_at IS NULL'];
+    const params: (string | number)[] = [];
+    if (opts.orgId) {
+      where.push('org_id = ?');
+      params.push(opts.orgId);
+    }
+    if (opts.unread) where.push('read_at IS NULL');
+    const kinds = opts.kind === undefined ? [] : Array.isArray(opts.kind) ? opts.kind : [opts.kind];
+    if (kinds.length) {
+      where.push('kind IN (' + kinds.map(() => '?').join(', ') + ')');
+      params.push(...kinds);
+    }
+    params.push(Math.max(1, Math.min(opts.limit ?? 100, 1000)));
+    const rows = this.#db
+      .prepare('SELECT * FROM notifications WHERE ' + where.join(' AND ') + ' ORDER BY created_at DESC, rowid DESC LIMIT ?')
+      .all(...params) as Row[];
+    return rows.map(mapNotification);
+  }
+
+  /**
+   * Mark notifications read - by id, or `'all'` for everything unread (in one
+   * company when `orgId` is given). `read: false` puts them back on the
+   * unread list. Returns how many rows changed.
+   */
+  markNotificationsRead(ids: string[] | 'all', options: { read?: boolean; orgId?: string } = {}): number {
+    const read = options.read ?? true;
+    const now = Date.now();
+    if (ids === 'all') {
+      const result = read
+        ? options.orgId
+          ? this.#db.prepare('UPDATE notifications SET read_at = ? WHERE read_at IS NULL AND org_id = ?').run(now, options.orgId)
+          : this.#db.prepare('UPDATE notifications SET read_at = ? WHERE read_at IS NULL').run(now)
+        : options.orgId
+          ? this.#db.prepare('UPDATE notifications SET read_at = NULL WHERE org_id = ?').run(options.orgId)
+          : this.#db.prepare('UPDATE notifications SET read_at = NULL').run();
+      return Number(result.changes);
+    }
+    let changed = 0;
+    const statement = read
+      ? this.#db.prepare('UPDATE notifications SET read_at = ? WHERE id = ? AND read_at IS NULL')
+      : this.#db.prepare('UPDATE notifications SET read_at = NULL WHERE id = ? AND read_at IS NOT NULL');
+    for (const id of ids) {
+      changed += Number((read ? statement.run(now, id) : statement.run(id)).changes);
+    }
+    return changed;
+  }
+
+  /**
+   * Archive (or restore) one notification. Archiving also marks it read:
+   * something put away on purpose is not waiting for anybody.
+   */
+  archiveNotification(id: string, archived = true): Notification | null {
+    const now = Date.now();
+    if (archived) {
+      this.#db
+        .prepare('UPDATE notifications SET archived_at = ?, read_at = COALESCE(read_at, ?) WHERE id = ?')
+        .run(now, now, id);
+    } else {
+      this.#db.prepare('UPDATE notifications SET archived_at = NULL WHERE id = ?').run(id);
+    }
+    return this.getNotification(id);
+  }
+
+  /** Unread, unarchived notifications - the badge. */
+  unreadNotificationCount(orgId?: string): number {
+    const row = (
+      orgId
+        ? this.#db
+            .prepare('SELECT COUNT(*) AS n FROM notifications WHERE read_at IS NULL AND archived_at IS NULL AND org_id = ?')
+            .get(orgId)
+        : this.#db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE read_at IS NULL AND archived_at IS NULL').get()
+    ) as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
+  /* -------------------------------- task activity ------------------------------ */
+
+  /** Append one line to a card's activity. */
+  addTaskEvent(input: {
+    taskId: string;
+    kind: TaskEventKind;
+    actorKind: TaskEventActor;
+    actorAgentId?: string;
+    text: string;
+    assignmentId?: string;
+    at?: number;
+  }): TaskEvent {
+    const event: TaskEvent = {
+      id: randomUUID(),
+      taskId: input.taskId,
+      at: input.at ?? Date.now(),
+      kind: input.kind,
+      actorKind: input.actorKind,
+      actorAgentId: input.actorKind === 'agent' ? blank(input.actorAgentId) : undefined,
+      text: input.text,
+      assignmentId: blank(input.assignmentId),
+    };
+    this.#db
+      .prepare(
+        `INSERT INTO task_events (id, task_id, at, kind, actor_kind, actor_agent_id, text, assignment_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        event.id,
+        event.taskId,
+        event.at,
+        event.kind,
+        event.actorKind,
+        event.actorAgentId ?? null,
+        event.text,
+        event.assignmentId ?? null,
+      );
+    return event;
+  }
+
+  /** A card's whole activity, oldest first. */
+  listTaskEvents(taskId: string): TaskEvent[] {
+    const rows = this.#db
+      .prepare('SELECT * FROM task_events WHERE task_id = ? ORDER BY at, rowid')
+      .all(taskId) as Row[];
+    return rows.map(mapTaskEvent);
+  }
+
+  /** The newest line of a card's activity, of one kind when `kind` is given. */
+  lastTaskEvent(taskId: string, kind?: TaskEventKind): TaskEvent | null {
+    const row = (
+      kind
+        ? this.#db
+            .prepare('SELECT * FROM task_events WHERE task_id = ? AND kind = ? ORDER BY at DESC, rowid DESC LIMIT 1')
+            .get(taskId, kind)
+        : this.#db.prepare('SELECT * FROM task_events WHERE task_id = ? ORDER BY at DESC, rowid DESC LIMIT 1').get(taskId)
+    ) as Row | undefined;
+    return row ? mapTaskEvent(row) : null;
+  }
+
   /* ----------------------------------- tasks ---------------------------------- */
 
   createTask(input: {
@@ -896,6 +1118,18 @@ export class OrgStore {
         now,
         task.sortOrder,
       );
+    // Every card opens its activity with its own brief, whoever made it and
+    // through whichever door - the tool, the board, a route, a schedule. It
+    // replaces the work-order mail a task used to be opened with, and it is
+    // written here rather than by each caller so no door can forget it.
+    this.addTaskEvent({
+      taskId: task.id,
+      kind: 'created',
+      actorKind: task.createdBy,
+      actorAgentId: task.createdBy === 'agent' ? task.createdByAgentId : undefined,
+      text: task.description || task.title,
+      at: now,
+    });
     return task;
   }
 
@@ -909,10 +1143,10 @@ export class OrgStore {
    * a run of it. The condition is the guard, and it is exactly one rule:
    * a task that is already running cannot be taken again.
    *
-   * Deliberately not stricter. A finished task is claimable, because a
-   * reply in its thread is allowed to set it going again with that reply as
-   * its brief (`#continueTask`) - excluding `done` here quietly broke that,
-   * and the card simply never moved.
+   * Deliberately not stricter. A finished task is claimable, because an
+   * answer to it is allowed to set it going again with that answer as its
+   * brief (`answer_task`) - excluding `done` here quietly broke that, and
+   * the card simply never moved.
    */
   claimTaskForRun(id: string, startedAt: number): boolean {
     const result = this.#db
@@ -1859,5 +2093,37 @@ function mapMailRecipient(row: Row): MailRecipient {
     recipientId: optional(row.recipient_id),
     box: row.box as 'to' | 'cc',
     readAt: row.read_at ? Number(row.read_at) : undefined,
+  };
+}
+
+function mapNotification(row: Row): Notification {
+  return {
+    id: row.id as string,
+    orgId: row.org_id as string,
+    kind: row.kind as NotificationKind,
+    title: row.title as string,
+    body: (row.body as string | null) ?? '',
+    fromKind: row.from_kind as Notification['fromKind'],
+    fromAgentId: optional(row.from_agent_id),
+    taskId: optional(row.task_id),
+    cronJobId: optional(row.cron_job_id),
+    cronRunId: optional(row.cron_run_id),
+    sessionId: optional(row.session_id),
+    readAt: optionalScore(row.read_at),
+    archivedAt: optionalScore(row.archived_at),
+    createdAt: Number(row.created_at),
+  };
+}
+
+function mapTaskEvent(row: Row): TaskEvent {
+  return {
+    id: row.id as string,
+    taskId: row.task_id as string,
+    at: Number(row.at),
+    kind: row.kind as TaskEventKind,
+    actorKind: row.actor_kind as TaskEventActor,
+    actorAgentId: optional(row.actor_agent_id),
+    text: (row.text as string | null) ?? '',
+    assignmentId: optional(row.assignment_id),
   };
 }

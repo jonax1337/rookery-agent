@@ -58,6 +58,42 @@ function createFakeProvider(options = {}) {
       maxActive = Math.max(maxActive, active);
       try {
         const prompt = opts.prompt ?? '';
+        const call = (name, args) =>
+          bridgeCall(opts.mcp.env.ROOKERY_BRIDGE_PATH, opts.mcp.env.ROOKERY_BRIDGE_TOKEN, 'call', { name, args });
+        // Work handed off in the background came back (R4). A child that
+        // asked a question is answered through answer_task; otherwise the
+        // lead just finishes - it must not hand the same work off again.
+        if (prompt.includes('has come back') && opts.mcp) {
+          const waiting = prompt.match(/answer_task\("([0-9a-f]{8})"/);
+          let text = 'FINAL(' + (waiting ? 'answered' : 'collected') + ')';
+          if (waiting) {
+            const result = await call('answer_task', { id: waiting[1], answer: 'Tab-separated.' });
+            text += ' ' + result.text;
+          }
+          yield { type: 'text', delta: text };
+          yield { type: 'done', text };
+          return;
+        }
+        // A scripted background hand-off: assign with wait=false.
+        const detached = prompt.match(/DETACH:([\w-]+)\|([^\n]+)/);
+        if (detached && opts.mcp) {
+          const result = await call('assign', { agent: detached[1], title: 'Background part', task: detached[2], wait: false });
+          const text = 'HANDED OFF: ' + result.text;
+          yield { type: 'text', delta: text };
+          yield { type: 'done', text };
+          return;
+        }
+        // A scripted question to whoever gave the task: ask_requester, then
+        // end the run the way the tool says to. Once the answer is in the
+        // brief, the run carries on normally instead of asking again.
+        const question = prompt.match(/QUESTION:([^\n]+)/);
+        if (question && opts.mcp && !prompt.includes(' answered:')) {
+          const result = await call('ask_requester', { question: question[1] });
+          const text = 'WAITING: ' + result.text;
+          yield { type: 'text', delta: text };
+          yield { type: 'done', text };
+          return;
+        }
         // A scripted delegation: call the assign tool through the bridge.
         const calls = [...prompt.matchAll(/ASSIGN:([\w-]+)\|([^\n]+)/g)];
         if (calls.length && opts.mcp) {
@@ -70,20 +106,6 @@ function createFakeProvider(options = {}) {
             ),
           );
           const text = 'DELEGATED: ' + results.map((result) => result.text).join(' || ');
-          yield { type: 'text', delta: text };
-          yield { type: 'done', text };
-          return;
-        }
-        // A scripted answer that goes out as mail: the turn writes to
-        // somebody with send_mail and then ends on a line about having done
-        // so - the shape that used to deliver the answer twice.
-        const mailed = prompt.match(/MAILBACK:([\w-]+)\|([^\n]+)/);
-        if (mailed && opts.mcp) {
-          await bridgeCall(opts.mcp.env.ROOKERY_BRIDGE_PATH, opts.mcp.env.ROOKERY_BRIDGE_TOKEN, 'call', {
-            name: 'send_mail',
-            args: { to: mailed[1], subject: 'Answer', body: mailed[2] },
-          });
-          const text = 'Done - the reply went out.';
           yield { type: 'text', delta: text };
           yield { type: 'done', text };
           return;
@@ -281,276 +303,163 @@ test('an agent may only delegate to its direct reports, and never too deep', asy
   assistant.close();
 });
 
-test('mail follows the chain of command and lands in mailboxes', async () => {
+/* ------------------- notifications, activity, answers ------------------- */
+
+/** The context the board runs a task under: the assistant, nobody waiting. */
+function boardContext(org) {
+  return { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
+}
+
+/** A card the user put on the board themselves. */
+function userCard(store, org, input) {
+  return store.org.createTask({ orgId: org.id, createdBy: 'user', ...input });
+}
+
+const kinds = (list) => list.map((entry) => entry.kind);
+
+test('answer_task follows the chain of command', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const org = assistant.org.activeOrganization();
   const lead = hire(assistant, { name: 'Lead' });
   const junior = hire(assistant, { name: 'Junior', managerId: lead.id });
   const stranger = hire(assistant, { name: 'Stranger' });
-  const asJunior = { orgId: org.id, audience: 'agent', agentId: junior.id, depth: 1, emit() {} };
 
-  assert.equal((await assistant.org.handle(asJunior, 'send_mail', { to: stranger.slug, subject: 'hi', body: 'hi' })).isError, true);
-  // Cc'ing the lead only delivers - it must not start a real run for them.
-  assert.equal((await assistant.org.handle(asJunior, 'send_mail', { to: 'assistant', cc: lead.slug, subject: 'done', body: 'done' })).isError, undefined);
-  assert.equal((await assistant.org.handle(asJunior, 'send_mail', { to: 'assistant', subject: 'fyi', body: 'fyi' })).isError, undefined);
+  // What `assign` from inside the lead's task builds: the lead's own errand.
+  const hers = store.org.createTask({
+    orgId: org.id,
+    title: 'Parse the rows',
+    description: 'Parse them.',
+    assigneeId: junior.id,
+    createdBy: 'agent',
+    createdByAgentId: lead.id,
+  });
+  store.org.updateTask(hers.id, { status: 'blocked' });
 
-  assert.equal(store.org.mailbox(org.id, { kind: 'agent', id: lead.id }, 'inbox', { unreadOnly: true }).length, 1);
-  // Not `unreadOnly`: mail to the assistant wakes it, and the turn it runs
-  // reads its own mailbox on the way through.
-  assert.equal(store.org.mailbox(org.id, { kind: 'assistant' }, 'inbox').length, 2);
+  const asStranger = { orgId: org.id, audience: 'agent', agentId: stranger.id, depth: 0, emit() {} };
+  const refused = await assistant.org.handle(asStranger, 'answer_task', { id: hers.id, answer: 'Commas.' });
+  assert.equal(refused.isError, true, 'an agent answers only what it handed out itself');
+  assert.match(refused.text, /Only whoever handed this task out/);
+  assert.equal(store.org.listTaskEvents(hers.id).some((event) => event.kind === 'answer'), false, 'and nothing was written');
 
   const asLead = { orgId: org.id, audience: 'agent', agentId: lead.id, depth: 0, emit() {} };
-  const mail = await assistant.org.handle(asLead, 'read_mail', {});
-  assert.match(mail.text, /done/);
-  assert.equal(store.org.mailbox(org.id, { kind: 'agent', id: lead.id }, 'inbox', { unreadOnly: true }).length, 0, 'reading marks as read');
-  assert.equal(store.org.listAssignments(org.id, { agentId: lead.id }).length, 0, 'a cc never starts a run');
-  assistant.close();
-});
-
-test('mailing an agent\'s To triggers a real run whose result returns as a reply mail', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
-
-  const sent = await assistant.org.handle(ctx, 'send_mail', { to: mara.slug, subject: 'Ping', body: 'Please pong.' });
-  assert.equal(sent.isError, undefined);
-  await sleep(80);
-
-  const assignments = store.org.listAssignments(org.id, { agentId: mara.id });
-  assert.equal(assignments.length, 1, 'the To agent got a real run');
-  assert.equal(assignments[0].status, 'done');
-
-  const inbox = store.org.mailbox(org.id, { kind: 'assistant' }, 'inbox');
-  const reply = inbox.find((entry) => entry.subject.startsWith('Re:'));
-  assert.ok(reply, 'the finished run replied by mail');
-  assert.equal(reply.fromKind, 'agent');
-  assert.equal(reply.fromAgentId, mara.id);
-  assert.match(reply.body, /OUTPUT/);
-
-  const original = store.org.mailbox(org.id, { kind: 'agent', id: mara.id }, 'inbox')[0];
-  assert.equal(reply.threadId, original.threadId, 'the reply stays in the original thread');
-  assistant.close();
-});
-
-test('a reply keeps whoever was Cc on the mail it answers', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
-
-  // The assistant asks Mara something and copies the user in.
-  const sent = await assistant.org.handle(ctx, 'send_mail', {
-    to: mara.slug,
-    cc: 'user',
-    subject: 'Ping',
-    body: 'Please pong.',
-  });
-  assert.equal(sent.isError, undefined);
-  await sleep(120);
-
-  const reply = store.org.mailbox(org.id, { kind: 'user' }, 'inbox').find((entry) => entry.subject.startsWith('Re:'));
-  assert.ok(reply, 'the answer reached the user, who was only on Cc');
-  assert.equal(reply.fromAgentId, mara.id);
-  const to = reply.recipients.filter((entry) => entry.box === 'to').map((entry) => entry.recipientKind);
-  const cc = reply.recipients.filter((entry) => entry.box === 'cc').map((entry) => entry.recipientKind);
-  assert.deepEqual(to, ['assistant'], 'the answer is addressed to whoever asked');
-  assert.deepEqual(cc, ['user'], 'and everyone else on the mail stays on it');
-  assistant.close();
-});
-
-test('a turn that answers mail with send_mail does not also deliver its closing text', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-
-  await assistant.org.sendUserMail({
-    orgId: org.id,
-    to: ['assistant'],
-    subject: 'A question',
-    body: 'MAILBACK:user|Here is the answer you asked for.',
-  });
-  await sleep(200);
-
-  const inbox = store.org.mailbox(org.id, { kind: 'user' }, 'inbox');
-  assert.equal(inbox.length, 1, 'one answer, not an answer plus a note about it');
-  assert.match(inbox[0].body, /Here is the answer/);
-  assert.ok(
-    !inbox.some((entry) => /the reply went out/.test(entry.body)),
-    'the turn\'s bookkeeping line never becomes a mail of its own',
-  );
-  assistant.close();
-});
-
-test('a thread keeps the kind it opened with, and replies inherit it', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  const chat = store.org.sendMail({ orgId: org.id, from: { kind: 'user' }, to: [{ kind: 'assistant' }], subject: 'hello', body: 'hello' });
-  const report = store.org.sendMail({
-    orgId: org.id,
-    from: { kind: 'agent', id: mara.id },
-    to: [{ kind: 'user' }],
-    subject: 'status',
-    body: 'status',
-  });
-  assert.equal(store.org.getMailThread(org.id, chat.threadId).kind, 'chat', 'a user mail opens a chat');
-  assert.equal(store.org.getMailThread(org.id, report.threadId).kind, 'report', "an agent's mail opens a report");
-
-  store.org.sendMail({
-    orgId: org.id,
-    from: { kind: 'user' },
-    to: [{ kind: 'agent', id: mara.id }],
-    subject: 'Re: status',
-    body: 'nice',
-    inReplyTo: report.id,
-    threadId: report.threadId,
-  });
-  assert.equal(store.org.getMailThread(org.id, report.threadId).kind, 'report', "the reply inherits the thread's kind");
-  assert.equal(store.org.getMail(chat.id).threadKind, 'chat');
-  assert.equal(store.org.getMail(report.id).threadKind, 'report');
-  assistant.close();
-});
-
-test('a task mail becomes one task, one run, and one answer in the Aufgaben folder', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  const { mail, task } = await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: mara.slug,
-    subject: 'Ship the thing',
-    body: 'Please ship it.',
-  });
-  assert.equal(task.title, 'Ship the thing');
-  assert.equal(task.assigneeId, mara.id);
-  assert.equal(task.createdBy, 'user');
+  const answered = await assistant.org.handle(asLead, 'answer_task', { id: hers.id, answer: 'Tabs.' });
+  assert.equal(answered.isError, undefined, 'whoever handed it out may answer');
+  const answer = store.org.lastTaskEvent(hers.id, 'answer');
+  assert.equal(answer.actorKind, 'agent');
+  assert.equal(answer.actorAgentId, lead.id);
+  assert.equal(answer.text, 'Tabs.');
   await sleep(150);
+  const runs = store.org.listAssignments(org.id, { agentId: junior.id });
+  assert.equal(runs.length, 1, 'the answer carried the task on');
+  assert.match(runs[0].task, /lead answered:\n\nTabs\./);
 
-  const thread = store.org.getMailThreadForTask(org.id, task.id);
-  assert.ok(thread, 'the task is linked to the thread it was born in');
-  assert.equal(thread.threadId, mail.threadId);
-  assert.equal(thread.kind, 'assignment');
-
-  assert.equal(
-    store.org.listAssignments(org.id, { agentId: mara.id }).length,
-    1,
-    'exactly one run - the To trigger must not fire beside the task run',
-  );
-
-  const reply = store.org
-    .mailbox(org.id, { kind: 'user' }, 'inbox', { folder: 'tasks' })
-    .find((entry) => entry.fromKind === 'agent');
-  assert.ok(reply, "the run's answer landed in the thread");
-  assert.equal(reply.threadId, mail.threadId);
-  assert.equal(store.org.getMail(reply.id).taskId, task.id);
-  assert.equal(store.org.getMail(reply.id).taskTitle, task.title);
-
-  assert.ok(
-    store.org.mailbox(org.id, { kind: 'agent', id: mara.id }, 'inbox', { folder: 'tasks' }).some((entry) => entry.id === mail.id),
-    "the work order lands in the agent's Aufgaben folder",
-  );
-  // The plain inbox is the superset - everything unarchived - so the work
-  // order shows there too; Aufgaben is the slice, not a partition.
-  assert.ok(
-    store.org.mailbox(org.id, { kind: 'agent', id: mara.id }, 'inbox', { folder: 'inbox' }).some((entry) => entry.id === mail.id),
-    'and stays visible in the plain inbox, which is everything unarchived',
-  );
+  // The assistant may answer any card, the user's included.
+  const mine = userCard(store, org, { title: 'Fix the gate', description: 'Please fix it.', assigneeId: stranger.id });
+  store.org.updateTask(mine.id, { status: 'blocked' });
+  const byAssistant = await assistant.org.handle(boardContext(org), 'answer_task', { id: mine.id, answer: 'The north gate.' });
+  assert.equal(byAssistant.isError, undefined);
+  await sleep(200);
+  assert.equal(store.org.listAssignments(org.id, { agentId: stranger.id }).length, 1);
   assistant.close();
 });
 
-test('folders route reports, and archiving moves a thread whole', async () => {
+test('ask_requester blocks the card, the user gets the question once, and their answer carries the same task on', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const org = assistant.org.activeOrganization();
   const mara = hire(assistant, { name: 'Mara' });
-  const who = { kind: 'user' };
+  const announced = [];
+  assistant.on('notification', (event) => announced.push(event.notification));
 
-  const report = store.org.sendMail({
-    orgId: org.id,
-    from: { kind: 'agent', id: mara.id },
-    to: [{ kind: 'user' }],
-    subject: 'Weekly report',
-    body: 'numbers',
-  });
-  store.org.sendMail({
-    orgId: org.id,
-    from: { kind: 'user' },
-    to: [{ kind: 'agent', id: mara.id }],
-    subject: 'Re: Weekly report',
-    body: 'thanks',
-    inReplyTo: report.id,
-    threadId: report.threadId,
-  });
-
-  assert.ok(
-    store.org.mailbox(org.id, who, 'inbox', { folder: 'reports' }).some((entry) => entry.id === report.id),
-    'an agent thread lands under Berichte',
-  );
-  assert.ok(
-    !store.org.mailbox(org.id, who, 'inbox', { folder: 'tasks' }).some((entry) => entry.id === report.id),
-    'and nowhere else',
-  );
-
-  store.org.archiveMailThread(org.id, report.threadId, true);
-  assert.ok(
-    !store.org.mailbox(org.id, who, 'inbox', { folder: 'reports' }).some((entry) => entry.id === report.id),
-    'archiving empties the live folder',
-  );
-  assert.equal(
-    store.org.mailbox(org.id, who, 'inbox', { folder: 'archiv' }).length,
-    1,
-    'the report moved - the reply, addressed to Mara, was never in this inbox',
-  );
-  assert.equal(store.org.unreadMailFor(org.id, who).length, 0, 'archived mail never counts as waiting');
-  assistant.close();
-});
-
-test('every writer moves a task the same way: the tool tells the thread, and reopening clears the last life', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  const task = store.org.createTask({
-    orgId: org.id,
+  const task = userCard(store, org, {
     title: 'Fix the gate',
-    description: 'Please fix it.',
+    description: 'QUESTION:Which gate do you mean?',
     assigneeId: mara.id,
-    createdBy: 'user',
   });
-  const order = store.org.sendMail({
-    orgId: org.id,
-    from: { kind: 'user' },
-    to: [{ kind: 'agent', id: mara.id }],
-    subject: 'Fix the gate',
-    body: 'Please fix it.',
-    kind: 'assignment',
-  });
-  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
+  const ended = await assistant.org.runTask(boardContext(org), task);
+  assert.equal(ended.status, 'blocked', 'a run that ended with a question is waiting, not finished');
+
+  const question = store.org.lastTaskEvent(task.id, 'question');
+  assert.equal(question.text, 'Which gate do you mean?', 'the question is on the card');
+  assert.equal(question.actorAgentId, mara.id);
+  let notes = store.org.listNotifications({ orgId: org.id });
+  assert.deepEqual(kinds(notes), ['question'], 'one question, and no status note repeating it');
+  assert.equal(notes[0].taskId, task.id, 'it points at the card an answer continues');
+  assert.equal(notes[0].fromAgentId, mara.id, 'in the asking agent\'s name');
+  assert.match(notes[0].body, /Which gate do you mean\?/);
+  assert.deepEqual(kinds(announced), ['question'], 'announced exactly once');
+
+  // The user answers - the route and a Telegram reply both land here.
+  const answered = await assistant.org.answerTask({ taskId: task.id, answer: 'The north gate.' });
+  assert.equal(answered.ok, true);
+  await sleep(250);
+
+  const runs = store.org.listAssignments(org.id, { agentId: mara.id });
+  assert.equal(runs.length, 2, 'the answer started the next run of the task');
+  for (const run of runs) assert.equal(store.org.getTaskIdForAssignment(run.id), task.id, 'on the same card');
+  assert.ok(runs.some((run) => run.task.includes('The user answered:\n\nThe north gate.')), 'briefed with the answer');
+  assert.equal(store.org.getTask(task.id).status, 'done');
+
+  notes = store.org.listNotifications({ orgId: org.id });
+  assert.deepEqual(kinds(notes), ['task', 'question'], 'and its ending reaches the user once');
+  assert.deepEqual(
+    kinds(store.org.listTaskEvents(task.id)),
+    ['created', 'run-started', 'question', 'run-ended', 'status', 'answer', 'run-started', 'run-ended', 'status'],
+    'the card keeps the whole story',
+  );
+  assistant.close();
+});
+
+test('a card the user put up tells them how it ended exactly once, with the result', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const shipped = userCard(store, org, { title: 'Ship the thing', description: 'Please ship it.', assigneeId: mara.id });
+  await assistant.org.runTask(boardContext(org), shipped);
+  const broken = userCard(store, org, { title: 'Fix the gate', description: 'FAIL - this run goes nowhere.', assigneeId: mara.id });
+  await assistant.org.runTask(boardContext(org), broken);
+
+  const notes = store.org.listNotifications({ orgId: org.id });
+  assert.equal(notes.length, 2, 'one per ending, nothing on top');
+  const done = notes.find((entry) => entry.taskId === shipped.id);
+  assert.equal(done.kind, 'task');
+  assert.match(done.title, /"Ship the thing" is done/);
+  assert.match(done.body, /OUTPUT\(/, 'it carries the result, not a pointer to it');
+  const failed = notes.find((entry) => entry.taskId === broken.id);
+  assert.match(failed.title, /failed/, 'a failure the user would otherwise never hear about');
+  assert.match(failed.body, /boom/);
+  assert.equal(store.org.lastTaskEvent(broken.id, 'status').text.includes('failed'), true, 'and the card says so too');
+  assistant.close();
+});
+
+test('every writer moves a task the same way: the tool tells the card and the user, and reopening clears the last life', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const task = userCard(store, org, { title: 'Fix the gate', description: 'Please fix it.', assigneeId: mara.id });
 
   // Closing it through the tool. This is the writer that used to move the
-  // card in silence: no event, and nothing said in the thread, so whoever
-  // was waiting there waited for good.
-  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
-  const closed = await assistant.org.handle(ctx, 'update_task', {
+  // card in silence: no event, and nobody told, so whoever was waiting
+  // waited for good.
+  const closed = await assistant.org.handle(boardContext(org), 'update_task', {
     id: task.id,
     status: 'done',
     result: 'The hinge was loose.',
   });
   assert.equal(closed.isError, undefined);
 
-  const note = store.org.thread(org.id, order.threadId).at(-1);
-  // The note carries the work now, not just the fact that something moved.
-  assert.match(note.body, /is done/, 'the thread hears it from the tool too');
+  const status = store.org.lastTaskEvent(task.id, 'status');
+  assert.equal(status.actorKind, 'assistant', 'the card says who moved it');
+  assert.match(status.text, /is done/);
+  const [note] = store.org.listNotifications({ orgId: org.id });
+  assert.equal(note.kind, 'task', 'the user hears it from the tool too');
   assert.match(note.body, /The hinge was loose\./, 'and it carries the result, not a pointer to it');
+  assert.equal(store.org.listAssignments(org.id, { agentId: mara.id }).length, 0, 'a status change starts nothing');
 
   const done = store.org.getTask(task.id);
   assert.equal(done.status, 'done');
@@ -625,316 +534,18 @@ test('an agent reports, the user closes: an agent cannot finish a card the user 
   assistant.close();
 });
 
-test('marking a task done by hand tells a thread that heard nothing, and wakes nobody', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  // A work order that was never run: the thread has the order and nothing
-  // else, so the hand change is the only news it will ever get.
-  const task = store.org.createTask({
-    orgId: org.id,
-    title: 'Fix the gate',
-    description: 'Please fix it.',
-    assigneeId: mara.id,
-    createdBy: 'user',
-  });
-  const order = store.org.sendMail({
-    orgId: org.id,
-    from: { kind: 'user' },
-    to: [{ kind: 'agent', id: mara.id }],
-    subject: 'Fix the gate',
-    body: 'Please fix it.',
-    kind: 'assignment',
-  });
-  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
-
-  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'done');
-
-  const note = store.org.thread(org.id, order.threadId).at(-1);
-  assert.equal(note.fromKind, 'assistant', 'the status note is a system mail');
-  assert.match(note.body, /is done/);
-  assert.equal(
-    store.org.listAssignments(org.id, { agentId: mara.id }).length,
-    0,
-    'a status note starts nothing',
-  );
-  assistant.close();
-});
-
-test('a reply in a task thread continues the same task instead of running beside it', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  const { mail, task } = await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: mara.slug,
-    subject: 'Ship the thing',
-    body: 'Please ship it.',
-  });
-  await sleep(200);
-  assert.equal(store.org.listAssignments(org.id, { agentId: mara.id }).length, 1, 'the work order ran once');
-
-  await assistant.org.sendUserMail({
-    orgId: org.id,
-    to: [mara.slug],
-    subject: 'Re: Ship the thing',
-    body: 'One more thing before you do.',
-    inReplyTo: mail.id,
-  });
-  await sleep(300);
-
-  const runs = store.org.listAssignments(org.id, { agentId: mara.id });
-  assert.equal(runs.length, 2, 'the reply started exactly one more run');
-  for (const run of runs) {
-    assert.equal(
-      store.org.getTaskIdForAssignment(run.id),
-      task.id,
-      'every run in the thread hangs on the same task - no board-less run beside it',
-    );
-  }
-  assert.ok(
-    runs.some((run) => (run.task ?? '').includes('One more thing before you do.')),
-    'the continued run was briefed with the mail that continued it',
-  );
-  assistant.close();
-});
-
-test('a task that ends failed leaves a status note in its thread', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  const { task } = await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: mara.slug,
-    subject: 'Fix the gate',
-    body: 'FAIL - this run goes nowhere.',
-  });
-  await sleep(250);
-
-  assert.equal(store.org.getTask(task.id).status, 'failed');
-  const thread = store.org.getMailThreadForTask(org.id, task.id);
-  const note = store.org.thread(org.id, thread.threadId).at(-1);
-  assert.equal(note.fromKind, 'assistant', 'a failure the thread would otherwise never hear about');
-  assert.match(note.body, /failed/);
-  assistant.close();
-});
-
-test('an agent that asks its assigner on To leaves the task blocked, not done', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  const { task } = await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: mara.slug,
-    subject: 'Fix the gate',
-    body: 'MAILBACK:user|Which gate do you mean?',
-  });
-  await sleep(250);
-
-  const current = store.org.getTask(task.id);
-  assert.equal(current.status, 'blocked', 'a run that ended with a question is waiting, not finished');
-  const thread = store.org.getMailThreadForTask(org.id, task.id);
-  const mails = store.org.thread(org.id, thread.threadId);
-  assert.equal(mails.at(-1).fromKind, 'agent', 'the question itself is the last word in the thread');
-  assert.ok(
-    !mails.some((entry) => entry.fromKind === 'assistant'),
-    'and it is the message - no status note repeats it',
-  );
-
-  // And the answer puts the very same task back to work instead of opening
-  // a second one beside it.
-  await assistant.org.sendUserMail({
-    orgId: org.id,
-    to: [mara.slug],
-    subject: 'Re: Fix the gate',
-    body: 'The north gate.',
-    inReplyTo: mails.at(-1).id,
-  });
-  await sleep(300);
-  const runs = store.org.listAssignments(org.id, { agentId: mara.id });
-  assert.equal(runs.length, 2, 'the answer started the next run of the task');
-  for (const run of runs) assert.equal(store.org.getTaskIdForAssignment(run.id), task.id);
-  assistant.close();
-});
-
-test('a task that ends done with a result reply gets no status note on top', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  const { task } = await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: mara.slug,
-    subject: 'Ship the thing',
-    body: 'Please ship it.',
-  });
-  await sleep(250);
-
-  assert.equal(store.org.getTask(task.id).status, 'done');
-  const thread = store.org.getMailThreadForTask(org.id, task.id);
-  const mails = store.org.thread(org.id, thread.threadId);
-  assert.equal(mails.length, 2, 'the work order and the answer, nothing else');
-  assert.equal(mails.at(-1).fromKind, 'agent', 'the result is the message');
-  assistant.close();
-});
-
-test('a mailed task that splits answers once, with the combined result', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-  const noah = hire(assistant, { name: 'Noah' });
-
-  const parent = store.org.createTask({ orgId: org.id, title: 'Big thing', description: 'Split me.', createdBy: 'user' });
-  store.org.createTask({ orgId: org.id, title: 'Part one', parentId: parent.id, assigneeId: mara.id, createdBy: 'user' });
-  store.org.createTask({ orgId: org.id, title: 'Part two', parentId: parent.id, assigneeId: noah.id, createdBy: 'user' });
-  const mail = store.org.sendMail({
-    orgId: org.id,
-    from: { kind: 'user' },
-    to: [{ kind: 'agent', id: mara.id }],
-    subject: 'Big thing',
-    body: 'Split me.',
-    kind: 'assignment',
-  });
-  store.org.linkMailThreadTask(org.id, mail.threadId, parent.id);
-
-  await assistant.org.runTask(
-    {
-      orgId: org.id,
-      audience: 'assistant',
-      depth: -1,
-      emit() {},
-      sourceMail: { id: mail.id, threadId: mail.threadId, depth: 0, fromKind: 'user', subject: mail.subject },
-    },
-    store.org.getTask(parent.id),
-  );
-  await sleep(250);
-
-  const answers = store.org
-    .mailbox(org.id, { kind: 'user' }, 'inbox', { folder: 'tasks' })
-    .filter((entry) => entry.fromKind === 'assistant');
-  assert.equal(answers.length, 1, 'one combined answer, not one per subtask');
-  assert.match(answers[0].body, /Part one/);
-  assert.match(answers[0].body, /Part two/);
-  assistant.close();
-});
-
-test('a colleague on To inside a task thread still gets a run of their own', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-  const noah = hire(assistant, { name: 'Noah', managerId: mara.id });
-
-  // Mara writes to Noah while working the task. The mail answers nothing, so
-  // it inherits the task's own thread - and the task must not swallow it:
-  // whoever is on To and is neither doing this task nor asked for it is
-  // being asked for something new.
-  const { task } = await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: mara.slug,
-    subject: 'Build the importer',
-    body: 'MAILBACK:noah|Can you check the index?',
-  });
-  await sleep(500);
-
-  const asked = store.org.listAssignments(org.id, { agentId: noah.id });
-  assert.equal(asked.length, 1, 'the colleague on To was woken');
-  assert.match(asked[0].task, /Can you check the index\?/, 'and briefed with what was asked');
-  assert.equal(
-    store.org.listAssignments(org.id, { agentId: mara.id }).length,
-    1,
-    'while the task itself ran exactly once',
-  );
-  assert.equal(store.org.getTask(task.id).status, 'done');
-  assistant.close();
-});
-
-test('a task cancelled by hand after it ran still tells its thread', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  const { task } = await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: mara.slug,
-    subject: 'Ship the thing',
-    body: 'Please ship it.',
-  });
-  await sleep(250);
-  assert.equal(store.org.getTask(task.id).status, 'done', 'the run answered the thread');
-
-  // Hours later, by hand. The old answer belongs to the run that is over; it
-  // says nothing about this ending, so this ending gets its own note.
-  store.org.updateTask(task.id, { status: 'cancelled' });
-  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'cancelled');
-
-  const thread = store.org.getMailThreadForTask(org.id, task.id);
-  const mails = store.org.thread(org.id, thread.threadId);
-  assert.equal(mails.length, 3, 'the work order, the answer, and the note about the cancellation');
-  assert.equal(mails.at(-1).fromKind, 'assistant');
-  assert.match(mails.at(-1).body, /was cancelled/);
-  assistant.close();
-});
-
-test('a task the assistant handed out tells its thread when it fails', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  // Nobody mailed this one in: the work order is written by the assistant,
-  // and a run starts a handful of statements later - the same millisecond as
-  // often as not. The window this ending is judged against therefore opens
-  // on the work order itself, which is exactly what must not count as the
-  // thread having heard how the work ended.
-  const task = store.org.createTask({
-    orgId: org.id,
-    title: 'Rewrite the token cache',
-    description: 'Make it expire properly.',
-    assigneeId: mara.id,
-    createdBy: 'assistant',
-  });
-  const order = store.org.sendMail({
-    orgId: org.id,
-    from: { kind: 'assistant' },
-    to: [{ kind: 'agent', id: mara.id }],
-    subject: task.title,
-    body: task.description,
-    kind: 'assignment',
-  });
-  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
-  store.org.updateTask(task.id, { status: 'failed', error: 'boom' });
-
-  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'failed', order.createdAt);
-
-  const mails = store.org.thread(org.id, order.threadId);
-  assert.equal(mails.length, 2, 'the work order and the note about the failure');
-  assert.equal(mails.at(-1).fromKind, 'assistant');
-  assert.match(mails.at(-1).body, /failed/);
-  assistant.close();
-});
-
-test('a delegated task reports back to the agent who ordered it, not to the user', async () => {
+test('who hears an ending: the user for their own cards and the assistant\'s loose ones, never for an agent\'s errand or their own cancel', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const org = assistant.org.activeOrganization();
   const victor = hire(assistant, { name: 'Victor' });
   const mara = hire(assistant, { name: 'Mara' });
+  const count = () => store.org.listNotifications({ orgId: org.id }).length;
 
-  // What `assign` builds: one agent opens a task for another. The user never
-  // ordered this and must not be handed a receipt for it.
-  const task = store.org.createTask({
+  // What `assign` builds when one agent opens a task for another: the user
+  // never ordered it and must not be handed a receipt for it. The card still
+  // records how it ended.
+  const errand = store.org.createTask({
     orgId: org.id,
     title: 'Raise the upload limit',
     description: 'Ten megabytes is not enough.',
@@ -942,62 +553,44 @@ test('a delegated task reports back to the agent who ordered it, not to the user
     createdBy: 'agent',
     createdByAgentId: victor.id,
   });
-  const order = store.org.sendMail({
+  await assistant.org.setTaskStatus({ task: errand, to: 'failed', by: 'assistant', error: 'boom' });
+  assert.equal(count(), 0, 'no receipt for work the user never ordered');
+  assert.match(store.org.lastTaskEvent(errand.id, 'status').text, /failed/, 'but the card knows');
+
+  // The assistant's own card with no conversation to report into: nobody
+  // else is left to hear it.
+  const loose = store.org.createTask({
     orgId: org.id,
-    from: { kind: 'agent', id: victor.id },
-    to: [{ kind: 'agent', id: mara.id }],
-    subject: task.title,
-    body: task.description,
-    kind: 'assignment',
-  });
-  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
-  store.org.updateTask(task.id, { status: 'failed', error: 'boom' });
-
-  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'failed', order.createdAt);
-
-  const note = store.org.thread(org.id, order.threadId).at(-1);
-  assert.match(note.body, /failed/, 'the thread still hears how it ended');
-  const to = note.recipients.filter((entry) => entry.box === 'to');
-  assert.equal(to.length, 1);
-  assert.equal(to[0].recipientKind, 'agent');
-  assert.equal(to[0].recipientId, victor.id, 'the note goes to whoever asked for the work');
-  assert.ok(
-    !note.recipients.some((entry) => entry.recipientKind === 'user' && entry.box === 'to'),
-    'the user is not on To for a task they never ordered',
-  );
-  assistant.close();
-});
-
-test('a task the user ordered still reports to the user', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, { name: 'Mara' });
-
-  const task = store.org.createTask({
-    orgId: org.id,
-    title: 'Raise the upload limit',
-    description: 'Ten megabytes is not enough.',
+    title: 'Rewrite the token cache',
+    description: 'Make it expire properly.',
     assigneeId: mara.id,
-    createdBy: 'user',
+    createdBy: 'assistant',
   });
-  const order = store.org.sendMail({
+  await assistant.org.setTaskStatus({ task: loose, to: 'failed', by: 'assistant', error: 'boom' });
+  assert.equal(count(), 1, 'the assistant\'s loose card tells the user when it fails');
+
+  // The user's own cancel is silent - they know, they did it - but the
+  // assistant cancelling their card is news.
+  const first = userCard(store, org, { title: 'Paint the fence', assigneeId: mara.id });
+  await assistant.org.setTaskStatus({ task: first, to: 'cancelled', by: 'user' });
+  assert.equal(count(), 1, 'their own cancel says nothing back');
+  const second = userCard(store, org, { title: 'Oil the hinge', assigneeId: mara.id });
+  await assistant.org.setTaskStatus({ task: second, to: 'cancelled', by: 'assistant' });
+  assert.equal(count(), 2);
+  assert.match(store.org.listNotifications({ orgId: org.id })[0].title, /was cancelled/);
+
+  // A card handed off from a conversation is that conversation's business:
+  // it hears it as a turn (report-back.test.js), never as a notification.
+  const session = assistant.createSession({ title: 'Chat' });
+  const fromChat = store.org.createTask({
     orgId: org.id,
-    from: { kind: 'user' },
-    to: [{ kind: 'agent', id: mara.id }],
-    subject: task.title,
-    body: task.description,
-    kind: 'assignment',
+    title: 'Look it up',
+    assigneeId: mara.id,
+    createdBy: 'assistant',
+    requesterSessionId: session.id,
   });
-  store.org.linkMailThreadTask(org.id, order.threadId, task.id);
-  store.org.updateTask(task.id, { status: 'failed', error: 'boom' });
-
-  await assistant.org.notifyTaskStatus(store.org.getTask(task.id), 'failed', order.createdAt);
-
-  const note = store.org.thread(org.id, order.threadId).at(-1);
-  const to = note.recipients.filter((entry) => entry.box === 'to');
-  assert.equal(to.length, 1);
-  assert.equal(to[0].recipientKind, 'user');
+  await assistant.org.setTaskStatus({ task: fromChat, to: 'done', by: 'assistant', result: 'Found it.' });
+  assert.equal(count(), 2, 'no notification on top of the report-back');
   assistant.close();
 });
 
@@ -1006,30 +599,159 @@ test('the board says what a blocked task waits for', async () => {
   const { assistant, store } = createAssistant(fake);
   const org = assistant.org.activeOrganization();
   const mara = hire(assistant, { name: 'Mara' });
-  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
 
-  const task = store.org.createTask({
-    orgId: org.id,
-    title: 'Fix the gate',
-    description: 'Please fix it.',
-    assigneeId: mara.id,
-    createdBy: 'user',
+  const task = userCard(store, org, { title: 'Fix the gate', description: 'Please fix it.', assigneeId: mara.id });
+  store.org.addTaskEvent({
+    taskId: task.id,
+    kind: 'question',
+    actorKind: 'agent',
+    actorAgentId: mara.id,
+    text: 'Which delimiter do these files use?',
   });
-  const question = store.org.sendMail({
-    orgId: org.id,
-    from: { kind: 'agent', id: mara.id },
-    to: [{ kind: 'user' }],
-    subject: 'Which delimiter do these files use?',
-    body: 'Tab or semicolon?',
-    kind: 'assignment',
-  });
-  store.org.linkMailThreadTask(org.id, question.threadId, task.id);
   store.org.updateTask(task.id, { status: 'blocked' });
 
-  const board = await assistant.org.handle(ctx, 'list_tasks', { status: '' });
+  const board = await assistant.org.handle(boardContext(org), 'list_tasks', { status: '' });
   assert.match(board.text, /BLOCKED/);
   assert.match(board.text, /waiting \d+[mhd]/, 'how long it has stood there');
   assert.match(board.text, /Which delimiter do these files use\?/, 'and what it is waiting on');
+
+  const activity = await assistant.org.handle(boardContext(org), 'task_activity', { id: task.id.slice(0, 8) });
+  assert.match(activity.text, /created by user/);
+  assert.match(activity.text, /question by mara:\n\s*Which delimiter/);
+  assistant.close();
+});
+
+test('a lead\'s background report that asks it something comes back to the lead, who answers it (R4)', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const lead = hire(assistant, { name: 'Lead' });
+  const junior = hire(assistant, { name: 'Junior', managerId: lead.id });
+
+  const task = userCard(store, org, {
+    title: 'Build the importer',
+    description: 'DETACH:junior|QUESTION:Which delimiter do these files use?',
+    assigneeId: lead.id,
+  });
+  const ended = await assistant.org.runTask(boardContext(org), task);
+  assert.equal(ended.status, 'done', 'the lead finished once its report was back');
+  assert.match(ended.result, /FINAL\(/);
+
+  const [child] = store.org.listTasks(org.id, { parentId: task.id });
+  assert.equal(child.assigneeId, junior.id);
+  assert.equal(store.org.getTask(child.id).status, 'done', 'the child carried on with the answer and finished');
+  const childEvents = store.org.listTaskEvents(child.id);
+  const answer = childEvents.find((event) => event.kind === 'answer');
+  assert.ok(childEvents.some((event) => event.kind === 'question'), 'the question is on the child\'s card');
+  assert.equal(answer.actorAgentId, lead.id, 'answered by the lead that asked for the work');
+  assert.equal(answer.text, 'Tab-separated.');
+
+  const notes = store.org.listNotifications({ orgId: org.id });
+  assert.deepEqual(kinds(notes), ['task'], 'the user never saw the question - only the card they put up ending');
+  assistant.close();
+});
+
+test('a question nobody else will carry goes to the user: a split\'s subtask asks, the user hears it', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const noah = hire(assistant, { name: 'Noah' });
+
+  const parent = userCard(store, org, { title: 'Big thing', description: 'Split me.' });
+  store.org.createTask({ orgId: org.id, title: 'Part one', description: 'Do part one.', parentId: parent.id, assigneeId: mara.id, createdBy: 'assistant' });
+  const asking = store.org.createTask({
+    orgId: org.id,
+    title: 'Part two',
+    description: 'QUESTION:Which region?',
+    parentId: parent.id,
+    assigneeId: noah.id,
+    createdBy: 'assistant',
+  });
+
+  await assistant.org.runTask(boardContext(org), store.org.getTask(parent.id));
+  assert.equal(store.org.getTask(asking.id).status, 'blocked');
+  const notes = store.org.listNotifications({ orgId: org.id });
+  const question = notes.find((entry) => entry.kind === 'question');
+  assert.ok(question, 'a question is never silent');
+  assert.equal(question.taskId, asking.id);
+  assert.match(question.body, /Which region\?/);
+  const done = notes.filter((entry) => entry.kind === 'task');
+  assert.equal(done.length, 1, 'and the split answers once, with the combined result');
+  assert.match(done[0].body, /Part one/);
+  assert.match(done[0].body, /Part two/);
+  assistant.close();
+});
+
+test('a person answering is never capped; a machine answering is', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake, { org: { autoReview: false, maxTaskRuns: 1 } });
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+
+  const task = userCard(store, org, { title: 'Fix the gate', description: 'QUESTION:Which gate?', assigneeId: mara.id });
+  await assistant.org.runTask(boardContext(org), task);
+  assert.equal(store.org.getTask(task.id).status, 'blocked');
+
+  const byAssistant = await assistant.org.handle(boardContext(org), 'answer_task', { id: task.id, answer: 'North.' });
+  assert.equal(byAssistant.isError, true, 'past the ceiling, a machine cannot set it going again');
+  assert.match(byAssistant.text, /already run 1 times/);
+  assert.equal(store.org.lastTaskEvent(task.id, 'answer').text, 'North.', 'but its answer is on the card');
+
+  const byUser = await assistant.org.answerTask({ taskId: task.id, answer: 'The north gate.' });
+  assert.equal(byUser.ok, true, 'the user always gets their run');
+  await sleep(200);
+  assert.equal(store.org.listAssignments(org.id, { agentId: mara.id }).length, 2);
+  assistant.close();
+});
+
+test('ask_requester and report_to_user: only inside a task, and an agent report is an agent notification', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+  const mara = hire(assistant, { name: 'Mara' });
+  const task = userCard(store, org, { title: 'Fix the gate', assigneeId: mara.id });
+
+  const loose = { orgId: org.id, audience: 'agent', agentId: mara.id, depth: 0, emit() {} };
+  const nowhere = await assistant.org.handle(loose, 'ask_requester', { question: 'Which gate?' });
+  assert.equal(nowhere.isError, true, 'outside a task there is nobody waiting to be asked');
+  const asUser = await assistant.org.handle(loose, 'ask_user', { header: 'x', question: 'y', options: ['a', 'b'] });
+  assert.match(asUser.text, /ask_requester/, 'and ask_user points an agent at the right tool');
+
+  const inTask = { ...loose, taskId: task.id, parentAssignmentId: 'run-1' };
+  const reported = await assistant.org.handle(inTask, 'report_to_user', {
+    title: 'The gate is older than we thought',
+    body: 'It predates the fence; replacing it is a bigger job.',
+  });
+  assert.equal(reported.isError, undefined);
+  const [note] = store.org.listNotifications({ orgId: org.id });
+  assert.equal(note.kind, 'agent');
+  assert.equal(note.fromKind, 'agent');
+  assert.equal(note.fromAgentId, mara.id);
+  assert.equal(note.taskId, task.id);
+  assert.match(store.org.lastTaskEvent(task.id, 'note').text, /Reported to the user/, 'and the card keeps a line of it');
+  assistant.close();
+});
+
+test('notify is kept as a system notification, pushed or not', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const org = assistant.org.activeOrganization();
+
+  // Nobody listening: nothing can push, but the line is not lost.
+  const unheard = await assistant.org.handle(boardContext(org), 'notify', { text: 'The backup finished.' });
+  assert.equal(unheard.isError, undefined);
+  assert.match(unheard.text, /saved in their notifications/);
+
+  const pushed = [];
+  assistant.on('notify', (event) => pushed.push(event));
+  const heard = await assistant.org.handle(boardContext(org), 'notify', { text: 'The server is down.', urgency: 'high' });
+  assert.match(heard.text, /^Sent \(high urgency\)/);
+  assert.equal(pushed.length, 1, 'the push still travels on its own event');
+
+  const notes = store.org.listNotifications({ orgId: org.id });
+  assert.deepEqual(kinds(notes), ['system', 'system']);
+  assert.equal(notes[0].title, 'The server is down.');
   assistant.close();
 });
 
@@ -1497,16 +1219,17 @@ test('chat retains completed and interrupted tool events on the persisted answer
 /* --------------------------- one entrance, one shape --------------------------- */
 
 /**
- * Every way into the company leaves the same rows behind: a task, the mail
- * thread it is negotiated in, a run, and the link between task and run
+ * Every way into the company leaves the same rows behind: a task that opens
+ * its own activity with its brief, a run, and the link between task and run
  * (concept 1.1). What differs is who started it, never what is left over.
  */
 async function assertOneShape(store, orgId, taskId, label) {
   const task = store.org.getTask(taskId);
   assert.ok(task, label + ': a task exists');
-  const thread = store.org.getMailThreadForTask(orgId, taskId);
-  assert.ok(thread, label + ': the task has a mail thread');
-  assert.equal(thread.kind, 'assignment', label + ': and that thread is a task thread');
+  const events = store.org.listTaskEvents(taskId);
+  assert.equal(events[0]?.kind, 'created', label + ': its activity opens with the brief');
+  assert.equal(events[0].text, task.description, label + ': which is the description itself');
+  assert.ok(events.some((event) => event.kind === 'run-started'), label + ': the run is on the card');
   assert.ok(task.assignmentId, label + ': the task points at its current run');
   const run = store.org.getAssignment(task.assignmentId);
   assert.ok(run, label + ': the run exists');
@@ -1515,25 +1238,18 @@ async function assertOneShape(store, orgId, taskId, label) {
   return { task, run };
 }
 
-test('all four ways in leave the same rows: a task, its thread, a run and the link', async () => {
+test('every way in leaves the same rows: a task, its activity, a run and the link', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const org = assistant.org.activeOrganization();
   const mara = hire(assistant, { name: 'Mara' });
   const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
 
-  // 1. Compose with exactly one agent on To - no mode, no switch.
-  const composed = await assistant.org.sendUserMail({
-    orgId: org.id,
-    to: [mara.slug],
-    subject: 'Ship the parser',
-    body: 'Please ship the parser.',
-  });
-  assert.ok(composed.task, 'one agent on To opens a task');
-  await sleep(200);
-  const mailBorn = await assertOneShape(store, org.id, composed.task.id, 'mail');
-  assert.equal(mailBorn.task.title, 'Ship the parser', 'the subject is the name');
-  assert.equal(mailBorn.run.title, 'Ship the parser', 'and the run inherits it');
+  // 1. The user puts a card up and the board runs it.
+  const card = userCard(store, org, { title: 'Ship the parser', description: 'Please ship the parser.', assigneeId: mara.id });
+  await assistant.org.runTask(boardContext(org), card);
+  const fromBoard = await assertOneShape(store, org.id, card.id, 'board');
+  assert.equal(fromBoard.run.title, 'Ship the parser', 'the run inherits the card\'s name');
 
   // 2. The assistant hands work over with assign.
   const assigned = await assistant.org.handle(ctx, 'assign', {
@@ -1557,22 +1273,8 @@ test('all four ways in leave the same rows: a task, its thread, a run and the li
   assert.equal(created.isError, undefined);
   const boardTask = store.org.listAllTasks(org.id).find((entry) => entry.title === 'Document the cache');
   await assistant.org.handle(ctx, 'run_task', { id: boardTask.id });
-  const fromBoard = await assertOneShape(store, org.id, boardTask.id, 'board');
-  assert.equal(fromBoard.run.title, 'Document the cache');
-
-  // 4. A conversation is the exception that proves the rule: several people
-  //    on To wake the agents among them and leave no card at all (E3).
-  const before = store.org.listAllTasks(org.id).length;
-  const conversation = await assistant.org.sendUserMail({
-    orgId: org.id,
-    to: [mara.slug, 'assistant'],
-    subject: 'What do you two think',
-    body: 'Two of you, one question.',
-  });
-  await sleep(200);
-  assert.equal(conversation.task, undefined, 'two on To is a conversation');
-  assert.equal(store.org.getMailThread(org.id, conversation.mail.threadId).kind, 'chat');
-  assert.equal(store.org.listAllTasks(org.id).length, before, 'and it creates no card');
+  const fromTool = await assertOneShape(store, org.id, boardTask.id, 'create_task');
+  assert.equal(fromTool.run.title, 'Document the cache');
   assistant.close();
 });
 
@@ -1583,18 +1285,18 @@ test('assign inside a task hangs the new task under it instead of beside it', as
   const lead = hire(assistant, { name: 'Lead' });
   hire(assistant, { name: 'Junior', managerId: lead.id });
 
-  const { task } = await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: lead.slug,
-    subject: 'Build the importer',
-    body: 'ASSIGN:junior|write the row parser',
+  const task = userCard(store, org, {
+    title: 'Build the importer',
+    description: 'ASSIGN:junior|write the row parser',
+    assigneeId: lead.id,
   });
-  await sleep(400);
+  await assistant.org.runTask(boardContext(org), task);
 
   const children = store.org.listTasks(org.id, { parentId: task.id });
   assert.equal(children.length, 1, 'what the lead handed on is a child of its own task');
   assert.equal(children[0].title, 'write the row parser');
   assert.ok(children[0].assigneeId, 'and it has the junior on it');
+  assert.equal(store.org.listTaskEvents(children[0].id)[0].actorAgentId, lead.id, 'opened by the lead that handed it on');
   assistant.close();
 });
 
@@ -1628,79 +1330,33 @@ test('a name is one short line and never the brief itself', async () => {
   assistant.close();
 });
 
-/* ------------------------------- roleplay ------------------------------- */
 
-test('a mail-born run is told to answer as a letter, result first, in its own voice', async () => {
+test('a promoted retrieval policy reaches the user as a sleep notification', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, {
-    name: 'Mara',
-    voice: 'Warm and precise; short sentences, never hedges.',
+  const announced = [];
+  assistant.on('notification', (event) => announced.push(event.notification));
+
+  // What the night hands the hook when it promotes a policy. It used to be a
+  // mail from the user to the user, which no push filter ever let through.
+  await assistant.announcePromotion({
+    owner: 'assistant',
+    slot: 'recall',
+    version: { id: 'policy-2', version: 2 },
+    evaluation: { delta: 0.0312, ciLow: 0.0101, closed: 40, traces: 55 },
+    rationale: 'Entity hops found the right memory more often.',
+    cooldownUntil: Date.now() + 86_400_000,
+    prevActiveId: 'policy-1',
+    runId: 'night-7',
   });
 
-  await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: mara.slug,
-    subject: 'Ship the thing',
-    body: 'Please ship it.',
-  });
-  await sleep(150);
-
-  const run = fake.runs.find((entry) => entry.prompt.startsWith('TASK: Ship the thing'));
-  assert.ok(run, 'the mail-born run happened');
-  assert.match(run.systemPrompt, /a short salutation, one sentence of context/);
-  assert.match(run.systemPrompt, /The result stands in the first paragraph/);
-  assert.match(run.systemPrompt, /in your own voice: Warm and precise; short sentences, never hedges\./);
-  assert.doesNotMatch(
-    run.systemPrompt,
-    /lead with the result, then what you changed or found/,
-    'the report register is replaced, not doubled up alongside the letter one',
-  );
-  assert.equal(store.org.getAssignment(store.org.listAssignments(org.id, { agentId: mara.id })[0].id).status, 'done');
-  assistant.close();
-});
-
-test('an assign-born run keeps the plain report register, no letter', async () => {
-  const fake = createFakeProvider();
-  const { assistant } = createAssistant(fake);
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, {
-    name: 'Mara',
-    voice: 'Warm and precise; short sentences, never hedges.',
-  });
-  const ctx = { orgId: org.id, audience: 'assistant', depth: -1, emit() {} };
-
-  await assistant.org.handle(ctx, 'assign', { agent: mara.slug, task: 'Write the parser', title: 'Write the parser' });
-  await sleep(200);
-
-  const run = fake.runs.find((entry) => entry.prompt.startsWith('Write the parser'));
-  assert.ok(run, 'the assign-born run happened');
-  assert.match(run.systemPrompt, /lead with the result, then what you changed or found/);
-  assert.doesNotMatch(run.systemPrompt, /a short salutation, one sentence of context/);
-  assistant.close();
-});
-
-test('org.roleplay off restores the plain report register even for a mail-born run', async () => {
-  const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake, { org: { autoReview: false, roleplay: false } });
-  const org = assistant.org.activeOrganization();
-  const mara = hire(assistant, {
-    name: 'Mara',
-    voice: 'Warm and precise; short sentences, never hedges.',
-  });
-
-  await assistant.org.sendTaskMail({
-    orgId: org.id,
-    to: mara.slug,
-    subject: 'Ship the thing',
-    body: 'Please ship it.',
-  });
-  await sleep(150);
-
-  const run = fake.runs.find((entry) => entry.prompt.startsWith('TASK: Ship the thing'));
-  assert.ok(run, 'the mail-born run happened');
-  assert.match(run.systemPrompt, /lead with the result, then what you changed or found/);
-  assert.doesNotMatch(run.systemPrompt, /a short salutation, one sentence of context/);
+  const [note] = store.org.listNotifications({ orgId: org.id });
+  assert.equal(note.kind, 'sleep');
+  assert.equal(note.fromKind, 'system');
+  assert.equal(note.title, 'Retrieval policy recall v2 is in force');
+  assert.match(note.body, /Entity hops found the right memory more often\./);
+  assert.match(note.body, /undo sleep run night-7/);
+  assert.deepEqual(announced.map((entry) => entry.id), [note.id], 'announced, so a push channel can carry it');
   assistant.close();
 });

@@ -105,21 +105,21 @@ test('cron: imported scripts require review, keep silent gates, and forward pre-
   assert.equal(direct.status, 'done');
   assert.equal(direct.result, 'watcher result');
   assert.equal(fake.runs.length, 0, 'script-only jobs never invoke a provider');
-  const mailboxCount = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
+  const mailboxCount = store.org.listNotifications({ orgId }).length;
   writeFileSync(path, 'console.log(JSON.stringify({wakeAgent:false}))');
   await assistant.cron.runNow(job.id);
-  assert.equal(store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length, mailboxCount, 'gate suppresses inbox noise');
+  assert.equal(store.org.listNotifications({ orgId }).length, mailboxCount, 'gate suppresses inbox noise');
   writeFileSync(path, '');
   await assistant.cron.runNow(job.id);
-  assert.equal(store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length, mailboxCount, 'empty script-only output stays quiet');
+  assert.equal(store.org.listNotifications({ orgId }).length, mailboxCount, 'empty script-only output stays quiet');
   assistant.cron.update(job.id, { script: { ...job.script, noAgent: false } });
   writeFileSync(path, 'console.log("sensor data from script")');
   assert.equal((await assistant.cron.runNow(job.id)).status, 'done');
   assert.match(fake.runs.at(-1).prompt, /sensor data from script/);
-  const beforeSilentAgent = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
+  const beforeSilentAgent = store.org.listNotifications({ orgId }).length;
   fake.provider.run = async function* () { yield { type: 'done', text: '[SILENT]' }; };
   await assistant.cron.runNow(job.id);
-  assert.equal(store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length, beforeSilentAgent, 'Hermes silent agent responses stay quiet');
+  assert.equal(store.org.listNotifications({ orgId }).length, beforeSilentAgent, 'Hermes silent agent responses stay quiet');
   writeFileSync(path, 'console.error("dependency missing");process.exit(3)');
   const failed = await assistant.cron.runNow(job.id);
   assert.equal(failed.status, 'failed');
@@ -280,7 +280,7 @@ test('cron: jobs are created with a next run, paused without one, and found by n
 
 /* ---------------------------------- runs --------------------------------- */
 
-test('cron: a due job runs as the assistant in its own conversation and reports to the inbox', async () => {
+test('cron: a due job runs as the assistant in its own conversation and reports as a notification', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const org = assistant.org.activeOrganization();
@@ -315,15 +315,19 @@ test('cron: a due job runs as the assistant in its own conversation and reports 
 
   const session = store.getSession(runs[0].sessionId);
   assert.equal(session.title, 'Schedule: Minutentakt');
-  assert.equal(session.kind, 'schedule', 'hidden from the conversations list like a mail transcript');
+  assert.equal(session.kind, 'schedule', 'hidden from the conversations list');
   assert.equal(store.getMessages(session.id).length, 2, 'prompt and answer are on record');
   assert.match(fake.runs[0].prompt, /Automatic run of schedule “Minutentakt”/);
   assert.match(fake.runs[0].prompt, /Sag hallo\./);
   assert.match(fake.runs[0].systemPrompt, /Your schedules \(cron jobs/);
 
-  const inbox = store.org.mailbox(org.id, { kind: 'user' }, 'inbox', { unreadOnly: true });
+  const inbox = store.org.listNotifications({ orgId: org.id, unread: true });
   assert.equal(inbox.length, 1);
-  assert.match(inbox[0].subject, /Schedule "Minutentakt" completed/);
+  assert.match(inbox[0].title, /Schedule "Minutentakt" completed/);
+  assert.equal(inbox[0].kind, 'schedule');
+  assert.equal(inbox[0].cronJobId, job.id, 'it points at the job');
+  assert.equal(inbox[0].cronRunId, runs[0].id, 'and at the run');
+  assert.equal(inbox[0].sessionId, runs[0].sessionId, 'and at the conversation a reply continues');
 
   assert.ok(events.some((event) => event.run?.status === 'running'), 'announced the start');
   assert.ok(events.some((event) => event.run?.status === 'done'), 'announced the end');
@@ -371,8 +375,8 @@ test('cron: a one-shot job switches itself off, and a failure is recorded as suc
   assert.equal(failed.status, 'failed');
   assert.match(failed.error, /boom/);
   assert.equal(assistant.cron.get(failing.id).lastStatus, 'failed');
-  const note = store.org.mailbox(org.id, { kind: 'user' }, 'inbox').find((mail) => mail.subject.includes('Kaputt'));
-  assert.match(note.subject, /failed/);
+  const note = store.org.listNotifications({ orgId: org.id }).find((entry) => entry.title.includes('Kaputt'));
+  assert.match(note.title, /failed/);
   assistant.close();
 });
 
@@ -436,24 +440,24 @@ test('cron: start() skips runs missed long ago and fails runs left behind', asyn
   assistant.close();
 });
 
-test('cron: a self-run schedule answering [SILENT] stays out of the inbox', async () => {
+test('cron: a self-run schedule answering [SILENT] stays out of the notifications', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const orgId = assistant.org.activeOrganization().id;
-  const before = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
+  const before = store.org.listNotifications({ orgId }).length;
   const job = assistant.cron.create({ orgId, name: 'Morgen-Bote', schedule: '* * * * *', kind: 'assistant',
     prompt: 'Send the briefing by mail yourself, then answer [SILENT].', enabled: false, createdBy: 'user' });
   const loud = await assistant.cron.runNow(job.id);
   assert.equal(loud.status, 'done');
   assert.match(loud.result, /^OUTPUT\(/, 'an ordinary self-run reports its text');
-  const afterLoud = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
+  const afterLoud = store.org.listNotifications({ orgId }).length;
   assert.equal(afterLoud, before + 1, 'an ordinary self-run still lands in the inbox');
   // The sentinel is whitespace-tolerant: the model ends its turn, not a protocol.
   fake.provider.run = async function* () { yield { type: 'done', text: '  [SILENT]\n' }; };
   const silent = await assistant.cron.runNow(job.id);
   assert.equal(silent.status, 'done');
   assert.ok(!silent.result, 'the sentinel is consumed, never reported as a result');
-  assert.equal(store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length, afterLoud, 'a silent self-run posts no completion mail');
+  assert.equal(store.org.listNotifications({ orgId }).length, afterLoud, 'a silent self-run posts no completion mail');
 
   // The model also reasons out loud before the sentinel sometimes - an exact
   // match on the whole reply would miss this and let the reasoning (sentinel
@@ -466,7 +470,7 @@ test('cron: a self-run schedule answering [SILENT] stays out of the inbox', asyn
   assert.equal(silentWithReasoning.status, 'done');
   assert.ok(!silentWithReasoning.result, 'reasoning before the trailing sentinel is still recognised as silent');
   assert.equal(
-    store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length,
+    store.org.listNotifications({ orgId }).length,
     afterLoud,
     'a silent self-run with reasoning still posts no completion mail',
   );
@@ -481,7 +485,7 @@ test('cron: a self-run schedule answering [SILENT] stays out of the inbox', asyn
   assert.equal(mentionsSentinel.status, 'done');
   assert.match(mentionsSentinel.result, /was not silent\.$/, 'a mid-text mention of the token is not the sentinel');
   assert.equal(
-    store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length,
+    store.org.listNotifications({ orgId }).length,
     afterLoud + 1,
     'a report that only mentions the token still reaches the inbox',
   );
@@ -542,9 +546,9 @@ test('cron: an event fires a run that records the trigger and what caused it', a
   assert.equal(after.lastStatus, 'done');
   assert.equal(after.nextRunAt, undefined, 'an event run does not put an event job on the clock');
 
-  const inbox = store.org.mailbox(orgId, { kind: 'user' }, 'inbox', { unreadOnly: true });
+  const inbox = store.org.listNotifications({ orgId, unread: true });
   assert.equal(inbox.length, 1);
-  assert.match(inbox[0].subject, /Schedule "Mail watcher" completed/);
+  assert.match(inbox[0].title, /Schedule "Mail watcher" completed/);
   assert.match(inbox[0].body, /fired by imap:work/, 'the note says why it ran, not which expression it does not have');
   assistant.close();
 });

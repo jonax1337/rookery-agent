@@ -14,10 +14,9 @@ import type {
   AssignmentStatus,
   AssignmentView,
   EffortLevel,
-  Mail,
-  MailThreadKind,
-  MailWho,
   MemoryKind,
+  Notification,
+  NotificationKind,
   NotifyEvent,
   Organization,
   PermissionLevel,
@@ -28,6 +27,9 @@ import type {
   RequesterKind,
   RookeryConfig,
   Task,
+  TaskEvent,
+  TaskEventActor,
+  TaskEventKind,
   TaskPriority,
   TaskStatus,
   ToolServerAudience,
@@ -49,7 +51,14 @@ import type { SleepRunner } from '../memory/sleep.js';
 import { clip, shorten, tail, titleFromBrief } from '../util/queue.js';
 import { formatAge, formatDay, formatWhen } from '../util/time.js';
 import type { BridgeServer, ToolCallResult, ToolHandler } from './bridge.js';
-import { buildAgentPrompt, renderBoard, renderMail, renderOrgOverview, renderSchedules, type OrgSnapshot } from './prompts.js';
+import {
+  buildAgentPrompt,
+  renderBoard,
+  renderOrgOverview,
+  renderSchedules,
+  renderTaskActivity,
+  type OrgSnapshot,
+} from './prompts.js';
 import {
   draftHandover,
   draftNote,
@@ -126,16 +135,11 @@ export interface ToolContext {
   emit: (event: AgentEvent) => void;
   signal?: AbortSignal;
   /**
-   * Set when the running assignment itself came from mail; carries the
-   * auto-trigger loop guard, and everything `run()` needs to mail the result
-   * back to the sender as a reply in the same thread.
-   */
-  sourceMail?: SourceMailRef;
-  /**
    * Appended to the brief of the task leaf this context runs. It carries the
-   * mail that continued a task thread: that mail is not in the task's own
-   * description, and without it a continued run would read the original work
-   * order again and answer it twice.
+   * answer that continued a waiting task, or the results of work handed off
+   * in the background: neither is in the task's own description, and without
+   * it a continued run would read the original work order again and answer
+   * it twice.
    */
   taskNote?: string;
   /**
@@ -148,7 +152,7 @@ export interface ToolContext {
   scheduled?: boolean;
   /**
    * Set for the board watcher's own run. It is the strictest context there
-   * is: the watcher may read the board and write one mail, nothing else. A
+   * is: the watcher may read the board and leave one report, nothing else. A
    * watcher that could reassign, restart or close what it finds would answer
    * a person's open question by guessing at it, which is the one thing a
    * backstop must never do.
@@ -160,20 +164,6 @@ export interface ToolContext {
    * every exit, not only on an abort.
    */
   questionOwner?: string;
-}
-
-/**
- * The mail that started a run: who wrote it, which thread it lives in, how
- * deep the run already is. The depth is the loop guard; the rest is what the
- * finished run's reply is built from.
- */
-export interface SourceMailRef {
-  id: string;
-  threadId: string;
-  depth: number;
-  fromKind: RequesterKind;
-  fromAgentId?: string;
-  subject: string;
 }
 
 export interface RunAssignmentInput {
@@ -199,20 +189,15 @@ export interface RunAssignmentInput {
   emit: (event: AgentEvent) => void;
   signal?: AbortSignal;
   /**
-   * Set when this assignment was started by mailing the agent's To line.
-   * On success, `run()` mails the result back to the sender as a reply.
-   */
-  sourceMail?: SourceMailRef;
-  /**
-   * Told, when the run ends, whether the agent wrote to whoever asked for
-   * the work on the To line while it was running - the signal that turns a
-   * finished task leaf into `blocked` instead of `done` (decision E6).
-   *
-   * It is reported from inside the run because only here is the answer
-   * still true: the run's own reply goes out to the same recipient a breath
-   * later, and from outside the two are indistinguishable.
+   * Told, when the run ends, whether the agent called `ask_requester` while
+   * it was running - the signal that turns a finished task leaf into
+   * `blocked` instead of `done` (decision E6). It used to be read off the
+   * agent's outbox (a mail to whoever asked, on To); now the tool itself sets
+   * a flag on the run, which cannot be mistaken for anything else.
    */
   onAskedRequester?: (asked: boolean) => void;
+  /** Told the run's record the moment it exists, before it is queued. */
+  onStarted?: (assignment: Assignment) => void;
 }
 
 export interface OrgControllerOptions {
@@ -239,13 +224,27 @@ export interface OrgControllerOptions {
    * controller has no notion of transport, so it asks rather than looks.
    */
   canNotify?: () => boolean;
-  /**
-   * Runs one assistant turn for a mail addressed to it and returns the reply
-   * body. The assistant is not an agent and has no `run()` of its own, so
-   * without this a mail to it would sit unanswered until the user's next chat;
-   * the runtime owns `chat()` and passes this in, the way it passes `cron`.
-   */
-  runAssistantMail?: (input: { mail: Mail; senderLabel: string; thread: Mail[] }) => Promise<string>;
+}
+
+/** Everything `notifyUser` takes: the notification minus what the store stamps. */
+export interface NotifyUserInput {
+  /** The company it belongs to; the active one when left out. */
+  orgId?: string;
+  kind: NotificationKind;
+  title: string;
+  body?: string;
+  fromKind?: Notification['fromKind'];
+  fromAgentId?: string;
+  taskId?: string;
+  cronJobId?: string;
+  cronRunId?: string;
+  sessionId?: string;
+}
+
+/** Who answers a task: the user, the assistant, or one agent (`agentId`). */
+export interface TaskAnswerer {
+  kind: 'user' | 'assistant' | 'agent';
+  agentId?: string;
 }
 
 /** Emit a progress line roughly every this many characters of agent output. */
@@ -291,8 +290,11 @@ export interface ReportBackEvent {
   notice: string;
 }
 
-/** The notice for one ended task, in the words the assistant reads. */
-export function reportBackNotice(task: Task, agent: Agent | null): string {
+/**
+ * The notice for one ended task, in the words the assistant reads. `question`
+ * is what the agent asked with `ask_requester`, for a task that is waiting.
+ */
+export function reportBackNotice(task: Task, agent: Agent | null, question?: string): string {
   const who = agent ? agent.name + ' (' + agent.slug + ')' : 'the agent';
   const ended = task.finishedAt ?? task.updatedAt;
   const took = task.startedAt && ended > task.startedAt ? ' after ' + formatAge(task.startedAt, ended, 'second') : '';
@@ -311,9 +313,11 @@ export function reportBackNotice(task: Task, agent: Agent | null): string {
     case 'blocked':
       return (
         head + 'stopped with a question and is waiting for an answer.\n\n' +
+        (question ? 'The question:\n' + clip(question, RESULT_BUDGET) + '\n\n' : '') +
         (task.result ? 'What it said:\n' + clip(task.result, RESULT_BUDGET) + '\n\n' : '') + system + ' ' +
-        "Put the question to the user. The agent's question sits in the task's mail thread; once the user answers, " +
-        'reply in that thread with send_mail and the task picks up again.'
+        'Put the question to the user. Once they answer, pass the answer on with answer_task("' +
+        task.id.slice(0, 8) + '", ...) and the task picks up again, as the same task. Answer it yourself only ' +
+        'if you know the answer for certain.'
       );
     case 'cancelled':
       return head + 'was cancelled' + took + '.\n\n' + system + ' Tell the user briefly, unless they cancelled it themselves just now.';
@@ -324,6 +328,44 @@ export function reportBackNotice(task: Task, agent: Agent | null): string {
         'Tell the user what went wrong and what you suggest - retrying, handing it to someone else, or dropping it.'
       );
   }
+}
+
+/**
+ * What the user is told when one of their cards ends or waits on them - the
+ * notification that replaced the status note mail. A task that is waiting
+ * becomes a `question` in the agent's own name; every other ending is a
+ * `task` notification from Rookery, carrying the result rather than a
+ * pointer to it (the rule `statusNote` was written for).
+ */
+export function taskNotification(
+  task: Task,
+  agent: Agent | null,
+  question?: string,
+): Pick<NotifyUserInput, 'kind' | 'title' | 'body' | 'fromKind' | 'fromAgentId' | 'taskId'> {
+  const name = '"' + task.title + '"';
+  if (task.status === 'blocked') {
+    return {
+      kind: 'question',
+      title: (agent ? agent.name : 'An agent') + ' has a question about ' + name,
+      body: clip(question ?? task.result ?? 'The task is waiting for an answer.', 4000),
+      fromKind: agent ? 'agent' : 'system',
+      fromAgentId: agent?.id,
+      taskId: task.id,
+    };
+  }
+  const title =
+    task.status === 'done'
+      ? 'Task ' + name + ' is done'
+      : task.status === 'cancelled'
+        ? 'Task ' + name + ' was cancelled'
+        : 'Task ' + name + ' failed';
+  const body =
+    task.status === 'done'
+      ? clip(task.result?.trim() || '', 4000) + (task.error ? (task.result ? '\n\n' : '') + 'Note: ' + task.error : '')
+      : task.status === 'cancelled'
+        ? ''
+        : (task.error ?? 'No reason given.') + (task.result ? '\n\nWhat it had so far:\n' + clip(task.result, 2000) : '');
+  return { kind: 'task', title, body, fromKind: 'system', taskId: task.id };
 }
 
 /** How much of one assignment's live log is kept, in JSON bytes. */
@@ -421,7 +463,12 @@ export class OrgController extends EventEmitter {
   readonly #sleep: SleepRunner | undefined;
   readonly #questions: QuestionRegistry | undefined;
   readonly #canNotify: (() => boolean) | undefined;
-  readonly #runAssistantMail: OrgControllerOptions['runAssistantMail'];
+  /**
+   * Runs whose agent called `ask_requester`, by assignment id. Read once when
+   * the run ends (`onAskedRequester`) and dropped there; in memory because a
+   * run that did not survive a restart has no ending left to decide.
+   */
+  readonly #askedRequester = new Set<string>();
   #running = 0;
   #waiting: (() => void)[] = [];
   /** Cancel hooks of assignments that are queued or running, by assignment id. */
@@ -457,7 +504,6 @@ export class OrgController extends EventEmitter {
     this.#sleep = options.sleep;
     this.#questions = options.questions;
     this.#canNotify = options.canNotify;
-    this.#runAssistantMail = options.runAssistantMail;
   }
 
   get bridge(): BridgeServer {
@@ -752,43 +798,94 @@ export class OrgController extends EventEmitter {
       case 'update_settings':
         return this.#updateSettings(context, args);
 
-      case 'send_mail':
-        return this.#sendMail(context, text('to'), text('cc'), text('subject'), text('body'), text('inReplyTo') || undefined);
+      case 'ask_requester':
+        return this.#askRequester(context, text('question'));
 
-      case 'read_mail': {
-        const who: MailWho = context.audience === 'agent' ? { kind: 'agent', id: context.agentId } : { kind: 'assistant' };
-        const mail = this.#store.org.unreadMailFor(context.orgId, who);
-        if (!mail.length) return { text: 'No unread mail.' };
-        this.#store.org.markMailReadFor(mail, who);
-        return { text: renderMail(mail, this.snapshot(context.orgId), 'Unread mail:') };
+      case 'answer_task': {
+        const task = this.findTask(context.orgId, text('id'));
+        if (!task) return fail('No task ' + text('id') + '.');
+        const answerer: TaskAnswerer =
+          context.audience === 'agent' ? { kind: 'agent', agentId: context.agentId } : { kind: 'assistant' };
+        const answered = await this.#answer(task, text('answer'), answerer, context);
+        if (!answered.ok) return fail(answered.reason);
+        const where = context.taskId && task.parentId === context.taskId
+          ? 'Your own task stays open until it is back: when your run ends, you are started again with its result.'
+          : task.requesterSessionId && !task.parentId
+            ? 'When it ends, a message arrives in the conversation it came from.'
+            : 'How it ends is recorded on its card.';
+        return {
+          text: 'Answered task ' + task.id.slice(0, 8) + ' "' + task.title + '"; it runs again with your answer. ' + where,
+        };
       }
 
-      case 'read_mail_thread': {
-        const reference = text('thread');
-        if (!reference) return fail('Name the thread to read.');
-        const who: MailWho = context.audience === 'agent' ? { kind: 'agent', id: context.agentId } : { kind: 'assistant' };
-        // Either id works: a mail names its own thread, and the id an agent
-        // has to hand is usually the mail it was woken with.
-        const threadId = this.#store.org.getMail(reference)?.threadId ?? reference;
-        const thread = this.#store.org.thread(context.orgId, threadId, { who });
-        if (!thread.length) return { text: 'No mail in that thread, or none of it was addressed to you.' };
-        // Asked for in full, answered in full: the prompt's 600-character
-        // preview is the wrong answer to "give me the whole thread".
+      case 'report_to_user': {
+        // Agents, and the one assistant run that has no conversation to speak
+        // in: the board watcher. An ordinary assistant turn answers the user
+        // directly, and `notify` is its line for what cannot wait.
+        if (context.audience !== 'agent' && !context.watching) {
+          return fail('Reach the user through your answer, or with notify for something that has to arrive now.');
+        }
+        if (!text('title') || !text('body')) return fail('A report needs a title and a body.');
+        const notification = this.notifyUser({
+          orgId: context.orgId,
+          kind: context.watching ? 'watch' : 'agent',
+          title: text('title'),
+          body: text('body'),
+          fromKind: context.audience === 'agent' ? 'agent' : 'assistant',
+          fromAgentId: context.audience === 'agent' ? context.agentId : undefined,
+          taskId: context.taskId,
+          // The watcher's own run is where a reply to its report continues;
+          // an agent's run has no conversation of its own to point at.
+          sessionId: context.watching ? context.sessionId : undefined,
+        });
+        if (context.taskId && this.#store.org.getTask(context.taskId)) {
+          this.#taskEvent({
+            taskId: context.taskId,
+            kind: 'note',
+            actorKind: context.audience === 'agent' ? 'agent' : 'assistant',
+            actorAgentId: context.agentId,
+            text: 'Reported to the user: ' + notification.title + '\n\n' + notification.body,
+            assignmentId: context.parentAssignmentId,
+          });
+        }
+        return { text: 'Left the user a notification: "' + notification.title + '".' };
+      }
+
+      case 'task_activity': {
+        const task = this.findTask(context.orgId, text('id'));
+        if (!task) return fail('No task ' + text('id') + '.');
         return {
-          text: clip(renderMail(thread, this.snapshot(context.orgId), 'The thread, oldest first:', 4000), RESULT_BUDGET),
+          text: clip(
+            renderTaskActivity(task, this.#store.org.listTaskEvents(task.id), this.snapshot(context.orgId)),
+            RESULT_BUDGET,
+          ),
         };
       }
 
       case 'notify': {
         if (context.audience !== 'assistant') return fail('Only the assistant can send notifications.');
         if (!text('text')) return fail('A notification needs text.');
-        if (!this.#canNotify || !this.#canNotify()) {
-          return fail(
-            'No notification channel can reach the user right now - none is set up, it is ' +
-              'switched off, or it has no recipient. Nothing was sent.',
-          );
-        }
         const urgency = args.urgency === 'high' ? 'high' : 'normal';
+        // Kept as well as pushed: a push is gone once it is swiped away, and
+        // the web should be able to show what the assistant said on its own.
+        // The push itself still travels on the `notify` event - the
+        // notification is the record, so a channel must not push it twice.
+        const firstLine = text('text').split('\n', 1)[0] ?? '';
+        this.notifyUser({
+          orgId: context.orgId,
+          kind: 'system',
+          title: shorten(firstLine, 80),
+          body: text('text'),
+          fromKind: 'assistant',
+          sessionId: context.sessionId,
+        });
+        if (!this.#canNotify || !this.#canNotify()) {
+          return {
+            text:
+              'No push channel can reach the user right now - none is set up, it is switched off, or it has ' +
+              'no recipient. The message is saved in their notifications and waits there.',
+          };
+        }
         const event: NotifyEvent = { text: text('text'), urgency, at: Date.now() };
         this.emit('notify', event);
         return { text: 'Sent' + (urgency === 'high' ? ' (high urgency)' : '') + ': ' + event.text };
@@ -796,10 +893,13 @@ export class OrgController extends EventEmitter {
 
       case 'ask_user': {
         // Only the assistant asks. An agent runs unattended by design and
-        // reports back by mail; letting one block on a person would stall a
-        // whole delegation chain behind somebody's inbox.
+        // asks whoever gave it the work (`ask_requester`); letting one block
+        // on a person would stall a whole delegation chain behind them.
         if (context.audience !== 'assistant') {
-          return fail('Only the assistant can ask the user. Report what you need in your result instead.');
+          return fail(
+            'Only the assistant can ask the user. Inside a task, ask whoever gave you the work with ' +
+              'ask_requester; otherwise say what you need in your result.',
+          );
         }
         // Belt and braces: a scheduled run is not offered the tool at all
         // (see `register`), so getting here means the list was built for a
@@ -1128,11 +1228,9 @@ export class OrgController extends EventEmitter {
           // ended. Inside a task there is a parent to report to instead.
           requesterSessionId: context.taskId ? undefined : context.sessionId,
         });
+        // The card opens its own activity with the brief (`createTask`), so
+        // there is nothing more to write before anybody presses start.
         this.#announceTask(task, context.emit);
-        // A task with an owner gets its thread now rather than at its first
-        // run: the work order is the mail, and the owner should be able to
-        // ask about it before anybody presses start.
-        await this.#ensureTaskThread(task, context.emit);
         return { text: 'Task ' + task.id.slice(0, 8) + ' "' + task.title + '" is on the board.' };
       }
 
@@ -1163,6 +1261,7 @@ export class OrgController extends EventEmitter {
         const task = this.findTask(context.orgId, text('id'));
         if (!task) return fail('No task ' + text('id') + '.');
         const finished = await this.#runAwaited(context, task);
+        if (finished.status === 'blocked') return { text: this.#waitingText(finished) };
         if (finished.status !== 'done') {
           return fail('Task "' + finished.title + '" ' + finished.status + (finished.error ? ': ' + finished.error : '.'));
         }
@@ -1282,7 +1381,7 @@ export class OrgController extends EventEmitter {
     if (name === 'run_schedule') {
       if (cron.isRunning(job.id)) return { text: 'Schedule "' + job.name + '" is already running.' };
       void cron.runNow(job.id).catch((error: Error) => this.#log.warn('Manual schedule run failed', { error: error.message }));
-      return { text: 'Schedule "' + job.name + '" is running now; the result will arrive in your inbox.' };
+      return { text: 'Schedule "' + job.name + '" is running now; the result reaches the user as a notification.' };
     }
 
     // update_schedule
@@ -1476,14 +1575,12 @@ export class OrgController extends EventEmitter {
     this.#announceTask(board, context.emit);
     const shortId = board.id.slice(0, 8);
 
-    // The new task is its own errand: the mail that started the caller's run
-    // must not be answered by this one as well, and the note that continued
-    // the caller's thread is not part of this brief.
+    // The new task is its own errand: the note that continued the caller's
+    // task is not part of this brief.
     const runContext: ToolContext = {
       ...context,
       projectId,
       taskId: board.id,
-      sourceMail: undefined,
       taskNote: undefined,
       emit: wait ? context.emit : (): void => undefined,
       signal: wait ? context.signal : undefined,
@@ -1515,7 +1612,7 @@ export class OrgController extends EventEmitter {
         ? 'Your own task stays open until it is finished: when your run ends, you are started again with its result.'
         : context.sessionId
           ? 'When it ends - done, failed or with a question - a message arrives in this conversation, and you tell the user then.'
-          : 'It is on the board; how it ends is recorded in its task thread.';
+          : 'It is on the board; how it ends is recorded on its card.';
       return {
         text:
           (agent.id === context.agentId ? 'Started in the background' : 'Handed to ' + agent.name + ' (' + agent.slug + ')') +
@@ -1532,12 +1629,7 @@ export class OrgController extends EventEmitter {
     if (finished.status === 'blocked') {
       // Not a failure: the agent asked whoever wanted the work a question,
       // and the card stays open until it is answered.
-      return {
-        text:
-          agent.name + ' (' + agent.slug + ') has a question about task ' + shortId + ' "' + title +
-          '"; it is waiting in the mail thread.' +
-          (finished.result ? '\n\n' + clip(finished.result, RESULT_BUDGET) : ''),
-      };
+      return { text: this.#waitingText(finished) };
     }
     if (finished.status !== 'done') {
       return fail(
@@ -1552,600 +1644,330 @@ export class OrgController extends EventEmitter {
     };
   }
 
-  /** "user", "assistant", or an agent by slug/name/id - the tokens send_mail's to/cc take. */
-  #resolveMailTarget(orgId: string, token: string): MailWho | null {
-    const lower = token.toLowerCase();
-    if (lower === 'user') return { kind: 'user' };
-    if (lower === 'assistant') return { kind: 'assistant' };
-    const agent = this.#store.org.findAgent(orgId, token);
-    return agent ? { kind: 'agent', id: agent.id } : null;
-  }
-
-  #mailWhoLabel(who: MailWho): string {
-    if (who.kind !== 'agent') return who.kind;
-    return (who.id ? this.#store.org.getAgent(who.id)?.slug : undefined) ?? 'unknown agent';
-  }
+  /* ------------------------ questions, answers, notices ----------------------- */
 
   /**
-   * Whether `writer` already wrote to this recipient during the run that
-   * started at `since` - that is, answered the mail with `send_mail` rather
-   * than by ending its turn.
-   *
-   * Both are legitimate on their own: the turn's closing text is delivered
-   * as the reply, and `send_mail` is how anyone here writes to anyone at
-   * all. What is not legitimate is both, which is how a real answer was
-   * followed by a second mail reading "Done - the reply went out". The
-   * turn's own text loses, because by then the recipient has the answer in
-   * writing and the leftover text is bookkeeping about it.
-   *
-   * `box` narrows the question to one line of the address: for the duplicate
-   * reply any box counts, but a task only goes `blocked` on a To (decision
-   * E6) - a Cc to the requester is information, not a question.
+   * What a caller that waited on a task hears when the task stopped on a
+   * question: the question itself, and how to answer it. The agent's run is
+   * over; the card waits, and `answer_task` is what carries it on.
    */
-  #answeredDuringTurn(
-    orgId: string,
-    writer: MailWho,
-    recipient: MailWho,
-    since: number,
-    box?: 'to' | 'cc',
-  ): boolean {
-    const key = (who: MailWho): string => who.kind + ':' + (who.id ?? '');
-    const wanted = key(recipient);
-    return this.#store.org
-      .mailbox(orgId, writer, 'outbox', { limit: 20 })
-      .some(
-        (sent) =>
-          sent.createdAt >= since &&
-          sent.recipients.some(
-            (entry) =>
-              (!box || entry.box === box) &&
-              key({ kind: entry.recipientKind, id: entry.recipientId }) === wanted,
-          ),
-      );
-  }
-
-  /**
-   * The Cc line of a reply: everyone who was on the mail being answered,
-   * minus the two who are already on it - the sender, who is the reply's To,
-   * and the replier itself.
-   *
-   * Every automatic reply used to go out with an empty Cc, which quietly
-   * ended the thread for anyone looped in: somebody Cc'd on the opening mail
-   * saw that one line and never an answer to it, and the assistant copying
-   * the user in on a question it asked got the answer alone. Mail only works
-   * if being on a conversation means staying on it.
-   */
-  #replyCc(source: Mail | null, replier: MailWho, sender: MailWho): MailWho[] {
-    if (!source) return [];
-    const key = (who: MailWho): string => who.kind + ':' + (who.id ?? '');
-    const seen = new Set([key(replier), key(sender)]);
-    const cc: MailWho[] = [];
-    for (const recipient of source.recipients) {
-      const who: MailWho = { kind: recipient.recipientKind, id: recipient.recipientId };
-      if (seen.has(key(who))) continue;
-      seen.add(key(who));
-      cc.push(who);
-    }
-    // Whoever started the mail, when the reply is not addressed to them: an
-    // answer still concerns the person who asked, even two hops down.
-    const author: MailWho = { kind: source.fromKind, id: source.fromAgentId };
-    if (!seen.has(key(author))) cc.push(author);
-    return cc;
-  }
-
-  /**
-   * Deliver mail and, per the user's rule, start a real run for every To
-   * target that is an agent - never for Cc. Shared by the tool path
-   * (`#sendMail`, permission-checked) and `sendUserMail` (the user may mail
-   * anyone) and the automatic reply `run()` sends back when it finishes work
-   * that arrived as mail.
-   */
-  async #deliverMail(params: {
-    orgId: string;
-    from: MailWho;
-    to: MailWho[];
-    cc: MailWho[];
-    subject: string;
-    body: string;
-    inReplyTo?: string;
-    threadId?: string;
-    depth: number;
-    parentAssignmentId?: string;
-    projectId?: string;
-    /** What thread this mail opens; only 'assignment' changes delivery. */
-    kind?: MailThreadKind;
-    /**
-     * This mail is a finished run's own reply. It is delivered, but it wakes
-     * nobody: an answer is not new work, and letting one start a run is what
-     * turns two colleagues into an infinite exchange of pleasantries.
-     */
-    autoReply?: boolean;
-    emit: (event: AgentEvent) => void;
-  }): Promise<Mail> {
-    const threadId =
-      params.threadId ?? (params.inReplyTo ? (this.#store.org.getMail(params.inReplyTo)?.threadId ?? params.inReplyTo) : undefined);
-    const mail = this.#store.org.sendMail({
-      orgId: params.orgId,
-      from: params.from,
-      subject: params.subject,
-      body: params.body,
-      to: params.to,
-      cc: params.cc,
-      threadId,
-      inReplyTo: params.inReplyTo,
-      depth: params.depth,
-      assignmentId: params.parentAssignmentId,
-      kind: params.kind,
-    });
-    this.#announce({ type: 'mail', mail }, params.emit);
-
-    // A task thread is dispatched by its task, never by the To line: the
-    // thread's own row decides that, not the call's `kind` (decision E4).
-    // Reading the parameter instead let a reply into a task thread - where
-    // no caller passes a kind - start a second run beside the task, on no
-    // board and on no card.
-    let triggerTo = params.to;
-    if (!params.autoReply && mail.threadKind === 'assignment') {
-      this.#continueTask(mail, params.from, params.depth);
-      // Who this thread belongs to has now been dealt with by the task. A
-      // colleague on To who neither does this task nor asked for it is being
-      // asked for something new, and still gets the run the agent prompt
-      // promises them - delegation by mail is how work moves sideways here,
-      // and a mail an agent writes from inside a task lands in this thread
-      // whether it is about the task or not (`#sendMail` inherits it).
-      const thread = this.#store.org.getMailThread(params.orgId, mail.threadId);
-      const task = thread?.taskId ? this.#store.org.getTask(thread.taskId) : null;
-      if (!task) return mail;
-      triggerTo = params.to.filter((target) => !partyToTask(task, target));
-      if (!triggerTo.length) return mail;
-    }
-
-    if (!params.autoReply && params.depth < this.#config.org.maxDelegationDepth) {
-      const senderLabel = this.#mailWhoLabel(params.from);
-      for (const target of triggerTo) {
-        if (target.kind === 'assistant' && this.#runAssistantMail) {
-          // Where the turn's own answer stops being the reply: if the
-          // assistant wrote to the sender itself while thinking, that mail
-          // is the answer, and delivering the turn's closing text on top of
-          // it is how "Done - the reply went out" arrives as a second mail.
-          const turnStartedAt = Date.now();
-          this.#runAssistantMail({
-            mail,
-            senderLabel,
-            thread: this.#store.org
-              .thread(params.orgId, mail.threadId, { who: { kind: 'assistant' } })
-              .filter((entry) => entry.id !== mail.id),
-          })
-            .then((reply) => {
-              if (!reply.trim()) return;
-              if (this.#answeredDuringTurn(params.orgId, { kind: 'assistant' }, params.from, turnStartedAt)) {
-                this.#log.debug('Mail already answered by the turn itself', { mail: mail.id });
-                return;
-              }
-              return this.#deliverMail({
-                orgId: params.orgId,
-                from: { kind: 'assistant' },
-                to: [params.from],
-                cc: this.#replyCc(mail, { kind: 'assistant' }, params.from),
-                subject: mail.subject.startsWith('Re: ') ? mail.subject : 'Re: ' + mail.subject,
-                body: reply,
-                inReplyTo: mail.id,
-                threadId: mail.threadId,
-                depth: params.depth + 1,
-                autoReply: true,
-                emit: () => undefined,
-              }).then(() => undefined);
-            })
-            .catch((error: unknown) => {
-              this.#log.warn('Mail-triggered assistant turn failed', { error: String(error) });
-            });
-          continue;
-        }
-        if (target.kind !== 'agent' || !target.id) continue;
-        const agent = this.#store.org.getAgent(target.id);
-        if (!agent) continue;
-        this.run({
-          orgId: params.orgId,
-          agent,
-          // A human wrote the subject line; that is already a name, and the
-          // same one the thread runs under (concept 7.2, source two).
-          title: mail.subject.trim() || titleFromBrief(params.body),
-          task:
-            'Handle mail ' + mail.id + ' from ' + senderLabel + '.\nSubject: ' + mail.subject + '\n\n' + params.body,
-          projectId: params.projectId,
-          parentId: params.parentAssignmentId,
-          requesterKind: params.from.kind,
-          requesterAgentId: params.from.kind === 'agent' ? params.from.id : undefined,
-          depth: params.depth,
-          emit: () => undefined,
-          sourceMail: {
-            id: mail.id,
-            threadId: mail.threadId,
-            depth: params.depth,
-            fromKind: params.from.kind,
-            fromAgentId: params.from.id,
-            subject: mail.subject,
-          },
-        }).catch((error: unknown) => {
-          this.#log.warn('Mail-triggered run failed', { agent: agent.slug, error: String(error) });
-        });
-      }
-    }
-    return mail;
-  }
-
-  /**
-   * A mail in a task thread continues its task; it never starts a run beside
-   * it (decision E5). The task decides what happens, not the mail: a running
-   * task only receives - the run it is in already has its prompt, and
-   * aborting it would burn work that was started in good faith (F1) - while
-   * a task that has stopped, however it stopped, runs again with this mail
-   * as its brief. The new run hangs on the same task through
-   * `linkTaskAssignment`, so the card keeps its whole chain, and the old
-   * result stands until the new run has a better one.
-   */
-  #continueTask(mail: Mail, from: MailWho, depth: number): void {
-    if (depth >= this.#config.org.maxDelegationDepth) return;
-    const thread = this.#store.org.getMailThread(mail.orgId, mail.threadId);
-    // A task thread with no task: the mail that opens one arrives here
-    // before `sendTaskMail` has linked it, and its run is already on its
-    // way. Nothing else may start a run in a thread that owns no task.
-    if (!thread?.taskId) return;
-    const task = this.#store.org.getTask(thread.taskId);
-    if (!task || task.status === 'running') return;
+  #waitingText(task: Task): string {
     const agent = task.assigneeId ? this.#store.org.getAgent(task.assigneeId) : null;
-    if (!agent) return;
-    // A person writing in the thread always gets their run: they can see
-    // what came back and are deciding to try again. A machine writing in it
-    // cannot, so it gets a ceiling - without one, two agents mailing each
-    // other in a task thread re-run the same task until something else
-    // stops them, and a task that fails the same way every time costs a
-    // full model run per repetition.
-    if (from.kind !== 'user' && this.#store.org.taskRunCount(task.id) >= this.#config.org.maxTaskRuns) {
-      this.#log.warn('Task continuation refused: run ceiling reached', {
-        task: task.id,
-        runs: this.#store.org.taskRunCount(task.id),
-      });
-      return;
-    }
+    const who = agent ? agent.name + ' (' + agent.slug + ')' : 'The agent';
+    const question = this.#questionFor(task);
+    return (
+      who + ' has a question about task ' + task.id.slice(0, 8) + ' "' + task.title + '" and the task waits for ' +
+      'the answer.' +
+      (question ? '\n\nThe question:\n' + clip(question, RESULT_BUDGET) : '') +
+      (task.result ? '\n\nWhat it said:\n' + clip(task.result, RESULT_BUDGET) : '') +
+      '\n\nAnswer it with answer_task("' + task.id.slice(0, 8) + '", ...) once you know the answer; the task ' +
+      'then runs again with it.'
+    );
+  }
 
-    void this.runTask(
+  /** The last question asked on a card, if any - what a waiting task waits on. */
+  #questionFor(task: Task): string | undefined {
+    return this.#store.org.lastTaskEvent(task.id, 'question')?.text || undefined;
+  }
+
+  /**
+   * `ask_requester`: an agent inside a task asks whoever gave it the work.
+   *
+   * The question is written on the card, and the run is marked as having
+   * asked - which is all it takes: when the run ends, its leaf reads the mark
+   * and the card goes `blocked` instead of `done`, and the ending travels to
+   * whoever asked like every other ending does (report-back, the parent task,
+   * or a notification). This replaces a mail on the requester's To line, and
+   * the outbox scan that used to recognise one.
+   */
+  #askRequester(context: ToolContext, question: string): ToolCallResult {
+    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
+    if (context.audience !== 'agent') {
+      return fail('Only an agent working on a task asks its requester. You can ask the user with ask_user.');
+    }
+    if (!context.taskId) {
+      return fail(
+        'You are not working on a task, so nobody is waiting to be asked. Put the question in your result, ' +
+          'with what you assumed in the meantime.',
+      );
+    }
+    const task = this.#store.org.getTask(context.taskId);
+    if (!task) return fail('The task you are working on no longer exists.');
+    if (!question) return fail('A question needs its text.');
+    this.#taskEvent({
+      taskId: task.id,
+      kind: 'question',
+      actorKind: 'agent',
+      actorAgentId: context.agentId,
+      text: question,
+      assignmentId: context.parentAssignmentId,
+    });
+    if (context.parentAssignmentId) this.#askedRequester.add(context.parentAssignmentId);
+    return {
+      text:
+        'Your question is on the card of task ' + task.id.slice(0, 8) + '. End your run now with a short ' +
+        'summary of where the work stands and what you would do with each likely answer. The task waits ' +
+        'for the answer, and you are started again with it.',
+    };
+  }
+
+  /**
+   * The one way anything reaches the user outside a conversation
+   * (docs/concepts/mail-removal-notifications-and-task-activity.md). Stored,
+   * so the web can show it later and mark it read; announced as a
+   * `notification` event, which is what a push channel listens for. Never
+   * throws: a notification that cannot be written costs the notification,
+   * never the run or the status change that produced it - the returned
+   * record then lives only in this one event.
+   */
+  notifyUser(input: NotifyUserInput): Notification {
+    const orgId = input.orgId ?? this.activeOrganization().id;
+    let notification: Notification;
+    try {
+      notification = this.#store.org.createNotification({ ...input, orgId });
+    } catch (error) {
+      this.#log.warn('Notification could not be stored', { kind: input.kind, error: (error as Error).message });
+      notification = {
+        id: 'unsaved-' + Date.now().toString(36),
+        orgId,
+        kind: input.kind,
+        title: input.title,
+        body: input.body ?? '',
+        fromKind: input.fromKind ?? 'system',
+        fromAgentId: input.fromAgentId,
+        taskId: input.taskId,
+        cronJobId: input.cronJobId,
+        cronRunId: input.cronRunId,
+        sessionId: input.sessionId,
+        createdAt: Date.now(),
+      };
+    }
+    const event: AgentEvent = { type: 'notification', notification };
+    this.emit('notification', event);
+    return notification;
+  }
+
+  /**
+   * The user answers a task that is waiting on them - the entrance behind
+   * `POST /api/org/tasks/:id/answer` and a Telegram reply to a `question`
+   * notification. Same path as the `answer_task` tool, and like every answer
+   * from a person, uncapped: they can see what came back and are deciding to
+   * go again. The assistant or an agent may be named as `by` for a caller
+   * that answers on their behalf; the chain of command still applies then.
+   */
+  async answerTask(input: {
+    taskId: string;
+    answer: string;
+    by?: TaskAnswerer;
+    /** Narrows a prefix lookup to one company; the task's own otherwise. */
+    orgId?: string;
+  }): Promise<{ ok: true; task: Task } | { ok: false; reason: string }> {
+    const task = input.orgId
+      ? this.findTask(input.orgId, input.taskId)
+      : this.#store.org.getTask(input.taskId.trim());
+    if (!task) return { ok: false, reason: 'No task ' + input.taskId + '.' };
+    const answered = await this.#answer(task, input.answer.trim(), input.by ?? { kind: 'user' });
+    if (!answered.ok) return answered;
+    return { ok: true, task: this.#store.org.getTask(task.id) ?? task };
+  }
+
+  /**
+   * Answer a task and carry it on. The answer goes on the card first, whatever
+   * happens next - an answer that could not start a run is still the answer,
+   * and the next run finds it on the card.
+   *
+   * Who may answer is the chain of command: the user and the assistant any
+   * task, an agent only the tasks it handed out itself. A running task is not
+   * answered - its run has its prompt already, and aborting it would burn
+   * work started in good faith (F1).
+   */
+  async #answer(
+    task: Task,
+    answer: string,
+    by: TaskAnswerer,
+    context?: ToolContext,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (!answer) return { ok: false, reason: 'An answer needs text.' };
+    if (by.kind === 'agent' && (task.createdBy !== 'agent' || task.createdByAgentId !== by.agentId)) {
+      return {
+        ok: false,
+        reason: 'Only whoever handed this task out may answer it. Tell whoever gave you your own work instead.',
+      };
+    }
+    if (task.status === 'running') {
+      return { ok: false, reason: 'The task is running right now. Answer it once its run has stopped.' };
+    }
+    this.#taskEvent({
+      taskId: task.id,
+      kind: 'answer',
+      actorKind: by.kind,
+      actorAgentId: by.agentId,
+      text: answer,
+    });
+    const label =
+      by.kind === 'agent'
+        ? ((by.agentId ? this.#store.org.getAgent(by.agentId)?.slug : undefined) ?? 'an agent')
+        : by.kind === 'user'
+          ? 'The user'
+          : 'The assistant';
+    const question = this.#questionFor(task);
+    const note =
+      (question ? 'You asked:\n' + clip(question, 4000) + '\n\n' : '') +
+      label + ' answered:\n\n' + answer;
+    return this.#continueTask(task, by, note, context);
+  }
+
+  /**
+   * An answered task runs again, as the same task (decision E5): the new run
+   * hangs on the same card through `linkTaskAssignment`, so the card keeps
+   * its whole chain, and the old result stands until the new run has a
+   * better one.
+   *
+   * A person answering always gets their run. A machine answering cannot see
+   * what came back, so it gets a ceiling - without one, two agents answering
+   * each other re-run the same task until something else stops them, and a
+   * task that fails the same way every time costs a full model run per
+   * repetition.
+   *
+   * Answered from inside a task - a lead answering the question its own
+   * report's card is waiting on (R4) - the continuation is work that lead
+   * handed off, and its own task waits for it exactly as for an `assign`
+   * with wait=false.
+   */
+  #continueTask(
+    task: Task,
+    by: TaskAnswerer,
+    note: string,
+    context?: ToolContext,
+  ): { ok: true } | { ok: false; reason: string } {
+    const agent = task.assigneeId ? this.#store.org.getAgent(task.assigneeId) : null;
+    if (!agent && !this.#store.org.listTasks(task.orgId, { parentId: task.id }).length) {
+      return { ok: false, reason: 'The answer is on the card, but nobody is assigned to carry the task on.' };
+    }
+    const runs = this.#store.org.taskRunCount(task.id);
+    if (by.kind !== 'user' && runs >= this.#config.org.maxTaskRuns) {
+      this.#log.warn('Task continuation refused: run ceiling reached', { task: task.id, runs });
+      return {
+        ok: false,
+        reason:
+          'The answer is on the card, but the task has already run ' + runs + ' times - the most it may run ' +
+          'without the user. It stays as it is until they pick it up.',
+      };
+    }
+    const depth = context ? context.depth : -1;
+    if (depth + 1 >= this.#config.org.maxDelegationDepth) {
+      return { ok: false, reason: 'The answer is on the card, but delegation is nested too deep to run it from here.' };
+    }
+    const running = this.runTask(
       {
-        orgId: mail.orgId,
-        audience: 'assistant',
-        // One below the mail, so the leaf that carries out the task runs at
-        // the mail's own depth - exactly where the To-trigger put it.
-        depth: depth - 1,
+        orgId: task.orgId,
+        audience: context?.audience ?? 'assistant',
+        agentId: context?.agentId,
+        depth,
         projectId: task.projectId,
+        parentAssignmentId: context?.parentAssignmentId,
         emit: () => undefined,
-        sourceMail: {
-          id: mail.id,
-          threadId: mail.threadId,
-          depth,
-          fromKind: from.kind,
-          fromAgentId: from.id,
-          subject: mail.subject,
-        },
-        taskNote: this.#mailWhoLabel(from) + ' wrote back:\n\n' + mail.body,
+        taskNote: note,
       },
       task,
     ).catch((error: unknown) => {
       this.#log.warn('Task continuation failed', { task: task.id, error: String(error) });
+      return this.#store.org.getTask(task.id) ?? task;
     });
-  }
-
-  /**
-   * A task and the thread it is negotiated in are one thing (concept section
-   * 2), so a task that was not born as mail gets its work order written now:
-   * one mail from whoever asked for it to whoever does it, opening the
-   * thread the card is linked to.
-   *
-   * It delivers without triggering anything. An `assignment` thread is
-   * dispatched by its task, and at this moment the thread carries no task id
-   * yet - the link is made one line below - so `#continueTask` finds nothing
-   * and returns. Whoever created the task starts the run.
-   *
-   * A task nobody is assigned to gets no thread yet: there would be no
-   * second party to address, and it gets one as soon as it has an owner.
-   */
-  async #ensureTaskThread(task: Task, emit: (event: AgentEvent) => void): Promise<void> {
-    if (this.#store.org.getMailThreadForTask(task.orgId, task.id)) return;
-    if (!task.assigneeId || !this.#store.org.getAgent(task.assigneeId)) return;
-    // A schedule has nobody to write to. The thread exists so a task can be
-    // negotiated - questions asked, results returned, an ending explained -
-    // and all of that presumes a counterpart who is waiting. A job that
-    // fires at three in the morning has none: its outcome is delivered by
-    // the schedule's own inbox mail. Opening a thread here meant every
-    // nightly run wrote a work order to the agent and, at the end, a "was
-    // marked as done" note to the user - two mails a night per job, for
-    // work nobody was following.
-    if (task.scheduleId) return;
-    const from: MailWho =
-      task.createdBy === 'user'
-        ? { kind: 'user' }
-        : task.createdBy === 'agent' && task.createdByAgentId
-          ? { kind: 'agent', id: task.createdByAgentId }
-          : { kind: 'assistant' };
-    try {
-      const mail = await this.#deliverMail({
-        orgId: task.orgId,
-        from,
-        to: [{ kind: 'agent', id: task.assigneeId }],
-        cc: [],
-        subject: task.title,
-        body: task.description,
-        depth: 0,
-        kind: 'assignment',
-        projectId: task.projectId,
-        emit,
-      });
-      this.#store.org.linkMailThreadTask(task.orgId, mail.threadId, task.id);
-    } catch (error: unknown) {
-      this.#log.warn('Task thread could not be opened', { task: task.id, error: String(error) });
-    }
-  }
-
-  async #sendMail(
-    context: ToolContext,
-    toRaw: string,
-    ccRaw: string,
-    subject: string,
-    body: string,
-    inReplyTo?: string,
-  ): Promise<ToolCallResult> {
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
-    if (!toRaw) return fail('Name at least one recipient in "to".');
-    if (!subject) return fail('The mail needs a subject.');
-    if (!body) return fail('The mail is empty.');
-
-    const toTokens = toRaw.split(',').map((v) => v.trim()).filter(Boolean);
-    const ccTokens = ccRaw.split(',').map((v) => v.trim()).filter(Boolean);
-
-    const to: MailWho[] = [];
-    for (const token of toTokens) {
-      const target = this.#resolveMailTarget(context.orgId, token);
-      if (!target) return fail('No agent "' + token + '".');
-      to.push(target);
-    }
-    const cc: MailWho[] = [];
-    for (const token of ccTokens) {
-      const target = this.#resolveMailTarget(context.orgId, token);
-      if (!target) return fail('No agent "' + token + '".');
-      cc.push(target);
-    }
-
-    if (context.audience === 'agent') {
-      const self = context.agentId ? this.#store.org.getAgent(context.agentId) : null;
-      for (const target of [...to, ...cc]) {
-        if (target.kind !== 'agent') continue; // user and assistant are always reachable
-        const recipient = this.#store.org.getAgent(target.id ?? '');
-        const allowed =
-          recipient?.id === self?.managerId ||
-          recipient?.managerId === context.agentId ||
-          (Boolean(self?.teamId) && recipient?.teamId === self?.teamId);
-        if (!allowed) return fail('You may mail your manager, your team, your reports, the assistant, or the user.');
+    if (context?.taskId && task.parentId === context.taskId) {
+      let pending = this.#detached.get(context.taskId);
+      if (!pending) {
+        pending = new Map();
+        this.#detached.set(context.taskId, pending);
       }
+      pending.set(task.id, running);
     }
-
-    const from: MailWho = context.audience === 'agent' ? { kind: 'agent', id: context.agentId } : { kind: 'assistant' };
-    const depth = context.sourceMail ? context.sourceMail.depth + 1 : 0;
-    const mail = await this.#deliverMail({
-      orgId: context.orgId,
-      from,
-      to,
-      cc,
-      subject,
-      // A mail a scheduled run writes opens a report thread - it exists
-      // because a run produced it, no matter which box it came from. Replies
-      // inherit their thread anyway; only new threads land here.
-      kind: context.scheduled ? 'report' : undefined,
-      body,
-      inReplyTo,
-      threadId: inReplyTo ? undefined : context.sourceMail?.threadId,
-      depth,
-      parentAssignmentId: context.parentAssignmentId,
-      projectId: context.projectId,
-      emit: context.emit,
-    });
-    return { text: 'Mail sent to ' + [...to, ...cc].map((who) => this.#mailWhoLabel(who)).join(', ') + ': "' + mail.subject + '".' };
+    return { ok: true };
   }
 
-  /**
-   * The user sends mail to anyone, no permission circle applied - the one
-   * entrance behind `POST /api/org/mail`.
-   *
-   * What comes of it is read off the address line, never off a switch the
-   * user has to remember afterwards (decisions E2 and E3): exactly one agent
-   * on To is a work order and opens a task, Cc whoever you like. The
-   * assistant on To, the user on To, or several people on To is a
-   * conversation - the agents among them are woken exactly as before, and no
-   * card is created, because splitting work is `plan_task`'s job and not the
-   * address line's.
-   *
-   * A reply opens nothing either way: the thread it lands in decided long ago
-   * what it is, and a task thread carries its own task on (decision E5).
-   */
-  async sendUserMail(input: {
-    orgId: string;
-    to: string[];
-    cc?: string[];
-    subject: string;
-    body: string;
-    inReplyTo?: string;
-    projectId?: string;
-    emit?: (event: AgentEvent) => void;
-  }): Promise<{ mail: Mail; task?: Task }> {
-    const resolve = (token: string): MailWho => {
-      const target = this.#resolveMailTarget(input.orgId, token);
-      if (!target) throw new Error('No agent "' + token + '".');
-      return target;
-    };
-    const to = input.to.map(resolve);
-    const soleRecipient = input.to.length === 1 ? input.to[0] : undefined;
-    if (!input.inReplyTo && soleRecipient !== undefined && to.length === 1 && to[0]?.kind === 'agent') {
-      return this.sendTaskMail({
-        orgId: input.orgId,
-        to: soleRecipient,
-        cc: input.cc,
-        subject: input.subject,
-        body: input.body,
-        projectId: input.projectId,
-        emit: input.emit,
-      });
+  /** Append one line to a card's activity and tell everyone listening. Never throws. */
+  #taskEvent(input: {
+    taskId: string;
+    kind: TaskEventKind;
+    actorKind: TaskEventActor;
+    actorAgentId?: string;
+    text: string;
+    assignmentId?: string;
+  }): TaskEvent | null {
+    try {
+      const event = this.#store.org.addTaskEvent(input);
+      const announced: AgentEvent = { type: 'task-event', event };
+      this.emit('task-event', announced);
+      return event;
+    } catch (error) {
+      this.#log.warn('Task activity could not be written', { task: input.taskId, error: (error as Error).message });
+      return null;
     }
-    const mail = await this.#deliverMail({
-      orgId: input.orgId,
-      from: { kind: 'user' },
-      to,
-      cc: (input.cc ?? []).map(resolve),
-      subject: input.subject,
-      body: input.body,
-      inReplyTo: input.inReplyTo,
-      depth: 0,
-      projectId: input.projectId,
-      emit: input.emit ?? (() => undefined),
-    });
-    return { mail };
   }
 
   /**
-   * A work order as mail: one agent on the To line, one task on the board,
-   * one thread tying them together. The mail opens an `assignment` thread -
-   * delivered, but not auto-triggered, because the run happens here over the
-   * task, which is what keeps assignment, board and mail the same story.
-   * The agent's finished run replies into the thread; marking the task done
-   * posts a status note into it (see `notifyTaskStatus`).
-   */
-  async sendTaskMail(input: {
-    orgId: string;
-    to: string;
-    cc?: string[];
-    subject: string;
-    body: string;
-    projectId?: string;
-    emit?: (event: AgentEvent) => void;
-  }): Promise<{ mail: Mail; task: Task }> {
-    const target = this.#resolveMailTarget(input.orgId, input.to);
-    if (!target || target.kind !== 'agent' || !target.id) throw new Error('A work order needs exactly one agent on the To line.');
-
-    const task = this.#store.org.createTask({
-      orgId: input.orgId,
-      title: input.subject.trim() || '(no subject)',
-      description: input.body,
-      assigneeId: target.id,
-      createdBy: 'user',
-      projectId: input.projectId,
-    });
-    this.#announceTask(task, input.emit ?? (() => undefined));
-
-    const mail = await this.#deliverMail({
-      orgId: input.orgId,
-      from: { kind: 'user' },
-      to: [target],
-      cc: (input.cc ?? [])
-        .map((token) => this.#resolveMailTarget(input.orgId, token))
-        .filter((who): who is MailWho => who !== null),
-      subject: input.subject,
-      body: input.body,
-      depth: 0,
-      kind: 'assignment',
-      projectId: input.projectId,
-      emit: input.emit ?? (() => undefined),
-    });
-    this.#store.org.linkMailThreadTask(input.orgId, mail.threadId, task.id);
-
-    // The run goes over the task, so the board keeps the assignment and the
-    // task's own trail. sourceMail is what makes the finished run mail its
-    // result back into this thread. Fire-and-forget like every delivery
-    // trigger: the mail exists, the answer arrives when it arrives.
-    void this.runTask(
-      {
-        orgId: input.orgId,
-        audience: 'assistant',
-        depth: -1,
-        projectId: input.projectId,
-        emit: () => undefined,
-        sourceMail: { id: mail.id, threadId: mail.threadId, depth: 0, fromKind: 'user', subject: mail.subject },
-      },
-      this.#store.org.getTask(task.id) ?? task,
-    ).catch((error: unknown) => {
-      this.#log.warn('Task run for assignment mail failed', { task: task.id, error: String(error) });
-    });
-
-    return { mail, task };
-  }
-
-  /**
-   * A task's status change, told to its thread: a system note from the
-   * assistant as a reply, so the mail trail shows not just the work order
-   * and the result but also how the work ended. Never throws, and never
-   * wakes anyone - `autoReply` delivers without triggering.
+   * Who hears how a task ended, once the card itself has moved - the half of
+   * the old `notifyTaskStatus` that is about people rather than the thread.
    *
-   * It writes only when the thread has heard nothing else about this ending
-   * (decision E7). A finished run mails its result and a stuck one mails its
-   * question; both are the message, and a note repeating them is the same
-   * news twice. What the thread never hears on its own is a run that failed
-   * or was called off, and that is what the note is for.
+   * A conversation that handed the work off hears it as a turn of its own
+   * (`#reportBack`), a caller blocked on the run gets it as its return value,
+   * and a parent task collects its children itself. What is left is the user
+   * - a card they put up, or one the assistant made with no conversation to
+   * report into - and they get a notification. An agent's own errand with no
+   * parent is its own business and stays on the card.
    *
-   * `since` is when this ending began - a run passes its own start, so only
-   * that run's mail can speak for it. A change made by hand has no run and
-   * passes nothing: it happens now, the thread has said nothing about it,
-   * and the note always goes out. Judging every ending against the first
-   * run's start left a task cancelled by hand hours later silent, because
-   * the old result reply still counted as news about it.
+   * A question is never silent. A card waiting on an answer that none of the
+   * above will carry to anybody goes to the user as a `question`, schedule
+   * cards included: the job fired at three in the morning, but the person it
+   * works for is who can answer. The other endings keep the old silences: a
+   * schedule's card (its own notification is the delivery) and a
+   * cancellation the person just performed themselves.
    */
-  async notifyTaskStatus(
+  #deliverEnding(
     task: Task,
     status: 'done' | 'failed' | 'cancelled' | 'blocked',
-    since: number = Date.now(),
-  ): Promise<void> {
-    const orgId = task.orgId;
-    const thread = this.#store.org.getMailThreadForTask(orgId, task.id);
-    if (!thread) return;
-    const mails = this.#store.org.thread(orgId, thread.threadId, { limit: 50 });
-    const latest = mails.at(-1);
-    if (!latest) return;
-    // Anyone but the person who asked: their own mail is the work order or a
-    // follow-up to it, never an answer. Asking "not the user" instead
-    // silenced every task nobody mailed in - `#ensureTaskThread` writes that
-    // work order from the assistant or a lead, one millisecond before the
-    // run starts, so a delegated task that failed said nothing at all.
-    const asked = (entry: Mail): boolean =>
-      entry.fromKind === task.createdBy && (task.createdBy !== 'agent' || entry.fromAgentId === task.createdByAgentId);
-    if (mails.some((entry) => entry.createdAt >= since && !asked(entry))) return;
-    // The note is addressed to whoever asked for the work, which is not always
-    // the user: an agent that delegates through `assign` opens a task of its
-    // own, and a receipt for it in the user's inbox is a receipt for something
-    // they never ordered. On a morning of ordinary delegation that was eight
-    // of them. They still see it when they are on the thread - `#replyCc`
-    // keeps everyone the conversation already had.
-    const requester: MailWho =
-      task.createdBy === 'agent' && task.createdByAgentId
-        ? { kind: 'agent', id: task.createdByAgentId }
-        : { kind: task.createdBy };
-    try {
-      await this.#deliverMail({
-        orgId,
-        from: { kind: 'assistant' },
-        to: [requester],
-        // Everyone the conversation already has stays on it; the status note
-        // is bookkeeping, but bookkeeping the assignee should see.
-        cc: this.#replyCc(latest, { kind: 'assistant' }, requester),
-        subject: latest.subject.startsWith('Re: ') ? latest.subject : 'Re: ' + latest.subject,
-        body: statusNote(task, status),
-        inReplyTo: latest.id,
-        threadId: thread.threadId,
-        depth: latest.depth + 1,
-        autoReply: true,
-        emit: () => undefined,
-      });
-    } catch (error: unknown) {
-      this.#log.warn('Task status mail failed', { task: task.id, error: String(error) });
+    how: { by: RequesterKind; fromRun: boolean },
+  ): void {
+    const userCard = task.createdBy === 'user' && !task.requesterSessionId && !task.parentId;
+    const reportsBack = Boolean(task.requesterSessionId) && !task.parentId;
+    const awaited = this.#awaited.has(task.id);
+    if (status === 'blocked') {
+      // Only a run's own ending asks anything; a card set to `blocked` by
+      // hand carries no new question.
+      if (!how.fromRun) return;
+      if (!userCard) {
+        if (awaited || reportsBack) return;
+        // A lead's own report asked it: the lead's task waits for its
+        // children and is started again with the question (R4), and
+        // `#awaitDelegated` escalates it when it cannot be.
+        if (task.createdBy === 'agent' && task.parentId) return;
+      }
+      this.#escalateQuestion(task);
+      return;
     }
+    if (task.scheduleId) return;
+    if (status === 'cancelled' && how.by === 'user' && !how.fromRun) return;
+    // The user's own card tells them, even when the assistant happened to be
+    // waiting on the run: they put it up, and the card is theirs to follow.
+    if (!userCard) {
+      if (awaited || reportsBack || task.parentId) return;
+      if (task.createdBy !== 'assistant') return;
+    }
+    const agent = task.assigneeId ? this.#store.org.getAgent(task.assigneeId) : null;
+    this.notifyUser({ orgId: task.orgId, ...taskNotification(task, agent) });
+  }
+
+  /** Put a waiting card's question to the user, in the asking agent's name. */
+  #escalateQuestion(task: Task): void {
+    const current = this.#store.org.getTask(task.id) ?? task;
+    const asked = this.#store.org.lastTaskEvent(current.id, 'question');
+    const agentId = asked?.actorAgentId ?? current.assigneeId;
+    const agent = agentId ? this.#store.org.getAgent(agentId) : null;
+    this.notifyUser({ orgId: current.orgId, ...taskNotification({ ...current, status: 'blocked' }, agent, asked?.text) });
   }
 
   /** Emit into the turn that caused an event, and to everyone listening on the controller. */
-  #announce(event: Extract<AgentEvent, { type: 'assignment' | 'message' | 'mail' }>, emit: (event: AgentEvent) => void): void {
+  #announce(event: Extract<AgentEvent, { type: 'assignment' | 'message' }>, emit: (event: AgentEvent) => void): void {
     emit(event);
     this.emit(event.type, event);
   }
@@ -2175,7 +1997,7 @@ export class OrgController extends EventEmitter {
 
   /**
    * Run one assignment to completion: a fresh provider process with the
-   * agent's own prompt, memory, inbox and tools. Never throws; the returned
+   * agent's own prompt, memory and tools. Never throws; the returned
    * record says how it ended. Events flow to `input.emit` as they happen.
    */
   async run(input: RunAssignmentInput): Promise<Assignment> {
@@ -2194,6 +2016,7 @@ export class OrgController extends EventEmitter {
       requesterAgentId: input.requesterAgentId,
       depth: input.depth,
     });
+    input.onStarted?.(assignment);
 
     const view = (extra: Partial<AssignmentView> = {}): AssignmentView => toView(assignment, agent, extra);
     const announce = (extra: Partial<AssignmentView> = {}): void =>
@@ -2280,21 +2103,16 @@ export class OrgController extends EventEmitter {
       if (!existsSync(cwd)) return fail('The project directory ' + cwd + ' does not exist.', started);
 
       // Everything below is shared by every provider attempt of this
-      // assignment: the company, the memory, the inbox and the skills are the
-      // agent's, not the backend's.
+      // assignment: the company, the memory and the skills are the agent's,
+      // not the backend's.
       const snapshot = this.snapshot(input.orgId);
       const memories = this.#memoriesFor(agent.id, input.task);
-      const mailWho: MailWho = { kind: 'agent', id: agent.id };
-      const unreadMail = org.unreadMailFor(input.orgId, mailWho);
       const requester =
         input.requesterKind === 'agent'
           ? (org.getAgent(input.requesterAgentId ?? '')?.name ?? 'your manager')
           : input.requesterKind === 'user'
             ? 'the user, directly'
             : 'the assistant';
-      // Read once the context is assembled: the mail is in the prompt, so a
-      // provider switch must not deliver it a second time.
-      if (unreadMail.length) org.markMailReadFor(unreadMail, mailWho);
 
       // The project's own MCP servers - read from its `.mcp.json`, the same
       // file a person's own session in that folder would read - only start
@@ -2337,7 +2155,6 @@ export class OrgController extends EventEmitter {
         emit: input.emit,
         signal: controller.signal,
         scheduled: input.scheduled,
-        sourceMail: input.sourceMail,
       });
 
       let text = '';
@@ -2373,20 +2190,9 @@ export class OrgController extends EventEmitter {
             snapshot,
             project: project ?? undefined,
             memories,
-            mail: unreadMail,
             assignmentId: assignment.id,
             requestedBy: requester,
-            sourceMailSubject: input.sourceMail?.subject,
-            sourceMailId: input.sourceMail?.id,
-            sourceMailThreadId: input.sourceMail?.threadId,
-            // Everything said before the mail that woke this run, minus that mail
-            // itself - it is already the task above. Listed as an index only; the
-            // prompt points at `read_mail_thread` for the text.
-            sourceMailThread: input.sourceMail
-              ? org
-                  .thread(input.orgId, input.sourceMail.threadId, { who: mailWho })
-                  .filter((entry) => entry.id !== input.sourceMail?.id)
-              : undefined,
+            taskId: input.taskId,
             toolHints,
             skillsIndex,
             agentNotes: org.agentNotesSince(agent.id).slice(0, 2),
@@ -2521,45 +2327,8 @@ export class OrgController extends EventEmitter {
         void this.#learn(agent, input.task, text, usedProvider);
       }
       if (this.#config.org.autoReview) void this.#review(agent, done, input.task, text, usedProvider);
-      if (input.onAskedRequester) {
-        // Who asked for this: the sender of the mail that started the run,
-        // or else whoever handed the assignment over.
-        const requester: MailWho = input.sourceMail
-          ? { kind: input.sourceMail.fromKind, id: input.sourceMail.fromAgentId }
-          : { kind: input.requesterKind, id: input.requesterAgentId };
-        input.onAskedRequester(
-          this.#answeredDuringTurn(input.orgId, { kind: 'agent', id: agent.id }, requester, started, 'to'),
-        );
-      }
-      if (input.sourceMail) {
-        const sourceMail = input.sourceMail;
-        const replier: MailWho = { kind: 'agent', id: agent.id };
-        const sender: MailWho = { kind: sourceMail.fromKind, id: sourceMail.fromAgentId };
-        // An agent that mailed the requester itself has already answered;
-        // the report would arrive behind it as a duplicate.
-        if (this.#answeredDuringTurn(input.orgId, replier, sender, started)) return done;
-        this.#deliverMail({
-          orgId: input.orgId,
-          from: replier,
-          to: [sender],
-          // Everyone the mail was addressed to stays addressed: a reply that
-          // drops the Cc is where a thread silently loses its audience.
-          cc: this.#replyCc(this.#store.org.getMail(sourceMail.id), replier, sender),
-          subject: 'Re: ' + sourceMail.subject,
-          body: text,
-          inReplyTo: sourceMail.id,
-          threadId: sourceMail.threadId,
-          depth: sourceMail.depth + 1,
-          // The reply carries the run that produced it; the thread's task, if
-          // it has one, is one `task_assignments` hop away from here.
-          parentAssignmentId: assignment.id,
-          projectId: project?.id,
-          autoReply: true,
-          emit: input.emit,
-        }).catch((error: unknown) => {
-          this.#log.warn('Mail reply failed', { agent: agent.slug, error: String(error) });
-        });
-      }
+      // Asked by the run itself, through `ask_requester` - nothing to infer.
+      input.onAskedRequester?.(this.#askedRequester.has(assignment.id));
       return done;
     } catch (error) {
       this.#log.warn('Assignment failed', { id: assignment.id, error: (error as Error).message });
@@ -2602,6 +2371,7 @@ export class OrgController extends EventEmitter {
       // `done` is reserved for a run that actually ended in `done`.
       const settled = this.#store.org.getAssignment(assignment.id) ?? assignment;
       this.#store.turns.settle(assignment.id, settled.status === 'done' ? 'done' : 'interrupted', Date.now());
+      this.#askedRequester.delete(assignment.id);
       this.#active.delete(assignment.id);
       input.signal?.removeEventListener('abort', onAbort);
       this.#release();
@@ -2864,8 +2634,9 @@ export class OrgController extends EventEmitter {
       }
     }
     // The status goes through `setTaskStatus`, which is what makes this tool
-    // tell the task's mail thread what it did - closing a task from here
-    // used to leave whoever was waiting in that thread waiting for good.
+    // record on the card what it did and tell whoever is owed the ending -
+    // closing a task from here used to leave whoever was waiting waiting for
+    // good.
     //
     // It runs *first*. Writing the fields first meant a refused status left
     // the other edits standing and unannounced: the caller read "that is not
@@ -2992,6 +2763,13 @@ export class OrgController extends EventEmitter {
    * longer exists.
    */
   reportEnded(task: Task): void {
+    // On the card and to the user as well, by the same rules as any other
+    // ending: a card the user put up must not end in silence because the
+    // process that ran it died.
+    this.#recordStatus(task, 'system');
+    if (task.status === 'done' || task.status === 'failed' || task.status === 'cancelled') {
+      this.#deliverEnding(task, task.status, { by: 'assistant', fromRun: true });
+    }
     this.#reportBack(task);
   }
 
@@ -3009,7 +2787,9 @@ export class OrgController extends EventEmitter {
    * Tell whoever handed this work off how it ended (R2). Only a conversation
    * is told here: a caller blocked on the run gets its return value, a
    * subtask reports to the task it belongs to, and a card nobody handed over
-   * - the board, a schedule - keeps its thread and its push as before.
+   * - the board, a schedule - is told through `#deliverEnding`. A
+   * conversation that cannot take a turn (a schedule's, say) is the
+   * runtime's to fall back from: it turns the event into a notification.
    */
   #reportBack(task: Task): void {
     if (!task.requesterSessionId || task.parentId || this.#awaited.has(task.id)) return;
@@ -3021,7 +2801,7 @@ export class OrgController extends EventEmitter {
       sessionId: task.requesterSessionId,
       taskId: task.id,
       status: task.status,
-      notice: reportBackNotice(task, agent),
+      notice: reportBackNotice(task, agent, task.status === 'blocked' ? this.#questionFor(task) : undefined),
     };
     this.emit('report-back', event);
   }
@@ -3067,21 +2847,35 @@ export class OrgController extends EventEmitter {
       // A leaf that failed or is waiting on a question is not picked back up:
       // the children's results are on the board, and a re-run would paper
       // over the question or the failure. Nor is one past either ceiling.
+      // A child that came back with a question then has nobody left to ask
+      // it of, and a question is never silent: it goes to the user.
+      const current = children.map((child) => this.#store.org.getTask(child.id) ?? child);
       if (
         outcome.status !== 'done' ||
         outcome.askedRequester ||
         round >= MAX_DELEGATION_ROUNDS ||
         this.#store.org.taskRunCount(task.id) >= this.#config.org.maxTaskRuns
       ) {
+        for (const child of current) if (child.status === 'blocked') this.#escalateQuestion(child);
         continue;
       }
-      const results = children
+      const results = current
         .map((child) => {
           const who = child.assigneeId ? (this.#store.org.getAgent(child.assigneeId)?.slug ?? 'agent') : 'agent';
-          return (
-            '### ' + child.title + ' (' + who + ', ' + child.status + ')\n' +
-            clip(child.result ?? (child.error ? 'FAILED: ' + child.error : 'no output'), 6000)
-          );
+          const head = '### ' + child.title + ' (' + who + ', ' + child.status + ', task ' + child.id.slice(0, 8) + ')\n';
+          if (child.status === 'blocked') {
+            // R4 meets ask_requester: the child asked its requester, and the
+            // requester is this run. The question comes back here with the
+            // results, and answering it carries the child on.
+            const question = this.#questionFor(child);
+            return (
+              head + 'It stopped with a question for you:\n' + clip(question ?? child.result ?? '(no text)', 6000) +
+              '\nAnswer it with answer_task("' + child.id.slice(0, 8) + '", ...) - it then carries on in the ' +
+              'background, and you are started again once it is back. If you cannot answer it, say so in your ' +
+              'report instead.'
+            );
+          }
+          return head + clip(child.result ?? (child.error ? 'FAILED: ' + child.error : 'no output'), 6000);
         })
         .join('\n\n');
       const note =
@@ -3098,15 +2892,13 @@ export class OrgController extends EventEmitter {
 
     const started = Date.now();
 
-    // How a run ends is the thread's business, not an HTTP route's: every
-    // ending passes here, and `notifyTaskStatus` decides for itself whether
-    // the thread still needs to be told (decision E7).
+    // How a run ends is the card's business, not an HTTP route's: every
+    // ending passes here, and `setTaskStatus` records it and decides who is
+    // owed it (decision E7).
     // Through the one writer like everyone else. `fromRun` is what lets it
     // move a card that is `running`: this loop owns that card for the
     // duration, and it is the only writer that may decide the outcome from
-    // inside rather than having to cancel first. `started` keeps the
-    // thread's "has it already heard about this ending" check pinned to
-    // this run, not to the task's first one.
+    // inside rather than having to cancel first.
     const finish = async (status: TaskStatus, patch: { result?: string; error?: string }): Promise<Task> => {
       const moved = await this.setTaskStatus({
         task: reload(),
@@ -3121,8 +2913,8 @@ export class OrgController extends EventEmitter {
     };
 
     try {
-      // Planning and opening the thread belong inside the guard. They ran
-      // before it, so a failure in either escaped `#runTask` entirely - and
+      // Planning belongs inside the guard. It ran before it once, so a
+      // failure there escaped `#runTask` entirely - and
       // `Runtime.assign` had already put the card on the board by then,
       // leaving it sitting at `open` with no run, no error and no
       // explanation. The claim below is what makes the card `running`, and
@@ -3133,11 +2925,6 @@ export class OrgController extends EventEmitter {
         await this.planTask(context, reload());
         children = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
       }
-
-      // Every task is negotiated in a thread, whichever way it got here: one
-      // that was not born as mail has its work order written before it runs,
-      // so its result, its questions and its ending all have somewhere to go.
-      await this.#ensureTaskThread(reload(), context.emit);
 
       if (!org.claimTaskForRun(task.id, started)) {
         // Somebody finished or cancelled it while this was getting ready.
@@ -3189,11 +2976,10 @@ export class OrgController extends EventEmitter {
     }
 
     const waves = buildTaskWaves(children.filter((c) => c.status !== 'done'));
-    // A task that arrived as mail must not let every subtask's leaf answer
-    // the thread in turn - three subtasks would mail three replies. The
-    // waves run without the mail context; the parent speaks for the split
-    // once, below, with the combined result.
-    const waveContext: ToolContext = { ...context, sourceMail: undefined, taskNote: undefined };
+    // The note that continued the parent is the parent's; each subtask runs
+    // on its own brief. The parent speaks for the split once, below, with
+    // the combined result.
+    const waveContext: ToolContext = { ...context, taskNote: undefined };
     for (const wave of waves) {
       if (waveContext.signal?.aborted) break;
       await Promise.all(wave.map((child) => this.#runSubtask(waveContext, child)));
@@ -3218,32 +3004,6 @@ export class OrgController extends EventEmitter {
               result: combined,
               error: failed.length ? failed.length + ' of ' + all.length + ' subtasks failed.' : undefined,
             };
-    // The one answer the mailed split makes: the parent's combined report,
-    // through the same auto-reply path a leaf would have used. It goes out
-    // before the task is closed, so that the status note `finish()` may add
-    // sees a thread that has already heard how the work ended.
-    if (context.sourceMail && outcome.status === 'done') {
-      const sourceMail = context.sourceMail;
-      const replier: MailWho = { kind: 'assistant' };
-      const sender: MailWho = { kind: sourceMail.fromKind, id: sourceMail.fromAgentId };
-      if (!this.#answeredDuringTurn(context.orgId, replier, sender, started)) {
-        void this.#deliverMail({
-          orgId: context.orgId,
-          from: replier,
-          to: [sender],
-          cc: this.#replyCc(this.#store.org.getMail(sourceMail.id), replier, sender),
-          subject: 'Re: ' + sourceMail.subject,
-          body: combined,
-          inReplyTo: sourceMail.id,
-          threadId: sourceMail.threadId,
-          depth: sourceMail.depth + 1,
-          autoReply: true,
-          emit: context.emit,
-        }).catch((error: unknown) => {
-          this.#log.warn('Task completion mail failed', { task: task.id, error: String(error) });
-        });
-      }
-    }
     return await finish(outcome.status, { result: outcome.result, error: outcome.error });
   }
 
@@ -3312,7 +3072,23 @@ export class OrgController extends EventEmitter {
         });
       }
     }
-    this.#announceTask(org.getTask(child.id) ?? child, context.emit);
+    const ended = org.getTask(child.id) ?? child;
+    this.#announceTask(ended, context.emit);
+    // A subtask's ending is written straight to its row above - the parent's
+    // loop owns it - but it still goes on the card, and a question on it
+    // still has to reach somebody: the split's parent only collects results.
+    if (ended.status === 'done' || ended.status === 'failed' || ended.status === 'cancelled' || ended.status === 'blocked') {
+      this.#recordStatus(ended, 'system');
+      this.#deliverEnding(ended, ended.status, { by: 'assistant', fromRun: true });
+    }
+  }
+
+  /** The card's own line about where it now stands. */
+  #recordStatus(task: Task, actor: TaskEventActor): void {
+    if (task.status !== 'done' && task.status !== 'failed' && task.status !== 'cancelled' && task.status !== 'blocked') {
+      return;
+    }
+    this.#taskEvent({ taskId: task.id, kind: 'status', actorKind: actor, text: statusNote(task, task.status) });
   }
 
   /** One task, one agent, one assignment. */
@@ -3327,10 +3103,11 @@ export class OrgController extends EventEmitter {
         deps.map((dep) => '### ' + dep.title + '\n' + clip(dep.result ?? '', 6000)).join('\n\n') +
         '\n\n---\n\n'
       : '';
-    // What continued the thread comes after the work order: the order is
-    // what the task is, the note is what changed about it.
+    // What continued the task comes after the work order: the order is what
+    // the task is, the note is what changed about it.
     const note = context.taskNote ? '\n\n---\n\n' + context.taskNote : '';
     let askedRequester = false;
+    const runNumber = this.#store.org.taskRunCount(task.id) + 1;
     const assignment = await this.run({
       orgId: context.orgId,
       agent,
@@ -3349,26 +3126,43 @@ export class OrgController extends EventEmitter {
       // Who is waiting for this comes off the card, not off the audience
       // that happens to be driving the run. They are not the same thing: a
       // task the user put on the board is carried out by the assistant, so
-      // reading the audience said "assistant" and the agent's question went
-      // looking for an answer from a party that was never asked. Then
-      // `askedRequester` saw nobody waiting and the task closed as `done`
-      // with a real question still open in the user's inbox.
+      // reading the audience said "assistant" and the agent was told the
+      // work came from a party that never asked for it.
       //
-      // `notifyTaskStatus` and `partyToTask` already answer this question
-      // from `task.createdBy`; this is the third place agreeing with them.
+      // `#deliverEnding` answers this question from `task.createdBy` as
+      // well; the two have to agree.
       requesterKind: task.createdBy,
       requesterAgentId: task.createdBy === 'agent' ? task.createdByAgentId : undefined,
       depth: context.depth + 1,
       emit: context.emit,
       signal: context.signal,
-      // A task that arrived as mail answers in its thread: the leaf's run
-      // mails its result back to the sender, the way a To-line run does.
-      sourceMail: context.sourceMail,
       onAskedRequester: (asked) => {
         askedRequester = asked;
       },
+      onStarted: (started) => {
+        this.#taskEvent({
+          taskId: task.id,
+          kind: 'run-started',
+          actorKind: 'agent',
+          actorAgentId: agent.id,
+          text: agent.name + ' started run ' + runNumber + (context.taskNote ? ', carrying on with new input' : '') + '.',
+          assignmentId: started.id,
+        });
+      },
     });
     this.#store.org.linkTaskAssignment(task.id, assignment.id);
+    this.#taskEvent({
+      taskId: task.id,
+      kind: 'run-ended',
+      actorKind: 'agent',
+      actorAgentId: agent.id,
+      text:
+        'Run ' + runNumber + ' ' + (askedRequester && assignment.status === 'done' ? 'ended with a question' : assignment.status) +
+        (assignment.durationMs !== undefined ? ' after ' + Math.round(assignment.durationMs / 1000) + ' s' : '') +
+        (assignment.error ? ': ' + assignment.error : '.') +
+        (assignment.result ? '\n\n' + clip(assignment.result, 4000) : ''),
+      assignmentId: assignment.id,
+    });
     return {
       status: assignment.status,
       result: assignment.result,
@@ -3386,13 +3180,14 @@ export class OrgController extends EventEmitter {
    * idea of what else has to happen. The route checked for a conflicting
    * run and wrote a note into the task's mail thread; the tool did neither;
    * the CLI did not even emit an event, so an open browser never heard that
-   * the card had moved. Whether the thread learned a task was finished
+   * the card had moved. Whether anybody learned a task was finished
    * depended on which process happened to finish it, and that is what made
    * the board feel arbitrary.
    *
    * Three things belong together and now cannot come apart: the guard, the
-   * write, and telling everyone. `by` is who is asking, which decides
-   * whether a running task may be touched at all.
+   * write, and telling everyone - the card's activity, and whoever is owed
+   * the ending. `by` is who is asking, which decides whether a running task
+   * may be touched at all.
    *
    * Reopening clears what the previous life left behind. A card moved back
    * to `open` kept its old `finishedAt` and `result`, so every duration on
@@ -3412,7 +3207,10 @@ export class OrgController extends EventEmitter {
      * `running` card - everybody else has to cancel it first.
      */
     fromRun?: boolean;
-    /** When this ending began, for the thread's "has it heard yet" check. */
+    /**
+     * When this ending began. Read by nothing since the status note left
+     * the mail thread; kept so existing callers still type-check.
+     */
     since?: number;
     emit?: (event: AgentEvent) => void;
   }): Promise<{ ok: true; task: Task } | { ok: false; reason: string }> {
@@ -3471,23 +3269,13 @@ export class OrgController extends EventEmitter {
     org.updateTask(current.id, patch);
     const updated = org.getTask(current.id) ?? current;
     this.#announceTask(updated, input.emit ?? ((): void => undefined));
-    // A card from a schedule has no thread and no counterpart waiting in
-    // one - the schedule's own inbox mail is its delivery. Telling it how
-    // the work ended would put a second notification on top of that, every
-    // firing, for ever.
-    // Who still needs telling, once the card itself has moved.
-    //
-    // Not a schedule's card - its own inbox mail is the delivery. Not
-    // `blocked`, because being blocked *is* an agent's question sitting in
-    // the thread already, and a note saying "this is waiting for an answer"
-    // underneath the answer it is waiting for is pure noise. And not a
-    // cancellation the person just performed: they know, they did it.
-    const silent =
-      Boolean(updated.scheduleId) ||
-      input.to === 'blocked' ||
-      (input.to === 'cancelled' && input.by === 'user' && !input.fromRun);
-    if (!silent && (input.to === 'done' || input.to === 'failed' || input.to === 'cancelled')) {
-      await this.notifyTaskStatus(updated, input.to, input.since ?? now);
+    // Every ending and every wait goes on the card, whoever moved it; then
+    // whoever is owed the news gets it (`#deliverEnding` has the rules - who
+    // hears, and the old silences: a schedule's card, the person's own
+    // cancel).
+    if (input.to === 'done' || input.to === 'failed' || input.to === 'cancelled' || input.to === 'blocked') {
+      this.#recordStatus(updated, input.fromRun ? 'system' : input.by);
+      this.#deliverEnding(updated, input.to, { by: input.by, fromRun: Boolean(input.fromRun) });
     }
     return { ok: true, task: updated };
   }
@@ -4038,16 +3826,16 @@ function briefFor(task: Task): string {
 }
 
 /**
- * What the thread is told when a task ends - the work, not the bookkeeping.
+ * The card's `status` line when a task ends or waits - the work, not the
+ * bookkeeping.
  *
  * This used to say "The task X was marked as done." and nothing else, which
- * is the worst of both worlds: a mail that interrupts somebody and then
+ * is the worst of both worlds: a line that interrupts somebody and then
  * makes them go somewhere else to find the thing it is about. If a note is
- * worth sending at all it carries the result; if the result is not worth
- * reading, the note was not worth sending.
+ * worth writing at all it carries the result; if the result is not worth
+ * reading, the note was not worth writing.
  *
- * Clipped rather than whole: the full text is on the card and on the run,
- * and a mail is a notification, not an archive.
+ * Clipped rather than whole: the full text is on the card and on the run.
  */
 function statusNote(task: Task, status: 'done' | 'failed' | 'cancelled' | 'blocked'): string {
   const name = 'The task "' + task.title + '"';
@@ -4061,24 +3849,11 @@ function statusNote(task: Task, status: 'done' | 'failed' | 'cancelled' | 'block
 }
 
 /**
- * Whether a recipient is a party to a task: the agent who does it, or
- * whoever asked for it. Their mail in the task's thread is the negotiation
- * of the task itself and is dispatched by the task (`#continueTask`).
- * Anybody else on the To line is being asked for something new and keeps the
- * run the mail trigger has always given them.
- */
-function partyToTask(task: Task, who: MailWho): boolean {
-  if (who.kind === 'agent' && who.id && who.id === task.assigneeId) return true;
-  if (who.kind !== task.createdBy) return false;
-  return who.kind !== 'agent' || who.id === task.createdByAgentId;
-}
-
-/**
  * What one finished leaf run means for its card. A run that ended by asking
  * its requester a question is not done, whatever its own status says: the
  * work waits for an answer, and the card says so (decision E6). The error
  * falls the safe way round - a task wrongly left `blocked` sits on the board
- * and is carried on by the next reply, while a task wrongly called `done`
+ * and is carried on by the next answer, while a task wrongly called `done`
  * disappears.
  */
 function taskStatusFor(outcome: { status: Assignment['status']; askedRequester: boolean }): TaskStatus {

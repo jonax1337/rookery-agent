@@ -56,7 +56,7 @@ test('the system prompt carries identity, memories, history and the company bloc
     memories: [{ kind: 'preference', content: 'The user prefers German.', score: 1, reason: 'test' }],
     history: [{ id: '1', sessionId: 's', role: 'user', content: 'Earlier question', createdAt: now }],
     resumed: false,
-    orgBlock: assistantOrgBlock(DEFAULT_CONFIG, snapshot, []),
+    orgBlock: assistantOrgBlock(DEFAULT_CONFIG, snapshot),
   });
   assert.match(prompt, /Rookery/);
   assert.match(prompt, /Alex/);
@@ -259,23 +259,21 @@ test('skills live as SKILL.md folders and render into an index per audience', as
   assert.equal(store.get('deploy'), null);
 });
 
-test('the company block lists staff, the chain of command and the mail', () => {
-  const block = assistantOrgBlock(DEFAULT_CONFIG, snapshot, [
-    {
-      id: 'm1', orgId: 'org1', fromKind: 'agent', fromAgentId: 'a1', subject: 'Build status', body: 'Build is green.',
-      threadId: 'm1', depth: 0, createdAt: now,
-      recipients: [{ id: 'r1', mailId: 'm1', recipientKind: 'assistant', box: 'to' }],
-    },
-  ]);
+test('the company block lists staff and the chain of command, and never mail', () => {
+  const block = assistantOrgBlock(DEFAULT_CONFIG, snapshot);
   assert.match(block, /ben — Ben, Junior Engineer .* reports to: mara/);
   assert.match(block, /reports to: the assistant/);
-  assert.match(block, /from mara to assistant - subject: Build status\n\s*Build is green/);
+  // Mail is gone: the block tells the assistant how things reach whom now,
+  // and how a question an agent asked comes back to it.
+  assert.match(block, /There is no internal mail/);
+  assert.match(block, /answer with `answer_task`/);
+  assert.doesNotMatch(block, /send_mail|read_mail|Mail waiting for you/);
   assert.match(renderOrgOverview({ ...snapshot, agents: [] }), /none yet/);
 });
 
 test('an agent prompt is a member of staff, never the assistant', () => {
   const prompt = buildAgentPrompt({
-    config: DEFAULT_CONFIG, agent, snapshot, memories: [], mail: [],
+    config: DEFAULT_CONFIG, agent, snapshot, memories: [],
     assignmentId: 'abcdef12-0000', requestedBy: 'the assistant',
   });
   assert.match(prompt, /You are Mara, Backend Engineer at Rookery & Co\./);
@@ -289,28 +287,53 @@ test('an agent prompt is a member of staff, never the assistant', () => {
   assert.match(prompt, /stop at the first rung that holds/);
   const eager = buildAgentPrompt({
     config: { ...DEFAULT_CONFIG, org: { ...DEFAULT_CONFIG.org, lazyCoding: false } },
-    agent, snapshot, memories: [], mail: [],
+    agent, snapshot, memories: [],
     assignmentId: 'abcdef12-0000', requestedBy: 'the assistant',
   });
   assert.doesNotMatch(eager, /stop at the first rung that holds/);
   assert.match(eager, /Keep the API small/);
 });
 
-test('an agent prompt tells the agent to reply by mail when the assignment came from one', () => {
-  const prompt = buildAgentPrompt({
-    config: DEFAULT_CONFIG, agent, snapshot, memories: [], mail: [],
-    assignmentId: 'abcdef12-0000', requestedBy: 'Ben (ben)', sourceMailSubject: 'Status update',
+test('an agent prompt says the result is the answer, and offers ask_requester only inside a task', () => {
+  const inTask = buildAgentPrompt({
+    config: DEFAULT_CONFIG, agent, snapshot, memories: [],
+    assignmentId: 'abcdef12-0000', requestedBy: 'Ben (ben)', taskId: 'task-1',
   });
-  assert.match(prompt, /arrived as an email from Ben \(ben\), subject "Status update"/);
-  assert.match(prompt, /reply's body/);
+  assert.match(inTask, /Your result is the answer/);
+  assert.match(inTask, /ask it with `ask_requester`/);
+  assert.match(inTask, /`report_to_user`/);
+  assert.doesNotMatch(inTask, /send_mail|read_mail|letter to a colleague|salutation/, 'no mail etiquette, no roleplay');
+
+  const loose = buildAgentPrompt({
+    config: DEFAULT_CONFIG, agent, snapshot, memories: [],
+    assignmentId: 'abcdef12-0000', requestedBy: 'the assistant',
+  });
+  assert.doesNotMatch(loose, /ask_requester/, 'without a card there is nobody waiting to be asked');
+
+  // org.roleplay is read by nothing now: on or off, one register.
+  const roleplay = buildAgentPrompt({
+    config: { ...DEFAULT_CONFIG, org: { ...DEFAULT_CONFIG.org, roleplay: true } },
+    agent: { ...agent, voice: 'Warm and precise.' }, snapshot, memories: [],
+    assignmentId: 'abcdef12-0000', requestedBy: 'Ben (ben)', taskId: 'task-1',
+  });
+  assert.match(roleplay, /lead with the result, then what you changed or found/);
 });
 
-test('agents see the staff subset of the tools', () => {
+test('agents see the staff subset of the tools, and nobody sees mail', () => {
   const assistant = toolsFor('assistant').map((tool) => tool.name);
   const staff = toolsFor('agent').map((tool) => tool.name);
+  const watcher = toolsFor('assistant', { scheduled: true, watching: true }).map((tool) => tool.name);
   assert.ok(assistant.includes('hire_agent') && assistant.includes('assign'));
-  assert.ok(staff.includes('assign') && staff.includes('send_mail'));
+  assert.ok(staff.includes('assign') && staff.includes('ask_requester') && staff.includes('report_to_user'));
+  assert.ok(staff.includes('answer_task') && staff.includes('task_activity'));
   assert.ok(!staff.includes('hire_agent') && !staff.includes('create_project'));
+  assert.ok(assistant.includes('answer_task') && assistant.includes('task_activity'));
+  assert.ok(!assistant.includes('ask_requester'), 'the assistant asks the user with ask_user');
+  assert.ok(!assistant.includes('report_to_user'), 'an ordinary assistant turn answers the user itself');
+  assert.ok(watcher.includes('report_to_user'), 'the watcher, which has no conversation, reports');
+  for (const name of ['send_mail', 'read_mail', 'read_mail_thread']) {
+    assert.ok(![...assistant, ...staff, ...watcher].includes(name), name + ' is gone');
+  }
 });
 
 /* ------------------------------ text utils ---------------------------- */

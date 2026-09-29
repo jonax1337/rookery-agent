@@ -125,12 +125,13 @@ export interface ProviderQuota {
  * <subject>" thread in the conversations list that nobody had opened and
  * nobody could continue. Marking it as its own kind keeps the transcript
  * without pretending it is something to come back to: `listSessions` leaves
- * these out unless a caller asks for them by name.
+ * these out unless a caller asks for them by name. Nothing creates one any
+ * more - mail was removed in schema 27 - but the old rows keep their kind.
  *
  * `schedule` is the same idea for a cron run: each firing gets its own fresh
  * session to think in, nobody is there to hold that conversation, and the
- * outcome is what gets read later (from the inbox and from the schedule's
- * own run history), not the transcript sitting in the chat list.
+ * outcome is what gets read later (from its notification and from the
+ * schedule's own run history), not the transcript sitting in the chat list.
  */
 export type SessionKind = 'chat' | 'voice' | 'mail' | 'schedule';
 
@@ -242,8 +243,20 @@ export type AgentEvent =
   | { type: 'assignment'; assignment: AssignmentView }
   /** A message between agents, their manager or the assistant was posted. */
   | { type: 'message'; message: AgentMessage }
-  /** Mail was sent: the user, the assistant, or an agent, to To + Cc. */
+  /**
+   * Mail was sent: the user, the assistant, or an agent, to To + Cc.
+   * @deprecated Internal mail is gone (docs/concepts/mail-removal-notifications-and-task-activity.md);
+   * nothing in core emits this any more. Kept only so old clients still compile.
+   */
   | { type: 'mail'; mail: Mail }
+  /**
+   * Something for the user: a schedule's outcome, a question on one of their
+   * cards, a report an agent or the watcher wrote. Stored, readable later,
+   * and the one event a push channel carries to the phone.
+   */
+  | { type: 'notification'; notification: Notification }
+  /** One line was added to a task's activity - what happened on the card. */
+  | { type: 'task-event'; event: TaskEvent }
   /** A task on the board was created or changed state. */
   | { type: 'task'; task: Task }
   /** A schedule was created, edited, deleted, or one of its runs changed state. */
@@ -1391,13 +1404,16 @@ export interface AgentMessage {
 }
 
 /**
- * Company mail: To + Cc, a subject, threading, and per-recipient read state -
- * the real replacement for `AgentMessage`. Mailing an agent's To line
- * triggers a real run of that agent (see org/controller.ts `#deliverMail`);
- * Cc only ever delivers, it never starts anything.
+ * Company mail: To + Cc, a subject, threading, and per-recipient read state.
+ *
+ * Retired (schema 27, docs/concepts/mail-removal-notifications-and-task-activity.md):
+ * the tables stay and their content was migrated once into notifications and
+ * task activity, but nothing in the runtime writes mail any more. The types
+ * below stay exported so the web and server compile until they have moved
+ * over; every one of them is deprecated.
  */
 
-/** Whose mailbox: the user, the assistant, or one agent (`id` set). */
+/** Whose mailbox: the user, the assistant, or one agent (`id` set). @deprecated Mail was removed. */
 export interface MailWho {
   kind: RequesterKind;
   /** Agent id. Set only when `kind` is 'agent'. */
@@ -1410,16 +1426,18 @@ export interface MailWho {
  * work order that created a task; `report` is a thread a run started (self
  * reports, cron results, an agent writing first). The kind is what routes a
  * thread into the fixed inbox folders.
+ * @deprecated Mail was removed.
  */
 export type MailThreadKind = 'chat' | 'assignment' | 'report';
 
 /**
  * The fixed inbox folders, the same for every mailbox. `outbox` is not one of
  * them - what you sent is routed by sender, not by what the thread is.
+ * @deprecated Mail was removed.
  */
 export type MailFolder = 'inbox' | 'tasks' | 'reports' | 'archiv';
 
-/** The protocol row behind one `threadId` - see `mail_threads` in memory/db.ts. */
+/** The protocol row behind one `threadId` - see `mail_threads` in memory/db.ts. @deprecated Mail was removed. */
 export interface MailThread {
   threadId: string;
   orgId: string;
@@ -1430,6 +1448,7 @@ export interface MailThread {
   createdAt: number;
 }
 
+/** @deprecated Mail was removed; see `Notification` and `TaskEvent`. */
 export interface Mail {
   id: string;
   orgId: string;
@@ -1456,6 +1475,7 @@ export interface Mail {
   threadArchivedAt?: number;
 }
 
+/** @deprecated Mail was removed. */
 export interface MailRecipient {
   id: string;
   mailId: string;
@@ -1467,9 +1487,87 @@ export interface MailRecipient {
 }
 
 /**
+ * What a notification is about. It decides the icon, the push switch that
+ * governs it (`notificationPushAllowed` in config.ts) and what a reply to it
+ * means: a reply to a `question` answers the task, a reply to anything else
+ * starts a conversation about it.
+ *
+ *   schedule  a schedule's run finished (the old "Schedule X completed" mail)
+ *   watch     the board watcher found something that needs a person
+ *   task      a card the user asked for ended - done, failed or cancelled
+ *   question  an agent asked the user something about a card; always pushed
+ *   agent     an agent wrote to the user with `report_to_user`
+ *   sleep     the night promoted a retrieval policy
+ *   system    anything else Rookery says on its own, `notify` included
+ */
+export type NotificationKind = 'schedule' | 'watch' | 'task' | 'question' | 'agent' | 'sleep' | 'system';
+
+/**
+ * One message to the user - the only thing that still reaches them outside a
+ * conversation (docs/concepts/mail-removal-notifications-and-task-activity.md).
+ * Stored, read and archived like a mail used to be, but addressed to nobody
+ * else and answered through the thing it points at: the task, the schedule
+ * run, the conversation.
+ */
+export interface Notification {
+  id: string;
+  orgId: string;
+  kind: NotificationKind;
+  title: string;
+  body: string;
+  /** Who is speaking: the assistant, one agent (`fromAgentId`), or Rookery itself. */
+  fromKind: 'assistant' | 'agent' | 'system';
+  fromAgentId?: string;
+  /** The card it is about; for a `question`, the task an answer continues. */
+  taskId?: string;
+  /** The schedule and the run it reports, for `schedule`. */
+  cronJobId?: string;
+  cronRunId?: string;
+  /** The conversation it came out of, when there is one - where a reply continues. */
+  sessionId?: string;
+  readAt?: number;
+  archivedAt?: number;
+  createdAt: number;
+}
+
+/**
+ * What one line of a task's activity records.
+ *
+ *   created      the card was made; the text is the brief
+ *   run-started  an agent started working on it (`assignmentId` is the run)
+ *   run-ended    that run ended; the text says how, with its result
+ *   question     the agent asked whoever asked for the work (`ask_requester`)
+ *   answer       the requester answered (`answer_task`)
+ *   status       the card moved to done, failed, cancelled or blocked
+ *   note         anything else worth keeping on the card
+ */
+export type TaskEventKind = 'created' | 'run-started' | 'run-ended' | 'question' | 'answer' | 'note' | 'status';
+
+/** Who wrote a task event. `system` is Rookery's own bookkeeping. */
+export type TaskEventActor = 'user' | 'assistant' | 'agent' | 'system';
+
+/**
+ * One line of a task's activity - the card's own protocol, which replaces the
+ * mail thread a task used to be negotiated in. Oldest first; nothing in it is
+ * ever rewritten.
+ */
+export interface TaskEvent {
+  id: string;
+  taskId: string;
+  at: number;
+  kind: TaskEventKind;
+  actorKind: TaskEventActor;
+  /** Set only when `actorKind` is 'agent'. */
+  actorAgentId?: string;
+  text: string;
+  /** The run this line belongs to, when it belongs to one. */
+  assignmentId?: string;
+}
+
+/**
  * `blocked` is the state a task is in while it waits for an answer: its run
- * ended with a question to whoever assigned it, so the work is neither done
- * nor failed. The next mail in its thread continues it.
+ * ended with a question to whoever assigned it (`ask_requester`), so the work
+ * is neither done nor failed. `answer_task` continues it.
  */
 export type TaskStatus = 'open' | 'planned' | 'running' | 'blocked' | 'done' | 'failed' | 'cancelled';
 export type TaskPriority = 'low' | 'normal' | 'high';
@@ -2477,6 +2575,8 @@ export interface OrgConfig {
    * voice instead of a report (decision E10, section 6.3). Off restores
    * today's report register everywhere, unconditionally. Global, not
    * per-agent (decision E6/F6): the tone is a property of the company.
+   * @deprecated Ignored since mail was removed - there are no mail-born runs
+   * left to write letters. Kept so an existing config file still loads.
    */
   roleplay: boolean;
   /**
@@ -2676,9 +2776,33 @@ export interface TelegramPushConfig {
   enabled: boolean;
   assignments: boolean;
   cron: boolean;
+  /** Also governs `sleep` notifications (a promoted retrieval policy). */
   sleep: boolean;
+  /** Also governs `task` notifications: a card the user asked for ended. */
   tasks: boolean;
-  /** Mail the user is To or Cc on, pushed to the phone. See `mailFrom`. */
+  /**
+   * `schedule` and `watch` notifications: a schedule's outcome - agent jobs
+   * included, whoever the agent is - and what the board watcher reports.
+   * Read from `mail` when an old config file has no such key yet.
+   */
+  schedules: boolean;
+  /**
+   * `question` notifications. Always true: a question is never silent, and
+   * the switch exists only so the settings page can show that it is on.
+   */
+  questions: boolean;
+  /**
+   * `agent` notifications - what an agent writes with `report_to_user`:
+   * only from leads (a team lead, or anyone with reports), from every agent,
+   * or never. Read from `mail`/`mailFrom` when an old config file has no such
+   * key yet.
+   */
+  agents: 'leads' | 'all' | 'off';
+  /**
+   * Mail the user is To or Cc on, pushed to the phone. See `mailFrom`.
+   * @deprecated Mail was removed; only read as the fallback for `schedules`
+   * and `agents` in an old config file.
+   */
   mail: boolean;
   /**
    * The running commentary the web app shows as toasts: a memory stored, a
@@ -2700,6 +2824,7 @@ export interface TelegramPushConfig {
    * own initiative anyway. 'leads' adds the agents named as a team's lead,
    * so a team reaches the user through one voice; 'all' pushes every mail
    * that lands in the user's mailbox, which is what the web inbox is for.
+   * @deprecated Mail was removed; only read as the fallback for `agents`.
    */
   mailFrom: 'assistant' | 'leads' | 'all';
   /** "22:00"; empty means no quiet hours. */

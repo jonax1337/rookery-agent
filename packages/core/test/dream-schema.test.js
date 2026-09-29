@@ -25,7 +25,7 @@ function tempPath(t) {
 
 test('schema 25 is what a fresh database writes into meta', () => {
   const db = openDatabase(':memory:');
-  assert.equal(SCHEMA_VERSION, 26);
+  assert.equal(SCHEMA_VERSION, 27);
   const row = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
   assert.equal(row.value, String(SCHEMA_VERSION));
   db.close();
@@ -298,7 +298,7 @@ test('an existing schema-23 database migrates to 24 without losing rows', (t) =>
   const db = openDatabase(path);
   const version = db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
   assert.equal(version.value, String(SCHEMA_VERSION));
-  assert.equal(SCHEMA_VERSION, 26);
+  assert.equal(SCHEMA_VERSION, 27);
 
   // Schema 25: a card can name the schedule that made it, so a run that
   // appeared overnight is not indistinguishable from one the user asked for.

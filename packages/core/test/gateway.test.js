@@ -9,6 +9,8 @@ import {
   mailReadDoneCallbackData,
   missingGatewaySettings,
   nextGatewayAction,
+  notificationReadCallbackData,
+  notificationReadDoneCallbackData,
   pushRecipients,
   questionCallbackData,
   questionDoneCallbackData,
@@ -585,16 +587,27 @@ test('a spent question button is told apart from a live one', () => {
   assert.deepEqual(readCallbackData(questionDoneCallbackData()), { kind: 'question-done' });
 });
 
-test('the mail read button still reads back the way it always did', () => {
+test('a read button drawn before mail was removed still reads back the way it always did', () => {
+  // The phone keeps old messages, and the migration gave each mail's
+  // notification the mail's own id - so an old tap is still understood.
   assert.equal(mailReadCallbackData('mail-42'), 'mail:read:mail-42');
   assert.deepEqual(readCallbackData('mail:read:mail-42'), { kind: 'mail-read', mailId: 'mail-42' });
   assert.deepEqual(readCallbackData(mailReadDoneCallbackData()), { kind: 'mail-read-done' });
+});
+
+test('a notification read button reads back as the notification it was drawn for', () => {
+  const id = '0b4c8f3e-7c1d-4a2b-9e5f-3d2c1b0a9f8e';
+  const data = notificationReadCallbackData(id);
+  assert.ok(Buffer.byteLength(data) <= 64, 'within the 64 bytes Telegram allows');
+  assert.deepEqual(readCallbackData(data), { kind: 'notification-read', notificationId: id });
+  assert.deepEqual(readCallbackData(notificationReadDoneCallbackData()), { kind: 'notification-read-done' });
 });
 
 test('a button nobody drew is unknown rather than nearly understood', () => {
   assert.deepEqual(readCallbackData(undefined), { kind: 'unknown' });
   assert.deepEqual(readCallbackData(''), { kind: 'unknown' });
   assert.deepEqual(readCallbackData('mail:read:'), { kind: 'unknown' });
+  assert.deepEqual(readCallbackData('notif:read:'), { kind: 'unknown' });
   assert.deepEqual(readCallbackData('question:q-7'), { kind: 'unknown' });
   assert.deepEqual(readCallbackData('question:q-7:x'), { kind: 'unknown' });
   assert.deepEqual(readCallbackData('question:q-7:-1'), { kind: 'unknown' });
