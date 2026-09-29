@@ -530,7 +530,7 @@ export function AgentFormPage() {
                 onChange={(event) => set({ voice: event.target.value })}
               />
               <FieldDescription>
-                How they write, not what they can do - that stays in Instructions. Colours mail sent from a task; empty stays neutral.
+                How they write, not what they can do - that stays in Instructions. Colours their reports and questions; empty stays neutral.
               </FieldDescription>
             </Field>
           </FieldSet>

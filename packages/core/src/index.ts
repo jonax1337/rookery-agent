@@ -8,7 +8,16 @@
 export * from './types.js';
 export { PROFILE_FILES, ensureProfile, readProfile, writeProfileFile, readProfileExcerpt, searchProfile, renderProfile } from './profile.js';
 export * from './migration.js';
-export { DEFAULT_CONFIG, applyConfig, databasePath, ensureHome, loadConfig, saveConfig } from './config.js';
+export {
+  DEFAULT_CONFIG,
+  applyConfig,
+  databasePath,
+  ensureHome,
+  loadConfig,
+  notificationPushAllowed,
+  saveConfig,
+  upgradePushConfig,
+} from './config.js';
 export { createLogger, silentLogger, type LogLevel, type Logger } from './logger.js';
 
 export { openDatabase, reindex, SCHEMA_VERSION, type Db } from './memory/db.js';
@@ -328,6 +337,11 @@ export { buildSystemPrompt, deriveTitle, toSpeakableText, type ContextInput } fr
 export { OrgStore, slugify } from './org/store.js';
 export {
   OrgController,
+  reportBackNotice,
+  taskNotification,
+  type NotifyUserInput,
+  type TaskAnswerer,
+  type ReportBackEvent,
   describeAssignment,
   describePlan,
   toView,
@@ -341,7 +355,7 @@ export {
   buildAgentPrompt,
   renderBoard,
   renderInbox,
-  renderMail,
+  renderTaskActivity,
   renderOrgOverview,
   type AgentPromptInput,
   type OrgSnapshot,
@@ -506,6 +520,8 @@ export {
   type AssignInput,
   type AssistantOptions,
   type ChatInput,
+  type FollowUpEvent,
   type MemoryLearnedEvent,
+  type TurnRunner,
   type RunTaskInput,
 } from './runtime.js';

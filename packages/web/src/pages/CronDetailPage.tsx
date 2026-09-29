@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { NavLink, useNavigate, useParams } from 'react-router';
+import { NavLink, useNavigate, useParams, useSearchParams } from 'react-router';
 
 import {
   BriefcaseBusinessIcon as Building2Icon,
@@ -109,6 +109,23 @@ export function CronDetailPage() {
   useEffect(() => {
     void reload();
   }, [live, running, reload]);
+
+  // `?run=<id>` opens that run's report - the deep link a schedule notification uses.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const runParam = searchParams.get('run');
+  useEffect(() => {
+    if (!runParam || !detail) return;
+    const run = detail.runs.find((entry) => entry.id === runParam);
+    if (run) setReport(run);
+    setSearchParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        next.delete('run');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [runParam, detail, setSearchParams]);
 
   const job = detail?.job;
   const scriptNeedsReview = job?.kind === 'script' && job.permission !== 'full';

@@ -25,7 +25,21 @@ import type { ServerContext } from '../context.js';
  * for a push notification.
  */
 
-export type OriginKind = 'mail' | 'cron' | 'sleep' | 'assignment' | 'task' | 'notify' | 'digest' | 'answer';
+/**
+ * `mail` is only read back: registries written before mail was removed still
+ * hold such entries, and a reply to one of those messages is answered from
+ * the notification the mail was migrated into (same id).
+ */
+export type OriginKind =
+  | 'notification'
+  | 'mail'
+  | 'cron'
+  | 'sleep'
+  | 'assignment'
+  | 'task'
+  | 'notify'
+  | 'digest'
+  | 'answer';
 
 export interface MessageOrigin {
   kind: OriginKind;
@@ -204,19 +218,26 @@ export function originContext(context: ServerContext, origin: MessageOrigin): st
   const store = context.assistant.store;
 
   switch (origin.kind) {
+    // An old `mail` entry points at the notification its mail became: the
+    // migration kept the mail's id.
+    case 'notification':
     case 'mail': {
-      const mail = origin.ref ? store.org.getMail(origin.ref) : null;
-      if (!mail) break;
+      const notification = origin.ref ? store.org.getNotification(origin.ref) : null;
+      if (!notification) break;
       const sender =
-        mail.fromKind === 'assistant'
+        notification.fromKind === 'assistant'
           ? context.config.assistantName
-          : (agentName(context, mail.fromAgentId) ?? mail.fromKind);
-      return [
-        `Mail from ${sender}, ${stamp(mail.createdAt)}`,
-        `Subject: ${mail.subject}`,
-        '',
-        mail.body.trim(),
-      ].join('\n');
+          : notification.fromKind === 'agent'
+            ? (agentName(context, notification.fromAgentId) ?? 'an agent')
+            : 'Rookery';
+      const lines = [
+        `Notification (${notification.kind}) from ${sender}, ${stamp(notification.createdAt)}`,
+        `Title: ${notification.title}`,
+      ];
+      if (notification.body.trim()) lines.push('', notification.body.trim());
+      const task = notification.taskId ? store.org.getTask(notification.taskId) : null;
+      if (task) lines.push('', `It is about the task “${task.title}” (${task.id}), now ${task.status}.`);
+      return lines.join('\n');
     }
 
     case 'cron': {
@@ -292,7 +313,8 @@ export interface Thread {
 /** A title a person can find in the sidebar three days later. */
 function threadTitle(origin: MessageOrigin): string {
   const prefix: Record<OriginKind, string> = {
-    mail: 'Mail',
+    notification: 'Notification',
+    mail: 'Notification',
     cron: 'Schedule',
     sleep: 'Sleep',
     assignment: 'Assignment',

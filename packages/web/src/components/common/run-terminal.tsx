@@ -112,8 +112,29 @@ export function RunTerminal({
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
-
-    const input = term.onData((data) => socket.sendTuiInput(assignmentId, data));
+    // One process, one size - and several places that may show it (the
+    // conversation, a run page, every tile of the workspace grid). Whoever
+    // opened it last or types into it sets the size; everyone else takes that
+    // size over instead of pushing their own back, which is what used to
+    // leave the others skewed with every repaint.
+    const drive = (): void => {
+      try {
+        fit.fit();
+        socket.resizeTui(assignmentId, term.cols, term.rows);
+      } catch {
+        // Not laid out yet.
+      }
+    };
+    // Measure before asking for the screen: the process is set to this size
+    // first, and the snapshot then arrives drawn for exactly these columns.
+    // A snapshot written into the 80-column default and fitted afterwards is
+    // what used to come out skewed.
+    drive();
+    const input = term.onData((data) => {
+      const proposed = fit.proposeDimensions();
+      if (proposed && (proposed.cols !== term.cols || proposed.rows !== term.rows)) drive();
+      socket.sendTuiInput(assignmentId, data);
+    });
     const off = socket.onTui((frame) => {
       if (frame.assignmentId !== assignmentId) return;
       if (frame.type === 'tui-snapshot') {
@@ -129,6 +150,10 @@ export function RunTerminal({
         term.write(frame.data);
         note(frame.data);
       } else {
+        const { cols, rows } = frame.info;
+        if (frame.info.state !== 'exited' && cols && rows && (cols !== term.cols || rows !== term.rows)) {
+          term.resize(cols, rows);
+        }
         setInfo(frame.info.state === 'exited' ? null : frame.info);
       }
     });
@@ -231,7 +256,11 @@ export function RunTerminal({
         className={cn(
           'relative min-h-[320px] overflow-hidden rounded-lg border',
           showHeader ? 'h-[560px]' : 'flex-1',
-          !live && 'hidden',
+          // Laid out but invisible while the server answers, so the terminal
+          // can be measured before its screen arrives; gone only when there
+          // is no terminal at all.
+          info === undefined && 'invisible',
+          info === null && 'hidden',
         )}
         style={{ background: THEME.background }}
       >

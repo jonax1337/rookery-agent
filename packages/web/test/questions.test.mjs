@@ -54,6 +54,7 @@ test('a question waits inside a running turn and leaves when it is closed', asyn
     send(payload, cb) { callbacks = cb; return 'turn'; },
     abort() {},
     answer(id, body) { sent.push({ id, body }); return true; },
+    attachConversation() {},
   };
   const render = () => { reset(); return useChat(socket, 'session'); };
   let chat = render();
@@ -106,7 +107,7 @@ test('a closed socket posts the answer instead of losing it, and a failed post k
   t.after(() => { globalThis.fetch = previous; });
   const { react, reset } = harness();
   const { useChat } = await load('hooks/useChat.ts', { react });
-  const socket = { send() { return 'turn'; }, abort() {}, answer() { return false; } };
+  const socket = { send() { return 'turn'; }, abort() {}, answer() { return false; }, attachConversation() {} };
   const render = () => { reset(); return useChat(socket, 'session'); };
   let chat = render();
   chat.openQuestion(asked('q 1'));

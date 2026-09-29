@@ -103,7 +103,9 @@ export async function registerWebsocketRoutes(
 
           // A run's Claude Code terminal. Subscribing first, snapshot
           // second: output that arrives in between is sent twice at worst,
-          // never lost.
+          // never lost. The snapshot is the screen as it is (the emulator
+          // mirroring the process), not the raw bytes that painted it - those
+          // only make sense at the size they were painted for.
           case 'tui-watch': {
             const { assignmentId } = frame.data;
             let watched = context.tuiWatchers.get(socket);
@@ -112,12 +114,13 @@ export async function registerWebsocketRoutes(
               context.tuiWatchers.set(socket, watched);
             }
             watched.add(assignmentId);
-            const snapshot = tuiSessions.snapshot(assignmentId);
-            sendFrame(socket, {
-              type: 'tui-snapshot',
-              assignmentId,
-              info: snapshot?.info ?? null,
-              data: snapshot?.data ?? '',
+            void tuiSessions.screen(assignmentId).then((screen) => {
+              sendFrame(socket, {
+                type: 'tui-snapshot',
+                assignmentId,
+                info: screen?.info ?? null,
+                data: screen?.data ?? '',
+              });
             });
             return;
           }
@@ -197,6 +200,10 @@ export async function registerWebsocketRoutes(
           // the `attached` reply lines the two up by sequence number.
           case 'attach':
             hub.attach(frame.data.sessionId, socket);
+            return;
+
+          case 'detach':
+            hub.leave(frame.data.sessionId, socket);
             return;
 
           // A chat turn and a direct assignment differ only in which

@@ -8,8 +8,8 @@ import {
   ClipboardCheckIcon as ListTodoIcon,
   ExternalLinkIcon as SquareArrowOutUpRightIcon,
   FolderOpenIcon as FolderIcon,
+  CircleHelpIcon,
   LinkIcon,
-  MailboxIcon,
   PenToolIcon as PencilIcon,
   PenToolIcon as PencilLineIcon,
   PlayIcon as PlayAnimatedIcon,
@@ -35,7 +35,9 @@ import type {
   AssignmentView,
   Task,
   TaskDetail,
+  TaskEvent,
 } from '@/lib/types';
+import { openQuestion } from '@/lib/notifications';
 import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
 
@@ -53,7 +55,8 @@ import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { useCancelAssignment } from '@/components/common/entity-actions';
 import { RunTerminal } from '@/components/common/run-terminal';
 import { LiveRunList } from '@/components/common/live-run-list';
-import { MailThreadView } from '@/components/common/mail-thread';
+import { TaskActivity } from '@/components/common/task-activity';
+import { TaskAnswerBox } from '@/components/common/task-answer-box';
 import { MetaList, MetaListSkeleton } from '@/components/common/meta-list';
 import { ResultCard } from '@/components/common/result-card';
 import { RowMenuButton } from '@/components/common/row-menu-button';
@@ -123,7 +126,7 @@ import type { IconComponent } from "@/components/icons";
  * of open runs; the text itself lives one click away, on the run.
  */
 
-type TabValue = 'ueberblick' | 'thread' | 'teilaufgaben' | 'laeufe' | 'ergebnis';
+type TabValue = 'ueberblick' | 'activity' | 'teilaufgaben' | 'laeufe' | 'ergebnis';
 
 /** Statuses in which a run is still open, for the live list and the tab badge. */
 const OPEN = new Set(['pending', 'running']);
@@ -174,6 +177,51 @@ export function TaskDetailPage() {
     const fromBoard = tasks.childrenOf(id);
     return fromBoard.length > 0 ? fromBoard : (detail?.children ?? []);
   }, [detail?.children, id, tasks]);
+
+  /* ------------------------------ the activity --------------------------- */
+
+  // The record brings the activity up to now; the socket appends what
+  // happens while the page is open, so a question or a run's end shows up
+  // without a reload.
+  const [events, setEvents] = useState<TaskEvent[] | null>(null);
+  useEffect(() => {
+    setEvents(null);
+  }, [id]);
+  useEffect(() => {
+    if (!detail || detail.task.id !== id) return;
+    const loaded = detail.events ?? [];
+    setEvents((current) => {
+      if (!current) return loaded;
+      // Keep anything the socket delivered that the fetch did not have yet.
+      const known = new Set(loaded.map((event) => event.id));
+      return [...loaded, ...current.filter((event) => !known.has(event.id))].sort((a, b) => a.at - b.at);
+    });
+  }, [detail, id]);
+  useEffect(
+    () =>
+      socket.onTaskEvent((event) => {
+        if (event.taskId !== id) return;
+        setEvents((current) =>
+          current === null || current.some((entry) => entry.id === event.id) ? current : [...current, event],
+        );
+      }),
+    [socket, id],
+  );
+
+  /** The question the card waits on - only while it is actually blocked. */
+  const question = useMemo(
+    () => (task?.status === 'blocked' && events ? openQuestion(events) : null),
+    [task?.status, events],
+  );
+  const questionAsker = question
+    ? question.actorKind === 'agent'
+      ? (org.agentById(question.actorAgentId ?? '')?.name ?? 'Former agent')
+      : question.actorKind === 'user'
+        ? 'You'
+        : question.actorKind === 'system'
+          ? 'Rookery'
+          : 'The assistant'
+    : '';
 
   /* -------------------------------- the runs ----------------------------- */
 
@@ -715,18 +763,6 @@ export function TaskDetailPage() {
                     </span>
                   ),
               },
-              // The thread the task was born in - the other end of the chain
-              // Mail-Chip → Task → Assignment → Reply, one click back.
-              ...(detail?.thread
-                ? [
-                    {
-                      label: 'Mailbox',
-                      value: 'Open thread',
-                      icon: MailboxIcon,
-                      to: '/inbox?mailbox=user&thread=' + detail.thread.threadId,
-                    },
-                  ]
-                : []),
             ]}
           />
         </div>
@@ -746,6 +782,33 @@ export function TaskDetailPage() {
         </Fade>
       ) : null}
 
+      {question ? (
+        <Fade delay={50}>
+          <div className="px-4 lg:px-6">
+            <Card className="border-amber-500/50">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <CircleHelpIcon className="size-4 text-amber-500" aria-hidden="true" />
+                  Waiting for an answer
+                </CardTitle>
+                <CardDescription>
+                  {questionAsker} asked {timeAgo(question.at)}. Your answer continues the task.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                <ResultMarkdown text={question.text} />
+                <TaskAnswerBox
+                  key={question.id}
+                  taskId={task.id}
+                  askedBy={questionAsker}
+                  onAnswered={() => void reload()}
+                />
+              </CardContent>
+            </Card>
+          </div>
+        </Fade>
+      ) : null}
+
       <Fade delay={100}>
         <StatCards items={cards} />
       </Fade>
@@ -755,9 +818,16 @@ export function TaskDetailPage() {
           <Tabs value={tab} onValueChange={(value) => setTab(value as TabValue)}>
             <TabsList>
               <TabsTrigger value="ueberblick">Overview</TabsTrigger>
-              {/* A case is one page, not two: the thread it was ordered and
-                  answered in belongs next to the task, not behind a link. */}
-              {detail?.thread ? <TabsTrigger value="thread">Thread</TabsTrigger> : null}
+              {/* A case is one page, not two: what was asked and answered
+                  about it belongs next to the task, not behind a link. */}
+              <TabsTrigger value="activity">
+                Activity
+                {question ? (
+                  <Badge variant="secondary" className="tabular-nums">
+                    1
+                  </Badge>
+                ) : null}
+              </TabsTrigger>
               <TabsTrigger value="teilaufgaben">
                 Subtasks
                 {children.length > 0 ? (
@@ -820,20 +890,20 @@ export function TaskDetailPage() {
             ) : null}
           </TabsContent>
 
-          {/* ------------------------------ thread ----------------------------- */}
-          {detail?.thread ? (
-            <TabsContent value="thread" className="mt-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Thread</CardTitle>
-                  <CardDescription>Everything said about this task, oldest first.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <MailThreadView threadId={detail.thread.threadId} />
-                </CardContent>
-              </Card>
-            </TabsContent>
-          ) : null}
+          {/* ----------------------------- activity ---------------------------- */}
+          <TabsContent value="activity" className="mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Activity</CardTitle>
+                <CardDescription>
+                  Everything that happened on this task, oldest first: runs, questions, answers and status changes.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <TaskActivity events={events} highlightId={question?.id} />
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           {/* ----------------------------- subtasks ---------------------------- */}
           <TabsContent value="teilaufgaben" className="mt-4">

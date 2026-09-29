@@ -269,24 +269,10 @@ export function ChatPage() {
   const [mode, setMode] = React.useState<ChatMode>(() => readChatMode(activeId));
   const [opening, setOpening] = React.useState(false);
   React.useEffect(() => setMode(readChatMode(activeId)), [activeId]);
-  // A terminal opened elsewhere - the workspace, another tab - is this
-  // conversation's terminal too; showing the chat beside it would pretend
-  // the conversation were not in the terminal at all.
-  React.useEffect(() => {
-    if (!activeId) return;
-    let live = true;
-    void api
-      .terminals()
-      .then((open) => {
-        if (!live || !open.some((entry) => entry.key === 'chat:' + activeId)) return;
-        writeChatMode(activeId, 'terminal');
-        setMode('terminal');
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, [activeId]);
+  // Which view is shown is the person's choice and nothing else. An open
+  // terminal used to switch the page to it - back when having one meant
+  // somebody had chosen the terminal. Now every conversation is answered in
+  // its terminal (T1), so that rule flipped every chat after its first answer.
 
   // One conversation, one model choice: whatever `/model` picked inside the
   // terminal is what the composer shows - and sends - when the chat takes
@@ -350,7 +336,8 @@ export function ChatPage() {
     setMode('chat');
     if (!activeId) return;
     writeChatMode(activeId, 'chat');
-    socket.closeTui(activeId);
+    // The terminal stays: it is the process the chat is answered in, too.
+    // Nothing to close - only the view changes.
     // What was said in the terminal is in the conversation now; the thread on
     // screen still shows how it looked before the switch.
     const loaded = await loadSession(activeId);

@@ -6,8 +6,9 @@ import type { Message, Session } from '../lib/types';
  * Session list plus the active session and its transcript.
  *
  * Chat is assistant-only: the list always holds the assistant's own
- * conversations. Agent communication runs through mail instead (`Mail`,
- * `InboxPage`), never through a chat thread.
+ * conversations. Agent work runs through tasks and their activity, and what
+ * reaches the user arrives as a notification (`InboxPage`), never through a
+ * chat thread.
  */
 export function useSessions(onOffline?: (offline: boolean) => void) {
   const [sessions, setSessions] = useState<Session[]>([]);

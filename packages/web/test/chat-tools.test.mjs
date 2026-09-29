@@ -72,7 +72,7 @@ test('tools survive streaming, completion, the next turn and transcript reload d
     useCallback(fn) { return fn; }, useMemo(fn) { return fn(); },
   };
   const { useChat } = await load('hooks/useChat.ts', { react });
-  const socket = { send(payload, cb) { callbacks = cb; return 'turn'; }, abort() {} };
+  const socket = { send(payload, cb) { callbacks = cb; return 'turn'; }, abort() {}, attachConversation() {} };
   const render = () => { index = 0; return useChat(socket, 'session'); };
   let chat = render(); chat.send({ text: 'hello', provider: 'claude' });
   const events = [
@@ -167,7 +167,7 @@ test('parts keep arrival order, end events merge onto their start, and finish wr
     useCallback(fn) { return fn; }, useMemo(fn) { return fn(); },
   };
   const { useChat } = await load('hooks/useChat.ts', { react });
-  const socket = { send(payload, cb) { callbacks = cb; return 'turn'; }, abort() {} };
+  const socket = { send(payload, cb) { callbacks = cb; return 'turn'; }, abort() {}, attachConversation() {} };
   const render = () => { index = 0; return useChat(socket, 'session'); };
   let chat = render(); chat.send({ text: 'do it', provider: 'claude' });
   for (const event of [

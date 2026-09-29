@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { Assistant, ProviderRegistry, Store, toolsFor } from '../dist/index.js';
 
 /**
- * Phase 3 of the mail/board unification concept: the watcher (section 5, E8).
+ * Phase 3 of the mail/board unification concept: the watcher (section 5, E8),
+ * reporting through notifications since mail was removed.
  *
  * A `board-watch:<orgId>` schedule is seeded once, editable and switchable
  * like any other job; it fires fast off the same task events `#announceTask`
@@ -197,7 +198,7 @@ test('board-watch: a firing with nothing new on the board costs no model call at
 
   // One real failure, and now it is worth thinking about - once. The second
   // pass has nothing *new* to say, so it falls silent again instead of
-  // mailing about the same broken task every half hour.
+  // reporting the same broken task every half hour.
   boardTask(store, orgId, 'Broken', 'failed');
   run = await assistant.cron.runNow(job.id);
   assert.equal(fake.runs.length, 1, 'a fresh failure is worth a model call');
@@ -217,10 +218,14 @@ test('board-watch: the watching run is offered nothing that acts', async () => {
   const offered = new Set(toolsFor('assistant', { watching: true, scheduled: true }).map((tool) => tool.name));
   const ordinary = new Set(toolsFor('assistant', { scheduled: true }).map((tool) => tool.name));
 
-  for (const name of ['list_tasks', 'list_assignments', 'org_overview', 'send_mail', 'notify']) {
+  for (const name of ['list_tasks', 'list_assignments', 'org_overview', 'task_activity', 'notify']) {
     assert.ok(offered.has(name), 'the watcher can still see the board and speak up: ' + name);
     assert.ok(ordinary.has(name), 'and an ordinary scheduled run is unchanged: ' + name);
   }
+  // Its one way to leave a report, now that there is no mail to write.
+  assert.ok(offered.has('report_to_user'), 'the watcher reports with report_to_user');
+  assert.ok(!ordinary.has('report_to_user'), 'which no other assistant run is offered');
+  assert.ok(!offered.has('answer_task'), 'answering a question for somebody is acting');
   for (const name of [
     'assign',
     'run_task',
@@ -245,12 +250,12 @@ test('board-watch: the watching run is offered nothing that acts', async () => {
   );
 });
 
-test('board-watch: a healthy pass that ends in [SILENT] posts no completion mail', async () => {
+test('board-watch: a healthy pass that ends in [SILENT] posts no completion notification', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const orgId = assistant.org.activeOrganization().id;
   const job = assistant.ensureBoardWatchSchedule();
-  const before = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
+  const before = store.org.listNotifications({ orgId }).length;
 
   fake.provider.run = async function* () {
     yield { type: 'done', text: 'Checked the board, nothing needs a person right now.\n\n[SILENT]' };
@@ -259,9 +264,9 @@ test('board-watch: a healthy pass that ends in [SILENT] posts no completion mail
   assert.equal(run.status, 'done');
   assert.ok(!run.result, 'the sentinel is consumed, never reported as a result');
   assert.equal(
-    store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length,
+    store.org.listNotifications({ orgId }).length,
     before,
-    'a healthy board posts no completion mail',
+    'a healthy board posts no completion notification',
   );
   assistant.close();
 });
@@ -299,11 +304,11 @@ test('board-watch: the mark survives a long quiet stretch and a [SILENT] verdict
   assistant.close();
 });
 
-test('board-watch: a schedule-born task neither opens a thread nor mails a status note', async () => {
-  // The card is the point of `Runtime.assign` going through `runTask`. The
-  // mail that came with it was not: a nightly agent job would have written
-  // a work order to the agent and a "was marked as done" note to the user,
-  // every night, for work nobody was following.
+test('board-watch: a schedule-born task leaves one outcome notification, never a status note on top', async () => {
+  // The card is the point of `Runtime.assign` going through `runTask`. A
+  // status note was not: a nightly agent job would have told the user its
+  // card "was marked as done" every night, on top of the schedule's own
+  // outcome, for work nobody was following.
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);
   const orgId = assistant.org.activeOrganization().id;
@@ -313,7 +318,9 @@ test('board-watch: a schedule-born task neither opens a thread nor mails a statu
     title: 'Engineer',
     instructions: 'Do the work.',
   });
-  const before = store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length;
+  const before = store.org.listNotifications({ orgId }).length;
+  const announced = [];
+  assistant.on('notification', (event) => announced.push(event.notification));
 
   const job = assistant.cron.create({
     orgId,
@@ -329,15 +336,36 @@ test('board-watch: a schedule-born task neither opens a thread nor mails a statu
   const taskId = store.org.getTaskIdForAssignment(run.assignmentId);
   const card = store.org.getTask(taskId);
   assert.equal(card.scheduleId, job.id, 'the card knows which schedule made it');
-  assert.equal(
-    store.org.getMailThreadForTask(orgId, card.id),
-    null,
-    'a schedule has no counterpart to negotiate with',
-  );
-  assert.equal(
-    store.org.mailbox(orgId, { kind: 'user' }, 'inbox').length,
-    before + 1,
-    "only the schedule's own outcome mail, never a status note on top of it",
-  );
+  const events = store.org.listTaskEvents(card.id).map((event) => event.kind);
+  assert.deepEqual(events, ['created', 'run-started', 'run-ended', 'status'], 'the card still keeps its own activity');
+  const notes = store.org.listNotifications({ orgId });
+  assert.equal(notes.length, before + 1, "only the schedule's own outcome, never a status note on top of it");
+  assert.equal(notes[0].kind, 'schedule');
+  assert.equal(notes[0].fromKind, 'agent', 'an agent job speaks in the agent\'s name');
+  assert.equal(notes[0].fromAgentId, agent.id);
+  assert.equal(notes[0].cronJobId, job.id);
+  assert.equal(notes[0].cronRunId, run.id);
+  assert.deepEqual(announced.map((entry) => entry.id), [notes[0].id], 'and it was announced exactly once');
+  assistant.close();
+});
+
+test('board-watch: report_to_user from the watcher is a watch notification', async () => {
+  const fake = createFakeProvider();
+  const { assistant, store } = createAssistant(fake);
+  const orgId = assistant.org.activeOrganization().id;
+  const ctx = { orgId, audience: 'assistant', depth: -1, watching: true, scheduled: true, sessionId: 'watch-session', emit() {} };
+  const reported = await assistant.org.handle(ctx, 'report_to_user', {
+    title: 'Two failed runs of the importer',
+    body: 'The importer failed twice in an hour; I would look at the credentials.',
+  });
+  assert.equal(reported.isError, undefined);
+  const [note] = store.org.listNotifications({ orgId });
+  assert.equal(note.kind, 'watch');
+  assert.equal(note.sessionId, 'watch-session', 'a reply continues in the watcher\'s own run');
+
+  // An ordinary assistant turn has its own answer and notify; the tool is
+  // not for it.
+  const refused = await assistant.org.handle({ ...ctx, watching: false }, 'report_to_user', { title: 'x', body: 'y' });
+  assert.equal(refused.isError, true);
   assistant.close();
 });

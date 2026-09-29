@@ -102,9 +102,93 @@ export function loadPty(): Promise<PtyModule | null> {
   return ptyModule;
 }
 
+/** The subset of `@xterm/headless` plus its serialize addon this module uses. */
+interface ScreenMirror {
+  write(data: string, done?: () => void): void;
+  resize(cols: number, rows: number): void;
+  serialize(): string;
+  /** The visible screen as plain text, one line per row. */
+  text(): string;
+  dispose(): void;
+}
+
+let mirrorModule: Promise<((cols: number, rows: number) => ScreenMirror) | null> | undefined;
+
+/**
+ * A terminal emulator with no screen, fed the same bytes as the browser.
+ *
+ * A viewer that opens a terminal late used to get the raw byte history
+ * replayed - cursor moves and partial repaints computed for whatever size
+ * the terminal had back then, cut off at a byte limit wherever that fell.
+ * Played into a terminal of another size that came out skewed: prompt bars
+ * twice, lines broken halfway, colour runs ending in the wrong place. The
+ * mirror keeps the screen as it actually is, and a late viewer gets that,
+ * serialized - colours and all - at the size the process has now.
+ */
+function loadMirror(): Promise<((cols: number, rows: number) => ScreenMirror) | null> {
+  mirrorModule ??= Promise.all([import('@xterm/headless'), import('@xterm/addon-serialize')])
+    .then(([headless, serialize]) => {
+      const Terminal = (headless as { Terminal?: unknown; default?: { Terminal: unknown } }).Terminal ??
+        (headless as { default: { Terminal: unknown } }).default.Terminal;
+      const SerializeAddon = (serialize as { SerializeAddon?: unknown; default?: { SerializeAddon: unknown } }).SerializeAddon ??
+        (serialize as { default: { SerializeAddon: unknown } }).default.SerializeAddon;
+      return (cols: number, rows: number): ScreenMirror => {
+        const TerminalClass = Terminal as new (options: Record<string, unknown>) => {
+          write(data: string, done?: () => void): void;
+          resize(cols: number, rows: number): void;
+          loadAddon(addon: unknown): void;
+          dispose(): void;
+          rows: number;
+          buffer: {
+            active: {
+              viewportY: number;
+              getLine(y: number): { translateToString(trimRight?: boolean): string } | undefined;
+            };
+          };
+        };
+        const SerializeClass = SerializeAddon as new () => { serialize(): string };
+        const term = new TerminalClass({ cols, rows, scrollback: 5000, allowProposedApi: true });
+        const addon = new SerializeClass();
+        term.loadAddon(addon);
+        return {
+          write: (data, done) => term.write(data, done),
+          // Queued behind what is still waiting to be parsed: a write is
+          // processed later, a resize at once, and bytes painted for the old
+          // width then landed on the new one - overlapping, skewed lines.
+          resize: (c, r) => term.write('', () => term.resize(c, r)),
+          serialize: () => addon.serialize(),
+          text: () => {
+            const buffer = term.buffer.active;
+            const lines: string[] = [];
+            for (let y = buffer.viewportY; y < buffer.viewportY + term.rows; y += 1) {
+              lines.push(buffer.getLine(y)?.translateToString(true) ?? '');
+            }
+            return lines.join('\n');
+          },
+          dispose: () => term.dispose(),
+        };
+      };
+    })
+    .catch(() => null);
+  return mirrorModule;
+}
+
+// Loaded up front, not with the first terminal. The mirror replays what was
+// painted before it existed, at the size it is created with; if the module
+// took its time on first use, a browser could resize the process in between,
+// and the early bytes were then replayed at the wrong width.
+void loadMirror();
+
+const PASTE_ON = String.fromCharCode(27) + '[?2004h';
+const PASTE_OFF = String.fromCharCode(27) + '[?2004l';
+
 class TuiSession {
   buffer = '';
   lingerTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The screen as it is, for late viewers; unset where the emulator cannot load. */
+  mirror: ScreenMirror | undefined;
+  /** Whether the TUI has bracketed paste switched on right now. */
+  pasteMode = false;
 
   constructor(
     readonly info: TuiSessionInfo,
@@ -140,13 +224,27 @@ export class TuiSessionRegistry extends EventEmitter {
       lingerMs,
     );
     this.#sessions.set(key, session);
+    // Everything painted before the emulator was ready is still in the raw
+    // buffer; it goes in first, and every later chunk after it.
+    void loadMirror().then((create) => {
+      if (!create || this.#sessions.get(key) !== session) return;
+      const mirror = create(session.info.cols, session.info.rows);
+      mirror.write(session.buffer);
+      session.mirror = mirror;
+    });
     pty.onData((data) => {
       if (this.#sessions.get(key) !== session) return;
       session.buffer = (session.buffer + data).slice(-REPLAY_LIMIT);
+      session.mirror?.write(data);
+      const on = data.lastIndexOf(PASTE_ON);
+      const off = data.lastIndexOf(PASTE_OFF);
+      if (on !== off) session.pasteMode = on > off;
       this.emit('data', key, data);
     });
     pty.onExit(() => {
       clearTimeout(session.lingerTimer);
+      session.mirror?.dispose();
+      session.mirror = undefined;
       session.cleanup();
       if (this.#sessions.get(key) !== session) return;
       this.#sessions.delete(key);
@@ -171,10 +269,36 @@ export class TuiSessionRegistry extends EventEmitter {
     return [...this.#sessions.values()].map((session) => ({ ...session.info }));
   }
 
-  /** The screen so far, for a viewer that opens the terminal late. */
+  /** The raw output so far - what the process wrote, not what the screen shows. */
   snapshot(key: string): { info: TuiSessionInfo; data: string } | null {
     const session = this.#sessions.get(key);
     return session ? { info: { ...session.info }, data: session.buffer } : null;
+  }
+
+  /**
+   * The screen as it is now, for a viewer that opens the terminal late:
+   * scrollback and visible screen serialized at the process's current size.
+   * Falls back to the raw output where there is no emulator.
+   */
+  async screen(key: string): Promise<{ info: TuiSessionInfo; data: string } | null> {
+    const session = this.#sessions.get(key);
+    if (!session) return null;
+    const mirror = session.mirror;
+    if (!mirror) return { info: { ...session.info }, data: session.buffer };
+    // Parsing is asynchronous; wait until what has arrived is on the screen.
+    await new Promise<void>((resolve) => mirror.write('', resolve));
+    if (session.mirror !== mirror) return this.snapshot(key);
+    return { info: { ...session.info }, data: mirror.serialize() };
+  }
+
+  /** What the screen shows right now as plain text, or null without an emulator. */
+  screenText(key: string): string | null {
+    return this.#sessions.get(key)?.mirror?.text() ?? null;
+  }
+
+  /** Whether the TUI takes pasted text as one paste right now. */
+  pasteMode(key: string): boolean {
+    return this.#sessions.get(key)?.pasteMode ?? false;
   }
 
   /** Keystrokes from a person. Typing into a finished terminal keeps it open longer. */
@@ -194,8 +318,12 @@ export class TuiSessionRegistry extends EventEmitter {
     if (c === session.info.cols && r === session.info.rows) return;
     try {
       session.pty.resize(c, r);
+      session.mirror?.resize(c, r);
       session.info.cols = c;
       session.info.rows = r;
+      // Every other viewer of this terminal follows the new size instead of
+      // fighting it with its own (run-terminal.tsx).
+      this.emit('state', { ...session.info });
     } catch {
       // A pty that is exiting refuses a resize; nothing to keep.
     }
@@ -442,6 +570,8 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 class TerminalWatch {
   exitCode: number | null = null;
   lastActivity = Date.now();
+  /** The last time the screen changed - quiet here means the TUI sits at its prompt. */
+  lastScreen = Date.now();
   /** The newest text block - what a print run reports as its result. */
   lastBlock = '';
   /** Assistant entries read so far; growth after a Stop means work went on. */
@@ -594,6 +724,7 @@ async function spawnTerminal(spec: TuiSpawnSpec, resumed: boolean): Promise<Term
   });
   child.onData((data) => {
     watch.lastActivity = Date.now();
+    watch.lastScreen = watch.lastActivity;
     if (answered.size === STARTUP_DIALOGS.length) return;
     screen = (screen + data).slice(-20_000);
     const flat = flatten(screen);
@@ -741,8 +872,16 @@ export interface TuiTurn {
   usage: { durationMs: number; contextTokens?: number };
 }
 
+/** A turn Rookery typed in itself, and how it ended. */
+export interface SubmittedTurn extends TuiTurn {
+  /** Stopped with Esc before Claude Code said it was done. */
+  interrupted?: boolean;
+  /** What went wrong, when it did: an API error, a message the terminal never took. */
+  error?: string;
+}
+
 export interface TuiConversationHandlers {
-  /** After every answer - the Stop hook fired and the transcript has it. */
+  /** After every answer to something a person typed into the terminal itself. */
   onTurn(turn: TuiTurn): void;
   /** The process is gone, however it ended. */
   onExit(): void;
@@ -751,71 +890,419 @@ export interface TuiConversationHandlers {
 /** A conversation terminal nobody has used for this long is closed. */
 const CONVERSATION_IDLE_MS = 60 * 60 * 1000;
 
+/** Screen silence that means the TUI sits at its prompt, ready for keys. */
+const READY_QUIET_MS = 800;
+/** A fresh terminal paints, answers its dialogs and settles within this. */
+const READY_LIMIT_MS = 30_000;
+/** How long a typed message may take to show up in the transcript. */
+const ACCEPT_LIMIT_MS = 15_000;
+/** How often an unconfirmed message is looked after: Enter again, or typed again. */
+const ACCEPT_RETRY_MS = 3000;
+/**
+ * A panel or menu is open and waiting for Esc. Not the first-run dialogs:
+ * Esc there declines the folder and Claude Code quits.
+ */
+function hasOpenPanel(screen: string): boolean {
+  const lower = screen.toLowerCase();
+  if (lower.includes('trust this folder') || lower.includes('yes, i accept')) return false;
+  return lower.includes('esc to cancel') || lower.includes('esc to close') || lower.includes('esc to exit');
+}
+
+/** The screen a command left, as text for the chat: without the hint lines and the empty tail. */
+function commandOutput(screen: string, command: string): string {
+  const lines = screen.split('\n');
+  // Only what came after the command line itself, not the conversation above it.
+  const at = lines.map((line) => line.includes(command)).lastIndexOf(true);
+  return lines
+    .slice(at + 1)
+    .filter((line) => !/esc to (cancel|close|exit)/i.test(line))
+    .join('\n')
+    .replace(/\s+$/, '')
+    .replace(/^\s*\n/, '');
+}
+
+/** Lines Claude Code draws under its input box, and only there. */
+const INPUT_FOOTERS = ['shift+tab to cycle', '? for shortcuts', 'for shortcuts'];
+/** How long an interrupted turn gets to write what it had before it is read as is. */
+const INTERRUPT_SETTLE_MS = 1500;
+
+/** Bracketed paste: the TUI takes the text as one paste, newlines and all. */
+const PASTE_START = ESC + '[200~';
+const PASTE_END = ESC + '[201~';
+
+/**
+ * The `UserPromptSubmit` hook of a conversation terminal: whatever Rookery
+ * wrote into the context file for this one message goes to Claude Code as
+ * `additionalContext`, and the file is emptied so the next message - typed in
+ * the terminal by a person, say - does not get it again. Single quotes only:
+ * the command runs through whichever shell Claude Code picks.
+ */
+export function promptContextHookCommand(contextFile: string): string {
+  const node = process.execPath.replace(/\\/g, '/');
+  const target = contextFile.replace(/\\/g, '/').replace(/'/g, "\\'");
+  const script =
+    "const fs=require('fs');const f='" + target + "';let t='';" +
+    "try{t=fs.readFileSync(f,'utf8');fs.writeFileSync(f,'')}catch(e){}" +
+    "if(t.trim())process.stdout.write(JSON.stringify({hookSpecificOutput:{hookEventName:'UserPromptSubmit',additionalContext:t}}))";
+  return `"${node}" -e "${script}"`;
+}
+
+/** The context file of a conversation terminal, next to its Stop marker. */
+export function contextFileFor(workDir: string): string {
+  return join(workDir, 'context.md');
+}
+
+interface PendingTurn {
+  prompt: string;
+  onEvent: (event: AgentEvent) => void;
+  events: AgentEvent[];
+  started: number;
+  /** The typed message has shown up in the transcript. */
+  accepted: boolean;
+  done: (turn: SubmittedTurn) => void;
+}
+
+export interface SubmitInput {
+  prompt: string;
+  /** Handed to Claude Code for this message only, through the prompt hook. */
+  context?: string;
+  onEvent: (event: AgentEvent) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * One conversation, one Claude Code process. A person may type into it from
+ * the terminal view, and Rookery types into it for every chat message - from
+ * the web, from Telegram, or a report-back from work handed off earlier. What
+ * Rookery typed comes back to the caller of `submit`; what a person typed
+ * comes back through `onTurn`. Both are the same process and the same
+ * transcript, which is the point: the chat and the terminal are one
+ * conversation, not two views taking turns writing to it.
+ */
+export class ConversationTerminal {
+  #pending: PendingTurn | null = null;
+  /** Submissions run one after another, never interleaved. */
+  #queue: Promise<unknown> = Promise.resolve();
+  readonly #spawned = Date.now();
+  /** Prompts a person typed since the last answer, and what came of them. */
+  #typed: string[] = [];
+  #typedEvents: AgentEvent[] = [];
+  #typedStarted = Date.now();
+
+  constructor(
+    readonly watch: TerminalWatch,
+    readonly handlers: TuiConversationHandlers,
+  ) {}
+
+  get key(): string {
+    return this.watch.spec.key;
+  }
+
+  get providerSessionId(): string {
+    return this.watch.spec.sessionId;
+  }
+
+  alive(): boolean {
+    return stillOpen(this.watch);
+  }
+
+  /** Whether a submitted message is being answered right now. */
+  get busy(): boolean {
+    return this.#pending !== null;
+  }
+
+  close(): void {
+    tuiSessions.kill(this.key);
+  }
+
+  /** Nothing being answered right now, neither a submitted message nor a typed one. */
+  async whenIdle(limitMs = 10 * 60 * 1000): Promise<void> {
+    const deadline = Date.now() + limitMs;
+    while (Date.now() < deadline && this.alive()) {
+      const working = this.#pending !== null || this.#typed.length > 0 || tuiSessions.info(this.key)?.state === 'running';
+      if (!working) return;
+      await sleep(POLL_MS);
+    }
+  }
+
+  /**
+   * Type one message into the terminal and wait for its answer. `context`
+   * reaches Claude Code through the `UserPromptSubmit` hook rather than as
+   * part of the message, so the transcript - and the terminal a person may be
+   * watching - shows exactly what was said, nothing Rookery added.
+   */
+  submit(input: SubmitInput): Promise<SubmittedTurn> {
+    const run = this.#queue.then(() => this.#submit(input));
+    this.#queue = run.catch(() => undefined);
+    return run;
+  }
+
+  async #submit(input: SubmitInput): Promise<SubmittedTurn> {
+    const failed = (error: string): SubmittedTurn => ({
+      prompt: input.prompt,
+      answer: '',
+      events: [],
+      providerSessionId: this.providerSessionId,
+      usage: { durationMs: 0 },
+      error,
+    });
+    if (!this.alive()) return failed('The terminal is closed.');
+    await this.#ready(input.signal);
+    if (input.signal?.aborted) return failed('Cancelled before it was sent.');
+    if (!this.alive()) return failed('The terminal closed before the message could be sent.');
+
+    await writeFile(contextFileFor(this.watch.spec.workDir), input.context ?? '').catch(() => undefined);
+    // A turn started while the Stop marker still holds the last answer would
+    // end the moment it began.
+    await this.watch.clearMarker();
+
+    let pending: PendingTurn | undefined;
+    const ended = new Promise<SubmittedTurn>((resolve) => {
+      pending = {
+        prompt: input.prompt,
+        onEvent: input.onEvent,
+        events: [],
+        started: Date.now(),
+        accepted: false,
+        done: resolve,
+      };
+    });
+    if (!pending) return failed('The terminal could not take the message.');
+    const mine = pending;
+    this.#pending = mine;
+
+    tuiSessions.markRunning(this.key);
+    this.#type(input.prompt);
+
+    const onAbort = (): void => {
+      // Esc is what a person presses: Claude Code stops, keeps what it had,
+      // and writes no Stop payload - so the turn is closed here instead.
+      tuiSessions.write(this.key, ESC);
+      setTimeout(() => void this.#interrupted(mine), INTERRUPT_SETTLE_MS);
+    };
+    if (input.signal?.aborted) onAbort();
+    else input.signal?.addEventListener('abort', onAbort, { once: true });
+
+    // A slash command or a `!` shell line is the terminal's own business: it
+    // may never reach the model, so no Stop hook comes. Once the screen has
+    // settled without a model turn starting, it is done - whatever it showed
+    // is on the terminal, which is where a command's output lives anyway.
+    const command = /^[/!]/.test(input.prompt.trim());
+    if (command) {
+      void (async (): Promise<void> => {
+        const typedAt = Date.now();
+        while (this.#pending === mine && !mine.accepted && Date.now() - typedAt < ACCEPT_LIMIT_MS) {
+          await sleep(POLL_MS * 2);
+          if (Date.now() - typedAt > 2500 && Date.now() - this.watch.lastScreen > 1500 && !mine.accepted) {
+            // What the command put on the screen is its answer - the chat
+            // cannot see the terminal, so `/cost` there shows the costs. A
+            // panel it opened is closed again, or the next message would be
+            // typed into it.
+            const screen = tuiSessions.screenText(this.key) ?? '';
+            const output = commandOutput(screen, input.prompt.trim());
+            // Fenced: a panel is laid out in columns, and markdown would reflow it.
+            this.#settle(mine, { answer: output ? '```\n' + output + '\n```' : '' });
+            if (hasOpenPanel(screen)) tuiSessions.write(this.key, ESC);
+            return;
+          }
+        }
+        // Still running past the limit (a command that started real work
+        // settles through the Stop hook instead): never leave it hanging.
+        if (this.#pending === mine && !mine.accepted) this.#settle(mine, { answer: '' });
+      })();
+    }
+
+    // The message has to arrive. Every few seconds without it in the
+    // transcript, the screen says why: the text sits in the input box (a
+    // paste the TUI held on to) and gets another Enter, or it is not there at
+    // all (keys swallowed while the TUI was still setting up) and is typed
+    // again. Past the limit it is an error, not a turn waiting for ever.
+    void (async (): Promise<void> => {
+      if (command) return;
+      const typedAt = Date.now();
+      const snippet = input.prompt.replace(/\s+/g, ' ').trim().slice(0, 24);
+      while (Date.now() - typedAt < ACCEPT_LIMIT_MS * 2) {
+        await sleep(ACCEPT_RETRY_MS);
+        if (this.#pending !== mine || mine.accepted) return;
+        const screen = tuiSessions.screenText(this.key);
+        const waiting = screen === null || screen.includes('[Pasted text') || screen.replace(/\s+/g, ' ').includes(snippet);
+        if (waiting) tuiSessions.write(this.key, '\r');
+        else this.#type(input.prompt);
+      }
+      if (this.#pending !== mine || mine.accepted) return;
+      this.#settle(mine, { error: 'The terminal did not take the message.' });
+    })();
+
+    try {
+      return await ended;
+    } finally {
+      input.signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  /**
+   * Wait until the TUI sits at its prompt: not working, quiet for a moment,
+   * and - where the screen can be read - showing the footer Claude Code only
+   * draws under a live input box. Quiet alone was not enough: a fresh
+   * terminal pauses while its startup hooks run, and keys typed into that
+   * pause are swallowed.
+   */
+  async #ready(signal?: AbortSignal): Promise<void> {
+    const deadline = Date.now() + READY_LIMIT_MS;
+    let closed = 0;
+    while (Date.now() < deadline && !signal?.aborted && this.alive()) {
+      const working = tuiSessions.info(this.key)?.state === 'running' || this.#typed.length > 0;
+      const quiet = Date.now() - this.#spawned > 1500 && Date.now() - this.watch.lastScreen > READY_QUIET_MS;
+      const screen = tuiSessions.screenText(this.key);
+      const prompt = screen === null || INPUT_FOOTERS.some((footer) => screen.includes(footer));
+      if (!working && quiet && prompt) return;
+      // A panel left open - by a command typed in the terminal, say - sits
+      // where the input box would be. Esc closes it, as a person would.
+      if (!working && quiet && screen !== null && hasOpenPanel(screen) && closed < 3) {
+        closed += 1;
+        tuiSessions.write(this.key, ESC);
+        await sleep(READY_QUIET_MS);
+      }
+      await sleep(POLL_MS);
+    }
+  }
+
+  /** The message as keystrokes: pasted whole where the TUI allows it, then Enter. */
+  #type(prompt: string): void {
+    const body = tuiSessions.pasteMode(this.key) ? PASTE_START + prompt + PASTE_END : prompt.replace(/\r?\n/g, ' ');
+    tuiSessions.write(this.key, body);
+    // Enter on its own write, a beat later: in the same chunk the TUI can read
+    // it as part of the paste rather than as the key that sends it.
+    setTimeout(() => tuiSessions.write(this.key, '\r'), 200);
+  }
+
+  async #interrupted(pending: PendingTurn): Promise<void> {
+    if (this.#pending !== pending) return;
+    for (const event of await this.watch.read().catch(() => [] as AgentEvent[])) this.take(event);
+    this.#settle(pending, { interrupted: true });
+  }
+
+  #settle(pending: PendingTurn, extra: { answer?: string; interrupted?: boolean; error?: string }): void {
+    if (this.#pending !== pending) return;
+    this.#pending = null;
+    let lastText = '';
+    for (const event of pending.events) if (event.type === 'text') lastText = event.delta.replace(/^\n\n/, '');
+    pending.done({
+      prompt: pending.prompt,
+      answer: extra.answer ?? lastText,
+      events: pending.events,
+      ...(this.watch.model ? { model: this.watch.model } : {}),
+      providerSessionId: this.providerSessionId,
+      usage: {
+        durationMs: Date.now() - pending.started,
+        ...(this.watch.contextTokens !== undefined ? { contextTokens: this.watch.contextTokens } : {}),
+      },
+      ...(extra.interrupted ? { interrupted: true } : {}),
+      ...(extra.error ? { error: extra.error } : {}),
+    });
+    tuiSessions.linger(this.key);
+  }
+
+  /** From the read loop: one transcript event, for the submitted turn if there is one. */
+  take(event: AgentEvent): void {
+    const pending = this.#pending;
+    if (event.type === 'status' && event.label === 'input' && event.detail) {
+      // The first message after a submission is the one Rookery typed.
+      if (pending && !pending.accepted) {
+        pending.accepted = true;
+        return;
+      }
+      if (!pending) {
+        if (this.#typed.length === 0 && this.#typedEvents.length === 0) this.#typedStarted = Date.now();
+        this.#typed.push(event.detail);
+        tuiSessions.markRunning(this.key);
+      }
+      return;
+    }
+    if (event.type !== 'text' && event.type !== 'thinking' && event.type !== 'tool') return;
+    if (pending) {
+      pending.accepted = true;
+      pending.events.push(event);
+      pending.onEvent(event);
+    } else {
+      this.#typedEvents.push(event);
+    }
+  }
+
+  /** From the read loop: the Stop hook fired and the transcript caught up. */
+  stopped(reported: string): void {
+    const pending = this.#pending;
+    if (pending) {
+      if (this.watch.apiError) this.#settle(pending, { error: this.watch.apiError });
+      else this.#settle(pending, { answer: reported || this.watch.lastBlock });
+      return;
+    }
+    const answer = reported || this.watch.lastBlock;
+    if (this.#typed.length || answer) {
+      this.handlers.onTurn({
+        prompt: this.#typed.join('\n\n'),
+        answer,
+        events: this.#typedEvents,
+        ...(this.watch.model ? { model: this.watch.model } : {}),
+        providerSessionId: this.providerSessionId,
+        usage: {
+          durationMs: Date.now() - this.#typedStarted,
+          ...(this.watch.contextTokens !== undefined ? { contextTokens: this.watch.contextTokens } : {}),
+        },
+      });
+    }
+    this.#typed = [];
+    this.#typedEvents = [];
+    // Answered: waiting for the person again.
+    tuiSessions.linger(this.key);
+  }
+
+  /** From the read loop: the process is gone, and a turn still waiting on it ends. */
+  exited(): void {
+    const pending = this.#pending;
+    if (pending) this.#settle(pending, { error: this.watch.apiError ?? 'Claude Code closed its terminal before answering.' });
+  }
+}
+
 /**
  * Opens a conversation in Claude Code's own terminal. There is no task and
- * no end: a person types, Claude answers, and every answer is reported as a
- * turn so the conversation's history stays whole. It runs until somebody
- * closes it, switches the conversation back to chat, or leaves it untouched
- * for an hour.
+ * no end: a person or Rookery types, Claude answers. It runs until somebody
+ * closes it, or until nobody has used it for an hour; the next message then
+ * starts it again on the same session.
  */
 export async function startConversationTerminal(
   spec: TuiSpawnSpec,
   resumed: boolean,
   handlers: TuiConversationHandlers,
-): Promise<void> {
+): Promise<ConversationTerminal> {
   const watch = await spawnTerminal({ ...spec, lingerMs: CONVERSATION_IDLE_MS }, resumed);
+  const terminal = new ConversationTerminal(watch, handlers);
   // A conversation terminal waits for its person first - idle, not working,
   // and closed by itself after an hour of nobody typing.
   tuiSessions.linger(spec.key);
   void (async () => {
-    let prompts: string[] = [];
-    let events: AgentEvent[] = [];
-    let turnStarted = Date.now();
-    const take = (event: AgentEvent): void => {
-      if (event.type === 'status' && event.label === 'input' && event.detail) {
-        if (prompts.length === 0 && events.length === 0) turnStarted = Date.now();
-        prompts.push(event.detail);
-        tuiSessions.markRunning(spec.key);
-      } else if (event.type === 'text' || event.type === 'thinking' || event.type === 'tool') {
-        events.push(event);
-      }
-    };
     try {
       while (stillOpen(watch)) {
         await sleep(POLL_MS);
-        for (const event of await watch.read()) take(event);
+        for (const event of await watch.read()) terminal.take(event);
         const payload = await watch.marker();
         if (payload) {
           const reported =
             typeof payload.last_assistant_message === 'string' ? payload.last_assistant_message.trim() : '';
           const settled = await watch.settle(reported);
-          for (const event of settled.events) take(event);
+          for (const event of settled.events) terminal.take(event);
           await watch.clearMarker();
-          const holds = settled.holds;
-          if (!holds) continue;
-          const answer = reported || watch.lastBlock;
-          if (prompts.length || answer) {
-            handlers.onTurn({
-              prompt: prompts.join('\n\n'),
-              answer,
-              events,
-              ...(watch.model ? { model: watch.model } : {}),
-              providerSessionId: spec.sessionId,
-              usage: {
-                durationMs: Date.now() - turnStarted,
-                ...(watch.contextTokens !== undefined ? { contextTokens: watch.contextTokens } : {}),
-              },
-            });
-          }
-          prompts = [];
-          events = [];
-          // Answered: waiting for the person again.
-          tuiSessions.linger(spec.key);
+          if (!settled.holds) continue;
+          terminal.stopped(reported);
         }
         if (Date.now() - watch.lastActivity > CONVERSATION_IDLE_MS) tuiSessions.kill(spec.key);
       }
+    } catch {
+      // A read that throws past its own guards ends the watch, not the server.
     } finally {
+      terminal.exited();
       handlers.onExit();
     }
   })();
+  return terminal;
 }

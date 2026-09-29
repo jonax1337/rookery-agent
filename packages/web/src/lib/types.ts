@@ -460,7 +460,7 @@ export interface Agent {
   name: string;
   title: string;
   instructions: string;
-  /** Two to four sentences on HOW this person writes. Never steers the work; only colours mail. */
+  /** Two to four sentences on HOW this person writes. Never steers the work; only colours their reports and questions. */
   voice?: string;
   teamId?: string;
   managerId?: string;
@@ -557,64 +557,56 @@ export interface AgentMessage {
   readAt?: number;
 }
 
-export interface MailRecipient {
-  id: string;
-  mailId: string;
-  recipientKind: RequesterKind;
-  /** Set only when `recipientKind` is 'agent'. */
-  recipientId?: string;
-  box: 'to' | 'cc';
-  readAt?: number;
-}
-
 /**
- * What a mail thread *is*, decided once when the thread is created and
- * inherited by every reply - the protocol layer that routes mail into the
- * fixed folders: `assignment` threads are work orders, `report` threads are
- * run results, `chat` is everything else.
+ * What a notification is about. Mirrors `packages/core/src/types.ts`.
+ *
+ *   schedule  a schedule's run finished
+ *   watch     the board watcher found something that needs a person
+ *   task      a card the user asked for ended - done, failed or cancelled
+ *   question  an agent asked the user something about a card; always pushed
+ *   agent     an agent wrote to the user with `report_to_user`
+ *   sleep     the night promoted a retrieval policy
+ *   system    anything else Rookery says on its own, `notify` included
  */
-export type MailThreadKind = 'chat' | 'assignment' | 'report';
+export type NotificationKind = 'schedule' | 'watch' | 'task' | 'question' | 'agent' | 'sleep' | 'system';
 
-/** The thread row behind one `threadId`, as the server joins it in. */
-export interface MailThread {
-  threadId: string;
+/** One message to the user - what the inbox shows since mail is gone. */
+export interface Notification {
+  id: string;
   orgId: string;
-  kind: MailThreadKind;
+  kind: NotificationKind;
+  title: string;
+  body: string;
+  fromKind: 'assistant' | 'agent' | 'system';
+  fromAgentId?: string;
+  /** The card it is about; for a `question`, the task an answer continues. */
   taskId?: string;
+  cronJobId?: string;
+  cronRunId?: string;
+  /** The conversation it came out of, when there is one. */
+  sessionId?: string;
+  readAt?: number;
   archivedAt?: number;
   createdAt: number;
 }
 
-/**
- * The fixed inbox folders, the same for every mailbox. `outbox` is not one
- * of them - what you sent is routed by sender, not by what the thread is.
- */
-export type MailFolder = 'inbox' | 'tasks' | 'reports' | 'archiv' | 'outbox';
+export type TaskEventKind = 'created' | 'run-started' | 'run-ended' | 'question' | 'answer' | 'note' | 'status';
 
-export interface Mail {
+/** Who wrote a task event. `system` is Rookery's own bookkeeping. */
+export type TaskEventActor = 'user' | 'assistant' | 'agent' | 'system';
+
+/** One line of a task's activity, oldest first; never rewritten. */
+export interface TaskEvent {
   id: string;
-  orgId: string;
-  fromKind: RequesterKind;
-  /** Set only when `fromKind` is 'agent'. */
-  fromAgentId?: string;
-  subject: string;
-  body: string;
-  /** Shared by every mail in a reply chain; equals `id` for the root mail. */
-  threadId: string;
-  inReplyTo?: string;
-  /** Auto-trigger hop count, the loop guard for mail-triggered runs. */
-  depth: number;
-  /** The run this mail's body came from, when it is an automatic reply. */
+  taskId: string;
+  at: number;
+  kind: TaskEventKind;
+  actorKind: TaskEventActor;
+  /** Set only when `actorKind` is 'agent'. */
+  actorAgentId?: string;
+  text: string;
+  /** The run this line belongs to, when it belongs to one. */
   assignmentId?: string;
-  createdAt: number;
-  recipients: MailRecipient[];
-  /** The thread's kind, joined in from the server's thread table. */
-  threadKind?: MailThreadKind;
-  /** Set when the thread is an assignment with a task on the board. */
-  taskId?: string;
-  taskTitle?: string;
-  /** Set when the whole thread has been archived. */
-  threadArchivedAt?: number;
 }
 
 /* ----------------------------------- tasks ---------------------------------- */
@@ -691,8 +683,8 @@ export interface TaskDetail {
   children: Task[];
   assignee: Agent | null;
   assignment: Assignment | null;
-  /** The mail thread the task was born in, when it arrived as an assignment mail. */
-  thread: MailThread | null;
+  /** The card's activity, oldest first - replaces the mail thread it used to live in. */
+  events: TaskEvent[];
 }
 
 /** POST /api/org/tasks/:id/plan */
@@ -958,8 +950,10 @@ export type AgentEvent =
   | { type: 'assignment'; assignment: AssignmentView }
   /** A message between agents, their manager or the assistant was posted. */
   | { type: 'message'; message: AgentMessage }
-  /** Mail was sent - a new mail in someone's inbox or outbox. */
-  | { type: 'mail'; mail: Mail }
+  /** Something was stored for the user - the inbox and the phone. */
+  | { type: 'notification'; notification: Notification }
+  /** A line was added to a task's activity. */
+  | { type: 'task-event'; event: TaskEvent }
   /** A task on the board was created or changed state. */
   | { type: 'task'; task: Task }
   /** A schedule was created, edited, deleted, or one of its runs changed state. */
@@ -1176,8 +1170,6 @@ export interface OrgConfig {
   autoReview: boolean;
   /** Off, a stage-2 escalation proposes an instruction rewrite instead of applying it. */
   autoReconfig: boolean;
-  /** On, a mail-born run answers as a letter in the agent's own voice instead of a report. */
-  roleplay: boolean;
   /** Agents work in a visible Claude Code terminal instead of headless. */
   interactiveRuns: boolean;
   activeOrganizationId?: string;
@@ -1241,10 +1233,12 @@ export interface TelegramPushConfig {
   cron: boolean;
   sleep: boolean;
   tasks: boolean;
-  /** Mail the user is To or Cc on, pushed to the phone. See `mailFrom`. */
-  mail: boolean;
-  /** Whose mail is worth a push: the assistant, plus team leads, or everyone. */
-  mailFrom: 'assistant' | 'leads' | 'all';
+  /** `schedule` and `watch` notifications: a schedule's outcome, what the board watcher reports. */
+  schedules: boolean;
+  /** `question` notifications. Always true - a question is never silent. */
+  questions?: boolean;
+  /** `agent` notifications (`report_to_user`): only from leads, from every agent, or never. */
+  agents: 'leads' | 'all' | 'off';
   /** Memories stored, skills written, records saved - the app's toasts. */
   activity: boolean;
   /** Every tool call, one short line, batched. Loud by nature. */
@@ -1388,6 +1382,14 @@ export interface PublicConfig {
   router?: RouterConfig;
   providerFallback?: ProviderFallbackConfig;
   updates: UpdatesConfig;
+  turns?: TurnsConfig;
+}
+
+/** One conversational turn: its ceiling, and where it runs. */
+export interface TurnsConfig {
+  timeoutMs?: number;
+  /** Conversations run in their Claude Code terminal (one process per chat). */
+  terminal?: boolean;
 }
 
 /* ------------------------------- updates ------------------------------- */
@@ -1782,6 +1784,7 @@ export type ClientFrame =
    * journal; the `attached` reply lines the two up.
    */
   | { type: 'attach'; sessionId: string }
+  | { type: 'detach'; sessionId: string }
   | { type: 'ping' };
 
 /**
@@ -1833,8 +1836,10 @@ export type ServerFrame =
   | { type: 'memory'; event: { sessionId: string; stored: MemoryRecord[] } }
   | { type: 'assignment'; event: AgentEvent }
   | { type: 'message'; event: AgentEvent }
-  /** Broadcast: mail was sent - a new mail in someone's inbox or outbox. */
-  | { type: 'mail'; event: AgentEvent }
+  /** Broadcast: a notification was stored for the user. */
+  | { type: 'notification'; notification?: Notification; event?: AgentEvent }
+  /** Broadcast: a line was added to a task's activity. */
+  | { type: 'task-event'; event: TaskEvent | AgentEvent }
   /** Broadcast: a task on the board was created or changed state. */
   | { type: 'task'; event: AgentEvent }
   /** Broadcast: a schedule or one of its runs changed. */
@@ -1857,7 +1862,8 @@ export type ServerFrame =
   | { type: 'tui-state'; assignmentId: string; info: TuiSessionInfo }
   /** Reply to `tui-open`: the conversation, and the key its terminal streams under. */
   | { type: 'tui-opened'; id: string; sessionId: string; key: string }
-  | { type: 'changed'; change: OrgChange }
+  /** `change` normally; a bare `kind` (e.g. 'notifications') is read the same way. */
+  | { type: 'changed'; change?: OrgChange; kind?: string; id?: string }
   | { type: 'pong' }
   | { type: 'error'; id?: string; message: string };
 

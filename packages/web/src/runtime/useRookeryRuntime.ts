@@ -57,7 +57,7 @@ export interface RookeryRuntimeInputs {
 
 interface RookeryThreadMessage {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   thinking?: string;
   toolCalls?: Message['toolCalls'];
@@ -68,7 +68,23 @@ interface RookeryThreadMessage {
 
 type Part = Exclude<ThreadMessageLike['content'], string>[number];
 
+/**
+ * The one line a report-back shows as: its first sentence, without the
+ * marker the model reads. The full notice stays in the stored message.
+ */
+function systemSummary(content: string): string {
+  const first = content.split('\n')[0] ?? '';
+  return first.replace(/^\[Rookery\]\s*/, '').trim() || 'Rookery';
+}
+
 function convertMessage(message: RookeryThreadMessage): ThreadMessageLike {
+  if (message.role === 'system') {
+    return {
+      id: message.id,
+      role: 'system',
+      content: [{ type: 'text', text: systemSummary(message.content) }],
+    };
+  }
   if (message.role === 'user') {
     return {
       id: message.id,
@@ -211,7 +227,7 @@ export function useRookeryRuntime({
   const messages = useMemo<RookeryThreadMessage[]>(() => {
     const base: RookeryThreadMessage[] = chat.messages.map((message, index) => ({
       id: 'm' + index,
-      role: message.role === 'user' ? 'user' : 'assistant',
+      role: message.role === 'user' ? 'user' : message.role === 'system' ? 'system' : 'assistant',
       content: message.content,
       toolCalls: message.toolCalls,
       blocks: message.blocks,

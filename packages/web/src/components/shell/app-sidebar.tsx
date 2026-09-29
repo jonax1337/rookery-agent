@@ -7,7 +7,7 @@ import { formatNumber } from '@/lib/stats';
 import { cn } from '@/lib/utils';
 import {
   useAllSessionsState,
-  useMailState,
+  useNotificationState,
   useOrgState,
   useTasksState,
 } from '@/providers/rookery-provider';
@@ -60,7 +60,7 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
   // Archived rows are behind a facet on that page, so they are not what the
   // badge is counting.
   const openConversations = sessions.filter((session) => !session.archived).length;
-  const mail = useMailState();
+  const notifications = useNotificationState();
 
   /**
    * Counts the rail may show, keyed by the route they belong to.
@@ -112,14 +112,13 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
           '/assignments': { node: <SlidingNumber number={liveAssignments} thousandSeparator="," /> },
         }
       : {}),
-    // The inbox is its own top-level row now, so the count sits on it
-    // directly rather than on `/org`, which no longer has anything to do
-    // with it.
-    ...(mail.unreadCount > 0
+    // Unread notifications - a schedule result, an agent's question, a
+    // finished card - on the row that opens them.
+    ...(notifications.unreadCount > 0
       ? {
           '/inbox': {
-            node: <SlidingNumber number={mail.unreadCount} thousandSeparator="," />,
-            label: 'unread messages in the inbox',
+            node: <SlidingNumber number={notifications.unreadCount} thousandSeparator="," />,
+            label: 'unread notifications',
           },
         }
       : {}),

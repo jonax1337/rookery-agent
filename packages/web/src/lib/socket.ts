@@ -6,8 +6,8 @@ import type {
   ChatPayload,
   ClientFrame,
   EffortLevel,
-  Mail,
   MemoryRecord,
+  Notification,
   OrgChange,
   PermissionLevel,
   ProviderId,
@@ -15,6 +15,7 @@ import type {
   RunTaskPayload,
   ServerFrame,
   Task,
+  TaskEvent,
   TurnUsage,
 } from './types';
 
@@ -78,6 +79,14 @@ export class RookerySocket {
   #attempt = 0;
   #closedByUs = false;
   #pending = new Map<string, PendingTurn>();
+  /**
+   * Event frames of turns nobody here has adopted yet, by turn id. A turn
+   * announced to this socket - a report-back, a message from the phone - is
+   * joined by reading its journal and then adopting it; frames that land in
+   * between would otherwise fall through the gap. Small and short-lived:
+   * adopting drains them, and only the newest few turns are kept.
+   */
+  readonly #unclaimed = new Map<string, Extract<ServerFrame, { type: 'event' }>[]>();
   /** Conversations this socket wants the running turn of, re-armed on reconnect. */
   #attachedConversations = new Set<string>();
   /** The latest `attachConversation` handler; one page attaches one conversation. */
@@ -86,7 +95,8 @@ export class RookerySocket {
   #memoryListeners = new Set<(event: { sessionId: string; stored: MemoryRecord[] }) => void>();
   #assignmentListeners = new Set<(assignment: AssignmentView) => void>();
   #messageListeners = new Set<(message: AgentMessage) => void>();
-  #mailListeners = new Set<(mail: Mail) => void>();
+  #notificationListeners = new Set<(notification: Notification) => void>();
+  #taskEventListeners = new Set<(event: TaskEvent) => void>();
   #taskListeners = new Set<(task: Task) => void>();
   #cronListeners = new Set<(event: CronEvent) => void>();
   #changedListeners = new Set<(change: OrgChange) => void>();
@@ -136,10 +146,16 @@ export class RookerySocket {
     return () => this.#messageListeners.delete(listener);
   }
 
-  /** Every mail sent between agents, the assistant or the user. */
-  onMail(listener: (mail: Mail) => void): () => void {
-    this.#mailListeners.add(listener);
-    return () => this.#mailListeners.delete(listener);
+  /** Every notification stored for the user - a schedule result, a question, a report. */
+  onNotification(listener: (notification: Notification) => void): () => void {
+    this.#notificationListeners.add(listener);
+    return () => this.#notificationListeners.delete(listener);
+  }
+
+  /** Every line added to any task's activity. */
+  onTaskEvent(listener: (event: TaskEvent) => void): () => void {
+    this.#taskEventListeners.add(listener);
+    return () => this.#taskEventListeners.delete(listener);
   }
 
   /** Every task on the board that was created or changed state, whoever did it. */
@@ -323,7 +339,7 @@ export class RookerySocket {
     // null out the *successor's* reference and schedule yet another
     // reconnect, and the second live socket was still wired to
     // `#handleFrame`. Every broadcast then arrived twice - two "memories
-    // learned" toasts for one turn, two mail toasts for one mail - which is
+    // learned" toasts for one turn, two notification toasts for one notification - which is
     // exactly the duplication this guard ends.
     const current = (): boolean => this.#ws === socket;
 
@@ -435,6 +451,11 @@ export class RookerySocket {
    */
   adopt(id: string, handlers: TurnHandlers, cursor: number): void {
     this.#pending.set(id, { id, cursor, ...handlers });
+    const early = this.#unclaimed.get(id);
+    this.#unclaimed.delete(id);
+    // Replayed through the same path, so the cursor drops what the journal
+    // already covered.
+    for (const frame of early ?? []) this.#handleEventFrame(frame);
   }
 
   abort(id: string): void {
@@ -460,6 +481,9 @@ export class RookerySocket {
   detachConversation(sessionId: string): void {
     this.#attachedConversations.delete(sessionId);
     this.#onAttached = null;
+    // Otherwise the server keeps announcing every new turn there to a page
+    // that is not showing it any more.
+    this.#send({ type: 'detach', sessionId });
   }
 
   /**
@@ -515,11 +539,17 @@ export class RookerySocket {
       return;
     }
 
-    if (frame.type === 'mail') {
-      if (frame.event.type === 'mail') {
-        const mail = frame.event.mail;
-        for (const listener of this.#mailListeners) listener(mail);
-      }
+    if (frame.type === 'notification') {
+      // The contract sends the notification flat; tolerate it wrapped as an event too.
+      const notification = frame.notification ?? (frame.event?.type === 'notification' ? frame.event.notification : undefined);
+      if (notification) for (const listener of this.#notificationListeners) listener(notification);
+      return;
+    }
+
+    if (frame.type === 'task-event') {
+      const raw = frame.event as TaskEvent | AgentEvent;
+      const event = 'type' in raw ? (raw.type === 'task-event' ? raw.event : undefined) : raw;
+      if (event) for (const listener of this.#taskEventListeners) listener(event);
       return;
     }
 
@@ -564,7 +594,7 @@ export class RookerySocket {
     }
 
     if (frame.type === 'changed') {
-      for (const listener of this.#changedListeners) listener(frame.change);
+      for (const listener of this.#changedListeners) listener(frame.change ?? { kind: frame.kind ?? '', id: frame.id ?? '' });
       return;
     }
 
@@ -614,24 +644,43 @@ export class RookerySocket {
         for (const listener of this.#quotaListeners) listener(quota);
       }
 
-      const turn = this.#pending.get(frame.id);
-      if (!turn) return;
-      // The journal position this frame carries is the guard of the handover:
-      // a re-joined turn has already applied everything up to its cursor, so
-      // an overlap frame is dropped instead of splicing duplicated text in.
-      if (typeof frame.seq === 'number') {
-        if (frame.seq <= turn.cursor) return;
-        turn.cursor = frame.seq;
-      }
-      turn.onEvent(frame.event);
+      this.#handleEventFrame(frame);
+    }
+  }
 
-      if (frame.event.type === 'done') {
-        this.#pending.delete(frame.id);
-        turn.onDone(frame.event.text, frame.event.usage);
-      } else if (frame.event.type === 'error' && frame.event.fatal) {
-        this.#pending.delete(frame.id);
-        turn.onError(frame.event.message);
+  #handleEventFrame(frame: Extract<ServerFrame, { type: 'event' }>): void {
+    const turn = this.#pending.get(frame.id);
+    if (!turn) {
+      let early = this.#unclaimed.get(frame.id);
+      if (!early) {
+        early = [];
+        this.#unclaimed.set(frame.id, early);
+        // Only the newest few turns: an announced turn is adopted within a
+        // round trip or not at all.
+        while (this.#unclaimed.size > 8) {
+          const oldest = this.#unclaimed.keys().next().value;
+          if (oldest === undefined) break;
+          this.#unclaimed.delete(oldest);
+        }
       }
+      if (early.length < 2000) early.push(frame);
+      return;
+    }
+    // The journal position this frame carries is the guard of the handover:
+    // a re-joined turn has already applied everything up to its cursor, so
+    // an overlap frame is dropped instead of splicing duplicated text in.
+    if (typeof frame.seq === 'number') {
+      if (frame.seq <= turn.cursor) return;
+      turn.cursor = frame.seq;
+    }
+    turn.onEvent(frame.event);
+
+    if (frame.event.type === 'done') {
+      this.#pending.delete(frame.id);
+      turn.onDone(frame.event.text, frame.event.usage);
+    } else if (frame.event.type === 'error' && frame.event.fatal) {
+      this.#pending.delete(frame.id);
+      turn.onError(frame.event.message);
     }
   }
 

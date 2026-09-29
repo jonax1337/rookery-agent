@@ -16,12 +16,13 @@ import {
   PERMISSION_HINT,
   PERMISSION_LABEL,
 } from '@/lib/format';
+import { NOTIFICATION_KIND_LABEL } from '@/lib/notifications';
 import type { CronEvent, RookerySocket, SleepEvent } from '@/lib/socket';
 import type {
   ChatPayload,
   EffortLevel,
-  Mail,
   MemoryRecord,
+  Notification,
   PermissionLevel,
   ProviderId,
   ProviderStatus,
@@ -153,7 +154,7 @@ interface RookeryValue {
   memoryGraph: ReturnType<typeof useMemoryGraph>;
   sleep: ReturnType<typeof useSleep>;
   speech: SpeechState;
-  mail: MailState;
+  notifications: NotificationState;
 
   turn: TurnSettings;
   runtime: ReturnType<typeof useRookeryRuntime>;
@@ -164,7 +165,7 @@ const RookeryContext = createContext<RookeryValue | null>(null);
 export function RookeryProvider({ children }: { children: ReactNode }) {
   const { socket, connected } = useSocket();
   const navigate = useNavigate();
-  const { pathname, search } = useLocation();
+  const { pathname } = useLocation();
 
   const [config, setConfig] = useState<PublicConfig | null>(null);
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
@@ -184,10 +185,6 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
   // Read through a ref so the callback below stays stable across navigation.
   const pathnameRef = useRef(pathname);
   pathnameRef.current = pathname;
-  // Read alongside it, for the mail toast below: it needs to know which
-  // mailbox `/inbox` is showing right now, not just that it is open.
-  const searchRef = useRef(search);
-  searchRef.current = search;
 
   // A brand-new chat gets its session id from the server's first event: it
   // becomes the active thread, goes into the URL so a reload keeps it, and
@@ -339,44 +336,56 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
   );
   useLearnedMemories(socket, onLearned);
 
-  /* -------------------------------- mail ------------------------------- */
+  /* ---------------------------- notifications ---------------------------- */
 
-  // App-wide delivery for the async inbox: a mail landing while nobody has
-  // `/inbox` open would otherwise sit unnoticed until the next visit there.
-  // Subscribing here means a toast fires no matter which page is open, and
-  // the rail's badge stays correct without anyone visiting `/inbox` first.
+  // App-wide delivery for what Rookery stores for the user: a schedule
+  // result, an agent's question, a finished card. Subscribing here means a
+  // toast fires no matter which page is open, and the rail's badge stays
+  // correct without anyone visiting `/inbox` first.
   const [unreadCount, setUnreadCount] = useState(0);
 
   const refreshUnread = useCallback(async (): Promise<void> => {
     try {
-      const list = await api.mail('user', 'inbox', 200);
-      setUnreadCount(
-        list.filter((mail) =>
-          mail.recipients.some((recipient) => recipient.recipientKind === 'user' && recipient.readAt == null),
-        ).length,
-      );
+      const { count } = await api.unreadNotificationCount();
+      setUnreadCount(count);
     } catch {
       // The badge is a convenience; a failed refetch just keeps the last known count.
     }
   }, []);
 
+  // Refetch on reconnect too: notifications stored while the socket was down
+  // sent their frames to nobody.
   useEffect(() => {
-    void refreshUnread();
-  }, [refreshUnread]);
+    if (connected) void refreshUnread();
+  }, [connected, refreshUnread]);
+
+  // Schedule runs that already got their notification toast, so the plain
+  // "Schedule finished" toast below does not say the same thing twice.
+  const notifiedRunsRef = useRef(new Set<string>());
 
   useEffect(
     () =>
-      socket.onMail((mail: Mail) => {
-        const own = mail.recipients.find((recipient) => recipient.recipientKind === 'user');
-        if (!own) return;
+      socket.onNotification((notification: Notification) => {
+        if (notification.cronRunId) notifiedRunsRef.current.add(notification.cronRunId);
         void refreshUnread();
-        // No toast while the user is already looking at their own inbox -
-        // the list there refetches on the same event and shows it right away.
-        const onOwnInbox =
-          pathnameRef.current === '/inbox' &&
-          (new URLSearchParams(searchRef.current).get('mailbox') ?? 'user') === 'user';
-        if (onOwnInbox) return;
-        toast('New mail', { description: mail.subject });
+        // No toast while the user is already looking at the inbox - the list
+        // there refetches on the same event and shows it right away.
+        if (pathnameRef.current === '/inbox') return;
+        toast(notification.title || NOTIFICATION_KIND_LABEL[notification.kind], {
+          description: NOTIFICATION_KIND_LABEL[notification.kind],
+          action: {
+            label: 'Open',
+            onClick: () => void navigate('/inbox?id=' + encodeURIComponent(notification.id)),
+          },
+        });
+      }),
+    [socket, refreshUnread, navigate],
+  );
+
+  useEffect(
+    () =>
+      socket.onChanged((change) => {
+        if (change.kind === 'notifications') void refreshUnread();
       }),
     [socket, refreshUnread],
   );
@@ -385,10 +394,17 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
     () =>
       socket.onCron((event: CronEvent) => {
         if (event.deleted || !event.run || event.run.status === 'running') return;
-        const ok = event.run.status === 'done';
-        toast(ok ? 'Schedule finished: ' + event.job.name : 'Schedule failed: ' + event.job.name, {
-          ...(ok ? {} : { description: event.run.error }),
-        });
+        const run = event.run;
+        const ok = run.status === 'done';
+        // A run that reports stores a `schedule` notification, which toasts on
+        // its own. Wait a moment for it; only a run that stayed silent (or
+        // whose notification never came) gets this plain toast.
+        window.setTimeout(() => {
+          if (notifiedRunsRef.current.has(run.id)) return;
+          toast(ok ? 'Schedule finished: ' + event.job.name : 'Schedule failed: ' + event.job.name, {
+            ...(ok ? {} : { description: run.error }),
+          });
+        }, 2000);
       }),
     [socket],
   );
@@ -405,7 +421,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
     [socket],
   );
 
-  const mail = useMemo<MailState>(
+  const notifications = useMemo<NotificationState>(
     () => ({ unreadCount, refresh: refreshUnread }),
     [unreadCount, refreshUnread],
   );
@@ -559,7 +575,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       memoryGraph,
       sleep,
       speech,
-      mail,
+      notifications,
       turn,
       runtime,
     }),
@@ -571,10 +587,10 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       context,
       cron,
       highlighted,
-      mail,
       memories,
       memoryGraph,
       newConversation,
+      notifications,
       offline,
       openConversation,
       org,
@@ -728,23 +744,20 @@ export function useSpeechState(): SpeechState {
 }
 
 /**
- * The inbox, as a badge count.
+ * Unread notifications, as a badge count.
  *
- * The count is not the running total this session has seen - it is fetched
- * from the server (unread rows addressed to the assistant/user), because the
- * in-memory counter starts at zero on every fresh load and a page that only
- * trusted it would under-count whatever piled up before this tab opened.
- * `refresh()` re-reads that true count; `InboxPage` calls it after marking
- * rows read, and the `message`/`cron`/`sleep` broadcasts above call it on
- * every new arrival.
+ * Fetched from the server rather than counted from frames, because a fresh
+ * load starts at zero and would under-count what piled up before the tab
+ * opened. `refresh()` re-reads it; `InboxPage` calls it after marking rows
+ * read, and every `notification` frame and `changed: notifications` does too.
  */
-export interface MailState {
+export interface NotificationState {
   unreadCount: number;
   refresh(): Promise<void>;
 }
 
-export function useMailState(): MailState {
-  return useRookery().mail;
+export function useNotificationState(): NotificationState {
+  return useRookery().notifications;
 }
 
 /* ------------------------------ sub-trees ------------------------------ */

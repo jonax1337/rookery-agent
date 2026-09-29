@@ -238,8 +238,16 @@ export async function buildServer(
   const onMessage = (event: AgentEvent): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'message', event });
   };
-  const onMail = (event: AgentEvent): void => {
-    for (const socket of context.sockets) sendFrame(socket, { type: 'mail', event });
+  // Something for the user - the inbox and its badge follow it on every
+  // screen; the phone hears about it through gateways/push.ts.
+  const onNotification = (event: AgentEvent): void => {
+    if (event.type !== 'notification') return;
+    for (const socket of context.sockets) sendFrame(socket, { type: 'notification', notification: event.notification });
+  };
+  // A line on a card's activity: an open task page appends it live.
+  const onTaskEvent = (event: AgentEvent): void => {
+    if (event.type !== 'task-event') return;
+    for (const socket of context.sockets) sendFrame(socket, { type: 'task-event', event: event.event });
   };
   const onChanged = (change: { kind: string; id: string }): void => {
     for (const socket of context.sockets) sendFrame(socket, { type: 'changed', change });
@@ -286,7 +294,8 @@ export async function buildServer(
   assistant.on('assignment', onAssignment);
   assistant.on('assignment-log', onAssignmentLog);
   assistant.on('message', onMessage);
-  assistant.on('mail', onMail);
+  assistant.on('notification', onNotification);
+  assistant.on('task-event', onTaskEvent);
   assistant.on('changed', onChanged);
   assistant.on('task', onTask);
   assistant.on('cron', onCron);
@@ -365,6 +374,15 @@ export async function buildServer(
   // happened; this is the honest answer it asks for, and it changes with a
   // setting or a blocked recipient, so the probe is a call, not a flag.
   assistant.notifyProbe = () => telegramPush.canDeliver();
+  // A turn nobody typed - a report-back from work handed off earlier - runs
+  // through the hub like any other, so every tab that has the conversation
+  // open watches it arrive, and it can be stopped from any of them.
+  assistant.turnRunner = (turn) => {
+    turns.start({ id: turn.turnId, sessionId: turn.sessionId, controller: turn.controller, events: turn.events });
+  };
+  // Work a restart killed was handed off by somebody who is still waiting
+  // for it; they hear that it died, now that the turn can be shown.
+  for (const task of staleTasks) assistant.org.reportEnded(task);
 
   // A socket that misses a full heartbeat round trip is dead weight: without
   // this a dropped Wi-Fi connection would sit in `sockets` forever.
@@ -409,7 +427,8 @@ export async function buildServer(
     // No terminal outlives the server that streams it.
     tuiSessions.killAll();
     assistant.off('message', onMessage);
-    assistant.off('mail', onMail);
+    assistant.off('notification', onNotification);
+    assistant.off('task-event', onTaskEvent);
     assistant.off('changed', onChanged);
     assistant.off('task', onTask);
     assistant.off('cron', onCron);
@@ -418,6 +437,7 @@ export async function buildServer(
     assistant.off('question-closed', onQuestionClosed);
     telegramPush.detach();
     assistant.notifyProbe = undefined;
+    assistant.turnRunner = undefined;
     try {
       await telegramGateway.stop();
     } catch (error) {

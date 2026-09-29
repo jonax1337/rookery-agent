@@ -16,6 +16,8 @@
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.15",
     "@playwright/mcp": "^0.0.80",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
     "@zavora-ai/computer-use-mcp": "^7.1.0",
     "zod": "^3.24.1"
   }

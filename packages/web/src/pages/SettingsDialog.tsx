@@ -953,6 +953,25 @@ function BehaviorSection({
           </RadioGroup>
         </FieldSet>
       </Fade>
+
+      <Fade delay={100}>
+        <FieldSet>
+          <FieldLegend variant="label">Conversations</FieldLegend>
+          <Field orientation="horizontal">
+            <FieldContent>
+              <FieldLabel htmlFor="set-chat-terminal">Chat in Claude Code's terminal</FieldLabel>
+              <FieldDescription>
+                Every conversation runs in one Claude Code terminal: messages from the chat and from Telegram are typed into it, and the terminal view shows the same session. Slash commands and background agents behave exactly as in Claude Code. Off answers each message headless.
+              </FieldDescription>
+            </FieldContent>
+            <Switch
+              id="set-chat-terminal"
+              checked={draft.turns?.terminal ?? true}
+              onCheckedChange={(on) => set({ turns: { ...draft.turns, terminal: on } })}
+            />
+          </Field>
+        </FieldSet>
+      </Fade>
     </>
   );
 }
@@ -1784,20 +1803,6 @@ function OrgSection({
             checked={draft.org.autoReconfig}
             disabled={!draft.org.autoReview}
             onCheckedChange={(on) => setOrg({ autoReconfig: on })}
-          />
-        </Field>
-
-        <Field orientation="horizontal">
-          <FieldContent>
-            <FieldLabel htmlFor="set-roleplay">Roleplay in mail</FieldLabel>
-            <FieldDescription>
-              A run that started from an email answers as a letter to a colleague, in that agent's own voice, instead of a plain report. Off restores the report for every run.
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="set-roleplay"
-            checked={draft.org.roleplay}
-            onCheckedChange={(on) => setOrg({ roleplay: on })}
           />
         </Field>
 

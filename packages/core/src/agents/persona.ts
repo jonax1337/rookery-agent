@@ -156,7 +156,7 @@ function renderHistory(history: Message[], budget: number): string {
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const message = history[index];
     if (!message) continue;
-    const speaker = message.role === 'user' ? 'User' : 'You';
+    const speaker = message.role === 'user' ? 'User' : message.role === 'system' ? 'Rookery (system)' : 'You';
     const body = message.content.replace(/\s+/g, ' ').trim();
     const line = speaker + ': ' + (body.length > 400 ? body.slice(0, 397) + '...' : body);
     if (used + line.length > budget) break;

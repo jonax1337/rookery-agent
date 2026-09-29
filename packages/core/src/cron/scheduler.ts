@@ -9,10 +9,10 @@ import type {
   CronRun,
   CronTrigger,
   CronTriggerMode,
-  MailWho,
   PermissionLevel,
   RequesterKind,
 } from '../types.js';
+import type { NotifyUserInput } from '../org/controller.js';
 import type { Logger } from '../logger.js';
 import { silentLogger } from '../logger.js';
 import type { Store } from '../memory/store.js';
@@ -30,13 +30,13 @@ import { validateCronScript } from './script.js';
  * never runs twice at once, what happens to a missed run after a restart -
  * and hands the actual execution to a runner the runtime supplies.
  *
- * Every outcome is recorded as a run and posted to the assistant's inbox, so
- * the next conversation knows what happened overnight.
+ * Every outcome is recorded as a run and reaches the user as a `schedule`
+ * notification, so what happened overnight is waiting for them in the morning.
  */
 
 export interface CronRunOutcome {
   status: 'done' | 'failed';
-  /** A script pre-check can suppress an uneventful inbox notification. */
+  /** A script pre-check or a `[SILENT]` reply suppresses the outcome notification. */
   silent?: boolean;
   result?: string;
   error?: string;
@@ -55,6 +55,12 @@ export interface CronSchedulerOptions {
   catchUpWindowMs?: number;
   /** Hard stop for one run. */
   timeoutMs?: number;
+  /**
+   * Where a run's outcome goes - the controller's `notifyUser`, handed in as
+   * a closure because the scheduler is built before the controller exists.
+   * Left out, the scheduler stores the notification itself and emits it.
+   */
+  notify?: (input: NotifyUserInput) => void;
 }
 
 export interface CronJobInput {
@@ -106,8 +112,8 @@ const MAX_SLEEP_MS = 60_000;
 const MIN_SLEEP_MS = 200;
 const DEFAULT_CATCH_UP_MS = 10 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 45 * 60 * 1000;
-/** How much of a result goes into the inbox note. */
-const INBOX_BUDGET = 1500;
+/** How much of a result goes into the outcome notification. */
+const NOTICE_BUDGET = 1500;
 /**
  * How long a job rests after a run before an event may start the next one.
  *
@@ -124,6 +130,7 @@ export class CronScheduler extends EventEmitter {
   readonly #log: Logger;
   readonly #catchUpMs: number;
   readonly #timeoutMs: number;
+  readonly #notify: ((input: NotifyUserInput) => void) | undefined;
   #timer: ReturnType<typeof setTimeout> | null = null;
   #started = false;
   /** Abort controllers of runs in flight, by job id: one run per job at a time. */
@@ -142,6 +149,7 @@ export class CronScheduler extends EventEmitter {
     this.#log = options.logger ?? silentLogger;
     this.#catchUpMs = options.catchUpWindowMs ?? DEFAULT_CATCH_UP_MS;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.#notify = options.notify;
   }
 
   /* ------------------------------- lifecycle ------------------------------ */
@@ -513,7 +521,7 @@ export class CronScheduler extends EventEmitter {
         },
         false,
       );
-      if (!outcome.silent) this.#postToInbox(current, outcome, source);
+      if (!outcome.silent) this.#postOutcome(current, run.id, outcome, source);
     }
 
     const finishedRun = this.#store.cron.getRun(run.id) ?? run;
@@ -594,10 +602,20 @@ export class CronScheduler extends EventEmitter {
     }
   }
 
-  /** What the user reads in their mailbox, from whoever ran the job. */
-  #postToInbox(job: CronJob, outcome: CronRunOutcome, source?: string): void {
+  /**
+   * What the user reads about one run, from whoever ran the job: a
+   * notification of kind `schedule` - the same title and text the inbox mail
+   * used to carry, now pointing at the job, the run and the conversation it
+   * ran in, so a reply to it can continue right there.
+   *
+   * Through the runtime's `notify` when there is one - the controller's
+   * `notifyUser`, the one road to the user. A scheduler built on its own (a
+   * test, a one-off command) writes the row itself and announces it on its
+   * own emitter instead.
+   */
+  #postOutcome(job: CronJob, runId: string, outcome: CronRunOutcome, source?: string): void {
     const when = new Date().toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' });
-    const subject = 'Schedule "' + job.name + '" ' + (outcome.status === 'done' ? 'completed' : 'failed');
+    const title = 'Schedule "' + job.name + '" ' + (outcome.status === 'done' ? 'completed' : 'failed');
     // Why it ran at all: the expression when the clock asked, and the name of
     // whatever happened when something else did. An event-only job has no
     // expression to quote, so quoting one would be an invention.
@@ -605,16 +623,29 @@ export class CronScheduler extends EventEmitter {
     const body =
       outcome.status === 'done'
         ? 'Completed at ' + when + ' (' + because + '). Result: ' +
-          (clip(outcome.result ?? '', INBOX_BUDGET) || '(no text)')
+          (clip(outcome.result ?? '', NOTICE_BUDGET) || '(no text)')
         : 'Failed at ' + when + ' (' + because + '): ' + (outcome.error ?? 'unknown error');
+    const byAgent = job.kind === 'agent' && Boolean(job.agentId);
+    const input: NotifyUserInput = {
+      orgId: job.orgId,
+      kind: 'schedule',
+      title,
+      body,
+      fromKind: byAgent ? 'agent' : 'assistant',
+      fromAgentId: byAgent ? job.agentId : undefined,
+      cronJobId: job.id,
+      cronRunId: runId,
+      sessionId: outcome.sessionId,
+    };
     try {
-      const from: MailWho = job.kind === 'agent' && job.agentId ? { kind: 'agent', id: job.agentId } : { kind: 'assistant' };
-      // A schedule's outcome is a report even when the assistant sends it -
-      // the agent-default in the store would file it as chat.
-      const mail = this.#store.org.sendMail({ orgId: job.orgId, from, to: [{ kind: 'user' }], subject, body, kind: 'report' });
-      this.emit('mail', { type: 'mail', mail } satisfies AgentEvent);
+      if (this.#notify) {
+        this.#notify(input);
+        return;
+      }
+      const notification = this.#store.org.createNotification({ ...input, orgId: job.orgId });
+      this.emit('notification', { type: 'notification', notification } satisfies AgentEvent);
     } catch (error) {
-      this.#log.warn('Could not post schedule outcome to mail', { error: (error as Error).message });
+      this.#log.warn('Could not post the schedule outcome', { error: (error as Error).message });
     }
   }
 

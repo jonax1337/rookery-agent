@@ -51,11 +51,10 @@ export interface TaskBoardProps {
   /** Persists the new position; called after every reorder, same-column or cross-column. */
   onReorder(task: Task, sortOrder: number): Promise<void> | void;
   /**
-   * The newest mail of a task's thread, by task id. A blocked card says what
-   * it is waiting for with it; without an entry it only says that it waits,
-   * because a subject nobody sent is not a subject.
+   * The open question of a blocked card, by task id - its newest `question`
+   * event, on one line. Without an entry the card only says that it waits.
    */
-  lastMailByTask?: ReadonlyMap<string, { subject: string; at: number }>;
+  questionByTask?: ReadonlyMap<string, { subject: string; at: number }>;
 }
 
 function byColumn(tasks: Task[]): Record<TaskStatus, string[]> {
@@ -75,7 +74,7 @@ export function TaskBoard({
   onOpenDetail,
   onStatusChange,
   onReorder,
-  lastMailByTask,
+  questionByTask,
 }: TaskBoardProps) {
   const tasksById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
   const [columns, setColumns] = useState<Record<TaskStatus, string[]>>(() => byColumn(tasks));
@@ -190,7 +189,7 @@ export function TaskBoard({
               tasksById={tasksById}
               agentById={agentById}
               onOpenDetail={onOpenDetail}
-              {...(lastMailByTask ? { lastMailByTask } : {})}
+              {...(questionByTask ? { questionByTask } : {})}
             />
           </Fade>
         ))}
@@ -212,10 +211,10 @@ interface BoardColumnProps {
   tasksById: Map<string, Task>;
   agentById(id: string | undefined): Agent | undefined;
   onOpenDetail(task: Task): void;
-  lastMailByTask?: ReadonlyMap<string, { subject: string; at: number }>;
+  questionByTask?: ReadonlyMap<string, { subject: string; at: number }>;
 }
 
-function BoardColumn({ status, taskIds, tasksById, agentById, onOpenDetail, lastMailByTask }: BoardColumnProps) {
+function BoardColumn({ status, taskIds, tasksById, agentById, onOpenDetail, questionByTask }: BoardColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id: status });
   const settable = isSettableTaskStatus(status);
 
@@ -245,7 +244,7 @@ function BoardColumn({ status, taskIds, tasksById, agentById, onOpenDetail, last
                 task={task}
                 agentById={agentById}
                 onOpenDetail={onOpenDetail}
-                {...(lastMailByTask?.get(id) ? { lastMail: lastMailByTask.get(id) as { subject: string; at: number } } : {})}
+                {...(questionByTask?.get(id) ? { question: questionByTask.get(id) as { subject: string; at: number } } : {})}
               />
             );
           })}
@@ -261,8 +260,8 @@ interface TaskCardProps {
   task: Task;
   agentById(id: string | undefined): Agent | undefined;
   onOpenDetail(task: Task): void;
-  /** The newest mail of this task's thread, when the board knows one. */
-  lastMail?: { subject: string; at: number };
+  /** The question this blocked card waits on, when the board knows it. */
+  question?: { subject: string; at: number };
   dragging?: boolean;
   handleProps?: Record<string, unknown>;
   style?: React.CSSProperties;
@@ -273,7 +272,7 @@ function TaskCard({
   task,
   agentById,
   onOpenDetail,
-  lastMail,
+  question,
   dragging,
   handleProps,
   style,
@@ -321,13 +320,13 @@ function TaskCard({
       ) : null}
 
       {/* A blocked card says who it is waiting for, and on what: the run
-          ended with a question, and the question went out as mail. */}
+          ended with a question, and the question is on its activity. */}
       {task.status === 'blocked' ? (
         <div className="flex flex-col gap-0.5 pl-5 text-xs">
           <span className="font-medium text-destructive">Waiting for you</span>
-          {lastMail ? (
+          {question ? (
             <span className="truncate text-muted-foreground">
-              {lastMail.subject || '(No subject)'}
+              {question.subject}
             </span>
           ) : null}
         </div>
@@ -346,7 +345,7 @@ function TaskCard({
   );
 }
 
-function SortableTaskCard({ task, agentById, onOpenDetail, lastMail }: Omit<TaskCardProps, 'dragging'>) {
+function SortableTaskCard({ task, agentById, onOpenDetail, question }: Omit<TaskCardProps, 'dragging'>) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -358,7 +357,7 @@ function SortableTaskCard({ task, agentById, onOpenDetail, lastMail }: Omit<Task
       task={task}
       agentById={agentById}
       onOpenDetail={onOpenDetail}
-      {...(lastMail ? { lastMail } : {})}
+      {...(question ? { question } : {})}
       setNodeRef={setNodeRef}
       style={style}
       handleProps={{ ...attributes, ...listeners }}

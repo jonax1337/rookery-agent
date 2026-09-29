@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 27;
 
 export type Db = DatabaseSync;
 
@@ -1104,6 +1104,64 @@ function migrate(db: Db): void {
     db.exec('ALTER TABLE tasks ADD COLUMN schedule_id TEXT');
   }
 
+  // Schema 25 -> 26: the conversation a card was handed over from. A card
+  // knew its parent task but not the chat that asked for it, so work handed
+  // off in the background had nowhere to report back to, and the assistant's
+  // "I will let you know" was a promise the code could not keep
+  // (docs/concepts/delegation-report-back-and-chat-terminal.md, R1).
+  if (!hasColumn(db, 'tasks', 'requester_session_id')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN requester_session_id TEXT');
+  }
+
+  // Schema 26 -> 27: internal mail is gone
+  // (docs/concepts/mail-removal-notifications-and-task-activity.md). Mail was
+  // three things at once - transport between agents, the protocol of a task,
+  // and the channel to the user - and each gets its own home now. What
+  // reaches the user is a notification; what happened on a card is its
+  // activity. The mail tables stay where they are, unwritten, and their
+  // content is copied over once below.
+  //
+  // No foreign keys on the references out of `notifications`: a notification
+  // outlives the task, schedule or conversation it talks about, the same way
+  // a mail did. `task_events` does cascade - a line of a card's protocol has
+  // no meaning without the card.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id            TEXT PRIMARY KEY,
+      org_id        TEXT NOT NULL,
+      kind          TEXT NOT NULL,
+      title         TEXT NOT NULL,
+      body          TEXT NOT NULL DEFAULT '',
+      from_kind     TEXT NOT NULL DEFAULT 'system',
+      from_agent_id TEXT,
+      task_id       TEXT,
+      cron_job_id   TEXT,
+      cron_run_id   TEXT,
+      session_id    TEXT,
+      read_at       INTEGER,
+      archived_at   INTEGER,
+      created_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_notifications_live
+      ON notifications(org_id, archived_at, read_at, created_at);
+    CREATE INDEX IF NOT EXISTS idx_notifications_task
+      ON notifications(task_id);
+    CREATE TABLE IF NOT EXISTS task_events (
+      id             TEXT PRIMARY KEY,
+      task_id        TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      at             INTEGER NOT NULL,
+      kind           TEXT NOT NULL,
+      actor_kind     TEXT NOT NULL,
+      actor_agent_id TEXT,
+      text           TEXT NOT NULL DEFAULT '',
+      assignment_id  TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_events_task
+      ON task_events(task_id, at);
+  `);
+
+  migrateMailToNotifications(db);
+
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(
     'schema_version',
     String(SCHEMA_VERSION),
@@ -1225,6 +1283,125 @@ function migrateAgentMessagesToMail(db: Db): void {
   }
 
   db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_migrated_v1', '1')").run();
+}
+
+/**
+ * The one-time copy out of the retired mail tables (schema 27, section 6 of
+ * docs/concepts/mail-removal-notifications-and-task-activity.md), guarded by
+ * a `meta` flag like every other backfill. Nothing is deleted: the mail rows
+ * stay exactly where they are, and both copies reuse the mail's own id, so
+ * even without the flag a second pass could only ever skip.
+ *
+ * Two copies, because mail was two things:
+ *
+ * - Every mail the user was To or Cc on becomes a notification. Its kind
+ *   comes from what the thread was: a `report` thread is what a schedule
+ *   posted, an `assignment` thread is a card, anything else somebody writing.
+ *   One refinement the concept does not spell out: the night's promotion
+ *   notice was a mail from the user to themselves, and reads as `sleep`
+ *   rather than as an agent writing. It counts as read only when every one of
+ *   the user's copies was read; it is archived when its thread was.
+ * - Every task with a linked thread gets that thread as its activity: the
+ *   first mail is the card's `created` line, the rest are `note`s, each by
+ *   whoever sent it.
+ */
+function migrateMailToNotifications(db: Db): void {
+  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_to_notifications_v1'").get() as
+    | { value: string }
+    | undefined;
+  if (done) return;
+
+  type Row = Record<string, unknown>;
+  const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+  const optionalText = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
+  const optionalNumber = (value: unknown): number | null => (typeof value === 'number' ? value : null);
+
+  const insertNotification = db.prepare(
+    `INSERT OR IGNORE INTO notifications
+       (id, org_id, kind, title, body, from_kind, from_agent_id, task_id, cron_job_id, cron_run_id, session_id, read_at, archived_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
+  );
+  const insertEvent = db.prepare(
+    `INSERT OR IGNORE INTO task_events (id, task_id, at, kind, actor_kind, actor_agent_id, text, assignment_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+
+  db.exec('BEGIN');
+  try {
+    const toUser = db
+      .prepare(
+        `SELECT m.id, m.org_id, m.from_kind, m.from_agent_id, m.subject, m.body, m.created_at,
+                mt.kind AS thread_kind, mt.task_id AS thread_task_id, mt.archived_at AS thread_archived_at,
+                (SELECT COUNT(*) FROM mail_recipients r
+                   WHERE r.mail_id = m.id AND r.recipient_kind = 'user' AND r.read_at IS NULL) AS unread,
+                (SELECT MAX(r.read_at) FROM mail_recipients r
+                   WHERE r.mail_id = m.id AND r.recipient_kind = 'user') AS read_at
+         FROM mail m
+         LEFT JOIN mail_threads mt ON mt.thread_id = m.thread_id
+         WHERE EXISTS (SELECT 1 FROM mail_recipients r WHERE r.mail_id = m.id AND r.recipient_kind = 'user')`,
+      )
+      .all() as Row[];
+    for (const row of toUser) {
+      const fromKind = text(row.from_kind);
+      const subject = text(row.subject);
+      const kind =
+        fromKind === 'user' && subject.startsWith('Retrieval policy ')
+          ? 'sleep'
+          : row.thread_kind === 'report'
+            ? 'schedule'
+            : row.thread_kind === 'assignment'
+              ? 'task'
+              : 'agent';
+      insertNotification.run(
+        text(row.id),
+        text(row.org_id),
+        kind,
+        subject || '(no subject)',
+        text(row.body),
+        fromKind === 'agent' ? 'agent' : fromKind === 'assistant' ? 'assistant' : 'system',
+        fromKind === 'agent' ? optionalText(row.from_agent_id) : null,
+        optionalText(row.thread_task_id),
+        Number(row.unread ?? 0) > 0 ? null : optionalNumber(row.read_at),
+        optionalNumber(row.thread_archived_at),
+        optionalNumber(row.created_at) ?? Date.now(),
+      );
+    }
+
+    // Only threads whose task still exists: the activity cascades with its
+    // card, and a line for a card that is gone could not be inserted anyway.
+    const threadMail = db
+      .prepare(
+        `SELECT m.id, m.from_kind, m.from_agent_id, m.body, m.created_at, m.assignment_id, mt.task_id
+         FROM mail m
+         JOIN mail_threads mt ON mt.thread_id = m.thread_id
+         JOIN tasks t ON t.id = mt.task_id
+         ORDER BY mt.task_id, m.created_at, m.rowid`,
+      )
+      .all() as Row[];
+    let current = '';
+    for (const row of threadMail) {
+      const taskId = text(row.task_id);
+      const first = taskId !== current;
+      current = taskId;
+      const fromKind = text(row.from_kind);
+      insertEvent.run(
+        text(row.id),
+        taskId,
+        optionalNumber(row.created_at) ?? Date.now(),
+        first ? 'created' : 'note',
+        fromKind === 'agent' || fromKind === 'assistant' || fromKind === 'user' ? fromKind : 'system',
+        fromKind === 'agent' ? optionalText(row.from_agent_id) : null,
+        text(row.body),
+        optionalText(row.assignment_id),
+      );
+    }
+
+    db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_to_notifications_v1', '1')").run();
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 /** Rebuild the FTS index. Used by the CLI after a bulk import. */
