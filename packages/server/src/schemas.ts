@@ -538,6 +538,10 @@ export const patchConfigSchema = z
     // six-hour MCP tool ceiling the blocked call sits under, and above zero
     // so a saved value can never wedge a turn forever.
     questions: z.object({ timeoutMs: z.number().int().min(30_000).max(60 * 60 * 1000) }).partial(),
+    // Whether a conversation is answered in its Claude Code terminal (T1).
+    turns: z
+      .object({ timeoutMs: z.number().int().min(60_000).max(24 * 60 * 60 * 1000), terminal: z.boolean() })
+      .partial(),
     providerFallback: z
       .object({
         enabled: z.boolean(),
@@ -655,6 +659,8 @@ export const clientFrameSchema = z.discriminatedUnion('type', [
   // happened comes over REST from the journal - this frame is only the
   // subscription, and the `attached` reply says which turn (if any) answered.
   z.object({ type: z.literal('attach'), sessionId: z.string().min(1) }),
+  // The page left the conversation: new turns there are no longer announced.
+  z.object({ type: z.literal('detach'), sessionId: z.string().min(1) }),
   z.object({ type: z.literal('ping') }),
 ]);
 

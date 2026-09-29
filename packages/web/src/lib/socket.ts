@@ -78,6 +78,14 @@ export class RookerySocket {
   #attempt = 0;
   #closedByUs = false;
   #pending = new Map<string, PendingTurn>();
+  /**
+   * Event frames of turns nobody here has adopted yet, by turn id. A turn
+   * announced to this socket - a report-back, a message from the phone - is
+   * joined by reading its journal and then adopting it; frames that land in
+   * between would otherwise fall through the gap. Small and short-lived:
+   * adopting drains them, and only the newest few turns are kept.
+   */
+  readonly #unclaimed = new Map<string, Extract<ServerFrame, { type: 'event' }>[]>();
   /** Conversations this socket wants the running turn of, re-armed on reconnect. */
   #attachedConversations = new Set<string>();
   /** The latest `attachConversation` handler; one page attaches one conversation. */
@@ -435,6 +443,11 @@ export class RookerySocket {
    */
   adopt(id: string, handlers: TurnHandlers, cursor: number): void {
     this.#pending.set(id, { id, cursor, ...handlers });
+    const early = this.#unclaimed.get(id);
+    this.#unclaimed.delete(id);
+    // Replayed through the same path, so the cursor drops what the journal
+    // already covered.
+    for (const frame of early ?? []) this.#handleEventFrame(frame);
   }
 
   abort(id: string): void {
@@ -460,6 +473,9 @@ export class RookerySocket {
   detachConversation(sessionId: string): void {
     this.#attachedConversations.delete(sessionId);
     this.#onAttached = null;
+    // Otherwise the server keeps announcing every new turn there to a page
+    // that is not showing it any more.
+    this.#send({ type: 'detach', sessionId });
   }
 
   /**
@@ -614,24 +630,43 @@ export class RookerySocket {
         for (const listener of this.#quotaListeners) listener(quota);
       }
 
-      const turn = this.#pending.get(frame.id);
-      if (!turn) return;
-      // The journal position this frame carries is the guard of the handover:
-      // a re-joined turn has already applied everything up to its cursor, so
-      // an overlap frame is dropped instead of splicing duplicated text in.
-      if (typeof frame.seq === 'number') {
-        if (frame.seq <= turn.cursor) return;
-        turn.cursor = frame.seq;
-      }
-      turn.onEvent(frame.event);
+      this.#handleEventFrame(frame);
+    }
+  }
 
-      if (frame.event.type === 'done') {
-        this.#pending.delete(frame.id);
-        turn.onDone(frame.event.text, frame.event.usage);
-      } else if (frame.event.type === 'error' && frame.event.fatal) {
-        this.#pending.delete(frame.id);
-        turn.onError(frame.event.message);
+  #handleEventFrame(frame: Extract<ServerFrame, { type: 'event' }>): void {
+    const turn = this.#pending.get(frame.id);
+    if (!turn) {
+      let early = this.#unclaimed.get(frame.id);
+      if (!early) {
+        early = [];
+        this.#unclaimed.set(frame.id, early);
+        // Only the newest few turns: an announced turn is adopted within a
+        // round trip or not at all.
+        while (this.#unclaimed.size > 8) {
+          const oldest = this.#unclaimed.keys().next().value;
+          if (oldest === undefined) break;
+          this.#unclaimed.delete(oldest);
+        }
       }
+      if (early.length < 2000) early.push(frame);
+      return;
+    }
+    // The journal position this frame carries is the guard of the handover:
+    // a re-joined turn has already applied everything up to its cursor, so
+    // an overlap frame is dropped instead of splicing duplicated text in.
+    if (typeof frame.seq === 'number') {
+      if (frame.seq <= turn.cursor) return;
+      turn.cursor = frame.seq;
+    }
+    turn.onEvent(frame.event);
+
+    if (frame.event.type === 'done') {
+      this.#pending.delete(frame.id);
+      turn.onDone(frame.event.text, frame.event.usage);
+    } else if (frame.event.type === 'error' && frame.event.fatal) {
+      this.#pending.delete(frame.id);
+      turn.onError(frame.event.message);
     }
   }
 

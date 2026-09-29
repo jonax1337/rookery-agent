@@ -11,6 +11,7 @@ import type {
   ProviderQuota,
   ProviderStatus,
   ProviderTerminalHandlers,
+  ConversationTerminalHandle,
   ProviderTurnOptions,
   TurnUsage,
 } from '../types.js';
@@ -21,7 +22,15 @@ import { sharedRouterManager } from './router.js';
 import { sharedCodexBridge } from './codex-bridge.js';
 import { codexContextWindow } from './provider-catalog.js';
 import { TOOL_INPUT_LIMIT, canonicalJson, hashCanonicalJson } from '../memory/dream/trajectory.js';
-import { loadPty, runTui, startConversationTerminal, stopHookCommand, tuiSessions } from './claude-tui.js';
+import {
+  contextFileFor,
+  loadPty,
+  promptContextHookCommand,
+  runTui,
+  startConversationTerminal,
+  stopHookCommand,
+  tuiSessions,
+} from './claude-tui.js';
 import { BRIDGE_TOKEN_HEADER } from './codex-bridge.js';
 
 /** The built-in `claude` provider: OAuth login, no endpoint override. */
@@ -222,6 +231,7 @@ export class ClaudeCodeProvider implements Provider {
   async #commandLine(
     options: ProviderTurnOptions,
     withTui: boolean,
+    conversation = false,
   ): Promise<{
     args: string[];
     env: NodeJS.ProcessEnv;
@@ -295,7 +305,17 @@ export class ClaudeCodeProvider implements Provider {
       tuiDir = await mkdtemp(join(tmpdir(), 'rookery-tui-'));
       markerFile = join(tuiDir, 'stop.json');
       await writeFile(markerFile, '');
-      turnOptions = { ...options, settings: withStopHook(options.settings, stopHookCommand(markerFile)) };
+      turnOptions = { ...options, settings: withHook(options.settings, 'Stop', stopHookCommand(markerFile)) };
+      // A conversation terminal also takes per-message context - the recall,
+      // the fresh company block - through its prompt hook (T2).
+      if (conversation) {
+        const contextFile = contextFileFor(tuiDir);
+        await writeFile(contextFile, '');
+        turnOptions = {
+          ...turnOptions,
+          settings: withHook(turnOptions.settings, 'UserPromptSubmit', promptContextHookCommand(contextFile)),
+        };
+      }
     }
     if (options.gateway?.picker.length) {
       // The TUI's `/model` menu: Claude's own entries stay, the gateway's
@@ -355,20 +375,21 @@ export class ClaudeCodeProvider implements Provider {
   async openTerminal(
     options: ProviderTurnOptions,
     handlers: ProviderTerminalHandlers,
-  ): Promise<{ providerSessionId: string }> {
+  ): Promise<{ providerSessionId: string; terminal: ConversationTerminalHandle }> {
     const binary = this.#resolve();
     if (!binary) throw new Error('The claude CLI is not on PATH.');
     if (!options.tui) throw new Error('A terminal needs a key.');
     if (!(await loadPty())) throw new Error('Terminal support is not available on this system.');
 
-    const { args, env, pinnedSessionId, handoff, tuiDir, markerFile } = await this.#commandLine(options, true);
+    const { args, env, pinnedSessionId, handoff, tuiDir, markerFile } = await this.#commandLine(options, true, true);
     const dir = tuiDir as string;
     const cleanup = (): void => {
       handoff.cleanup();
       void rm(dir, { recursive: true, force: true }).catch(() => {});
     };
+    let terminal: ConversationTerminalHandle;
     try {
-      await startConversationTerminal(
+      terminal = await startConversationTerminal(
         {
           key: options.tui.key,
           binary,
@@ -388,7 +409,7 @@ export class ClaudeCodeProvider implements Provider {
       cleanup();
       throw error;
     }
-    return { providerSessionId: pinnedSessionId };
+    return { providerSessionId: pinnedSessionId, terminal };
   }
 
   async *run(options: ProviderTurnOptions): AsyncGenerator<AgentEvent, void, unknown> {
@@ -695,17 +716,18 @@ export function mcpConfig(servers: McpServerSpec[]): Record<string, unknown> {
   return { mcpServers };
 }
 
-/** Rookery's settings for the turn, with one more Stop handler appended. */
-function withStopHook(
+/** Rookery's settings for the turn, with one more handler appended for `event`. */
+function withHook(
   settings: ProviderTurnOptions['settings'],
+  event: 'Stop' | 'UserPromptSubmit',
   command: string,
 ): NonNullable<ProviderTurnOptions['settings']> {
   const base = settings ?? {};
   const hooks = (base.hooks && typeof base.hooks === 'object' ? base.hooks : {}) as Record<string, unknown[]>;
-  const stop = Array.isArray(hooks.Stop) ? hooks.Stop : [];
+  const existing = Array.isArray(hooks[event]) ? hooks[event] : [];
   return {
     ...base,
-    hooks: { ...hooks, Stop: [...stop, { hooks: [{ type: 'command', command }] }] },
+    hooks: { ...hooks, [event]: [...existing, { hooks: [{ type: 'command', command }] }] },
   };
 }
 

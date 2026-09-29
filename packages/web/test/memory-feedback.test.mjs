@@ -69,7 +69,7 @@ test('a recall event carries its turnId into chat state, and both clear on the n
   const { react, reset } = harness();
   const { useChat } = await load('hooks/useChat.ts', { react });
   let callbacks;
-  const socket = { send(payload, cb) { callbacks = cb; return 'turn'; }, abort() {} };
+  const socket = { send(payload, cb) { callbacks = cb; return 'turn'; }, abort() {}, attachConversation() {} };
   const render = () => { reset(); return useChat(socket, 'session'); };
 
   let chat = render();
@@ -112,7 +112,7 @@ test('a recall becomes a block of the running turn, in the shape the server pers
   const { react, reset } = harness();
   const { useChat } = await load('hooks/useChat.ts', { react });
   let callbacks;
-  const socket = { send(payload, cb) { callbacks = cb; return 'turn'; }, abort() {} };
+  const socket = { send(payload, cb) { callbacks = cb; return 'turn'; }, abort() {}, attachConversation() {} };
   const render = () => { reset(); return useChat(socket, 'session'); };
 
   let chat = render();

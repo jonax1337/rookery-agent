@@ -14,6 +14,7 @@ import type {
   MemoryRecord,
   NotifyEvent,
   PermissionLevel,
+  Project,
   ProviderId,
   RecallBox,
   RecallPolicy,
@@ -33,7 +34,10 @@ import { isUsageLimitError, providerBlocked, providerLow, rememberUsageFailure }
 import { sharedCodexBridge } from './providers/codex-bridge.js';
 import { tuiSessions } from './providers/claude-tui.js';
 import { ModelGateway } from './providers/model-gateway.js';
-import type { ProviderProfile } from './types.js';
+import type { ConversationTerminalHandle, ProviderProfile } from './types.js';
+import { loadPty } from './providers/claude-tui.js';
+import type { ReportBackEvent, ToolContext } from './org/controller.js';
+import { renderMemoryBlock } from './memory/recall.js';
 import { Store } from './memory/store.js';
 import { byScoreThenId, coreProfile, dropContradicted, recall } from './memory/recall.js';
 import { fetchFrame } from './memory/dream/frame.js';
@@ -247,6 +251,13 @@ export interface ChatInput {
   /** Spoken turn: the reply is shaped to be read aloud. */
   voice?: boolean;
   /**
+   * Who is speaking. `system` is Rookery itself - a report-back from work
+   * handed off earlier (R3). It is stored as a system message rather than as
+   * something the user said, never titles the conversation and never feeds
+   * the memory: only the user's own words may stand behind a memory.
+   */
+  origin?: 'user' | 'system';
+  /**
    * The id this turn is journalled under. A transport that has its own id for
    * the turn - the websocket frame id - passes it through, so a client that
    * rejoins after a reload can stop the very turn it re-joined; every other
@@ -318,6 +329,48 @@ export interface MemoryLearnedEvent {
   stored: MemoryRecord[];
 }
 
+/**
+ * A report-back turn has ended (R3). The web sees the turn itself through
+ * the hub; this is for channels that only hear about turns they started -
+ * Telegram sends `text` to the chat the conversation belongs to.
+ */
+export interface FollowUpEvent {
+  sessionId: string;
+  taskId?: string;
+  text: string;
+  error?: string;
+}
+
+/**
+ * Whoever hosts the runtime and can show a turn to people - the server,
+ * through its turn hub - takes over a turn nobody typed: a report-back. Left
+ * unset, the runtime drains it itself and the result still lands in the
+ * conversation.
+ */
+export type TurnRunner = (turn: {
+  turnId: string;
+  sessionId: string;
+  controller: AbortController;
+  events: AsyncGenerator<AgentEvent, void, unknown>;
+}) => void;
+
+/** A conversation's Claude Code process, and what it was started with. */
+interface ChatTerminal {
+  handle: ConversationTerminalHandle;
+  /** Model, effort, rights, project and tool servers - a change restarts it (T3). */
+  signature: string;
+  /** The tool servers it was started with, for the continuation check. */
+  servers: string[];
+  /** The context its bridge token answers with; `emit` points at the current turn. */
+  context: ToolContext;
+  model: string | undefined;
+}
+
+/** Where the rights a conversation was last used with are kept. */
+function sessionPermissionKey(sessionId: string): string {
+  return 'session:permission:' + sessionId;
+}
+
 /** The terminal registry's key for a conversation - runs use their assignment id. */
 export function conversationTerminalKey(sessionId: string): string {
   return 'chat:' + sessionId;
@@ -359,6 +412,18 @@ export class Assistant extends EventEmitter {
    * a blocked recipient or a channel that was switched off mid-session.
    */
   notifyProbe?: () => boolean;
+  /** Takes over report-back turns so people can watch them; see `TurnRunner`. */
+  turnRunner?: TurnRunner;
+  /**
+   * The turn each conversation is running or waiting to run, chained: one
+   * conversation answers one message at a time. A report-back arriving while
+   * the user's own message is being answered waits its turn instead of
+   * talking over it - and a conversation's terminal could not take two at
+   * once anyway.
+   */
+  readonly #sessionTurns = new Map<string, Promise<void>>();
+  /** Conversation terminals by session id (T1). */
+  readonly #chatTerminals = new Map<string, ChatTerminal>();
   /**
    * The last status seen for a task, by id - only so the board-watch
    * subscriber can tell a fresh landing in `failed` apart from an unrelated
@@ -455,6 +520,100 @@ export class Assistant extends EventEmitter {
     // Telegram here, just an event a channel in another package can listen
     // for and act on however it likes.
     this.org.on('notify', (event: NotifyEvent) => this.emit('notify', event));
+    // Work handed off in the background has ended: the conversation that
+    // handed it off hears about it as a turn of its own (R2/R3).
+    this.org.on('report-back', (event: ReportBackEvent) => this.#onReportBack(event));
+  }
+
+  /* --------------------------- report-back --------------------------- */
+
+  #onReportBack(event: ReportBackEvent): void {
+    const session = this.store.getSession(event.sessionId);
+    // A scheduled run or a mail answer has nobody reading along; its task
+    // thread and the push already carry the ending.
+    if (!session || (session.kind !== 'chat' && session.kind !== 'voice')) {
+      this.log.debug('Report-back without a conversation to go to', { task: event.taskId, session: event.sessionId });
+      return;
+    }
+    // Archived while the work ran: bringing it back is better than burying
+    // the answer where nobody looks.
+    if (session.archived) this.store.updateSession(session.id, { archived: false });
+    this.followUp({ sessionId: session.id, text: event.notice, taskId: event.taskId });
+  }
+
+  /**
+   * A turn in a conversation that nobody typed: Rookery telling the
+   * assistant something it has to pass on - today, how work it handed off
+   * ended. It runs like any other turn of that conversation, after whatever
+   * is being answered there now, and the host shows it live (`turnRunner`).
+   * Returns the turn id.
+   */
+  followUp(input: { sessionId: string; text: string; taskId?: string }): string {
+    const turnId = randomUUID();
+    const controller = new AbortController();
+    const permission = this.store.getMeta(sessionPermissionKey(input.sessionId)) as PermissionLevel | null;
+    const events = this.#reported(
+      this.chat({
+        text: input.text,
+        sessionId: input.sessionId,
+        turnId,
+        origin: 'system',
+        ...(permission ? { permission } : {}),
+        signal: controller.signal,
+      }),
+      input,
+    );
+    if (this.turnRunner) {
+      this.turnRunner({ turnId, sessionId: input.sessionId, controller, events });
+    } else {
+      void (async () => {
+        for await (const event of events) void event;
+      })().catch((error: unknown) => this.log.warn('Follow-up turn failed', { error: String(error) }));
+    }
+    return turnId;
+  }
+
+  /** Passes a follow-up's events through and says how it ended, once, however it ends. */
+  async *#reported(
+    events: AsyncGenerator<AgentEvent, void, unknown>,
+    input: { sessionId: string; taskId?: string },
+  ): AsyncGenerator<AgentEvent, void, unknown> {
+    let text = '';
+    let error: string | undefined;
+    try {
+      for await (const event of events) {
+        if (event.type === 'done') text = event.text;
+        else if (event.type === 'error' && event.fatal) error = event.message;
+        yield event;
+      }
+    } catch (thrown) {
+      error = (thrown as Error).message;
+      throw thrown;
+    } finally {
+      const done: FollowUpEvent = {
+        sessionId: input.sessionId,
+        ...(input.taskId ? { taskId: input.taskId } : {}),
+        text,
+        ...(error ? { error } : {}),
+      };
+      this.emit('follow-up', done);
+    }
+  }
+
+  /** Wait for this conversation's turn; the returned function hands it on. */
+  async #takeTurn(sessionId: string): Promise<() => void> {
+    const previous = this.#sessionTurns.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => mine);
+    this.#sessionTurns.set(sessionId, tail);
+    await previous;
+    return () => {
+      release();
+      if (this.#sessionTurns.get(sessionId) === tail) this.#sessionTurns.delete(sessionId);
+    };
   }
 
   close(): void {
@@ -777,6 +936,17 @@ export class Assistant extends EventEmitter {
    * ephemeral by nature and stay unjournalled.
    */
   async *chat(input: ChatInput): AsyncGenerator<AgentEvent, void, unknown> {
+    // One conversation answers one message at a time. A new conversation has
+    // nothing to wait for: nobody else can know its id yet.
+    const release = input.sessionId ? await this.#takeTurn(input.sessionId) : undefined;
+    try {
+      yield* this.#journalledChat(input);
+    } finally {
+      release?.();
+    }
+  }
+
+  async *#journalledChat(input: ChatInput): AsyncGenerator<AgentEvent, void, unknown> {
     const turnId = input.turnId ?? randomUUID();
     const startedAt = Date.now();
     const journal: TurnJournalState = { begun: false };
@@ -918,10 +1088,39 @@ export class Assistant extends EventEmitter {
     // The journal's id, on the message (concept 9.4): it is what makes a
     // quote from this prompt locatable to this exact turn later, instead of
     // to a position counted off the transcript.
-    this.store.addMessage({ sessionId: session.id, role: 'user', content: prompt, turnId });
-    if (session.messageCount === 0 && session.title === 'New conversation') {
+    const fromSystem = input.origin === 'system';
+    // The rights this conversation was last used with, so a turn nobody
+    // typed - a report-back - runs with them rather than with the default.
+    if (!fromSystem && input.permission) this.store.setMeta(sessionPermissionKey(session.id), input.permission);
+    this.store.addMessage({ sessionId: session.id, role: fromSystem ? 'system' : 'user', content: prompt, turnId });
+    if (!fromSystem && session.messageCount === 0 && session.title === 'New conversation') {
       this.store.updateSession(session.id, { title: deriveTitle(prompt) });
     }
+
+    // Chat and terminal are one process (T1): an ordinary conversation is
+    // answered by typing into its Claude Code terminal. Everything above -
+    // the recall, the stored message - is shared; what follows differs.
+    if (await this.#answersInTerminal(session, input, providerId)) {
+      yield* this.#terminalTurn({
+        session,
+        prompt,
+        memories,
+        mail,
+        project,
+        snapshotOrgId: organization.id,
+        providerId,
+        model,
+        effort,
+        input,
+        turnId,
+        recall,
+        ownSkills,
+      });
+      return;
+    }
+    // Answered headless this time - a voice turn, say. The terminal must not
+    // go on writing to the same transcript in parallel.
+    await this.#closeChatTerminal(session.id);
 
     const started = Date.now();
     let answer = '';
@@ -1195,9 +1394,203 @@ export class Assistant extends EventEmitter {
     if (
       this.config.memory.enabled &&
       this.config.memory.autoExtract &&
-      session.kind !== 'schedule'
+      session.kind !== 'schedule' &&
+      !fromSystem
     ) {
       void this.#learn(session.id, prompt, answer, usedProvider, owner);
+    }
+  }
+
+  /* ------------------------ chat in the terminal ------------------------ */
+
+  /**
+   * Whether this turn is typed into the conversation's terminal (T1, T5):
+   * switched on, an ordinary conversation, not a spoken turn or the watcher,
+   * a provider the model gateway can reach, and a pty on this machine.
+   */
+  async #answersInTerminal(session: Session, input: ChatInput, providerId: ProviderId): Promise<boolean> {
+    if (!this.config.turns.terminal) return false;
+    if (session.kind !== 'chat' || input.voice || input.watching) return false;
+    if (!this.providers.has('claude') || !this.providers.get('claude').openTerminal) return false;
+    if (providerId !== 'claude' && providerId !== 'codex') {
+      const profile = this.providers.profiles().find((entry) => entry.id === providerId);
+      if (profile?.via !== 'direct') return false;
+    }
+    return (await loadPty()) !== null;
+  }
+
+  async *#terminalTurn(turn: {
+    session: Session;
+    prompt: string;
+    memories: ScoredMemory[];
+    mail: Mail[];
+    project: Project | undefined;
+    snapshotOrgId: string;
+    providerId: ProviderId;
+    model: string | undefined;
+    effort: EffortLevel | undefined;
+    input: ChatInput;
+    turnId: string;
+    recall: Extract<AgentEvent, { type: 'memory' }> | undefined;
+    ownSkills: ReturnType<SkillStore['for']>;
+  }): AsyncGenerator<AgentEvent, void, unknown> {
+    const { session, input } = turn;
+    const started = Date.now();
+    const permission = input.permission ?? this.config.defaultPermission;
+
+    let terminal: ChatTerminal;
+    try {
+      // A turn nobody typed brings no settings of its own - it takes the
+      // terminal as the person left it rather than restarting it onto the
+      // defaults (a different model, other rights) in the middle of their work.
+      const running = this.#chatTerminals.get(session.id);
+      terminal =
+        input.origin === 'system' && running?.handle.alive()
+          ? running
+          : await this.#chatTerminal(session, {
+              providerId: turn.providerId,
+              model: turn.model,
+              effort: turn.effort,
+              permission,
+            });
+    } catch (error) {
+      yield { type: 'error', message: (error as Error).message, fatal: true };
+      return;
+    }
+
+    // What a headless turn rebuilds into its system prompt every time goes
+    // in through the prompt hook here (T2): the recall, the company as it is
+    // right now with its unread mail, the skills that look like this message.
+    const budget = this.config.memory.contextBudget;
+    const snapshot = this.org.snapshot(turn.snapshotOrgId);
+    const context = [
+      renderMemoryBlock(turn.memories, Math.floor(budget * 0.4), 'this user', this.store),
+      assistantOrgBlock(this.config, snapshot, turn.mail, turn.project, this.cron.list(turn.snapshotOrgId), this.store),
+      renderSkillMatches(matchSkills(this.config, 'assistant', turn.ownSkills, turn.prompt)),
+      'It is now ' + formatNow() + '.',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const toolCalls: Extract<AgentEvent, { type: 'tool' }>[] = [];
+    const turnBlocks = new TurnBlocks();
+    if (turn.recall) turnBlocks.apply(turn.recall);
+    let answer = '';
+    let failure: string | undefined;
+    let usage: TurnUsage | undefined;
+    let answeredBy = terminal.model;
+
+    let prompt = turn.prompt;
+    let promptContext: string | undefined = context;
+    for (let pass = 1; pass <= MAX_PROVIDER_PASSES; pass += 1) {
+      yield {
+        type: 'session',
+        sessionId: session.id,
+        providerSessionId: terminal.handle.providerSessionId,
+        provider: turn.providerId,
+        ...(terminal.model ? { model: terminal.model } : {}),
+      };
+      const queue = new EventQueue<AgentEvent>();
+      // The bridge token outlives the turn; its events belong to whichever
+      // turn is typing into the terminal right now.
+      terminal.context.emit = (event) => queue.push(event);
+      // And its signal: an `assign` this turn waits on is stopped with it.
+      terminal.context.signal = input.signal;
+      const submitted = terminal.handle
+        .submit({ prompt, context: promptContext, onEvent: (event) => queue.push(event), signal: input.signal })
+        .finally(() => queue.close());
+      try {
+        for await (const event of queue.drain()) {
+          if (event.type === 'tool') {
+            toolCalls.push(event);
+            turnBlocks.apply(event);
+            this.emit('tool', event);
+          } else if (event.type === 'text' || event.type === 'thinking') {
+            turnBlocks.apply(event);
+          }
+          yield event;
+        }
+      } finally {
+        terminal.context.emit = () => undefined;
+        terminal.context.signal = undefined;
+      }
+      const result = await submitted;
+      answeredBy = result.model ?? answeredBy;
+      usage = mergeUsage(usage, result.usage);
+      if (result.answer) answer = answer ? answer + '\n\n' + result.answer : result.answer;
+      if (result.error) {
+        failure = result.error;
+        break;
+      }
+      if (result.interrupted || input.signal?.aborted || pass === MAX_PROVIDER_PASSES) break;
+
+      // The continuation (T3): a tool server switched on during the turn
+      // needs a process that has it attached. The terminal restarts on the
+      // same session with it, and the work carries on.
+      const next = toolServersFor(this.config, 'assistant', turn.providerId, session.projectId);
+      const fresh = next.specs.map((spec) => spec.name).filter((name) => !terminal.servers.includes(name));
+      if (!fresh.length) break;
+      yield { type: 'status', label: 'tools', detail: fresh.join(', ') + ' attached, carrying on' };
+      try {
+        terminal = await this.#chatTerminal(this.store.getSession(session.id) ?? session, {
+          providerId: turn.providerId,
+          model: answeredBy ?? turn.model,
+          effort: turn.effort,
+          permission,
+        });
+      } catch (error) {
+        failure = (error as Error).message;
+        break;
+      }
+      prompt = continuePrompt(fresh);
+      promptContext = undefined;
+    }
+
+    if (failure) yield { type: 'error', message: failure, fatal: !answer };
+    turnBlocks.reconcile(answer);
+    const turnUsage: TurnUsage = { ...usage, durationMs: Date.now() - started };
+    const answeredOn = this.#gatewayOwner(answeredBy, turn.providerId);
+    this.store.addMessage({
+      sessionId: session.id,
+      role: 'assistant',
+      content: answer,
+      turnId: turn.turnId,
+      provider: answeredOn,
+      ...(answeredBy ? { model: answeredBy } : {}),
+      usage: turnUsage,
+      toolCalls,
+      blocks: turnBlocks.blocks.length ? turnBlocks.blocks : undefined,
+    });
+    this.store.updateSession(session.id, {
+      provider: answeredOn,
+      ...(answeredBy ? { model: answeredBy } : {}),
+      providerSessionId: terminal.handle.providerSessionId,
+    });
+    if (failure && !answer) return;
+
+    yield { type: 'done', text: answer, providerSessionId: terminal.handle.providerSessionId, usage: turnUsage };
+
+    if (this.config.memory.enabled && this.config.memory.autoExtract && input.origin !== 'system') {
+      void this.#learn(session.id, turn.prompt, answer, answeredOn, ASSISTANT_MEMORY_OWNER);
+    }
+  }
+
+  /** Which provider a model name belongs to, as the gateway routes it. */
+  #gatewayOwner(model: string | undefined, fallback: ProviderId): ProviderId {
+    if (!this.#gateway || !model) return fallback;
+    const route = this.#gateway.route(model);
+    return route.kind === 'codex' ? 'codex' : route.kind === 'profile' ? route.profile.id : 'claude';
+  }
+
+  /** Ends a conversation's terminal and waits until its process is gone. */
+  async #closeChatTerminal(sessionId: string): Promise<void> {
+    const open = this.#chatTerminals.get(sessionId);
+    if (!open) return;
+    this.#chatTerminals.delete(sessionId);
+    open.handle.close();
+    const key = conversationTerminalKey(sessionId);
+    for (let waited = 0; waited < 5000 && tuiSessions.info(key); waited += 100) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }
 
@@ -1788,18 +2181,11 @@ export class Assistant extends EventEmitter {
   /* ------------------------- conversation terminal ------------------------ */
 
   /**
-   * Carries a conversation on in Claude Code's own terminal instead of the
-   * chat: the full TUI, typed into directly, on the same provider session a
-   * chat turn resumes - so switching back and forth loses nothing. Claude
-   * Code keeps its own context across the switch; Rookery keeps the
-   * conversation's history by storing every exchange the terminal reports.
-   *
-   * What a chat turn rebuilds every time is built once here: the system
-   * prompt, the company block, the tool servers. A terminal has one prompt
-   * for its whole life, so the per-turn memory recall is the one thing it
-   * goes without - the memories still come back on the next chat turn.
-   *
-   * Returns at once if the conversation already has an open terminal.
+   * The terminal view of a conversation: the same Claude Code process every
+   * chat message of it is typed into (T1), opened here if nothing has opened
+   * it yet. Switching between chat and terminal loses nothing because there
+   * is nothing to switch - it is one process with one transcript, and what a
+   * person types into it lands in the conversation like any other message.
    */
   async openConversationTerminal(input: {
     sessionId?: string;
@@ -1817,17 +2203,38 @@ export class Assistant extends EventEmitter {
       ...(input.projectId ? { projectId: input.projectId } : {}),
     });
     const key = conversationTerminalKey(session.id);
-    if (tuiSessions.info(key)) return { sessionId: session.id, key };
+    const open = this.#chatTerminals.get(session.id);
+    if (open?.handle.alive()) return { sessionId: session.id, key };
     if (input.projectId && input.projectId !== session.projectId) {
       this.store.updateSession(session.id, { projectId: input.projectId });
       session.projectId = input.projectId;
     }
-
-    const wanted = input.provider ?? session.provider;
-    const providerId = await this.providers.resolveUsable(wanted);
+    const providerId = await this.providers.resolveUsable(input.provider ?? session.provider);
     if (!providerId) throw new Error('No AI provider is ready.');
-    // Always the plain Claude Code adapter: the gateway, not a profile's
-    // environment, decides where each model goes.
+    await this.#chatTerminal(session, {
+      providerId,
+      model: input.model ?? session.model ?? this.config.defaultModel,
+      effort: input.effort ?? this.config.defaultEffort,
+      permission: input.permission ?? this.config.defaultPermission,
+    });
+    return { sessionId: session.id, key };
+  }
+
+  /**
+   * The conversation's terminal, started as this turn needs it. A terminal
+   * already running with the same model, effort, rights, project and tool
+   * servers is reused; any difference ends it and starts it again on the same
+   * Claude Code session (T3) - the context is in the transcript, not in the
+   * process, so nothing of the conversation is lost.
+   *
+   * What a headless turn rebuilds every time is built once here: the system
+   * prompt, the tool servers. What changes per message - the recall, the
+   * company's current state - goes in through the prompt hook instead.
+   */
+  async #chatTerminal(
+    session: Session,
+    want: { providerId: ProviderId; model: string | undefined; effort: EffortLevel | undefined; permission: PermissionLevel },
+  ): Promise<ChatTerminal> {
     const provider = this.providers.get('claude');
     if (!provider.openTerminal) throw new Error(provider.displayName + ' has no terminal of its own.');
 
@@ -1839,7 +2246,7 @@ export class Assistant extends EventEmitter {
       if (status.id === 'claude' || !status.available || !status.authenticated) continue;
       const profile = this.providers.profiles().find((entry) => entry.id === status.id);
       // The gateway speaks to ChatGPT and to Anthropic-compatible endpoints;
-      // a router-backed profile stays reachable from the chat only.
+      // a router-backed profile stays reachable from headless turns only.
       if (status.id !== 'codex' && profile?.via !== 'direct') continue;
       const models = await this.providers.models(status.id).catch(() => []);
       if (profile) direct.push({ profile, models: models.map((entry) => entry.id) });
@@ -1850,23 +2257,31 @@ export class Assistant extends EventEmitter {
     this.#gatewayProfiles = direct;
     this.#gateway ??= new ModelGateway({ profiles: () => this.#gatewayProfiles });
     const gateway = await this.#gateway.start();
-    const ownerOf = (name: string | undefined): ProviderId => {
-      const route = this.#gateway?.route(name) ?? { kind: 'anthropic' as const };
-      return route.kind === 'codex' ? 'codex' : route.kind === 'profile' ? route.profile.id : 'claude';
-    };
 
-    // One gateway serves every model, so the session resumes whichever
-    // provider it last ran on - Claude Code's transcript is the same format.
-    const resumed = Boolean(session.providerSessionId);
-    const requested = input.model ?? session.model ?? this.config.defaultModel;
-    // A name another provider owns (the chat's `sonnet` on a GPT terminal)
+    // A name another provider owns (the chat's `sonnet` on a GPT turn)
     // becomes that provider's own default instead of silently going to Claude.
-    const model = requested && ownerOf(requested) === providerId ? requested : remapModel(providerId, requested);
-    const organization = this.org.activeOrganization();
-    const snapshot = this.org.snapshot(organization.id);
+    const model =
+      want.model && this.#gatewayOwner(want.model, 'claude') === want.providerId
+        ? want.model
+        : remapModel(want.providerId, want.model);
     const project = session.projectId ? (this.store.org.getProject(session.projectId) ?? undefined) : undefined;
     const who = 'assistant';
-    const extra = toolServersFor(this.config, who, providerId, project?.id);
+    const extra = toolServersFor(this.config, who, want.providerId, project?.id);
+    const servers = extra.specs.map((spec) => spec.name).sort();
+    const signature = JSON.stringify([model ?? '', want.effort ?? '', want.permission, project?.id ?? '', servers]);
+
+    const open = this.#chatTerminals.get(session.id);
+    if (open && open.handle.alive() && open.signature === signature) return open;
+    // Whatever a person is doing in it right now finishes first; a restart
+    // must not cut off a turn somebody typed into the terminal view.
+    if (open?.handle.alive()) await open.handle.whenIdle();
+    await this.#closeChatTerminal(session.id);
+
+    // Read again: a restart must resume the session the last process wrote.
+    const current = this.store.getSession(session.id) ?? session;
+    const resumed = Boolean(current.providerSessionId);
+    const organization = this.org.activeOrganization();
+    const snapshot = this.org.snapshot(organization.id);
     const ownSkills = this.skills.for(who);
     const systemPrompt = buildSystemPrompt({
       config: this.config,
@@ -1882,8 +2297,9 @@ export class Assistant extends EventEmitter {
     });
 
     // The token lives as long as the terminal: the MCP bridge answers the
-    // assistant's own tools for exactly that long.
-    const token = this.org.register({
+    // assistant's own tools for exactly that long. `emit` is pointed at
+    // whichever turn is typing into it at the time.
+    const context: ToolContext = {
       orgId: organization.id,
       audience: 'assistant',
       agentId: undefined,
@@ -1894,12 +2310,15 @@ export class Assistant extends EventEmitter {
       watching: false,
       emit: () => undefined,
       signal: undefined,
-    });
+    };
+    const token = this.org.register(context);
     const release = (): void => {
       this.org.unregister(token);
       this.questions.cancelForOwner(token);
     };
 
+    const key = conversationTerminalKey(session.id);
+    let entry: ChatTerminal | undefined;
     try {
       const mcp = await this.org.bridge.spec(token);
       const opened = await provider.openTerminal(
@@ -1907,11 +2326,11 @@ export class Assistant extends EventEmitter {
           prompt: '',
           systemPrompt,
           systemPromptMode: 'replace',
-          ...(resumed && session.providerSessionId ? { providerSessionId: session.providerSessionId } : {}),
+          ...(resumed && current.providerSessionId ? { providerSessionId: current.providerSessionId } : {}),
           ...(model ? { model } : {}),
-          effort: input.effort ?? this.config.defaultEffort,
+          ...(want.effort ? { effort: want.effort } : {}),
           cwd: this.config.workspace,
-          permission: input.permission ?? this.config.defaultPermission,
+          permission: want.permission,
           mcp,
           ...(extra.specs.length ? { mcpExtra: extra.specs } : {}),
           ...externalTurnExtras(this.config, who),
@@ -1919,61 +2338,77 @@ export class Assistant extends EventEmitter {
           tui: { key },
         },
         {
-          onTurn: (turn) => {
-            if (turn.prompt) this.store.addMessage({ sessionId: session.id, role: 'user', content: turn.prompt });
-            // Stored the way a chat turn stores itself: the tool calls, and
-            // the ordered transcript the thread renders them from - or the
-            // chat would show a terminal turn as bare text.
-            const toolCalls: Extract<AgentEvent, { type: 'tool' }>[] = [];
-            const turnBlocks = new TurnBlocks();
-            for (const event of turn.events) {
-              if (event.type === 'tool') toolCalls.push(event);
-              turnBlocks.apply(event);
-            }
-            turnBlocks.reconcile(turn.answer);
-            // Whoever actually answered: `/model` in the terminal may have
-            // moved the conversation to another provider since it opened.
-            const answeredBy = turn.model ?? model;
-            const answeredOn = ownerOf(answeredBy);
-            this.store.addMessage({
-              sessionId: session.id,
-              role: 'assistant',
-              content: turn.answer,
-              provider: answeredOn,
-              ...(answeredBy ? { model: answeredBy } : {}),
-              usage: turn.usage,
-              toolCalls,
-              ...(turnBlocks.blocks.length ? { blocks: turnBlocks.blocks } : {}),
-            });
-            const current = this.store.getSession(session.id);
-            if (current && current.title === 'New conversation' && turn.prompt) {
-              this.store.updateSession(session.id, { title: deriveTitle(turn.prompt) });
-            }
-            this.store.updateSession(session.id, {
-              provider: answeredOn,
-              ...(answeredBy ? { model: answeredBy } : {}),
-              providerSessionId: turn.providerSessionId,
-            });
-            this.emit('changed', { kind: 'session', id: session.id });
-            if (this.config.memory.enabled && this.config.memory.autoExtract && turn.prompt) {
-              void this.#learn(session.id, turn.prompt, turn.answer, answeredOn, ASSISTANT_MEMORY_OWNER);
-            }
-          },
+          // Something a person typed into the terminal itself. What Rookery
+          // types comes back to the turn that typed it and is stored there.
+          onTurn: (typed) => this.#storeTypedTurn(session.id, typed, model),
           onExit: () => {
             release();
+            if (entry && this.#chatTerminals.get(session.id) === entry) this.#chatTerminals.delete(session.id);
             this.emit('changed', { kind: 'session', id: session.id });
           },
         },
       );
-      // Stored at once, so switching back to chat resumes this very session
-      // even if nothing was said in the terminal yet.
-      this.store.updateSession(session.id, { provider: providerId, model, providerSessionId: opened.providerSessionId });
+      entry = { handle: opened.terminal, signature, servers, context, model };
+      this.#chatTerminals.set(session.id, entry);
+      // Stored at once, so the next message - or a headless turn - resumes
+      // this very session even if nothing was said in the terminal yet.
+      this.store.updateSession(session.id, {
+        provider: want.providerId,
+        ...(model ? { model } : {}),
+        providerSessionId: opened.providerSessionId,
+      });
     } catch (error) {
       release();
       throw error;
     }
     this.emit('changed', { kind: 'session', id: session.id });
-    return { sessionId: session.id, key };
+    return entry;
+  }
+
+  /** A turn a person typed straight into the terminal, stored like a chat turn. */
+  #storeTypedTurn(
+    sessionId: string,
+    turn: Parameters<Parameters<NonNullable<ReturnType<ProviderRegistry['get']>['openTerminal']>>[1]['onTurn']>[0],
+    openedWith: string | undefined,
+  ): void {
+    if (turn.prompt) this.store.addMessage({ sessionId, role: 'user', content: turn.prompt });
+    // Stored the way a chat turn stores itself: the tool calls, and the
+    // ordered transcript the thread renders them from - or the chat would
+    // show a terminal turn as bare text.
+    const toolCalls: Extract<AgentEvent, { type: 'tool' }>[] = [];
+    const turnBlocks = new TurnBlocks();
+    for (const event of turn.events) {
+      if (event.type === 'tool') toolCalls.push(event);
+      turnBlocks.apply(event);
+    }
+    turnBlocks.reconcile(turn.answer);
+    // Whoever actually answered: `/model` in the terminal may have moved
+    // the conversation to another provider since it opened.
+    const answeredBy = turn.model ?? openedWith;
+    const answeredOn = this.#gatewayOwner(answeredBy, 'claude');
+    this.store.addMessage({
+      sessionId,
+      role: 'assistant',
+      content: turn.answer,
+      provider: answeredOn,
+      ...(answeredBy ? { model: answeredBy } : {}),
+      usage: turn.usage,
+      toolCalls,
+      ...(turnBlocks.blocks.length ? { blocks: turnBlocks.blocks } : {}),
+    });
+    const current = this.store.getSession(sessionId);
+    if (current && current.title === 'New conversation' && turn.prompt) {
+      this.store.updateSession(sessionId, { title: deriveTitle(turn.prompt) });
+    }
+    this.store.updateSession(sessionId, {
+      provider: answeredOn,
+      ...(answeredBy ? { model: answeredBy } : {}),
+      providerSessionId: turn.providerSessionId,
+    });
+    this.emit('changed', { kind: 'session', id: sessionId });
+    if (this.config.memory.enabled && this.config.memory.autoExtract && turn.prompt) {
+      void this.#learn(sessionId, turn.prompt, turn.answer, answeredOn, ASSISTANT_MEMORY_OWNER);
+    }
   }
 
   /** The model gateway conversation terminals share, started with the first one. */
@@ -1981,9 +2416,12 @@ export class Assistant extends EventEmitter {
   /** The directly reachable profiles and their models, refreshed with every terminal. */
   #gatewayProfiles: { profile: ProviderProfile; models: string[] }[] = [];
 
-  /** Back to chat: ends the conversation's terminal. False when it had none. */
+  /** Ends the conversation's terminal. False when it had none. */
   closeConversationTerminal(sessionId: string): boolean {
-    return tuiSessions.kill(conversationTerminalKey(sessionId));
+    const had = this.#chatTerminals.has(sessionId) || tuiSessions.info(conversationTerminalKey(sessionId)) !== null;
+    void this.#closeChatTerminal(sessionId);
+    tuiSessions.kill(conversationTerminalKey(sessionId));
+    return had;
   }
 
   #resolveSession(input: ChatInput): Session {

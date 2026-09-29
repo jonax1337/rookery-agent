@@ -43,6 +43,7 @@ import {
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
+  BellIcon,
   ArrowUpIcon,
   BanIcon as SquareIcon,
   CheckIcon,
@@ -209,7 +210,30 @@ const ThreadMessage: FC = () => {
 
   if (isEditing) return <EditComposer />;
   if (role === "user") return <UserMessage />;
+  if (role === "system") return <SystemMessage />;
   return <AssistantMessageComponent />;
+};
+
+/**
+ * Rookery speaking into the conversation - a report-back from work handed off
+ * earlier. Not something the user said and not the answer, so neither bubble:
+ * one quiet line, the answer to it follows as an ordinary message.
+ */
+const SystemMessage: FC = () => {
+  return (
+    <MessagePrimitive.Root
+      data-slot="aui_system-message-root"
+      data-role="system"
+      className="fade-in animate-in flex justify-center px-2 duration-150"
+    >
+      <div className="text-muted-foreground flex max-w-[85%] min-w-0 items-center gap-2 rounded-full border px-3 py-1 text-xs">
+        <BellIcon className="size-3.5 shrink-0" aria-hidden />
+        <span className="truncate">
+          <MessagePrimitive.Parts />
+        </span>
+      </div>
+    </MessagePrimitive.Root>
+  );
 };
 
 const ThreadScrollToBottom: FC = () => {

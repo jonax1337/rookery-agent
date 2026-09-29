@@ -112,6 +112,16 @@ export function RunTerminal({
     term.open(host);
     termRef.current = term;
     fitRef.current = fit;
+    // Measure before asking for the screen: the process is set to this size
+    // first, and the snapshot then arrives drawn for exactly these columns.
+    // A snapshot written into the 80-column default and fitted afterwards is
+    // what used to come out skewed.
+    try {
+      fit.fit();
+      socket.resizeTui(assignmentId, term.cols, term.rows);
+    } catch {
+      // Not laid out yet; the resize effect below catches up.
+    }
 
     const input = term.onData((data) => socket.sendTuiInput(assignmentId, data));
     const off = socket.onTui((frame) => {
@@ -231,7 +241,11 @@ export function RunTerminal({
         className={cn(
           'relative min-h-[320px] overflow-hidden rounded-lg border',
           showHeader ? 'h-[560px]' : 'flex-1',
-          !live && 'hidden',
+          // Laid out but invisible while the server answers, so the terminal
+          // can be measured before its screen arrives; gone only when there
+          // is no terminal at all.
+          info === undefined && 'invisible',
+          info === null && 'hidden',
         )}
         style={{ background: THEME.background }}
       >

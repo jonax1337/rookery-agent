@@ -1509,6 +1509,14 @@ export interface Task {
    * docs/concepts/work-as-one-surface.md).
    */
   scheduleId?: string;
+  /**
+   * The conversation this work was handed over from, when it was. Whoever
+   * hands work off in the background is told how it ended, in that same
+   * conversation (docs/concepts/delegation-report-back-and-chat-terminal.md,
+   * R1). A card made inside another task has a `parentId` instead: its
+   * report goes to that task, not past it.
+   */
+  requesterSessionId?: string;
   /** Sibling task ids that must finish first. */
   dependsOn: string[];
   /** Why the planner decided what it decided. */
@@ -1926,7 +1934,47 @@ export interface Provider {
    * `handlers`. `options.tui.key` names the terminal; `options.prompt` is
    * ignored. Absent on providers without a terminal.
    */
-  openTerminal?(options: ProviderTurnOptions, handlers: ProviderTerminalHandlers): Promise<{ providerSessionId: string }>;
+  openTerminal?(
+    options: ProviderTurnOptions,
+    handlers: ProviderTerminalHandlers,
+  ): Promise<{ providerSessionId: string; terminal: ConversationTerminalHandle }>;
+}
+
+/** One message Rookery typed into a conversation terminal, and how it ended. */
+export interface ConversationTerminalTurn {
+  prompt: string;
+  answer: string;
+  /** Text, thinking and tool events of the turn, in order. */
+  events: AgentEvent[];
+  model?: string;
+  providerSessionId: string;
+  usage: TurnUsage;
+  /** Stopped with Esc before Claude Code said it was done. */
+  interrupted?: boolean;
+  error?: string;
+}
+
+/**
+ * A conversation's Claude Code process, as the runtime drives it: every chat
+ * message is typed into it, and a person may type into it too
+ * (docs/concepts/delegation-report-back-and-chat-terminal.md, T1).
+ */
+export interface ConversationTerminalHandle {
+  readonly key: string;
+  readonly providerSessionId: string;
+  /** A submitted message is being answered right now. */
+  readonly busy: boolean;
+  alive(): boolean;
+  close(): void;
+  /** Resolves once nothing is being answered - by Rookery or a person - or after a long wait. */
+  whenIdle(): Promise<void>;
+  submit(input: {
+    prompt: string;
+    /** Handed to Claude Code for this message only, through the prompt hook. */
+    context?: string;
+    onEvent: (event: AgentEvent) => void;
+    signal?: AbortSignal;
+  }): Promise<ConversationTerminalTurn>;
 }
 
 /** What a conversation terminal reports while it is open. */
@@ -2370,6 +2418,14 @@ export interface TurnsConfig {
    * that are never coming back, not a limit on how long a person may think.
    */
   timeoutMs: number;
+  /**
+   * Ordinary conversations are answered in their Claude Code terminal - one
+   * process per chat, typed into for every message, the same one the
+   * terminal view shows (docs/concepts/delegation-report-back-and-chat-terminal.md,
+   * T1). Off, every turn is a headless print run again, and the terminal view
+   * opens a process of its own on the same session.
+   */
+  terminal: boolean;
 }
 
 export interface OrgConfig {

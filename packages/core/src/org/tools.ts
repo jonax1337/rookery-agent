@@ -115,10 +115,11 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'access to this conversation, so the instruction must be self-contained: restate every ' +
       'fact, file and constraint it needs. Call assign several times in one message to run agents ' +
       "in parallel. Returns the agent's complete report. With wait=false it returns at once and " +
-      'the agent keeps working in the background; check on it with assignment_status. In a chat, ' +
-      'name yourself as the agent with wait=false to spin off real work in the background while ' +
-      'the conversation keeps going - your report posts back into the same chat once it finishes. ' +
-      'Handing work to yourself must use wait=false.',
+      'the agent keeps working in the background - and you are guaranteed to hear how it ends: ' +
+      'handed off from a conversation, a message with the outcome arrives in that conversation ' +
+      '(tell the user then, not before); handed off from inside a task, your task stays open and ' +
+      'you are run again with the result once it is back. Nothing needs polling, but ' +
+      'assignment_status shows where it stands. Handing work to yourself must use wait=false.',
     inputSchema: {
       type: 'object',
       properties: {

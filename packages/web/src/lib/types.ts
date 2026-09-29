@@ -1388,6 +1388,14 @@ export interface PublicConfig {
   router?: RouterConfig;
   providerFallback?: ProviderFallbackConfig;
   updates: UpdatesConfig;
+  turns?: TurnsConfig;
+}
+
+/** One conversational turn: its ceiling, and where it runs. */
+export interface TurnsConfig {
+  timeoutMs?: number;
+  /** Conversations run in their Claude Code terminal (one process per chat). */
+  terminal?: boolean;
 }
 
 /* ------------------------------- updates ------------------------------- */
@@ -1782,6 +1790,7 @@ export type ClientFrame =
    * journal; the `attached` reply lines the two up.
    */
   | { type: 'attach'; sessionId: string }
+  | { type: 'detach'; sessionId: string }
   | { type: 'ping' };
 
 /**

@@ -13,6 +13,7 @@ import {
   readCallbackData,
   splitMessage,
   type AgentEvent,
+  type FollowUpEvent,
   type GatewayAttachment,
   type GatewayLifecycleState,
   type GatewayRejection,
@@ -566,6 +567,23 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   const albums = new Map<string, { job: Incoming; timer: NodeJS.Timeout }>();
   /** One running turn per sender, so `/stop` knows what to abort. */
   const turns = new Map<number, AbortController>();
+
+  /**
+   * A turn in one of this chat's conversations that nobody here typed - a
+   * report-back from work handed off from the phone (R3). The conversation
+   * remembers which chat it belongs to; its answer goes there, filed as an
+   * answer of that conversation so a reply to it continues it.
+   */
+  const sessionChatKey = (sessionId: string): string => 'telegram:session:' + sessionId;
+  context.assistant.on('follow-up', (event: FollowUpEvent) => {
+    if (!running || !api) return;
+    const raw = context.assistant.store.getMeta(sessionChatKey(event.sessionId));
+    const chatId = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(chatId)) return;
+    const text = event.text.trim() || (event.error ? 'Error: ' + event.error : '');
+    if (!text) return;
+    say(chatId, text, { origin: { kind: 'answer', sessionId: event.sessionId } });
+  });
   /** Per chat, so two answers never race each other onto the wire. */
   const outbox = new Map<number, Promise<void>>();
   const idReplies = new Map<number, number>();
@@ -1546,6 +1564,9 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         ? openThread(context, origin, () => resolveSession(chatId))
         : { session: resolveSession(chatId), fresh: false };
       session = thread.session;
+      // Whatever answers in this conversation later without being asked
+      // here - a report-back - knows where to find this chat.
+      context.assistant.store.setMeta(sessionChatKey(session.id), String(chatId));
       // The notification itself goes in front of the turn only when this
       // conversation has not seen it yet. A thread being continued already
       // holds it in its history, and repeating it every time would push the

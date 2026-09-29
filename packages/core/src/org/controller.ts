@@ -259,6 +259,73 @@ const RESULT_BUDGET = 24000;
  */
 const MAX_PROVIDER_ATTEMPTS = 2;
 
+/**
+ * How often a task run picks its own work back up because work it handed off
+ * in the background came back (R4). Each round is a full run of the leaf, so
+ * this is a ceiling on cost as much as on nesting; `org.maxTaskRuns` still
+ * applies on top of it.
+ */
+const MAX_DELEGATION_ROUNDS = 2;
+
+/** How one leaf run of a task ended - what `#runTaskLeaf` hands back. */
+interface LeafOutcome {
+  status: Assignment['status'];
+  result?: string;
+  error?: string;
+  assignmentId: string;
+  /** The agent asked its requester something while running (decision E6). */
+  askedRequester: boolean;
+}
+
+/**
+ * What a conversation is told when work it handed off in the background has
+ * ended (docs/concepts/delegation-report-back-and-chat-terminal.md, R3). It
+ * arrives as a turn of its own, marked as coming from the system, and the
+ * assistant answers the user from it - which is what makes "I will let you
+ * know" a promise the code keeps rather than one the model makes.
+ */
+export interface ReportBackEvent {
+  sessionId: string;
+  taskId: string;
+  status: TaskStatus;
+  notice: string;
+}
+
+/** The notice for one ended task, in the words the assistant reads. */
+export function reportBackNotice(task: Task, agent: Agent | null): string {
+  const who = agent ? agent.name + ' (' + agent.slug + ')' : 'the agent';
+  const ended = task.finishedAt ?? task.updatedAt;
+  const took = task.startedAt && ended > task.startedAt ? ' after ' + formatAge(task.startedAt, ended, 'second') : '';
+  const head = '[Rookery] Background task ' + task.id.slice(0, 8) + ' "' + task.title + '", handed to ' + who + ', ';
+  const system =
+    'This message comes from the system, not from your user - do not answer it as if they wrote it. ' +
+    'You handed this work off earlier in this conversation; this is the follow-up you owe them.';
+  switch (task.status) {
+    case 'done':
+      return (
+        head + 'is done' + took + '.' + (task.error ? ' Note: ' + task.error : '') + '\n\n' +
+        'Report:\n' + clip(task.result ?? '(no output)', RESULT_BUDGET) + '\n\n' + system + ' ' +
+        'Tell the user what came of it now, in your own words: the outcome, and anything they need to decide or do. ' +
+        'Keep it as short as the report allows.'
+      );
+    case 'blocked':
+      return (
+        head + 'stopped with a question and is waiting for an answer.\n\n' +
+        (task.result ? 'What it said:\n' + clip(task.result, RESULT_BUDGET) + '\n\n' : '') + system + ' ' +
+        "Put the question to the user. The agent's question sits in the task's mail thread; once the user answers, " +
+        'reply in that thread with send_mail and the task picks up again.'
+      );
+    case 'cancelled':
+      return head + 'was cancelled' + took + '.\n\n' + system + ' Tell the user briefly, unless they cancelled it themselves just now.';
+    default:
+      return (
+        head + 'failed' + took + ': ' + (task.error ?? 'no reason given') + '.' +
+        (task.result ? '\n\nWhat it had so far:\n' + clip(task.result, 4000) : '') + '\n\n' + system + ' ' +
+        'Tell the user what went wrong and what you suggest - retrying, handing it to someone else, or dropping it.'
+      );
+  }
+}
+
 /** How much of one assignment's live log is kept, in JSON bytes. */
 const ASSIGNMENT_LOG_BYTES = 256 * 1024;
 
@@ -363,6 +430,20 @@ export class OrgController extends EventEmitter {
   readonly #logs = new Map<string, AssignmentLogBuffer>();
   /** Abort controllers of tasks being run from the board, by task id. */
   readonly #activeTasks = new Map<string, AbortController>();
+  /**
+   * Tasks somebody is blocked on right now - an `assign` or `run_task` with
+   * the caller waiting for its return value. Their ending travels back as that
+   * return value, so a report-back on top would say it twice. In memory on
+   * purpose: after a restart nobody is waiting any more, and then every run
+   * reports back on its own.
+   */
+  readonly #awaited = new Set<string>();
+  /**
+   * Work an agent handed off with `wait=false` from inside a task, by that
+   * task's id. The task does not end while any of it is still out (R4): its
+   * run waits, then picks its own work back up with the results.
+   */
+  readonly #detached = new Map<string, Map<string, Promise<Task>>>();
 
   constructor(options: OrgControllerOptions) {
     super();
@@ -1043,6 +1124,9 @@ export class OrgController extends EventEmitter {
           assigneeId: assignee?.id,
           createdBy: context.audience === 'agent' ? 'agent' : 'assistant',
           createdByAgentId: context.agentId,
+          // Whenever it runs, the conversation that asked for it hears how it
+          // ended. Inside a task there is a parent to report to instead.
+          requesterSessionId: context.taskId ? undefined : context.sessionId,
         });
         this.#announceTask(task, context.emit);
         // A task with an owner gets its thread now rather than at its first
@@ -1078,7 +1162,7 @@ export class OrgController extends EventEmitter {
       case 'run_task': {
         const task = this.findTask(context.orgId, text('id'));
         if (!task) return fail('No task ' + text('id') + '.');
-        const finished = await this.runTask(context, task);
+        const finished = await this.#runAwaited(context, task);
         if (finished.status !== 'done') {
           return fail('Task "' + finished.title + '" ' + finished.status + (finished.error ? ': ' + finished.error : '.'));
         }
@@ -1385,6 +1469,9 @@ export class OrgController extends EventEmitter {
       assigneeId: agent.id,
       createdBy: context.audience === 'agent' ? 'agent' : 'assistant',
       createdByAgentId: context.agentId,
+      // Where the ending is reported (R1): the conversation for top-level
+      // work, the parent task for work handed on from inside one.
+      requesterSessionId: context.taskId ? undefined : context.sessionId,
     });
     this.#announceTask(board, context.emit);
     const shortId = board.id.slice(0, 8);
@@ -1406,41 +1493,37 @@ export class OrgController extends EventEmitter {
       // Detached: the turn ends while the agent works. Its progress reaches
       // every socket through the org-level run events; the turn's own stream
       // and abort signal must not be tied to it.
-      const isSelf = agent.id === context.agentId;
-      this.runTask(runContext, board)
-        .then((finished) => {
-          if (!isSelf) return undefined;
-          // A self-assignment has nobody else waiting on assignment_status,
-          // so it reports for itself the same way mail-triggered work does:
-          // a mail addressed to the user.
-          const body =
-            finished.status === 'done'
-              ? clip(finished.result ?? '', RESULT_BUDGET)
-              : 'Could not finish: ' + (finished.error ?? finished.status) + '.';
-          return this.#deliverMail({
-            orgId: context.orgId,
-            from: { kind: 'agent', id: agent.id },
-            to: [{ kind: 'user' }],
-            cc: [],
-            subject: 'Re: ' + title,
-            body,
-            depth: 0,
-            emit: () => undefined,
-          });
-        })
-        .catch((error: unknown) => {
-          this.#log.warn('Detached task failed', { agent: agent.slug, error: String(error) });
-        });
+      //
+      // Nobody waits on the promise here, and nobody has to: how the task
+      // ends is reported back by `runTask` itself - to the conversation for
+      // top-level work, to the parent task (which waits for it, R4) for work
+      // handed on from inside one. It used to be dropped on the floor unless
+      // an agent had assigned itself, while the tool text promised otherwise.
+      const running = this.runTask(runContext, board).catch((error: unknown) => {
+        this.#log.warn('Detached task failed', { agent: agent.slug, error: String(error) });
+        return this.#store.org.getTask(board.id) ?? board;
+      });
+      if (context.taskId) {
+        let pending = this.#detached.get(context.taskId);
+        if (!pending) {
+          pending = new Map();
+          this.#detached.set(context.taskId, pending);
+        }
+        pending.set(board.id, running);
+      }
+      const whereBack = context.taskId
+        ? 'Your own task stays open until it is finished: when your run ends, you are started again with its result.'
+        : context.sessionId
+          ? 'When it ends - done, failed or with a question - a message arrives in this conversation, and you tell the user then.'
+          : 'It is on the board; how it ends is recorded in its task thread.';
       return {
-        text: isSelf
-          ? 'Started in the background as task ' + shortId + ' "' + title +
-            '" - I will follow up in this chat once it is done.'
-          : 'Handed to ' + agent.name + ' (' + agent.slug + ') as task ' + shortId + ' "' + title +
-            '". It runs in the background and is on the board; the user is told when it finishes.',
+        text:
+          (agent.id === context.agentId ? 'Started in the background' : 'Handed to ' + agent.name + ' (' + agent.slug + ')') +
+          ' as task ' + shortId + ' "' + title + '". ' + whereBack,
       };
     }
 
-    const finished = await this.runTask(runContext, board);
+    const finished = await this.#runAwaited(runContext, board);
     const duration =
       finished.startedAt && finished.finishedAt
         ? ', ' + Math.round((finished.finishedAt - finished.startedAt) / 1000) + ' s'
@@ -2895,6 +2978,117 @@ export class OrgController extends EventEmitter {
     } finally {
       this.#activeTasks.delete(task.id);
       outer.signal?.removeEventListener('abort', onAbort);
+      // Every ending of every run passes here, thrown or not, so this is the
+      // one place a report-back can be neither forgotten nor sent twice.
+      this.#detached.delete(task.id);
+      this.#reportBack(reload());
+    }
+  }
+
+  /**
+   * A task that ended outside any run - failed by the startup sweep after a
+   * restart killed its run. It is reported back like any other ending: the
+   * conversation that handed it off must not wait for ever on a run that no
+   * longer exists.
+   */
+  reportEnded(task: Task): void {
+    this.#reportBack(task);
+  }
+
+  /** `runTask` for a caller that blocks on the result - it hears the ending itself. */
+  async #runAwaited(context: ToolContext, task: Task): Promise<Task> {
+    this.#awaited.add(task.id);
+    try {
+      return await this.runTask(context, task);
+    } finally {
+      this.#awaited.delete(task.id);
+    }
+  }
+
+  /**
+   * Tell whoever handed this work off how it ended (R2). Only a conversation
+   * is told here: a caller blocked on the run gets its return value, a
+   * subtask reports to the task it belongs to, and a card nobody handed over
+   * - the board, a schedule - keeps its thread and its push as before.
+   */
+  #reportBack(task: Task): void {
+    if (!task.requesterSessionId || task.parentId || this.#awaited.has(task.id)) return;
+    if (task.status !== 'done' && task.status !== 'failed' && task.status !== 'cancelled' && task.status !== 'blocked') {
+      return;
+    }
+    const agent = task.assigneeId ? this.#store.org.getAgent(task.assigneeId) : null;
+    const event: ReportBackEvent = {
+      sessionId: task.requesterSessionId,
+      taskId: task.id,
+      status: task.status,
+      notice: reportBackNotice(task, agent),
+    };
+    this.emit('report-back', event);
+  }
+
+  /**
+   * The leaf is finished, but work it handed off in the background may not
+   * be (R4). Wait for all of it, then - if the leaf itself had finished
+   * cleanly - run it once more with the results, so the task's report is
+   * built on them instead of on a promise that they are coming. A cancelled
+   * task takes its handed-off work down with it.
+   */
+  async #awaitDelegated(context: ToolContext, task: Task, agent: Agent, first: LeafOutcome): Promise<LeafOutcome> {
+    let outcome = first;
+    for (let round = 0; ; round += 1) {
+      const pending = this.#detached.get(task.id);
+      if (!pending || pending.size === 0) {
+        this.#detached.delete(task.id);
+        return outcome;
+      }
+      const entries = [...pending.entries()];
+      pending.clear();
+      const cancelAll = (): void => {
+        for (const [id] of entries) this.cancelTask(id);
+      };
+      if (context.signal?.aborted || outcome.status === 'cancelled') {
+        cancelAll();
+        this.#detached.delete(task.id);
+        return outcome;
+      }
+      context.signal?.addEventListener('abort', cancelAll, { once: true });
+      let children: Task[];
+      try {
+        children = await Promise.all(entries.map(([, promise]) => promise));
+      } finally {
+        context.signal?.removeEventListener('abort', cancelAll);
+      }
+      // Cancelled while it waited: the task ends cancelled, not with the
+      // interim report it had written before the work came back.
+      if (context.signal?.aborted) {
+        this.#detached.delete(task.id);
+        return { ...outcome, status: 'cancelled' };
+      }
+      // A leaf that failed or is waiting on a question is not picked back up:
+      // the children's results are on the board, and a re-run would paper
+      // over the question or the failure. Nor is one past either ceiling.
+      if (
+        outcome.status !== 'done' ||
+        outcome.askedRequester ||
+        round >= MAX_DELEGATION_ROUNDS ||
+        this.#store.org.taskRunCount(task.id) >= this.#config.org.maxTaskRuns
+      ) {
+        continue;
+      }
+      const results = children
+        .map((child) => {
+          const who = child.assigneeId ? (this.#store.org.getAgent(child.assigneeId)?.slug ?? 'agent') : 'agent';
+          return (
+            '### ' + child.title + ' (' + who + ', ' + child.status + ')\n' +
+            clip(child.result ?? (child.error ? 'FAILED: ' + child.error : 'no output'), 6000)
+          );
+        })
+        .join('\n\n');
+      const note =
+        'The work you handed off in the background while doing this task has come back:\n\n' + results +
+        '\n\nYour own report from before it came back:\n' + clip(outcome.result ?? '', 6000) +
+        '\n\nPick the task back up with these results and finish it. What you answer now is the final report.';
+      outcome = await this.#runTaskLeaf({ ...context, taskNote: note }, this.#store.org.getTask(task.id) ?? task, agent);
     }
   }
 
@@ -2989,7 +3183,8 @@ export class OrgController extends EventEmitter {
       const current = reload();
       const agent = current.assigneeId ? org.getAgent(current.assigneeId) : null;
       if (!agent) return await finish('failed', { error: 'Nobody is assigned and nobody could be found to do it.' });
-      const outcome = await this.#runTaskLeaf(context, current, agent);
+      const leaf = await this.#runTaskLeaf(context, current, agent);
+      const outcome = await this.#awaitDelegated(context, current, agent, leaf);
       return await finish(taskStatusFor(outcome), { result: outcome.result, error: outcome.error });
     }
 
@@ -3075,6 +3270,7 @@ export class OrgController extends EventEmitter {
       this.#announceTask(org.getTask(child.id) ?? child, context.emit);
     } finally {
       this.#activeTasks.delete(child.id);
+      this.#detached.delete(child.id);
       outer.signal?.removeEventListener('abort', onAbort);
     }
   }
@@ -3104,7 +3300,10 @@ export class OrgController extends EventEmitter {
           finishedAt: Date.now(),
         });
       } else {
-        const outcome = await this.#runTaskLeaf(context, child, agent, deps.filter((t) => t.result));
+        // A subtask's agent may hand work on in the background as well; the
+        // subtask is not done before that work is back (R4).
+        const leaf = await this.#runTaskLeaf(context, child, agent, deps.filter((t) => t.result));
+        const outcome = await this.#awaitDelegated(context, child, agent, leaf);
         org.updateTask(child.id, {
           status: taskStatusFor(outcome),
           result: outcome.result,
@@ -3122,14 +3321,7 @@ export class OrgController extends EventEmitter {
     task: Task,
     agent: Agent,
     deps: Task[] = [],
-  ): Promise<{
-    status: Assignment['status'];
-    result?: string;
-    error?: string;
-    assignmentId: string;
-    /** The agent asked its requester something while running (decision E6). */
-    askedRequester: boolean;
-  }> {
+  ): Promise<LeafOutcome> {
     const prior = deps.length
       ? 'Results of the subtasks this one depends on:\n\n' +
         deps.map((dep) => '### ' + dep.title + '\n' + clip(dep.result ?? '', 6000)).join('\n\n') +

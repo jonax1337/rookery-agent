@@ -365,6 +365,15 @@ export async function buildServer(
   // happened; this is the honest answer it asks for, and it changes with a
   // setting or a blocked recipient, so the probe is a call, not a flag.
   assistant.notifyProbe = () => telegramPush.canDeliver();
+  // A turn nobody typed - a report-back from work handed off earlier - runs
+  // through the hub like any other, so every tab that has the conversation
+  // open watches it arrive, and it can be stopped from any of them.
+  assistant.turnRunner = (turn) => {
+    turns.start({ id: turn.turnId, sessionId: turn.sessionId, controller: turn.controller, events: turn.events });
+  };
+  // Work a restart killed was handed off by somebody who is still waiting
+  // for it; they hear that it died, now that the turn can be shown.
+  for (const task of staleTasks) assistant.org.reportEnded(task);
 
   // A socket that misses a full heartbeat round trip is dead weight: without
   // this a dropped Wi-Fi connection would sit in `sockets` forever.
@@ -418,6 +427,7 @@ export async function buildServer(
     assistant.off('question-closed', onQuestionClosed);
     telegramPush.detach();
     assistant.notifyProbe = undefined;
+    assistant.turnRunner = undefined;
     try {
       await telegramGateway.stop();
     } catch (error) {

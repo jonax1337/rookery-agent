@@ -457,8 +457,12 @@ export function useChat(
       setBusy(false);
       inFlight.current = false;
       onSettledRef.current?.();
+      // Something may have queued up behind this turn - a report-back waits
+      // for the conversation's current answer before it starts. Asking again
+      // is how this screen joins it now rather than on the next reload.
+      if (sessionId) socket.attachConversation(sessionId);
     },
-    [sessionId],
+    [sessionId, socket],
   );
 
   /** Everything a fresh turn resets, whether it is a chat or an assignment. */
@@ -550,6 +554,18 @@ export function useChat(
    * after the fetch - on another screen, say - is joined the same way when
    * its `attached` reply arrives.
    */
+  /** The conversation as stored, replacing what is on screen. */
+  const reloadMessages = useCallback(async (id: string): Promise<void> => {
+    try {
+      const response = await fetch('/api/sessions/' + encodeURIComponent(id));
+      if (!response.ok) return;
+      const body = (await response.json()) as { messages?: Message[] };
+      if (Array.isArray(body.messages)) setMessages(body.messages);
+    } catch {
+      // The screen keeps what it has; the next load brings the rest.
+    }
+  }, []);
+
   const attach = useCallback<ChatState['attach']>(
     async (id) => {
       // Arming comes before the busy guard, deliberately: the effect that
@@ -564,10 +580,13 @@ export function useChat(
       });
       if (inFlight.current) return;
 
-      const readRunning = async (): Promise<{
+      // Declarations, not arrow constants: the handler armed above can fire
+      // after this call returned early on the busy guard, and a `const` below
+      // that guard would then still be uninitialised when it is called.
+      async function readRunning(): Promise<{
         turn: { id: string; status: string } | null;
         events: { seq: number; event: AgentEvent }[];
-      } | null> => {
+      } | null> {
         try {
           const response = await fetch('/api/sessions/' + encodeURIComponent(id) + '/running');
           if (!response.ok) return null;
@@ -578,9 +597,9 @@ export function useChat(
         } catch {
           return null;
         }
-      };
+      }
 
-      const rejoin = async (prefetched?: Awaited<ReturnType<typeof readRunning>>): Promise<void> => {
+      async function rejoin(prefetched?: Awaited<ReturnType<typeof readRunning>>): Promise<void> {
         if (inFlight.current) return;
         const body = prefetched ?? (await readRunning());
         if (!body?.turn) return;
@@ -610,6 +629,9 @@ export function useChat(
             onDone: (answer, usage) => {
               if (turnToken.current !== token) return;
               finish(answer, undefined, usage);
+              // A joined turn may have been one nobody typed here - its
+              // opening line is in the store, not on this screen.
+              void reloadMessages(id);
             },
             onError: (message) => {
               if (turnToken.current !== token) return;
@@ -619,12 +641,12 @@ export function useChat(
           },
           cursor,
         );
-      };
+      }
 
       const body = await readRunning();
       if (body?.turn) await rejoin(body);
     },
-    [finish, handleEvent, resetTurnState, socket],
+    [finish, handleEvent, reloadMessages, resetTurnState, socket],
   );
 
   const sendAssign = useCallback<ChatState['sendAssign']>(

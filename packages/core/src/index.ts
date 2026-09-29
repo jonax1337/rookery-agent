@@ -328,6 +328,8 @@ export { buildSystemPrompt, deriveTitle, toSpeakableText, type ContextInput } fr
 export { OrgStore, slugify } from './org/store.js';
 export {
   OrgController,
+  reportBackNotice,
+  type ReportBackEvent,
   describeAssignment,
   describePlan,
   toView,
@@ -506,6 +508,8 @@ export {
   type AssignInput,
   type AssistantOptions,
   type ChatInput,
+  type FollowUpEvent,
   type MemoryLearnedEvent,
+  type TurnRunner,
   type RunTaskInput,
 } from './runtime.js';

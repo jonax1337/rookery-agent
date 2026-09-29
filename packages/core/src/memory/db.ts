@@ -9,7 +9,7 @@ import { existsSync, mkdirSync } from 'node:fs';
  * which matters a lot on Windows.
  */
 
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 export type Db = DatabaseSync;
 
@@ -1102,6 +1102,15 @@ function migrate(db: Db): void {
   // docs/concepts/work-as-one-surface.md).
   if (!hasColumn(db, 'tasks', 'schedule_id')) {
     db.exec('ALTER TABLE tasks ADD COLUMN schedule_id TEXT');
+  }
+
+  // Schema 25 -> 26: the conversation a card was handed over from. A card
+  // knew its parent task but not the chat that asked for it, so work handed
+  // off in the background had nowhere to report back to, and the assistant's
+  // "I will let you know" was a promise the code could not keep
+  // (docs/concepts/delegation-report-back-and-chat-terminal.md, R1).
+  if (!hasColumn(db, 'tasks', 'requester_session_id')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN requester_session_id TEXT');
   }
 
   db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run(

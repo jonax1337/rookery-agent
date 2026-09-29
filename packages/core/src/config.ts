@@ -365,7 +365,7 @@ export const DEFAULT_CONFIG: RookeryConfig = {
   // run and a schedule stop themselves, a conversation had nothing at all,
   // and over `POST /api/chat` - which passes no signal - one stuck in a
   // tool loop could not be stopped from outside at all.
-  turns: { timeoutMs: 4 * 60 * 60 * 1000 },
+  turns: { timeoutMs: 4 * 60 * 60 * 1000, terminal: true },
   skillsDir: join(DEFAULT_HOME, 'skills'),
 };
 

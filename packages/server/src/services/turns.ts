@@ -30,6 +30,12 @@ interface RunningTurn {
 
 export class TurnHub {
   readonly #turns = new Map<string, RunningTurn>();
+  /**
+   * Who has a conversation open, by session id. A turn can start there that
+   * none of them asked for - a report-back from work handed off earlier, a
+   * message from the phone - and each of them is told the moment it does.
+   */
+  readonly #conversations = new Map<string, Set<WebSocket>>();
   /** Reverse index, so a closing socket leaves every turn in one sweep. */
   readonly #subscriptions = new Map<WebSocket, Set<RunningTurn>>();
   readonly #log: Logger;
@@ -77,6 +83,7 @@ export class TurnHub {
     };
     this.#turns.set(turn.id, turn);
     if (input.socket) this.#remember(input.socket, turn);
+    this.#announce(turn);
 
     void (async () => {
       try {
@@ -87,6 +94,7 @@ export class TurnHub {
           // arrives a moment later (a reload, a second tab) finds the turn.
           if (event.type === 'session' && !turn.sessionId && event.sessionId) {
             turn.sessionId = event.sessionId;
+            this.#announce(turn);
           }
           turn.seq += 1;
           for (const socket of turn.subscribers) {
@@ -116,6 +124,14 @@ export class TurnHub {
    * silence.
    */
   attach(sessionId: string, socket: WebSocket): void {
+    // Remembered whether or not anything runs now: the next turn that starts
+    // here finds this socket without it having to ask again.
+    let watching = this.#conversations.get(sessionId);
+    if (!watching) {
+      watching = new Set();
+      this.#conversations.set(sessionId, watching);
+    }
+    watching.add(socket);
     const turn = [...this.#turns.values()].find((entry) => entry.sessionId === sessionId);
     if (!turn) {
       sendFrame(socket, { type: 'attached', id: null, seq: 0 });
@@ -133,6 +149,17 @@ export class TurnHub {
     }
   }
 
+  /**
+   * The socket left a conversation's page. Turns that start there later are
+   * no longer announced to it; one it already follows runs out as before.
+   */
+  leave(sessionId: string, socket: WebSocket): void {
+    const watching = this.#conversations.get(sessionId);
+    if (!watching) return;
+    watching.delete(socket);
+    if (watching.size === 0) this.#conversations.delete(sessionId);
+  }
+
   /** Stop a turn, from any connection - including one that only re-joined it. */
   abort(id: string): boolean {
     const turn = this.#turns.get(id);
@@ -143,11 +170,29 @@ export class TurnHub {
 
   /** A socket went away: its subscriptions go with it, the turns stay. */
   detach(socket: WebSocket): void {
+    for (const [sessionId, watching] of this.#conversations) {
+      watching.delete(socket);
+      if (watching.size === 0) this.#conversations.delete(sessionId);
+    }
     const mine = this.#subscriptions.get(socket);
     if (!mine) return;
     for (const turn of mine) turn.subscribers.delete(socket);
     this.#subscriptions.delete(socket);
     this.#log.debug('Turn subscriptions dropped', { remaining: this.#turns.size });
+  }
+
+  /**
+   * A turn started in a conversation somebody has open: subscribe them and
+   * say so with the same `attached` reply an explicit attach gets. The
+   * client then reads the journal and joins, exactly as after a reload.
+   */
+  #announce(turn: RunningTurn): void {
+    if (!turn.sessionId) return;
+    for (const socket of this.#conversations.get(turn.sessionId) ?? []) {
+      if (turn.subscribers.has(socket)) continue;
+      this.#remember(socket, turn);
+      sendFrame(socket, { type: 'attached', id: turn.id, seq: turn.seq });
+    }
   }
 
   #forget(socket: WebSocket, turn: RunningTurn): void {

@@ -839,6 +839,8 @@ export class OrgStore {
     createdByAgentId?: string;
     /** The schedule whose firing made this card, when one did. */
     scheduleId?: string;
+    /** The conversation that handed this work over, when one did. */
+    requesterSessionId?: string;
     dependsOn?: string[];
     planNote?: string;
     status?: TaskStatus;
@@ -857,6 +859,7 @@ export class OrgStore {
       createdBy: input.createdBy,
       createdByAgentId: blank(input.createdByAgentId),
       scheduleId: blank(input.scheduleId),
+      requesterSessionId: blank(input.requesterSessionId),
       dependsOn: [...new Set(input.dependsOn ?? [])],
       planNote: blank(input.planNote),
       createdAt: now,
@@ -869,9 +872,9 @@ export class OrgStore {
       .prepare(
         `INSERT INTO tasks
            (id, org_id, project_id, parent_id, title, description, status, priority, assignee_id,
-            created_by, created_by_agent_id, schedule_id, depends_on, plan_note, created_at,
-            updated_at, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            created_by, created_by_agent_id, schedule_id, requester_session_id, depends_on, plan_note,
+            created_at, updated_at, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         task.id,
@@ -886,6 +889,7 @@ export class OrgStore {
         task.createdBy,
         task.createdByAgentId ?? null,
         task.scheduleId ?? null,
+        task.requesterSessionId ?? null,
         JSON.stringify(task.dependsOn),
         task.planNote ?? null,
         now,
@@ -1749,6 +1753,7 @@ function mapTask(row: Row): Task {
     createdBy: row.created_by as RequesterKind,
     createdByAgentId: optional(row.created_by_agent_id),
     scheduleId: optional(row.schedule_id),
+    requesterSessionId: optional(row.requester_session_id),
     dependsOn,
     planNote: optional(row.plan_note),
     result: optional(row.result),

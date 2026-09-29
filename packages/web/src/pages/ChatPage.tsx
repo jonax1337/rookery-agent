@@ -350,7 +350,8 @@ export function ChatPage() {
     setMode('chat');
     if (!activeId) return;
     writeChatMode(activeId, 'chat');
-    socket.closeTui(activeId);
+    // The terminal stays: it is the process the chat is answered in, too.
+    // Nothing to close - only the view changes.
     // What was said in the terminal is in the conversation now; the thread on
     // screen still shows how it looked before the switch.
     const loaded = await loadSession(activeId);
