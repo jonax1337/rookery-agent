@@ -96,7 +96,7 @@ export default function App() {
           <Route path="/" element={<ChatPage />} />
           <Route path="/c/:sessionId" element={<ChatPage />} />
           <Route path="/chats" element={<ConversationsPage />} />
-          {/* A personal mailbox, not an org-management screen: the assistant
+          {/* Notifications (the former mailbox), not an org-management screen: the assistant
               itself writes into it too, so it sits beside Conversations rather
               than under /org. See `InboxPage`'s own comment. */}
           <Route path="/inbox" element={<InboxPage />} />

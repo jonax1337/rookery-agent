@@ -10,7 +10,6 @@ import {
   ClipboardCheckIcon as ClipboardList,
   CpuIcon,
   DownloadIcon as InboxIcon,
-  MailCheckIcon as MailPlusIcon,
   PenToolIcon as PencilIcon,
   SendIcon,
   ShieldCheckIcon as ShieldIcon,
@@ -267,22 +266,6 @@ export function AgentDetailPage() {
             {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
             <SendIcon data-icon="inline-start" />
             Create assignment
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void navigate('/inbox?mailbox=' + agent.id)}
-          >
-            <InboxIcon data-icon="inline-start" />
-            View mailbox
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void navigate('/inbox?compose=' + agent.id)}
-          >
-            <MailPlusIcon data-icon="inline-start" />
-            Write mail
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

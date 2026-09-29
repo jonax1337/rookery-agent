@@ -28,7 +28,8 @@ import { isBoardWatch } from '@/lib/cron';
 import { useCron } from '@/hooks/useCron';
 import type { RookerySocket } from '@/lib/socket';
 import { countSince, formatNumber } from '@/lib/stats';
-import type { Mail, Task, TaskStatus } from '@/lib/types';
+import type { Task, TaskStatus } from '@/lib/types';
+import { openQuestion, plainSnippet } from '@/lib/notifications';
 import { useConnection, useOrgState, useTasksState } from '@/providers/rookery-provider';
 import { useStatsTotals } from '@/hooks/useStatsTotals';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
@@ -255,40 +256,64 @@ export function TasksPage() {
   }, []);
 
   /*
-   * The newest mail of each task thread the user is on. A blocked card
-   * should say what it is waiting for, and this is the only real source for
-   * it: the `tasks` folder is every assignment thread addressed to the user,
-   * newest first, with the task id joined in. No entry means no line.
+   * The open question of each blocked card. A blocked card should say what
+   * it is waiting for, and the card's own activity is the source: its newest
+   * `question` event with no answer after it. Only blocked cards are read -
+   * one detail call each, and there are rarely more than a handful - and a
+   * question or an answer arriving over the socket patches the map in place.
    */
-  const [taskMails, setTaskMails] = useState<Mail[]>([]);
-  const blockedCount = tasks.countByStatus.blocked;
+  const [questionByTask, setQuestionByTask] = useState<ReadonlyMap<string, { subject: string; at: number }>>(
+    () => new Map(),
+  );
+  const blockedKey = useMemo(
+    () =>
+      tasks.tasks
+        .filter((task) => task.status === 'blocked')
+        .map((task) => task.id)
+        .sort()
+        .join(','),
+    [tasks.tasks],
+  );
   useEffect(() => {
-    if (blockedCount === 0) return;
+    const ids = blockedKey ? blockedKey.split(',') : [];
+    if (ids.length === 0) {
+      setQuestionByTask(new Map());
+      return;
+    }
     let live = true;
-    api
-      .mail('user', 'tasks', 200)
-      .then((mails) => {
-        if (live) setTaskMails(mails);
-      })
-      .catch(() => {
-        // A missing subject line is a missing line, never an error banner.
-      });
+    void Promise.all(
+      ids.map((id) =>
+        api
+          .task(id)
+          .then((detail) => [id, openQuestion(detail.events ?? [])] as const)
+          // A missing question line is a missing line, never an error banner.
+          .catch(() => [id, null] as const),
+      ),
+    ).then((entries) => {
+      if (!live) return;
+      const next = new Map<string, { subject: string; at: number }>();
+      for (const [id, question] of entries) {
+        if (question) next.set(id, { subject: plainSnippet(question.text), at: question.at });
+      }
+      setQuestionByTask(next);
+    });
     return () => {
       live = false;
     };
-  }, [blockedCount]);
-
-  const lastMailByTask = useMemo(() => {
-    const newest = new Map<string, { subject: string; at: number }>();
-    for (const mail of taskMails) {
-      if (!mail.taskId) continue;
-      const known = newest.get(mail.taskId);
-      if (!known || known.at < mail.createdAt) {
-        newest.set(mail.taskId, { subject: mail.subject, at: mail.createdAt });
-      }
-    }
-    return newest;
-  }, [taskMails]);
+  }, [blockedKey]);
+  useEffect(
+    () =>
+      socket.onTaskEvent((event) => {
+        if (event.kind !== 'question' && event.kind !== 'answer') return;
+        setQuestionByTask((current) => {
+          const next = new Map(current);
+          if (event.kind === 'question') next.set(event.taskId, { subject: plainSnippet(event.text), at: event.at });
+          else next.delete(event.taskId);
+          return next;
+        });
+      }),
+    [socket],
+  );
 
   /* ------------------------------- actions ------------------------------ */
 
@@ -550,7 +575,7 @@ export function TasksPage() {
                 if (isSettableTaskStatus(status)) void setStatus(task, status);
               }}
               onReorder={reorderTask}
-              lastMailByTask={lastMailByTask}
+              questionByTask={questionByTask}
             />
           </div>
         ) : (

@@ -74,19 +74,19 @@ const FORM_ID = 'gateway-telegram';
 
 const PERMISSION_LEVELS: PermissionLevel[] = ['chat', 'read', 'write', 'full'];
 
-/** Whose mail reaches the phone, narrowest first. */
-const MAIL_FROM_LEVELS: TelegramPushConfig['mailFrom'][] = ['assistant', 'leads', 'all'];
+/** Which agents' reports reach the phone, widest first. */
+const AGENT_REPORT_LEVELS: TelegramPushConfig['agents'][] = ['leads', 'all', 'off'];
 
-const MAIL_FROM_LABEL: Record<TelegramPushConfig['mailFrom'], string> = {
-  assistant: 'Assistant only',
-  leads: 'Assistant and leads',
-  all: 'Everyone',
+const AGENT_REPORT_LABEL: Record<TelegramPushConfig['agents'], string> = {
+  leads: 'Leads',
+  all: 'All',
+  off: 'Off',
 };
 
-const MAIL_FROM_HINT: Record<TelegramPushConfig['mailFrom'], string> = {
-  assistant: 'Agents reach you through the assistant, who decides what is worth saying.',
+const AGENT_REPORT_HINT: Record<TelegramPushConfig['agents'], string> = {
   leads: 'Anyone leading a team or with agents reporting to them — a Head of without a team counts.',
-  all: 'Every mail that lands in your mailbox, including agent to agent copies.',
+  all: 'Every agent that reports to you.',
+  off: 'Agent reports stay in the web notifications only.',
 };
 
 /** Where a voice message becomes text, free first. */
@@ -673,35 +673,43 @@ export function GatewayDetailPage() {
                 />
               </Field>
 
+              <p className="text-sm text-muted-foreground">
+                Questions from agents are always sent.
+              </p>
+
               <Field orientation="horizontal">
                 <FieldContent>
-                  <FieldLabel htmlFor="gw-push-mail">Mail</FieldLabel>
+                  <FieldLabel htmlFor="gw-push-schedules">Schedules</FieldLabel>
                   <FieldDescription>
-                    Mail addressed to you, To or Cc. Who it is worth a push for is set below.
+                    A schedule's result, agent jobs included, and what the board watcher reports.
                   </FieldDescription>
                 </FieldContent>
                 <Switch
-                  id="gw-push-mail"
-                  checked={draft.push.mail}
-                  onCheckedChange={(on) => setPush({ mail: on })}
+                  id="gw-push-schedules"
+                  checked={draft.push.schedules}
+                  onCheckedChange={(on) => setPush({ schedules: on })}
                 />
               </Field>
+
+              <Field>
+                <FieldLabel>Agent reports</FieldLabel>
+                <FieldDescription>Which agents' reports to you are worth a push.</FieldDescription>
+              </Field>
               <RadioGroup
-                value={draft.push.mailFrom}
-                onValueChange={(value) => setPush({ mailFrom: value as TelegramPushConfig['mailFrom'] })}
+                value={draft.push.agents}
+                onValueChange={(value) => setPush({ agents: value as TelegramPushConfig['agents'] })}
               >
-                {MAIL_FROM_LEVELS.map((level) => (
-                  <FieldLabel key={level} htmlFor={'gw-push-mail-from-' + level}>
+                {AGENT_REPORT_LEVELS.map((level) => (
+                  <FieldLabel key={level} htmlFor={'gw-push-agents-' + level}>
                     <Field orientation="horizontal">
                       <FieldContent>
-                        <FieldTitle>{MAIL_FROM_LABEL[level]}</FieldTitle>
-                        <FieldDescription>{MAIL_FROM_HINT[level]}</FieldDescription>
+                        <FieldTitle>{AGENT_REPORT_LABEL[level]}</FieldTitle>
+                        <FieldDescription>{AGENT_REPORT_HINT[level]}</FieldDescription>
                       </FieldContent>
                       <RadioGroupItem
                         value={level}
-                        id={'gw-push-mail-from-' + level}
-                        aria-label={MAIL_FROM_LABEL[level]}
-                        disabled={!draft.push.mail}
+                        id={'gw-push-agents-' + level}
+                        aria-label={AGENT_REPORT_LABEL[level]}
                       />
                     </Field>
                   </FieldLabel>
@@ -712,7 +720,7 @@ export function GatewayDetailPage() {
                 <FieldContent>
                   <FieldLabel htmlFor="gw-push-assignments">Runs</FieldLabel>
                   <FieldDescription>
-                    One message per finished run. Off by default: the company reports in mail.
+                    One message per finished run. Off by default: results arrive as notifications.
                   </FieldDescription>
                 </FieldContent>
                 <Switch
@@ -723,7 +731,10 @@ export function GatewayDetailPage() {
               </Field>
               <Field orientation="horizontal">
                 <FieldContent>
-                  <FieldLabel htmlFor="gw-push-cron">Schedules</FieldLabel>
+                  <FieldLabel htmlFor="gw-push-cron">Every schedule run</FieldLabel>
+                  <FieldDescription>
+                    A short line for runs that stay silent too. Results are covered by Schedules above.
+                  </FieldDescription>
                 </FieldContent>
                 <Switch
                   id="gw-push-cron"
@@ -734,6 +745,7 @@ export function GatewayDetailPage() {
               <Field orientation="horizontal">
                 <FieldContent>
                   <FieldLabel htmlFor="gw-push-sleep">Sleep</FieldLabel>
+                  <FieldDescription>The night's report and a promoted retrieval policy.</FieldDescription>
                 </FieldContent>
                 <Switch
                   id="gw-push-sleep"
@@ -775,6 +787,7 @@ export function GatewayDetailPage() {
               <Field orientation="horizontal">
                 <FieldContent>
                   <FieldLabel htmlFor="gw-push-tasks">Tasks</FieldLabel>
+                  <FieldDescription>A task you asked for is done, failed or cancelled.</FieldDescription>
                 </FieldContent>
                 <Switch
                   id="gw-push-tasks"

@@ -7,7 +7,6 @@ import {
   CpuIcon,
   DownloadIcon as InboxIcon,
   ExternalLinkIcon as SquareArrowOutUpRightIcon,
-  MailCheckIcon as MailPlusIcon,
   PenToolIcon as PencilIcon,
   ShieldCheckIcon as ShieldIcon,
   UserIcon as UserRoundIcon,
@@ -320,14 +319,6 @@ export function OrgAgentsPage() {
                   <PencilIcon />
                   Edit
                 </NavLink>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void navigate('/inbox?mailbox=' + agent.id)}>
-                <InboxIcon />
-                View mailbox
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void navigate('/inbox?compose=' + agent.id)}>
-                <MailPlusIcon />
-                Write mail
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => void archive(agent)}>

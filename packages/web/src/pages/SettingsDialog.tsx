@@ -1808,20 +1808,6 @@ function OrgSection({
 
         <Field orientation="horizontal">
           <FieldContent>
-            <FieldLabel htmlFor="set-roleplay">Roleplay in mail</FieldLabel>
-            <FieldDescription>
-              A run that started from an email answers as a letter to a colleague, in that agent's own voice, instead of a plain report. Off restores the report for every run.
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="set-roleplay"
-            checked={draft.org.roleplay}
-            onCheckedChange={(on) => setOrg({ roleplay: on })}
-          />
-        </Field>
-
-        <Field orientation="horizontal">
-          <FieldContent>
             <FieldLabel htmlFor="set-interactive-runs">Visible Claude Code terminal</FieldLabel>
             <FieldDescription>
               Agents work in Claude Code's full terminal, which you can watch and type into from the run page. When the work is done it stays open for ten minutes, then only the transcript remains. Off runs them headless.

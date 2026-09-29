@@ -2,8 +2,8 @@ import {
   AudioLinesIcon as AudioLines,
   ClipboardCheckIcon as ClipboardList,
   ClockIcon as Clock,
+  BellIcon as Bell,
   LayoutGridIcon as LayoutDashboard,
-  MailboxIcon as Mail,
   MessageSquareIcon as MessageSquare,
   RadioTowerIcon as RadioTower,
   SendIcon as Send,
@@ -29,7 +29,8 @@ export const TasksIcon = ClipboardList;
 export const AssignmentsIcon = Send;
 export const SchedulesIcon = Clock;
 export const GatewaysIcon = RadioTower;
-export const InboxIcon = Mail;
+/** The notifications route keeps its `/inbox` path and `InboxIcon` name. */
+export const InboxIcon = Bell;
 // A wrench, not sparkles: skills are crafted, not conjured - and the plug
 // took the MCP job on the tools route.
 export const SkillsIcon = Wrench;

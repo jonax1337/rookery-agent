@@ -290,3 +290,25 @@ ungelesene Benachrichtigungen (Titel, Art, Alter) ohne sie zu markieren;
 
 Offen: `docs/concepts/telegram-channel.md` beschreibt noch `/mail` und
 `mailFrom` (Konzept, der Code gilt).
+
+## 9. Umsetzung Phase 3 (Web)
+
+Stand: 2026-09-29, nur `packages/web`. `/inbox` heisst in der Navigation
+"Notifications" (Glocke), Aufbau wie das alte Mail-Programm: Leiste mit einer
+Zeile pro Art plus Archiv (ungelesen pro Art aus `GET /api/notifications?unread=1`),
+Liste mit All/Unread, "Mark all read" (bei "All" `{all: true}`, sonst die Ids
+der Art), Lesebereich mit Markdown, Links zur Quelle und bei `question` mit
+`taskId` dem Antwortfeld (`TaskAnswerBox`, auch auf der Karte). `?id=<id>`
+oeffnet eine Benachrichtigung und weitet dafuer die Ansicht auf All, dann aufs
+Archiv. Zeitplan-Lauf-Link: `/cron/:jobId?run=<runId>` oeffnet den Report des
+Laufs (neu in `CronDetailPage`). Der "Schedule finished"-Toast wartet 2 s und
+entfaellt, wenn fuer den Lauf eine `schedule`-Benachrichtigung kam (stille
+Laeufe behalten ihn). Karte: Tab "Activity" aus `events`, live per
+`task-event`; ist die Karte `blocked`, steht die offene Frage (letztes
+`question` ohne spaeteres `answer`) mit Antwortfeld ueber den Kennzahlen. Board:
+"Waiting for you" liest die offene Frage per `GET /api/org/tasks/:id` nur fuer
+blockierte Karten. Der Socket nimmt `notification` flach oder als Event und
+`changed` mit `change.kind` oder blankem `kind` an. Push-Seite: Schalter
+Schedules, Agent reports (Leads/All/Off), Hinweis "Questions from agents are
+always sent."; Tasks und Sleep blieben, "Schedules" (alt, `cron`) heisst jetzt
+"Every schedule run".

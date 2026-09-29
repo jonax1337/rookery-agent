@@ -29,8 +29,6 @@ import type {
   GatewayStatus,
   GatewayTestResult,
   ListenerStatus,
-  Mail,
-  MailFolder,
   MemoryEntity,
   MemoryGraph,
   MemoryKind,
@@ -38,6 +36,8 @@ import type {
   MemoryRecord,
   MemoryStats,
   Message,
+  Notification,
+  NotificationKind,
   Organization,
   OrgPerformanceEntry,
   OrgSnapshot,
@@ -769,27 +769,27 @@ export const api = {
   markMessagesRead: (ids: string[]) =>
     request<{ ok: true }>('/api/org/messages/read', { method: 'POST', ...json({ ids }) }),
 
-  /** `mailbox` is an agent id, `"user"` or `"assistant"`; `folder` slices the inbox. */
-  mail: (mailbox: string, folder: MailFolder, limit = 100) =>
-    request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&folder=' + folder + '&limit=' + limit),
-  /** One whole conversation, oldest first - the board's deep link into mail. */
-  mailThread: (threadId: string, mailbox = 'user') =>
-    request<Mail[]>('/api/org/mail?mailbox=' + encodeURIComponent(mailbox) + '&thread=' + encodeURIComponent(threadId)),
-  archiveMailThread: (threadId: string, archived = true) =>
-    request<{ ok: true }>('/api/org/mail/archive', { method: 'POST', ...json({ threadId, archived }) }),
-  /**
-   * There is no mode to pass: exactly one agent on To opens a task, anything
-   * else is a conversation, and the answer carries the task when one was
-   * created so the page can link straight to it.
-   */
-  sendMail: (input: { to: string[]; cc?: string[]; subject: string; body: string; inReplyTo?: string }) =>
-    request<{ mail: Mail; task?: Task }>('/api/org/mail', { method: 'POST', ...json(input) }),
-  /**
-   * Marks a batch of mailbox rows read; the mailbox page calls this once per
-   * load. `read: false` is the reading pane's "Mark as unread".
-   */
-  markMailRead: (ids: string[], read = true) =>
-    request<{ ok: true }>('/api/org/mail/read', { method: 'POST', ...json({ ids, read }) }),
+  /* ------------------------------ notifications ------------------------------ */
+
+  /** Newest first. Default: the live shelf (not archived), 100 rows. */
+  notifications: (options: { unread?: boolean; kind?: NotificationKind; archived?: boolean; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (options.unread) params.set('unread', '1');
+    if (options.kind) params.set('kind', options.kind);
+    if (options.archived) params.set('archived', '1');
+    if (options.limit) params.set('limit', String(options.limit));
+    const query = params.toString();
+    return request<Notification[]>('/api/notifications' + (query ? '?' + query : ''));
+  },
+  unreadNotificationCount: () => request<{ count: number }>('/api/notifications/unread-count'),
+  /** Marks the given notifications (or all of them) read; `read: false` marks them unread. */
+  markNotificationsRead: (input: { ids?: string[]; all?: boolean; read?: boolean }) =>
+    request<{ ok: true }>('/api/notifications/read', { method: 'POST', ...json(input) }),
+  archiveNotification: (id: string, archived = true) =>
+    request<{ ok: true }>('/api/notifications/archive', { method: 'POST', ...json({ id, archived }) }),
+  /** Answers a blocked task's question as the user; the task runs on. */
+  answerTask: (id: string, answer: string) =>
+    request<{ ok: true; task: Task }>('/api/org/tasks/' + id + '/answer', { method: 'POST', ...json({ answer }) }),
 };
 
 /**

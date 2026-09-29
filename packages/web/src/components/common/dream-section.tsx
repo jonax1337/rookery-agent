@@ -249,7 +249,7 @@ const SWITCHES: { key: DreamSwitch; label: string; detail: string }[] = [
     key: 'promote',
     label: 'Promotion gate',
     detail:
-      'Lets a night put a measured policy in force by itself. Every promotion is mailed, falls under the undo and can be reverted here.',
+      'Lets a night put a measured policy in force by itself. Every promotion sends you a notification, falls under the undo and can be reverted here.',
   },
 ];
 
@@ -282,8 +282,8 @@ export function DreamSection({ owner }: DreamSectionProps) {
               <span className="block">
                 With the gate open a night may put a retrieval policy in force on its own. It cannot
                 do that until it has measured one: the evaluation has to be valid, beat the incumbent
-                on a holdout AND beat the factory defaults on a frozen audit set. Every promotion is
-                mailed to you, falls under the night&rsquo;s undo, and can be reverted from this page.
+                on a holdout AND beat the factory defaults on a frozen audit set. Every promotion sends
+                you a notification, falls under the night&rsquo;s undo, and can be reverted from this page.
               </span>
               <span className="mt-2 block">
                 What is not proven yet is the measure itself. The concept asks for a hand check of

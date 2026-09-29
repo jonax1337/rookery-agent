@@ -4,687 +4,297 @@ import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
-import { formatDateTime } from '@/lib/format';
-import { groupThreads, type MailThreadSummary } from '@/lib/mail';
-import type { Mail, MailFolder, MailRecipient, RequesterKind, TaskStatus } from '@/lib/types';
-import { useConfig, useConnection, useMailState, useOrgState, useTasksState } from '@/providers/rookery-provider';
+import type { NotificationFilter } from '@/lib/notifications';
+import type { Notification, Task, TaskStatus } from '@/lib/types';
+import {
+  useConfig,
+  useConnection,
+  useNotificationState,
+  useOrgState,
+  useTasksState,
+} from '@/providers/rookery-provider';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { ServerOffline } from '@/components/common/empty-state';
-import type { EntityOption } from '@/components/forms/entity-combobox';
-import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Field, FieldDescription, FieldLabel } from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Textarea } from '@/components/ui/textarea';
 
-import { MailDisplay } from '@/components/mail/mail-display';
-import { MailList } from '@/components/mail/mail-list';
-import { MailNav } from '@/components/mail/mail-nav';
-import { MultiEntityCombobox } from '@/components/mail/multi-entity-combobox';
+import { NotificationDisplay } from '@/components/notifications/notification-display';
+import { NotificationList } from '@/components/notifications/notification-list';
+import { NotificationNav } from '@/components/notifications/notification-nav';
 
 /**
- * Company mail - a real mail program, not a note list.
+ * Notifications - everything Rookery stores for the user.
  *
- * Chat stopped being how anyone talks to an agent; this is what replaced it.
- * A mailbox switcher picks whose mail is on screen - the user's own (the only
- * writable one), the assistant's, or any agent's, all real subject/To/Cc mail
- * with per-recipient read state. Mailing an agent's To line kicks off a real
- * run of theirs behind the scenes; its result comes back as a reply here.
+ * This route used to be company mail. Mail is gone (see
+ * docs/concepts/mail-removal-notifications-and-task-activity.md); what reached
+ * the user through it now arrives here as a notification: a schedule's result,
+ * an agent's question about a card, a card the user asked for that ended, an
+ * agent's report, what the board watcher found, the night's promotion, and
+ * anything `notify` said. The same notifications go to Telegram.
  *
- * The three panes follow shadcn's mail example: a collapsible rail with the
- * open mailbox, its folders and the switcher; a list of cards with search and
- * an All/Unread filter; and a reading pane whose action bar carries Reply,
- * Reply all and Forward. Reply answers inline, the other two open Compose
- * pre-filled, because they are the two that change who a mail goes to.
+ * The three panes keep the mail program's shape: a collapsible rail with one
+ * row per kind and the archive; a list of cards with search and an
+ * All/Unread filter; and a reading pane with Markdown, links to the source
+ * (task, schedule run, conversation) and, for a question, the answer box.
  *
- * `?mailbox=<id>` pre-selects a mailbox and `?compose=<agentId>` opens Compose
- * with that agent already in To - the two entry points `AgentDetailPage` and
- * `OrgAgentsPage` use instead of the "Chat" button they used to have.
+ * `?id=<notification>` opens one - the toast's "Open" button and Telegram's
+ * links use it.
  */
-
-/** What Compose opens with, when something else fills it in first. */
-interface ComposePrefill {
-  to: EntityOption[];
-  cc: EntityOption[];
-  subject: string;
-  body: string;
-}
-
 export function InboxPage() {
   const org = useOrgState();
   const tasksState = useTasksState();
   const { assistantName } = useConfig();
   const { socket } = useConnection();
-  const mailBadge = useMailState();
+  const badge = useNotificationState();
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const mailboxId = searchParams.get('mailbox') ?? 'user';
-  const composeAgentId = searchParams.get('compose');
-  const threadParam = searchParams.get('thread');
-  const interactive = mailboxId === 'user';
+  const idParam = searchParams.get('id');
 
-  // The folder is the rail's one choice; `box` (in/out) falls out of it,
-  // because only the outbox is routed by direction rather than by kind.
-  const [folder, setFolder] = useState<MailFolder>('inbox');
-  const box: 'inbox' | 'outbox' = folder === 'outbox' ? 'outbox' : 'inbox';
-  const [filter, setFilter] = useState<'all' | 'unread'>('all');
+  const [filter, setFilter] = useState<NotificationFilter>('all');
+  const [archived, setArchived] = useState(false);
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const [navCollapsed, setNavCollapsed] = useState(false);
-  const [mails, setMails] = useState<Mail[] | null>(null);
+  const [notifications, setNotifications] = useState<Notification[] | null>(null);
+  const [unreadList, setUnreadList] = useState<Notification[] | null>(null);
   const [offline, setOffline] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
-  /** Unread in this mailbox's inbox, remembered while the outbox is open. */
-  const [inboxUnread, setInboxUnread] = useState<number | null>(null);
-  /** Unread report threads - they are not in the inbox list, so they get their own count. */
-  const [reportsUnread, setReportsUnread] = useState<number | null>(null);
+  /** Task statuses learned from an answer, ahead of the board's own broadcast. */
+  const [answeredTasks, setAnsweredTasks] = useState<Record<string, TaskStatus>>({});
 
-  const [composeOpen, setComposeOpen] = useState(false);
-  const [composeTo, setComposeTo] = useState<EntityOption[]>([]);
-  const [composeCc, setComposeCc] = useState<EntityOption[]>([]);
-  const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
-
-  usePageMeta({ breadcrumb: [{ label: 'Inbox' }] }, []);
-
-  /* ------------------------------- naming --------------------------------- */
-
-  const nameOf = useCallback(
-    (kind: RequesterKind, id?: string): string => {
-      if (kind === 'user') return 'You';
-      if (kind === 'assistant') return assistantName;
-      return id ? (org.agentById(id)?.name ?? 'Former agent') : 'Former agent';
-    },
-    [org, assistantName],
-  );
-
-  const mailboxLabel = useCallback(
-    (id: string): string => nameOf(id === 'user' || id === 'assistant' ? id : 'agent', id),
-    [nameOf],
-  );
-
-  const senderLabel = useCallback((mail: Mail): string => nameOf(mail.fromKind, mail.fromAgentId), [nameOf]);
-
-  /**
-   * An agent's job title - "Lead Engineer", "Research Lead".
-   *
-   * Six agent names in a rail are six names; the title is what says who does
-   * what, so it rides along wherever a single sender is named. Only agents
-   * have one: the user is the user, and the assistant's role is its name.
-   */
-  const roleOf = useCallback(
-    (kind: RequesterKind, id?: string): string | null =>
-      kind === 'agent' && id ? (org.agentById(id)?.title?.trim() || null) : null,
-    [org],
-  );
-
-  const mailboxRole = useCallback(
-    (id: string): string | null => (id === 'user' || id === 'assistant' ? null : roleOf('agent', id)),
-    [roleOf],
-  );
-
-  const senderRole = useCallback(
-    (mail: Mail): string | null => roleOf(mail.fromKind, mail.fromAgentId),
-    [roleOf],
-  );
-
-  const namesFor = useCallback(
-    (mail: Mail, box: 'to' | 'cc'): string[] =>
-      mail.recipients
-        .filter((recipient) => recipient.box === box)
-        .map((recipient) => nameOf(recipient.recipientKind, recipient.recipientId)),
-    [nameOf],
-  );
-
-  const toLine = useCallback((mail: Mail): string => 'To: ' + (namesFor(mail, 'to').join(', ') || '—'), [namesFor]);
-
-  /* ------------------------------ ownership -------------------------------- */
-
-  /** Whether a recipient row belongs to whoever's mailbox is open. */
-  const isOwnRow = useCallback(
-    (recipient: MailRecipient): boolean =>
-      mailboxId === 'user'
-        ? recipient.recipientKind === 'user'
-        : mailboxId === 'assistant'
-          ? recipient.recipientKind === 'assistant'
-          : recipient.recipientKind === 'agent' && recipient.recipientId === mailboxId,
-    [mailboxId],
-  );
-
-  /** The mailbox owner's own recipient row on a mail, when there is one. */
-  const ownRecipient = useCallback((mail: Mail) => mail.recipients.find(isOwnRow), [isOwnRow]);
-
-  const isUnread = useCallback(
-    (mail: Mail): boolean => (ownRecipient(mail)?.readAt ?? null) == null,
-    [ownRecipient],
-  );
-
-  /* --------------------------------- rows ---------------------------------- */
-
-  /** The name a list row leads with: the sender, or in the outbox the To line. */
-  const primaryLabel = useCallback(
-    (mail: Mail): string => (box === 'outbox' ? namesFor(mail, 'to').join(', ') || '—' : senderLabel(mail)),
-    [box, namesFor, senderLabel],
-  );
-
-  /**
-   * The job title beside that name - but only when the name is one person.
-   *
-   * An outbox row addressed to three agents leads with three names, and a
-   * single title hung on the end of them would read as though it belonged to
-   * the last one.
-   */
-  const primaryRole = useCallback(
-    (mail: Mail): string | null => {
-      if (box !== 'outbox') return senderRole(mail);
-      const to = mail.recipients.filter((recipient) => recipient.box === 'to');
-      const only = to.length === 1 ? to[0] : undefined;
-      return only ? roleOf(only.recipientKind, only.recipientId) : null;
-    },
-    [box, senderRole, roleOf],
-  );
-
-  /**
-   * The badges under a row: everyone the mail also went to.
-   *
-   * The mailbox owner is left out of the inbox's chips - "You" on every row of
-   * your own inbox says nothing - and so is the whole To line in the outbox,
-   * where it is already the row's heading.
-   */
-  const recipientChips = useCallback(
-    (mail: Mail): string[] => {
-      const cc = namesFor(mail, 'cc').map((name) => name + ' (Cc)');
-      if (box === 'outbox') return cc;
-      const to = mail.recipients
-        .filter((recipient) => recipient.box === 'to' && !isOwnRow(recipient))
-        .map((recipient) => nameOf(recipient.recipientKind, recipient.recipientId));
-      return [...to, ...cc];
-    },
-    [box, namesFor, isOwnRow, nameOf],
-  );
-
-  /* ------------------------------ addressing ------------------------------- */
-
-  /** Token `api.sendMail` understands for who sent this mail. */
-  const senderToken = (mail: Mail): string =>
-    mail.fromKind === 'agent' ? (mail.fromAgentId ?? 'assistant') : mail.fromKind;
-
-  /** The same tokens for one of a mail's recipient boxes, the user left out. */
-  const recipientTokens = (mail: Mail, box: 'to' | 'cc'): string[] =>
-    mail.recipients
-      .filter((recipient) => recipient.box === box && recipient.recipientKind !== 'user')
-      .map((recipient) =>
-        recipient.recipientKind === 'agent' ? (recipient.recipientId ?? 'assistant') : recipient.recipientKind,
-      );
-
-  /**
-   * Who a reply goes to. Replying to your own sent mail answers the people it
-   * was addressed to, the way a mail client does - taking the sender literally
-   * there would post the reply straight back into your own inbox.
-   */
-  const replyTargets = (mail: Mail): string[] => {
-    if (mail.fromKind !== 'user') return [senderToken(mail)];
-    return recipientTokens(mail, 'to');
-  };
-
-  const tokenLabel = useCallback(
-    (token: string): string =>
-      token === 'assistant' ? assistantName : (org.agentById(token)?.name ?? 'Former agent'),
-    [assistantName, org],
-  );
-
-  const replyTargetLabel = (mail: Mail): string | null => {
-    const names = replyTargets(mail).map(tokenLabel);
-    return names.length > 0 ? names.join(', ') : null;
-  };
-
-  /** Everyone a "Reply all" would reach: To gains the sender, Cc stays Cc. */
-  const replyAllTargets = (mail: Mail): { to: string[]; cc: string[] } => {
-    const sender = mail.fromKind === 'user' ? [] : [senderToken(mail)];
-    const to = [...new Set([...sender, ...recipientTokens(mail, 'to')])];
-    const cc = [...new Set(recipientTokens(mail, 'cc'))].filter((token) => !to.includes(token));
-    return { to, cc };
-  };
-
-  /* -------------------------------- options -------------------------------- */
-
-  // "You" is left out: mailing yourself is not what compose is for. The title
-  // rides along as the hint, so picking a recipient is a choice between roles
-  // rather than between six first names.
-  const recipientOptions: EntityOption[] = useMemo(
-    () => [
-      { value: 'assistant', label: assistantName },
-      ...org.agents
-        .filter((agent) => !agent.archived)
-        .map((agent) => ({
-          value: agent.id,
-          label: agent.name,
-          ...(agent.title.trim() ? { hint: agent.title } : {}),
-        })),
-    ],
-    [org.agents, assistantName],
-  );
-
-  // What the address line is about to do, said before the mail goes out
-  // rather than chosen in a switch and forgotten afterwards (decision E2).
-  // Exactly one agent on To is a work order; anybody else, and anybody in
-  // company with them, is a conversation.
-  const composeOutcome = useMemo(() => {
-    if (composeTo.length === 0) return 'Add a recipient. One agent alone opens a task; anyone else is a conversation.';
-    const sole = composeTo.length === 1 ? composeTo[0] : undefined;
-    const agent = sole && sole.value !== 'assistant' ? org.agentById(sole.value) : undefined;
-    if (agent) return 'This opens a task for @' + agent.slug + '.';
-    const people = composeTo.length;
-    return 'This is a conversation with ' + people + (people === 1 ? ' person' : ' people') + '. No task is created.';
-  }, [composeTo, org]);
+  usePageMeta({ breadcrumb: [{ label: 'Notifications' }] }, []);
 
   /* --------------------------------- load ---------------------------------- */
 
-  // Sequence guard: switching the mailbox or the box starts a new load while
-  // the old one may still be out; only the newest run may write state, so the
-  // previous mailbox's slow answer cannot land in the one now open.
+  // Sequence guard: switching the kind starts a new load while the old one
+  // may still be out; only the newest run may write state.
   const loadSeq = useRef(0);
 
   const load = useCallback(async (): Promise<void> => {
     const seq = ++loadSeq.current;
     try {
-      const list = await api.mail(mailboxId, folder, 200);
+      const [list, unread] = await Promise.all([
+        api.notifications({
+          ...(filter === 'all' ? {} : { kind: filter }),
+          ...(archived ? { archived: true } : {}),
+          ...(unreadOnly && !archived ? { unread: true } : {}),
+          limit: 200,
+        }),
+        api.notifications({ unread: true, limit: 500 }),
+      ]);
       if (seq !== loadSeq.current) return;
-      setMails(list);
+      setNotifications(list);
+      setUnreadList(unread);
       setOffline(false);
     } catch {
       if (seq !== loadSeq.current) return;
       setOffline(true);
     }
-  }, [mailboxId, folder]);
+  }, [filter, archived, unreadOnly]);
 
   useEffect(() => {
-    setMails(null);
-    setSelectedId(null);
     void load();
   }, [load]);
 
-  useEffect(() => socket.onMail(() => void load()), [socket, load]);
+  useEffect(() => socket.onNotification(() => void load()), [socket, load]);
 
-  // A mail whose read state changed elsewhere - the "✓ Read" button under a
-  // Telegram push is the one that does this today. It cannot arrive on the
-  // `mail` event: push listens to that one and would send the mail that was
-  // just marked read straight back to the phone.
+  // Read state changed elsewhere - the "Read" button under a Telegram push.
   useEffect(
     () =>
       socket.onChanged((change) => {
-        if (change.kind === 'mail') void load();
+        if (change.kind === 'notifications') void load();
       }),
     [socket, load],
   );
 
-  // The rail's unread count comes from the inbox itself, so it also counts for
-  // mailboxes that are not the user's - and it survives a look in the outbox.
-  // Counted in threads, like the rows: a task thread with three unread
-  // replies is one thing to read, not three.
-  useEffect(() => {
-    setInboxUnread(null);
-    setReportsUnread(null);
-  }, [mailboxId]);
-  useEffect(() => {
-    if (folder !== 'inbox' || mails === null) return;
-    const unreadThreads = groupThreads(mails, isUnread).filter((thread) => thread.unread);
-    setInboxUnread(unreadThreads.filter((thread) => thread.latest.threadKind !== 'report').length);
-    setReportsUnread(unreadThreads.filter((thread) => thread.latest.threadKind === 'report').length);
-  }, [folder, mails, isUnread]);
+  /** Unread per kind, and in total under `all`, for the rail. */
+  const unreadCounts = useMemo(() => {
+    if (!unreadList) return null;
+    const counts: Partial<Record<NotificationFilter, number>> = { all: unreadList.length };
+    for (const entry of unreadList) counts[entry.kind] = (counts[entry.kind] ?? 0) + 1;
+    return counts;
+  }, [unreadList]);
 
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    let list = mails ?? [];
-    if (interactive && folder === 'inbox' && filter === 'unread') list = list.filter(isUnread);
-    if (!query) return list;
-    return list.filter(
-      (mail) =>
-        mail.subject.toLowerCase().includes(query) ||
-        mail.body.toLowerCase().includes(query) ||
-        senderLabel(mail).toLowerCase().includes(query),
-    );
-  }, [mails, search, senderLabel, interactive, folder, filter, isUnread]);
+  /* -------------------------------- naming --------------------------------- */
 
-  useEffect(() => {
-    if (selectedId && !filtered.some((mail) => mail.id === selectedId)) setSelectedId(null);
-  }, [filtered, selectedId]);
-
-  /*
-    The list reads as conversations. Reports - the evening briefing, a cron
-    result - have their own folder; in the inbox they buried the mail somebody
-    actually wrote to you under a daily pile of bookkeeping. And every thread
-    is one row, its newest written message, instead of one card per reply and
-    per status note. The outbox stays per mail: it is a log of what you sent.
-  */
-  const visible = useMemo(
-    () => (folder === 'inbox' ? filtered.filter((mail) => mail.threadKind !== 'report') : filtered),
-    [filtered, folder],
+  const senderLabel = useCallback(
+    (notification: Notification): string => {
+      if (notification.fromKind === 'assistant') return assistantName;
+      if (notification.fromKind === 'agent') {
+        const agent = notification.fromAgentId ? org.agentById(notification.fromAgentId) : undefined;
+        return agent?.name ?? 'Former agent';
+      }
+      return 'Rookery';
+    },
+    [assistantName, org],
   );
-  const threadOf = useMemo(() => {
-    if (box === 'outbox') return null;
-    return new Map(groupThreads(visible, isUnread).map((thread) => [thread.threadId, thread]));
-  }, [visible, box, isUnread]);
-  const rows = useMemo(
-    () => (threadOf ? [...threadOf.values()].map((thread) => thread.latestMessage) : visible),
-    [threadOf, visible],
-  );
-  const threadFor = useCallback(
-    (mail: Mail): MailThreadSummary | undefined => threadOf?.get(mail.threadId),
-    [threadOf],
-  );
-
-  // The open mail is the thread's newest written message, whichever row or
-  // deep link opened it: that is the one a reply answers.
-  const selected = useMemo(() => {
-    const opened = filtered.find((mail) => mail.id === selectedId) ?? null;
-    return opened ? (threadFor(opened)?.latestMessage ?? opened) : null;
-  }, [filtered, selectedId, threadFor]);
 
   const taskStatusOf = useCallback(
-    (mail: Mail): TaskStatus | null =>
-      mail.taskId ? (tasksState.tasks.find((task) => task.id === mail.taskId)?.status ?? null) : null,
-    [tasksState.tasks],
+    (notification: Notification): TaskStatus | null => {
+      if (!notification.taskId) return null;
+      return (
+        answeredTasks[notification.taskId] ??
+        tasksState.tasks.find((task) => task.id === notification.taskId)?.status ??
+        null
+      );
+    },
+    [tasksState.tasks, answeredTasks],
+  );
+
+  /* -------------------------------- filter --------------------------------- */
+
+  const visible = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    const list = notifications ?? [];
+    if (!query) return list;
+    return list.filter(
+      (entry) =>
+        entry.title.toLowerCase().includes(query) ||
+        entry.body.toLowerCase().includes(query) ||
+        senderLabel(entry).toLowerCase().includes(query),
+    );
+  }, [notifications, search, senderLabel]);
+
+  const selected = useMemo(
+    () => (notifications ?? []).find((entry) => entry.id === selectedId) ?? null,
+    [notifications, selectedId],
   );
 
   /* -------------------------------- actions -------------------------------- */
 
-  const selectMailbox = useCallback(
-    (id: string): void => {
-      setSearchParams(
-        (current) => {
-          const next = new URLSearchParams(current);
-          if (id === 'user') next.delete('mailbox');
-          else next.set('mailbox', id);
-          next.delete('compose');
-          return next;
-        },
-        { replace: true },
-      );
-      setFolder('inbox');
-      setFilter('all');
-    },
-    [setSearchParams],
-  );
-
-  /** Writes one recipient row's read mark into the loaded list. */
-  const patchReadAt = useCallback((mailId: string, rowId: string, readAt: number | undefined): void => {
-    setMails(
-      (current) =>
-        current?.map((entry) =>
-          entry.id === mailId
-            ? {
-                ...entry,
-                recipients: entry.recipients.map((recipient) =>
-                  recipient.id === rowId ? { ...recipient, readAt } : recipient,
-                ),
-              }
-            : entry,
-        ) ?? null,
-    );
+  /** Writes one read mark into both loaded lists, ahead of the server. */
+  const patchRead = useCallback((notification: Notification, read: boolean): void => {
+    const { readAt: _readAt, ...rest } = notification;
+    const next: Notification = read ? { ...rest, readAt: Date.now() } : rest;
+    setNotifications((current) => current?.map((entry) => (entry.id === next.id ? next : entry)) ?? null);
+    setUnreadList((current) => {
+      if (!current) return current;
+      const others = current.filter((entry) => entry.id !== next.id);
+      return read ? others : [...others, next];
+    });
   }, []);
 
-  /**
-   * Marks the mailbox owner's own row read - on click, and on a deep-linked
-   * open. Every thread folder counts as reading; the outbox is the one place
-   * that does not - it is routed by sender, so the read mark there is not
-   * the reader's own.
-   */
-  const markOpenedRead = useCallback(
-    (mail: Mail): void => {
-      if (!interactive || box === 'outbox') return;
-      const own = ownRecipient(mail);
-      if (!own || own.readAt != null) return;
-      patchReadAt(mail.id, own.id, Date.now());
+  const setRead = useCallback(
+    (notification: Notification, read: boolean): void => {
+      patchRead(notification, read);
       void api
-        .markMailRead([own.id])
-        .then(() => void mailBadge.refresh())
-        .catch(() => undefined);
+        .markNotificationsRead({ ids: [notification.id], read })
+        .then(() => void badge.refresh())
+        .catch((caught: unknown) => reportFailure(read ? 'Mark as read' : 'Mark as unread', caught));
     },
-    [interactive, box, ownRecipient, mailBadge, patchReadAt],
-  );
-
-  /** Opening a thread reads all of it, not only the row it was opened by. */
-  const markThreadRead = useCallback(
-    (mail: Mail): void => {
-      if (!interactive || box === 'outbox' || !mails) return;
-      const unreadRows = mails
-        .filter((entry) => entry.threadId === mail.threadId)
-        .map((entry) => ({ mail: entry, own: ownRecipient(entry) }))
-        .filter((entry): entry is { mail: Mail; own: MailRecipient } => entry.own != null && entry.own.readAt == null);
-      if (unreadRows.length === 0) return;
-      const now = Date.now();
-      for (const entry of unreadRows) patchReadAt(entry.mail.id, entry.own.id, now);
-      void api
-        .markMailRead(unreadRows.map((entry) => entry.own.id))
-        .then(() => void mailBadge.refresh())
-        .catch(() => undefined);
-    },
-    [interactive, box, mails, ownRecipient, patchReadAt, mailBadge],
+    [patchRead, badge],
   );
 
   const select = useCallback(
     (id: string): void => {
       setSelectedId(id);
-      const mail = mails?.find((entry) => entry.id === id);
-      if (mail) markThreadRead(mail);
+      const notification = notifications?.find((entry) => entry.id === id);
+      if (notification && notification.readAt == null && notification.archivedAt == null) setRead(notification, true);
     },
-    [mails, markThreadRead],
+    [notifications, setRead],
   );
 
-  /** The open mail's own row, when it is read and so can be put back. */
-  const unreadableRow = useMemo(() => {
-    if (!interactive || !selected) return null;
-    const own = ownRecipient(selected);
-    return own && own.readAt != null ? own : null;
-  }, [interactive, selected, ownRecipient]);
+  const selectFilter = useCallback((next: NotificationFilter, nextArchived: boolean): void => {
+    setFilter(next);
+    setArchived(nextArchived);
+    setSelectedId(null);
+    setNotifications(null);
+  }, []);
 
-  const markUnread = useCallback((): void => {
-    if (!selected || !unreadableRow) return;
-    patchReadAt(selected.id, unreadableRow.id, undefined);
+  const toggleRead = useCallback((): void => {
+    if (selected) setRead(selected, selected.readAt == null);
+  }, [selected, setRead]);
+
+  /** Archiving files it away (and reads it); from the archive it moves back. */
+  const toggleArchived = useCallback((): void => {
+    if (!selected) return;
+    const archive = selected.archivedAt == null;
+    const id = selected.id;
+    setNotifications((current) => current?.filter((entry) => entry.id !== id) ?? null);
+    setUnreadList((current) => current?.filter((entry) => entry.id !== id) ?? null);
+    setSelectedId(null);
     void api
-      .markMailRead([unreadableRow.id], false)
-      .then(() => void mailBadge.refresh())
-      .catch((caught: unknown) => reportFailure('Mark as unread', caught));
-  }, [selected, unreadableRow, mailBadge, patchReadAt]);
+      .archiveNotification(id, archive)
+      .then(() => {
+        toast(archive ? 'Notification archived' : 'Moved back to notifications');
+        void badge.refresh();
+      })
+      .catch((caught: unknown) => {
+        reportFailure(archive ? 'Archive' : 'Restore', caught);
+        void load();
+      });
+  }, [selected, badge, load]);
 
-  /**
-   * Files the open mail's whole thread away - every mail of it leaves the
-   * live folders at once, because the folder routing is per thread. The list
-   * drops them optimistically; the archive call is the one that decides.
-   */
-  const archiveThread = useCallback((): void => {
-    if (!selected) return;
-    const threadId = selected.threadId;
-    setMails((current) => current?.filter((entry) => entry.threadId !== threadId) ?? null);
+  const unreadInView = useMemo(
+    () => (unreadList ?? []).filter((entry) => filter === 'all' || entry.kind === filter),
+    [unreadList, filter],
+  );
+
+  const markAllRead = useCallback((): void => {
+    const ids = unreadInView.map((entry) => entry.id);
+    if (ids.length === 0) return;
+    const now = Date.now();
+    const idSet = new Set(ids);
+    setNotifications(
+      (current) => current?.map((entry) => (idSet.has(entry.id) ? { ...entry, readAt: now } : entry)) ?? null,
+    );
+    setUnreadList((current) => current?.filter((entry) => !idSet.has(entry.id)) ?? null);
     void api
-      .archiveMailThread(threadId)
-      .then(() => toast('Thread archived'))
-      .catch((caught: unknown) => reportFailure('Archivieren', caught));
-  }, [selected]);
-
-  const resetCompose = (): void => {
-    setComposeTo([]);
-    setComposeCc([]);
-    setSubject('');
-    setBody('');
-  };
-
-  const openCompose = (prefill: ComposePrefill): void => {
-    setComposeTo(prefill.to);
-    setComposeCc(prefill.cc);
-    setSubject(prefill.subject);
-    setBody(prefill.body);
-    setComposeOpen(true);
-  };
-
-  /** The mail as a quote block, the way a mail client stacks a conversation. */
-  const quoted = (mail: Mail): string =>
-    '\n\nOn ' +
-    formatDateTime(mail.createdAt) +
-    ', ' +
-    senderLabel(mail) +
-    ' wrote:\n' +
-    mail.body
-      .split('\n')
-      .map((line) => '> ' + line)
-      .join('\n');
-
-  const replyAll = (): void => {
-    if (!selected) return;
-    const { to, cc } = replyAllTargets(selected);
-    openCompose({
-      to: to.map((token) => ({ value: token, label: tokenLabel(token) })),
-      cc: cc.map((token) => ({ value: token, label: tokenLabel(token) })),
-      subject: selected.subject.startsWith('Re: ') ? selected.subject : 'Re: ' + selected.subject,
-      body: quoted(selected),
-    });
-  };
-
-  const forward = (): void => {
-    if (!selected) return;
-    openCompose({
-      to: [],
-      cc: [],
-      subject: selected.subject.startsWith('Fwd: ') ? selected.subject : 'Fwd: ' + selected.subject,
-      body:
-        '\n\n--- Forwarded message ---\nFrom: ' +
-        senderLabel(selected) +
-        '\nDate: ' +
-        formatDateTime(selected.createdAt) +
-        '\nSubject: ' +
-        (selected.subject || '(No subject)') +
-        '\n' +
-        toLine(selected) +
-        '\n\n' +
-        selected.body,
-    });
-  };
-
-  const submitCompose = async (): Promise<void> => {
-    const trimmedSubject = subject.trim();
-    const trimmedBody = body.trim();
-    if (!trimmedBody || composeTo.length === 0 || sending) return;
-    setSending(true);
-    try {
-      // No mode to pick: the address line decides, and the answer says what
-      // it decided. One agent on To opened a task, anything else is a
-      // conversation.
-      const sent = await api.sendMail({
-        to: composeTo.map((option) => option.value),
-        ...(composeCc.length > 0 ? { cc: composeCc.map((option) => option.value) } : {}),
-        subject: trimmedSubject || '(No subject)',
-        body: trimmedBody,
+      .markNotificationsRead(filter === 'all' ? { all: true } : { ids })
+      .then(() => void badge.refresh())
+      .catch((caught: unknown) => {
+        reportFailure('Mark all read', caught);
+        void load();
       });
-      resetCompose();
-      setComposeOpen(false);
-      toast(sent.task ? 'Task created: ' + sent.task.title : 'Mail sent');
-      void load();
-    } catch (caught) {
-      reportFailure('Send', caught);
-    } finally {
-      setSending(false);
-    }
-  };
+  }, [unreadInView, filter, badge, load]);
 
-  const reply = async (text: string): Promise<void> => {
-    if (!selected) return;
-    const to = replyTargets(selected);
-    if (to.length === 0) return;
-    setSending(true);
-    try {
-      const replySubject = selected.subject.startsWith('Re: ') ? selected.subject : 'Re: ' + selected.subject;
-      await api.sendMail({
-        to,
-        subject: replySubject,
-        body: text,
-        inReplyTo: selected.id,
-      });
-      toast('Reply sent');
-      void load();
-    } catch (caught) {
-      reportFailure('Reply', caught);
-    } finally {
-      setSending(false);
-    }
-  };
+  const onAnswered = useCallback((task: Task): void => {
+    setAnsweredTasks((current) => ({ ...current, [task.id]: task.status }));
+  }, []);
 
-  // `?compose=<agentId>` opens Compose pre-filled, from AgentDetailPage/OrgAgentsPage.
+  /* ------------------------------- deep link ------------------------------- */
+
+  // `?id=<id>` opens one notification. When the open view does not hold it -
+  // a filter, the Unread tab, or it was archived - the view widens once to
+  // All, then to the archive, before giving up.
+  const deepLinkStep = useRef<'view' | 'all' | 'archive'>('view');
   useEffect(() => {
-    if (!composeAgentId) return;
-    const agent = org.agentById(composeAgentId);
-    setComposeTo([{ value: composeAgentId, label: agent?.name ?? 'Former agent' }]);
-    setComposeOpen(true);
-    setSearchParams(
-      (current) => {
-        const next = new URLSearchParams(current);
-        next.delete('compose');
-        return next;
-      },
-      { replace: true },
-    );
-  }, [composeAgentId, org, setSearchParams]);
+    deepLinkStep.current = 'view';
+  }, [idParam]);
 
-  // `?thread=<id>` opens one conversation, from TaskDetailPage. When the
-  // folder holds none of its mail - a task thread lives in the Tasks folder,
-  // not in whatever folder is open - the thread is fetched and spliced in
-  // ahead of the list, or the deep link would land on an empty reading pane.
   useEffect(() => {
-    if (!threadParam || mails === null) return;
-    const inList = mails.filter((entry) => entry.threadId === threadParam);
-    if (inList.length > 0) {
-      setSelectedId(inList[0]?.id ?? null);
-      const opened = inList[0];
-      if (opened) markOpenedRead(opened);
-    } else {
-      void api
-        .mailThread(threadParam, mailboxId)
-        .then((threadMails) => {
-          const newest = threadMails.at(-1);
-          if (!newest) return;
-          setMails((current) => {
-            if (!current) return current;
-            const known = new Set(current.map((entry) => entry.id));
-            const fresh = threadMails.filter((entry) => !known.has(entry.id));
-            return [...fresh, ...current];
-          });
-          setSelectedId(newest.id);
-          markOpenedRead(newest);
-        })
-        .catch(() => undefined);
+    if (!idParam || notifications === null) return;
+    const found = notifications.find((entry) => entry.id === idParam);
+    const clear = (): void =>
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          next.delete('id');
+          return next;
+        },
+        { replace: true },
+      );
+    if (found) {
+      select(found.id);
+      clear();
+      return;
     }
-    setSearchParams(
-      (current) => {
-        const next = new URLSearchParams(current);
-        next.delete('thread');
-        return next;
-      },
-      { replace: true },
-    );
-  }, [threadParam, mails, mailboxId, setSearchParams, markOpenedRead]);
+    if (deepLinkStep.current === 'view' && (filter !== 'all' || unreadOnly || archived)) {
+      deepLinkStep.current = 'all';
+      setUnreadOnly(false);
+      selectFilter('all', false);
+      return;
+    }
+    if (deepLinkStep.current !== 'archive' && !archived) {
+      deepLinkStep.current = 'archive';
+      selectFilter('all', true);
+      return;
+    }
+    clear();
+  }, [idParam, notifications, filter, unreadOnly, archived, select, selectFilter, setSearchParams]);
 
   /* --------------------------------- render -------------------------------- */
-
-  if (mails === null) {
-    return (
-      <Fade asChild>
-        <div className="flex flex-col gap-3 p-4 lg:p-6">
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-16 w-full" />
-          <Skeleton className="h-16 w-full" />
-        </div>
-      </Fade>
-    );
-  }
 
   if (offline) {
     return (
@@ -696,144 +306,65 @@ export function InboxPage() {
     );
   }
 
-  const replyAllReach = selected ? replyAllTargets(selected) : null;
-
   return (
     <div className="flex min-h-0 flex-1">
-      {/* `flex`: through this wrapper the rail keeps stretching to full height,
-          the way it did as a direct flex child of this row. */}
+      {/* `flex`: through this wrapper the rail keeps stretching to full height. */}
       <Fade className="flex shrink-0">
-        <MailNav
-          agents={org.agents.filter((agent) => !agent.archived)}
-          assistantName={assistantName}
-          mailboxId={mailboxId}
-          mailboxLabel={mailboxLabel(mailboxId)}
-          mailboxRole={mailboxRole(mailboxId)}
-          onSelect={selectMailbox}
-          folder={folder}
-          onFolderChange={setFolder}
-          unread={inboxUnread}
-          folderUnread={{ reports: reportsUnread }}
+        <NotificationNav
+          filter={filter}
+          archived={archived}
+          onSelect={selectFilter}
+          unread={unreadCounts}
           collapsed={navCollapsed}
           onCollapsedChange={setNavCollapsed}
         />
       </Fade>
 
-      {/* `min-w-0`: without it this flex child keeps its `min-width: auto` and
-          a long unwrapped mail line stretches the panel group past the window,
-          pushing the reading pane off screen and defeating every `truncate`. */}
+      {/* `min-w-0`: without it a long unwrapped line stretches the panel group
+          past the window and defeats every `truncate`. */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
           <ResizablePanel defaultSize="38" minSize="24">
-            {/* The list enters as one section, never row by row - the rows are
-                too dense for that. The sizing classes hand MailList's own root
-                the full panel it sat in directly until now. */}
             <Fade className="h-full min-h-0 w-full min-w-0" delay={50}>
-              <MailList
-                mails={rows}
-                selectedId={selected?.id ?? null}
-                onSelect={select}
-                title={mailboxLabel(mailboxId)}
-                folder={folder}
-                filter={filter}
-                onFilterChange={setFilter}
-                interactive={interactive}
-                onCompose={() => setComposeOpen(true)}
-                search={search}
-                onSearch={setSearch}
-                primaryLabel={primaryLabel}
-                primaryRole={primaryRole}
-                recipientChips={recipientChips}
-                isUnread={isUnread}
-                {...(threadOf
-                  ? {
-                      threadCount: (mail: Mail) => threadFor(mail)?.count ?? 1,
-                      threadUnread: (mail: Mail) => threadFor(mail)?.unread ?? isUnread(mail),
-                    }
-                  : {})}
-                taskStatus={taskStatusOf}
-              />
+              {notifications === null ? (
+                <div className="flex flex-col gap-3 p-4">
+                  <Skeleton className="h-24 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                </div>
+              ) : (
+                <NotificationList
+                  notifications={visible}
+                  selectedId={selected?.id ?? null}
+                  onSelect={select}
+                  filter={filter}
+                  archived={archived}
+                  unreadOnly={unreadOnly}
+                  onUnreadOnlyChange={setUnreadOnly}
+                  onMarkAllRead={unreadInView.length > 0 ? markAllRead : undefined}
+                  search={search}
+                  onSearch={setSearch}
+                  senderLabel={senderLabel}
+                  taskStatus={taskStatusOf}
+                />
+              )}
             </Fade>
           </ResizablePanel>
           <ResizableHandle withHandle />
           <ResizablePanel defaultSize="62" minSize="30">
-            {/* Staggered after the list: rail, list, reading pane. */}
             <Fade className="h-full min-h-0 w-full min-w-0" delay={100}>
-              <MailDisplay
-                mail={selected}
-                mailboxId={mailboxId}
-                reloadKey={selected ? threadFor(selected)?.latest.id : undefined}
+              <NotificationDisplay
+                notification={selected}
+                senderLabel={selected ? senderLabel(selected) : null}
                 taskStatus={selected ? taskStatusOf(selected) : null}
-                interactive={interactive}
-                replyTargetName={selected ? replyTargetLabel(selected) : null}
-                onReply={reply}
-                onReplyAll={replyAll}
-                onForward={forward}
-                canReplyAll={replyAllReach !== null && replyAllReach.to.length + replyAllReach.cc.length > 1}
-                onMarkUnread={unreadableRow ? markUnread : undefined}
-                onArchiveThread={interactive ? archiveThread : undefined}
-                sending={sending}
+                onToggleRead={toggleRead}
+                onToggleArchived={toggleArchived}
+                onAnswered={onAnswered}
               />
             </Fade>
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
-
-      <Dialog
-        open={composeOpen}
-        onOpenChange={(open) => {
-          setComposeOpen(open);
-          if (!open) resetCompose();
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>New mail</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-3">
-            <Field>
-              <FieldLabel>To</FieldLabel>
-              <MultiEntityCombobox
-                options={recipientOptions}
-                value={composeTo}
-                onChange={setComposeTo}
-                placeholder="Add recipient…"
-              />
-              <FieldDescription>{composeOutcome}</FieldDescription>
-            </Field>
-            <Field>
-              <FieldLabel>Cc</FieldLabel>
-              <MultiEntityCombobox
-                options={recipientOptions}
-                value={composeCc}
-                onChange={setComposeCc}
-                placeholder="Add Cc…"
-              />
-            </Field>
-            <Field>
-              <FieldLabel>Subject</FieldLabel>
-              <Input value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="Subject" />
-            </Field>
-            <Field>
-              <FieldLabel>Body</FieldLabel>
-              {/* `max-h-64`: Reply all and Forward arrive with a whole mail
-                  quoted underneath, and an auto-growing field would push the
-                  Send button past the bottom of the dialog. */}
-              <Textarea
-                value={body}
-                onChange={(event) => setBody(event.target.value)}
-                placeholder="Write your message…"
-                className="max-h-64 min-h-32 overflow-y-auto"
-              />
-            </Field>
-          </div>
-          <DialogFooter>
-            <Button onClick={() => void submitCompose()} disabled={sending || !body.trim() || composeTo.length === 0}>
-              Send
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

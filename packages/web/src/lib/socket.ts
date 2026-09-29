@@ -6,8 +6,8 @@ import type {
   ChatPayload,
   ClientFrame,
   EffortLevel,
-  Mail,
   MemoryRecord,
+  Notification,
   OrgChange,
   PermissionLevel,
   ProviderId,
@@ -15,6 +15,7 @@ import type {
   RunTaskPayload,
   ServerFrame,
   Task,
+  TaskEvent,
   TurnUsage,
 } from './types';
 
@@ -94,7 +95,8 @@ export class RookerySocket {
   #memoryListeners = new Set<(event: { sessionId: string; stored: MemoryRecord[] }) => void>();
   #assignmentListeners = new Set<(assignment: AssignmentView) => void>();
   #messageListeners = new Set<(message: AgentMessage) => void>();
-  #mailListeners = new Set<(mail: Mail) => void>();
+  #notificationListeners = new Set<(notification: Notification) => void>();
+  #taskEventListeners = new Set<(event: TaskEvent) => void>();
   #taskListeners = new Set<(task: Task) => void>();
   #cronListeners = new Set<(event: CronEvent) => void>();
   #changedListeners = new Set<(change: OrgChange) => void>();
@@ -144,10 +146,16 @@ export class RookerySocket {
     return () => this.#messageListeners.delete(listener);
   }
 
-  /** Every mail sent between agents, the assistant or the user. */
-  onMail(listener: (mail: Mail) => void): () => void {
-    this.#mailListeners.add(listener);
-    return () => this.#mailListeners.delete(listener);
+  /** Every notification stored for the user - a schedule result, a question, a report. */
+  onNotification(listener: (notification: Notification) => void): () => void {
+    this.#notificationListeners.add(listener);
+    return () => this.#notificationListeners.delete(listener);
+  }
+
+  /** Every line added to any task's activity. */
+  onTaskEvent(listener: (event: TaskEvent) => void): () => void {
+    this.#taskEventListeners.add(listener);
+    return () => this.#taskEventListeners.delete(listener);
   }
 
   /** Every task on the board that was created or changed state, whoever did it. */
@@ -331,7 +339,7 @@ export class RookerySocket {
     // null out the *successor's* reference and schedule yet another
     // reconnect, and the second live socket was still wired to
     // `#handleFrame`. Every broadcast then arrived twice - two "memories
-    // learned" toasts for one turn, two mail toasts for one mail - which is
+    // learned" toasts for one turn, two notification toasts for one notification - which is
     // exactly the duplication this guard ends.
     const current = (): boolean => this.#ws === socket;
 
@@ -531,11 +539,17 @@ export class RookerySocket {
       return;
     }
 
-    if (frame.type === 'mail') {
-      if (frame.event.type === 'mail') {
-        const mail = frame.event.mail;
-        for (const listener of this.#mailListeners) listener(mail);
-      }
+    if (frame.type === 'notification') {
+      // The contract sends the notification flat; tolerate it wrapped as an event too.
+      const notification = frame.notification ?? (frame.event?.type === 'notification' ? frame.event.notification : undefined);
+      if (notification) for (const listener of this.#notificationListeners) listener(notification);
+      return;
+    }
+
+    if (frame.type === 'task-event') {
+      const raw = frame.event as TaskEvent | AgentEvent;
+      const event = 'type' in raw ? (raw.type === 'task-event' ? raw.event : undefined) : raw;
+      if (event) for (const listener of this.#taskEventListeners) listener(event);
       return;
     }
 
@@ -580,7 +594,7 @@ export class RookerySocket {
     }
 
     if (frame.type === 'changed') {
-      for (const listener of this.#changedListeners) listener(frame.change);
+      for (const listener of this.#changedListeners) listener(frame.change ?? { kind: frame.kind ?? '', id: frame.id ?? '' });
       return;
     }
 
