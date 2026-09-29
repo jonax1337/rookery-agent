@@ -1,5 +1,13 @@
 # Telegram als Fernsteuerung
 
+> **Nachtrag 2026-09-29:** Interne Mail gibt es nicht mehr. Was hier ueber
+> Mail-Push (`push.mail`, `mailFrom`), `/mail` und Antworten auf Mail-
+> Benachrichtigungen steht, ist ueberholt: Meldungen an den Nutzer sind jetzt
+> Benachrichtigungen (`push.schedules`, `push.tasks`, `push.agents`,
+> `push.sleep`; Rueckfragen immer), `/mail` heisst `/inbox`, und eine Antwort
+> auf eine Rueckfrage beantwortet den Task direkt. Wahrheit dafuer:
+> `mail-removal-notifications-and-task-activity.md`.
+
 Stand: 2026-09-11. **Umgesetzt**; dieses Dokument bleibt als Begruendung stehen. Der Code liegt in
 `packages/core/src/gateway/policy.ts` (Wache, Nachrichtenaufteilung, Ruhezeit, Lebenszyklus - die
 reine Entscheidungslogik, siehe Abschnitt 3), `packages/core/src/types.ts`, `packages/core/src/config.ts`,
