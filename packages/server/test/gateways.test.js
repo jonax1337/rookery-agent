@@ -2,10 +2,18 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import { EventEmitter } from 'node:events';
-import { DEFAULT_CONFIG } from '@rookery/core';
+import { DEFAULT_CONFIG, readCallbackData } from '@rookery/core';
 import { registerGatewayRoutes } from '../dist/routes/gateways.js';
 import { attachGatewayPush } from '../dist/gateways/push.js';
-import { COMMANDS, htmlPieces, mailReadDone, mailReadKeyboard, mergeFinalText } from '../dist/gateways/telegram.js';
+import {
+  COMMANDS,
+  answerTaskQuestion,
+  htmlPieces,
+  mergeFinalText,
+  notificationReadDone,
+  notificationReadKeyboard,
+  questionForOrigin,
+} from '../dist/gateways/telegram.js';
 import { toTelegramHtml } from '../dist/gateways/markdown.js';
 import { findOrigin, noteMessages, openThread, originContext, rememberOrigin, takeMessages } from '../dist/gateways/threads.js';
 
@@ -62,10 +70,30 @@ test('gateway test messages use English and only reach an allowed recipient', as
   }]);
 });
 
-test('mail reaches the phone from the assistant and anyone who leads, from nobody else', async (t) => {
+/** A notification as the controller emits it. */
+function notification(id, fields = {}) {
+  return {
+    type: 'notification',
+    notification: {
+      id,
+      orgId: 'org',
+      kind: 'agent',
+      title: 'Title ' + id,
+      body: 'Body ' + id,
+      fromKind: 'agent',
+      createdAt: Date.now(),
+      ...fields,
+    },
+  };
+}
+
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test('agent notifications reach the phone by push.agents: leads, all, or off', async (t) => {
   const config = structuredClone(DEFAULT_CONFIG);
   config.gateways.telegram.allowedUserIds = [7];
   Object.assign(config.gateways.telegram.push, { enabled: true, quietFrom: '00:00', quietUntil: '00:00', maxPerHour: 0 });
+  assert.equal(config.gateways.telegram.push.agents, 'leads', 'leads is the default');
 
   const agents = {
     lead: { id: 'lead', name: 'Mona', slug: 'mona', managerId: undefined },
@@ -77,6 +105,7 @@ test('mail reaches the phone from the assistant and anyone who leads, from nobod
   assistant.store = {
     org: {
       getAgent: (id) => agents[id] ?? null,
+      getTask: () => null,
       listTeams: () => [{ id: 'team', leadId: 'lead' }],
       listAgents: (_orgId, options = {}) =>
         Object.values(agents).filter((agent) => agent.managerId === options.managerId),
@@ -90,59 +119,208 @@ test('mail reaches the phone from the assistant and anyone who leads, from nobod
   });
   t.after(() => push.detach());
 
-  const mail = (id, from, recipients) => ({
-    type: 'mail',
-    mail: {
-      id,
-      orgId: 'org',
-      fromKind: from.kind,
-      fromAgentId: from.id,
-      subject: 'Subject ' + id,
-      body: 'Body ' + id,
-      recipients: recipients.map((kind) => ({ recipientKind: kind, box: 'to' })),
-    },
-  });
-  const settle = () => new Promise((resolve) => setImmediate(resolve));
-
-  // Agent to agent: the user is not on it, so it is none of the phone's business.
-  assistant.emit('mail', mail('m1', { kind: 'agent', id: 'lead' }, ['agent']));
-  await settle();
-  assert.deepEqual(sent, []);
-
   // An ordinary agent writing to the user: it lands in the web inbox only.
-  assistant.emit('mail', mail('m2', { kind: 'agent', id: 'hand' }, ['user']));
+  assistant.emit('notification', notification('n2', { fromAgentId: 'hand' }));
   await settle();
   assert.deepEqual(sent, []);
 
-  assistant.emit('mail', mail('m3', { kind: 'agent', id: 'lead' }, ['user']));
+  assistant.emit('notification', notification('n3', { fromAgentId: 'lead' }));
   await settle();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /Mona – Subject m3/);
-  assert.match(sent[0], /Body m3/);
-
-  assistant.emit('mail', mail('m4', { kind: 'assistant' }, ['user']));
-  await settle();
-  assert.equal(sent.length, 2);
-  assert.match(sent[1], /Assistant – Subject m4/);
+  assert.match(sent[0], /📬 Mona – Title n3/);
+  assert.match(sent[0], /Body n3/);
 
   // A head of department leads nothing named "team" and still leads.
-  assistant.emit('mail', mail('m7', { kind: 'agent', id: 'head' }, ['user']));
+  assistant.emit('notification', notification('n7', { fromAgentId: 'head' }));
   await settle();
-  assert.equal(sent.length, 3);
-  assert.match(sent[2], /Victor – Subject m7/);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /Victor – Title n7/);
 
-  // 'assistant' narrows it back down to the one voice the user asked for.
-  config.gateways.telegram.push.mailFrom = 'assistant';
-  assistant.emit('mail', mail('m5', { kind: 'agent', id: 'lead' }, ['user']));
+  // 'all' lets everybody through.
+  config.gateways.telegram.push.agents = 'all';
+  assistant.emit('notification', notification('n8', { fromAgentId: 'hand' }));
+  await settle();
+  assert.equal(sent.length, 3);
+  assert.match(sent[2], /Pat – Title n8/);
+
+  // 'off' silences agents, leads included.
+  config.gateways.telegram.push.agents = 'off';
+  assistant.emit('notification', notification('n5', { fromAgentId: 'lead' }));
   await settle();
   assert.equal(sent.length, 3);
 
-  // The switch is the master: mailFrom never overrides it.
-  config.gateways.telegram.push.mail = false;
-  config.gateways.telegram.push.mailFrom = 'all';
-  assistant.emit('mail', mail('m6', { kind: 'agent', id: 'hand' }, ['user']));
+  // `system` is `notify`'s record: `notify` pushes on its own event, so the
+  // notification never does - or the phone would hear it twice.
+  assistant.emit('notification', notification('n9', { kind: 'system', fromKind: 'system' }));
   await settle();
   assert.equal(sent.length, 3);
+
+  // The master switch wins over every kind.
+  config.gateways.telegram.push.agents = 'all';
+  config.gateways.telegram.push.enabled = false;
+  assistant.emit('notification', notification('n6', { fromAgentId: 'hand' }));
+  await settle();
+  assert.equal(sent.length, 3);
+});
+
+test('each kind reads as what it is, and a schedule of any agent gets through', async (t) => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.gateways.telegram.allowedUserIds = [7];
+  Object.assign(config.gateways.telegram.push, { enabled: true, quietFrom: '00:00', quietUntil: '00:00', maxPerHour: 0 });
+
+  const tasks = {
+    t1: { id: 't1', title: 'Ship the release', status: 'blocked' },
+    t2: { id: 't2', title: 'Clean the backlog', status: 'failed' },
+    t3: { id: 't3', title: 'Write the notes', status: 'done' },
+  };
+  const assistant = new EventEmitter();
+  assistant.store = {
+    org: {
+      getAgent: (id) => (id === 'hand' ? { id, name: 'Pat' } : null),
+      getTask: (id) => tasks[id] ?? null,
+      listTeams: () => [],
+      listAgents: () => [],
+    },
+  };
+  const sent = [];
+  const push = attachGatewayPush({ config, assistant, log: { warn() {} } }, {
+    status: () => ({ running: true }),
+    send: async (_id, text) => { sent.push(text); },
+  });
+  t.after(() => push.detach());
+
+  // A non-lead agent's schedule used to be lost (mailFrom = leads); it is a
+  // schedule result now, and those go by push.schedules.
+  assistant.emit('notification', notification('s1', {
+    kind: 'schedule', title: 'Schedule "Nightly" completed', body: 'Result: all green', fromAgentId: 'hand',
+  }));
+  assistant.emit('notification', notification('q1', {
+    kind: 'question', title: 'Pat has a question about "Ship the release"', body: 'Which branch?', fromAgentId: 'hand', taskId: 't1',
+  }));
+  assistant.emit('notification', notification('f1', {
+    kind: 'task', title: 'Task "Clean the backlog" failed', body: 'Out of time.', fromKind: 'system', taskId: 't2',
+  }));
+  assistant.emit('notification', notification('d1', {
+    kind: 'task', title: 'Task "Write the notes" is done', body: 'Done.', fromKind: 'system', taskId: 't3',
+  }));
+  assistant.emit('notification', notification('w1', { kind: 'watch', title: 'Two cards are stuck', fromKind: 'assistant' }));
+  assistant.emit('notification', notification('z1', { kind: 'sleep', title: 'Retrieval policy promoted', fromKind: 'system' }));
+  await settle();
+
+  assert.equal(sent.length, 5, 'sleep is off by default, everything else here is on');
+  assert.match(sent[0], /^⏰ Schedule "Nightly" completed\n\nResult: all green$/);
+  assert.match(sent[1], /^❓ Pat asks about task “Ship the release”:\n\nWhich branch\?\n\nReply to this message to answer\.$/);
+  assert.match(sent[2], /^❌ Task "Clean the backlog" failed/);
+  assert.match(sent[3], /^✅ Task "Write the notes" is done/);
+  assert.match(sent[4], /^👀 Two cards are stuck/);
+
+  // Switched off, a schedule stays in the web inbox - a question never does.
+  config.gateways.telegram.push.schedules = false;
+  config.gateways.telegram.push.tasks = false;
+  config.gateways.telegram.push.sleep = true;
+  assistant.emit('notification', notification('s2', { kind: 'schedule', title: 'Schedule "Nightly" failed' }));
+  assistant.emit('notification', notification('q2', { kind: 'question', title: 'Another question', taskId: 't1', fromAgentId: 'hand' }));
+  assistant.emit('notification', notification('z2', { kind: 'sleep', title: 'Retrieval policy promoted', fromKind: 'system' }));
+  await settle();
+  assert.equal(sent.length, 7);
+  assert.match(sent[5], /^❓ Pat asks about task/);
+  assert.match(sent[6], /^🌙 Retrieval policy promoted/);
+});
+
+test('a question goes out at once in quiet hours and does not use up the hourly cap', async (t) => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.gateways.telegram.allowedUserIds = [7];
+  const pad = (value) => String(value).padStart(2, '0');
+  const now = new Date();
+  const later = new Date(now.getTime() + 60 * 60 * 1000);
+  Object.assign(config.gateways.telegram.push, {
+    enabled: true,
+    quietFrom: pad(now.getHours()) + ':' + pad(now.getMinutes()),
+    quietUntil: pad(later.getHours()) + ':' + pad(later.getMinutes()),
+    maxPerHour: 1,
+  });
+  const assistant = new EventEmitter();
+  assistant.store = { org: { getAgent: () => null, getTask: () => null, listTeams: () => [], listAgents: () => [] } };
+  const sent = [];
+  const push = attachGatewayPush({ config, assistant, log: { warn() {} } }, {
+    status: () => ({ running: true }),
+    send: async (_id, text) => { sent.push(text); },
+  });
+  t.after(() => push.detach());
+
+  // Quiet hours hold a schedule back...
+  assistant.emit('notification', notification('s1', { kind: 'schedule', title: 'Schedule "Nightly" completed' }));
+  await settle();
+  assert.equal(sent.length, 0);
+
+  // ...but not a question, and not twice either.
+  assistant.emit('notification', notification('q1', { kind: 'question', title: 'Q one', taskId: 't1' }));
+  assistant.emit('notification', notification('q2', { kind: 'question', title: 'Q two', taskId: 't2' }));
+  assistant.emit('notification', notification('q2', { kind: 'question', title: 'Q two', taskId: 't2' }));
+  await settle();
+  assert.equal(sent.length, 2);
+  assert.match(sent[0], /Q one/);
+  assert.match(sent[1], /Q two/);
+});
+
+test('no double push: a schedule or task notification replaces the bare cron and task lines', async (t) => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.gateways.telegram.allowedUserIds = [7];
+  Object.assign(config.gateways.telegram.push, {
+    enabled: true, cron: true, tasks: true, quietFrom: '00:00', quietUntil: '00:00', maxPerHour: 0,
+  });
+  const stored = [];
+  const assistant = new EventEmitter();
+  assistant.store = {
+    org: {
+      getAgent: () => null,
+      getTask: () => null,
+      listTeams: () => [],
+      listAgents: () => [],
+      listNotifications: ({ kind }) => stored.filter((entry) => entry.kind === kind),
+    },
+  };
+  const sent = [];
+  const push = attachGatewayPush({ config, assistant, log: { warn() {} } }, {
+    status: () => ({ running: true }),
+    send: async (_id, text) => { sent.push(text); },
+  });
+  t.after(() => push.detach());
+  // What the controller does: store, then announce.
+  const notify = (id, fields) => {
+    const event = notification(id, fields);
+    stored.push(event.notification);
+    assistant.emit('notification', event);
+  };
+
+  const job = { id: 'job-1', name: 'Nightly', kind: 'assistant' };
+  notify('s1', { kind: 'schedule', title: 'Schedule "Nightly" completed', cronRunId: 'run-1', fromKind: 'assistant' });
+  assistant.emit('cron', { type: 'cron', job, run: { id: 'run-1', status: 'done', result: 'ok' } });
+  await settle();
+  assert.equal(sent.length, 1, 'the schedule result is the push; "Schedule completed" on top would be a second');
+  assert.match(sent[0], /^⏰ Schedule "Nightly" completed/);
+
+  // A silent run has no notification: push.cron still speaks for it.
+  assistant.emit('cron', { type: 'cron', job, run: { id: 'run-2', status: 'done', result: '[SILENT]' } });
+  await settle();
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /Schedule “Nightly” completed/);
+
+  // A user's card fails: the task event comes first, the notification right after.
+  const card = { id: 'card-1', title: 'Fix the build', status: 'failed' };
+  assistant.emit('task', { type: 'task', task: card });
+  notify('f1', { kind: 'task', title: 'Task "Fix the build" failed', body: 'Timed out.', fromKind: 'system', taskId: 'card-1' });
+  await settle();
+  await settle();
+  assert.equal(sent.length, 3, 'one push for one failure');
+  assert.match(sent[2], /^❌ Task "Fix the build" failed/);
+
+  // An agent's own card fails with nobody notified: the bare line stays.
+  assistant.emit('task', { type: 'task', task: { id: 'card-2', title: 'Agent chore', status: 'failed' } });
+  await settle();
+  await settle();
+  assert.equal(sent.length, 4);
+  assert.match(sent[3], /Task failed: Agent chore/);
 });
 
 test('a long message is cut so that every piece still fits after HTML escaping', () => {
@@ -161,13 +339,13 @@ test('a long message is cut so that every piece still fits after HTML escaping',
   assert.equal(hostilePieces.join('').replace(/\n/g, '').replace(/&amp;/g, '&'), hostile);
 });
 
-test('a long mail reaches the phone whole instead of being cut at 600 characters', async (t) => {
+test('a long notification reaches the phone whole, and a huge one is cut honestly', async (t) => {
   const config = structuredClone(DEFAULT_CONFIG);
   config.gateways.telegram.allowedUserIds = [7];
   Object.assign(config.gateways.telegram.push, { enabled: true, quietFrom: '00:00', quietUntil: '00:00', maxPerHour: 0 });
 
   const assistant = new EventEmitter();
-  assistant.store = { org: { getAgent: () => null, listTeams: () => [], listAgents: () => [] } };
+  assistant.store = { org: { getAgent: () => null, getTask: () => null, listTeams: () => [], listAgents: () => [] } };
   const sent = [];
   const push = attachGatewayPush({ config, assistant, log: { warn() {} } }, {
     status: () => ({ running: true }),
@@ -177,78 +355,73 @@ test('a long mail reaches the phone whole instead of being cut at 600 characters
 
   const body = ('Sentence number one. ').repeat(150).trim();
   assert.ok(body.length > 2000);
-  assistant.emit('mail', {
-    type: 'mail',
-    mail: {
-      id: 'long',
-      orgId: 'org',
-      fromKind: 'assistant',
-      subject: 'The long one',
-      body,
-      recipients: [{ recipientKind: 'user', box: 'to' }],
-    },
-  });
-  await new Promise((resolve) => setImmediate(resolve));
+  assistant.emit('notification', notification('long', { kind: 'schedule', title: 'The long one', body }));
+  await settle();
 
   // Several Telegram messages, and the text survives across the seam.
   const delivered = sent.join('');
   assert.ok(sent.length >= 1);
-  assert.ok(delivered.includes(body.slice(-40)), 'the end of the mail never arrived');
+  assert.ok(delivered.includes(body.slice(-40)), 'the end of the notification never arrived');
   assert.ok(!delivered.includes('inbox.'), 'nothing should have been clipped at this length');
+
+  sent.length = 0;
+  const huge = ('Sentence number two. ').repeat(1000).trim();
+  assistant.emit('notification', notification('huge', { kind: 'schedule', title: 'The huge one', body: huge }));
+  await settle();
+  const cut = sent.join('');
+  assert.ok(cut.length < huge.length + 200, 'a body past the cap is cut, not sent whole');
+  assert.match(cut, /The rest of this notification is in your inbox\.$/);
 });
 
-test('a pushed mail carries the read button, once, under its last piece', async (t) => {
+test('a pushed notification carries the read button, once, under its last piece', async (t) => {
   const config = structuredClone(DEFAULT_CONFIG);
   config.gateways.telegram.allowedUserIds = [7];
   Object.assign(config.gateways.telegram.push, { enabled: true, quietFrom: '00:00', quietUntil: '00:00', maxPerHour: 0 });
 
   const assistant = new EventEmitter();
-  assistant.store = { org: { getAgent: () => null, listTeams: () => [], listAgents: () => [] } };
+  assistant.store = { org: { getAgent: () => null, getTask: () => null, listTeams: () => [], listAgents: () => [] } };
   const sent = [];
   const push = attachGatewayPush({ config, assistant, log: { warn() {} } }, {
     status: () => ({ running: true }),
-    send: async (_id, text, options) => { sent.push({ text, keyboard: options?.keyboard }); },
+    send: async (_id, text, options) => { sent.push({ text, keyboard: options?.keyboard, origin: options?.origin }); },
   });
   t.after(() => push.detach());
 
   const body = ('Sentence number one. ').repeat(400).trim();
-  assistant.emit('mail', {
-    type: 'mail',
-    mail: {
-      id: 'mail-42',
-      orgId: 'org',
-      fromKind: 'assistant',
-      subject: 'Long enough to be split',
-      body,
-      recipients: [{ recipientKind: 'user', box: 'to' }],
-    },
-  });
-  await new Promise((resolve) => setImmediate(resolve));
+  assistant.emit('notification', notification('n-42', { kind: 'schedule', title: 'Long enough to be split', body }));
+  await settle();
 
-  assert.ok(sent.length > 1, 'this mail should have been split into several messages');
+  assert.ok(sent.length > 1, 'this notification should have been split into several messages');
   const withButton = sent.filter((message) => message.keyboard);
-  assert.equal(withButton.length, 1, 'the button belongs under the mail once, not under every piece');
+  assert.equal(withButton.length, 1, 'the button belongs under the notification once, not under every piece');
   assert.equal(sent.at(-1).keyboard, withButton[0].keyboard, 'and under the last piece, not the first');
-  // The mail's own id travels on the button: a tap has to name what it marks.
-  assert.deepEqual(withButton[0].keyboard, [[{ text: 'Mark as read', callbackData: 'mail:read:mail-42' }]]);
+  // The notification's own id travels on the button: a tap has to name what it marks.
+  assert.deepEqual(withButton[0].keyboard, [[{ text: 'Mark as read', callbackData: 'notif:read:n-42' }]]);
+  // And every piece is filed under it, so a reply to any of them finds it.
+  for (const message of sent) {
+    assert.equal(message.origin.kind, 'notification');
+    assert.equal(message.origin.ref, 'n-42');
+  }
 });
 
 test('the read button looks different after it has been pressed', () => {
   // The first version read "✓ Read" in both states. The button did change -
   // it just changed into itself, so from the phone nothing had happened.
-  const before = mailReadKeyboard('mail-42')[0][0];
-  const after = mailReadDone(Date.parse('2026-09-15T22:47:00'))[0][0];
+  const before = notificationReadKeyboard('n-42')[0][0];
+  const after = notificationReadDone(Date.parse('2026-09-15T22:47:00'))[0][0];
   assert.notEqual(before.text, after.text, 'a pressed button that reads like an unpressed one is not feedback');
   assert.match(before.text, /^Mark as read$/, 'before the tap the label says what tapping does');
   assert.match(after.text, /^✓ Read at \d{1,2}[:.]\d{2}/, 'after it, what was done and when');
   // And a second tap is answered rather than written again.
   assert.notEqual(before.callbackData, after.callbackData);
+  assert.equal(readCallbackData(before.callbackData).kind, 'notification-read');
+  assert.equal(readCallbackData(after.callbackData).kind, 'notification-read-done');
 });
 
 /* ------------------------------------------------------------------ *
  * Replying to a notification
  *
- * The point of the registry is that a mail push, a schedule and last
+ * The point of the registry is that a notification push, a schedule and last
  * night's sleep report are three different subjects in one Telegram
  * column, and a reply has to reach the right one. These tests use a fake
  * store - the registry is a `meta` row and nothing more - so what is being
@@ -267,7 +440,7 @@ function fakeContext(overrides = {}) {
         getMeta: (key) => meta.get(key) ?? null,
         setMeta: (key, value) => { meta.set(key, value); },
         getSleepRun: () => null,
-        org: { getMail: () => null, getAgent: () => null, getAssignment: () => null, getTask: () => null },
+        org: { getNotification: () => null, getAgent: () => null, getAssignment: () => null, getTask: () => null },
         ...overrides.store,
       },
       cron: { get: () => null, runs: () => [], ...overrides.cron },
@@ -286,29 +459,29 @@ function fakeContext(overrides = {}) {
 test('a reply finds what it answers, and each subject gets a thread of its own', () => {
   const { context } = fakeContext();
 
-  rememberOrigin(context, 7, [100, 101], { kind: 'mail', ref: 'mail-1', title: 'Quarterly numbers' });
+  rememberOrigin(context, 7, [100, 101], { kind: 'notification', ref: 'n-1', title: 'Quarterly numbers' });
   rememberOrigin(context, 7, [200], { kind: 'sleep', ref: 'sleep-9', title: '12/09/2026' });
 
   // Any piece of a long notification leads back to the same subject.
-  assert.equal(findOrigin(context, 7, 101)?.ref, 'mail-1');
+  assert.equal(findOrigin(context, 7, 101)?.ref, 'n-1');
   assert.equal(findOrigin(context, 7, 200)?.kind, 'sleep');
   assert.equal(findOrigin(context, 7, 999), undefined);
   // A different chat knows nothing about this one's messages.
   assert.equal(findOrigin(context, 8, 100), undefined);
 
   const fallback = () => { throw new Error('the plain chat must not be used for a record'); };
-  const mailThread = openThread(context, findOrigin(context, 7, 100), fallback);
-  assert.equal(mailThread.fresh, true);
-  assert.match(mailThread.session.title, /Mail: Quarterly numbers/);
+  const noteThread = openThread(context, findOrigin(context, 7, 100), fallback);
+  assert.equal(noteThread.fresh, true);
+  assert.match(noteThread.session.title, /Notification: Quarterly numbers/);
 
   const sleepThread = openThread(context, findOrigin(context, 7, 200), fallback);
-  assert.notEqual(sleepThread.session.id, mailThread.session.id, 'two subjects must not share a conversation');
+  assert.notEqual(sleepThread.session.id, noteThread.session.id, 'two subjects must not share a conversation');
 
-  // The second reply to the same mail continues the conversation the first
+  // The second reply to the same notification continues the conversation the first
   // one opened, rather than opening another.
-  mailThread.session.messageCount = 2;
+  noteThread.session.messageCount = 2;
   const again = openThread(context, findOrigin(context, 7, 100), fallback);
-  assert.equal(again.session.id, mailThread.session.id);
+  assert.equal(again.session.id, noteThread.session.id);
   assert.equal(again.fresh, false, 'a continued thread must not be handed the notification twice');
 });
 
@@ -335,24 +508,117 @@ test('a notice with no record behind it falls back to the plain chat, carrying i
   assert.equal(thread.session.id, 'telegram-chat');
 });
 
-test('the mail itself is read back from the store, not from what was pushed', () => {
+test('the notification itself is read back from the store, not from what was pushed', () => {
+  const stored = {
+    'n-1': {
+      id: 'n-1', orgId: 'org', kind: 'agent', fromKind: 'assistant', title: 'Quarterly numbers',
+      body: 'The whole body, all of it.', createdAt: 0,
+    },
+  };
   const { context } = fakeContext({
     store: {
       org: {
-        getMail: (id) => (id === 'mail-1'
-          ? { id, fromKind: 'assistant', subject: 'Quarterly numbers', body: 'The whole body, all of it.', createdAt: 0 }
-          : null),
+        getNotification: (id) => stored[id] ?? null,
         getAgent: () => null,
         getAssignment: () => null,
         getTask: () => null,
       },
     },
   });
-  rememberOrigin(context, 7, [100], { kind: 'mail', ref: 'mail-1', snippet: 'a shortened push line' });
+  rememberOrigin(context, 7, [100], { kind: 'notification', ref: 'n-1', snippet: 'a shortened push line' });
   const quoted = originContext(context, findOrigin(context, 7, 100));
   assert.match(quoted, /Quarterly numbers/);
   assert.match(quoted, /The whole body, all of it\./);
   assert.ok(!quoted.includes('shortened'), 'the push line is a fallback, not the source');
+
+  // A registry entry from before mail was removed points at the notification
+  // its mail became - the migration kept the id.
+  rememberOrigin(context, 7, [101], { kind: 'mail', ref: 'n-1', snippet: 'old push line' });
+  assert.match(originContext(context, findOrigin(context, 7, 101)), /The whole body, all of it\./);
+});
+
+test('a reply to a schedule result continues the conversation the run happened in', async (t) => {
+  const config = structuredClone(DEFAULT_CONFIG);
+  config.gateways.telegram.allowedUserIds = [7];
+  Object.assign(config.gateways.telegram.push, { enabled: true, quietFrom: '00:00', quietUntil: '00:00', maxPerHour: 0 });
+  const assistant = new EventEmitter();
+  assistant.store = { org: { getAgent: () => null, getTask: () => null, listTeams: () => [], listAgents: () => [] } };
+  const origins = [];
+  const push = attachGatewayPush({ config, assistant, log: { warn() {} } }, {
+    status: () => ({ running: true }),
+    send: async (_id, _text, options) => { origins.push(options?.origin); },
+  });
+  t.after(() => push.detach());
+
+  assistant.emit('notification', notification('s-1', {
+    kind: 'schedule', title: 'Schedule "Daily" completed', sessionId: 'run-session', cronRunId: 'run-1',
+  }));
+  // Any other kind keeps no conversation of its own: its reply opens a thread.
+  assistant.emit('notification', notification('a-1', { kind: 'agent', fromAgentId: 'x', sessionId: 'somewhere' }));
+  config.gateways.telegram.push.agents = 'all';
+  assistant.emit('notification', notification('a-2', { kind: 'agent', fromAgentId: 'x', sessionId: 'somewhere' }));
+  await settle();
+  assert.equal(origins.length, 2);
+  assert.equal(origins[0].sessionId, 'run-session');
+  assert.equal(origins[1].sessionId, undefined);
+
+  const { context, sessions } = fakeContext();
+  sessions.set('run-session', { id: 'run-session', title: 'Daily', kind: 'schedule', messageCount: 4 });
+  rememberOrigin(context, 7, [500], origins[0]);
+  const thread = openThread(context, findOrigin(context, 7, 500), () => {
+    throw new Error('the plain chat must not be used when the run has a conversation');
+  });
+  assert.equal(thread.session.id, 'run-session');
+
+  rememberOrigin(context, 7, [501], origins[1]);
+  const other = openThread(context, findOrigin(context, 7, 501), () => {
+    throw new Error('a notification with a record gets a thread of its own');
+  });
+  assert.equal(other.fresh, true);
+  assert.match(other.session.title, /^Notification: /);
+});
+
+test('a reply to a question answers the task as the user, and nothing else does', async () => {
+  const notifications = {
+    'q-1': { id: 'q-1', orgId: 'org', kind: 'question', title: 'Pat has a question', body: 'Which branch?', taskId: 'task-1' },
+    's-1': { id: 's-1', orgId: 'org', kind: 'schedule', title: 'Schedule done', body: '' },
+  };
+  const tasks = { 'task-1': { id: 'task-1', orgId: 'org', title: 'Ship', status: 'blocked' } };
+  const answered = [];
+  const { context } = fakeContext({
+    store: {
+      org: {
+        getNotification: (id) => notifications[id] ?? null,
+        getTask: (id) => tasks[id] ?? null,
+        getAgent: () => null,
+        getAssignment: () => null,
+      },
+    },
+  });
+  context.assistant.org = {
+    answerTask: async (input) => {
+      answered.push(input);
+      tasks[input.taskId] = { ...tasks[input.taskId], status: 'running' };
+      return { ok: true, task: tasks[input.taskId] };
+    },
+  };
+
+  // Only a question with a card behind it is an answer.
+  assert.equal(questionForOrigin(context, { kind: 'notification', ref: 's-1' }), undefined);
+  assert.equal(questionForOrigin(context, { kind: 'cron', ref: 'q-1' }), undefined);
+  const asked = questionForOrigin(context, { kind: 'notification', ref: 'q-1' });
+  assert.deepEqual(asked, { taskId: 'task-1', orgId: 'org' });
+
+  const result = await answerTaskQuestion(context, asked, 'main, please');
+  assert.deepEqual(result, { ok: true });
+  // As the user - `by` left out is the user, uncapped - with the text as received.
+  assert.deepEqual(answered, [{ taskId: 'task-1', answer: 'main, please', orgId: 'org' }]);
+
+  // A second reply to the same question does not start the task over.
+  const again = await answerTaskQuestion(context, asked, 'actually, develop');
+  assert.equal(again.ok, false);
+  assert.match(again.reason, /no longer waiting/);
+  assert.equal(answered.length, 1);
 });
 
 test('the registry stays bounded, keeping the newest messages', () => {
@@ -413,24 +679,23 @@ test('the chat ledger remembers what is standing in the chat, once each and boun
   assert.equal(kept.at(-1), 1200, 'the newest message has to survive the ring');
 });
 
-test('the activity feed batches, stays out of quiet hours, and never eats the mail budget', async (t) => {
+test('the activity feed batches, stays out of quiet hours, and never eats the notification budget', async (t) => {
   const config = structuredClone(DEFAULT_CONFIG);
   config.gateways.telegram.allowedUserIds = [7];
   Object.assign(config.gateways.telegram.push, {
     enabled: true,
-    mail: true,
     activity: true,
     tools: true,
     quietFrom: '00:00',
     quietUntil: '00:00',
-    // One message an hour: the cap that mail has to survive.
+    // One message an hour: the cap that a notification has to survive.
     maxPerHour: 1,
   });
 
   const assistant = new EventEmitter();
   assistant.store = {
     getMemory: () => null,
-    org: { getAgent: () => null, getProject: () => null, listTeams: () => [], listAgents: () => [] },
+    org: { getAgent: () => null, getTask: () => null, getProject: () => null, listTeams: () => [], listAgents: () => [] },
   };
   const sent = [];
   const push = attachGatewayPush({ config, assistant, log: { warn() {}, info() {} } }, {
@@ -456,19 +721,14 @@ test('the activity feed batches, stays out of quiet hours, and never eats the ma
   assert.match(feed, /Jonas prefers short answers\./);
   assert.match(feed, /Skill saved · telegram-triage/);
 
-  // And the mail that arrives afterwards still gets through, even though the
-  // hourly cap is one: the feed is not counted against it.
-  assistant.emit('mail', {
-    type: 'mail',
-    mail: {
-      id: 'm-1',
-      orgId: 'org',
-      fromKind: 'assistant',
-      subject: 'Still reaches you',
-      body: 'The feed must not use up the budget that exists for this.',
-      recipients: [{ recipientKind: 'user', box: 'to' }],
-    },
-  });
+  // And the notification that arrives afterwards still gets through, even
+  // though the hourly cap is one: the feed is not counted against it.
+  assistant.emit('notification', notification('n-1', {
+    kind: 'schedule',
+    fromKind: 'assistant',
+    title: 'Still reaches you',
+    body: 'The feed must not use up the budget that exists for this.',
+  }));
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(sent.length, 2);
   assert.match(sent[1], /Still reaches you/);

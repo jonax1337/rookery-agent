@@ -1,8 +1,8 @@
-import { inQuietHours, pushRecipients, splitMessage } from '@rookery/core';
-import type { AgentEvent, Mail, MemoryLearnedEvent, NotifyEvent, TelegramPushConfig } from '@rookery/core';
+import { inQuietHours, notificationPushAllowed, pushRecipients, splitMessage } from '@rookery/core';
+import type { AgentEvent, MemoryLearnedEvent, Notification, NotifyEvent, TelegramPushConfig } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import type { MessageOrigin } from './threads.js';
-import { mailReadKeyboard, type GatewayHandle } from './telegram.js';
+import { notificationReadKeyboard, type GatewayHandle } from './telegram.js';
 import type { TelegramInlineKeyboard } from './telegram-api.js';
 
 /**
@@ -12,7 +12,7 @@ import type { TelegramInlineKeyboard } from './telegram-api.js';
  * There are two lanes, and the difference between them is the whole design.
  *
  * The first is for things that *finish* while nobody is watching: an agent's
- * assignment, a schedule, a night's sleep, a failed task, a mail, whatever
+ * assignment, a schedule, a night's sleep, a failed task, a notification, whatever
  * `notify` decides to say. Each is worth interrupting a phone for, so each is
  * rate limited, held back during quiet hours, and folded into a digest when
  * several pile up.
@@ -22,16 +22,16 @@ import type { TelegramInlineKeyboard } from './telegram-api.js';
  * fire on every turn, so the first lane's rules would be exactly wrong for
  * them: they are batched into one message every few seconds, dropped rather
  * than buffered in quiet hours, and counted against a ceiling of their own so
- * a busy afternoon cannot use up the budget that exists so a mail gets
+ * a busy afternoon cannot use up the budget that exists so a notification gets
  * through. Both are off by default; on, they turn the phone into something
  * closer to a screen you can watch.
  *
- * Mail addressed to the user is the one item here that is somebody writing
- * rather than something finishing, and it is the channel the defaults lean
- * on: the company talks to the user in mail, and the phone carries that mail
- * instead of a running commentary on the machinery behind it. Who counts as
- * worth a buzz is `push.mailFrom` - the assistant alone, the assistant plus
- * the agents named as a team's lead, or everything that reaches the mailbox.
+ * Notifications are the channel the defaults lean on: a schedule's result,
+ * a card of the user's that ended, an agent's question, what the board
+ * watcher or an agent reports. They are stored for the web inbox either way;
+ * which kinds also buzz the phone is `push.schedules`, `push.tasks`,
+ * `push.sleep` and `push.agents` (leads, all, off). A task's question always
+ * goes out, at once, because a card waits on it.
  *
  * A question the assistant stopped to ask belongs to that same first lane and
  * is the one item in it that cannot be held back: it expires, so it is sent
@@ -50,9 +50,15 @@ import type { TelegramInlineKeyboard } from './telegram-api.js';
 interface PushItem {
   /** Dedupe key: the same id within 10s is the same event told twice. */
   id: string;
-  kind: 'assignment' | 'cron' | 'sleep' | 'task' | 'mail' | 'notify';
-  /** `notify` with urgency `high` - the only thing quiet hours do not hold back. */
+  kind: 'assignment' | 'cron' | 'sleep' | 'task' | 'notification' | 'notify';
+  /** `notify` with urgency `high`, or a question - quiet hours do not hold these back. */
   urgent: boolean;
+  /**
+   * Sent now or not at all: neither held back nor counted against the hourly
+   * cap. Only a task's question - it waits on the person, and a question
+   * delivered from a buffer is a card that sat still for nothing.
+   */
+  immediate?: boolean;
   /** Full text, used as-is when this item is sent alone. */
   message: string;
   /** Which counting bucket this item falls into inside a batched digest. */
@@ -65,7 +71,7 @@ interface PushItem {
    */
   origin: Omit<MessageOrigin, 'at'>;
   /**
-   * Buttons under the message. Only mail carries one, and only because
+   * Buttons under the message. Only a notification carries one, and only because
    * Telegram gives a bot no way to learn that a message was read: the tap is
    * the read receipt the API does not have.
    */
@@ -82,22 +88,27 @@ const TALLY_LABELS: Record<string, { one: string; many: string }> = {
   'sleep:done': { one: 'sleep run completed', many: 'sleep runs completed' },
   'sleep:failed': { one: 'sleep run failed', many: 'sleep runs failed' },
   'task:failed': { one: 'task failed', many: 'tasks failed' },
-  'mail:new': { one: 'new mail', many: 'new mails' },
+  'notification:schedule': { one: 'schedule result', many: 'schedule results' },
+  'notification:watch': { one: 'board report', many: 'board reports' },
+  'notification:task': { one: 'task update', many: 'task updates' },
+  'notification:agent': { one: 'message from an agent', many: 'messages from agents' },
+  'notification:sleep': { one: 'sleep note', many: 'sleep notes' },
+  'notification:question': { one: 'question', many: 'questions' },
   'notify:normal': { one: 'notice', many: 'notices' },
 };
 
 /**
- * How much of a mail body the phone carries.
+ * How much of a notification body the phone carries.
  *
  * Not a transport limit: Telegram takes 4096 characters per message and
- * `splitMessage` cuts anything longer into several, so a mail arrives whole
+ * `splitMessage` cuts anything longer into several, so a notification arrives whole
  * unless something here shortens it first. 600 was that something, and it
- * beheaded every mail worth reading. What is left is a politeness cap - four
+ * beheaded every message worth reading. What is left is a politeness cap - four
  * messages is a long read on a phone, and past that the web inbox is the
  * better place, which the marker says out loud rather than trailing off.
  */
-const MAIL_BODY_LIMIT = 12_000;
-const MAIL_CLIPPED_NOTE = '\n\n[…] The rest of this mail is in your inbox.';
+const BODY_LIMIT = 12_000;
+const CLIPPED_NOTE = '\n\n[…] The rest of this notification is in your inbox.';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -126,12 +137,18 @@ function clip(text: string, max: number): string {
   return trimmed.length > max ? trimmed.slice(0, max) + '…' : trimmed;
 }
 
-/** A mail body as the phone gets it: whole, or honestly cut off. */
-function mailBody(body: string): string {
+/** A notification body as the phone gets it: whole, or honestly cut off. */
+function notificationBody(body: string): string {
   const trimmed = body.trim();
-  return trimmed.length > MAIL_BODY_LIMIT
-    ? trimmed.slice(0, MAIL_BODY_LIMIT).replace(/\s+\S*$/, '') + MAIL_CLIPPED_NOTE
+  return trimmed.length > BODY_LIMIT
+    ? trimmed.slice(0, BODY_LIMIT).replace(/\s+\S*$/, '') + CLIPPED_NOTE
     : trimmed;
+}
+
+/** Title, a blank line, the body - or the title alone when there is no body. */
+function withBody(head: string, body: string): string {
+  const text = notificationBody(body);
+  return text ? head + '\n\n' + text : head;
 }
 
 function formatDuration(ms?: number): string {
@@ -206,7 +223,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     const recipients = pushRecipients(context.config.gateways.telegram).filter((id) => !disabled.has(id));
     if (recipients.length === 0) return;
     // The commentary has a budget of its own and must not eat the one that
-    // decides whether a mail gets through.
+    // decides whether a notification gets through.
     if (options.counted !== false) sentAt.push(Date.now());
     const parts = splitMessage(text);
     for (const userId of recipients) {
@@ -217,7 +234,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
           await gateway.send(userId, part, {
             origin,
             ...(options.silent ? { silent: true } : {}),
-            // The buttons go under the final part only: a mail long enough
+            // The buttons go under the final part only: a notification long enough
             // to be split would otherwise offer "read" halfway through it.
             ...(index === parts.length - 1 && options.keyboard ? { keyboard: options.keyboard } : {}),
           });
@@ -281,8 +298,9 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
         return config.sleep;
       case 'task':
         return config.tasks;
-      case 'mail':
-        return config.mail;
+      case 'notification':
+        // Filtered per kind before it gets here (`notificationPushAllowed`).
+        return true;
       case 'notify':
         // No dedicated switch for the assistant's own notices - the master
         // `enabled` below is the only gate, same as the config shape defines it.
@@ -299,6 +317,11 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
 
     // Give a backlog a chance to drain before deciding where this new item goes.
     attemptFlush();
+
+    if (item.immediate) {
+      void sendNow(item.message, item.origin, { counted: false, ...(item.keyboard ? { keyboard: item.keyboard } : {}) });
+      return;
+    }
 
     const quiet = !item.urgent && isQuietNow();
     if (quiet || isRateLimited()) {
@@ -319,7 +342,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
    * while it happens and worthless twenty minutes later, so these are never
    * buffered: in quiet hours they are dropped, not delivered at breakfast.
    * They are not counted against the hourly cap either, or a busy turn would
-   * use up the budget that exists so a mail gets through. What keeps them
+   * use up the budget that exists so a notification gets through. What keeps them
    * from flooding the phone instead is shape: lines are collected for a few
    * seconds and sent as one message, and the lane has its own ceiling per
    * hour after which it goes quiet on its own.
@@ -443,7 +466,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
         line = '🧰 Tool server changed · ' + oneLine(change.id, 60);
         break;
       default:
-        // Everything else - a task, a mail, an assignment - has a proper
+        // Everything else - a task, a notification, an assignment - has a proper
         // notification of its own above. This lane is for what does not.
         break;
     }
@@ -495,6 +518,11 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     // A `sleep`-kind schedule also fires its own `sleep` event with the real
     // report; reporting the bare cron run too would say the same thing twice.
     if (event.job.kind === 'sleep') return;
+    // The run's outcome is a `schedule` notification (written before this
+    // event fires) with the result in it, and that notification is the
+    // delivery. This line exists only for runs that have none - a silent
+    // run, when `push.cron` asks to hear about every run anyway.
+    if (hasNotification('schedule', (entry) => entry.cronRunId === event.run?.id)) return;
 
     const label = event.run.status === 'done' ? 'completed' : 'failed';
     const duration = formatDuration(event.run.durationMs);
@@ -554,17 +582,35 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     // that ran and did not make it is the one change on it worth a buzz.
     // Everything else about a task is visible the next time the page is open.
     if (event.task.status !== 'failed') return;
+    const task = event.task;
 
-    const message = '🚧 Task failed: ' + oneLine(event.task.title, 200);
-    dispatch({
-      id: 'task:' + event.task.id + ':failed',
-      kind: 'task',
-      urgent: false,
-      message,
-      tallyKey: 'task:failed',
-      origin: { kind: 'task', ref: event.task.id, title: oneLine(event.task.title, 60) },
+    // A card the user is owed news about gets a `task` notification with the
+    // reason in it, and that is the push. It is written right after this
+    // event, in the same tick - so look once the tick is over, and speak
+    // only for the failures nobody is told about otherwise (an agent's own
+    // card, say).
+    setImmediate(() => {
+      const since = Date.now() - 60_000;
+      if (hasNotification('task', (entry) => entry.taskId === task.id && entry.createdAt >= since)) return;
+      dispatch({
+        id: 'task:' + task.id + ':failed',
+        kind: 'task',
+        urgent: false,
+        message: '🚧 Task failed: ' + oneLine(task.title, 200),
+        tallyKey: 'task:failed',
+        origin: { kind: 'task', ref: task.id, title: oneLine(task.title, 60) },
+      });
     });
   };
+
+  /** Whether a recent notification of this kind matches - the "already told" check. */
+  function hasNotification(kind: Notification['kind'], matches: (entry: Notification) => boolean): boolean {
+    try {
+      return assistant.store.org.listNotifications({ kind, limit: 25 }).some(matches);
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * Whether this agent is somebody the company answers to.
@@ -573,51 +619,86 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
    * lead in `leadId`, and an agent can simply have people reporting to it.
    * A "Head of" with reports but no team of their own leads in every sense
    * that matters here, and asking only about `leadId` left exactly that
-   * person unable to reach the phone. Read fresh on every mail, so a
-   * promotion takes effect without a restart.
+   * person unable to reach the phone. Read fresh on every notification, so
+   * a promotion takes effect without a restart.
    */
   const isLead = (orgId: string, agentId: string): boolean =>
     assistant.store.org.listTeams(orgId).some((team) => team.leadId === agentId) ||
     assistant.store.org.listAgents(orgId, { managerId: agentId }).length > 0;
 
-  /**
-   * Who wrote this mail, and whether that is somebody the user asked to hear
-   * from. `undefined` leaves the mail in the web inbox and nowhere else.
-   */
-  const mailSenderLabel = (mail: Mail): string | undefined => {
-    const setting = pushConfig().mailFrom;
-    // The user's own mail, echoed back to the phone it was written from.
-    if (mail.fromKind === 'user') return undefined;
-    if (mail.fromKind === 'assistant') return 'Assistant';
-    if (!mail.fromAgentId) return undefined;
-    const agent = assistant.store.org.getAgent(mail.fromAgentId);
-    if (!agent) return undefined;
-    if (setting === 'assistant') return undefined;
-    if (setting === 'leads' && !isLead(mail.orgId, agent.id)) return undefined;
-    return agent.name;
-  };
+  /** Who is speaking in a notification, by name. */
+  const speaker = (notification: Notification): string =>
+    notification.fromKind === 'assistant'
+      ? context.config.assistantName
+      : notification.fromKind === 'agent'
+        ? ((notification.fromAgentId ? assistant.store.org.getAgent(notification.fromAgentId)?.name : undefined) ??
+          'An agent')
+        : 'Rookery';
 
-  const onMail = (event: AgentEvent): void => {
-    if (event.type !== 'mail') return;
-    const mail = event.mail;
-    // To or Cc, no difference: being looped in is being told.
-    if (!mail.recipients.some((recipient) => recipient.recipientKind === 'user')) return;
-    const sender = mailSenderLabel(mail);
-    if (!sender) return;
+  /** The phone's text for one notification, by kind. */
+  function notificationMessage(notification: Notification): string {
+    const title = oneLine(notification.title, 200);
+    switch (notification.kind) {
+      case 'schedule':
+        return withBody('⏰ ' + title, notification.body);
+      case 'question': {
+        const task = notification.taskId ? assistant.store.org.getTask(notification.taskId) : null;
+        const head = task
+          ? '❓ ' + speaker(notification) + ' asks about task “' + oneLine(task.title, 120) + '”:'
+          : '❓ ' + title;
+        return withBody(head, notification.body) + '\n\nReply to this message to answer.';
+      }
+      case 'task': {
+        const status = notification.taskId ? assistant.store.org.getTask(notification.taskId)?.status : undefined;
+        const failed = status ? status === 'failed' : / failed$/.test(notification.title);
+        const cancelled = status ? status === 'cancelled' : / was cancelled$/.test(notification.title);
+        return withBody((failed ? '❌ ' : cancelled ? '🚫 ' : '✅ ') + title, notification.body);
+      }
+      case 'watch':
+        return withBody('👀 ' + title, notification.body);
+      case 'agent':
+        return withBody('📬 ' + speaker(notification) + ' – ' + oneLine(notification.title, 120), notification.body);
+      case 'sleep':
+        return withBody('🌙 ' + title, notification.body);
+      default:
+        return withBody('🔔 ' + title, notification.body);
+    }
+  }
+
+  /**
+   * Something for the user - the one road that replaced mail. Which kinds
+   * reach the phone is the user's per-kind switches (`notificationPushAllowed`);
+   * a question always does, and goes out at once, like the assistant's own
+   * questions: it holds a card still until somebody answers it.
+   */
+  const onNotification = (event: AgentEvent): void => {
+    if (event.type !== 'notification') return;
+    const notification = event.notification;
+    if (!notificationPushAllowed(pushConfig(), notification, (agentId) => isLead(notification.orgId, agentId))) return;
+    const question = notification.kind === 'question';
 
     dispatch({
-      id: 'mail:' + mail.id,
-      kind: 'mail',
-      urgent: false,
-      message: '📬 ' + sender + ' – ' + oneLine(mail.subject, 120) + '\n\n' + mailBody(mail.body),
-      tallyKey: 'mail:new',
-      // The mail's own id, not the thread's: a reply is about the mail that
-      // was pushed, and the store has the whole thing when it is needed.
-      origin: { kind: 'mail', ref: mail.id, title: oneLine(mail.subject, 60) },
+      id: 'notification:' + notification.id,
+      kind: 'notification',
+      urgent: question,
+      ...(question ? { immediate: true } : {}),
+      message: notificationMessage(notification),
+      tallyKey: 'notification:' + notification.kind,
+      // The notification's own id: a reply is about what was pushed, and the
+      // store has the whole thing when it is needed. A schedule's outcome
+      // also names the conversation the run happened in, so answering it
+      // continues that conversation instead of starting a stranger next to it.
+      origin: {
+        kind: 'notification',
+        ref: notification.id,
+        title: oneLine(notification.title, 60),
+        ...(notification.kind === 'schedule' && notification.sessionId ? { sessionId: notification.sessionId } : {}),
+        ...(notification.body.trim() ? { snippet: notification.body } : {}),
+      },
       // The read receipt Telegram does not give. Having read it on the phone
       // is worth nothing to the web inbox unless it is said out loud, and a
       // tap is the only place the user can say it.
-      keyboard: mailReadKeyboard(mail.id),
+      keyboard: notificationReadKeyboard(notification.id),
     });
   };
 
@@ -625,13 +706,13 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
    * The assistant asking the user something, carried to the phone.
    *
    * It belongs in this lane and not in the commentary above: a question is
-   * somebody writing, not something finishing, which is the same reason mail
+   * somebody writing, not something finishing, which is the same reason notifications are
    * is here. What it does *not* take from this lane is the buffering. Quiet
    * hours and the hourly cap exist so a finished assignment can wait until
    * breakfast - a question cannot, because it expires, and a question
    * delivered from a buffer asks about a decision the turn was forced to make
    * without it twenty minutes ago. So it goes out now or not at all, and for
-   * the same reason it is not counted against the cap that protects mail.
+   * the same reason it is not counted against the cap that protects notifications.
    *
    * The gateway does the drawing, because the buttons and the registry that
    * makes a typed reply count are its business, and it only draws a question
@@ -671,7 +752,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
   assistant.on('cron', onCron);
   assistant.on('sleep', onSleep);
   assistant.on('task', onTask);
-  assistant.on('mail', onMail);
+  assistant.on('notification', onNotification);
   assistant.on('notify', onNotify);
   assistant.on('question', onQuestion);
   assistant.on('question-closed', onQuestionClosed);
@@ -685,7 +766,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       assistant.off('cron', onCron);
       assistant.off('sleep', onSleep);
       assistant.off('task', onTask);
-      assistant.off('mail', onMail);
+      assistant.off('notification', onNotification);
       assistant.off('notify', onNotify);
       assistant.off('question', onQuestion);
       assistant.off('question-closed', onQuestionClosed);

@@ -1,15 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { AssignmentStatus, MailFolder, MailWho, TaskStatus } from '@rookery/core';
+import type { AssignmentStatus, NotificationKind, TaskStatus } from '@rookery/core';
 import { fingerprintMcpFile, projectMcpStatus, readProjectMcpFile } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import {
   agentSchema,
-  archiveMailThreadSchema,
+  answerTaskSchema,
+  archiveNotificationSchema,
   assignInputSchema,
   assignmentReviewSchema,
   formatIssues,
-  markMailReadSchema,
-  sendMailSchema,
+  markNotificationsReadSchema,
   organizationSchema,
   parseOrThrow,
   patchTaskSchema,
@@ -443,10 +443,29 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
       children: store.listTasks(task.orgId, { parentId: task.id }),
       assignee: task.assigneeId ? store.getAgent(task.assigneeId) : null,
       assignment: task.assignmentId ? store.getAssignment(task.assignmentId) : null,
-      // The mail thread the task was born in, when it arrived as an
-      // assignment mail - the board side of the traceable chain.
-      thread: store.getMailThreadForTask(task.orgId, task.id),
+      // The card's own protocol, oldest first: the brief, every run, every
+      // question and answer, every status change.
+      events: store.listTaskEvents(task.id),
     };
+  });
+
+  /**
+   * The user answers the question a card is waiting on. Same road as the
+   * `answer_task` tool, as the user and uncapped: the answer goes on the
+   * card and the task runs again. Only a waiting card can be answered - a
+   * second answer to a question somebody already answered would start the
+   * task over.
+   */
+  app.post('/api/org/tasks/:id/answer', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const task = store.getTask(request.params.id);
+    if (!task) return notFound(reply, 'No task ' + request.params.id);
+    const input = parseOrThrow(answerTaskSchema, request.body ?? {});
+    if (task.status !== 'blocked') {
+      return badRequest(reply, 'The task is not waiting for an answer (it is ' + task.status + ').');
+    }
+    const answered = await context.assistant.org.answerTask({ taskId: task.id, answer: input.answer, orgId: task.orgId });
+    if (!answered.ok) return badRequest(reply, answered.reason);
+    return { ok: true, task: answered.task };
   });
 
   app.patch('/api/org/tasks/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
@@ -475,7 +494,7 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     }
     const { force: _force, status, ...rest } = patch;
     // The status goes through the one writer, which clears what a previous
-    // life left on the card, announces it, and tells the task's mail thread.
+    // life left on the card, announces it, and writes it into the card's activity.
     // This route used to do all three by hand and was the only writer that
     // did - the tool and the CLI moved the same card in silence.
     //
@@ -522,78 +541,66 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     return reply;
   });
 
-  /* ------------------------------------ mail ----------------------------------- */
+  /* -------------------------------- notifications ------------------------------ */
 
-  const resolveMailbox = (token: string): MailWho | null => {
-    if (token === 'user') return { kind: 'user' };
-    if (token === 'assistant') return { kind: 'assistant' };
-    return store.getAgent(token) ? { kind: 'agent', id: token } : null;
-  };
+  const NOTIFICATION_KINDS: readonly NotificationKind[] = ['schedule', 'watch', 'task', 'question', 'agent', 'sleep', 'system'];
 
+  /** The inbox's list: newest first, the live shelf unless `archived=1`. */
   app.get(
-    '/api/org/mail',
+    '/api/notifications',
     async (
-      request: FastifyRequest<{ Querystring: { mailbox?: string; box?: string; folder?: string; thread?: string; limit?: string } }>,
+      request: FastifyRequest<{ Querystring: { unread?: string; kind?: string; archived?: string; limit?: string } }>,
       reply: FastifyReply,
     ) => {
-      const token = request.query.mailbox ?? 'user';
-      const who = resolveMailbox(token);
-      if (!who) return notFound(reply, 'No agent ' + token);
       const orgId = context.assistant.org.activeOrganization().id;
-      // `thread` asks for one conversation, oldest first, in whoever's view -
-      // a deep link from the board lands on the whole thread, not one mail.
-      if (request.query.thread) {
-        return store.thread(orgId, request.query.thread, { who, limit: 100 });
-      }
-      const box = request.query.box === 'outbox' || request.query.folder === 'outbox' ? 'outbox' : 'inbox';
-      if (box === 'outbox') {
-        return store.mailbox(orgId, who, 'outbox', { limit: clampLimit(request.query.limit, 100, 500) });
-      }
-      const folder = (request.query.folder ?? 'inbox') as MailFolder;
-      if (!['inbox', 'tasks', 'reports', 'archiv'].includes(folder)) {
-        return badRequest(reply, 'No folder ' + request.query.folder);
-      }
-      return store.mailbox(orgId, who, 'inbox', { folder, limit: clampLimit(request.query.limit, 100, 500) });
+      const kinds = (request.query.kind ?? '')
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0);
+      const unknown = kinds.find((entry) => !NOTIFICATION_KINDS.includes(entry as NotificationKind));
+      if (unknown) return badRequest(reply, 'No notification kind ' + unknown);
+      return store.listNotifications({
+        orgId,
+        unread: isTrue(request.query.unread),
+        archived: isTrue(request.query.archived),
+        ...(kinds.length ? { kind: kinds as NotificationKind[] } : {}),
+        limit: clampLimit(request.query.limit, 100, 1000),
+      });
     },
   );
 
-  app.post('/api/org/mail', async (request: FastifyRequest, reply: FastifyReply) => {
-    const input = parseOrThrow(sendMailSchema, request.body ?? {});
-    const orgId = context.assistant.org.activeOrganization().id;
-    try {
-      // The controller's own broadcast (forwarded through the assistant's
-      // `mail` event) reaches every socket; nothing to emit here.
-      //
-      // What the mail becomes is read off its address line, not off a mode
-      // the caller picks (decision E2): the answer carries the task when one
-      // agent on To opened one, so the page can link straight to the card.
-      const sent = await context.assistant.org.sendUserMail({ orgId, ...input });
-      reply.code(201);
-      return sent;
-    } catch (error) {
-      return badRequest(reply, (error as Error).message);
-    }
-  });
+  /** The badge: unread and not archived. */
+  app.get('/api/notifications/unread-count', async () => ({
+    count: store.unreadNotificationCount(context.assistant.org.activeOrganization().id),
+  }));
 
   /**
-   * Marks a batch of mailbox rows read - the mailbox page calls this on load.
-   * `read: false` is the reading pane's "Mark as unread", the one way back.
+   * Marks notifications read - by id, or all of them. `read: false` is the
+   * reading pane's "Mark as unread". Every open tab refreshes on `changed`;
+   * never on `notification`, which the phone would push a second time.
    */
-  app.post('/api/org/mail/read', async (request: FastifyRequest) => {
-    const input = parseOrThrow(markMailReadSchema, request.body ?? {});
-    if (input.read === false) store.markMailUnread(input.ids);
-    else store.markMailRead(input.ids);
+  app.post('/api/notifications/read', async (request: FastifyRequest) => {
+    const input = parseOrThrow(markNotificationsReadSchema, request.body ?? {});
+    const orgId = context.assistant.org.activeOrganization().id;
+    const read = input.read !== false;
+    if (input.all) store.markNotificationsRead('all', { read, orgId });
+    else store.markNotificationsRead(input.ids ?? [], { read });
+    context.assistant.emit('changed', { kind: 'notifications', id: 'all' });
     return { ok: true };
   });
 
-  /** Moves a whole thread into the archive folder; `archived: false` takes it back out. */
-  app.post('/api/org/mail/archive', async (request: FastifyRequest, reply: FastifyReply) => {
-    const input = parseOrThrow(archiveMailThreadSchema, request.body ?? {});
-    const orgId = context.assistant.org.activeOrganization().id;
-    if (!store.getMailThread(orgId, input.threadId)) return notFound(reply, 'No mail thread ' + input.threadId);
-    store.archiveMailThread(orgId, input.threadId, input.archived !== false);
+  /** Moves one notification into the archive; `archived: false` takes it back out. */
+  app.post('/api/notifications/archive', async (request: FastifyRequest, reply: FastifyReply) => {
+    const input = parseOrThrow(archiveNotificationSchema, request.body ?? {});
+    if (!store.getNotification(input.id)) return notFound(reply, 'No notification ' + input.id);
+    store.archiveNotification(input.id, input.archived !== false);
+    context.assistant.emit('changed', { kind: 'notifications', id: 'all' });
     return { ok: true };
   });
+}
+
+function isTrue(raw: string | undefined): boolean {
+  return raw === '1' || raw === 'true';
 }
 
 function clampLimit(raw: string | undefined, fallback: number, max: number): number {

@@ -241,3 +241,52 @@ emittiert. Neu: `notification`- und `task-event`-Events am `Assistant`,
 aber exportiert. Nach Phase 1 bricht im Server nur `routes/org.ts`
 (`sendUserMail`); die Mail-Routen, Push (`onMail`, `mailFrom`) und
 `/mail` in Telegram lesen noch die alten Tabellen und muessen umziehen.
+
+## 9. Umsetzung Phase 2 (Server, CLI)
+
+Stand: 2026-09-29, `packages/server` und `packages/cli`.
+
+**HTTP/WS** wie vereinbart: `GET /api/notifications` (`unread`, `kind` -
+einzeln oder kommagetrennt -, `archived`, `limit`; Default live, 100),
+`GET /api/notifications/unread-count`, `POST /api/notifications/read`
+(`ids` oder `all`, `read: false` = ungelesen), `POST /api/notifications/archive`;
+beide POSTs emittieren `changed {kind:'notifications', id:'all'}` - nie
+`notification`, sonst pusht Telegram erneut. Benachrichtigungen gelten fuer die
+aktive Firma. `GET /api/org/tasks/:id` liefert `events` statt `thread`.
+`POST /api/org/tasks/:id/answer` antwortet als Nutzer ueber `org.answerTask`;
+400, wenn die Karte nicht `blocked` ist (sonst wuerde eine zweite Antwort einen
+fertigen Task neu starten) oder wenn der Core ablehnt (Grund als Meldung).
+Mail-Routen entfernt. WebSocket: `{type:'notification', notification}` und
+`{type:'task-event', event}` an alle Sockets, kein `mail`-Frame mehr.
+Config: Push-Patch kennt `schedules`, `questions` (immer true gespeichert),
+`agents`; alte `mail`/`mailFrom` werden im Route-Handler wie
+`upgradePushConfig` abgebildet und nie gespeichert; `org.roleplay` wird
+verworfen. `publicConfig` zeigt Push ohne `mail`/`mailFrom` und `org` ohne
+`roleplay`.
+
+**Telegram-Push** (`onNotification`, Filter `notificationPushAllowed`):
+`schedule` "⏰ Titel + Text", `question` "❓ <Agent> asks about task …" +
+"Reply to this message to answer." - sofort, auch in Ruhezeiten, nicht auf
+das Stundenlimit angerechnet (Hauptschalter gilt), `task` ✅/❌/🚫 nach
+Kartenstatus, `watch` 👀, `agent` 📬 <Agent> – Titel, `sleep` 🌙, `system` nie
+(der `notify`-Push ist die Zustellung). Text bis 12 000 Zeichen, danach
+gekuerzt mit Hinweis; "Mark as read" (`notif:read:<id>`) unter dem letzten
+Teil. **Keine Doppelmeldungen:** `onCron` schweigt, wenn es zum Lauf eine
+`schedule`-Benachrichtigung gibt (spricht also nur noch fuer stille Laeufe,
+wenn `push.cron` an ist); `onTask` "Task failed" prueft nach dem Tick, ob eine
+`task`-Benachrichtigung fuer die Karte kam, und schweigt dann - bleibt fuer
+Agenten-Karten ohne Benachrichtigung.
+
+**Telegram-Antworten:** `OriginKind` `notification` (ref = Id), alte
+`mail`-Eintraege werden als Benachrichtigung mit gleicher Id gelesen.
+Antwort auf `question` → `answerTask` als Nutzer mit dem Text (bzw.
+Transkript), Quittung "Answered — the task continues." oder der Grund; kein
+Chat-Turn. `schedule` mit `sessionId` → dieses Gespraech; alle anderen →
+eigener Thread mit dem Benachrichtigungstext als Kontext. Knopf-Tap markiert
+gelesen und emittiert `changed`; alte `mail:read:`-Knoepfe markieren die
+migrierte Benachrichtigung und antworten "Already handled". `/inbox` listet
+ungelesene Benachrichtigungen (Titel, Art, Alter) ohne sie zu markieren;
+`/mail` ist Alias mit Hinweis.
+
+Offen: `docs/concepts/telegram-channel.md` beschreibt noch `/mail` und
+`mailFrom` (Konzept, der Code gilt).

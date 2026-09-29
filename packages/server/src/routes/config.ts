@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { applyConfig } from '@rookery/core';
-import type { RookeryConfig } from '@rookery/core';
+import type { RookeryConfig, TelegramPushConfig } from '@rookery/core';
 import { publicConfig, type ServerContext } from '../context.js';
 import { parseOrThrow, patchConfigSchema } from '../schemas.js';
 
@@ -41,6 +41,29 @@ function normaliseSecrets(patch: Record<string, unknown>, config: RookeryConfig)
   }
 }
 
+/**
+ * The push switches as they are stored now. An old client still sends the
+ * mail switches: they are read the way `upgradePushConfig` reads an old
+ * file - `mail` becomes `schedules` (and turns `tasks` on), `mailFrom`
+ * becomes `agents` - unless the new key came along too, and are never
+ * written back. `questions` cannot be switched off.
+ */
+function normalisePush(push: Partial<TelegramPushConfig> | undefined): void {
+  if (!push) return;
+  if (push.mail !== undefined && push.schedules === undefined) {
+    push.schedules = push.mail;
+    if (push.mail && push.tasks === undefined) push.tasks = true;
+  }
+  if ((push.mail !== undefined || push.mailFrom !== undefined) && push.agents === undefined) {
+    const from = push.mailFrom;
+    push.agents = push.mail === false || from === 'assistant' ? 'off' : from === 'all' ? 'all' : from ? 'leads' : undefined;
+    if (push.agents === undefined) delete push.agents;
+  }
+  delete push.mail;
+  delete push.mailFrom;
+  if (push.questions !== undefined) push.questions = true;
+}
+
 export async function registerConfigRoutes(
   app: FastifyInstance,
   context: ServerContext,
@@ -50,6 +73,7 @@ export async function registerConfigRoutes(
   app.patch('/api/config', async (request: FastifyRequest) => {
     const patch = parseOrThrow(patchConfigSchema, request.body ?? {});
     normaliseSecrets(patch, context.config);
+    normalisePush(patch.gateways?.telegram?.push);
     // applyConfig deep-merges into the file, so a partial `memory`/`voice`
     // object is exactly what it wants; the cast only bridges Zod's
     // deep-partial shape. It updates the config in place, and the server and

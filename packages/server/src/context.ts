@@ -75,13 +75,22 @@ function readVersion(): string {
 }
 
 /** Every gateway block with its secrets blanked, structure otherwise intact. */
-function redactGateways(gateways: GatewaysConfig): GatewaysConfig {
-  return { ...gateways, telegram: { ...gateways.telegram, token: '' } };
+function redactGateways(gateways: GatewaysConfig) {
+  // The push block in its current shape: `mail`/`mailFrom` only survive in
+  // the type so an old config file can be read (upgradePushConfig has mapped
+  // them onto `schedules`, `tasks` and `agents` already).
+  const { mail: _mail, mailFrom: _mailFrom, ...push } = gateways.telegram.push;
+  return { ...gateways, telegram: { ...gateways.telegram, token: '', push: { ...push, questions: true } } };
 }
 
 /** The same for listeners: every mailbox password blanked, the rest intact. */
 function redactListeners(listeners: ListenersConfig): ListenersConfig {
   return { ...listeners, imap: listeners.imap.map((entry) => ({ ...entry, password: '' })) };
+}
+
+function withoutRoleplay(org: RookeryConfig['org']): Omit<RookeryConfig['org'], 'roleplay'> {
+  const { roleplay: _roleplay, ...rest } = org;
+  return rest;
 }
 
 /** The subset of the config that is safe to hand to a browser. Never a token. */
@@ -103,7 +112,8 @@ export function publicConfig(config: RookeryConfig): Record<string, unknown> {
     defaultPermission: config.defaultPermission,
     voice: config.voice,
     memory: config.memory,
-    org: config.org,
+    // `roleplay` is gone with mail; the key stays in old files and is ignored.
+    org: withoutRoleplay(config.org),
     // No secret here - profile API keys live behind GET /api/providers/profiles.
     router: config.router,
     providerFallback: config.providerFallback,

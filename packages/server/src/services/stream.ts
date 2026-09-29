@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { AgentEvent, TuiSessionInfo } from '@rookery/core';
+import type { AgentEvent, Notification, TaskEvent, TuiSessionInfo } from '@rookery/core';
 import type { WebSocket } from '@fastify/websocket';
 
 /**
@@ -125,8 +125,10 @@ export type ServerFrame =
   | { type: 'tui-opened'; id: string; sessionId: string; key: string }
   /** Broadcast: a message between agents or to the assistant was posted. */
   | { type: 'message'; event: AgentEvent }
-  /** Broadcast: mail was sent - a new mail in someone's inbox or outbox. */
-  | { type: 'mail'; event: AgentEvent }
+  /** Broadcast: something for the user - a new entry in the inbox. */
+  | { type: 'notification'; notification: Notification }
+  /** Broadcast: a line was added to a card's activity. */
+  | { type: 'task-event'; event: TaskEvent }
   /** Broadcast: a task on the board was created or changed state. */
   | { type: 'task'; event: AgentEvent }
   /** Broadcast: a schedule was created, edited, deleted, or a run of it changed state. */

@@ -316,7 +316,7 @@ export async function taskDoneCommand(ref: string, options: TaskDoneOptions = {}
 
     const result = options.result?.trim();
     // Through the one writer, so closing a task from the terminal reaches
-    // its mail thread and any open browser. This used to write the column
+    // its activity, whoever is owed the news and any open browser. This used to write the column
     // straight and tell nobody at all.
     return assistant.org
       .setTaskStatus({ task, to: 'done', by: 'user', ...(result ? { result } : {}) })

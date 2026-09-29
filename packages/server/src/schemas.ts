@@ -187,26 +187,27 @@ export const planTaskSchema = z.object({
   hint: z.string().optional(),
 });
 
-/** POST /api/org/mail */
-export const sendMailSchema = z.object({
-  to: z.array(z.string().min(1)).min(1, 'to must not be empty'),
-  cc: z.array(z.string().min(1)).optional(),
-  subject: z.string().min(1, 'subject must not be empty'),
-  body: z.string().min(1, 'body must not be empty'),
-  inReplyTo: z.string().min(1).optional(),
+/** POST /api/org/tasks/:id/answer - the user answers the question a card is waiting on. */
+export const answerTaskSchema = z.object({
+  answer: z.string().trim().min(1, 'answer must not be empty').max(20_000),
 });
 
-/** POST /api/org/mail/read */
-export const markMailReadSchema = z.object({
-  ids: z.array(z.string()).min(1, 'ids must not be empty'),
-  /** `false` puts the rows back to unread - the reading pane's "Mark as unread". */
-  read: z.boolean().optional(),
-});
+/* ------------------------------ notifications ------------------------------ */
 
-/** POST /api/org/mail/archive - moves (or restores) a whole thread. */
-export const archiveMailThreadSchema = z.object({
-  threadId: z.string().min(1),
-  /** `false` is the way back out of the archive folder. */
+/** POST /api/notifications/read - by id, or everything with `all`. */
+export const markNotificationsReadSchema = z
+  .object({
+    ids: z.array(z.string().min(1)).max(1000).optional(),
+    all: z.boolean().optional(),
+    /** `false` puts them back to unread - the reading pane's "Mark as unread". */
+    read: z.boolean().optional(),
+  })
+  .refine((value) => value.all === true || (value.ids?.length ?? 0) > 0, 'ids or all is required');
+
+/** POST /api/notifications/archive - moves one notification into (or out of) the archive. */
+export const archiveNotificationSchema = z.object({
+  id: z.string().min(1),
+  /** `false` is the way back out of the archive. */
   archived: z.boolean().optional(),
 });
 
@@ -391,7 +392,8 @@ const orgConfigSchema = z
     // anywhere a person would look for one.
     autoReview: z.boolean(),
     autoReconfig: z.boolean(),
-    roleplay: z.boolean(),
+    // `roleplay` went with mail; an old client sending it is ignored (zod
+    // drops unknown keys).
     interactiveRuns: z.boolean(),
     activeOrganizationId: z.string().min(1),
   })
@@ -412,6 +414,16 @@ const telegramPushConfigSchema = z
     cron: z.boolean(),
     sleep: z.boolean(),
     tasks: z.boolean(),
+    /** `schedule` and `watch` notifications. */
+    schedules: z.boolean(),
+    /** Questions are always pushed; accepted so a form can send it back, never stored as false. */
+    questions: z.boolean(),
+    /** `agent` notifications: from leads only, every agent, or none. */
+    agents: z.enum(['leads', 'all', 'off']),
+    /**
+     * @deprecated The mail switches of old clients: accepted, mapped onto
+     * `schedules`/`agents` by the config route, never stored.
+     */
     mail: z.boolean(),
     mailFrom: z.enum(['assistant', 'leads', 'all']),
     activity: z.boolean(),

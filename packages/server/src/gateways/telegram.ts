@@ -3,10 +3,10 @@ import {
   classifyCallback,
   classifyUpdate,
   isAudible,
-  mailReadCallbackData,
-  mailReadDoneCallbackData,
   missingGatewaySettings,
   nextGatewayAction,
+  notificationReadCallbackData,
+  notificationReadDoneCallbackData,
   providerQuota,
   questionCallbackData,
   questionDoneCallbackData,
@@ -73,24 +73,24 @@ const ALLOWED_UPDATES = ['message', 'callback_query'];
  * What goes *on* a button - the prefixes and how they read back - lives in
  * `@rookery/core`'s gateway policy, next to the guard that decides whether a
  * tap counts at all. What is left here is the drawing: labels, rows, and the
- * wording a spent button carries. Mail ids and question ids are opaque to
- * the phone either way; a tap is believed because the guard chain proved who
- * pressed it, never because of what the data says.
+ * wording a spent button carries. Notification ids and question ids are
+ * opaque to the phone either way; a tap is believed because the guard chain
+ * proved who pressed it, never because of what the data says.
  */
 
 /**
- * The button as it is drawn under a fresh mail push.
+ * The button as it is drawn under a fresh notification push.
  *
  * The label is an *invitation*, not a state, and the difference is the whole
  * point: the first version read "✓ Read" both before and after the tap, so
  * the button did change and nobody could see it. A button says what tapping
- * it will do; what it did belongs to `mailReadDone` below.
+ * it will do; what it did belongs to `notificationReadDone` below.
  *
  * Exported so `push.ts` can ask for it without knowing what goes on a
  * button: the wording stays in the one file that also draws the rest.
  */
-export function mailReadKeyboard(mailId: string): TelegramInlineKeyboard {
-  return [[{ text: 'Mark as read', callbackData: mailReadCallbackData(mailId) }]];
+export function notificationReadKeyboard(notificationId: string): TelegramInlineKeyboard {
+  return [[{ text: 'Mark as read', callbackData: notificationReadCallbackData(notificationId) }]];
 }
 
 /**
@@ -99,9 +99,9 @@ export function mailReadKeyboard(mailId: string): TelegramInlineKeyboard {
  * The clock is the server's own, because that is the room the user is in -
  * Telegram tells a bot nothing about the phone's time zone.
  */
-export function mailReadDone(at: number): TelegramInlineKeyboard {
+export function notificationReadDone(at: number): TelegramInlineKeyboard {
   const stamp = new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  return [[{ text: '✓ Read at ' + stamp, callbackData: mailReadDoneCallbackData() }]];
+  return [[{ text: '✓ Read at ' + stamp, callbackData: notificationReadDoneCallbackData() }]];
 }
 
 /** The assistant's question, as it arrives on the wire. */
@@ -134,7 +134,7 @@ export function questionKeyboard(question: QuestionPrompt): TelegramInlineKeyboa
 /**
  * What is left standing once a question is over.
  *
- * The same reasoning as the mail button: Telegram has no disabled state, so
+ * The same reasoning as the read button: Telegram has no disabled state, so
  * the spent keyboard is a keyboard too, and its one job is to say what
  * happened - including when the answer came from the web app or the terminal
  * rather than from here, which is the case this exists for.
@@ -303,7 +303,7 @@ export const COMMANDS: Array<{ command: string; description: string }> = [
   { command: 'stop', description: 'Cancel the turn that is running' },
   { command: 'status', description: 'Provider, usage limits, running work, last sleep' },
   { command: 'tasks', description: 'Open tasks on the board' },
-  { command: 'mail', description: 'Unread mail addressed to you' },
+  { command: 'inbox', description: 'Unread notifications: schedules, tasks, questions' },
   { command: 'agents', description: 'Who works in the company' },
   { command: 'schedules', description: 'What runs on a schedule, and when' },
   { command: 'id', description: 'Your numeric Telegram ID' },
@@ -531,6 +531,41 @@ function usernameOf(update: TelegramUpdate): string | undefined {
   const message = update.message as Record<string, unknown> | undefined;
   const from = message?.from as Record<string, unknown> | undefined;
   return typeof from?.username === 'string' ? from.username : undefined;
+}
+
+/**
+ * The task question a pushed message asked, if it asked one: a `question`
+ * notification that points at a card. Read from the store, so the registry
+ * only has to remember the notification's id.
+ */
+export function questionForOrigin(context: ServerContext, origin: MessageOrigin): { taskId: string; orgId: string } | undefined {
+  if ((origin.kind !== 'notification' && origin.kind !== 'mail') || !origin.ref) return undefined;
+  const notification = context.assistant.store.org.getNotification(origin.ref);
+  if (!notification || notification.kind !== 'question' || !notification.taskId) return undefined;
+  return { taskId: notification.taskId, orgId: notification.orgId };
+}
+
+/**
+ * Answer a waiting card as the user. Only a card that is still waiting is
+ * answered: a reply to a question somebody already answered in the web
+ * app must not start the task over.
+ */
+export async function answerTaskQuestion(
+  context: ServerContext,
+  asked: { taskId: string; orgId: string },
+  answer: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const task = context.assistant.store.org.getTask(asked.taskId);
+  if (!task) return { ok: false, reason: 'that task no longer exists.' };
+  if (task.status !== 'blocked') {
+    return { ok: false, reason: `the task is no longer waiting for an answer (it is ${task.status}).` };
+  }
+  try {
+    const result = await context.assistant.org.answerTask({ taskId: task.id, answer, orgId: asked.orgId });
+    return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+  } catch (error) {
+    return { ok: false, reason: errorText(error) };
+  }
 }
 
 export function createTelegramGateway(context: ServerContext): GatewayHandle {
@@ -1122,21 +1157,20 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     return listText(`Board: ${open.length} unfinished`, rows, 'Nothing open on the board.', open.length);
   }
 
-  function mailText(): string {
+  function inboxText(): string {
     const id = orgId();
     if (!id) return 'No company is configured yet.';
     // Read without marking read: this is a glance at the inbox, not the act
-    // of reading a mail, and the web inbox must not go quiet because of it.
-    const unread = context.assistant.store.org.unreadMailFor(id, { kind: 'user' });
-    const rows = unread.map((mail) => {
-      const sender =
-        mail.fromKind === 'assistant'
-          ? context.config.assistantName
-          : (mail.fromAgentId ? context.assistant.store.org.getAgent(mail.fromAgentId)?.name : undefined) ??
-            mail.fromKind;
-      return `• ${sender}: ${oneLine(mail.subject, 70)} (${relativeTime(mail.createdAt)})`;
-    });
-    return listText(`Inbox: ${unread.length} unread`, rows, 'No unread mail.', unread.length);
+    // of reading a notification, and the web inbox must not go quiet because
+    // of it.
+    const store = context.assistant.store.org;
+    const total = store.unreadNotificationCount(id);
+    const unread = store.listNotifications({ orgId: id, unread: true, limit: LIST_LIMIT });
+    const rows = unread.map(
+      (notification) =>
+        `• ${oneLine(notification.title, 70)} – ${notification.kind} (${relativeTime(notification.createdAt)})`,
+    );
+    return listText(`Inbox: ${total} unread`, rows, 'No unread notifications.', total);
   }
 
   function agentsText(): string {
@@ -1276,8 +1310,14 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         say(chatId, tasksText());
         return true;
 
+      case 'inbox':
+        say(chatId, inboxText());
+        return true;
+
+      // Mail was folded into notifications; the old command still works and
+      // says where it went.
       case 'mail':
-        say(chatId, mailText());
+        say(chatId, '/mail is now /inbox.\n\n' + inboxText());
         return true;
 
       case 'agents':
@@ -1481,8 +1521,8 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
    * is: the user's own words stand as they are, a transcript says that it is
    * a transcript, and a quoted notification is fenced off with a line saying
    * where it ends. None of it is trusted less for that - it is all the
-   * owner's own material - but a turn that cannot tell a mail apart from an
-   * instruction is a turn that will eventually follow the mail.
+   * owner's own material - but a turn that cannot tell a notification apart from an
+   * instruction is a turn that will eventually follow the notification.
    */
   function buildPrompt(job: Incoming, intake: Intake, quoted?: string): string {
     const parts: string[] = [];
@@ -1551,6 +1591,9 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     let session: Session | undefined;
     let origin: MessageOrigin | undefined;
     let stream: ReturnType<typeof startStream> | undefined;
+    // Set when the message turned out to be the answer to a task's question
+    // and was handed to the card instead of a turn.
+    let answeredTask = false;
     try {
       // Files first: downloading and listening is part of the turn, and the
       // typing bubble and the progress note above already cover the wait.
@@ -1560,6 +1603,34 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       // whatever that message was about; everything else is the running
       // Telegram conversation, exactly as before.
       origin = job.replyTo?.fromBot === true ? findOrigin(context, chatId, job.replyTo.messageId) : undefined;
+
+      // A reply to an agent's question is the answer, not a conversation:
+      // it goes onto the card and the task carries on, and no chat turn is
+      // started about it.
+      const asked = origin ? questionForOrigin(context, origin) : undefined;
+      if (asked) {
+        answeredTask = true;
+        const text = [job.text?.trim() ?? '', ...intake.transcripts].filter((part) => part.length > 0).join('\n\n');
+        if (!text) {
+          say(chatId, 'Write the answer as text (or say it in a voice message) to answer that question.', {
+            ...(job.messageId !== undefined ? { replyTo: job.messageId } : {}),
+          });
+          failed = true;
+        } else {
+          const result = await answerTaskQuestion(context, asked, text);
+          failed = !result.ok;
+          log.info('Telegram reply answered a task question', {
+            from: userId,
+            task: asked.taskId,
+            ok: result.ok,
+          });
+          say(chatId, result.ok ? 'Answered — the task continues.' : `Could not answer: ${result.reason}`, {
+            ...(job.messageId !== undefined ? { replyTo: job.messageId } : {}),
+          });
+        }
+        return;
+      }
+
       const thread = origin
         ? openThread(context, origin, () => resolveSession(chatId))
         : { session: resolveSession(chatId), fresh: false };
@@ -1646,6 +1717,11 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       clearInterval(typing);
       progress.clear();
       if (turns.get(userId) === turn) turns.delete(userId);
+    }
+
+    if (answeredTask) {
+      react(chatId, job.messageId, failed ? REACTION.failed : REACTION.done);
+      return;
     }
 
     // Whatever was streamed is written out one last time, cancelled turns
@@ -1763,10 +1839,11 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
    *
    * The Bot API has no read receipts - a bot never learns that its message
    * was looked at. So being read is not observed here, it is *declared*, by
-   * a deliberate tap, and only that tap marks the mail read in the store the
-   * web inbox reads from. Anything softer (the push having been delivered, a
-   * glance at `/mail`) would empty the unread list without anybody having
-   * read a word, which is the failure mode `/mail` already avoids on purpose.
+   * a deliberate tap, and only that tap marks the notification read in the
+   * store the web inbox reads from. Anything softer (the push having been
+   * delivered, a glance at `/inbox`) would empty the unread list without
+   * anybody having read a word, which is the failure mode `/inbox` already
+   * avoids on purpose.
    *
    * No turn is started and no model is called: this is a database write and
    * an acknowledgement, the same weight as the four reading commands.
@@ -1800,7 +1877,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     // already proved who pressed it.
     const action = readCallbackData(data);
 
-    if (action.kind === 'mail-read-done') {
+    if (action.kind === 'notification-read-done' || action.kind === 'mail-read-done') {
       await acknowledge('Already marked as read.');
       return;
     }
@@ -1815,32 +1892,43 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       return;
     }
 
-    if (action.kind !== 'mail-read') {
+    const store = context.assistant.store.org;
+
+    if (action.kind === 'mail-read') {
+      // A button under a mail pushed before mail was removed. The migration
+      // kept the mail's id for the notification it became, so the tap still
+      // lands where it should when that notification is there; otherwise
+      // there is nothing left to mark.
+      const migrated = action.mailId ? store.getNotification(action.mailId) : null;
+      if (migrated && !migrated.readAt) {
+        store.markNotificationsRead([migrated.id]);
+        context.assistant.emit('changed', { kind: 'notifications', id: 'all' });
+      }
+      await acknowledge('Already handled.');
+      return;
+    }
+
+    if (action.kind !== 'notification-read') {
       // A button from an older version of this code, or one we no longer
       // draw. Saying so beats leaving the phone to guess.
       await acknowledge('This button no longer does anything.');
       return;
     }
 
-    const mailId = action.mailId;
-    const store = context.assistant.store.org;
-    const mail = mailId ? store.getMail(mailId) : null;
-    if (!mail) {
-      await acknowledge('That mail is gone.');
+    const notification = action.notificationId ? store.getNotification(action.notificationId) : null;
+    if (!notification) {
+      await acknowledge('That notification is gone.');
       return;
     }
 
-    // The user's own recipient rows on this mail, and nobody else's -
-    // `markMailReadFor` picks them by kind, so a mail an agent was Cc'd on
-    // stays unread for that agent.
-    store.markMailReadFor([mail], { kind: 'user' });
+    store.markNotificationsRead([notification.id]);
 
-    // The web inbox follows the socket, so it has to hear about this. Not on
-    // the `mail` event, though: push listens to that one and would send the
-    // very mail that was just marked read straight back to the phone.
-    context.assistant.emit('changed', { kind: 'mail', id: mail.id });
+    // The web inbox follows the socket, so it has to hear about this - on
+    // `changed`, never on `notification`: push listens to that one and would
+    // send the very notification that was just marked read straight back.
+    context.assistant.emit('changed', { kind: 'notifications', id: 'all' });
 
-    log.info('Mail marked read from Telegram', { from: verdict.userId, mail: mail.id });
+    log.info('Notification marked read from Telegram', { from: verdict.userId, notification: notification.id });
 
     await acknowledge('✓ Marked as read.');
 
@@ -1849,7 +1937,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     // never the read state that was already written.
     if (client && chatId !== undefined && messageId !== undefined) {
       try {
-        await client.editMessageReplyMarkup(chatId, messageId, mailReadDone(Date.now()));
+        await client.editMessageReplyMarkup(chatId, messageId, notificationReadDone(Date.now()));
       } catch (error) {
         log.debug('Telegram read button could not be redrawn', { error: errorText(error) });
       }
