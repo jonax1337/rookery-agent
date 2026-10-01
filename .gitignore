@@ -23,3 +23,6 @@ logs/
 
 # Server stdout when started detached
 *.out.log
+
+# Local Hyperframes video scratch projects (compositions, renders, assets)
+videos/
