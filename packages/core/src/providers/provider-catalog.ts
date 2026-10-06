@@ -28,7 +28,7 @@ export interface ProviderCatalogEntry {
    * model discovery with Anthropic's own names whatever endpoint it is pointed
    * at - asking it about GLM would list `sonnet` and `opus`.
    */
-  models?: ProviderModel[];
+  models?: (ProviderModel & { contextWindow?: number })[];
   /**
    * Borrow another provider's catalogue instead of declaring one. The Codex
    * proxy fronts the same backend as the `codex` CLI, so the models that CLI
@@ -48,8 +48,9 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     needs: 'api-key',
     hint: 'Create a key at z.ai/manage-apikey/apikey-list, on a GLM Coding Plan.',
     models: [
-      { id: 'glm-5.3', name: 'GLM-5.3', description: 'Flagship', isDefault: true },
-      { id: 'glm-5.3-flash', name: 'GLM-5.3 Flash', description: 'Faster, smaller' },
+      // https://docs.z.ai/guides/llm/glm-5.3 and /guides/vlm/glm-5.3-flash
+      { id: 'glm-5.3', name: 'GLM-5.3', description: 'Flagship', isDefault: true, contextWindow: 1000000 },
+      { id: 'glm-5.3-flash', name: 'GLM-5.3 Flash', description: 'Faster, smaller', contextWindow: 1000000 },
     ],
   },
 ];
@@ -80,6 +81,7 @@ interface CachedModel {
   /** Lower comes first; the account's own ordering. */
   priority?: number;
   context_window?: number;
+  max_context_window?: number;
 }
 
 /** `gpt-5.6-sol` -> `GPT-5.6-sol`. Shared with the terminal front-ends. */
@@ -115,15 +117,23 @@ export function codexModels(): ProviderModel[] {
   }
 }
 
-/** The context window the backend reports for a model, for the harness to respect. */
-export function codexContextWindow(slug: string): number | undefined {
+/** Resolve at launch time; unknown limits remain under the harness's native control. */
+export function providerContextWindow(profile: ProviderProfile, model = profile.defaultModel): number | undefined {
+  if (!model) return undefined;
+  if (profile.via === 'codex-bridge') return codexContextWindow(model);
+  const entry = PROVIDER_CATALOG.find((provider) => provider.baseUrl === profile.baseUrl);
+  return entry?.models?.find((candidate) => candidate.id === model)?.contextWindow;
+}
+
+function codexContextWindow(slug: string): number | undefined {
   try {
     const home = process.env.CODEX_HOME ?? join(homedir(), '.codex');
     const raw = JSON.parse(readFileSync(join(home, 'models_cache.json'), 'utf8')) as {
       models?: Partial<CachedModel>[];
     };
     const entry = raw.models?.find((model) => model.slug === slug);
-    return typeof entry?.context_window === 'number' ? entry.context_window : undefined;
+    const window = entry?.max_context_window ?? entry?.context_window;
+    return typeof window === 'number' ? window : undefined;
   } catch {
     return undefined;
   }

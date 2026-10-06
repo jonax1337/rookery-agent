@@ -20,7 +20,7 @@ import { discoverModels } from './catalogue.js';
 import { parseClaudeWindows, rememberQuota } from './quota.js';
 import { sharedRouterManager } from './router.js';
 import { sharedCodexBridge } from './codex-bridge.js';
-import { codexContextWindow } from './provider-catalog.js';
+import { providerContextWindow } from './provider-catalog.js';
 import { TOOL_INPUT_LIMIT, canonicalJson, hashCanonicalJson } from '../memory/dream/trajectory.js';
 import {
   contextFileFor,
@@ -113,16 +113,12 @@ export class ClaudeCodeProvider implements Provider {
    * login. `via: 'router'` starts (or confirms) the shared `ccr` process
    * first and points at that instead of the profile's own backend base URL.
    */
-  async #resolveEnv(model?: string): Promise<NodeJS.ProcessEnv> {
+  async #resolveEnv(): Promise<NodeJS.ProcessEnv> {
     if (this.#profile.via === 'codex-bridge') {
       const { baseUrl, token } = await sharedCodexBridge.start();
-      // The harness does not recognise ChatGPT model slugs and would otherwise
-      // assume 200k; the backend's own figure keeps compaction honest.
-      const window = model ? codexContextWindow(model) : undefined;
       return {
         ANTHROPIC_BASE_URL: baseUrl,
         ANTHROPIC_AUTH_TOKEN: token,
-        ...(window ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(window) } : {}),
       };
     }
     if (this.#profile.via === 'router') {
@@ -155,7 +151,7 @@ export class ClaudeCodeProvider implements Provider {
   async models() {
     const binary = this.#resolve();
     if (!binary) throw new Error('The claude CLI is not installed.');
-    return discoverModels('claude', binary, await this.#resolveEnv(this.#profile.defaultModel));
+    return discoverModels('claude', binary, await this.#resolveEnv());
   }
 
   async status(): Promise<ProviderStatus> {
@@ -190,7 +186,7 @@ export class ClaudeCodeProvider implements Provider {
     // model picker.
     let env: NodeJS.ProcessEnv;
     try {
-      env = await this.#resolveEnv(this.#profile.defaultModel);
+      env = await this.#resolveEnv();
     } catch (error) {
       return {
         id: this.id,
@@ -337,13 +333,15 @@ export class ClaudeCodeProvider implements Provider {
       args.push('--plugin-dir', dir);
     }
 
+    const contextWindow = providerContextWindow(this.#profile, model);
     const env: NodeJS.ProcessEnv = {
       CLAUDE_CODE_ENTRYPOINT: 'rookery',
       // An assignment can run for many minutes; the default tool timeout
       // would cut the assistant's `assign` call off long before that.
       MCP_TOOL_TIMEOUT: String(6 * 60 * 60 * 1000),
       MCP_TIMEOUT: String(60 * 1000),
-      ...(await this.#resolveEnv(model)),
+      ...(await this.#resolveEnv()),
+      ...(contextWindow ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(contextWindow) } : {}),
     };
     if (options.gateway) {
       // One endpoint for every model. No credential of our own: Claude Code

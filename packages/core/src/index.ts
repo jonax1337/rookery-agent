@@ -315,7 +315,7 @@ export {
   PROVIDER_CATALOG,
   CODEX_PROFILE,
   codexModels,
-  codexContextWindow,
+  providerContextWindow,
   prettifyModelId,
   providerCatalogEntry,
   profileWithCatalog,
