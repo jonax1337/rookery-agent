@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { databasePath, tuiSessions, type Assistant, type Logger, type RookeryConfig } from '@rookery/core';
 import type { TurnHub } from './turns.js';
@@ -97,12 +97,15 @@ export function detectInstall(root: string, platform: NodeJS.Platform = process.
   if (existsSync(join(root, 'packages', 'server', 'src'))) {
     return { kind: 'source', root, reason: 'Rookery runs from a source checkout. Update it with git pull, npm install and npm run build.' };
   }
-  const modules = dirname(root);
-  if (basename(root) !== PACKAGE_NAME || basename(modules) !== 'node_modules') {
+  // The path is parsed the way its platform writes it, whatever machine this
+  // runs on: a Windows install path means nothing to POSIX `dirname`.
+  const flavour = platform === 'win32' ? win32 : posix;
+  const modules = flavour.dirname(root);
+  if (flavour.basename(root) !== PACKAGE_NAME || flavour.basename(modules) !== 'node_modules') {
     return { kind: 'unknown', root, reason: 'Rookery is not installed as a global npm package here, so it cannot replace itself.' };
   }
-  const parent = dirname(modules);
-  const prefix = platform !== 'win32' && basename(parent) === 'lib' ? dirname(parent) : parent;
+  const parent = flavour.dirname(modules);
+  const prefix = platform !== 'win32' && flavour.basename(parent) === 'lib' ? flavour.dirname(parent) : parent;
   return { kind: 'npm', root, prefix };
 }
 
