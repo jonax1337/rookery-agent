@@ -10,6 +10,7 @@ import type {
   ToolServerAudience,
   Agent,
   AgentDetail,
+  AgentEvent,
   AgentMessage,
   AgentReview,
   Assignment,
@@ -88,6 +89,11 @@ export class ApiError extends Error {
   }
 }
 
+/** Whatever was thrown, as an `ApiError` - status 0 when it was not one. */
+export function toApiError(caught: unknown): ApiError {
+  return caught instanceof ApiError ? caught : new ApiError(String(caught), 0);
+}
+
 export type VoiceKeyStatus = Record<'openai' | 'elevenlabs', {
   configured: boolean;
   source: 'saved' | 'environment' | 'none';
@@ -100,39 +106,61 @@ export function setApiBase(url: string): void {
   baseUrl = url.replace(/\/$/, '');
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** The server's own `message`/`error` field when the body is JSON, the raw text otherwise. */
+async function failure(response: Response): Promise<ApiError> {
+  const body = await response.text().catch(() => '');
+  let message = body || response.statusText;
+  try {
+    const parsed = JSON.parse(body) as { message?: string; error?: string };
+    message = parsed.message ?? parsed.error ?? message;
+  } catch {
+    // plain-text error body is fine
+  }
+  return new ApiError(message, response.status);
+}
+
+/** Every call's fetch: resolves with an `ok` response, rejects with an `ApiError` otherwise. */
+async function send(path: string, init: RequestInit = {}): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(baseUrl + path, {
       ...init,
       headers: {
-        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
-        ...init?.headers,
+        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init.headers,
       },
     });
   } catch (error) {
+    if ((error as Error).name === 'AbortError') throw error;
     // fetch only rejects for network-level failures, which for us means the
     // Rookery server is not running.
     throw new ApiError((error as Error).message || 'Backend unreachable', 0, true);
   }
+  if (!response.ok) throw await failure(response);
+  return response;
+}
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    let message = body || response.statusText;
-    try {
-      const parsed = JSON.parse(body) as { message?: string; error?: string };
-      message = parsed.message ?? parsed.error ?? message;
-    } catch {
-      // plain-text error body is fine
-    }
-    throw new ApiError(message, response.status);
-  }
-
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await send(path, init);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
+
+/**
+ * `path` plus a query string. Falsy values (`undefined`, `false`, `0`, `''`)
+ * leave their key out, `true` becomes `1`, anything else is stringified - so
+ * a caller whose `0` is meaningful passes `String(value)`.
+ */
+function withQuery(path: string, params: Record<string, string | number | boolean | undefined>): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) query.set(key, value === true ? '1' : String(value));
+  }
+  const search = query.toString();
+  return search ? path + '?' + search : path;
+}
 
 /** `null` clears a nullable column server-side; `undefined` leaves it alone. */
 export type Nullable<T> = T | null;
@@ -288,6 +316,12 @@ export interface CronJobPatch {
   eventCooldownMs?: number;
 }
 
+/** What `GET /api/sessions/:id/running` says: the live turn, if any, and its journal. */
+export interface RunningTurn {
+  turn: { id: string; status: string } | null;
+  events: { seq: number; event: AgentEvent }[];
+}
+
 export const api = {
   health: () =>
     request<{ ok: boolean; version: string; providers: ProviderStatus[] }>('/api/health'),
@@ -309,6 +343,9 @@ export const api = {
 
   /* ------------------------------- statistics ------------------------------ */
 
+  /** Every Claude Code terminal open right now - conversations and runs. */
+  terminals: () => request<TerminalView[]>('/api/terminals'),
+
   /**
    * The only aggregate call in the API: real `COUNT(*)` totals plus a daily
    * series, both counted in the database instead of estimated from a capped
@@ -318,16 +355,14 @@ export const api = {
    * The series leaves empty days out - `fillDayGaps` from `lib/stats.ts` closes
    * them for the window a chart actually means to draw.
    */
-  /** Every Claude Code terminal open right now - conversations and runs. */
-  terminals: () => request<TerminalView[]>('/api/terminals'),
-
   stats: (options: { days?: number; since?: number | string; owner?: string } = {}) => {
-    const params = new URLSearchParams();
-    if (options.since !== undefined) params.set('since', String(options.since));
-    else if (options.days !== undefined) params.set('days', String(options.days));
-    if (options.owner) params.set('owner', options.owner);
-    const query = params.toString();
-    return request<StatsSnapshot>('/api/stats' + (query ? '?' + query : ''));
+    const window =
+      options.since !== undefined
+        ? { since: String(options.since) }
+        : options.days !== undefined
+          ? { days: String(options.days) }
+          : {};
+    return request<StatsSnapshot>(withQuery('/api/stats', { ...window, owner: options.owner }));
   },
 
   /* ---------------------------------- voice -------------------------------- */
@@ -335,7 +370,7 @@ export const api = {
   ttsVoices: () => request<TtsCatalogue>('/api/tts/voices'),
   voiceKeys: () => request<VoiceKeyStatus>('/api/tts/keys'),
   saveVoiceKeys: (patch: Partial<Record<'openai' | 'elevenlabs', string | null>>) =>
-    request<VoiceKeyStatus>('/api/tts/keys', { method: 'PATCH', body: JSON.stringify(patch) }),
+    request<VoiceKeyStatus>('/api/tts/keys', { method: 'PATCH', ...json(patch) }),
 
   /* ---------------------------------- tools -------------------------------- */
 
@@ -456,11 +491,7 @@ export const api = {
    */
   sessions: (limit = 50, agent?: string, kind?: SessionKind, includeArchived = false) =>
     request<Session[]>(
-      '/api/sessions?limit=' +
-        limit +
-        (agent ? '&agent=' + encodeURIComponent(agent) : '') +
-        (kind ? '&kind=' + kind : '') +
-        (includeArchived ? '&includeArchived=1' : ''),
+      withQuery('/api/sessions', { limit: String(limit), agent, kind, includeArchived }),
     ),
   createSession: (
     input: {
@@ -483,6 +514,9 @@ export const api = {
     request<{ ok: true }>('/api/sessions/' + id, { method: 'DELETE' }),
   resetSession: (id: string) =>
     request<{ ok: true }>('/api/sessions/' + id + '/reset', { method: 'POST' }),
+  /** The turn running in a conversation, with the journal events it has produced so far. */
+  runningTurn: (id: string) =>
+    request<RunningTurn>('/api/sessions/' + encodeURIComponent(id) + '/running'),
 
   /* -------------------------------- memories ------------------------------- */
 
@@ -492,19 +526,10 @@ export const api = {
       kind?: MemoryKind;
       limit?: number;
       owner?: string;
-      /** Include what was forgotten - the memory list's "Vergessene zeigen". */
+      /** Include what was forgotten - the memory list's "Show forgotten". */
       includeForgotten?: boolean;
     } = {},
-  ) => {
-    const params = new URLSearchParams();
-    if (options.q) params.set('q', options.q);
-    if (options.kind) params.set('kind', options.kind);
-    if (options.limit) params.set('limit', String(options.limit));
-    if (options.owner) params.set('owner', options.owner);
-    if (options.includeForgotten) params.set('includeForgotten', '1');
-    const query = params.toString();
-    return request<ScoredMemory[] | MemoryRecord[]>('/api/memories' + (query ? '?' + query : ''));
-  },
+  ) => request<ScoredMemory[] | MemoryRecord[]>(withQuery('/api/memories', options)),
   addMemory: (input: {
     content: string;
     kind?: MemoryKind;
@@ -512,9 +537,9 @@ export const api = {
     importance?: number;
   }) => request<MemoryRecord>('/api/memories', { method: 'POST', ...json(input) }),
   forgetMemory: (id: string, hard = false) =>
-    request<{ ok: true }>('/api/memories/' + id + (hard ? '?hard=1' : ''), { method: 'DELETE' }),
+    request<{ ok: true }>(withQuery('/api/memories/' + id, { hard }), { method: 'DELETE' }),
   memoryStats: (owner?: string) =>
-    request<MemoryStats>('/api/memories/stats' + (owner ? '?owner=' + encodeURIComponent(owner) : '')),
+    request<MemoryStats>(withQuery('/api/memories/stats', { owner })),
 
   /** Pin, re-word, re-weight, or wake a sleeping memory. */
   patchMemory: (
@@ -529,6 +554,12 @@ export const api = {
       forgotten?: boolean;
     },
   ) => request<MemoryRecord>('/api/memories/' + id, { method: 'PATCH', ...json(patch) }),
+  /** One verdict about one recalled memory in one turn (see `lib/memory-recall.ts`). */
+  memoryFeedback: (id: string, turnId: string, verdict: 'point' | 'ballast') =>
+    request<unknown>('/api/memories/' + encodeURIComponent(id) + '/feedback', {
+      method: 'POST',
+      ...json({ turnId, verdict }),
+    }),
 
   /* ---------------------------- the memory graph --------------------------- */
 
@@ -541,47 +572,30 @@ export const api = {
       includeDormant?: boolean;
       limit?: number;
     } = {},
-  ) => {
-    const query = new URLSearchParams();
-    if (options.owner) query.set('owner', options.owner);
-    if (options.entity) query.set('entity', options.entity);
-    if (options.kind) query.set('kind', options.kind);
-    if (options.since) query.set('since', String(options.since));
-    if (options.includeDormant) query.set('includeDormant', '1');
-    if (options.limit) query.set('limit', String(options.limit));
-    const search = query.toString();
-    return request<MemoryGraph>('/api/memories/graph' + (search ? '?' + search : ''));
-  },
-  entities: (options: { owner?: string; limit?: number; minMentions?: number } = {}) => {
-    const query = new URLSearchParams();
-    if (options.owner) query.set('owner', options.owner);
-    if (options.limit) query.set('limit', String(options.limit));
-    if (options.minMentions !== undefined) query.set('minMentions', String(options.minMentions));
-    const search = query.toString();
-    return request<MemoryEntity[]>('/api/entities' + (search ? '?' + search : ''));
-  },
+  ) => request<MemoryGraph>(withQuery('/api/memories/graph', options)),
+  entities: (options: { owner?: string; limit?: number; minMentions?: number } = {}) =>
+    request<MemoryEntity[]>(
+      withQuery('/api/entities', {
+        owner: options.owner,
+        limit: options.limit,
+        minMentions: options.minMentions === undefined ? undefined : String(options.minMentions),
+      }),
+    ),
   memoryEdges: (id: string) => request<MemoryNeighbourhood>('/api/memories/' + id + '/edges'),
 
   /* --------------------------------- sleep -------------------------------- */
 
   sleepStatus: (owner?: string) =>
-    request<SleepStatusView>('/api/sleep/status' + (owner ? '?owner=' + encodeURIComponent(owner) : '')),
-  sleepRuns: (owner?: string, limit = 30) => {
-    const query = new URLSearchParams({ limit: String(limit) });
-    if (owner) query.set('owner', owner);
-    return request<SleepRun[]>('/api/sleep/runs?' + query.toString());
-  },
+    request<SleepStatusView>(withQuery('/api/sleep/status', { owner })),
+  sleepRuns: (owner?: string, limit = 30) =>
+    request<SleepRun[]>(withQuery('/api/sleep/runs', { limit: String(limit), owner })),
   /** Start a night. Resolves once it is running; the socket reports the rest. */
   startSleep: (owner?: string) =>
-    request<{ started: boolean; owner: string }>(
-      '/api/sleep/run' + (owner ? '?owner=' + encodeURIComponent(owner) : ''),
-      { method: 'POST' },
-    ),
+    request<{ started: boolean; owner: string }>(withQuery('/api/sleep/run', { owner }), {
+      method: 'POST',
+    }),
   cancelSleep: (owner?: string) =>
-    request<{ cancelled: boolean }>(
-      '/api/sleep/cancel' + (owner ? '?owner=' + encodeURIComponent(owner) : ''),
-      { method: 'POST' },
-    ),
+    request<{ cancelled: boolean }>(withQuery('/api/sleep/cancel', { owner }), { method: 'POST' }),
   /** Reshape the nightly run's own schedule: a cron expression, on/off, or both. */
   updateSleepSchedule: (patch: { schedule?: string; enabled?: boolean }) =>
     request<{ schedule: SleepStatusView['schedule']; config: SleepStatusView['config'] }>('/api/sleep/schedule', {
@@ -608,38 +622,30 @@ export const api = {
 
   /** What is in force per slot right now, and whether the slot is frozen. */
   dreamPolicies: (owner?: string) =>
-    request<DreamSlotView[]>(
-      '/api/dream/policies' + (owner ? '?owner=' + encodeURIComponent(owner) : ''),
-    ),
+    request<DreamSlotView[]>(withQuery('/api/dream/policies', { owner })),
   /** One slot's versions, newest first - what the version curve draws. */
-  dreamPolicyHistory: (slot: DreamSlot, options: { owner?: string; limit?: number } = {}) => {
-    const query = new URLSearchParams();
-    if (options.owner) query.set('owner', options.owner);
-    if (options.limit) query.set('limit', String(options.limit));
-    const search = query.toString();
-    return request<PolicyVersion[]>(
-      '/api/dream/policies/' + encodeURIComponent(slot) + '/history' + (search ? '?' + search : ''),
-    );
-  },
+  dreamPolicyHistory: (slot: DreamSlot, options: { owner?: string; limit?: number } = {}) =>
+    request<PolicyVersion[]>(
+      withQuery('/api/dream/policies/' + encodeURIComponent(slot) + '/history', options),
+    ),
   /** The evaluations behind a version's numbers - the diff sheet's receipt. */
   dreamEvals: (
     options: { owner?: string; slot?: DreamSlot; policyId?: string; sleepRunId?: string; promoted?: boolean; limit?: number } = {},
-  ) => {
-    const query = new URLSearchParams();
-    if (options.owner) query.set('owner', options.owner);
-    if (options.slot) query.set('slot', options.slot);
-    if (options.policyId) query.set('policyId', options.policyId);
-    if (options.sleepRunId) query.set('sleepRunId', options.sleepRunId);
-    if (options.promoted !== undefined) query.set('promoted', options.promoted ? '1' : '0');
-    if (options.limit) query.set('limit', String(options.limit));
-    const search = query.toString();
-    return request<DreamEval[]>('/api/dream/evals' + (search ? '?' + search : ''));
-  },
+  ) =>
+    request<DreamEval[]>(
+      withQuery('/api/dream/evals', {
+        owner: options.owner,
+        slot: options.slot,
+        policyId: options.policyId,
+        sleepRunId: options.sleepRunId,
+        promoted: options.promoted === undefined ? undefined : options.promoted ? '1' : '0',
+        limit: options.limit,
+      }),
+    ),
   /** Take one promotion back by hand, over `prevActiveId` (concept 10.4). */
   revertPolicy: (id: string, owner?: string) =>
     request<PolicyRevertResult>(
-      '/api/dream/policies/' + encodeURIComponent(id) + '/revert' +
-        (owner ? '?owner=' + encodeURIComponent(owner) : ''),
+      withQuery('/api/dream/policies/' + encodeURIComponent(id) + '/revert', { owner }),
       { method: 'POST' },
     ),
 
@@ -677,12 +683,8 @@ export const api = {
     request<Agent>('/api/org/agents/' + id, { method: 'PATCH', ...json(patch) }),
   deleteAgent: (id: string) =>
     request<{ ok: true }>('/api/org/agents/' + id, { method: 'DELETE' }),
-  agentReviews: (id: string, options: { limit?: number } = {}) => {
-    const params = new URLSearchParams();
-    if (options.limit) params.set('limit', String(options.limit));
-    const query = params.toString();
-    return request<AgentReview[]>('/api/org/agents/' + id + '/reviews' + (query ? '?' + query : ''));
-  },
+  agentReviews: (id: string, options: { limit?: number } = {}) =>
+    request<AgentReview[]>(withQuery('/api/org/agents/' + id + '/reviews', options)),
   /** Stage 2: the user accepting a drafted instruction rewrite the escalation did not apply. */
   applyReconfig: (id: string, actionId: string) =>
     request<Agent>('/api/org/agents/' + id + '/reconfig/' + actionId, { method: 'POST' }),
@@ -695,14 +697,14 @@ export const api = {
 
   assignments: (
     options: { limit?: number; status?: AssignmentStatus[]; agentId?: string } = {},
-  ) => {
-    const params = new URLSearchParams();
-    if (options.limit) params.set('limit', String(options.limit));
-    if (options.status?.length) params.set('status', options.status.join(','));
-    if (options.agentId) params.set('agentId', options.agentId);
-    const query = params.toString();
-    return request<Assignment[]>('/api/org/assignments' + (query ? '?' + query : ''));
-  },
+  ) =>
+    request<Assignment[]>(
+      withQuery('/api/org/assignments', {
+        limit: options.limit,
+        status: options.status?.join(','),
+        agentId: options.agentId,
+      }),
+    ),
   assignment: (id: string) => request<AssignmentDetail>('/api/org/assignments/' + id),
   /**
    * The live log of a running assignment, buffered on the server only while
@@ -720,14 +722,14 @@ export const api = {
   /* ---------------------------------- tasks -------------------------------- */
 
   /** Top-level tasks by default; `all` returns every task incl. subtasks. */
-  tasks: (options: { status?: TaskStatus[]; all?: boolean; limit?: number } = {}) => {
-    const params = new URLSearchParams();
-    if (options.all) params.set('all', '1');
-    if (options.status?.length) params.set('status', options.status.join(','));
-    if (options.limit) params.set('limit', String(options.limit));
-    const query = params.toString();
-    return request<Task[]>('/api/org/tasks' + (query ? '?' + query : ''));
-  },
+  tasks: (options: { status?: TaskStatus[]; all?: boolean; limit?: number } = {}) =>
+    request<Task[]>(
+      withQuery('/api/org/tasks', {
+        all: options.all,
+        status: options.status?.join(','),
+        limit: options.limit,
+      }),
+    ),
   createTask: (input: TaskInput) =>
     request<Task>('/api/org/tasks', { method: 'POST', ...json(input) }),
   task: (id: string) => request<TaskDetail>('/api/org/tasks/' + id),
@@ -762,7 +764,7 @@ export const api = {
   disableCronWebhook: (id: string) =>
     request<{ ok: true }>('/api/cron/' + id + '/webhook', { method: 'DELETE' }),
 
-  messages: (limit = 100) => request<AgentMessage[]>('/api/org/messages?limit=' + limit),
+  messages: (limit = 100) => request<AgentMessage[]>(withQuery('/api/org/messages', { limit: String(limit) })),
   postMessage: (input: { toAgentId?: string; content: string }) =>
     request<AgentMessage>('/api/org/messages', { method: 'POST', ...json(input) }),
   /** Marks a batch of inbox rows read; the inbox page calls this once per load. */
@@ -772,15 +774,8 @@ export const api = {
   /* ------------------------------ notifications ------------------------------ */
 
   /** Newest first. Default: the live shelf (not archived), 100 rows. */
-  notifications: (options: { unread?: boolean; kind?: NotificationKind; archived?: boolean; limit?: number } = {}) => {
-    const params = new URLSearchParams();
-    if (options.unread) params.set('unread', '1');
-    if (options.kind) params.set('kind', options.kind);
-    if (options.archived) params.set('archived', '1');
-    if (options.limit) params.set('limit', String(options.limit));
-    const query = params.toString();
-    return request<Notification[]>('/api/notifications' + (query ? '?' + query : ''));
-  },
+  notifications: (options: { unread?: boolean; kind?: NotificationKind; archived?: boolean; limit?: number } = {}) =>
+    request<Notification[]>(withQuery('/api/notifications', options)),
   unreadNotificationCount: () => request<{ count: number }>('/api/notifications/unread-count'),
   /** Marks the given notifications (or all of them) read; `read: false` marks them unread. */
   markNotificationsRead: (input: { ids?: string[]; all?: boolean; read?: boolean }) =>
@@ -790,6 +785,17 @@ export const api = {
   /** Answers a blocked task's question as the user; the task runs on. */
   answerTask: (id: string, answer: string) =>
     request<{ ok: true; task: Task }>('/api/org/tasks/' + id + '/answer', { method: 'POST', ...json({ answer }) }),
+
+  /* -------------------------------- questions ------------------------------- */
+
+  /** Questions a turn is still waiting on - a bare array or `{ questions }`, whichever the route sends. */
+  openQuestions: () => request<unknown>('/api/questions'),
+  /** The REST door for an answer; the socket is the short way, this one works without it. */
+  answerQuestion: (id: string, reply: { selected: number[]; text?: string }) =>
+    request<unknown>('/api/questions/' + encodeURIComponent(id) + '/answer', {
+      method: 'POST',
+      ...json(reply),
+    }),
 };
 
 /**
@@ -797,28 +803,7 @@ export const api = {
  * MP3 for every engine, ready for `AudioContext.decodeAudioData`.
  */
 export async function fetchSpeech(text: string, signal?: AbortSignal): Promise<ArrayBuffer> {
-  let response: Response;
-  try {
-    response = await fetch(baseUrl + '/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text }),
-      signal,
-    });
-  } catch (error) {
-    if ((error as Error).name === 'AbortError') throw error;
-    throw new ApiError((error as Error).message || 'Backend unreachable', 0, true);
-  }
-  if (!response.ok) {
-    const body = await response.text().catch(() => '');
-    let message = body || response.statusText;
-    try {
-      message = (JSON.parse(body) as { message?: string }).message ?? message;
-    } catch {
-      // plain-text error body is fine
-    }
-    throw new ApiError(message, response.status);
-  }
+  const response = await send('/api/tts', { method: 'POST', ...json({ text }), signal });
   return response.arrayBuffer();
 }
 

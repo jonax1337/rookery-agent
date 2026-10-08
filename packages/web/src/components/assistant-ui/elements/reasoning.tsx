@@ -18,8 +18,10 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { DISCLOSURE_ANIMATION_MS } from "./surfaces";
 
-export const ANIMATION_DURATION = 200;
+/** How close to the bottom, in px, still counts as pinned to the newest tokens. */
+const PIN_TOLERANCE_PX = 1;
 
 const ReasoningPreviewContext = createContext(false);
 
@@ -112,7 +114,7 @@ function ReasoningRoot({
       )}
       style={
         {
-          "--animation-duration": `${ANIMATION_DURATION}ms`,
+          "--animation-duration": `${DISCLOSURE_ANIMATION_MS}ms`,
         } as React.CSSProperties
       }
       {...props}
@@ -124,35 +126,30 @@ function ReasoningRoot({
   );
 }
 
+const FADE_SIDE_CLASSES = {
+  top: [
+    "top-0",
+    "bg-[linear-gradient(to_bottom,var(--color-background),transparent)]",
+    "group-data-[variant=muted]/reasoning-root:bg-[linear-gradient(to_bottom,color-mix(in_oklab,var(--color-muted)_50%,var(--color-background)),transparent)]",
+  ],
+  bottom: [
+    "bottom-0",
+    "bg-[linear-gradient(to_top,var(--color-background),transparent)]",
+    "group-data-[variant=muted]/reasoning-root:bg-[linear-gradient(to_top,color-mix(in_oklab,var(--color-muted)_50%,var(--color-background)),transparent)]",
+  ],
+} as const;
+
 function ReasoningFade({
   side = "bottom",
   className,
   ...props
 }: React.ComponentProps<"div"> & { side?: "top" | "bottom" }) {
-  if (side === "top") {
-    return (
-      <div
-        data-slot="reasoning-fade"
-        className={cn(
-          "aui-reasoning-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-8",
-          "bg-[linear-gradient(to_bottom,var(--color-background),transparent)]",
-          "group-data-[variant=muted]/reasoning-root:bg-[linear-gradient(to_bottom,color-mix(in_oklab,var(--color-muted)_50%,var(--color-background)),transparent)]",
-          "fade-in-0 animate-in",
-          "animation-duration-(--animation-duration)",
-          className,
-        )}
-        {...props}
-      />
-    );
-  }
-
   return (
     <div
       data-slot="reasoning-fade"
       className={cn(
-        "aui-reasoning-fade pointer-events-none absolute inset-x-0 bottom-0 z-10 h-8",
-        "bg-[linear-gradient(to_top,var(--color-background),transparent)]",
-        "group-data-[variant=muted]/reasoning-root:bg-[linear-gradient(to_top,color-mix(in_oklab,var(--color-muted)_50%,var(--color-background)),transparent)]",
+        "aui-reasoning-fade pointer-events-none absolute inset-x-0 z-10 h-8",
+        FADE_SIDE_CLASSES[side],
         "fade-in-0 animate-in",
         "animation-duration-(--animation-duration)",
         className,
@@ -259,7 +256,7 @@ function ReasoningText({
     const isAtBottom = () =>
       Math.abs(
         scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight,
-      ) <= 1 || scrollEl.scrollHeight <= scrollEl.clientHeight;
+      ) <= PIN_TOLERANCE_PX || scrollEl.scrollHeight <= scrollEl.clientHeight;
 
     const pin = () => {
       if (!pinned) return;

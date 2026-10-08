@@ -10,6 +10,7 @@ import type {
 import type { Store } from '../store.js';
 import type { AdmissionResult } from './admission.js';
 import type { AgreementReport, DreamEvalResult } from './evaluate.js';
+import { clampNumber } from './util.js';
 
 /**
  * The promotion gate (dream stage 2, AP9; concept 10.2, 10.3, 10.4).
@@ -140,12 +141,6 @@ export interface PromotionDecision {
 
 function isNumber(value: unknown): boolean {
   return typeof value === 'number' && Number.isFinite(value);
-}
-
-/** Clamp to a range; dream keys are clamped where they are read (S23/E21). */
-function clampNumber(value: number, lo: number, hi: number): number {
-  const safe = Number.isFinite(value) ? value : lo;
-  return Math.min(hi, Math.max(lo, safe));
 }
 
 /**
@@ -431,6 +426,16 @@ export interface PromotionRecord {
   promoted: number;
 }
 
+/** The audit pair a promotion records: the explicit audit run wins over the one riding on the holdout row. */
+function auditFigures(
+  holdout: DreamEvalResult,
+  audit: DreamEvalResult | null | undefined,
+): Pick<DreamEvalResult, 'auditDelta' | 'auditCiLow'> {
+  return audit
+    ? { auditDelta: audit.delta, auditCiLow: audit.ciLow }
+    : { auditDelta: holdout.auditDelta, auditCiLow: holdout.auditCiLow };
+}
+
 function signed(value: number | null | undefined): string {
   if (!isNumber(value)) return 'na';
   const amount = value as number;
@@ -448,8 +453,7 @@ function signed(value: number | null | undefined): string {
  * reads next to the version.
  */
 export function renderRationale(holdout: DreamEvalResult, audit?: DreamEvalResult | null): string {
-  const auditDelta = audit ? audit.delta : holdout.auditDelta;
-  const auditCiLow = audit ? audit.ciLow : holdout.auditCiLow;
+  const { auditDelta, auditCiLow } = auditFigures(holdout, audit);
   return [
     'slot=' + holdout.slot,
     'n=' + holdout.closed,
@@ -495,8 +499,7 @@ function evalRowFrom(
     delta: result.delta,
     ciLow: result.ciLow,
     ciHigh: result.ciHigh,
-    auditDelta: audit ? audit.delta : result.auditDelta,
-    auditCiLow: audit ? audit.ciLow : result.auditCiLow,
+    ...auditFigures(result, audit),
     deltaLive: result.deltaLive,
     signAgree: result.signAgree,
     evalMs: result.evalMs,
@@ -563,8 +566,7 @@ export function applyPromotion(store: Store, input: ApplyPromotionInput): Promot
       replayScore: input.holdout.score,
       replayN: input.holdout.closed,
       baselineScore: input.holdout.baseline,
-      auditDelta: audit ? audit.delta : input.holdout.auditDelta,
-      auditCiLow: audit ? audit.ciLow : input.holdout.auditCiLow,
+      ...auditFigures(input.holdout, audit),
     });
 
     const evaluation = store.recordDreamEval({

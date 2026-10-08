@@ -1,6 +1,7 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { pushRecipients } from '@rookery/core';
 import type { ServerContext } from '../context.js';
+import { BadRequestError } from '../schemas.js';
 
 type IdParams = { Params: { id: string } };
 
@@ -16,21 +17,12 @@ export async function registerGatewayRoutes(app: FastifyInstance, context: Serve
   });
 
   /** Send an English test line to the first configured recipient. */
-  app.post('/api/gateways/:id/test', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+  app.post('/api/gateways/:id/test', async (request: FastifyRequest<IdParams>) => {
     const gateway = context.gateways.find((entry) => entry.id === request.params.id);
-    if (!gateway) {
-      reply.code(400);
-      return { error: 'Bad Request', message: 'Unknown gateway: ' + request.params.id };
-    }
-    if (!gateway.status().running) {
-      reply.code(400);
-      return { error: 'Bad Request', message: 'The gateway is not running.' };
-    }
+    if (!gateway) throw new BadRequestError('Unknown gateway: ' + request.params.id);
+    if (!gateway.status().running) throw new BadRequestError('The gateway is not running.');
     const [recipient] = pushRecipients(context.config.gateways.telegram);
-    if (recipient === undefined) {
-      reply.code(400);
-      return { error: 'Bad Request', message: 'No recipient is configured.' };
-    }
+    if (recipient === undefined) throw new BadRequestError('No recipient is configured.');
     await gateway.send(recipient, 'Test message from Rookery - if you can read this, the gateway is working.');
     return { ok: true, recipient };
   });

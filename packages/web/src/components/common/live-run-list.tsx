@@ -1,4 +1,4 @@
-import { TerminalIcon, XIcon } from "@/components/icons";
+import { TerminalIcon, XIcon } from '@/components/icons';
 import * as React from 'react';
 import { NavLink } from 'react-router';
 
@@ -211,36 +211,14 @@ function RunRow({
       {(watchable || (cancellable && onCancel)) && (
         <ItemActions>
           {watchable && onWatch && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Watch this run live"
-                  onClick={() => onWatch(assignment.id)}
-                >
-                  <TerminalIcon />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Watch live</TooltipContent>
-            </Tooltip>
+            <RunAction label="Watch this run live" tooltip="Watch live" onClick={() => onWatch(assignment.id)}>
+              <TerminalIcon />
+            </RunAction>
           )}
           {cancellable && onCancel && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Stop this run"
-                  onClick={() => onCancel(assignment.id)}
-                >
-                  <XIcon />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Cancel</TooltipContent>
-            </Tooltip>
+            <RunAction label="Stop this run" tooltip="Cancel" onClick={() => onCancel(assignment.id)}>
+              <XIcon />
+            </RunAction>
           )}
         </ItemActions>
       )}
@@ -257,5 +235,25 @@ function RunRow({
         </ItemFooter>
       )}
     </Item>
+  );
+}
+
+interface RunActionProps {
+  label: string;
+  tooltip: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}
+
+function RunAction({ label, tooltip, onClick, children }: RunActionProps) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label={label} onClick={onClick}>
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{tooltip}</TooltipContent>
+    </Tooltip>
   );
 }

@@ -109,6 +109,39 @@ function axisLabel(point: VersionPoint): string {
   return point.label ?? 'v' + point.version;
 }
 
+/** Scores live in 0..1; a fitted axis never leaves that interval. */
+const SCORE_MIN = 0;
+const SCORE_MAX = 1;
+
+/**
+ * A margin of a tenth of the spread, but never less than half a tenth of the
+ * scale, so a single version does not sit on a zero-height axis.
+ */
+const MARGIN_OF_SPREAD = 0.1;
+const MIN_MARGIN = 0.05;
+
+/** The axis fitted to the observed values, rounded outwards to hundredths; `null` without values. */
+function fitDomain(
+  data: readonly VersionPoint[],
+  series: readonly VersionSeries[],
+): [number, number] | null {
+  const values: number[] = [];
+  for (const point of data) {
+    for (const entry of series) {
+      const value = seriesValue(point, entry.key);
+      if (value !== null) values.push(value);
+    }
+  }
+  if (values.length === 0) return null;
+  const low = Math.min(...values);
+  const high = Math.max(...values);
+  const margin = Math.max((high - low) * MARGIN_OF_SPREAD, MIN_MARGIN);
+  return [
+    Math.max(SCORE_MIN, Math.floor((low - margin) * 100) / 100),
+    Math.min(SCORE_MAX, Math.ceil((high + margin) * 100) / 100),
+  ];
+}
+
 export function VersionCurveCard<T extends VersionPoint>({
   title,
   description,
@@ -127,37 +160,17 @@ export function VersionCurveCard<T extends VersionPoint>({
     return config;
   }, [series]);
 
-  // The axis reads a string, so the tick is `v3` rather than `3` and two
   // The fitted axis, and the sentence that discloses it. A caller that passes
   // its own `domain` gets that one and no note.
-  const fitted = React.useMemo<[number, number] | null>(() => {
-    if (domain) return null;
-    const values: number[] = [];
-    for (const point of data) {
-      for (const entry of series) {
-        const value = seriesValue(point, entry.key);
-        if (value !== null) values.push(value);
-      }
-    }
-    if (values.length === 0) return null;
-    const low = Math.min(...values);
-    const high = Math.max(...values);
-    // A margin of a tenth of the spread, but never less than half a tenth of
-    // the scale, so a single version does not sit on a zero-height axis.
-    const margin = Math.max((high - low) * 0.1, 0.05);
-    return [
-      Math.max(0, Math.floor((low - margin) * 100) / 100),
-      Math.min(1, Math.ceil((high + margin) * 100) / 100),
-    ];
-  }, [data, series, domain]);
+  const fitted = React.useMemo(
+    () => (domain ? null : fitDomain(data, series)),
+    [data, series, domain],
+  );
 
+  // The axis reads a string, so the tick is `v3` rather than `3` and
   // versions never blur into a decimal axis on a narrow card.
   const rows = React.useMemo(
-    () =>
-      data.map((point) => ({
-        ...point,
-        tick: axisLabel(point),
-      })),
+    () => data.map((point) => ({ ...point, tick: axisLabel(point) })),
     [data],
   );
 
@@ -217,7 +230,7 @@ export function VersionCurveCard<T extends VersionPoint>({
                     tickLine={false}
                     axisLine={false}
                     width={40}
-                    domain={domain ?? fitted ?? [0, 1]}
+                    domain={domain ?? fitted ?? [SCORE_MIN, SCORE_MAX]}
                     tickCount={4}
                     tickFormatter={(value) => valueFormatter(value as number)}
                   />

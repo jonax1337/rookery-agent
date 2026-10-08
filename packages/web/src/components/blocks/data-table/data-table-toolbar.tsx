@@ -1,7 +1,6 @@
 import { SearchIcon, XIcon } from "@/components/icons";
 import type { ReactNode } from 'react';
 
-
 import { Button } from '@/components/ui/button';
 import {
   InputGroup,
@@ -33,7 +32,7 @@ export interface DataTableToolbarProps {
   filters?: ReactNode;
   /** The column visibility menu, built by `DataTable` from the table instance. */
   columnMenu?: ReactNode;
-  /** Primary actions ("Neues Gespräch", "Agent einstellen"). */
+  /** Primary actions ("New conversation", "Hire agent"). */
   actions?: ReactNode;
   /** Bulk action bar; only drawn while rows are selected. */
   selection?: DataTableSelection;

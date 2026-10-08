@@ -38,6 +38,7 @@ for (const succeeds of [false, true]) {
       } },
       setConfig: (value) => { published = value; },
       toast,
+      reportFailure: (title, caught) => toast.error(title + ': ' + caught.message),
     });
     assert.equal(await save(config), succeeds);
     assert.equal(published, succeeds ? config : undefined);
@@ -46,7 +47,13 @@ for (const succeeds of [false, true]) {
   });
 }
 
-for (const page of ['SettingsDialog', 'GatewayDetailPage']) {
+// Where each page's save flow lives now that the pages delegate it to a hook.
+const SUBMIT_SOURCE = {
+  SettingsDialog: 'pages/settings/useSettingsDraft.ts',
+  GatewayDetailPage: 'hooks/useGatewayDraft.ts',
+};
+
+for (const page of Object.keys(SUBMIT_SOURCE)) {
   for (const succeeds of [false, true]) {
     for (const editDuringSave of [false, true]) {
       test(`${page}: success=${succeeds}, edit during save=${editDuringSave}`, async () => {
@@ -57,7 +64,7 @@ for (const page of ['SettingsDialog', 'GatewayDetailPage']) {
         let refreshed = 0;
         let finish;
         const saveResult = new Promise((resolve) => { finish = resolve; });
-        const submit = callback(`pages/${page}.tsx`, 'submit', {
+        const submit = callback(SUBMIT_SOURCE[page], 'submit', {
           draftRef, touched,
           setSaving: (value) => saving.push(value),
           save: async (patch) => {

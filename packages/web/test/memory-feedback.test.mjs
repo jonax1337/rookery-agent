@@ -311,7 +311,7 @@ test('postMemoryFeedback posts the turn reference and verdict, and throws on a f
   t.after(() => { globalThis.fetch = previous; });
 
   const calls = [];
-  globalThis.fetch = async (url, init) => { calls.push({ url, init }); return { ok: true }; };
+  globalThis.fetch = async (url, init) => { calls.push({ url, init }); return { ok: true, status: 204 }; };
   await postMemoryFeedback('mem 1', 'turn-1', 'point');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, '/api/memories/mem%201/feedback');
@@ -319,7 +319,7 @@ test('postMemoryFeedback posts the turn reference and verdict, and throws on a f
   assert.equal(calls[0].init.headers['Content-Type'], 'application/json');
   assert.deepEqual(JSON.parse(calls[0].init.body), { turnId: 'turn-1', verdict: 'point' });
 
-  globalThis.fetch = async () => ({ ok: false });
+  globalThis.fetch = async () => ({ ok: false, status: 500, statusText: 'Server error', text: async () => '' });
   await assert.rejects(() => postMemoryFeedback('mem-1', 'turn-1', 'ballast'));
 });
 

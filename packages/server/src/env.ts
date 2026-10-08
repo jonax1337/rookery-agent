@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
 /**
  * Minimal .env support for the optional voice keys (ELEVENLABS_API_KEY,
  * OPENAI_API_KEY): `~/.rookery/.env` for an installed copy, the repo root's
@@ -15,17 +16,21 @@ export function loadDotEnv(): void {
   ];
   for (const path of candidates) {
     if (!existsSync(path)) continue;
-    for (const raw of readFileSync(path, 'utf8').split(/\r?\n/)) {
-      const line = raw.trim();
-      if (!line || line.startsWith('#')) continue;
-      const at = line.indexOf('=');
-      if (at <= 0) continue;
-      const key = line.slice(0, at).trim();
-      let value = line.slice(at + 1).trim();
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-      if (key && !(key in process.env) && value) process.env[key] = value;
-    }
+    for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) setFromLine(line.trim());
   }
+}
+
+/** `KEY=value`; comments, blanks and empty values are skipped, and a variable already set is never overwritten. */
+function setFromLine(line: string): void {
+  if (!line || line.startsWith('#')) return;
+  const separator = line.indexOf('=');
+  if (separator <= 0) return;
+  const key = line.slice(0, separator).trim();
+  const value = unquote(line.slice(separator + 1).trim());
+  if (key && !(key in process.env) && value) process.env[key] = value;
+}
+
+function unquote(value: string): string {
+  const quoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"));
+  return quoted ? value.slice(1, -1) : value;
 }

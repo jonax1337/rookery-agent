@@ -77,9 +77,3 @@ export function titleFromBrief(text: string, max = 60): string {
 export function tail(text: string, max: number): string {
   return text.length <= max ? text : text.slice(-max);
 }
-
-/** Integer in [min, max], or the fallback for anything else. */
-export function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
-  return Math.max(min, Math.min(max, Math.round(value)));
-}

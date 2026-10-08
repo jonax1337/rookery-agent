@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import { api, ApiError } from '../lib/api';
+import { useMemo } from 'react';
+import { api, type ApiError } from '../lib/api';
 import type { GatewayId, GatewayStatus, GatewayTestResult } from '../lib/types';
+import { createSharedList } from './shared-list';
 
 /**
  * The gateway roster, held once for the whole app - same shape as `useTools`.
@@ -11,49 +12,7 @@ import type { GatewayId, GatewayStatus, GatewayTestResult } from '../lib/types';
  * like the tool hub.
  */
 
-interface GatewaysSnapshot {
-  gateways: GatewayStatus[];
-  loading: boolean;
-  error: ApiError | null;
-  /** False until the first response, so a second mount does not refetch. */
-  loaded: boolean;
-}
-
-let snapshot: GatewaysSnapshot = { gateways: [], loading: true, error: null, loaded: false };
-const listeners = new Set<() => void>();
-let inflight: Promise<void> | null = null;
-
-function publish(next: Partial<GatewaysSnapshot>): void {
-  snapshot = { ...snapshot, ...next };
-  for (const listener of listeners) listener();
-}
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-/** One request at a time; concurrent callers share the flight. */
-function load(): Promise<void> {
-  if (inflight) return inflight;
-  inflight = (async () => {
-    try {
-      const gateways = await api.getGateways();
-      publish({ gateways, error: null, loading: false, loaded: true });
-    } catch (caught) {
-      publish({
-        error: caught instanceof ApiError ? caught : new ApiError(String(caught), 0),
-        loading: false,
-        loaded: true,
-      });
-    } finally {
-      inflight = null;
-    }
-  })();
-  return inflight;
-}
+const gatewayList = createSharedList<GatewayStatus>(api.getGateways);
 
 export interface UseGatewaysResult {
   gateways: GatewayStatus[];
@@ -66,30 +25,18 @@ export interface UseGatewaysResult {
 }
 
 export function useGateways(): UseGatewaysResult {
-  const state = useSyncExternalStore(subscribe, () => snapshot);
-
-  useEffect(() => {
-    if (!snapshot.loaded) void load();
-  }, []);
-
-  useEffect(() => {
-    const onVisible = (): void => {
-      if (document.visibilityState === 'visible') void load();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, []);
+  const state = gatewayList.use();
 
   return useMemo<UseGatewaysResult>(
     () => ({
-      gateways: state.gateways,
+      gateways: state.items,
       loading: state.loading,
       error: state.error,
-      refresh: load,
-      gatewayById: (id) => (id ? state.gateways.find((entry) => entry.id === id) : undefined),
+      refresh: gatewayList.load,
+      gatewayById: (id) => (id ? state.items.find((entry) => entry.id === id) : undefined),
       test: async (id) => {
         const result = await api.testGateway(id);
-        await load();
+        await gatewayList.load();
         return result;
       },
     }),
@@ -99,7 +46,7 @@ export function useGateways(): UseGatewaysResult {
 
 /**
  * Named for the hook, not for the domain: `lib/gateways.ts` owns the word
- * "state" for what a channel is doing (läuft, aus, angehalten), and two
+ * "state" for what a channel is doing (running, off, stopped), and two
  * different `GatewayState`s in one feature is one too many.
  */
 export interface UseGatewayResult extends UseGatewaysResult {

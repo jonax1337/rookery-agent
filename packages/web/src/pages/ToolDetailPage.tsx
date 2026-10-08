@@ -1,146 +1,73 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink, useNavigate, useParams } from 'react-router';
 
-import {
-  BadgeAlertIcon as TriangleAlertIcon,
-  BoxIcon as PackageIcon,
-  CheckIcon,
-  DeleteIcon as Trash2Icon,
-  ExternalLinkIcon,
-  FolderOpenIcon as FolderIcon,
-  PlugZapIcon as PlugIcon,
-  RotateCcwIcon,
-  UsersIcon,
-  WrenchIcon,
-} from "@/components/icons";
+import { BadgeAlertIcon as TriangleAlertIcon, BoxIcon as PackageIcon, WrenchIcon } from '@/components/icons';
 import { toast } from 'sonner';
 
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { FormPage } from '@/components/blocks/form-page';
-import { DetailDrawer } from '@/components/blocks/detail-drawer';
 import { PageBody } from '@/components/blocks/page-body';
 import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { useRemoveTool } from '@/components/common/entity-actions';
-import { MetaList } from '@/components/common/meta-list';
 import { RowMenuButton } from '@/components/common/row-menu-button';
-import { FormField, FormFieldsSkeleton, useDraft } from '@/components/forms/form-kit';
-import { failureMessage, reportFailure } from '@/lib/errors';
+import { FormFieldsSkeleton, useDraft } from '@/components/forms/form-kit';
+import { failureMessage } from '@/lib/errors';
 import { useOrgState } from '@/providers/rookery-provider';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Checkbox } from '@/components/ui/checkbox';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  Field,
-  FieldContent,
-  FieldDescription,
-  FieldLabel,
-  FieldLegend,
-  FieldSet,
-  FieldTitle,
-} from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from '@/components/ui/input-group';
 import { Label } from '@/components/ui/label';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { useTool } from '@/hooks/useTools';
-import {
-  AUDIENCE_HINT,
-  AUDIENCE_LABEL,
-  AUDIENCE_SHORT_LABEL,
-  AUDIENCE_VALUES,
-  INSTALL_LABEL,
-  toolStatusLook,
-} from '@/lib/tools';
-import type { ToolServer, ToolServerAudience } from '@/lib/types';
+import type { ToolServer } from '@/lib/types';
+
+import { PrepareOutputDrawer, RemoveToolMenuItem, usePrepareTool, useToggleTool } from './tools/tool-actions';
+import { EMPTY_TOOL_DRAFT, toolDraftOf, typedEnv, type ToolDraft } from './tools/tool-draft';
+import { ToolFacts } from './tools/ToolFacts';
+import { ToolSettingsFields } from './tools/ToolSettingsFields';
+import { ToolCommandCard, ToolKeysCard } from './tools/ToolSideCards';
+import { ToolStatusBadge } from './tools/ToolStatusBadge';
 
 /**
  * One MCP server: who may use it, how it is configured, which keys it needs.
  *
- * The page used to save on every `onBlur` with no feedback at all - a typo in
- * an API key was written to the config the moment the field lost focus, and
- * nothing on screen said whether it had arrived. Now the audience, the options
- * and the keys form one draft that is written by "Save", and the button
- * stays disabled until something has actually changed.
+ * The audience, the options and the keys form one draft that is written by
+ * "Save", and the button stays disabled until something has actually changed -
+ * saving on every `onBlur` would write a typo in an API key to the config the
+ * moment the field lost focus, with nothing on screen saying whether it had
+ * arrived.
  *
  * The switch is the one exception: an on/off state is a single deliberate
  * click, it has its own optimistic rollback in `useTools`, and the same switch
  * on the list page behaves the same way.
  *
  * There is no `GET /api/tools/:id` - the record comes out of the shared
- * `useTools` cache (see serverGaps), which is also why the list page and this
- * page never disagree about a server's state.
+ * `useTools` cache, which is also why the list page and this page never
+ * disagree about a server's state.
  */
 
-const FORM_ID = 'werkzeug-form';
-
-interface Draft {
-  audience: ToolServerAudience;
-  /** One entry per `optionDef`, pre-filled from the entry's default. */
-  options: Record<string, string>;
-  /**
-   * Only what has been typed. Values never travel to the browser, so an empty
-   * field means "leave it alone" - and it has to, because the server deletes a
-   * key whose value arrives empty (`withToolServer` in core).
-   */
-  env: Record<string, string>;
-  /** Empty means every project. */
-  projectIds: string[];
-}
-
-/** What a finished preparation had to say, held for the drawer. */
-interface PrepareResult {
-  ok: boolean;
-  output: string;
-}
-
-function makeDraft(tool: ToolServer): Draft {
-  return {
-    audience: tool.audience,
-    options: Object.fromEntries(
-      tool.optionDefs.map((option) => [option.key, tool.options[option.key] ?? option.default]),
-    ),
-    env: {},
-    projectIds: tool.projectIds,
-  };
-}
+const FORM_ID = 'tool-form';
 
 export function ToolDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { tool, loading, error, refresh, setEnabled, update, remove, prepare } = useTool(id);
   const { dialog, removeTool: dropTool } = useRemoveTool(remove, refresh);
+  const toggle = useToggleTool(setEnabled);
+  const preparation = usePrepareTool(prepare);
   const org = useOrgState();
-  const projects = org.projects.filter((project) => !project.archived);
 
-  const { draft, dirty, set, hydrate, markSaved } = useDraft<Draft>({
-    audience: 'assistant',
-    options: {},
-    env: {},
-    projectIds: [],
-  });
+  const { draft, dirty, set, hydrate, markSaved } = useDraft<ToolDraft>(EMPTY_TOOL_DRAFT);
 
   // Bumped after a save so the draft refills from the record that came back -
   // which is what empties the key fields again and puts their "set" badge
@@ -148,31 +75,28 @@ export function ToolDetailPage() {
   const [generation, setGeneration] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [preparing, setPreparing] = useState(false);
-  const [result, setResult] = useState<PrepareResult | null>(null);
   // Dropping an override takes the entry out of the shared list at once, and
   // only the reload afterwards brings the catalogue's own version back. While
-  // that round trip runs the page would otherwise flash "Diesen Server gibt es
-  // nicht" for a server that is merely being put back on its defaults.
+  // that round trip runs the page would otherwise flash "This server does not
+  // exist" for a server that is merely being put back on its defaults.
   const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     if (!tool) return;
-    hydrate(tool.id + '#' + generation, () => makeDraft(tool));
+    hydrate(tool.id + '#' + generation, () => toolDraftOf(tool));
   }, [tool, generation, hydrate]);
-
-  /* -------------------------------- Actions ------------------------------ */
 
   const save = useCallback(async (): Promise<void> => {
     if (!tool || saving) return;
     setSaving(true);
     setSaveError(null);
     try {
-      const env: Record<string, string> = {};
-      for (const [name, value] of Object.entries(draft.env)) {
-        if (value.trim()) env[name] = value.trim();
-      }
-      await update(tool.id, { audience: draft.audience, options: draft.options, env, projectIds: draft.projectIds });
+      await update(tool.id, {
+        audience: draft.audience,
+        options: draft.options,
+        env: typedEnv(draft),
+        projectIds: draft.projectIds,
+      });
       markSaved();
       setGeneration((current) => current + 1);
       toast('Saved', { description: 'Takes effect on the next turn.' });
@@ -182,32 +106,6 @@ export function ToolDetailPage() {
       setSaving(false);
     }
   }, [draft, markSaved, saving, tool, update]);
-
-  const toggle = useCallback(
-    async (on: boolean): Promise<void> => {
-      if (!tool) return;
-      try {
-        await setEnabled(tool.id, on);
-        toast(on ? tool.name + ' enabled' : tool.name + ' disabled');
-      } catch (caught) {
-        reportFailure('Update', caught);
-      }
-    },
-    [setEnabled, tool],
-  );
-
-  const runPrepare = useCallback(async (): Promise<void> => {
-    if (!tool) return;
-    setPreparing(true);
-    try {
-      const outcome = await prepare(tool.id);
-      setResult({ ok: outcome.ok, output: outcome.output });
-    } catch (caught) {
-      setResult({ ok: false, output: failureMessage(caught) });
-    } finally {
-      setPreparing(false);
-    }
-  }, [prepare, tool]);
 
   /**
    * `DELETE /api/tools/:id` drops the entry's override, and what that means
@@ -234,62 +132,26 @@ export function ToolDetailPage() {
     }
   }, [dropTool, navigate, tool]);
 
-  /* --------------------------------- Kopf -------------------------------- */
+  const preparing = tool !== undefined && preparation.preparingId === tool.id;
 
   usePageMeta(
     {
       ...(tool ? { title: tool.name } : {}),
       breadcrumb: [{ label: 'Tools', to: '/tools' }, { label: tool?.name ?? 'Tool' }],
       actions: tool ? (
-        <div className="flex items-center gap-2">
-          <Label htmlFor="werkzeug-aktiv" className="flex h-8 items-center gap-2 rounded-md border px-2 font-normal">
-            <Switch
-              id="werkzeug-aktiv"
-              checked={tool.enabled}
-              disabled={!tool.installed}
-              onCheckedChange={(on) => void toggle(on)}
-            />
-            Active
-          </Label>
-          <Button size="sm" type="submit" form={FORM_ID} disabled={!dirty || saving}>
-            {saving ? <Spinner aria-label="Saving" data-icon="inline-start" /> : null}
-            Save
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="More actions" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              {tool.prepare ? (
-                <DropdownMenuItem
-                  disabled={preparing}
-                  onSelect={() => void runPrepare()}
-                  className="items-start whitespace-normal"
-                >
-                  {preparing ? <Spinner aria-label="Running" /> : <PackageIcon />}
-                  {tool.prepare.label}
-                </DropdownMenuItem>
-              ) : null}
-              {tool.install === 'custom' ? (
-                <DropdownMenuItem variant="destructive" onSelect={() => void removeTool()}>
-                  <Trash2Icon data-icon="inline-start" />
-                  Remove
-                </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem onSelect={() => void removeTool()}>
-                  <RotateCcwIcon data-icon="inline-start" />
-                  Restore default
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        <HeaderActions
+          tool={tool}
+          saveDisabled={!dirty || saving}
+          saving={saving}
+          preparing={preparing}
+          onToggle={(on) => void toggle(tool, on)}
+          onPrepare={() => void preparation.run(tool)}
+          onRemove={() => void removeTool()}
+        />
       ) : undefined,
     },
-    [tool, dirty, saving, preparing, toggle, runPrepare, removeTool],
+    [tool, dirty, saving, preparing, toggle, preparation.run, removeTool],
   );
-
-  /* -------------------------------- Zustände ------------------------------ */
 
   if (!tool && (loading || resetting)) {
     return (
@@ -324,8 +186,6 @@ export function ToolDetailPage() {
     );
   }
 
-  const look = toolStatusLook(tool);
-
   return (
     <PageBody width="3xl">
       {dialog}
@@ -333,10 +193,7 @@ export function ToolDetailPage() {
       <div className="flex flex-col gap-3">
         <Fade>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={look.variant} className="gap-1">
-              {look.icon ? <look.icon className={look.iconClassName} aria-hidden="true" /> : null}
-              {look.label}
-            </Badge>
+            <ToolStatusBadge tool={tool} />
             <Badge variant="outline" className="font-mono font-normal">
               {tool.id}
             </Badge>
@@ -348,55 +205,7 @@ export function ToolDetailPage() {
       </div>
 
       <Fade delay={100}>
-        <MetaList
-          columns={2}
-          items={[
-            { label: 'Audience', value: AUDIENCE_LABEL[tool.audience], icon: UsersIcon },
-            { label: 'Source', value: INSTALL_LABEL[tool.install], icon: PackageIcon },
-            {
-              label: 'Installed',
-              value: tool.installed ? 'Yes' : 'Not downloaded yet',
-              icon: PlugIcon,
-            },
-            {
-              label: 'Active',
-              value: tool.active
-                ? 'Running with'
-                : tool.enabled
-                  ? 'Enabled but not ready'
-                  : 'Off',
-              icon: PlugIcon,
-            },
-            {
-              label: 'Projects',
-              value: tool.projectIds.length
-                ? tool.projectIds
-                    .map((id) => org.projects.find((project) => project.id === id)?.name ?? id)
-                    .join(', ')
-                : 'All projects',
-              icon: FolderIcon,
-            },
-            {
-              label: 'Project page',
-              // An external address, so a plain anchor - `MetaList.to` routes
-              // inside the app and would swallow it.
-              value: tool.homepage ? (
-                <a
-                  href={tool.homepage}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 hover:underline"
-                >
-                  <span className="truncate">{tool.homepage.replace(/^https?:\/\//, '')}</span>
-                  <ExternalLinkIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                </a>
-              ) : (
-                ''
-              ),
-              icon: ExternalLinkIcon,
-            },
-          ]}
-        />
+        <ToolFacts tool={tool} projects={org.projects} />
       </Fade>
 
       {tool.missingEnv.length > 0 ? (
@@ -421,189 +230,17 @@ export function ToolDetailPage() {
           aside={
             <>
               {tool.envDefs.length > 0 ? (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Keys</CardTitle>
-                    <CardDescription>
-                      Stored in Rookery configuration and passed only to the server process. Saved
-                      keys are never returned to the browser; enter a new value to update one.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <FieldSet>
-                      <FieldLegend variant="label">Credentials</FieldLegend>
-                      {tool.envDefs.map((item) => {
-                        const isSet = tool.envSet[item.name] === true;
-                        const typed = (draft.env[item.name] ?? '').trim();
-                        const missing =
-                          item.required && tool.missingEnv.includes(item.name) && typed === '';
-                        return (
-                          // FormField haengt Guidance und Meldung per
-                          // `aria-describedby` an die Eingabe; `data-invalid`
-                          // allein faerbte nur die Gruppe.
-                          <FormField
-                            key={item.name}
-                            id={'env-' + item.name}
-                            label={
-                              <>
-                                {item.label}
-                                <Badge
-                                  variant={
-                                    isSet ? 'outline' : item.required ? 'destructive' : 'secondary'
-                                  }
-                                  className="font-normal"
-                                >
-                                  {isSet ? 'set' : 'missing'}
-                                </Badge>
-                              </>
-                            }
-                            error={missing ? 'Required' : null}
-                            {...(item.hint ? { description: item.hint } : {})}
-                          >
-                            {(control) => (
-                              <InputGroup>
-                                <InputGroupInput
-                                  {...control}
-                                  type={item.secret ? 'password' : 'text'}
-                                  autoComplete="off"
-                                  placeholder={isSet ? '••••••••' : 'not set'}
-                                  value={draft.env[item.name] ?? ''}
-                                  onChange={(event) =>
-                                    set({ env: { ...draft.env, [item.name]: event.target.value } })
-                                  }
-                                />
-                                <InputGroupAddon align="inline-end">
-                                  {isSet ? (
-                                    <CheckIcon className="text-status-ok" aria-hidden="true" />
-                                  ) : (
-                                    <TriangleAlertIcon
-                                      className={item.required ? 'text-destructive' : undefined}
-                                      aria-hidden="true"
-                                    />
-                                  )}
-                                </InputGroupAddon>
-                              </InputGroup>
-                            )}
-                          </FormField>
-                        );
-                      })}
-                    </FieldSet>
-                  </CardContent>
-                </Card>
+                <ToolKeysCard
+                  tool={tool}
+                  draft={draft}
+                  onEnvChange={(name, value) => set({ env: { ...draft.env, [name]: value } })}
+                />
               ) : null}
-
-              {tool.custom ? (
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Command</CardTitle>
-                    <CardDescription>
-                      This is how the server starts. To change the command, remove this entry and
-                      create another.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="flex flex-col gap-3">
-                    <pre className="overflow-x-auto rounded-lg bg-muted/60 p-3 font-mono text-xs">
-                      {tool.custom.command + ' ' + tool.custom.args.join(' ')}
-                    </pre>
-                    {tool.custom.hint ? (
-                      <p className="text-sm text-muted-foreground">{tool.custom.hint}</p>
-                    ) : null}
-                  </CardContent>
-                </Card>
-              ) : null}
+              {tool.custom ? <ToolCommandCard custom={tool.custom} /> : null}
             </>
           }
         >
-          <FieldSet>
-            <FieldLegend variant="label">Audience</FieldLegend>
-            <FieldDescription>
-              Determines who can see this server in their tools.
-            </FieldDescription>
-            <RadioGroup
-              value={draft.audience}
-              onValueChange={(value) => set({ audience: value as ToolServerAudience })}
-            >
-              {AUDIENCE_VALUES.map((value) => (
-                <FieldLabel key={value} htmlFor={'audience-' + value}>
-                  <Field orientation="horizontal">
-                    <FieldContent>
-                      <FieldTitle>{AUDIENCE_SHORT_LABEL[value]}</FieldTitle>
-                      <FieldDescription>{AUDIENCE_HINT[value]}</FieldDescription>
-                    </FieldContent>
-                    <RadioGroupItem value={value} id={'audience-' + value} aria-label={AUDIENCE_SHORT_LABEL[value]} />
-                  </Field>
-                </FieldLabel>
-              ))}
-            </RadioGroup>
-          </FieldSet>
-
-          <FieldSet>
-            <FieldLegend variant="label">Projects</FieldLegend>
-            <FieldDescription>
-              Limit this server to specific projects. Leave every box unchecked to keep it available
-              everywhere, including the workspace.
-            </FieldDescription>
-            {projects.length ? (
-              projects.map((project) => (
-                <FieldLabel key={project.id} htmlFor={'project-' + project.id}>
-                  <Field orientation="horizontal">
-                    <FieldContent>
-                      <FieldTitle>{project.name}</FieldTitle>
-                    </FieldContent>
-                    <Checkbox
-                      id={'project-' + project.id}
-                      checked={draft.projectIds.includes(project.id)}
-                      onCheckedChange={(checked) =>
-                        set({
-                          projectIds:
-                            checked === true
-                              ? [...draft.projectIds, project.id]
-                              : draft.projectIds.filter((entry) => entry !== project.id),
-                        })
-                      }
-                    />
-                  </Field>
-                </FieldLabel>
-              ))
-            ) : (
-              <FieldDescription>No projects exist yet.</FieldDescription>
-            )}
-          </FieldSet>
-
-          {tool.optionDefs.map((option) => (
-            <Field key={option.key}>
-              <FieldLabel htmlFor={'opt-' + option.key}>{option.label}</FieldLabel>
-              {option.type === 'select' ? (
-                <Select
-                  value={draft.options[option.key] ?? option.default}
-                  onValueChange={(value) =>
-                    set({ options: { ...draft.options, [option.key]: value } })
-                  }
-                >
-                  <SelectTrigger id={'opt-' + option.key} className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(option.choices ?? []).map((choice) => (
-                      <SelectItem key={choice.value} value={choice.value}>
-                        {choice.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  id={'opt-' + option.key}
-                  value={draft.options[option.key] ?? ''}
-                  placeholder={option.default}
-                  onChange={(event) =>
-                    set({ options: { ...draft.options, [option.key]: event.target.value } })
-                  }
-                />
-              )}
-              {option.hint ? <FieldDescription>{option.hint}</FieldDescription> : null}
-            </Field>
-          ))}
+          <ToolSettingsFields tool={tool} projects={org.projects} draft={draft} onChange={set} />
         </FormPage>
       </Fade>
 
@@ -612,7 +249,7 @@ export function ToolDetailPage() {
           <p className="text-sm text-muted-foreground">
             Not installed yet.{' '}
             {tool.prepare
-              ? '„' + tool.prepare.label + '” from the “More actions” menu downloads what is missing.'
+              ? '“' + tool.prepare.label + '” from the “More actions” menu downloads what is missing.'
               : 'The server is downloaded with npx on first launch.'}
           </p>
         </Fade>
@@ -632,19 +269,63 @@ export function ToolDetailPage() {
         </p>
       </Fade>
 
-      {/* The preparation can print a whole npm log; a toast would swallow it. */}
-      <DetailDrawer
-        open={result !== null}
-        onOpenChange={(open) => {
-          if (!open) setResult(null);
-        }}
-        title={tool.name + ' set up'}
-        description={result ? (result.ok ? 'Completed.' : 'Failed.') : undefined}
-      >
-        <pre className="rounded-lg bg-muted/60 p-3 font-mono text-xs whitespace-pre-wrap">
-          {result?.output.trim() || 'No output.'}
-        </pre>
-      </DetailDrawer>
+      <PrepareOutputDrawer result={preparation.result} onDismiss={preparation.dismiss} />
     </PageBody>
+  );
+}
+
+interface HeaderActionsProps {
+  tool: ToolServer;
+  saving: boolean;
+  saveDisabled: boolean;
+  preparing: boolean;
+  onToggle(on: boolean): void;
+  onPrepare(): void;
+  onRemove(): void;
+}
+
+function HeaderActions({
+  tool,
+  saving,
+  saveDisabled,
+  preparing,
+  onToggle,
+  onPrepare,
+  onRemove,
+}: HeaderActionsProps) {
+  return (
+    <div className="flex items-center gap-2">
+      <Label htmlFor="tool-active" className="flex h-8 items-center gap-2 rounded-md border px-2 font-normal">
+        <Switch
+          id="tool-active"
+          checked={tool.enabled}
+          disabled={!tool.installed}
+          onCheckedChange={onToggle}
+        />
+        Active
+      </Label>
+      <Button size="sm" type="submit" form={FORM_ID} disabled={saveDisabled}>
+        {saving ? <Spinner aria-label="Saving" data-icon="inline-start" /> : null}
+        Save
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <RowMenuButton tone="header" label="More actions" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-56">
+          {tool.prepare ? (
+            <DropdownMenuItem
+              disabled={preparing}
+              onSelect={onPrepare}
+              className="items-start whitespace-normal"
+            >
+              {preparing ? <Spinner aria-label="Running" /> : <PackageIcon />}
+              {tool.prepare.label}
+            </DropdownMenuItem>
+          ) : null}
+          <RemoveToolMenuItem tool={tool} onRemove={onRemove} />
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }

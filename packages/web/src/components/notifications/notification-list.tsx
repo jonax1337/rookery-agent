@@ -2,9 +2,8 @@ import { ArchiveIcon, CheckIcon, MailCheckIcon, SearchIcon } from '@/components/
 
 import type { Notification, TaskStatus } from '@/lib/types';
 import { relativeTime } from '@/lib/format';
-import { NOTIFICATION_FILTERS, NOTIFICATION_KIND_LABEL, plainSnippet, type NotificationFilter } from '@/lib/notifications';
+import { NOTIFICATION_FILTERS, plainSnippet, type NotificationFilter } from '@/lib/notifications';
 import { cn } from '@/lib/utils';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { EmptyState, NoResults } from '@/components/common/empty-state';
 import { StatusBadge } from '@/components/common/status-badge';
@@ -12,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { filterIcon, NOTIFICATION_KIND_ICON } from './notification-nav';
+import { filterIcon, NotificationKindBadge } from './notification-nav';
 
 /**
  * The middle pane: which kind is open, the All/Unread filter, "Mark all
@@ -123,27 +122,27 @@ export function NotificationList({
         <h1 className="shrink-0 text-xl font-bold">{heading}</h1>
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {!archived && (
-            <Tabs
-              value={unreadOnly ? 'unread' : 'all'}
-              onValueChange={(value) => onUnreadOnlyChange(value === 'unread')}
-            >
-              <TabsList>
-                <TabsTrigger value="all">All</TabsTrigger>
-                <TabsTrigger value="unread">Unread</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          )}
-          {!archived && (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => onMarkAllRead?.()}
-              disabled={!onMarkAllRead}
-            >
-              <CheckIcon />
-              Mark all read
-            </Button>
+            <>
+              <Tabs
+                value={unreadOnly ? 'unread' : 'all'}
+                onValueChange={(value) => onUnreadOnlyChange(value === 'unread')}
+              >
+                <TabsList>
+                  <TabsTrigger value="all">All</TabsTrigger>
+                  <TabsTrigger value="unread">Unread</TabsTrigger>
+                </TabsList>
+              </Tabs>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onMarkAllRead?.()}
+                disabled={!onMarkAllRead}
+              >
+                <CheckIcon />
+                Mark all read
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -179,7 +178,6 @@ export function NotificationList({
                 const unread = notification.readAt == null && !archived;
                 const selected = notification.id === selectedId;
                 const status = taskStatus(notification);
-                const KindIcon = NOTIFICATION_KIND_ICON[notification.kind];
                 return (
                   <button
                     key={notification.id}
@@ -215,13 +213,7 @@ export function NotificationList({
                     <div className="line-clamp-2 w-full text-xs text-muted-foreground">
                       {plainSnippet(notification.body)}
                     </div>
-                    <Badge
-                      variant={notification.kind === 'question' ? 'default' : 'secondary'}
-                      className="max-w-full truncate font-normal"
-                    >
-                      <KindIcon aria-hidden="true" />
-                      {NOTIFICATION_KIND_LABEL[notification.kind]}
-                    </Badge>
+                    <NotificationKindBadge kind={notification.kind} className="max-w-full truncate" />
                   </button>
                 );
               })}

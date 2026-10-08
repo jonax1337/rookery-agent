@@ -8,11 +8,15 @@
 
 import { existsSync, statSync } from 'node:fs';
 import { databasePath } from '@rookery/core';
-import type { ProviderStatus } from '@rookery/core';
+import type { Assistant, ProviderStatus } from '@rookery/core';
 import { glyph, theme } from '../ui/theme.js';
-import { heading, keyValue } from '../ui/render.js';
+import { heading, keyValue, providerHealth, providerMark } from '../ui/render.js';
+import type { ProviderHealth } from '../ui/render.js';
 import { describeSpeech } from '../ui/speech.js';
-import { withAssistant } from './shared.js';
+import { printJson, withAssistant } from './shared.js';
+
+const out = process.stdout;
+const PROVIDER_FIELD_WIDTH = 14;
 
 /** The command that gets a logged-out provider logged in. */
 const LOGIN_HINT: Record<string, string> = {
@@ -33,137 +37,157 @@ export interface DoctorOptions {
   json?: boolean;
 }
 
+/** The slice of the memory statistics the report prints. */
+interface MemoryStats {
+  total: number;
+  forgotten: number;
+  byKind: Record<string, number>;
+}
+
+interface DoctorFacts {
+  assistant: Assistant;
+  statuses: ProviderStatus[];
+  ready: ProviderStatus[];
+  databaseFile: string;
+  memoryStats: MemoryStats;
+  sessionCount: number;
+  speech: string;
+}
+
 export async function doctorCommand(options: DoctorOptions = {}): Promise<number> {
   return withAssistant(async (assistant) => {
-    const statuses = await assistant.providers.statuses(true);
-    const dbPath = databasePath(assistant.config);
-    const stats = assistant.store.memoryStats();
-    const sessions = assistant.store.listSessions({ limit: 1000, includeArchived: true });
-    const speech = await describeSpeech();
-    const ready = statuses.filter((s) => s.available && s.authenticated);
-
-    if (options.json) {
-      process.stdout.write(
-        JSON.stringify(
-          {
-            ok: ready.length > 0,
-            providers: statuses,
-            home: assistant.config.home,
-            workspace: assistant.config.workspace,
-            database: { path: dbPath, exists: existsSync(dbPath), bytes: fileSize(dbPath) },
-            memory: stats,
-            sessions: sessions.length,
-            speech,
-            defaults: {
-              provider: assistant.config.defaultProvider,
-              model: assistant.config.defaultModel ?? null,
-              permission: assistant.config.defaultPermission,
-            },
-          },
-          null,
-          2,
-        ) + '\n',
-      );
-      return ready.length ? 0 : 1;
-    }
-
-    const out = process.stdout;
-    out.write('\n' + heading('Rookery doctor') + '\n\n');
-
-    out.write(heading('Providers') + '\n');
-    for (const status of statuses) {
-      out.write(providerBlock(status));
-    }
-    out.write('\n');
-
-    out.write(heading('Storage') + '\n');
-    out.write(keyValue('home', assistant.config.home) + '\n');
-    // The assistant's own provider process always runs here, never in the
-    // directory Rookery happened to be started from.
-    out.write(
-      keyValue(
-        'workspace',
-        assistant.config.workspace +
-          (existsSync(assistant.config.workspace) ? '' : theme.yellow('  (not created yet)')),
-      ) + '\n',
-    );
-    out.write(
-      keyValue(
-        'database',
-        dbPath + (existsSync(dbPath) ? theme.dim('  (' + formatBytes(fileSize(dbPath)) + ')') : theme.yellow('  (not created yet)')),
-      ) + '\n',
-    );
-    out.write(keyValue('sessions', String(sessions.length)) + '\n');
-    out.write(
-      keyValue(
-        'memories',
-        String(stats.total) +
-          (stats.forgotten ? theme.dim('  +' + stats.forgotten + ' forgotten') : '') +
-          (Object.keys(stats.byKind).length
-            ? theme.dim(
-                '  [' +
-                  Object.entries(stats.byKind)
-                    .map(([kind, count]) => kind + ' ' + count)
-                    .join(', ') +
-                  ']',
-              )
-            : ''),
-      ) + '\n',
-    );
-    out.write('\n');
-
-    out.write(heading('Defaults') + '\n');
-    out.write(keyValue('provider', assistant.config.defaultProvider) + '\n');
-    out.write(keyValue('model', assistant.config.defaultModel ?? theme.dim('provider default')) + '\n');
-    out.write(keyValue('permission', assistant.config.defaultPermission) + '\n');
-    out.write(keyValue('memory recall', String(assistant.config.memory.recallLimit) + ' per turn') + '\n');
-    out.write(keyValue('voice lang', assistant.config.voice.lang) + '\n');
-    out.write(keyValue('speech', speech) + '\n');
-    out.write('\n');
-
-    if (!ready.length) {
-      out.write(theme.red(glyph.fail + ' No AI provider is logged in. Rookery cannot answer anything yet.') + '\n\n');
-      for (const status of statuses) {
-        const fix = status.available
-          ? LOGIN_HINT[status.id] ?? 'log in to ' + status.id
-          : 'install it: ' + INSTALL_HINT;
-        out.write('  ' + theme.accent(status.id) + '  ' + fix + '\n');
-      }
-      out.write('\n');
-      return 1;
-    }
-
-    out.write(
-      theme.green(glyph.ok + ' Ready via ' + ready.map((status) => status.id).join(' + ')) + '\n\n',
-    );
-    return 0;
+    const facts = await gatherFacts(assistant);
+    if (options.json) printJson(jsonReport(facts));
+    else printReport(facts);
+    return facts.ready.length ? 0 : 1;
   });
 }
 
+async function gatherFacts(assistant: Assistant): Promise<DoctorFacts> {
+  const statuses = await assistant.providers.statuses(true);
+  const databaseFile = databasePath(assistant.config);
+  const memoryStats = assistant.store.memoryStats();
+  const sessionCount = assistant.store.listSessions({ limit: 1000, includeArchived: true }).length;
+  const speech = await describeSpeech();
+  const ready = statuses.filter((status) => status.available && status.authenticated);
+  return { assistant, statuses, ready, databaseFile, memoryStats, sessionCount, speech };
+}
+
+function jsonReport(facts: DoctorFacts): object {
+  const { assistant, databaseFile } = facts;
+  return {
+    ok: facts.ready.length > 0,
+    providers: facts.statuses,
+    home: assistant.config.home,
+    workspace: assistant.config.workspace,
+    database: { path: databaseFile, exists: existsSync(databaseFile), bytes: fileSize(databaseFile) },
+    memory: facts.memoryStats,
+    sessions: facts.sessionCount,
+    speech: facts.speech,
+    defaults: {
+      provider: assistant.config.defaultProvider,
+      model: assistant.config.defaultModel ?? null,
+      permission: assistant.config.defaultPermission,
+    },
+  };
+}
+
+function printReport(facts: DoctorFacts): void {
+  out.write('\n' + heading('Rookery doctor') + '\n\n');
+  printProviders(facts.statuses);
+  printStorage(facts);
+  printDefaults(facts);
+  printVerdict(facts);
+}
+
+function printProviders(statuses: ProviderStatus[]): void {
+  out.write(heading('Providers') + '\n');
+  for (const status of statuses) {
+    out.write(providerBlock(status));
+  }
+  out.write('\n');
+}
+
+function printStorage({ assistant, databaseFile, memoryStats, sessionCount }: DoctorFacts): void {
+  const { config } = assistant;
+  const notCreatedYet = theme.yellow('  (not created yet)');
+
+  out.write(heading('Storage') + '\n');
+  out.write(keyValue('home', config.home) + '\n');
+  // The assistant's own provider process always runs here, never in the
+  // directory Rookery happened to be started from.
+  out.write(keyValue('workspace', config.workspace + (existsSync(config.workspace) ? '' : notCreatedYet)) + '\n');
+  out.write(
+    keyValue(
+      'database',
+      databaseFile +
+        (existsSync(databaseFile) ? theme.dim('  (' + formatBytes(fileSize(databaseFile)) + ')') : notCreatedYet),
+    ) + '\n',
+  );
+  out.write(keyValue('sessions', String(sessionCount)) + '\n');
+  out.write(keyValue('memories', memoriesSummary(memoryStats)) + '\n');
+  out.write('\n');
+}
+
+function memoriesSummary(stats: MemoryStats): string {
+  const kinds = Object.entries(stats.byKind)
+    .map(([kind, count]) => kind + ' ' + count)
+    .join(', ');
+  return (
+    String(stats.total) +
+    (stats.forgotten ? theme.dim('  +' + stats.forgotten + ' forgotten') : '') +
+    (kinds ? theme.dim('  [' + kinds + ']') : '')
+  );
+}
+
+function printDefaults({ assistant, speech }: DoctorFacts): void {
+  const { config } = assistant;
+  out.write(heading('Defaults') + '\n');
+  out.write(keyValue('provider', config.defaultProvider) + '\n');
+  out.write(keyValue('model', config.defaultModel ?? theme.dim('provider default')) + '\n');
+  out.write(keyValue('permission', config.defaultPermission) + '\n');
+  out.write(keyValue('memory recall', String(config.memory.recallLimit) + ' per turn') + '\n');
+  out.write(keyValue('voice lang', config.voice.lang) + '\n');
+  out.write(keyValue('speech', speech) + '\n');
+  out.write('\n');
+}
+
+function printVerdict({ statuses, ready }: DoctorFacts): void {
+  if (ready.length) {
+    out.write(theme.green(glyph.ok + ' Ready via ' + ready.map((status) => status.id).join(' + ')) + '\n\n');
+    return;
+  }
+
+  out.write(theme.red(glyph.fail + ' No AI provider is logged in. Rookery cannot answer anything yet.') + '\n\n');
+  for (const status of statuses) {
+    const fix = status.available
+      ? LOGIN_HINT[status.id] ?? 'log in to ' + status.id
+      : 'install it: ' + INSTALL_HINT;
+    out.write('  ' + theme.accent(status.id) + '  ' + fix + '\n');
+  }
+  out.write('\n');
+}
+
+const PROVIDER_STATE: Record<ProviderHealth, string> = {
+  ok: theme.green('authenticated'),
+  warn: theme.yellow('logged out'),
+  fail: theme.red('not installed'),
+};
+
 function providerBlock(status: ProviderStatus): string {
-  const mark = status.available && status.authenticated
-    ? theme.green(glyph.ok)
-    : status.available
-      ? theme.yellow(glyph.warn)
-      : theme.red(glyph.fail);
+  const field = (key: string, value: string): string =>
+    '    ' + keyValue(key, value, PROVIDER_FIELD_WIDTH);
 
-  const state = status.available
-    ? status.authenticated
-      ? theme.green('authenticated')
-      : theme.yellow('logged out')
-    : theme.red('not installed');
-
-  const lines: string[] = [];
-  lines.push('  ' + mark + ' ' + theme.accentBold(status.id.padEnd(8)) + state);
-  lines.push('    ' + keyValue('binary', status.binary || theme.dim('not found'), 14));
-  lines.push('    ' + keyValue('version', status.version ?? theme.dim('unknown'), 14));
-  if (status.detail) lines.push('    ' + keyValue('detail', theme.dim(status.detail), 14));
+  const lines: string[] = [
+    '  ' + providerMark(status) + ' ' + theme.accentBold(status.id.padEnd(8)) + PROVIDER_STATE[providerHealth(status)],
+    field('binary', status.binary || theme.dim('not found')),
+    field('version', status.version ?? theme.dim('unknown')),
+  ];
+  if (status.detail) lines.push(field('detail', theme.dim(status.detail)));
   if (status.available && !status.authenticated) {
-    lines.push('    ' + keyValue('fix', theme.accent(LOGIN_HINT[status.id] ?? 'log in'), 14));
+    lines.push(field('fix', theme.accent(LOGIN_HINT[status.id] ?? 'log in')));
   }
-  if (!status.available) {
-    lines.push('    ' + keyValue('fix', theme.accent(INSTALL_HINT), 14));
-  }
+  if (!status.available) lines.push(field('fix', theme.accent(INSTALL_HINT)));
   return lines.join('\n') + '\n';
 }
 

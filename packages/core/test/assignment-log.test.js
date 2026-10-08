@@ -17,7 +17,7 @@ import { Assistant, ProviderRegistry, Store, rememberUsageRecovered } from '../d
  */
 
 const USAGE_FATAL = 'API Error: 429 You have reached your usage limit, please wait';
-/** The ring buffer cap, mirrored from the controller to check the budget. */
+/** The ring buffer cap, mirrored from org/assignment-log.ts to check the budget. */
 const LOG_CAP_BYTES = 256 * 1024;
 
 function sleep(ms) {

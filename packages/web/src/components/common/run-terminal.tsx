@@ -33,6 +33,11 @@ const THEME = {
   selectionBackground: '#2b4a40',
 };
 
+const FONT_SIZE = 13;
+const SCROLLBACK_LINES = 5000;
+/** A re-measure once the TUI has started drawing, after the first fit and the web font. */
+const REMEASURE_DELAY_MS = 400;
+
 export interface RunTerminalProps {
   /** The terminal's key: a run's assignment id, or a conversation's `chat:<id>`. */
   assignmentId: string;
@@ -65,6 +70,21 @@ function hasVisibleText(data: string): boolean {
       .replace(/\][^\x07]*\x07/g, '')
       .replace(/\[[0-9;?>]*[ -/]*[@-~]/g, ''),
   );
+}
+
+/** Fits the terminal to its box and tells the server; a no-op until the box is laid out. */
+function fitAndReport(
+  fit: FitAddon,
+  term: Terminal,
+  socket: { resizeTui(assignmentId: string, cols: number, rows: number): void },
+  assignmentId: string,
+): void {
+  try {
+    fit.fit();
+    socket.resizeTui(assignmentId, term.cols, term.rows);
+  } catch {
+    // Not laid out yet; the resize observer comes back.
+  }
 }
 
 export function RunTerminal({
@@ -102,9 +122,9 @@ export function RunTerminal({
     };
     const term = new Terminal({
       fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim() || 'monospace',
-      fontSize: 13,
+      fontSize: FONT_SIZE,
       cursorBlink: true,
-      scrollback: 5000,
+      scrollback: SCROLLBACK_LINES,
       theme: THEME,
     });
     const fit = new FitAddon();
@@ -117,14 +137,7 @@ export function RunTerminal({
     // opened it last or types into it sets the size; everyone else takes that
     // size over instead of pushing their own back, which is what used to
     // leave the others skewed with every repaint.
-    const drive = (): void => {
-      try {
-        fit.fit();
-        socket.resizeTui(assignmentId, term.cols, term.rows);
-      } catch {
-        // Not laid out yet.
-      }
-    };
+    const drive = (): void => fitAndReport(fit, term, socket, assignmentId);
     // Measure before asking for the screen: the process is set to this size
     // first, and the snapshot then arrives drawn for exactly these columns.
     // A snapshot written into the 80-column default and fitted afterwards is
@@ -187,14 +200,7 @@ export function RunTerminal({
     const fit = fitRef.current;
     const term = termRef.current;
     if (!host || !fit || !term) return;
-    const apply = (): void => {
-      try {
-        fit.fit();
-        socket.resizeTui(assignmentId, term.cols, term.rows);
-      } catch {
-        // Not laid out yet; the observer comes back.
-      }
-    };
+    const apply = (): void => fitAndReport(fit, term, socket, assignmentId);
     apply();
     const observer = new ResizeObserver(apply);
     observer.observe(host);
@@ -208,7 +214,7 @@ export function RunTerminal({
       term.options.fontFamily = term.options.fontFamily;
       apply();
     });
-    const settle = setTimeout(apply, 400);
+    const settle = setTimeout(apply, REMEASURE_DELAY_MS);
     return () => {
       disposed = true;
       clearTimeout(settle);

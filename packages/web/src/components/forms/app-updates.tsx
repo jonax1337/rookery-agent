@@ -30,11 +30,28 @@ const CHANNEL_LABEL: Record<UpdatesConfig['channel'], string> = {
 
 /** How long the page waits for the restarted server before giving up on it. */
 const RESTART_TIMEOUT_MS = 5 * 60 * 1000;
+const RESTART_POLL_MS = 2000;
+
+interface RestartTarget {
+  from: string;
+  to: string;
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function when(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString() : 'never';
+}
+
+function statusLine(status: UpdateStatus | null, restarting: RestartTarget | null): string {
+  if (restarting) {
+    return `Installing ${restarting.to} and restarting. This page reloads when it is back.`;
+  }
+  if (status?.error) return `The last check failed: ${status.error}`;
+  if (!status?.checkedAt) return 'Not checked since Rookery started.';
+  return status.available
+    ? `Last checked ${when(status.checkedAt)}.`
+    : `Up to date as of ${when(status.checkedAt)}.`;
 }
 
 /**
@@ -81,11 +98,11 @@ export function AppUpdates({
    * moment after accepting the install, so a version only counts once the
    * server has been unreachable in between.
    */
-  const waitForRestart = useCallback(async (target: { from: string; to: string }) => {
+  const waitForRestart = useCallback(async (target: RestartTarget) => {
     const started = Date.now();
     let wentDown = false;
     while (mounted.current && Date.now() - started < RESTART_TIMEOUT_MS) {
-      await sleep(2000);
+      await sleep(RESTART_POLL_MS);
       try {
         const health = await api.health();
         if (!wentDown) continue;
@@ -146,15 +163,7 @@ export function AppUpdates({
             {status?.available ? <Badge>{status.latest} available</Badge> : null}
           </ItemTitle>
           <ItemDescription>
-            {restarting
-              ? `Installing ${restarting.to} and restarting. This page reloads when it is back.`
-              : status?.error
-                ? `The last check failed: ${status.error}`
-                : !status?.checkedAt
-                  ? 'Not checked since Rookery started.'
-                  : status.available
-                    ? `Last checked ${when(status.checkedAt)}.`
-                    : `Up to date as of ${when(status.checkedAt)}.`}
+            {statusLine(status, restarting)}
           </ItemDescription>
         </ItemContent>
         <ItemActions>
@@ -192,47 +201,56 @@ export function AppUpdates({
         </FieldDescription>
       ) : null}
 
-      <Field orientation="horizontal">
-        <FieldContent>
-          <FieldLabel htmlFor="set-update-mode">Updates</FieldLabel>
-          <FieldDescription>{MODE_HINT[settings.mode]}</FieldDescription>
-        </FieldContent>
-        <Select value={settings.mode} onValueChange={(value) => onChange({ mode: value as UpdatesConfig['mode'] })}>
-          <SelectTrigger id="set-update-mode" className="w-52">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {(Object.keys(MODE_LABEL) as UpdatesConfig['mode'][]).map((mode) => (
-              <SelectItem key={mode} value={mode}>
-                {MODE_LABEL[mode]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </Field>
+      <OptionField
+        id="set-update-mode"
+        label="Updates"
+        hint={MODE_HINT[settings.mode]}
+        value={settings.mode}
+        labels={MODE_LABEL}
+        onChange={(mode) => onChange({ mode })}
+      />
 
-      <Field orientation="horizontal">
-        <FieldContent>
-          <FieldLabel htmlFor="set-update-channel">Channel</FieldLabel>
-          <FieldDescription>Pre-releases arrive earlier and may still have rough edges.</FieldDescription>
-        </FieldContent>
-        <Select
-          value={settings.channel}
-          onValueChange={(value) => onChange({ channel: value as UpdatesConfig['channel'] })}
-        >
-          <SelectTrigger id="set-update-channel" className="w-52">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {(Object.keys(CHANNEL_LABEL) as UpdatesConfig['channel'][]).map((channel) => (
-              <SelectItem key={channel} value={channel}>
-                {CHANNEL_LABEL[channel]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </Field>
+      <OptionField
+        id="set-update-channel"
+        label="Channel"
+        hint="Pre-releases arrive earlier and may still have rough edges."
+        value={settings.channel}
+        labels={CHANNEL_LABEL}
+        onChange={(channel) => onChange({ channel })}
+      />
       {dialog}
     </FieldSet>
+  );
+}
+
+interface OptionFieldProps<T extends string> {
+  id: string;
+  label: string;
+  hint: string;
+  value: T;
+  labels: Record<T, string>;
+  onChange(value: T): void;
+}
+
+function OptionField<T extends string>({ id, label, hint, value, labels, onChange }: OptionFieldProps<T>) {
+  return (
+    <Field orientation="horizontal">
+      <FieldContent>
+        <FieldLabel htmlFor={id}>{label}</FieldLabel>
+        <FieldDescription>{hint}</FieldDescription>
+      </FieldContent>
+      <Select value={value} onValueChange={(next) => onChange(next as T)}>
+        <SelectTrigger id={id} className="w-52">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {(Object.keys(labels) as T[]).map((option) => (
+            <SelectItem key={option} value={option}>
+              {labels[option]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Field>
   );
 }

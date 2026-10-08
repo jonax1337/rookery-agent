@@ -48,6 +48,14 @@ const COLORS: Record<OrbState, [Rgb, Rgb]> = {
 
 const WEIGHT_INDEX: Record<OrbState, number> = { idle: 0, listening: 1, thinking: 2, speaking: 3 };
 
+const MAX_PIXEL_RATIO = 1.5;
+/** A stalled tab must not make the first frame back a leap. */
+const MAX_FRAME_SECONDS = 0.1;
+/** Per second: how fast colours and weights cross-fade to a new state. */
+const STATE_FADE_RATE = 5;
+/** Per second: how fast the level falls; it rises instantly. */
+const LEVEL_RELEASE_RATE = 8;
+
 const VERTEX = `
 attribute vec2 a_pos;
 void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
@@ -198,6 +206,28 @@ void main() {
 }
 `;
 
+/** The orb's program, or null (after logging why) when the driver rejects either shader or the link. */
+function createOrbProgram(gl: WebGLRenderingContext): WebGLProgram | null {
+  const vertex = compile(gl, gl.VERTEX_SHADER, VERTEX);
+  const fragment = compile(gl, gl.FRAGMENT_SHADER, FRAGMENT);
+  const program = vertex && fragment ? gl.createProgram() : null;
+  if (program && vertex && fragment) {
+    gl.attachShader(program, vertex);
+    gl.attachShader(program, fragment);
+    gl.linkProgram(program);
+  }
+  // A linked program keeps its own copy; the shader objects are done with.
+  if (vertex) gl.deleteShader(vertex);
+  if (fragment) gl.deleteShader(fragment);
+  if (!program) return null;
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error('Orb program failed to link:', gl.getProgramInfoLog(program));
+    gl.deleteProgram(program);
+    return null;
+  }
+  return program;
+}
+
 function compile(gl: WebGLRenderingContext, type: number, source: string): WebGLShader | null {
   const shader = gl.createShader(type);
   if (!shader) return null;
@@ -224,20 +254,9 @@ export function VoiceOrb({ state, getLevel, dim = false, className }: VoiceOrbPr
     const canvas = canvasRef.current;
     if (!canvas) return;
     const gl = canvas.getContext('webgl', { antialias: false, alpha: false, powerPreference: 'high-performance' });
-    if (!gl) {
+    const program = gl && createOrbProgram(gl);
+    if (!gl || !program) {
       canvas.dataset.fallback = 'true';
-      return;
-    }
-
-    const vertex = compile(gl, gl.VERTEX_SHADER, VERTEX);
-    const fragment = compile(gl, gl.FRAGMENT_SHADER, FRAGMENT);
-    const program = gl.createProgram();
-    if (!vertex || !fragment || !program) return;
-    gl.attachShader(program, vertex);
-    gl.attachShader(program, fragment);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.error('Orb program failed to link:', gl.getProgramInfoLog(program));
       return;
     }
     gl.useProgram(program);
@@ -262,7 +281,7 @@ export function VoiceOrb({ state, getLevel, dim = false, className }: VoiceOrbPr
     let width = 0;
     let height = 0;
     const resize = (): void => {
-      const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+      const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
       const nextWidth = Math.max(1, Math.round(canvas.clientWidth * ratio));
       const nextHeight = Math.max(1, Math.round(canvas.clientHeight * ratio));
       if (nextWidth === width && nextHeight === height) return;
@@ -287,9 +306,9 @@ export function VoiceOrb({ state, getLevel, dim = false, className }: VoiceOrbPr
     let last = start;
 
     const draw = (now: number): void => {
-      const dt = Math.min(0.1, (now - last) / 1000);
+      const dt = Math.min(MAX_FRAME_SECONDS, (now - last) / 1000);
       last = now;
-      const k = 1 - Math.exp(-dt * 5);
+      const k = 1 - Math.exp(-dt * STATE_FADE_RATE);
       const target = WEIGHT_INDEX[stateRef.current];
       for (let index = 0; index < 4; index += 1) {
         weights[index] = (weights[index] ?? 0) + (((index === target ? 1 : 0) - (weights[index] ?? 0)) * k);
@@ -300,7 +319,7 @@ export function VoiceOrb({ state, getLevel, dim = false, className }: VoiceOrbPr
         colB[index] = (colB[index] ?? 0) + (((wantB[index] ?? 0) - (colB[index] ?? 0)) * k);
       }
       const wantLevel = Math.max(0, Math.min(1, levelRef.current()));
-      level = wantLevel > level ? wantLevel : level + (wantLevel - level) * Math.min(1, dt * 8);
+      level = wantLevel > level ? wantLevel : level + (wantLevel - level) * Math.min(1, dt * LEVEL_RELEASE_RATE);
       dimmed += ((dimRef.current ? 1 : 0) - dimmed) * k;
 
       gl.uniform2f(uRes, width, height);
@@ -320,8 +339,6 @@ export function VoiceOrb({ state, getLevel, dim = false, className }: VoiceOrbPr
       observer.disconnect();
       gl.deleteBuffer(buffer);
       gl.deleteProgram(program);
-      gl.deleteShader(vertex);
-      gl.deleteShader(fragment);
     };
     // The refs carry state and dim; the GL setup must run exactly once.
     // eslint-disable-next-line react-hooks/exhaustive-deps

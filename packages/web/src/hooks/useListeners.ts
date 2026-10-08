@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import { api, ApiError } from '../lib/api';
+import { useMemo } from 'react';
+import { api, type ApiError } from '../lib/api';
 import type { ListenerStatus } from '../lib/types';
+import { createSharedList } from './shared-list';
 
 /**
  * What every listener's connection is doing, held once for the whole app.
@@ -11,49 +12,7 @@ import type { ListenerStatus } from '../lib/types';
  * becomes visible again, and after a settings save.
  */
 
-interface ListenersSnapshot {
-  listeners: ListenerStatus[];
-  loading: boolean;
-  error: ApiError | null;
-  /** False until the first response, so a second mount does not refetch. */
-  loaded: boolean;
-}
-
-let snapshot: ListenersSnapshot = { listeners: [], loading: true, error: null, loaded: false };
-const subscribers = new Set<() => void>();
-let inflight: Promise<void> | null = null;
-
-function publish(next: Partial<ListenersSnapshot>): void {
-  snapshot = { ...snapshot, ...next };
-  for (const subscriber of subscribers) subscriber();
-}
-
-function subscribe(subscriber: () => void): () => void {
-  subscribers.add(subscriber);
-  return () => {
-    subscribers.delete(subscriber);
-  };
-}
-
-/** One request at a time; concurrent callers share the flight. */
-function load(): Promise<void> {
-  if (inflight) return inflight;
-  inflight = (async () => {
-    try {
-      const listeners = await api.getListeners();
-      publish({ listeners, error: null, loading: false, loaded: true });
-    } catch (caught) {
-      publish({
-        error: caught instanceof ApiError ? caught : new ApiError(String(caught), 0),
-        loading: false,
-        loaded: true,
-      });
-    } finally {
-      inflight = null;
-    }
-  })();
-  return inflight;
-}
+const listenerList = createSharedList<ListenerStatus>(api.getListeners);
 
 export interface UseListenersResult {
   listeners: ListenerStatus[];
@@ -64,27 +23,15 @@ export interface UseListenersResult {
 }
 
 export function useListeners(): UseListenersResult {
-  const state = useSyncExternalStore(subscribe, () => snapshot);
-
-  useEffect(() => {
-    if (!snapshot.loaded) void load();
-  }, []);
-
-  useEffect(() => {
-    const onVisible = (): void => {
-      if (document.visibilityState === 'visible') void load();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, []);
+  const state = listenerList.use();
 
   return useMemo<UseListenersResult>(
     () => ({
-      listeners: state.listeners,
+      listeners: state.items,
       loading: state.loading,
       error: state.error,
-      refresh: load,
-      listenerById: (id) => state.listeners.find((entry) => entry.id === id),
+      refresh: listenerList.load,
+      listenerById: (id) => state.items.find((entry) => entry.id === id),
     }),
     [state],
   );

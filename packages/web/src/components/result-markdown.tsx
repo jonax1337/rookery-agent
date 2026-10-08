@@ -37,6 +37,11 @@ const PREVIEW_CLASS = [
   '[&_table]:my-1.5',
 ].join(' ');
 
+/** Fades the cut-off edge of a clamped result. */
+const CLAMP_FADE = 'linear-gradient(to bottom, #000 60%, transparent 100%)';
+/** Sub-pixel rounding must not count as hidden text. */
+const CLAMP_TOLERANCE_PX = 2;
+
 export interface ResultMarkdownProps {
   text: string;
   className?: string;
@@ -59,7 +64,7 @@ export function ResultMarkdown({ text, className, preview, clampRem }: ResultMar
     }
     const node = ref.current;
     if (!node) return;
-    const measure = (): void => setClamped(node.scrollHeight - node.clientHeight > 2);
+    const measure = (): void => setClamped(node.scrollHeight - node.clientHeight > CLAMP_TOLERANCE_PX);
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(measure);
@@ -67,14 +72,12 @@ export function ResultMarkdown({ text, className, preview, clampRem }: ResultMar
     return () => observer.disconnect();
   }, [clampRem, text]);
 
-  const fade = 'linear-gradient(to bottom, #000 60%, transparent 100%)';
-
   return (
     <div
       ref={ref}
       style={{
         ...(clampRem !== undefined ? { maxHeight: clampRem + 'rem', overflow: 'hidden' } : {}),
-        ...(clamped ? { maskImage: fade, WebkitMaskImage: fade } : {}),
+        ...(clamped ? { maskImage: CLAMP_FADE, WebkitMaskImage: CLAMP_FADE } : {}),
       }}
       className={cn(
         'text-sm leading-relaxed break-words',

@@ -7,6 +7,9 @@ import { BadRequestError, cronJobSchema, parseOrThrow, patchCronJobSchema } from
 
 type IdParams = { Params: { id: string } };
 
+/** Core's own wording for the failures that are the caller's input, not a fault here. */
+const CLIENT_MISTAKE_MESSAGE = /needs an agent|No schedule|script|remaining runs|Remaining runs/;
+
 /** The one job that is Rookery's own clockwork rather than a user's schedule. */
 function isInternal(job: CronJob): boolean {
   return job.kind === 'sleep';
@@ -33,9 +36,8 @@ function isPermanent(job: CronJob): boolean {
  * the same way the timer's own runs do.
  */
 export async function registerCronRoutes(app: FastifyInstance, context: ServerContext): Promise<void> {
-  // The global same-origin preHandler in server.ts covers every mutating
-  // route; reads keep their own check because that hook exempts GET/HEAD and
-  // reflected CORS would otherwise allow cross-origin reads.
+  // Keep sensitive routes guarded even when embedded without buildServer's
+  // global hook; script source and execution must never rely on the caller.
   const options = { preHandler: requireSameOrigin };
   const cron = context.assistant.cron;
   const store = context.assistant.store;
@@ -50,9 +52,14 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
       return fn();
     } catch (error) {
       if (error instanceof CronSyntaxError) throw new BadRequestError(error.message);
-      if (error instanceof Error && /needs an agent|No schedule|script|remaining runs|Remaining runs/.test(error.message)) throw new BadRequestError(error.message);
+      if (error instanceof Error && CLIENT_MISTAKE_MESSAGE.test(error.message)) throw new BadRequestError(error.message);
       throw error;
     }
+  };
+  /** The job behind a user-facing id: the nightly memory run is not one. */
+  const findUserJob = (id: string): CronJob | undefined => {
+    const job = cron.get(id);
+    return job && !isInternal(job) ? job : undefined;
   };
 
   app.get('/api/cron', async () => {
@@ -77,11 +84,12 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
         next: upcomingCronRuns(schedule, 5).map((date) => date.getTime()),
       };
     } catch (error) {
-      return { ok: false, schedule: raw, description: '', next: [], error: (error as Error).message };
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, schedule: raw, description: '', next: [], error: message };
     }
   });
 
-  app.post('/api/cron', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post('/api/cron', options, async (request: FastifyRequest, reply: FastifyReply) => {
     const input = parseOrThrow(cronJobSchema, request.body ?? {});
     if (input.agentId && !store.org.getAgent(input.agentId)) return notFound(reply, 'No agent ' + input.agentId);
     if (input.projectId && !store.org.getProject(input.projectId)) return notFound(reply, 'No project ' + input.projectId);
@@ -91,11 +99,11 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
   });
 
   app.get<IdParams>('/api/cron/:id', options, async (request, reply) => {
-    const job = cron.get(request.params.id);
     // Same story as the list above: the nightly memory run is not a user
     // schedule, so from this surface it does not exist - not even to read.
     // The memory page asks for it through /api/sleep/status instead.
-    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
+    const job = findUserJob(request.params.id);
+    if (!job) return notFound(reply, 'No schedule ' + request.params.id);
     let scriptSource: string | undefined;
     let scriptError: string | undefined;
     if (job.kind === 'script' && job.script) {
@@ -118,20 +126,20 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
     };
   });
 
-  app.patch<IdParams>('/api/cron/:id', async (request, reply) => {
-    const job = cron.get(request.params.id);
-    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
+  app.patch<IdParams>('/api/cron/:id', options, async (request, reply) => {
+    const job = findUserJob(request.params.id);
+    if (!job) return notFound(reply, 'No schedule ' + request.params.id);
     const patch = parseOrThrow(patchCronJobSchema, request.body ?? {});
     if (patch.agentId && !store.org.getAgent(patch.agentId)) return notFound(reply, 'No agent ' + patch.agentId);
     if (patch.projectId && !store.org.getProject(patch.projectId)) return notFound(reply, 'No project ' + patch.projectId);
     return guarded(() => cron.update(job.id, patch));
   });
 
-  app.delete<IdParams>('/api/cron/:id', async (request, reply) => {
-    const job = cron.get(request.params.id);
+  app.delete<IdParams>('/api/cron/:id', options, async (request, reply) => {
     // The nightly memory run is machinery, not a row somebody deletes: from
     // here it does not exist, and the memory page is where it is managed.
-    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
+    const job = findUserJob(request.params.id);
+    if (!job) return notFound(reply, 'No schedule ' + request.params.id);
     // The board watcher does exist and is editable - it just cannot be
     // deleted, so it says so rather than reporting a success the next
     // restart would undo.
@@ -143,16 +151,20 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
   });
 
   /** Fire now. Returns as soon as the run is booked; progress comes over the socket. */
-  app.post<IdParams>('/api/cron/:id/run', async (request, reply) => {
-    const job = cron.get(request.params.id);
-    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
+  app.post<IdParams>('/api/cron/:id/run', options, async (request, reply) => {
+    const job = findUserJob(request.params.id);
+    if (!job) return notFound(reply, 'No schedule ' + request.params.id);
     if (cron.isRunning(job.id)) {
       reply.code(409);
       return { error: 'Conflict', message: 'The schedule is running.' };
     }
-    if (job.kind === 'script' && job.permission !== 'full') throw new BadRequestError('Review the imported script and grant Full access before running it.');
+    if (job.kind === 'script' && job.permission !== 'full') {
+      throw new BadRequestError('Review the imported script and grant Full access before running it.');
+    }
     if (job.remainingRuns === 0) throw new BadRequestError('This schedule has no remaining runs.');
-    void cron.runNow(job.id).catch((error: Error) => context.log.warn('Manual schedule run failed', { error: error.message }));
+    void cron.runNow(job.id).catch((error: Error) => {
+      context.log.warn('Manual schedule run failed', { error: error.message });
+    });
     reply.code(202);
     return { ok: true };
   });
@@ -166,15 +178,15 @@ export async function registerCronRoutes(app: FastifyInstance, context: ServerCo
    * rotation and a first issue are the same act.
    */
   app.post<IdParams>('/api/cron/:id/webhook', options, async (request, reply) => {
-    const job = cron.get(request.params.id);
-    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
+    const job = findUserJob(request.params.id);
+    if (!job) return notFound(reply, 'No schedule ' + request.params.id);
     return { job: cron.enableWebhook(job.id) };
   });
 
   /** Take the webhook away. Whoever holds the URL holds nothing from here on. */
   app.delete<IdParams>('/api/cron/:id/webhook', options, async (request, reply) => {
-    const job = cron.get(request.params.id);
-    if (!job || isInternal(job)) return notFound(reply, 'No schedule ' + request.params.id);
+    const job = findUserJob(request.params.id);
+    if (!job) return notFound(reply, 'No schedule ' + request.params.id);
     return { job: cron.disableWebhook(job.id) };
   });
 }

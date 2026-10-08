@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, ApiError } from '../lib/api';
+import { api } from '../lib/api';
+import { upsertById } from '../lib/collections';
+import { failureMessage } from '../lib/errors';
 import { TASK_PRIORITY_RANK } from '../lib/format';
 import type { RookerySocket } from '../lib/socket';
 import type { Task, TaskStatus } from '../lib/types';
@@ -53,11 +55,7 @@ export function useTasks(socket: RookerySocket): TasksState {
       setTasks(await api.tasks({ all: true, limit: 300 }));
       setError(null);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.offline) {
-        setError('No connection to the Rookery server.');
-      } else {
-        setError((caught as Error).message);
-      }
+      setError(failureMessage(caught));
     } finally {
       setLoading(false);
     }
@@ -68,16 +66,7 @@ export function useTasks(socket: RookerySocket): TasksState {
   }, [refresh]);
 
   useEffect(
-    () =>
-      socket.onTask((task) => {
-        setTasks((current) => {
-          const index = current.findIndex((entry) => entry.id === task.id);
-          if (index === -1) return [...current, task];
-          const next = [...current];
-          next[index] = task;
-          return next;
-        });
-      }),
+    () => socket.onTask((task) => setTasks((current) => upsertById(current, task))),
     [socket],
   );
 

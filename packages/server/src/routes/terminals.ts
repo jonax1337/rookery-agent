@@ -23,34 +23,42 @@ export interface TerminalView {
   startedAt: number;
 }
 
+/** Terminal registry keys of a conversation start with this; any other key is an assignment id. */
+const CHAT_KEY_PREFIX = 'chat:';
+/** A run without a title is named by the start of its task. */
+const RUN_TITLE_CHARS = 80;
+
 export async function registerTerminalRoutes(app: FastifyInstance, context: ServerContext): Promise<void> {
   const { store } = context.assistant;
 
-  const view = (info: TuiSessionInfo): TerminalView => {
-    if (info.key.startsWith('chat:')) {
-      const id = info.key.slice('chat:'.length);
-      return {
-        key: info.key,
-        kind: 'chat',
-        id,
-        title: store.getSession(id)?.title ?? 'Conversation',
-        subtitle: '',
-        state: info.state,
-        startedAt: info.startedAt,
-      };
-    }
+  const chatView = (info: TuiSessionInfo): TerminalView => {
+    const id = info.key.slice(CHAT_KEY_PREFIX.length);
+    return {
+      key: info.key,
+      kind: 'chat',
+      id,
+      title: store.getSession(id)?.title ?? 'Conversation',
+      subtitle: '',
+      state: info.state,
+      startedAt: info.startedAt,
+    };
+  };
+
+  const runView = (info: TuiSessionInfo): TerminalView => {
     const assignment = store.org.getAssignment(info.key);
     const agent = assignment ? store.org.getAgent(assignment.agentId) : null;
     return {
       key: info.key,
       kind: 'run',
       id: info.key,
-      title: assignment?.title || assignment?.task.slice(0, 80) || 'Run',
+      title: assignment?.title || assignment?.task.slice(0, RUN_TITLE_CHARS) || 'Run',
       subtitle: agent?.name ?? '',
       state: info.state,
       startedAt: info.startedAt,
     };
   };
+
+  const view = (info: TuiSessionInfo): TerminalView => (info.key.startsWith(CHAT_KEY_PREFIX) ? chatView(info) : runView(info));
 
   // Oldest first: a tab keeps its place when others open after it.
   app.get('/api/terminals', async () =>

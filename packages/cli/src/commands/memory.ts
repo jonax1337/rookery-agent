@@ -3,19 +3,21 @@
  * same way a turn does, and forget things.
  */
 
-import { recall } from '@rookery/core';
-import type { MemoryKind } from '@rookery/core';
 import { glyph, theme } from '../ui/theme.js';
-import { heading, keyValue, memoryLine, relativeTime, shorten } from '../ui/render.js';
+import { heading, keyValue, listHeader, memoryLine, relativeTime, shorten } from '../ui/render.js';
 import {
   CliError,
+  inspectMemories,
   parseImportance,
   parseKind,
   parseLimit,
   parseTags,
+  printJson,
   resolveMemoryId,
   withAssistant,
 } from './shared.js';
+
+const out = process.stdout;
 
 export interface MemoryListOptions {
   kind?: string;
@@ -28,29 +30,28 @@ export async function memoryListCommand(options: MemoryListOptions = {}): Promis
   return withAssistant((assistant) => {
     const kind = parseKind(options.kind);
     const limit = parseLimit(options.limit, 30);
-    const kinds: MemoryKind[] = kind ? [kind] : [];
     const memories = assistant.store.listMemories({
-      kinds,
+      kinds: kind ? [kind] : [],
       limit,
       includeForgotten: options.all ?? false,
     });
 
     if (options.json) {
-      process.stdout.write(JSON.stringify(memories, null, 2) + '\n');
+      printJson(memories);
       return 0;
     }
 
     if (!memories.length) {
-      process.stdout.write(theme.dim('No memories yet. Add one with `rookery memory add "..."`.') + '\n');
+      out.write(theme.dim('No memories yet. Add one with `rookery memory add "..."`.') + '\n');
       return 0;
     }
 
-    process.stdout.write('\n' + heading('Memories') + theme.dim('  (' + memories.length + ')') + '\n\n');
+    out.write(listHeader('Memories', memories.length));
     for (const memory of memories) {
       const flag = memory.forgotten ? theme.dim(' [forgotten]') : '';
-      process.stdout.write(memoryLine(memory) + flag + '\n');
+      out.write(memoryLine(memory) + flag + '\n');
     }
-    process.stdout.write('\n');
+    out.write('\n');
     return 0;
   });
 }
@@ -78,12 +79,12 @@ export async function memoryAddCommand(
     });
 
     if (options.json) {
-      process.stdout.write(JSON.stringify(record, null, 2) + '\n');
+      printJson(record);
       return 0;
     }
 
-    process.stdout.write(theme.green(glyph.ok + ' Remembered') + '\n');
-    process.stdout.write(memoryLine(record) + '\n');
+    out.write(theme.green(glyph.ok + ' Remembered') + '\n');
+    out.write(memoryLine(record) + '\n');
     return 0;
   });
 }
@@ -108,28 +109,26 @@ export async function memorySearchCommand(
     const threshold = options.threshold === undefined ? 0 : Number(options.threshold);
     if (!Number.isFinite(threshold)) throw new CliError('--threshold must be a number.');
 
-    const hits = recall(assistant.store, {
+    const hits = inspectMemories(assistant, {
       text: query,
       limit,
       kinds: kind ? [kind] : undefined,
       threshold,
-      // Inspection should not inflate the usage signal it is inspecting.
-      touch: false,
     });
 
     if (options.json) {
-      process.stdout.write(JSON.stringify(hits, null, 2) + '\n');
+      printJson(hits);
       return 0;
     }
 
     if (!hits.length) {
-      process.stdout.write(theme.dim('Nothing recalled for "' + shorten(query, 60) + '".') + '\n');
+      out.write(theme.dim('Nothing recalled for "' + shorten(query, 60) + '".') + '\n');
       return 0;
     }
 
-    process.stdout.write('\n' + heading('Recall') + theme.dim('  "' + shorten(query, 60) + '"') + '\n\n');
-    for (const hit of hits) process.stdout.write(memoryLine(hit) + '\n');
-    process.stdout.write('\n');
+    out.write('\n' + heading('Recall') + theme.dim('  "' + shorten(query, 60) + '"') + '\n\n');
+    for (const hit of hits) out.write(memoryLine(hit) + '\n');
+    out.write('\n');
     return 0;
   });
 }
@@ -149,14 +148,10 @@ export async function memoryForgetCommand(
 
     if (options.hard) {
       assistant.store.deleteMemory(resolved);
-      process.stdout.write(
-        theme.green(glyph.ok + ' Deleted permanently: ') + theme.dim(shorten(memory.content, 70)) + '\n',
-      );
+      out.write(theme.green(glyph.ok + ' Deleted permanently: ') + theme.dim(shorten(memory.content, 70)) + '\n');
     } else {
       assistant.store.forgetMemory(resolved);
-      process.stdout.write(
-        theme.green(glyph.ok + ' Forgotten (recoverable): ') + theme.dim(shorten(memory.content, 70)) + '\n',
-      );
+      out.write(theme.green(glyph.ok + ' Forgotten (recoverable): ') + theme.dim(shorten(memory.content, 70)) + '\n');
     }
     return 0;
   });
@@ -172,21 +167,21 @@ export async function memoryStatsCommand(options: MemoryStatsOptions = {}): Prom
     const recent = assistant.store.listMemories({ limit: 5 });
 
     if (options.json) {
-      process.stdout.write(JSON.stringify(stats, null, 2) + '\n');
+      printJson(stats);
       return 0;
     }
 
-    process.stdout.write('\n' + heading('Memory') + '\n');
-    process.stdout.write(keyValue('active', String(stats.total)) + '\n');
-    process.stdout.write(keyValue('forgotten', String(stats.forgotten)) + '\n');
+    out.write('\n' + heading('Memory') + '\n');
+    out.write(keyValue('active', String(stats.total)) + '\n');
+    out.write(keyValue('forgotten', String(stats.forgotten)) + '\n');
     for (const [kind, count] of Object.entries(stats.byKind).sort((a, b) => b[1] - a[1])) {
-      process.stdout.write(keyValue('  ' + kind, String(count)) + '\n');
+      out.write(keyValue('  ' + kind, String(count)) + '\n');
     }
 
     if (recent.length) {
-      process.stdout.write('\n' + heading('Top by importance') + '\n');
+      out.write('\n' + heading('Top by importance') + '\n');
       for (const memory of recent) {
-        process.stdout.write(
+        out.write(
           theme.dim(memory.importance.toFixed(2) + '  ') +
             theme.frost(shorten(memory.content, 74)) +
             theme.dim('  ' + relativeTime(memory.updatedAt)) +
@@ -194,7 +189,7 @@ export async function memoryStatsCommand(options: MemoryStatsOptions = {}): Prom
         );
       }
     }
-    process.stdout.write('\n');
+    out.write('\n');
     return 0;
   });
 }

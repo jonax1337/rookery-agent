@@ -15,11 +15,18 @@ import type {
   ProviderTurnOptions,
   TurnUsage,
 } from '../types.js';
-import { readJsonLines, resolveBinary, runCapture, spawnCli, type ResolvedBinary } from './process.js';
+import {
+  readJsonLines,
+  resolveBinary,
+  runCapture,
+  spawnCli,
+  type ResolvedBinary,
+  type SpawnHandle,
+} from './process.js';
 import { discoverModels } from './catalogue.js';
 import { parseClaudeWindows, rememberQuota } from './quota.js';
 import { sharedRouterManager } from './router.js';
-import { sharedCodexBridge } from './codex-bridge.js';
+import { BRIDGE_TOKEN_HEADER, sharedCodexBridge } from './codex-bridge.js';
 import { providerContextWindow } from './provider-catalog.js';
 import { TOOL_INPUT_LIMIT, canonicalJson, hashCanonicalJson } from '../memory/dream/trajectory.js';
 import {
@@ -31,7 +38,6 @@ import {
   stopHookCommand,
   tuiSessions,
 } from './claude-tui.js';
-import { BRIDGE_TOKEN_HEADER } from './codex-bridge.js';
 
 /** The built-in `claude` provider: OAuth login, no endpoint override. */
 const BUILTIN_PROFILE: ProviderProfile = {
@@ -41,6 +47,19 @@ const BUILTIN_PROFILE: ProviderProfile = {
   authToken: '',
   via: 'direct',
 };
+
+const VERSION_PROBE_TIMEOUT_MS = 20000;
+const AUTH_PROBE_TIMEOUT_MS = 60000;
+/** An assignment can run for many minutes; the default tool timeout would cut it off long before that. */
+const MCP_TOOL_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const MCP_STARTUP_TIMEOUT_MS = 60 * 1000;
+const TOOL_RESULT_LIMIT = 16000;
+const TOOL_DETAIL_LIMIT = 120;
+const TOOL_INPUT_DETAIL_LIMIT = 4000;
+const EXIT_STDERR_TAIL_CHARS = 600;
+const PRINT_MODE_ARGS = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+/** Discovery guarantees this shape; rechecked wherever a name becomes a file name. */
+const HANDOFF_AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /**
  * Claude Code adapter.
@@ -87,6 +106,23 @@ function permissionArgs(level: PermissionLevel): string[] {
     case 'full':
       return ['--dangerously-skip-permissions'];
   }
+}
+
+/** The files a terminal run lives on; they outlive the generator that started it. */
+interface TerminalFiles {
+  dir: string;
+  /** Written by the Stop hook: how the terminal learns that the agent is done. */
+  markerFile: string;
+  /** Only a conversation terminal: per-message context its prompt hook reads. */
+  contextFile?: string;
+}
+
+interface CommandLine {
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  model: string | undefined;
+  pinnedSessionId: string;
+  handoff: Handoff;
 }
 
 export class ClaudeCodeProvider implements Provider {
@@ -157,26 +193,15 @@ export class ClaudeCodeProvider implements Provider {
   async status(): Promise<ProviderStatus> {
     const binary = this.#resolve();
     if (!binary) {
-      return {
-        id: this.id,
-        displayName: this.displayName,
-        available: false,
-        binary: 'claude',
-        authenticated: false,
-        detail: 'The claude CLI is not on PATH. Install Claude Code, then run it once to log in.',
-      };
+      return this.#unavailable(
+        'claude',
+        'The claude CLI is not on PATH. Install Claude Code, then run it once to log in.',
+      );
     }
 
-    const version = await runCapture(binary, ['--version'], 20000);
+    const version = await runCapture(binary, ['--version'], VERSION_PROBE_TIMEOUT_MS);
     if (version.code !== 0) {
-      return {
-        id: this.id,
-        displayName: this.displayName,
-        available: false,
-        binary: binary.path,
-        authenticated: false,
-        detail: 'claude --version failed: ' + (version.stderr.trim() || 'unknown error'),
-      };
+      return this.#unavailable(binary.path, 'claude --version failed: ' + (version.stderr.trim() || 'unknown error'));
     }
 
     // Reporting a provider as unusable is this method's job, so a backend that
@@ -188,14 +213,7 @@ export class ClaudeCodeProvider implements Provider {
     try {
       env = await this.#resolveEnv();
     } catch (error) {
-      return {
-        id: this.id,
-        displayName: this.displayName,
-        available: false,
-        binary: binary.path,
-        authenticated: false,
-        detail: (error as Error).message,
-      };
+      return this.#unavailable(binary.path, (error as Error).message);
     }
 
     // A one-token print turn is the only reliable proof that the login is live;
@@ -203,7 +221,7 @@ export class ClaudeCodeProvider implements Provider {
     const probe = await runCapture(
       binary,
       ['-p', 'ok', '--output-format', 'json', '--restricted', '--permission-mode', 'dontAsk'],
-      60000,
+      AUTH_PROBE_TIMEOUT_MS,
       env,
     );
     const authenticated = probe.code === 0;
@@ -219,59 +237,41 @@ export class ClaudeCodeProvider implements Provider {
     };
   }
 
+  #unavailable(binary: string, detail: string): ProviderStatus {
+    return {
+      id: this.id,
+      displayName: this.displayName,
+      available: false,
+      binary,
+      authenticated: false,
+      detail,
+    };
+  }
+
   /**
    * The command line and environment of one Claude Code process, shared by a
-   * print run, a terminal run and a conversation terminal. `withTui` leaves
-   * out the print-mode flags and adds the Stop hook the terminal modes read.
+   * print run, a terminal run and a conversation terminal. With `files` it is
+   * a terminal: the print-mode flags are left out and the Stop hook the
+   * terminal modes read is added.
    */
-  async #commandLine(
-    options: ProviderTurnOptions,
-    withTui: boolean,
-    conversation = false,
-  ): Promise<{
-    args: string[];
-    env: NodeJS.ProcessEnv;
-    model: string | undefined;
-    pinnedSessionId: string;
-    handoff: Handoff;
-    tuiDir?: string;
-    markerFile?: string;
-  }> {
-    const args = withTui ? [] : ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
-
+  async #commandLine(options: ProviderTurnOptions, files?: TerminalFiles): Promise<CommandLine> {
     // Pinned up front so the caller can resume even if the turn is cut short,
     // and so a terminal knows which transcript file is its own. An
     // interactive `--resume` keeps writing to that same session.
     const pinnedSessionId = options.providerSessionId ?? randomUUID();
-    if (options.providerSessionId) {
-      args.push('--resume', options.providerSessionId);
-    } else {
-      args.push('--session-id', pinnedSessionId);
-    }
     const model = options.model ?? this.#profile.defaultModel;
-    if (model) args.push('--model', model);
-    if (options.effort) args.push('--effort', options.effort);
-    if (options.systemPrompt) {
-      // The assistant replaces Claude Code's own coding-agent prompt so it is
-      // a person rather than a tool; agents keep it because they work in code.
-      args.push(
-        options.systemPromptMode === 'replace' ? '--system-prompt' : '--append-system-prompt',
-        options.systemPrompt,
-      );
-    }
-    args.push(...permissionArgs(options.permission ?? 'read'));
 
-    // Rookery is the whole environment: no user or project settings, and no
-    // MCP servers except the one Rookery hands over for this turn. The
-    // working directory's own CLAUDE.md is still read, which is why the
-    // workspace carries one of Rookery's own.
-    args.push('--setting-sources', '');
-    const servers = [...(options.mcp ? [options.mcp] : []), ...(options.mcpExtra ?? [])];
-    if (servers.length) {
-      args.push('--mcp-config', JSON.stringify(mcpConfig(servers)));
-      args.push('--strict-mcp-config');
-      args.push('--allowedTools', servers.map((server) => 'mcp__' + server.name).join(','));
-    }
+    const args = [
+      ...(files ? [] : PRINT_MODE_ARGS),
+      ...sessionArgs(options, pinnedSessionId, model),
+      ...permissionArgs(options.permission ?? 'read'),
+      // Rookery is the whole environment: no user or project settings, and no
+      // MCP servers except the one Rookery hands over for this turn. The
+      // working directory's own CLAUDE.md is still read, which is why the
+      // workspace carries one of Rookery's own.
+      '--setting-sources', '',
+      ...mcpArgs(options),
+    ];
 
     // Three further channels of their own, all paths, all unaffected by the
     // empty `--setting-sources` above - which is exactly why they are usable:
@@ -291,55 +291,27 @@ export class ClaudeCodeProvider implements Provider {
     // `--settings` carries Rookery's own `permissions.deny` floor even when
     // nobody approved a single hook, so a `full` turn finally has limits
     // between it and `--dangerously-skip-permissions`.
-    //
-    // A terminal run adds its Stop hook here, into the same settings file:
-    // the hook is how it learns that the agent is done.
-    let tuiDir: string | undefined;
-    let markerFile: string | undefined;
-    let turnOptions = options;
-    if (withTui) {
-      tuiDir = await mkdtemp(join(tmpdir(), 'rookery-tui-'));
-      markerFile = join(tuiDir, 'stop.json');
-      await writeFile(markerFile, '');
-      turnOptions = { ...options, settings: withHook(options.settings, 'Stop', stopHookCommand(markerFile)) };
-      // A conversation terminal also takes per-message context - the recall,
-      // the fresh company block - through its prompt hook (T2).
-      if (conversation) {
-        const contextFile = contextFileFor(tuiDir);
-        await writeFile(contextFile, '');
-        turnOptions = {
-          ...turnOptions,
-          settings: withHook(turnOptions.settings, 'UserPromptSubmit', promptContextHookCommand(contextFile)),
-        };
+    const handoff = await writeHandoffDir({ ...options, settings: composeSettings(options, files) });
+    try {
+      if (handoff.settingsFile) args.push('--settings', handoff.settingsFile);
+      // A plugin trusted outright comes in whole, folder and all; the curated
+      // skills, agents and hooks of that same source are left out upstream.
+      for (const dir of [...(options.pluginDirs ?? []), ...(handoff.dir ? [handoff.dir] : [])]) {
+        args.push('--plugin-dir', dir);
       }
+      return { args, env: await this.#commandEnv(options, model), model, pinnedSessionId, handoff };
+    } catch (error) {
+      handoff.cleanup();
+      throw error;
     }
-    if (options.gateway?.picker.length) {
-      // The TUI's `/model` menu: Claude's own entries stay, the gateway's
-      // other models are appended. `--settings` is one of the sources this
-      // key is read from even with every settings file switched off.
-      turnOptions = {
-        ...turnOptions,
-        settings: {
-          ...(turnOptions.settings ?? {}),
-          modelPicker: { options: options.gateway.picker, replaceBuiltInOptions: false },
-        },
-      };
-    }
-    const handoff = await writeHandoffDir(turnOptions);
-    if (handoff.settingsFile) args.push('--settings', handoff.settingsFile);
-    // A plugin trusted outright comes in whole, folder and all; the curated
-    // skills, agents and hooks of that same source are left out upstream.
-    for (const dir of [...(options.pluginDirs ?? []), ...(handoff.dir ? [handoff.dir] : [])]) {
-      args.push('--plugin-dir', dir);
-    }
+  }
 
+  async #commandEnv(options: ProviderTurnOptions, model: string | undefined): Promise<NodeJS.ProcessEnv> {
     const contextWindow = providerContextWindow(this.#profile, model);
     const env: NodeJS.ProcessEnv = {
       CLAUDE_CODE_ENTRYPOINT: 'rookery',
-      // An assignment can run for many minutes; the default tool timeout
-      // would cut the assistant's `assign` call off long before that.
-      MCP_TOOL_TIMEOUT: String(6 * 60 * 60 * 1000),
-      MCP_TIMEOUT: String(60 * 1000),
+      MCP_TOOL_TIMEOUT: String(MCP_TOOL_TIMEOUT_MS),
+      MCP_TIMEOUT: String(MCP_STARTUP_TIMEOUT_MS),
       ...(await this.#resolveEnv()),
       ...(contextWindow ? { CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(contextWindow) } : {}),
     };
@@ -352,17 +324,20 @@ export class ClaudeCodeProvider implements Provider {
       delete env.CLAUDE_CODE_MAX_CONTEXT_TOKENS;
       env.ANTHROPIC_CUSTOM_HEADERS = BRIDGE_TOKEN_HEADER + ': ' + options.gateway.token;
     }
+    return env;
+  }
 
-
-    return {
-      args,
-      env,
-      model,
-      pinnedSessionId,
-      handoff,
-      ...(tuiDir ? { tuiDir } : {}),
-      ...(markerFile ? { markerFile } : {}),
-    };
+  /** A terminal's command line; its files are removed again when the command line cannot be built. */
+  async #terminalCommandLine(
+    options: ProviderTurnOptions,
+    files: TerminalFiles,
+  ): Promise<CommandLine & { files: TerminalFiles }> {
+    try {
+      return { ...(await this.#commandLine(options, files)), files };
+    } catch (error) {
+      removeQuietly(files.dir);
+      throw error;
+    }
   }
 
   /**
@@ -379,12 +354,11 @@ export class ClaudeCodeProvider implements Provider {
     if (!options.tui) throw new Error('A terminal needs a key.');
     if (!(await loadPty())) throw new Error('Terminal support is not available on this system.');
 
-    const { args, env, pinnedSessionId, handoff, tuiDir, markerFile } = await this.#commandLine(options, true, true);
-    const dir = tuiDir as string;
-    const cleanup = (): void => {
-      handoff.cleanup();
-      void rm(dir, { recursive: true, force: true }).catch(() => {});
-    };
+    const { args, env, pinnedSessionId, handoff, files } = await this.#terminalCommandLine(
+      options,
+      await createConversationFiles(),
+    );
+    const cleanup = releaseTerminalFiles(handoff, files.dir);
     let terminal: ConversationTerminalHandle;
     try {
       terminal = await startConversationTerminal(
@@ -395,8 +369,8 @@ export class ClaudeCodeProvider implements Provider {
           ...(options.cwd ? { cwd: options.cwd } : {}),
           env,
           sessionId: pinnedSessionId,
-          workDir: dir,
-          markerFile: markerFile as string,
+          workDir: files.dir,
+          markerFile: files.markerFile,
           mapEntry: transcriptMapper(),
           cleanup,
         },
@@ -422,56 +396,60 @@ export class ClaudeCodeProvider implements Provider {
     // Rookery what happened (see claude-tui.ts). Without the pty binding it
     // quietly stays a print run.
     const tui = options.tui && (await loadPty()) ? options.tui : undefined;
-    const { args, env, model, pinnedSessionId, handoff, tuiDir, markerFile } = await this.#commandLine(
+    if (tui) yield* this.#runTerminal(binary, options, tui);
+    else yield* this.#runPrint(binary, options);
+  }
+
+  async *#runTerminal(
+    binary: ResolvedBinary,
+    options: ProviderTurnOptions,
+    tui: NonNullable<ProviderTurnOptions['tui']>,
+  ): AsyncGenerator<AgentEvent, void, unknown> {
+    const { args, env, model, pinnedSessionId, handoff, files } = await this.#terminalCommandLine(
       options,
-      Boolean(tui),
+      await createTerminalFiles(),
     );
-
-    if (tui && tuiDir && markerFile) {
-      yield {
-        type: 'session',
+    yield {
+      type: 'session',
+      sessionId: pinnedSessionId,
+      providerSessionId: pinnedSessionId,
+      provider: this.id,
+      ...(model ? { model } : {}),
+    };
+    // The terminal outlives this generator, so its files do too: they go
+    // when the process exits, not when the work is reported done.
+    const cleanup = releaseTerminalFiles(handoff, files.dir);
+    let failed = false;
+    try {
+      yield* runTui({
+        key: tui.key,
+        binary,
+        args,
+        prompt: options.prompt,
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        env,
+        ...(options.signal ? { signal: options.signal } : {}),
         sessionId: pinnedSessionId,
-        providerSessionId: pinnedSessionId,
-        provider: this.id,
-        ...(model ? { model } : {}),
-      };
-      const dir = tuiDir;
-      // The terminal outlives this generator, so its files do too: they go
-      // when the process exits, not when the work is reported done.
-      const cleanup = (): void => {
-        handoff.cleanup();
-        void rm(dir, { recursive: true, force: true }).catch(() => {});
-      };
-      let failed = false;
-      try {
-        yield* runTui({
-          key: tui.key,
-          binary,
-          args,
-          prompt: options.prompt,
-          ...(options.cwd ? { cwd: options.cwd } : {}),
-          env,
-          ...(options.signal ? { signal: options.signal } : {}),
-          sessionId: pinnedSessionId,
-          workDir: dir,
-          markerFile,
-          mapEntry: transcriptMapper(),
-          cleanup,
-          ...(tui.lingerMs !== undefined ? { lingerMs: tui.lingerMs } : {}),
-          ...(tui.onLateEvent ? { onLateEvent: tui.onLateEvent } : {}),
-        });
-      } catch (error) {
-        failed = true;
-        cleanup();
-        yield { type: 'error', message: (error as Error).message, fatal: true };
-      } finally {
-        // Walked away from before the terminal existed: nobody else will
-        // ever remove these folders. Once it exists, its exit does.
-        if (!failed && tuiSessions.info(tui.key)?.providerSessionId !== pinnedSessionId) cleanup();
-      }
-      return;
+        workDir: files.dir,
+        markerFile: files.markerFile,
+        mapEntry: transcriptMapper(),
+        cleanup,
+        ...(tui.lingerMs !== undefined ? { lingerMs: tui.lingerMs } : {}),
+        ...(tui.onLateEvent ? { onLateEvent: tui.onLateEvent } : {}),
+      });
+    } catch (error) {
+      failed = true;
+      cleanup();
+      yield { type: 'error', message: (error as Error).message, fatal: true };
+    } finally {
+      // Walked away from before the terminal existed: nobody else will
+      // ever remove these folders. Once it exists, its exit does.
+      if (!failed && tuiSessions.info(tui.key)?.providerSessionId !== pinnedSessionId) cleanup();
     }
+  }
 
+  async *#runPrint(binary: ResolvedBinary, options: ProviderTurnOptions): AsyncGenerator<AgentEvent, void, unknown> {
+    const { args, env, handoff } = await this.#commandLine(options);
     const handle = spawnCli(binary, {
       args,
       cwd: options.cwd,
@@ -480,142 +458,119 @@ export class ClaudeCodeProvider implements Provider {
       signal: options.signal,
       env,
     });
-
-    const started = Date.now();
-    let sessionId: string | undefined;
-    let accumulated = '';
-    let emittedDone = false;
-    /**
-     * Tool name by tool-use id, so the `end` event can carry the real name
-     * instead of the literal `'tool'` (concept S28). The CLI names the tool
-     * only on the `tool_use` block; its `tool_result` counterpart carries the
-     * id alone, and a divergence judge cannot compare names it never saw.
-     */
-    const toolNames = new Map<string, string>();
-    /** Context size of the latest request: prompt cache plus fresh input. */
-    let contextTokens: number | undefined;
+    const stream = new PrintTurnStream(this.id);
 
     try {
-      for await (const event of readJsonLines(handle.child.stdout)) {
-        const type = event.type as string | undefined;
-
-        if (type === 'rate_limit_event') {
-          // The CLI reports the account's windows with every turn; the same
-          // numbers its /usage panel shows, without another request.
-          const info = asRecordOf(event.rate_limit_info);
-          const windows = parseClaudeWindows(info?.unifiedWindows, true);
-          if (windows.length) {
-            const quota: ProviderQuota = { provider: this.id, windows, fetchedAt: Date.now() };
-            rememberQuota(quota);
-            yield { type: 'quota', quota };
-          }
-          continue;
-        }
-
-        if (type === 'system' && event.subtype === 'init') {
-          sessionId = event.session_id as string;
-          yield {
-            type: 'session',
-            sessionId: sessionId ?? '',
-            providerSessionId: sessionId,
-            provider: this.id,
-            model: event.model as string | undefined,
-          };
-          continue;
-        }
-
-        if (type === 'stream_event') {
-          const inner = event.event as Record<string, unknown> | undefined;
-          if (inner?.type === 'content_block_delta') {
-            const delta = inner.delta as Record<string, unknown> | undefined;
-            if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-              accumulated += delta.text;
-              yield { type: 'text', delta: delta.text };
-            } else if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-              yield { type: 'thinking', delta: delta.thinking };
-            }
-          }
-          continue;
-        }
-
-        if (type === 'assistant') {
-          // Tool calls only; the text already arrived as partial deltas.
-          const message = event.message as Record<string, unknown> | undefined;
-          contextTokens = contextSize(message?.usage) ?? contextTokens;
-          for (const block of asArray(message?.content)) {
-            if (block.type === 'tool_use') {
-              const name = String(block.name ?? 'tool');
-              const id = block.id as string | undefined;
-              if (id) toolNames.set(id, name);
-              yield {
-                type: 'tool',
-                name,
-                status: 'start',
-                id,
-                detail: summariseInput(block.input),
-                ...recordedInput(block.input),
-              };
-            }
-          }
-          continue;
-        }
-
-        if (type === 'user') {
-          const message = event.message as Record<string, unknown> | undefined;
-          for (const block of asArray(message?.content)) {
-            if (block.type === 'tool_result') {
-              const id = block.tool_use_id as string | undefined;
-              const name = (id !== undefined ? toolNames.get(id) : undefined) ?? 'tool';
-              if (id !== undefined) toolNames.delete(id);
-              yield {
-                type: 'tool',
-                name,
-                status: 'end',
-                id,
-                result: typeof block.content === 'string' ? block.content.slice(0, 16000) : JSON.stringify(block.content)?.slice(0, 16000),
-                isError: block.is_error === true,
-              };
-            }
-          }
-          continue;
-        }
-
-        if (type === 'result') {
-          const text = typeof event.result === 'string' ? event.result : accumulated;
-          // An errored result is not a finished turn: the error ends it, and a
-          // done on top would make callers store the error text as the answer.
-          if (event.is_error) {
-            yield { type: 'error', message: text || 'Claude Code reported an error.', fatal: true };
-            continue;
-          }
-          emittedDone = true;
-          yield {
-            type: 'done',
-            text,
-            providerSessionId: (event.session_id as string) ?? sessionId,
-            usage: mapUsage(event, started, contextTokens),
-          };
-        }
-      }
-
+      for await (const event of readJsonLines(handle.child.stdout)) yield* stream.map(event);
       const { code, stderr } = await handle.done;
-      if (!emittedDone) {
-        if (code !== 0) {
-          yield {
-            type: 'error',
-            message: 'Claude Code exited with code ' + code + '. ' + stderr.trim().slice(-600),
-            fatal: true,
-          };
-        } else {
-          yield { type: 'done', text: accumulated, providerSessionId: sessionId };
-        }
-      }
+      yield* stream.finish(code, stderr);
     } catch (error) {
       yield { type: 'error', message: (error as Error).message, fatal: true };
     } finally {
+      reap(handle);
       handoff.cleanup();
     }
   }
+}
+
+/**
+ * Stops a process the consumer walked away from, and observes its exit so a
+ * late spawn error cannot surface as an unhandled rejection. Does nothing to
+ * a process that already finished.
+ */
+function reap(handle: SpawnHandle): void {
+  handle.child.kill();
+  void handle.done.catch(() => {});
+}
+
+/** Session, model, effort and system prompt: what identifies and steers the conversation. */
+function sessionArgs(options: ProviderTurnOptions, pinnedSessionId: string, model: string | undefined): string[] {
+  const args = options.providerSessionId
+    ? ['--resume', options.providerSessionId]
+    : ['--session-id', pinnedSessionId];
+  if (model) args.push('--model', model);
+  if (options.effort) args.push('--effort', options.effort);
+  if (options.systemPrompt) {
+    // The assistant replaces Claude Code's own coding-agent prompt so it is
+    // a person rather than a tool; agents keep it because they work in code.
+    args.push(
+      options.systemPromptMode === 'replace' ? '--system-prompt' : '--append-system-prompt',
+      options.systemPrompt,
+    );
+  }
+  return args;
+}
+
+function mcpArgs(options: ProviderTurnOptions): string[] {
+  const servers = [...(options.mcp ? [options.mcp] : []), ...(options.mcpExtra ?? [])];
+  if (!servers.length) return [];
+  return [
+    '--mcp-config', JSON.stringify(mcpConfig(servers)),
+    '--strict-mcp-config',
+    '--allowedTools', servers.map((server) => 'mcp__' + server.name).join(','),
+  ];
+}
+
+/**
+ * Rookery's settings for the turn. A terminal run adds its Stop hook to the
+ * same settings file - the hook is how it learns that the agent is done - and
+ * a conversation terminal also takes per-message context, the recall and the
+ * fresh company block, through its prompt hook (T2).
+ */
+function composeSettings(options: ProviderTurnOptions, files?: TerminalFiles): ProviderTurnOptions['settings'] {
+  let settings = options.settings;
+  if (files) {
+    settings = withHook(settings, 'Stop', stopHookCommand(files.markerFile));
+    if (files.contextFile) {
+      settings = withHook(settings, 'UserPromptSubmit', promptContextHookCommand(files.contextFile));
+    }
+  }
+  if (options.gateway?.picker.length) {
+    // The TUI's `/model` menu: Claude's own entries stay, the gateway's
+    // other models are appended. `--settings` is one of the sources this
+    // key is read from even with every settings file switched off.
+    settings = {
+      ...(settings ?? {}),
+      modelPicker: { options: options.gateway.picker, replaceBuiltInOptions: false },
+    };
+  }
+  return settings;
+}
+
+async function createTerminalFiles(): Promise<TerminalFiles> {
+  const dir = await mkdtemp(join(tmpdir(), 'rookery-tui-'));
+  const markerFile = join(dir, 'stop.json');
+  try {
+    await writeFile(markerFile, '');
+  } catch (error) {
+    removeQuietly(dir);
+    throw error;
+  }
+  return { dir, markerFile };
+}
+
+async function createConversationFiles(): Promise<TerminalFiles> {
+  const files = await createTerminalFiles();
+  const contextFile = contextFileFor(files.dir);
+  try {
+    await writeFile(contextFile, '');
+  } catch (error) {
+    removeQuietly(files.dir);
+    throw error;
+  }
+  return { ...files, contextFile };
+}
+
+function releaseTerminalFiles(handoff: Handoff, dir: string): () => void {
+  return () => {
+    handoff.cleanup();
+    removeQuietly(dir);
+  };
+}
+
+/** Best effort: a leftover temp folder is untidy, not a failed turn. */
+function removeQuietly(dir: string): void {
+  void rm(dir, { recursive: true, force: true }).catch(() => {});
 }
 
 /**
@@ -656,26 +611,10 @@ async function writeHandoffDir(options: ProviderTurnOptions): Promise<Handoff> {
   if (!agents.length && !hooks && !wantsSettings) return { cleanup: () => {} };
 
   const root = await mkdtemp(join(tmpdir(), 'rookery-handoff-'));
-  const cleanup = (): void => {
-    // Best effort: a leftover temp folder is untidy, not a failed turn.
-    void rm(root, { recursive: true, force: true }).catch(() => {});
-  };
+  const cleanup = (): void => removeQuietly(root);
 
   try {
-    let dir: string | undefined;
-    if (agents.length || hooks) {
-      dir = join(root, 'plugin');
-      await mkdir(join(dir, 'agents'), { recursive: true });
-      await mkdir(join(dir, 'hooks'), { recursive: true });
-      await writeFile(join(dir, 'plugin.json'), HANDOFF_PLUGIN_JSON);
-      for (const agent of agents) {
-        // Discovery guarantees this shape; rechecked so a name that slipped
-        // past it cannot write the plugin somewhere it was never meant to go.
-        if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(agent.name)) continue;
-        await copyFile(agent.path, join(dir, 'agents', agent.name + '.md')).catch(() => {});
-      }
-      if (hooks) await writeFile(join(dir, 'hooks', 'hooks.json'), JSON.stringify({ hooks }));
-    }
+    const dir = agents.length || hooks ? await writeHandoffPlugin(join(root, 'plugin'), agents, hooks) : undefined;
 
     let settingsFile: string | undefined;
     if (wantsSettings && options.settings) {
@@ -688,6 +627,24 @@ async function writeHandoffDir(options: ProviderTurnOptions): Promise<Handoff> {
     cleanup();
     throw new Error('The approved hand-off files could not be written.');
   }
+}
+
+async function writeHandoffPlugin(
+  dir: string,
+  agents: NonNullable<ProviderTurnOptions['handoffAgents']>,
+  hooks: Record<string, unknown[]> | undefined,
+): Promise<string> {
+  await mkdir(join(dir, 'agents'), { recursive: true });
+  await mkdir(join(dir, 'hooks'), { recursive: true });
+  await writeFile(join(dir, 'plugin.json'), HANDOFF_PLUGIN_JSON);
+  for (const agent of agents) {
+    // A name that slipped past discovery's own check must not write the
+    // plugin somewhere it was never meant to go.
+    if (!HANDOFF_AGENT_NAME.test(agent.name)) continue;
+    await copyFile(agent.path, join(dir, 'agents', agent.name + '.md')).catch(() => {});
+  }
+  if (hooks) await writeFile(join(dir, 'hooks', 'hooks.json'), JSON.stringify({ hooks }));
+  return dir;
 }
 
 /**
@@ -730,58 +687,199 @@ function withHook(
 }
 
 /**
+ * Tool events with the real tool name on the `end` side (concept S28). The
+ * CLI names the tool only on the `tool_use` block; its `tool_result`
+ * counterpart carries the id alone, and a divergence judge cannot compare
+ * names it never saw - so the name is remembered by tool-use id.
+ */
+class ToolEvents {
+  readonly #names = new Map<string, string>();
+
+  start(block: Record<string, unknown>): AgentEvent {
+    const name = String(block.name ?? 'tool');
+    const id = block.id as string | undefined;
+    if (id) this.#names.set(id, name);
+    return {
+      type: 'tool',
+      name,
+      status: 'start',
+      id,
+      detail: summariseInput(block.input),
+      ...recordedInput(block.input),
+    };
+  }
+
+  end(block: Record<string, unknown>): AgentEvent {
+    const id = block.tool_use_id as string | undefined;
+    const name = (id !== undefined ? this.#names.get(id) : undefined) ?? 'tool';
+    if (id !== undefined) this.#names.delete(id);
+    return {
+      type: 'tool',
+      name,
+      status: 'end',
+      id,
+      result:
+        typeof block.content === 'string'
+          ? block.content.slice(0, TOOL_RESULT_LIMIT)
+          : JSON.stringify(block.content)?.slice(0, TOOL_RESULT_LIMIT),
+      isError: block.is_error === true,
+    };
+  }
+}
+
+/** Translates the lines of one `claude -p --output-format stream-json` run into agent events. */
+class PrintTurnStream {
+  readonly #provider: string;
+  readonly #tools = new ToolEvents();
+  readonly #startedAt = Date.now();
+  #sessionId: string | undefined;
+  #accumulated = '';
+  #emittedDone = false;
+  /** Context size of the latest request: prompt cache plus fresh input. */
+  #contextTokens: number | undefined;
+
+  constructor(provider: string) {
+    this.#provider = provider;
+  }
+
+  map(event: Record<string, unknown>): AgentEvent[] {
+    switch (event.type) {
+      case 'rate_limit_event':
+        return this.#rateLimit(event);
+      case 'system':
+        return event.subtype === 'init' ? this.#init(event) : [];
+      case 'stream_event':
+        return this.#partial(event);
+      case 'assistant':
+        return this.#assistant(event);
+      case 'user':
+        return this.#toolResults(event);
+      case 'result':
+        return this.#result(event);
+      default:
+        return [];
+    }
+  }
+
+  /** What the run still owes once stdout is closed and the process has exited. */
+  finish(code: number | null, stderr: string): AgentEvent[] {
+    if (this.#emittedDone) return [];
+    if (code !== 0) {
+      return [
+        {
+          type: 'error',
+          message: 'Claude Code exited with code ' + code + '. ' + stderr.trim().slice(-EXIT_STDERR_TAIL_CHARS),
+          fatal: true,
+        },
+      ];
+    }
+    return [{ type: 'done', text: this.#accumulated, providerSessionId: this.#sessionId }];
+  }
+
+  /**
+   * The CLI reports the account's windows with every turn; the same numbers
+   * its /usage panel shows, without another request.
+   */
+  #rateLimit(event: Record<string, unknown>): AgentEvent[] {
+    const info = asRecordOf(event.rate_limit_info);
+    const windows = parseClaudeWindows(info?.unifiedWindows, true);
+    if (!windows.length) return [];
+    const quota: ProviderQuota = { provider: this.#provider, windows, fetchedAt: Date.now() };
+    rememberQuota(quota);
+    return [{ type: 'quota', quota }];
+  }
+
+  #init(event: Record<string, unknown>): AgentEvent[] {
+    this.#sessionId = event.session_id as string;
+    return [
+      {
+        type: 'session',
+        sessionId: this.#sessionId ?? '',
+        providerSessionId: this.#sessionId,
+        provider: this.#provider,
+        model: event.model as string | undefined,
+      },
+    ];
+  }
+
+  #partial(event: Record<string, unknown>): AgentEvent[] {
+    const inner = event.event as Record<string, unknown> | undefined;
+    if (inner?.type !== 'content_block_delta') return [];
+    const delta = inner.delta as Record<string, unknown> | undefined;
+    if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+      this.#accumulated += delta.text;
+      return [{ type: 'text', delta: delta.text }];
+    }
+    if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+      return [{ type: 'thinking', delta: delta.thinking }];
+    }
+    return [];
+  }
+
+  /** Tool calls only; the text already arrived as partial deltas. */
+  #assistant(event: Record<string, unknown>): AgentEvent[] {
+    const message = event.message as Record<string, unknown> | undefined;
+    this.#contextTokens = contextSize(message?.usage) ?? this.#contextTokens;
+    return asArray(message?.content)
+      .filter((block) => block.type === 'tool_use')
+      .map((block) => this.#tools.start(block));
+  }
+
+  #toolResults(event: Record<string, unknown>): AgentEvent[] {
+    const message = event.message as Record<string, unknown> | undefined;
+    return asArray(message?.content)
+      .filter((block) => block.type === 'tool_result')
+      .map((block) => this.#tools.end(block));
+  }
+
+  #result(event: Record<string, unknown>): AgentEvent[] {
+    const text = typeof event.result === 'string' ? event.result : this.#accumulated;
+    // An errored result is not a finished turn: the error ends it, and a
+    // done on top would make callers store the error text as the answer.
+    if (event.is_error) return [{ type: 'error', message: text || 'Claude Code reported an error.', fatal: true }];
+    this.#emittedDone = true;
+    return [
+      {
+        type: 'done',
+        text,
+        providerSessionId: (event.session_id as string) ?? this.#sessionId,
+        usage: mapUsage(event, this.#startedAt, this.#contextTokens),
+      },
+    ];
+  }
+}
+
+/**
  * Transcript entries to the events a print run streams. The transcript holds
  * whole content blocks rather than deltas, so each text block arrives as one
  * `text` event; blocks after the first get a paragraph break in front, where
  * the stream would have started a new message.
  */
 function transcriptMapper(): (entry: Record<string, unknown>) => AgentEvent[] {
-  const toolNames = new Map<string, string>();
+  const tools = new ToolEvents();
   let hadText = false;
-  return (entry) => {
-    const events: AgentEvent[] = [];
-    const message = entry.message as Record<string, unknown> | undefined;
-    if (entry.type === 'assistant') {
-      for (const block of asArray(message?.content)) {
-        if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-          events.push({ type: 'text', delta: (hadText ? '\n\n' : '') + block.text });
-          hadText = true;
-        } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
-          events.push({ type: 'thinking', delta: block.thinking });
-        } else if (block.type === 'tool_use') {
-          const name = String(block.name ?? 'tool');
-          const id = block.id as string | undefined;
-          if (id) toolNames.set(id, name);
-          events.push({
-            type: 'tool',
-            name,
-            status: 'start',
-            id,
-            detail: summariseInput(block.input),
-            ...recordedInput(block.input),
-          });
-        }
-      }
-    } else if (entry.type === 'user') {
-      for (const block of asArray(message?.content)) {
-        if (block.type !== 'tool_result') continue;
-        const id = block.tool_use_id as string | undefined;
-        const name = (id !== undefined ? toolNames.get(id) : undefined) ?? 'tool';
-        if (id !== undefined) toolNames.delete(id);
-        events.push({
-          type: 'tool',
-          name,
-          status: 'end',
-          id,
-          result:
-            typeof block.content === 'string'
-              ? block.content.slice(0, 16000)
-              : JSON.stringify(block.content)?.slice(0, 16000),
-          isError: block.is_error === true,
-        });
-      }
+
+  const assistantEvents = (block: Record<string, unknown>): AgentEvent[] => {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+      const delta = (hadText ? '\n\n' : '') + block.text;
+      hadText = true;
+      return [{ type: 'text', delta }];
     }
-    return events;
+    if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
+      return [{ type: 'thinking', delta: block.thinking }];
+    }
+    if (block.type === 'tool_use') return [tools.start(block)];
+    return [];
+  };
+
+  return (entry) => {
+    const message = entry.message as Record<string, unknown> | undefined;
+    const blocks = asArray(message?.content);
+    if (entry.type === 'assistant') return blocks.flatMap(assistantEvents);
+    if (entry.type === 'user') {
+      return blocks.filter((block) => block.type === 'tool_result').map((block) => tools.end(block));
+    }
+    return [];
   };
 }
 
@@ -795,8 +893,11 @@ function summariseInput(input: unknown): string | undefined {
   const record = input as Record<string, unknown>;
   const candidate =
     record.file_path ?? record.command ?? record.pattern ?? record.query ?? record.path;
-  if (typeof candidate !== 'string') return JSON.stringify(input).slice(0, 4000);
-  return candidate.length > 120 ? candidate.slice(0, 117) + '...' : candidate;
+  if (typeof candidate !== 'string') return JSON.stringify(input).slice(0, TOOL_INPUT_DETAIL_LIMIT);
+  const ellipsis = '...';
+  return candidate.length > TOOL_DETAIL_LIMIT
+    ? candidate.slice(0, TOOL_DETAIL_LIMIT - ellipsis.length) + ellipsis
+    : candidate;
 }
 
 /**

@@ -34,6 +34,7 @@ function code(relativePath) {
 }
 
 const PAGE = '../src/pages/MemorySleepPage.tsx';
+const NIGHT_RUN = '../src/pages/memory/night-run.ts';
 const SECTION = '../src/components/common/dream-section.tsx';
 const CURVE = '../src/components/blocks/version-curve-card.tsx';
 const API = '../src/lib/api.ts';
@@ -95,8 +96,14 @@ function night(extra = {}) {
 
 /* ------------------------------ the counters ------------------------------ */
 
-test('the five dream counters have a column label', () => {
-  const { COLUMN_LABELS } = declarations(PAGE, ['COLUMN_LABELS']);
+/** The label every counter of a night is shown under, as the table and the report both read it. */
+function counterLabels() {
+  const { NIGHT_COUNTERS } = declarations(NIGHT_RUN, ['NIGHT_COUNTERS']);
+  return Object.fromEntries(NIGHT_COUNTERS.map((counter) => [counter.key, counter.label]));
+}
+
+test('the five dream counters have a label', () => {
+  const labels = counterLabels();
   for (const key of [
     'dreamTracesSeen',
     'dreamFramesScored',
@@ -104,52 +111,36 @@ test('the five dream counters have a column label', () => {
     'dreamPromoted',
     'dreamLabelsWritten',
   ]) {
-    assert.ok(COLUMN_LABELS[key], 'COLUMN_LABELS has no label for ' + key);
+    assert.ok(labels[key], 'the night counters have no label for ' + key);
   }
 });
 
-test('every dream counter the night writes is named in the column list', () => {
+test('every dream counter the night writes is named in the counter list', () => {
   // The source of truth is core's own `SleepRun`, so a sixth counter added
   // there fails here rather than staying invisible in the table.
   const types = read(CORE_TYPES);
   const declared = [...types.matchAll(/^\s+(dream[A-Z]\w*)\?:/gm)].map((match) => match[1]);
   assert.ok(declared.length >= 5, 'core SleepRun declares its dream counters');
-  const { COLUMN_LABELS } = declarations(PAGE, ['COLUMN_LABELS']);
+  const labels = counterLabels();
   for (const key of declared) {
-    assert.ok(COLUMN_LABELS[key], 'COLUMN_LABELS has no label for ' + key);
-  }
-});
-
-test('the report drawer lists every dream counter it has a column for', () => {
-  const page = read(PAGE);
-  for (const key of [
-    'dreamTracesSeen',
-    'dreamFramesScored',
-    'dreamCandidates',
-    'dreamPromoted',
-    'dreamLabelsWritten',
-  ]) {
-    // Once as a table column, once in the drawer's MetaList.
-    const uses = page.split('report.' + key).length - 1;
-    assert.equal(uses, 1, 'the report drawer reads report.' + key + ' exactly once');
-    assert.ok(page.includes("countColumn('" + key + "'"), 'the table has a column for ' + key);
+    assert.ok(labels[key], 'the night counters have no label for ' + key);
   }
 });
 
 /* -------------------------------- undoable -------------------------------- */
 
 test('a night whose only effect was a promotion is undoable (E18)', () => {
-  const { undoable } = declarations(PAGE, ['undoable']);
+  const { undoable } = declarations(NIGHT_RUN, ['undoable']);
   assert.equal(undoable(night({ dreamPromoted: 1 })), true);
 });
 
 test('a night whose only effect was dream labels is undoable', () => {
-  const { undoable } = declarations(PAGE, ['undoable']);
+  const { undoable } = declarations(NIGHT_RUN, ['undoable']);
   assert.equal(undoable(night({ dreamLabelsWritten: 4 })), true);
 });
 
 test('measuring alone leaves nothing to undo', () => {
-  const { undoable } = declarations(PAGE, ['undoable']);
+  const { undoable } = declarations(NIGHT_RUN, ['undoable']);
   // Looking at traces, scoring frames and writing an unmeasured candidate
   // change nothing an undo could take back.
   assert.equal(
@@ -159,13 +150,13 @@ test('measuring alone leaves nothing to undo', () => {
 });
 
 test('a promotion does not resurrect the undo button on a failed or undone night', () => {
-  const { undoable } = declarations(PAGE, ['undoable']);
+  const { undoable } = declarations(NIGHT_RUN, ['undoable']);
   assert.equal(undoable(night({ dreamPromoted: 1, status: 'failed' })), false);
   assert.equal(undoable(night({ dreamPromoted: 1, undoneAt: 1 })), false);
 });
 
 test('a night from before the dream counters is read as zero, not as undefined', () => {
-  const { undoable } = declarations(PAGE, ['undoable']);
+  const { undoable } = declarations(NIGHT_RUN, ['undoable']);
   assert.equal(undoable(night()), false);
 });
 

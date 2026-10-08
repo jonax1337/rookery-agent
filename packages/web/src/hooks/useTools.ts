@@ -1,67 +1,22 @@
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import { api, ApiError } from '../lib/api';
+import { useMemo } from 'react';
+import { api, type ApiError } from '../lib/api';
 import type { CustomToolInput, ToolServer, ToolServerAudience } from '../lib/types';
+import { createSharedList } from './shared-list';
 
 /**
- * The tool hub, held once for the whole app.
+ * The tool hub, held once for the whole app (see `shared-list.ts`).
  *
  * Tools hang on no socket broadcast: nothing tells the browser that a key was
  * set in a file or that a server finished installing. So the list refetches
  * after every mutation and whenever the tab becomes visible again - otherwise
  * the cards keep showing a number that stopped being true while the user was
  * in a terminal.
- *
- * The state is module-level rather than per-component because the list page
- * and the detail page want the same rows; the detail page used to pull the
- * whole catalogue a second time just to find one entry.
  */
 
-interface ToolsSnapshot {
-  tools: ToolServer[];
-  loading: boolean;
-  error: ApiError | null;
-  /** False until the first response, so a second mount does not refetch. */
-  loaded: boolean;
-}
-
-let snapshot: ToolsSnapshot = { tools: [], loading: true, error: null, loaded: false };
-const listeners = new Set<() => void>();
-let inflight: Promise<void> | null = null;
-
-function publish(next: Partial<ToolsSnapshot>): void {
-  snapshot = { ...snapshot, ...next };
-  for (const listener of listeners) listener();
-}
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-/** One request at a time; concurrent callers share the flight. */
-function load(): Promise<void> {
-  if (inflight) return inflight;
-  inflight = (async () => {
-    try {
-      const tools = await api.tools();
-      publish({ tools, error: null, loading: false, loaded: true });
-    } catch (caught) {
-      publish({
-        error: caught instanceof ApiError ? caught : new ApiError(String(caught), 0),
-        loading: false,
-        loaded: true,
-      });
-    } finally {
-      inflight = null;
-    }
-  })();
-  return inflight;
-}
+const toolList = createSharedList<ToolServer>(api.tools);
 
 function replace(tool: ToolServer): void {
-  publish({ tools: snapshot.tools.map((entry) => (entry.id === tool.id ? tool : entry)) });
+  toolList.setItems(toolList.snapshot().items.map((entry) => (entry.id === tool.id ? tool : entry)));
 }
 
 export interface ToolsState {
@@ -89,36 +44,22 @@ export interface ToolsState {
 }
 
 export function useTools(): ToolsState {
-  const state = useSyncExternalStore(subscribe, () => snapshot);
-
-  useEffect(() => {
-    if (!snapshot.loaded) void load();
-  }, []);
-
-  useEffect(() => {
-    const onVisible = (): void => {
-      if (document.visibilityState === 'visible') void load();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, []);
+  const state = toolList.use();
 
   return useMemo<ToolsState>(
     () => ({
-      tools: state.tools,
+      tools: state.items,
       loading: state.loading,
       error: state.error,
-      refresh: load,
-      toolById: (id) => (id ? state.tools.find((tool) => tool.id === id) : undefined),
+      refresh: toolList.load,
+      toolById: (id) => (id ? state.items.find((tool) => tool.id === id) : undefined),
       setEnabled: async (id, enabled) => {
-        const previous = snapshot.tools;
-        publish({
-          tools: previous.map((tool) => (tool.id === id ? { ...tool, enabled } : tool)),
-        });
+        const previous = toolList.snapshot().items;
+        toolList.setItems(previous.map((tool) => (tool.id === id ? { ...tool, enabled } : tool)));
         try {
           replace(await api.updateTool(id, { enabled }));
         } catch (caught) {
-          publish({ tools: previous });
+          toolList.setItems(previous);
           throw caught;
         }
       },
@@ -129,17 +70,17 @@ export function useTools(): ToolsState {
       },
       addCustom: async (input) => {
         const tool = await api.addCustomTool(input);
-        await load();
+        await toolList.load();
         return tool;
       },
       remove: async (id) => {
         await api.deleteTool(id);
-        publish({ tools: snapshot.tools.filter((tool) => tool.id !== id) });
+        toolList.setItems(toolList.snapshot().items.filter((tool) => tool.id !== id));
       },
       prepare: async (id) => {
         const result = await api.prepareTool(id);
         // Preparation is what flips `installed`, so the row is now stale.
-        await load();
+        await toolList.load();
         return result;
       },
     }),

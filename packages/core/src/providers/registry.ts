@@ -100,7 +100,8 @@ export class ProviderRegistry {
           detail: (error as Error).message,
         };
       }
-      this.#cache.set(id, { status, at: Date.now() });
+      // `sync` may have replaced or dropped this adapter mid-probe; its answer is stale then.
+      if (this.#providers.get(id) === provider) this.#cache.set(id, { status, at: Date.now() });
       return status;
     })().finally(() => this.#probing.delete(id));
     this.#probing.set(id, probe);

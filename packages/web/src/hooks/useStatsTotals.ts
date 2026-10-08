@@ -7,8 +7,8 @@ import type { StatsTotals } from '@/lib/types';
 /**
  * The real counts, from the only aggregate call this API has.
  *
- * `GET /api/stats` is what lets a card print "58 Gespräche" instead of "von
- * 500 geladenen". Five pages fetched it with three different cancel flags, two
+ * `GET /api/stats` is what lets a card print "58 conversations" instead of "of
+ * 500 loaded". Five pages fetched it with three different cancel flags, two
  * different catch branches and three different refresh triggers, so the same
  * tile was differently current depending on which page you were standing on.
  *

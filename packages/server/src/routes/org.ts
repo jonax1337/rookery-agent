@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import type { AssignmentStatus, NotificationKind, TaskStatus } from '@rookery/core';
+import type { Agent, AssignmentStatus, NotificationKind, TaskStatus } from '@rookery/core';
 import { fingerprintMcpFile, projectMcpStatus, readProjectMcpFile } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import {
@@ -8,7 +8,6 @@ import {
   archiveNotificationSchema,
   assignInputSchema,
   assignmentReviewSchema,
-  formatIssues,
   markNotificationsReadSchema,
   organizationSchema,
   parseOrThrow,
@@ -24,8 +23,24 @@ import {
   teamSchema,
 } from '../schemas.js';
 import { openSse, pipeToSse } from '../services/stream.js';
+import { clampPositiveInt, isTruthy } from './query.js';
 
 type IdParams = { Params: { id: string } };
+type ErrorBody = { error: string; message: string };
+type OrgStore = ServerContext['assistant']['store']['org'];
+
+const NOTIFICATION_KINDS: readonly NotificationKind[] = ['schedule', 'watch', 'task', 'question', 'agent', 'sleep', 'system'];
+
+/** What every section of the org routes needs, built once per server. */
+interface OrgRouteKit {
+  readonly context: ServerContext;
+  readonly store: OrgStore;
+  readonly activeOrgId: () => string;
+  /** Tell every open tab that something in the company changed. */
+  readonly changed: (kind: string, id: string) => void;
+  readonly notFound: (reply: FastifyReply, what: string) => ErrorBody;
+  readonly badRequest: (reply: FastifyReply, what: string) => ErrorBody;
+}
 
 /**
  * The organisation's backend: structure (company, projects, teams, agents),
@@ -37,24 +52,36 @@ type IdParams = { Params: { id: string } };
  * and the pieces are small.
  */
 export async function registerOrgRoutes(app: FastifyInstance, context: ServerContext): Promise<void> {
-  const org = (): ReturnType<typeof context.assistant.org.snapshot> =>
-    context.assistant.org.snapshot(context.assistant.org.activeOrganization().id);
-  const store = context.assistant.store.org;
-  const changed = (kind: string, id: string): void => {
-    context.assistant.emit('changed', { kind, id });
-  };
-  const notFound = (reply: FastifyReply, what: string): { error: string; message: string } => {
-    reply.code(404);
-    return { error: 'Not found', message: what };
-  };
-  const badRequest = (reply: FastifyReply, what: string): { error: string; message: string } => {
-    reply.code(400);
-    return { error: 'Bad request', message: what };
+  const kit: OrgRouteKit = {
+    context,
+    store: context.assistant.store.org,
+    activeOrgId: () => context.assistant.org.activeOrganization().id,
+    changed: (kind, id) => {
+      context.assistant.emit('changed', { kind, id });
+    },
+    notFound: (reply, what) => {
+      reply.code(404);
+      return { error: 'Not found', message: what };
+    },
+    badRequest: (reply, what) => {
+      reply.code(400);
+      return { error: 'Bad request', message: what };
+    },
   };
 
-  /* ---------------------------------- company --------------------------------- */
+  registerCompanyRoutes(app, kit);
+  registerProjectRoutes(app, kit);
+  registerTeamRoutes(app, kit);
+  registerAgentRoutes(app, kit);
+  registerAssignmentRoutes(app, kit);
+  registerTaskRoutes(app, kit);
+  registerNotificationRoutes(app, kit);
+}
 
-  app.get('/api/org', async () => org());
+/* ---------------------------------- company --------------------------------- */
+
+function registerCompanyRoutes(app: FastifyInstance, { context, store, activeOrgId, changed, notFound }: OrgRouteKit): void {
+  app.get('/api/org', async () => context.assistant.org.snapshot(activeOrgId()));
 
   app.get('/api/org/organizations', async () => store.listOrganizations());
 
@@ -72,12 +99,16 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     changed('organization', request.params.id);
     return store.getOrganization(request.params.id);
   });
+}
 
-  /* ---------------------------------- projects -------------------------------- */
+/* ---------------------------------- projects -------------------------------- */
+
+function registerProjectRoutes(app: FastifyInstance, kit: OrgRouteKit): void {
+  const { store, activeOrgId, changed, notFound, badRequest } = kit;
 
   app.post('/api/org/projects', async (request: FastifyRequest, reply: FastifyReply) => {
     const input = parseOrThrow(projectSchema, request.body ?? {});
-    const created = store.createProject({ orgId: context.assistant.org.activeOrganization().id, ...input });
+    const created = store.createProject({ orgId: activeOrgId(), ...input });
     changed('project', created.id);
     reply.code(201);
     return created;
@@ -135,12 +166,14 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     changed('project', project.id);
     return store.getProject(project.id);
   });
+}
 
-  /* ----------------------------------- teams ---------------------------------- */
+/* ----------------------------------- teams ---------------------------------- */
 
+function registerTeamRoutes(app: FastifyInstance, { store, activeOrgId, changed, notFound }: OrgRouteKit): void {
   app.post('/api/org/teams', async (request: FastifyRequest, reply: FastifyReply) => {
     const input = parseOrThrow(teamSchema, request.body ?? {});
-    const created = store.createTeam({ orgId: context.assistant.org.activeOrganization().id, ...input });
+    const created = store.createTeam({ orgId: activeOrgId(), ...input });
     changed('team', created.id);
     reply.code(201);
     return created;
@@ -159,12 +192,16 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     changed('team', request.params.id);
     return { ok: true };
   });
+}
 
-  /* ----------------------------------- agents --------------------------------- */
+/* ----------------------------------- agents --------------------------------- */
+
+function registerAgentRoutes(app: FastifyInstance, kit: OrgRouteKit): void {
+  const { context, store, activeOrgId, changed, notFound, badRequest } = kit;
 
   app.post('/api/org/agents', async (request: FastifyRequest, reply: FastifyReply) => {
     const input = parseOrThrow(agentSchema, request.body ?? {});
-    const created = store.createAgent({ orgId: context.assistant.org.activeOrganization().id, ...input });
+    const created = store.createAgent({ orgId: activeOrgId(), ...input });
     changed('agent', created.id);
     reply.code(201);
     return created;
@@ -173,40 +210,7 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
   app.get('/api/org/agents/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent) return notFound(reply, 'No agent ' + request.params.id);
-    // The identity chain (agent-performance-management, phase 4, decision
-    // E4): at most one of predecessor/successor is ever set on a given
-    // agent, since a replaced agent stays archived rather than replaced
-    // again under the same identity.
-    const predecessor = store.predecessorFor(agent.id);
-    const replacement = store.replacementFor(agent.id);
-    const successorId = replacement?.successorAgentId;
-    return {
-      agent,
-      assignments: store.listAssignments(agent.orgId, { agentId: agent.id, limit: 30 }),
-      memories: context.assistant.store.listMemories({
-        owner: agent.id,
-        limit: 100,
-        // An archived predecessor's memories stay visible on its own page,
-        // audit-only - `listMemories` already includes them by default.
-      }),
-      reports: store.listAgents(agent.orgId, { managerId: agent.id }),
-      performance: store.performance(agent.id),
-      actions: store.listActions(agent.id, { limit: 30 }),
-      // A drafted instruction rewrite waiting for the user. It is pending
-      // exactly while it is the newest entry: applying it writes a
-      // `reconfig` on top, and any later action means the record moved on
-      // without it.
-      pendingReconfig: (() => {
-        const latest = store.listActions(agent.id, { limit: 1 })[0];
-        return latest?.kind === 'reconfig-proposal' ? latest : null;
-      })(),
-      predecessor: predecessor ? { id: predecessor.id, name: predecessor.name, slug: predecessor.slug } : null,
-      successor: successorId ? (() => {
-        const successor = store.getAgent(successorId);
-        return successor ? { id: successor.id, name: successor.name, slug: successor.slug } : null;
-      })() : null,
-      handover: predecessor ? undefined : replacement?.handoverText,
-    };
+    return describeAgent(kit, agent);
   });
 
   /** An agent's review history, newest first (docs/concepts/agent-performance-management.md). */
@@ -215,7 +219,7 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     async (request: FastifyRequest<IdParams & { Querystring: { limit?: string } }>, reply: FastifyReply) => {
       const agent = store.getAgent(request.params.id);
       if (!agent) return notFound(reply, 'No agent ' + request.params.id);
-      return store.listReviews(agent.id, { limit: clampLimit(request.query.limit, 20, 100) });
+      return store.listReviews(agent.id, { limit: clampPositiveInt(request.query.limit, 20, 100) });
     },
   );
 
@@ -246,7 +250,7 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
    */
   app.post(
     '/api/org/agents/:id/reconfig/:actionId',
-    async (request: FastifyRequest<IdParams & { Params: { id: string; actionId: string } }>, reply: FastifyReply) => {
+    async (request: FastifyRequest<{ Params: { id: string; actionId: string } }>, reply: FastifyReply) => {
       const agent = store.getAgent(request.params.id);
       if (!agent) return notFound(reply, 'No agent ' + request.params.id);
       const action = store.getAction(request.params.actionId);
@@ -289,9 +293,8 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
    * been replaced, and its personnel record stays reachable from its own
    * (archived) page instead.
    */
-  app.get('/api/org/performance', async () => {
-    const orgId = context.assistant.org.activeOrganization().id;
-    return store.listAgents(orgId).map((agent) => {
+  app.get('/api/org/performance', async () =>
+    store.listAgents(activeOrgId()).map((agent) => {
       const performance = store.performance(agent.id);
       const latest = store.listActions(agent.id, { limit: 1 })[0];
       return {
@@ -299,21 +302,55 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
         performance,
         pendingProposal: performance.stage === 3 && latest?.kind === 'probation' ? latest : null,
       };
-    });
-  });
+    }),
+  );
+}
 
-  /* -------------------------------- assignments ------------------------------- */
+/** The agent's own page: the record plus everything hanging off it. */
+function describeAgent({ context, store }: OrgRouteKit, agent: Agent) {
+  // The identity chain (agent-performance-management, phase 4, decision
+  // E4): at most one of predecessor/successor is ever set on a given
+  // agent, since a replaced agent stays archived rather than replaced
+  // again under the same identity.
+  const predecessor = store.predecessorFor(agent.id);
+  const replacement = store.replacementFor(agent.id);
+  const successorId = replacement?.successorAgentId;
+  const latestAction = store.listActions(agent.id, { limit: 1 })[0];
+  return {
+    agent,
+    assignments: store.listAssignments(agent.orgId, { agentId: agent.id, limit: 30 }),
+    // An archived predecessor's memories stay visible on its own page,
+    // audit-only - `listMemories` already includes them by default.
+    memories: context.assistant.store.listMemories({ owner: agent.id, limit: 100 }),
+    reports: store.listAgents(agent.orgId, { managerId: agent.id }),
+    performance: store.performance(agent.id),
+    actions: store.listActions(agent.id, { limit: 30 }),
+    // A drafted instruction rewrite waiting for the user. It is pending
+    // exactly while it is the newest entry: applying it writes a
+    // `reconfig` on top, and any later action means the record moved on
+    // without it.
+    pendingReconfig: latestAction?.kind === 'reconfig-proposal' ? latestAction : null,
+    predecessor: agentReference(predecessor),
+    successor: successorId ? agentReference(store.getAgent(successorId)) : null,
+    handover: predecessor ? undefined : replacement?.handoverText,
+  };
+}
+
+function agentReference(agent: Pick<Agent, 'id' | 'name' | 'slug'> | null | undefined) {
+  return agent ? { id: agent.id, name: agent.name, slug: agent.slug } : null;
+}
+
+/* -------------------------------- assignments ------------------------------- */
+
+function registerAssignmentRoutes(app: FastifyInstance, kit: OrgRouteKit): void {
+  const { context, store, activeOrgId, changed, notFound } = kit;
 
   app.get(
     '/api/org/assignments',
     async (request: FastifyRequest<{ Querystring: { limit?: string; status?: string; agentId?: string } }>) => {
-      const orgId = context.assistant.org.activeOrganization().id;
-      const status = (request.query.status ?? '')
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean) as AssignmentStatus[];
-      return store.listAssignments(orgId, {
-        limit: clampLimit(request.query.limit, 50, 500),
+      const status = parseList<AssignmentStatus>(request.query.status);
+      return store.listAssignments(activeOrgId(), {
+        limit: clampPositiveInt(request.query.limit, 50, 500),
         status: status.length ? status : undefined,
         agentId: request.query.agentId,
       });
@@ -399,37 +436,35 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
    * id independently of this route's own signal.
    */
   app.post('/api/org/assignments', async (request: FastifyRequest, reply: FastifyReply) => {
-    const parsed = assignInputSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      reply.code(400);
-      return { error: 'Bad Request', message: formatIssues(parsed.error) };
-    }
-
+    const input = parseOrThrow(assignInputSchema, request.body ?? {});
     const sse = openSse(request, reply);
-    await pipeToSse(context.assistant.assign(parsed.data), sse);
+    await pipeToSse(context.assistant.assign(input), sse);
     return reply;
   });
+}
 
-  /* ----------------------------------- tasks ---------------------------------- */
+/* ----------------------------------- tasks ---------------------------------- */
+
+function registerTaskRoutes(app: FastifyInstance, kit: OrgRouteKit): void {
+  const { context, store, activeOrgId, notFound, badRequest } = kit;
 
   app.get(
     '/api/org/tasks',
     async (request: FastifyRequest<{ Querystring: { status?: string; all?: string; limit?: string } }>) => {
-      const orgId = context.assistant.org.activeOrganization().id;
-      if (request.query.all === '1') return store.listAllTasks(orgId, clampLimit(request.query.limit, 200, 1000));
-      const status = (request.query.status ?? '')
-        .split(',')
-        .map((value) => value.trim())
-        .filter(Boolean) as TaskStatus[];
-      return store.listTasks(orgId, { status: status.length ? status : undefined, limit: clampLimit(request.query.limit, 100, 500) });
+      const orgId = activeOrgId();
+      if (request.query.all === '1') return store.listAllTasks(orgId, clampPositiveInt(request.query.limit, 200, 1000));
+      const status = parseList<TaskStatus>(request.query.status);
+      return store.listTasks(orgId, {
+        status: status.length ? status : undefined,
+        limit: clampPositiveInt(request.query.limit, 100, 500),
+      });
     },
   );
 
   app.post('/api/org/tasks', async (request: FastifyRequest, reply: FastifyReply) => {
     const input = parseOrThrow(taskSchema, request.body ?? {});
-    const orgId = context.assistant.org.activeOrganization().id;
     if (input.assigneeId && !store.getAgent(input.assigneeId)) return notFound(reply, 'No agent ' + input.assigneeId);
-    const task = store.createTask({ orgId, ...input, createdBy: 'user' });
+    const task = store.createTask({ orgId: activeOrgId(), ...input, createdBy: 'user' });
     context.assistant.emit('task', { type: 'task', task });
     reply.code(201);
     return task;
@@ -501,11 +536,7 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     // It goes first, so a refused status cannot leave the other edits
     // standing behind a 409 the caller reads as "nothing happened".
     if (status) {
-      const moved = await context.assistant.org.setTaskStatus({
-        task,
-        to: status,
-        by: 'user',
-      });
+      const moved = await context.assistant.org.setTaskStatus({ task, to: status, by: 'user' });
       if (!moved.ok) {
         reply.code(409);
         return { error: 'Conflict', message: moved.reason };
@@ -540,10 +571,12 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
     await pipeToSse(context.assistant.runTask({ taskId: task.id }), sse);
     return reply;
   });
+}
 
-  /* -------------------------------- notifications ------------------------------ */
+/* -------------------------------- notifications ------------------------------ */
 
-  const NOTIFICATION_KINDS: readonly NotificationKind[] = ['schedule', 'watch', 'task', 'question', 'agent', 'sleep', 'system'];
+function registerNotificationRoutes(app: FastifyInstance, kit: OrgRouteKit): void {
+  const { context, store, activeOrgId, notFound, badRequest } = kit;
 
   /** The inbox's list: newest first, the live shelf unless `archived=1`. */
   app.get(
@@ -552,26 +585,22 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
       request: FastifyRequest<{ Querystring: { unread?: string; kind?: string; archived?: string; limit?: string } }>,
       reply: FastifyReply,
     ) => {
-      const orgId = context.assistant.org.activeOrganization().id;
-      const kinds = (request.query.kind ?? '')
-        .split(',')
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.length > 0);
-      const unknown = kinds.find((entry) => !NOTIFICATION_KINDS.includes(entry as NotificationKind));
+      const kinds = parseList<NotificationKind>(request.query.kind);
+      const unknown = kinds.find((entry) => !NOTIFICATION_KINDS.includes(entry));
       if (unknown) return badRequest(reply, 'No notification kind ' + unknown);
       return store.listNotifications({
-        orgId,
-        unread: isTrue(request.query.unread),
-        archived: isTrue(request.query.archived),
-        ...(kinds.length ? { kind: kinds as NotificationKind[] } : {}),
-        limit: clampLimit(request.query.limit, 100, 1000),
+        orgId: activeOrgId(),
+        unread: isTruthy(request.query.unread),
+        archived: isTruthy(request.query.archived),
+        ...(kinds.length ? { kind: kinds } : {}),
+        limit: clampPositiveInt(request.query.limit, 100, 1000),
       });
     },
   );
 
   /** The badge: unread and not archived. */
   app.get('/api/notifications/unread-count', async () => ({
-    count: store.unreadNotificationCount(context.assistant.org.activeOrganization().id),
+    count: store.unreadNotificationCount(activeOrgId()),
   }));
 
   /**
@@ -581,9 +610,8 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
    */
   app.post('/api/notifications/read', async (request: FastifyRequest) => {
     const input = parseOrThrow(markNotificationsReadSchema, request.body ?? {});
-    const orgId = context.assistant.org.activeOrganization().id;
     const read = input.read !== false;
-    if (input.all) store.markNotificationsRead('all', { read, orgId });
+    if (input.all) store.markNotificationsRead('all', { read, orgId: activeOrgId() });
     else store.markNotificationsRead(input.ids ?? [], { read });
     context.assistant.emit('changed', { kind: 'notifications', id: 'all' });
     return { ok: true };
@@ -599,12 +627,10 @@ export async function registerOrgRoutes(app: FastifyInstance, context: ServerCon
   });
 }
 
-function isTrue(raw: string | undefined): boolean {
-  return raw === '1' || raw === 'true';
-}
-
-function clampLimit(raw: string | undefined, fallback: number, max: number): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.min(Math.floor(parsed), max);
+/** `?status=a,b` as a list; the values are the store's to interpret, not checked here. */
+function parseList<T extends string>(raw: string | undefined): T[] {
+  return (raw ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0) as T[];
 }

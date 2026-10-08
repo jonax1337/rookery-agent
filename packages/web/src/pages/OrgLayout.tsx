@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router';
 
 import {
   BriefcaseBusinessIcon as Building2Icon,
   PenToolIcon as PencilIcon,
   PlusIcon,
-  PlusIcon as Plus,
-} from "@/components/icons";
+} from '@/components/icons';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -17,9 +16,11 @@ import { RotatingText, RotatingTextContainer } from '@/components/animate-ui/pri
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 
 import { api } from '@/lib/api';
-import { formatNumber } from '@/lib/stats';
+import { reportFailure } from '@/lib/errors';
 import { shorten } from '@/lib/format';
+import { formatNumber } from '@/lib/stats';
 import { useOrgState } from '@/providers/rookery-provider';
+import type { OrgState } from '@/hooks/useOrg';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { PageBody } from '@/components/blocks/page-body';
 import { StatCards, StatCardsSkeleton, type StatCardProps } from '@/components/blocks/stat-cards';
@@ -28,7 +29,6 @@ import { EmptyState, ServerOffline } from '@/components/common/empty-state';
 import { RowMenuButton } from '@/components/common/row-menu-button';
 import { RunningBadge } from '@/components/common/status-badge';
 import { collectErrors, useDraft, type FieldErrors } from '@/components/forms/form-kit';
-import { reportFailure } from '@/lib/errors';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -47,11 +47,9 @@ import { Textarea } from '@/components/ui/textarea';
 /**
  * The company, and the three tables it consists of.
  *
- * The old `/org` was one scrolling column of four Cards - a company header, a
- * team list, an agent list grouped by team, a project list - none of which
- * could be searched, sorted or filtered. The three lists are three routes now,
- * and this layout holds what they share: the headline numbers and the tab
- * strip. Headline numbers appear on Overview; navigation remains on every tab.
+ * The three lists are three routes, and this layout holds what they share: the
+ * headline numbers and the tab strip. Headline numbers appear on Overview;
+ * navigation remains on every tab.
  *
  * The tabs are routes rather than local state: `/org/teams` is a place the
  * sidebar, the command palette and a bookmark can all point at. Radix' Tabs
@@ -59,25 +57,36 @@ import { Textarea } from '@/components/ui/textarea';
  * trigger is a `NavLink` - which keeps the roving focus and the `aria-selected`
  * of the real thing instead of a row of hand-styled links.
  *
- * The company's own name and mission used to be edited by an inline form that
- * replaced the page header, with a `useEffect` that overwrote whatever was
- * typed the moment a socket broadcast came in. Two fields belong in a drawer,
- * and the draft belongs to `useDraft`, which a refetch cannot reset.
+ * The company's own name and mission are edited in a drawer, and the draft
+ * belongs to `useDraft`, which a refetch cannot reset.
  */
+
+interface CreateAction {
+  to: string;
+  label: string;
+}
+
+const HIRE_AGENT: CreateAction = { to: '/org/agents/new', label: 'Hire agent' };
+const CREATE_TEAM: CreateAction = { to: '/org/teams/new', label: 'Create team' };
+const CREATE_PROJECT: CreateAction = { to: '/org/projects/new', label: 'Create project' };
+const CREATE_ACTIONS: readonly CreateAction[] = [HIRE_AGENT, CREATE_TEAM, CREATE_PROJECT];
 
 interface OrgTab {
   value: string;
   to: string;
   label: string;
-  createLabel: string;
+  /** What the header's primary button creates while this tab is open. */
+  create: CreateAction;
 }
 
+const OVERVIEW_VALUE = 'overview';
+
 const TABS: readonly OrgTab[] = [
-  { value: 'agents', to: '/org/agents', label: 'Agents', createLabel: 'Hire agent' },
-  { value: 'teams', to: '/org/teams', label: 'Teams', createLabel: 'Create team' },
-  { value: 'projects', to: '/org/projects', label: 'Projects', createLabel: 'Create project' },
-  { value: 'hierarchy', to: '/org/hierarchy', label: 'Hierarchy', createLabel: 'Hire agent' },
-  { value: 'performance', to: '/org/performance', label: 'Performance', createLabel: 'Hire agent' },
+  { value: 'agents', to: '/org/agents', label: 'Agents', create: HIRE_AGENT },
+  { value: 'teams', to: '/org/teams', label: 'Teams', create: CREATE_TEAM },
+  { value: 'projects', to: '/org/projects', label: 'Projects', create: CREATE_PROJECT },
+  { value: 'hierarchy', to: '/org/hierarchy', label: 'Hierarchy', create: HIRE_AGENT },
+  { value: 'performance', to: '/org/performance', label: 'Performance', create: HIRE_AGENT },
 ];
 
 const organizationSchema = z.object({
@@ -93,15 +102,12 @@ interface OrgDraft {
 export function OrgLayout() {
   const org = useOrgState();
   const { pathname } = useLocation();
-
-  const organization = org.snapshot?.organization ?? null;
   const [editOpen, setEditOpen] = useState(false);
 
-  const active = TABS.find((tab) => pathname.startsWith(tab.to))?.value ?? 'overview';
-  const activeTab = TABS.find((tab) => tab.value === active);
-  const isIndex = active === 'overview';
-
-  /* -------------------------------- header -------------------------------- */
+  const organization = org.snapshot?.organization ?? null;
+  const activeTab = TABS.find((tab) => pathname.startsWith(tab.to));
+  const active = activeTab?.value ?? OVERVIEW_VALUE;
+  const create = activeTab?.create ?? HIRE_AGENT;
 
   usePageMeta(
     {
@@ -110,109 +116,16 @@ export function OrgLayout() {
         { label: organization?.name ?? 'Organization', to: '/org' },
         { label: activeTab?.label ?? 'Overview' },
       ],
-      // One primary button, then the overflow the detail pages already use.
-      // Not a ButtonGroup: that welds a filled button to an outlined one, and
-      // the seam reads as a mistake.
       actions: (
-        <>
-          <Button size="sm" asChild>
-            <NavLink to={(activeTab?.to ?? '/org/agents') + '/new'}>
-              <Plus data-icon="inline-start" />
-              <RotatingTextContainer
-                text={activeTab?.createLabel ?? 'Hire agent'}
-                className="py-1"
-              >
-                <RotatingText />
-              </RotatingTextContainer>
-            </NavLink>
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <RowMenuButton tone="header" label="More Organization actions" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              {TABS.filter((tab) => tab.value !== active).map((tab) => (
-                <DropdownMenuItem key={tab.value} asChild>
-                  <NavLink to={tab.to + '/new'}>
-                    <PlusIcon />
-                    {tab.createLabel}
-                  </NavLink>
-                </DropdownMenuItem>
-              ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem disabled={!organization} onSelect={() => setEditOpen(true)}>
-                <PencilIcon />
-                Edit organization
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </>
+        <HeaderActions
+          create={create}
+          canEdit={organization !== null}
+          onEdit={() => setEditOpen(true)}
+        />
       ),
     },
     [organization?.id, organization?.name, activeTab, active],
   );
-
-  /* -------------------------------- numbers ------------------------------- */
-
-  const counts = useMemo(() => {
-    const withoutTeam = org.agents.filter((agent) => !agent.teamId).length;
-    const withoutLead = org.teams.filter((team) => !team.leadId).length;
-    const withPath = org.projects.filter((project) => Boolean(project.path)).length;
-    // Several assignments can belong to the same agent; the card names people,
-    // not runs, so the list is deduplicated before it is printed.
-    const busy = [...new Set(org.running.map((view) => view.agentName))];
-    return { withoutTeam, withoutLead, withPath, busy };
-  }, [org.agents, org.teams, org.projects, org.running]);
-
-  const running = org.running.length;
-
-  // `GET /api/org` returns the active rows only - `listAgents` and
-  // `listProjects` both filter `archived = 0`, and there is no endpoint that
-  // would hand the archived ones over. So no card claims a total here; each
-  // one says which population it counted.
-  const cards: StatCardProps[] = [
-    {
-      label: 'Agents',
-      value: <CountingNumber number={org.agents.length} />,
-      headline:
-        counts.withoutTeam === 0
-          ? 'All assigned to a team'
-          : formatNumber(counts.withoutTeam) + ' without a team',
-      footnote: 'Active agents, excluding archive',
-      to: '/org/agents',
-    },
-    {
-      label: 'Teams',
-      value: <CountingNumber number={org.teams.length} />,
-      headline:
-        counts.withoutLead === 0
-          ? 'Every team has a lead'
-          : formatNumber(counts.withoutLead) + ' without a lead',
-      footnote: 'Teams in the active organization',
-      to: '/org/teams',
-    },
-    {
-      label: 'Projects',
-      value: <CountingNumber number={org.projects.length} />,
-      headline:
-        counts.withPath === 0
-          ? 'All use the shared workspace'
-          : formatNumber(counts.withPath) + ' with a custom directory',
-      footnote: 'Active projects, excluding archive',
-      to: '/org/projects',
-    },
-    {
-      label: 'Running now',
-      value: <CountingNumber number={running} />,
-      ...(running > 0 ? { badge: <RunningBadge count={running} /> } : {}),
-      headline:
-        running === 0 ? 'No one is working right now' : shorten(counts.busy.join(', '), 40),
-      footnote: 'Updated live',
-      to: '/assignments',
-    },
-  ];
-
-  /* -------------------------------- states -------------------------------- */
 
   if (org.loading && !organization) return <OrgSkeleton />;
 
@@ -254,48 +167,14 @@ export function OrgLayout() {
       <Tabs value={active} className="gap-4">
         <Fade delay={50}>
           <div className="overflow-x-auto px-4 lg:px-6">
-            <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1">
-              <TabsTrigger value="overview" asChild>
-                <NavLink to="/org" end>Overview</NavLink>
-              </TabsTrigger>
-              <TabsTrigger value="agents" asChild>
-                <NavLink to="/org/agents">
-                  Agents
-                  <Badge variant="secondary">
-                    <SlidingNumber number={org.agents.length} thousandSeparator="," />
-                  </Badge>
-                </NavLink>
-              </TabsTrigger>
-              <TabsTrigger value="teams" asChild>
-                <NavLink to="/org/teams">
-                  Teams
-                  <Badge variant="secondary">
-                    <SlidingNumber number={org.teams.length} thousandSeparator="," />
-                  </Badge>
-                </NavLink>
-              </TabsTrigger>
-              <TabsTrigger value="projects" asChild>
-                <NavLink to="/org/projects">
-                  Projects
-                  <Badge variant="secondary">
-                    <SlidingNumber number={org.projects.length} thousandSeparator="," />
-                  </Badge>
-                </NavLink>
-              </TabsTrigger>
-              <TabsTrigger value="hierarchy" asChild>
-                <NavLink to="/org/hierarchy">Hierarchy</NavLink>
-              </TabsTrigger>
-              <TabsTrigger value="performance" asChild>
-                <NavLink to="/org/performance">Performance</NavLink>
-              </TabsTrigger>
-            </TabsList>
+            <OrgTabList org={org} />
           </div>
         </Fade>
 
         <TabsContent value={active} forceMount className="flex flex-col gap-4">
-          {isIndex ? (
+          {active === OVERVIEW_VALUE ? (
             <Fade delay={100}>
-              <StatCards items={cards} />
+              <StatCards items={buildOverviewCards(org)} />
             </Fade>
           ) : (
             <Outlet />
@@ -315,7 +194,137 @@ export function OrgLayout() {
   );
 }
 
-/* ------------------------------ the company ------------------------------ */
+/**
+ * One primary button, then the overflow the detail pages already use. Not a
+ * ButtonGroup: that welds a filled button to an outlined one, and the seam
+ * reads as a mistake.
+ */
+function HeaderActions({
+  create,
+  canEdit,
+  onEdit,
+}: {
+  create: CreateAction;
+  canEdit: boolean;
+  onEdit(): void;
+}) {
+  return (
+    <>
+      <Button size="sm" asChild>
+        <NavLink to={create.to}>
+          <PlusIcon data-icon="inline-start" />
+          <RotatingTextContainer text={create.label} className="py-1">
+            <RotatingText />
+          </RotatingTextContainer>
+        </NavLink>
+      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <RowMenuButton tone="header" label="More Organization actions" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-48">
+          {CREATE_ACTIONS.filter((action) => action !== create).map((action) => (
+            <DropdownMenuItem key={action.to} asChild>
+              <NavLink to={action.to}>
+                <PlusIcon />
+                {action.label}
+              </NavLink>
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem disabled={!canEdit} onSelect={onEdit}>
+            <PencilIcon />
+            Edit organization
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
+  );
+}
+
+function OrgTabList({ org }: { org: OrgState }) {
+  const counts: Record<string, number> = {
+    agents: org.agents.length,
+    teams: org.teams.length,
+    projects: org.projects.length,
+  };
+
+  return (
+    <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:bg-muted-foreground/30 **:data-[slot=badge]:px-1">
+      <TabsTrigger value={OVERVIEW_VALUE} asChild>
+        <NavLink to="/org" end>
+          Overview
+        </NavLink>
+      </TabsTrigger>
+      {TABS.map((tab) => {
+        const count = counts[tab.value];
+        return (
+          <TabsTrigger key={tab.value} value={tab.value} asChild>
+            <NavLink to={tab.to}>
+              {tab.label}
+              {count !== undefined ? (
+                <Badge variant="secondary">
+                  <SlidingNumber number={count} thousandSeparator="," />
+                </Badge>
+              ) : null}
+            </NavLink>
+          </TabsTrigger>
+        );
+      })}
+    </TabsList>
+  );
+}
+
+// `GET /api/org` returns the active rows only - `listAgents` and
+// `listProjects` both filter `archived = 0`, and there is no endpoint that
+// would hand the archived ones over. So no card claims a total here; each
+// one says which population it counted.
+function buildOverviewCards(org: OrgState): StatCardProps[] {
+  const withoutTeam = org.agents.filter((agent) => !agent.teamId).length;
+  const withoutLead = org.teams.filter((team) => !team.leadId).length;
+  const withPath = org.projects.filter((project) => Boolean(project.path)).length;
+  // Several assignments can belong to the same agent; the card names people,
+  // not runs, so the list is deduplicated before it is printed.
+  const busy = [...new Set(org.running.map((view) => view.agentName))];
+  const running = org.running.length;
+
+  return [
+    {
+      label: 'Agents',
+      value: <CountingNumber number={org.agents.length} />,
+      headline:
+        withoutTeam === 0 ? 'All assigned to a team' : formatNumber(withoutTeam) + ' without a team',
+      footnote: 'Active agents, excluding archive',
+      to: '/org/agents',
+    },
+    {
+      label: 'Teams',
+      value: <CountingNumber number={org.teams.length} />,
+      headline:
+        withoutLead === 0 ? 'Every team has a lead' : formatNumber(withoutLead) + ' without a lead',
+      footnote: 'Teams in the active organization',
+      to: '/org/teams',
+    },
+    {
+      label: 'Projects',
+      value: <CountingNumber number={org.projects.length} />,
+      headline:
+        withPath === 0
+          ? 'All use the shared workspace'
+          : formatNumber(withPath) + ' with a custom directory',
+      footnote: 'Active projects, excluding archive',
+      to: '/org/projects',
+    },
+    {
+      label: 'Running now',
+      value: <CountingNumber number={running} />,
+      ...(running > 0 ? { badge: <RunningBadge count={running} /> } : {}),
+      headline: running === 0 ? 'No one is working right now' : shorten(busy.join(', '), 40),
+      footnote: 'Updated live',
+      to: '/assignments',
+    },
+  ];
+}
 
 interface OrganizationDrawerProps {
   open: boolean;
@@ -330,8 +339,8 @@ interface OrganizationDrawerProps {
  * Name and mission, in the one place they can be changed.
  *
  * `useDraft` rather than two `useState`s plus an effect: the company reloads
- * on every structural broadcast in the whole system, and the old inline form
- * threw away what was typed each time one arrived.
+ * on every structural broadcast in the whole system, and an inline form would
+ * throw away what was typed each time one arrived.
  */
 function OrganizationDrawer({
   open,
@@ -392,9 +401,9 @@ function OrganizationDrawer({
     >
       <FieldGroup>
         <Field data-invalid={errors.name ? true : undefined}>
-          <FieldLabel htmlFor="firma-name">Name</FieldLabel>
+          <FieldLabel htmlFor="org-name">Name</FieldLabel>
           <Input
-            id="firma-name"
+            id="org-name"
             value={draft.name}
             aria-invalid={errors.name ? true : undefined}
             onChange={(event) => set({ name: event.target.value })}
@@ -403,9 +412,9 @@ function OrganizationDrawer({
         </Field>
 
         <Field>
-          <FieldLabel htmlFor="firma-mission">Mission</FieldLabel>
+          <FieldLabel htmlFor="org-mission">Mission</FieldLabel>
           <Textarea
-            id="firma-mission"
+            id="org-mission"
             rows={4}
             placeholder="What the organization exists to do, in one or two sentences."
             value={draft.mission}

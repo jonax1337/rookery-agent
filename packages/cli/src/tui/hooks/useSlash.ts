@@ -51,8 +51,6 @@ export interface SlashState {
   open: boolean;
   matches: SlashCommand[];
   selected: number;
-  /** The `/word` the palette is filtering on. */
-  query: string;
   move: (delta: number) => void;
   /** The command that Tab/Enter would complete to, if any. */
   active: SlashCommand | undefined;
@@ -86,7 +84,6 @@ export function useSlash(value: string, cursor: number): SlashState {
     open,
     matches,
     selected: index,
-    query: query ?? '',
     active: open ? matches[index] : undefined,
     move: (delta: number) => {
       if (!matches.length) return;

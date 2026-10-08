@@ -92,7 +92,7 @@ export default function App() {
     <>
       <Routes location={settings ? background : location}>
         <Route element={<AppShell />}>
-          {/* ------------------------------ arbeiten ---------------------- */}
+          {/* -------------------------------- work ------------------------ */}
           <Route path="/" element={<ChatPage />} />
           <Route path="/c/:sessionId" element={<ChatPage />} />
           <Route path="/chats" element={<ConversationsPage />} />
@@ -103,7 +103,7 @@ export default function App() {
           <Route path="/workspace" element={<WorkspacePage />} />
           <Route path="/dashboard" element={<DashboardPage />} />
 
-          {/* ------------------------------- betrieb ---------------------- */}
+          {/* ------------------------------ operations -------------------- */}
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/tasks/new" element={<TaskFormPage />} />
           <Route path="/tasks/:id" element={<TaskDetailPage />} />
@@ -120,7 +120,7 @@ export default function App() {
           <Route path="/gateways" element={<GatewaysPage />} />
           <Route path="/gateways/:id" element={<GatewayDetailPage />} />
 
-          {/* --------------------------------- firma ---------------------- */}
+          {/* ------------------------------- company ---------------------- */}
           {/* The layout renders the overview at its index and frames the three tables. */}
           <Route path="/org" element={<OrgLayout />}>
             <Route index element={null} />
@@ -139,7 +139,7 @@ export default function App() {
           <Route path="/org/teams/:id/edit" element={<TeamFormPage />} />
           <Route path="/org/projects/new" element={<ProjectFormPage />} />
           <Route path="/org/projects/:id/edit" element={<ProjectFormPage />} />
-          {/* ----------------------------- gedächtnis --------------------- */}
+          {/* ----------------------------- memory ------------------------- */}
           {/* The layout renders the overview and shares the save-memory dialog. */}
           <Route path="/memory" element={<MemoryLayout />}>
             <Route index element={null} />
@@ -148,7 +148,7 @@ export default function App() {
             <Route path="sleep" element={<MemorySleepPage />} />
           </Route>
 
-          {/* ------------------------------ werkzeuge --------------------- */}
+          {/* -------------------------------- tools ----------------------- */}
           <Route path="/tools" element={<ToolsPage />} />
           <Route path="/tools/new" element={<ToolFormPage />} />
           <Route path="/tools/:id" element={<ToolDetailPage />} />

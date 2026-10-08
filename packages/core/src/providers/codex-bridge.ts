@@ -1,11 +1,20 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { sharedCodexSession, type CodexSession } from './codex-auth.js';
 import { codexModels } from './provider-catalog.js';
 import {
+  LoopbackServer,
+  abortWhenClientLeaves,
+  readBody,
+  sendError,
+  sendFailure,
+  type LoopbackEndpoint,
+} from './loopback-server.js';
+import {
   TurnTranslator,
   readServerSentEvents,
   toResponsesRequest,
+  type AnthropicEvent,
   type AnthropicRequest,
 } from './codex-translate.js';
 
@@ -24,7 +33,9 @@ import {
 
 const CODEX_URL = 'https://chatgpt.com/backend-api/codex/responses';
 /** Where a Claude slug goes in passthrough mode: Anthropic's own API, verbatim. */
-const ANTHROPIC_URL = 'https://api.anthropic.com';
+export const ANTHROPIC_URL = 'https://api.anthropic.com';
+/** How much of a failed upstream body is quoted back in the error message. */
+const UPSTREAM_DETAIL_CHARS = 600;
 /** What the Codex CLI identifies as; see codex-rs/login/src/auth/default_client.rs. */
 const ORIGINATOR = 'codex_cli_rs';
 /** Stand-in release date for the model list; the Codex cache reports none. */
@@ -59,10 +70,7 @@ export interface CodexBridgeOptions {
 }
 
 export class CodexBridge {
-  #server: Server | undefined;
-  #starting: Promise<{ baseUrl: string; token: string }> | undefined;
-  #token = '';
-  #baseUrl = '';
+  readonly #loopback = new LoopbackServer('Codex bridge', (request, response) => this.#handle(request, response));
   readonly #session: CodexSession;
   readonly #passthrough: boolean;
 
@@ -72,105 +80,71 @@ export class CodexBridge {
   }
 
   /** Start once and return where to point a CLI. Idempotent. */
-  start(): Promise<{ baseUrl: string; token: string }> {
-    this.#starting ??= new Promise((resolve, reject) => {
-      this.#token = randomUUID();
-      const server = createServer((request, response) => {
-        void this.#handle(request, response);
-      });
-      server.on('error', reject);
-      server.listen(0, '127.0.0.1', () => {
-        const address = server.address();
-        if (!address || typeof address === 'string') {
-          reject(new Error('The Codex bridge could not determine its own port.'));
-          return;
-        }
-        this.#server = server;
-        this.#baseUrl = 'http://127.0.0.1:' + address.port;
-        resolve({ baseUrl: this.#baseUrl, token: this.#token });
-      });
-    });
-    return this.#starting;
+  start(): Promise<LoopbackEndpoint> {
+    return this.#loopback.start();
   }
 
-  async close(): Promise<void> {
-    const server = this.#server;
-    this.#server = undefined;
-    this.#starting = undefined;
-    if (!server) return;
-    // `close` alone waits for every open connection to end, and a client that
-    // keeps its socket alive - `claude` does - never ends it. Without this the
-    // process hangs after the last turn instead of exiting.
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+  close(): Promise<void> {
+    return this.#loopback.close();
   }
 
   async #handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
-      const path = (request.url ?? '').split('?')[0] ?? '';
-      const isMessages = request.method === 'POST' && path.startsWith('/v1/messages');
-      // The turn itself, as opposed to `/v1/messages/count_tokens`, which shares
-      // the prefix but is not something this bridge can translate.
-      const isTurn = request.method === 'POST' && (path === '/v1/messages' || path === '/v1/messages/');
-      // What the binary asks for its model list; it sends `/v1/models`,
-      // `/v1/models/`, and both with `?limit=`/`?beta=`. Claude Code 2.1.263
-      // does not consult it to validate a `/model` switch - it probes with a
-      // one-token turn instead - but a bridge that claims to be the Messages
-      // API should answer it, and anything reading the list gets the truth.
-      const isModels = request.method === 'GET' && (path === '/v1/models' || path === '/v1/models/');
-
       // The body is read once, here, because the routing decision needs
       // `body.model` and a forwarded request needs the very same bytes.
       const raw = request.method === 'POST' ? await readBody(request) : '';
-      const body = isMessages ? (parseJson(raw) as AnthropicRequest) : undefined;
-
-      /**
-       * Which account answers this.
-       *
-       * Deliberately made on the requested name alone, and deliberately made
-       * before `resolveModel` ever sees it: `resolveModel` maps everything it
-       * does not recognise onto the account's first GPT slug, so asking it
-       * first would answer a `claude-*` turn - the one-token probe behind
-       * `/model` included - out of ChatGPT and report success for a model that
-       * was never asked. Only a slug the ChatGPT account actually serves goes
-       * to ChatGPT; the rest is Anthropic's, byte for byte.
-       */
-      if (this.#passthrough && !(isTurn && isCodexModel(body?.model))) {
-        await forwardToAnthropic(request, raw, response);
-        return;
-      }
-
-      if (!isMessages && !isModels) {
-        response.writeHead(404, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error' } }));
-        return;
-      }
-      if (!this.#authorised(request)) {
-        response.writeHead(401, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error' } }));
-        return;
-      }
-
-      if (isModels) {
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify(modelList()));
-        return;
-      }
-
-      await this.#turn(body as AnthropicRequest, response);
+      await this.#route(request, raw, response);
     } catch (error) {
-      if (!response.headersSent) {
-        response.writeHead(500, { 'content-type': 'application/json' });
-        response.end(
-          JSON.stringify({
-            type: 'error',
-            error: { type: 'api_error', message: (error as Error).message },
-          }),
-        );
-      } else {
-        response.end();
-      }
+      sendFailure(response, 500, error);
     }
+  }
+
+  async #route(request: IncomingMessage, raw: string, response: ServerResponse): Promise<void> {
+    const path = (request.url ?? '').split('?')[0] ?? '';
+    const isMessages = request.method === 'POST' && path.startsWith('/v1/messages');
+    // The turn itself, as opposed to `/v1/messages/count_tokens`, which shares
+    // the prefix but is not something this bridge can translate.
+    const isTurn = request.method === 'POST' && (path === '/v1/messages' || path === '/v1/messages/');
+    // What the binary asks for its model list; it sends `/v1/models`,
+    // `/v1/models/`, and both with `?limit=`/`?beta=`. Claude Code 2.1.263
+    // does not consult it to validate a `/model` switch - it probes with a
+    // one-token turn instead - but a bridge that claims to be the Messages
+    // API should answer it, and anything reading the list gets the truth.
+    const isModels = request.method === 'GET' && (path === '/v1/models' || path === '/v1/models/');
+    const body = isMessages ? (parseJson(raw) as AnthropicRequest) : undefined;
+
+    /**
+     * Which account answers this.
+     *
+     * Deliberately made on the requested name alone, and deliberately made
+     * before `resolveModel` ever sees it: `resolveModel` maps everything it
+     * does not recognise onto the account's first GPT slug, so asking it
+     * first would answer a `claude-*` turn - the one-token probe behind
+     * `/model` included - out of ChatGPT and report success for a model that
+     * was never asked. Only a slug the ChatGPT account actually serves goes
+     * to ChatGPT; the rest is Anthropic's, byte for byte.
+     */
+    if (this.#passthrough && !(isTurn && isCodexModel(body?.model))) {
+      await relayRequest(request, raw, response, ANTHROPIC_URL);
+      return;
+    }
+
+    if (!isMessages && !isModels) {
+      sendError(response, 404, 'not_found_error');
+      return;
+    }
+    if (!this.#authorised(request)) {
+      sendError(response, 401, 'authentication_error');
+      return;
+    }
+
+    if (isModels) {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(modelList()));
+      return;
+    }
+
+    await this.#turn(body as AnthropicRequest, response);
   }
 
   /**
@@ -189,13 +163,14 @@ export class CodexBridge {
    * authenticated by Anthropic against the caller's own credentials.
    */
   #authorised(request: IncomingMessage): boolean {
-    if (this.#token === '') return false;
+    const token = this.#loopback.token;
+    if (token === '') return false;
     const presented = [
       request.headers[BRIDGE_TOKEN_HEADER],
       (request.headers.authorization ?? '').replace(/^Bearer /i, ''),
       request.headers['x-api-key'],
     ];
-    return presented.some((value) => value === this.#token);
+    return presented.some((value) => value === token);
   }
 
   async #turn(body: AnthropicRequest, response: ServerResponse): Promise<void> {
@@ -213,66 +188,80 @@ export class CodexBridge {
         'session-id': sessionId,
       },
       body: JSON.stringify(toResponsesRequest(body, { model, sessionId })),
+      signal: abortWhenClientLeaves(response),
     });
 
     if (!upstream.ok || !upstream.body) {
-      const detail = (await upstream.text().catch(() => '')).slice(0, 600);
-      response.writeHead(upstream.status === 401 ? 401 : 502, { 'content-type': 'application/json' });
-      response.end(
-        JSON.stringify({
-          type: 'error',
-          error: {
-            type: upstream.status === 401 ? 'authentication_error' : 'api_error',
-            message: 'The ChatGPT backend answered ' + upstream.status + '. ' + detail,
-          },
-        }),
-      );
+      await rejectUpstream(upstream, response);
       return;
     }
 
     const translator = new TurnTranslator(model);
-
-    if (body.stream !== true) {
-      // Anything that did not ask to stream gets one Messages object, the
-      // Anthropic default for an absent `stream`. Two clients rely on it:
-      // `claude -p --output-format json`, which sends `stream: false`, and the
-      // model-validation probe behind `/model`, which sends a one-token turn
-      // with no `stream` field at all and reads `usage.input_tokens` off the
-      // body - an SSE answer there is what made the switch fail.
-      let text = '';
-      for await (const event of readServerSentEvents(upstream.body)) {
-        if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
-          text += event.delta;
-        }
-        translator.handle(event);
-      }
-      const message = translator.toMessage(text);
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify(message));
-      return;
-    }
-
-    response.writeHead(200, {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive',
-    });
-    const write = (event: { event: string; data: Record<string, unknown> }): void => {
-      response.write('event: ' + event.event + '\ndata: ' + JSON.stringify(event.data) + '\n\n');
-    };
-
-    let closed = false;
-    for await (const event of readServerSentEvents(upstream.body)) {
-      for (const out of translator.handle(event)) {
-        write(out);
-        if (out.event === 'message_stop') closed = true;
-      }
-    }
-    // A stream that ended without `response.completed` still has to be closed
-    // properly, or the harness waits for an answer that will never come.
-    if (!closed) for (const out of translator.finish()) write(out);
-    response.end();
+    if (body.stream === true) await streamTurn(upstream.body, translator, response);
+    else await replyWithMessage(upstream.body, translator, response);
   }
+}
+
+async function rejectUpstream(upstream: Response, response: ServerResponse): Promise<void> {
+  const detail = (await upstream.text().catch(() => '')).slice(0, UPSTREAM_DETAIL_CHARS);
+  const unauthorised = upstream.status === 401;
+  sendError(
+    response,
+    unauthorised ? 401 : 502,
+    unauthorised ? 'authentication_error' : 'api_error',
+    'The ChatGPT backend answered ' + upstream.status + '. ' + detail,
+  );
+}
+
+/**
+ * Anything that did not ask to stream gets one Messages object, the
+ * Anthropic default for an absent `stream`. Two clients rely on it:
+ * `claude -p --output-format json`, which sends `stream: false`, and the
+ * model-validation probe behind `/model`, which sends a one-token turn
+ * with no `stream` field at all and reads `usage.input_tokens` off the
+ * body - an SSE answer there is what made the switch fail.
+ */
+async function replyWithMessage(
+  upstream: ReadableStream<Uint8Array>,
+  translator: TurnTranslator,
+  response: ServerResponse,
+): Promise<void> {
+  let text = '';
+  for await (const event of readServerSentEvents(upstream)) {
+    if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
+      text += event.delta;
+    }
+    translator.handle(event);
+  }
+  response.writeHead(200, { 'content-type': 'application/json' });
+  response.end(JSON.stringify(translator.toMessage(text)));
+}
+
+async function streamTurn(
+  upstream: ReadableStream<Uint8Array>,
+  translator: TurnTranslator,
+  response: ServerResponse,
+): Promise<void> {
+  response.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+  });
+  const write = (event: AnthropicEvent): void => {
+    response.write('event: ' + event.event + '\ndata: ' + JSON.stringify(event.data) + '\n\n');
+  };
+
+  let closed = false;
+  for await (const event of readServerSentEvents(upstream)) {
+    for (const out of translator.handle(event)) {
+      write(out);
+      if (out.event === 'message_stop') closed = true;
+    }
+  }
+  // A stream that ended without `response.completed` still has to be closed
+  // properly, or the harness waits for an answer that will never come.
+  if (!closed) for (const out of translator.finish()) write(out);
+  response.end();
 }
 
 /**
@@ -355,38 +344,28 @@ const DROP_FROM_RESPONSE = new Set([
 ]);
 
 /**
- * A turn that is not ours, relayed untouched.
- *
- * Method, path, query, headers and body all go out exactly as they came in -
- * the caller's own `authorization` and its full `anthropic-beta` list
- * included. Nothing here is normalised on purpose: every field this bridge
- * rewrote would be a way for it to silently change a session it has no
- * business changing, and the caller's credentials are the caller's, never
- * read and never replaced.
- *
- * One thing to know when debugging this by hand: a Claude OAuth bearer replayed
- * against `api.anthropic.com` without Claude Code's own system prompt comes
- * back **429**, not 401. Anthropic rejects the subscription token for a caller
- * it does not recognise as the client, and dresses the rejection as a rate
- * limit. A 429 out of a hand-built curl is therefore not evidence that the
- * quota is exhausted, and not evidence that the forwarding is broken - it is
- * what a correct forward of a credential looks like from outside the binary.
- * Only the real `claude` process gets a 200 through this path.
- */
-async function forwardToAnthropic(
-  request: IncomingMessage,
-  raw: string,
-  response: ServerResponse,
-): Promise<void> {
-  await relayRequest(request, raw, response, ANTHROPIC_URL);
-}
-
-/**
  * Relay one request to another Anthropic-Messages endpoint and stream the
  * answer back. `rewrite` may change the outgoing headers - swap the
  * credential for a backend with its own key - and is the only thing that
- * differs from the byte-for-byte Anthropic forward above. Hop-by-hop headers
- * and the bridge's own token never travel on.
+ * differs from a byte-for-byte forward. Hop-by-hop headers and the bridge's
+ * own token never travel on.
+ *
+ * With no `rewrite`, nothing is normalised on purpose: method, path, query,
+ * headers and body all go out exactly as they came in - the caller's own
+ * `authorization` and its full `anthropic-beta` list included. Every field
+ * this bridge rewrote would be a way for it to silently change a session it
+ * has no business changing, and the caller's credentials are the caller's,
+ * never read and never replaced.
+ *
+ * One thing to know when debugging that by hand: a Claude OAuth bearer
+ * replayed against `api.anthropic.com` without Claude Code's own system
+ * prompt comes back **429**, not 401. Anthropic rejects the subscription
+ * token for a caller it does not recognise as the client, and dresses the
+ * rejection as a rate limit. A 429 out of a hand-built curl is therefore not
+ * evidence that the quota is exhausted, and not evidence that the forwarding
+ * is broken - it is what a correct forward of a credential looks like from
+ * outside the binary. Only the real `claude` process gets a 200 through this
+ * path.
  */
 export async function relayRequest(
   request: IncomingMessage,
@@ -406,6 +385,7 @@ export async function relayRequest(
     method: request.method ?? 'GET',
     headers,
     body: raw === '' ? undefined : raw,
+    signal: abortWhenClientLeaves(response),
   });
 
   const out: Record<string, string> = {};
@@ -417,12 +397,6 @@ export async function relayRequest(
   // caller as it arrives, or the harness sits on a finished turn.
   if (upstream.body) for await (const chunk of upstream.body) response.write(chunk);
   response.end();
-}
-
-async function readBody(request: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString('utf8');
 }
 
 function parseJson(raw: string): unknown {

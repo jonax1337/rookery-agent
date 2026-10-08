@@ -135,8 +135,12 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     ],
     env: [],
     spec: ({ config, options, provider }) => computerServerSpec(config, provider, options.profile, options.engine, options.mode),
-    hint: (options) => computerPromptBlock(computerEngine(options.engine)) +
-      (computerEngine(options.engine) === 'builtin' && options.mode === 'background' ? ' Background-only mode is enforced: no physical input, clipboard writes, launching or focus changes.' : ''),
+    hint: (options) => {
+      const engine = computerEngine(options.engine);
+      const backgroundOnly = engine === 'builtin' && options.mode === 'background';
+      return computerPromptBlock(engine) +
+        (backgroundOnly ? ' Background-only mode is enforced: no physical input, clipboard writes, launching or focus changes.' : '');
+    },
     installed: (options) => computerEngine(options?.engine) === 'builtin' ? process.platform === 'win32' : zavoraServerPath() !== null,
   },
   {

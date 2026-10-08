@@ -34,12 +34,17 @@ interface Backend {
 }
 
 const SPEAK_TIMEOUT_MS = 90_000;
+/** How long `which`/`where` may take before the engine counts as missing. */
+const PROBE_TIMEOUT_MS = 4000;
+
+/** The `detail` of a result whose playback the caller cut short; not worth reporting. */
+export const SPEECH_ABORTED = 'aborted';
 
 let detected: Backend | null | undefined;
 let current: ChildProcess | null = null;
 
 /** Resolve (and cache) the speech backend for this machine. */
-export async function detectSpeechBackend(): Promise<Backend | null> {
+async function detectSpeechBackend(): Promise<Backend | null> {
   if (detected !== undefined) return detected;
 
   const candidates: Backend[] =
@@ -67,20 +72,19 @@ export async function detectSpeechBackend(): Promise<Backend | null> {
   return detected;
 }
 
+/** What `describeSpeech` says when no speech engine exists on this machine. */
+export const SPEECH_UNAVAILABLE = 'unavailable on this system';
+
 /** Human-readable one-liner for `/voice` and `doctor`. */
 export async function describeSpeech(): Promise<string> {
   const backend = await detectSpeechBackend();
-  return backend ? backend.kind + ' (' + backend.command + ')' : 'unavailable on this system';
+  return backend ? backend.kind + ' (' + backend.command + ')' : SPEECH_UNAVAILABLE;
 }
 
 /** Stop whatever is being spoken right now. Safe to call at any time. */
 export function stopSpeaking(): void {
   if (!current) return;
-  try {
-    current.kill();
-  } catch {
-    /* the process was already gone */
-  }
+  kill(current);
   current = null;
 }
 
@@ -93,12 +97,7 @@ export async function speak(markdown: string, options: SpeakOptions = {}): Promi
   const text = toSpeakableText(markdown).trim();
   if (!text) return { ok: true };
 
-  let backend: Backend | null = null;
-  try {
-    backend = await detectSpeechBackend();
-  } catch (error) {
-    return { ok: false, detail: (error as Error).message };
-  }
+  const backend = await detectSpeechBackend();
   if (!backend) {
     return {
       ok: false,
@@ -118,57 +117,61 @@ export async function speak(markdown: string, options: SpeakOptions = {}): Promi
   }
 }
 
-/* --------------------------------------------------------------------- */
+/** How a backend is started for one piece of text. */
+interface Invocation {
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  /** Text to feed the engine on stdin, when it does not take it as an argument. */
+  stdinText: string | null;
+}
 
-function run(backend: Backend, text: string, options: SpeakOptions): Promise<SpeakResult> {
+function invocationFor(backend: Backend, text: string, options: SpeakOptions): Invocation {
   const lang = options.lang ?? '';
   const voice = options.voiceName ?? '';
   const rate = clampRate(options.rate ?? 1);
-
-  let args: string[] = [];
-  let env: NodeJS.ProcessEnv = process.env;
-  let stdinText: string | null = null;
 
   switch (backend.kind) {
     case 'powershell': {
       // The text travels through the environment, never through the command
       // line, so quotes and newlines in a reply can never become script.
-      env = {
+      const env = {
         ...process.env,
         ROOKERY_SPEECH_TEXT: text,
         ROOKERY_SPEECH_RATE: String(Math.round((rate - 1) * 10)),
         ROOKERY_SPEECH_VOICE: voice,
         ROOKERY_SPEECH_LANG: lang,
       };
-      args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', POWERSHELL_SCRIPT];
-      break;
+      const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', POWERSHELL_SCRIPT];
+      return { args, env, stdinText: null };
     }
     case 'say': {
-      args = [];
+      const args: string[] = [];
       if (voice) args.push('-v', voice);
       // `say` wants words per minute; 175 is roughly its default.
       args.push('-r', String(Math.round(175 * rate)));
       args.push('-f', '-');
-      stdinText = text;
-      break;
+      return { args, env: process.env, stdinText: text };
     }
     case 'spd-say': {
-      args = ['-w'];
+      const args = ['-w'];
       if (lang) args.push('-l', lang.split('-')[0] ?? lang);
       if (voice) args.push('-y', voice);
       args.push('-r', String(clampInt(Math.round((rate - 1) * 50), -100, 100)));
       args.push('--', text);
-      break;
+      return { args, env: process.env, stdinText: null };
     }
     case 'espeak': {
-      args = [];
+      const args: string[] = [];
       if (lang) args.push('-v', lang.toLowerCase());
       args.push('-s', String(clampInt(Math.round(175 * rate), 80, 450)));
       args.push('--stdin');
-      stdinText = text;
-      break;
+      return { args, env: process.env, stdinText: text };
     }
   }
+}
+
+function run(backend: Backend, text: string, options: SpeakOptions): Promise<SpeakResult> {
+  const { args, env, stdinText } = invocationFor(backend, text, options);
 
   return new Promise<SpeakResult>((resolve) => {
     let settled = false;
@@ -196,21 +199,13 @@ function run(backend: Backend, text: string, options: SpeakOptions): Promise<Spe
     });
 
     const onAbort = (): void => {
-      try {
-        child.kill();
-      } catch {
-        /* already gone */
-      }
-      finish({ ok: false, detail: 'aborted' });
+      kill(child);
+      finish({ ok: false, detail: SPEECH_ABORTED });
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
 
     const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* already gone */
-      }
+      kill(child);
       finish({ ok: false, detail: 'speech timed out' });
     }, SPEAK_TIMEOUT_MS);
     timer.unref?.();
@@ -240,6 +235,15 @@ function run(backend: Backend, text: string, options: SpeakOptions): Promise<Spe
   });
 }
 
+/** Kill `child`, whether or not it is still alive. */
+function kill(child: ChildProcess): void {
+  try {
+    child.kill();
+  } catch {
+    /* already gone */
+  }
+}
+
 /** Speaks $env:ROOKERY_SPEECH_TEXT. Single-quoted throughout so the shell never re-parses it. */
 const POWERSHELL_SCRIPT = [
   "$ErrorActionPreference='Stop'",
@@ -263,13 +267,9 @@ function commandExists(command: string): Promise<boolean> {
       return;
     }
     const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* already gone */
-      }
+      kill(child);
       resolve(false);
-    }, 4000);
+    }, PROBE_TIMEOUT_MS);
     timer.unref?.();
     child.on('error', () => {
       clearTimeout(timer);

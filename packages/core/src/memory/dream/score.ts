@@ -7,7 +7,7 @@ import type {
   ScoreResult,
   ScoredMemory,
 } from '../../types.js';
-import { SEEDS_CAP, isPointBox } from './frame.js';
+import { DEFAULT_LIMIT, SEEDS_CAP, isPointBox, tagHitOf, usageOf } from './frame.js';
 import { WEIGHTS, PROFILE_LEAD, byScoreThenId, describe, recencyOf } from '../recall.js';
 
 /**
@@ -60,7 +60,7 @@ export type PipelineResult =
  * box - the night's replay, whose list is a superset estimate - abstains.
  */
 export function scoreFrame(frame: RecallFrame, policy: FrameScoringPolicy = {}): ScoreResult {
-  const limit = policy.limit ?? 8;
+  const limit = policy.limit ?? DEFAULT_LIMIT;
   if (limit > frame.box.limitMax) return { ok: false, reason: 'limit-out-of-box' };
   if (!isPointBox(frame.box) && frame.possibleSeeds.length >= SEEDS_CAP) {
     return { ok: false, reason: 'seeds-capped' };
@@ -88,9 +88,8 @@ export function scoreFrame(frame: RecallFrame, policy: FrameScoringPolicy = {}):
     if (!record) continue; // a closed frame always has the record
     const relevance = row.relevance / frame.maxRelevanceClamped;
     const recency = recencyOf(record.updatedAt, frame.now);
-    const usage = Math.min(1, Math.log2(record.accessCount + 1) / 5);
-    // A memory whose tag the user just said is almost certainly on topic.
-    const tagHit = record.tags.some((tag) => queryTokens.has(tag.toLowerCase())) ? 0.1 : 0;
+    const usage = usageOf(record.accessCount);
+    const tagHit = tagHitOf(record.tags, queryTokens);
     scored.push({
       ...record,
       score:
@@ -311,7 +310,7 @@ export function renderFromFrame(
  * prompt order. That ordered list is the measurement target (concept 5.1) -
  * what the model read, not what `recall` returned.
  */
-function renderFrameBlock(
+export function renderFrameBlock(
   frame: RecallFrame,
   memories: ScoredMemory[],
   budget: number,
@@ -370,7 +369,7 @@ function renderFrameBlock(
 export function pipelineAssistant(frame: RecallFrame, policy: FrameScoringPolicy = {}): PipelineResult {
   const scored = scoreFrame(frame, policy);
   if (!scored.ok) return scored;
-  const limit = policy.limit ?? 8;
+  const limit = policy.limit ?? DEFAULT_LIMIT;
   const merged = mergeProfile(frame, scored.ranked, limit);
   const kept = dropContradictedFromFrame(frame, merged);
   const sorted = [...kept].sort(byScoreThenId);

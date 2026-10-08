@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useRef, useState } from "react";
+import { memo, useCallback, useRef, useState, type ReactNode } from "react";
 
 import {
   BadgeAlertIcon as AlertCircleIcon,
@@ -28,9 +28,9 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
-const ANIMATION_DURATION = 200;
+import { DISCLOSURE_ANIMATION_MS } from "./surfaces";
 
-const pressable = "active:scale-[0.98]";
+const pressScale = "active:scale-[0.98]";
 
 export type ToolFallbackRootProps = Omit<
   React.ComponentProps<typeof Collapsible>,
@@ -51,7 +51,7 @@ function ToolFallbackRoot({
 }: ToolFallbackRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useScrollLock(collapsibleRef, DISCLOSURE_ANIMATION_MS);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
@@ -79,7 +79,7 @@ function ToolFallbackRoot({
       )}
       style={
         {
-          "--animation-duration": `${ANIMATION_DURATION}ms`,
+          "--animation-duration": `${DISCLOSURE_ANIMATION_MS}ms`,
         } as React.CSSProperties
       }
       {...props}
@@ -88,6 +88,10 @@ function ToolFallbackRoot({
     </Collapsible>
   );
 }
+
+/** `rookery_org_overview` / `orgOverview` -> `rookery org overview`. */
+export const humanizeToolName = (toolName: string) =>
+  toolName.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ");
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
@@ -127,6 +131,20 @@ function ToolFallbackDuration({
   );
 }
 
+/** Spoken by screen readers after the visible tool name. */
+function statusLabel(status: ToolCallMessagePartStatus | undefined) {
+  switch (status?.type) {
+    case "running":
+      return "Running";
+    case "requires-action":
+      return "Awaiting approval";
+    case "incomplete":
+      return status.reason === "cancelled" ? "Cancelled" : "Failed";
+    default:
+      return "Completed";
+  }
+}
+
 function ToolFallbackTrigger({
   toolName,
   status,
@@ -142,7 +160,7 @@ function ToolFallbackTrigger({
     status?.type === "incomplete" && status.reason === "cancelled";
 
   const Icon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled" : isRunning ? "Running" : statusType === "incomplete" ? "Failed" : "Completed";
+  const label = statusLabel(status);
 
   return (
     <CollapsibleTrigger
@@ -169,7 +187,7 @@ function ToolFallbackTrigger({
           isRunning && "shimmer motion-reduce:animate-none",
         )}
       >
-        {toolName.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ")}
+        {humanizeToolName(toolName)}
         <span className="sr-only"> — {label}</span>
       </span>
       <ToolFallbackDuration />
@@ -251,7 +269,9 @@ const formatUnknownValue = (value: unknown, space?: number): string => {
 
     const json = JSON.stringify(value, null, space);
     if (json !== undefined) return json;
-  } catch {}
+  } catch {
+    // JSON.stringify throws on cycles and BigInt; String() below is the fallback.
+  }
 
   try {
     return String(value);
@@ -358,6 +378,166 @@ const offersInterruptAction = (
   status.reason !== "interrupt" ||
   approval != null ||
   interrupt != null;
+
+function ApprovalFrame({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="tool-fallback-approval"
+      className={cn(
+        "aui-tool-fallback-approval flex flex-col gap-2 pt-1",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function ApprovalConfirmation({
+  option,
+  submitted,
+  onConfirm,
+  onBack,
+  className,
+  ...props
+}: React.ComponentProps<"div"> & {
+  option: ToolApprovalOption;
+  submitted: boolean;
+  onConfirm: () => void;
+  onBack: () => void;
+}) {
+  const confirmMeta =
+    typeof option.confirm === "object" ? option.confirm : undefined;
+  const description = confirmMeta?.description ?? option.description;
+
+  return (
+    <div
+      data-slot="tool-fallback-approval-confirm"
+      className={cn(
+        "aui-tool-fallback-approval-confirm flex flex-col gap-2 pt-1",
+        className,
+      )}
+      {...props}
+    >
+      <p className="aui-tool-fallback-approval-confirm-title font-semibold">
+        {confirmMeta?.title ?? `${approvalOptionLabel(option)}?`}
+      </p>
+      {description && (
+        <p className="aui-tool-fallback-approval-confirm-description text-muted-foreground">
+          {description}
+        </p>
+      )}
+      {option.grants && option.grants.length > 0 && (
+        <ul className="aui-tool-fallback-approval-confirm-grants flex flex-col gap-1">
+          {option.grants.map((grant) => (
+            <li key={grant}>
+              <code className="aui-tool-fallback-approval-confirm-grant bg-muted rounded px-1.5 py-0.5 text-xs">
+                {grant}
+              </code>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          className={pressScale}
+          onClick={onConfirm}
+          disabled={submitted}
+        >
+          Confirm
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className={pressScale}
+          onClick={onBack}
+          disabled={submitted}
+        >
+          Back
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ApprovalOptionButtons({
+  options,
+  offerDeny,
+  submitted,
+  onOption,
+  onDeny,
+}: {
+  options: readonly ToolApprovalOption[];
+  /** Add a plain Deny when the host declared no refusal of its own. */
+  offerDeny: boolean;
+  submitted: boolean;
+  onOption: (option: ToolApprovalOption) => void;
+  onDeny: () => void;
+}) {
+  const allowOptions = options.filter((o) => isAllowKind(o.kind));
+  const customOptions = options.filter((o) => !isKnownKind(o.kind));
+  const rejectOptions = options.filter(
+    (o) => isKnownKind(o.kind) && !isAllowKind(o.kind),
+  );
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      {[...allowOptions, ...customOptions, ...rejectOptions].map((option) => (
+        <Button
+          key={option.id}
+          size="sm"
+          variant={option === allowOptions[0] ? "default" : "outline"}
+          className={pressScale}
+          onClick={() => onOption(option)}
+          disabled={submitted}
+        >
+          {approvalOptionLabel(option)}
+        </Button>
+      ))}
+      {rejectOptions.length === 0 && offerDeny && (
+        <Button
+          size="sm"
+          variant="outline"
+          className={pressScale}
+          onClick={onDeny}
+          disabled={submitted}
+        >
+          Deny
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function ApprovalDecisionButtons({
+  submitted,
+  onDecide,
+}: {
+  submitted: boolean;
+  onDecide: (approved: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <Button
+        size="sm"
+        className={pressScale}
+        onClick={() => onDecide(true)}
+        disabled={submitted}
+      >
+        Allow
+      </Button>
+      <Button
+        size="sm"
+        variant="outline"
+        className={pressScale}
+        onClick={() => onDecide(false)}
+        disabled={submitted}
+      >
+        Deny
+      </Button>
+    </div>
+  );
+}
 
 function ToolFallbackApproval({
   className,
@@ -503,7 +683,7 @@ function ToolFallbackApproval({
       {question && (
         <Button
           size="sm"
-          className={pressable}
+          className={pressScale}
           onClick={submitAnswer}
           disabled={submitted || !answer.trim()}
         >
@@ -514,161 +694,44 @@ function ToolFallbackApproval({
   ) : null;
 
   if (confirming) {
-    const confirmMeta =
-      typeof confirming.confirm === "object" ? confirming.confirm : undefined;
-    const confirmDescription =
-      confirmMeta?.description ?? confirming.description;
     return (
-      <div
-        data-slot="tool-fallback-approval-confirm"
-        className={cn(
-          "aui-tool-fallback-approval-confirm flex flex-col gap-2 pt-1",
-          className,
-        )}
+      <ApprovalConfirmation
+        option={confirming}
+        submitted={submitted}
+        onConfirm={() => respondWithOption(confirming)}
+        onBack={() => setConfirmingId(null)}
+        className={className}
         {...props}
-      >
-        <p className="aui-tool-fallback-approval-confirm-title font-semibold">
-          {confirmMeta?.title ?? `${approvalOptionLabel(confirming)}?`}
-        </p>
-        {confirmDescription && (
-          <p className="aui-tool-fallback-approval-confirm-description text-muted-foreground">
-            {confirmDescription}
-          </p>
-        )}
-        {confirming.grants && confirming.grants.length > 0 && (
-          <ul className="aui-tool-fallback-approval-confirm-grants flex flex-col gap-1">
-            {confirming.grants.map((grant) => (
-              <li key={grant}>
-                <code className="aui-tool-fallback-approval-confirm-grant bg-muted rounded px-1.5 py-0.5 text-xs">
-                  {grant}
-                </code>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            className={pressable}
-            onClick={() => respondWithOption(confirming)}
-            disabled={submitted}
-          >
-            Confirm
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className={pressable}
-            onClick={() => setConfirmingId(null)}
-            disabled={submitted}
-          >
-            Back
-          </Button>
-        </div>
-      </div>
-    );
-  }
-
-  if (declaredOptions && declaredOptions.length > 0) {
-    const allowOptions = declaredOptions.filter((o) => isAllowKind(o.kind));
-    const customOptions = declaredOptions.filter((o) => !isKnownKind(o.kind));
-    const rejectOptions = declaredOptions.filter(
-      (o) => isKnownKind(o.kind) && !isAllowKind(o.kind),
-    );
-    return (
-      <div
-        data-slot="tool-fallback-approval"
-        className={cn(
-          "aui-tool-fallback-approval flex flex-col gap-2 pt-1",
-          className,
-        )}
-        {...props}
-      >
-        {promptText}
-        <div className="flex flex-wrap items-center gap-2">
-          {[...allowOptions, ...customOptions, ...rejectOptions].map(
-            (option) => (
-              <Button
-                key={option.id}
-                size="sm"
-                variant={option === allowOptions[0] ? "default" : "outline"}
-                className={pressable}
-                onClick={() => handleOption(option)}
-                disabled={submitted}
-              >
-                {approvalOptionLabel(option)}
-              </Button>
-            ),
-          )}
-          {rejectOptions.length === 0 && !question && (
-            <Button
-              size="sm"
-              variant="outline"
-              className={pressable}
-              onClick={() => respond(false)}
-              disabled={submitted}
-            >
-              Deny
-            </Button>
-          )}
-        </div>
-        {answerField}
-        {errorText}
-      </div>
+      />
     );
   }
 
   // A question carries no decision to fabricate, so it renders only what the
   // request declared, even when that leaves nothing to act on here.
-  if (question) {
-    return (
-      <div
-        data-slot="tool-fallback-approval"
-        className={cn(
-          "aui-tool-fallback-approval flex flex-col gap-2 pt-1",
-          className,
-        )}
-        {...props}
-      >
-        {promptText}
-        {answerField}
-        {errorText}
-      </div>
+  let controls: ReactNode = null;
+  if (declaredOptions && declaredOptions.length > 0) {
+    controls = (
+      <ApprovalOptionButtons
+        options={declaredOptions}
+        offerDeny={!question}
+        submitted={submitted}
+        onOption={handleOption}
+        onDeny={() => respond(false)}
+      />
+    );
+  } else if (!question) {
+    controls = (
+      <ApprovalDecisionButtons submitted={submitted} onDecide={respond} />
     );
   }
 
   return (
-    <div
-      data-slot="tool-fallback-approval"
-      className={cn(
-        "aui-tool-fallback-approval flex flex-col gap-2 pt-1",
-        className,
-      )}
-      {...props}
-    >
+    <ApprovalFrame className={className} {...props}>
       {promptText}
-      <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          className={pressable}
-          onClick={() => respond(true)}
-          disabled={submitted}
-        >
-          Allow
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className={pressable}
-          onClick={() => respond(false)}
-          disabled={submitted}
-        >
-          Deny
-        </Button>
-      </div>
+      {controls}
       {answerField}
       {errorText}
-    </div>
+    </ApprovalFrame>
   );
 }
 

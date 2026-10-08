@@ -1,4 +1,4 @@
-import { XIcon } from "@/components/icons";
+import { XIcon } from '@/components/icons';
 import type { ReactNode } from 'react';
 
 

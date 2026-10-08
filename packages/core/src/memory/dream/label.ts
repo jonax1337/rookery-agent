@@ -8,6 +8,7 @@ import type {
 } from '../../types.js';
 import { confirmedBy, normalizeTokens, similarity } from '../gate.js';
 import type { DeltaPosition, GainFunction } from './measure.js';
+import { clampNumber } from './util.js';
 
 /**
  * From the source to the label (dream stage 2, AP4; concept 4).
@@ -133,12 +134,6 @@ export function locateTurn(messages: readonly LabelMessage[], quote: string): Tu
 
 /* ----------------------------------- the four sources ----------------------------------- */
 
-/** Clamp a label value into the range `dream_labels.relevance` may hold. */
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(1, Math.max(0, value));
-}
-
 /** One label, with the optional columns left out rather than nulled. */
 function makeLabel(input: {
   turnId: string;
@@ -155,7 +150,7 @@ function makeLabel(input: {
     turnId: input.turnId,
     target: input.target,
     source: input.source,
-    relevance: clamp01(input.relevance),
+    relevance: clampNumber(input.relevance, 0, 1),
     scope: input.scope,
     owner: input.owner,
     createdAt: input.now,
@@ -497,7 +492,7 @@ export function gainFrom(labels: readonly DreamLabel[]): GainResult {
     if (label.scope !== 'turn') continue;
     if (label.source === 'review' || label.target === REVIEW_TARGET) continue;
 
-    const relevance = clamp01(label.relevance);
+    const relevance = clampNumber(label.relevance, 0, 1);
     const values = seen.get(label.target);
     if (!values) seen.set(label.target, new Set([relevance]));
     else if (!values.has(relevance)) {
@@ -565,9 +560,12 @@ export interface RatingPair {
   b: number;
 }
 
+/** NUL cannot occur in an id, so the joined key is collision-free. */
+const RATING_KEY_SEPARATOR = '\0';
+
 /** The key two labels must share to be a rating of the same thing. */
 function ratingKey(label: DreamLabel): string {
-  return label.turnId + ' ' + label.target;
+  return label.turnId + RATING_KEY_SEPARATOR + label.target;
 }
 
 /**

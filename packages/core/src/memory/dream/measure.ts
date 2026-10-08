@@ -7,7 +7,12 @@ import type {
   ScoredMemory,
 } from '../../types.js';
 import { byScoreThenId } from '../recall.js';
-import { groupFromFrame, pipelineAgent, pipelineAssistant, type FrameScoringPolicy } from './score.js';
+import {
+  pipelineAgent,
+  pipelineAssistant,
+  renderFrameBlock,
+  type FrameScoringPolicy,
+} from './score.js';
 
 /**
  * The block measure (dream stage 1, AP8; concept 5.2).
@@ -119,6 +124,14 @@ export function normaliseWeights(w: RecallWeights): RecallWeights {
   };
 }
 
+/** Relative tolerance for comparing weight vectors; absolute below magnitude 1. */
+export const VECTOR_TOLERANCE = 1e-9;
+
+/** Equal within `eps`, relative to the larger magnitude (at least 1). NaN never counts as different. */
+export function approximatelyEqual(left: number, right: number, eps = VECTOR_TOLERANCE): boolean {
+  return !(Math.abs(left - right) > eps * Math.max(1, Math.abs(left), Math.abs(right)));
+}
+
 /**
  * The H9 predicate (R13): is `a` a positive scalar multiple of `b`?
  *
@@ -132,7 +145,7 @@ export function normaliseWeights(w: RecallWeights): RecallWeights {
 export function isScalarMultiple(
   a: Record<string, number>,
   b: Record<string, number>,
-  eps = 1e-9,
+  eps = VECTOR_TOLERANCE,
 ): boolean {
   const keys = Object.keys(b);
   const first = keys[0];
@@ -149,11 +162,7 @@ export function isScalarMultiple(
   const scale = (a[reference] ?? 0) / referenceValue;
   if (!Number.isFinite(scale) || scale <= 0) return false;
   for (const key of keys) {
-    const observed = a[key] ?? 0;
-    const expected = scale * (b[key] ?? 0);
-    if (Math.abs(observed - expected) > eps * Math.max(1, Math.abs(observed), Math.abs(expected))) {
-      return false;
-    }
+    if (!approximatelyEqual(a[key] ?? 0, scale * (b[key] ?? 0), eps)) return false;
   }
   return true;
 }
@@ -189,54 +198,6 @@ function deliverable(record: MemoryRecordSnapshot, owner: string): boolean {
 }
 
 /**
- * The renderer's truncation with its by-product: which memories' lines fit,
- * in prompt order. Branch-for-branch the loop `renderFrameBlock` walks in
- * dream/score.ts - same `groupFromFrame`, same line formats, same
- * break-not-continue - because the ideal must be cut by the renderer P was
- * cut by, not by a second opinion (R14). `measure` sends only the ideal
- * through here; P itself is whatever the real pipeline kept.
- */
-function renderIncluded(
-  frame: RecallFrame,
-  memories: ScoredMemory[],
-  budget: number,
-  flat: boolean,
-): ScoredMemory[] {
-  if (!memories.length) return [];
-  const included: ScoredMemory[] = [];
-  let used = 0;
-  const push = (line: string, memory?: ScoredMemory): boolean => {
-    if (used + line.length > budget) return false;
-    if (memory) included.push(memory);
-    used += line.length + 1;
-    return true;
-  };
-
-  const groups = flat ? null : groupFromFrame(frame, memories);
-  if (groups && groups.grouped.length) {
-    for (const group of groups.grouped) {
-      if (!push(group.entity.name + ':')) break;
-      let full = false;
-      for (const memory of group.memories) {
-        if (!push('  - (' + memory.kind + ') ' + memory.content, memory)) {
-          full = true;
-          break;
-        }
-      }
-      if (full) break;
-    }
-    for (const memory of groups.loose) {
-      if (!push('- (' + memory.kind + ') ' + memory.content, memory)) break;
-    }
-  } else {
-    for (const memory of memories) {
-      if (!push('- (' + memory.kind + ') ' + memory.content, memory)) break;
-    }
-  }
-  return included;
-}
-
-/**
  * Score one frame at one policy point against a caller-supplied gain
  * (concept 5.2). P is the pipeline's own kept-lines list - never rebuilt
  * here - and the ideal is the frame's reachable, deliverable, positively
@@ -263,15 +224,22 @@ export function measure(
   let labelledInFrame = 0;
   let reachableLabels = 0;
   for (const record of Object.values(frame.records)) {
-    if (gain(record.id) <= 0) continue;
+    const recordGain = gain(record.id);
+    if (recordGain <= 0) continue;
     labelledInFrame += 1;
     if (!deliverable(record, frame.owner)) continue;
     reachableLabels += 1;
-    ideal.push({ ...record, score: gain(record.id), hop: 'direct', reason: 'ideal' });
+    ideal.push({ ...record, score: recordGain, hop: 'direct', reason: 'ideal' });
   }
   ideal.sort(byScoreThenId);
 
-  const idealKept = renderIncluded(frame, ideal, frame.budgetChars, frame.pipeline === 'agent');
+  const idealKept = renderFrameBlock(
+    frame,
+    ideal,
+    frame.budgetChars,
+    frame.subject,
+    frame.pipeline === 'agent',
+  ).included;
   const idcg = dcg(idealKept.map((memory) => gain(memory.id)));
   if (idcg === 0) return { ok: false, abstain: 'no-reachable-label' };
 

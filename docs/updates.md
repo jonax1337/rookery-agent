@@ -2,6 +2,18 @@
 
 Rookery is distributed as the npm package [`rookery-agent`](https://www.npmjs.com/package/rookery-agent). An installation updates itself from that package; a release is published by pushing a version tag.
 
+## Release 0.4.0
+
+- Dream recording and policy promotion are enabled by default for new installations. Existing saved off switches remain off. Recording covers every assistant conversation by default; frames are stored compressed, and forgetting one memory removes only the frames that quote it.
+- Missing manual user labels no longer block a promotion by default. Set `memory.dream.requireUserLabels` to `true` to require them. Holdout, audit, admission, cooldown and regression checks remain in force.
+- Volume thresholds are adjusted for a personal assistant: 30 closed traces, 10% label coverage and 20 post-promotion calibration traces. Loading an older configuration replaces matching retired tuning defaults; other values are preserved.
+- Missed memory-sleep schedules catch up once on restart. Insight generation avoids repeating earlier observations and runs only when new evidence exists; related duplicate insights are offered to consolidation.
+- Core runtime, nightly processing, CLI and web pages are split into focused modules, with fixes for process cleanup, streaming cancellation, listener lifetimes and stale UI state.
+- Profile/import and script-schedule routes retain their own same-origin protection, including when registered outside the full server.
+
+Install the release and restart the server to load the new backend. Deleted or never-recorded frames cannot be recovered; new evidence must accumulate before a policy can pass the promotion gate.
+
+
 ## For people running Rookery
 
 ### Settings → Updates

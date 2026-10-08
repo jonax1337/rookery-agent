@@ -5,10 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 
-import {
-  GripVerticalIcon as EllipsisVertical,
-  GripVerticalIcon as EllipsisVerticalIcon,
-} from "@/components/icons";
+import { GripVerticalIcon as EllipsisVerticalIcon } from '@/components/icons';
+
 /**
  * The three-dot trigger, in the two places it actually belongs.
  *
@@ -64,7 +62,7 @@ export function RowMenuButton({
       {busy ? (
         <Spinner />
       ) : tone === 'header' ? (
-        <EllipsisVertical className="size-4" />
+        <EllipsisVerticalIcon className="size-4" />
       ) : (
         <EllipsisVerticalIcon />
       )}

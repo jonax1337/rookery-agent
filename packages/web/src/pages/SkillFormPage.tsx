@@ -1,7 +1,7 @@
-import { forwardRef, useCallback, useEffect, useId, useState } from 'react';
+import { useCallback, useEffect, useId, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 
-import { DeleteIcon as Trash2Icon, FileTextIcon, SparklesIcon as AnimatedSparklesIcon } from "@/components/icons";
+import { DeleteIcon as Trash2Icon, FileTextIcon, SparklesIcon } from '@/components/icons';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -33,14 +33,13 @@ import {
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
-import type { IconComponent } from "@/components/icons";
 
 /**
  * Write a skill: a name, the one sentence that decides when it is opened, and
  * the instructions themselves.
  *
  * The instructions are Markdown that a model reads, so the page now shows
- * them as Markdown too - "Schreiben" and "Vorschau" as two tabs over the same
+ * them as Markdown too - "Write" and "Preview" as two tabs over the same
  * text. Until now the only way to see whether a heading was actually a
  * heading was to save and open the skill elsewhere.
  */
@@ -95,15 +94,6 @@ function draftOf(skill: Skill): SkillDraft {
   };
 }
 
-/**
- * The empty-state icon as an animate-ui version. `EmptyState` takes a
- * `IconComponent` and renders it without props, so the animated icon sits in a
- * forwardRef shell that carries its `animateOnView` trigger along.
- */
-const EmptySparklesIcon = forwardRef<SVGSVGElement>(function EmptySparklesIcon() {
-  return <AnimatedSparklesIcon />;
-});
-
 export function SkillFormPage() {
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
@@ -114,7 +104,7 @@ export function SkillFormPage() {
 
   const formId = useId();
   const { draft, dirty, set, hydrate, markSaved } = useDraft<SkillDraft>(EMPTY);
-  const [tab, setTab] = useState('schreiben');
+  const [tab, setTab] = useState('write');
 
   // The shared list refetches on every tab focus, so the fill is guarded the
   // same way as everywhere else: once per skill, and never over an edit.
@@ -171,14 +161,14 @@ export function SkillFormPage() {
     [dirty, editing, formId, name, remove, saving, skill],
   );
 
-  /* ------------------------------- Zustände ------------------------------- */
+  /* -------------------------------- states -------------------------------- */
 
   if (editing && !skill && !loading) {
     return (
       <PageBody width="3xl">
         <Fade>
           <EmptyState
-            icon={EmptySparklesIcon}
+            icon={SparklesIcon}
             title="This skill no longer exists"
             description="The folder was deleted or never existed."
             actionLabel="View skills"
@@ -220,7 +210,7 @@ export function SkillFormPage() {
               <Input
                 id="skill-name"
                 className="font-mono"
-                placeholder="z. B. wochenbericht"
+                placeholder="e.g. weekly-report"
                 value={draft.name}
                 disabled={editing}
                 aria-invalid={Boolean(errors.name)}
@@ -267,10 +257,10 @@ export function SkillFormPage() {
               <FieldLabel htmlFor="skill-body">Content</FieldLabel>
               <Tabs value={tab} onValueChange={setTab}>
                 <TabsList>
-                  <TabsTrigger value="schreiben">Write</TabsTrigger>
-                  <TabsTrigger value="vorschau">Preview</TabsTrigger>
+                  <TabsTrigger value="write">Write</TabsTrigger>
+                  <TabsTrigger value="preview">Preview</TabsTrigger>
                 </TabsList>
-                <TabsContent value="schreiben">
+                <TabsContent value="write">
                   <Textarea
                     id="skill-body"
                     rows={18}
@@ -279,7 +269,7 @@ export function SkillFormPage() {
                     onChange={(event) => set({ body: event.target.value })}
                   />
                 </TabsContent>
-                <TabsContent value="vorschau">
+                <TabsContent value="preview">
                   <div className="min-h-[24rem] rounded-md border p-4">
                     {draft.body.trim() ? (
                       <ResultMarkdown text={draft.body} />
@@ -288,8 +278,8 @@ export function SkillFormPage() {
                         icon={FileTextIcon}
                         title="Nothing written yet"
                         description="The text in the “Write” tab appears here as Markdown."
-                        actionLabel="Started writing"
-                        onAction={() => setTab('schreiben')}
+                        actionLabel="Start writing"
+                        onAction={() => setTab('write')}
                         variant="plain"
                         size="sm"
                       />

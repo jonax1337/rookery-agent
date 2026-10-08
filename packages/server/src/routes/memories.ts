@@ -4,14 +4,12 @@ import { MEMORY_KINDS, recall } from '@rookery/core';
 import type { MemoryKind } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import { createMemorySchema, patchMemorySchema, parseOrThrow } from '../schemas.js';
+import { clampPositiveInt, isTruthy } from './query.js';
 
 /**
  * Body of `POST /api/memories/:id/feedback` - the chat highlight's click
- * target, agreed with the web package as part of this wave's cross-package
- * contract: `{ turnId, verdict }`, `'point'` maps to `relevance = 1`,
- * `'ballast'` to `relevance = 0`. Not in `schemas.ts` - that file belongs to
- * a different package this wave - the same way `routes/profile.ts` and
- * `routes/tools.ts` already build their own request schemas inline.
+ * target: `{ turnId, verdict }`, `'point'` maps to `relevance = 1`,
+ * `'ballast'` to `relevance = 0`.
  */
 const memoryFeedbackSchema = z.object({
   turnId: z.string().min(1, 'turnId must not be empty'),
@@ -33,6 +31,11 @@ export async function registerMemoryRoutes(
   app: FastifyInstance,
   context: ServerContext,
 ): Promise<void> {
+  const memoryMissing = (reply: FastifyReply, id: string): { error: string } => {
+    reply.code(404);
+    return { error: 'No memory ' + id + '.' };
+  };
+
   // Registered before /api/memories/:id so the literal path wins the match.
   app.get(
     '/api/memories/stats',
@@ -43,7 +46,7 @@ export async function registerMemoryRoutes(
   app.get('/api/memories', async (request: FastifyRequest<MemoryQuery>) => {
     const { q, limit: rawLimit, includeForgotten, owner } = request.query;
     const kinds = parseKinds(request.query.kind);
-    const limit = clampLimit(rawLimit, 100, 500);
+    const limit = clampPositiveInt(rawLimit, 100, 500);
 
     const query = q?.trim();
     if (query) {
@@ -94,7 +97,7 @@ export async function registerMemoryRoutes(
         kinds: kinds.length ? kinds : undefined,
         since: Number.isFinite(since) && since > 0 ? since : undefined,
         includeDormant: isTruthy(request.query.includeDormant),
-        limit: clampLimit(request.query.limit, context.config.memory.graph.maxNodes, 1000),
+        limit: clampPositiveInt(request.query.limit, context.config.memory.graph.maxNodes, 1000),
       });
     },
   );
@@ -108,7 +111,7 @@ export async function registerMemoryRoutes(
       const minMentions = Number(request.query.minMentions);
       return context.assistant.store.listEntities({
         owner: request.query.owner || undefined,
-        limit: clampLimit(request.query.limit, 200, 1000),
+        limit: clampPositiveInt(request.query.limit, 200, 1000),
         minMentions: Number.isFinite(minMentions) ? minMentions : 1,
       });
     },
@@ -119,10 +122,7 @@ export async function registerMemoryRoutes(
     '/api/memories/:id/edges',
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const neighbourhood = context.assistant.store.neighbourhood(request.params.id);
-      if (!neighbourhood) {
-        reply.code(404);
-        return { error: 'No memory ' + request.params.id + '.' };
-      }
+      if (!neighbourhood) return memoryMissing(reply, request.params.id);
       return neighbourhood;
     },
   );
@@ -146,10 +146,7 @@ export async function registerMemoryRoutes(
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
       const input = parseOrThrow(patchMemorySchema, request.body ?? {});
       const store = context.assistant.store;
-      if (!store.getMemory(request.params.id)) {
-        reply.code(404);
-        return { error: 'No memory ' + request.params.id + '.' };
-      }
+      if (!store.getMemory(request.params.id)) return memoryMissing(reply, request.params.id);
       if (input.dormant === false) store.wakeMemory(request.params.id);
       // The HTTP path is the only door a `user` label can enter through
       // (concept 4.2b, S5) - the model's own memory tool reaches
@@ -195,10 +192,7 @@ export async function registerMemoryRoutes(
       const input = parseOrThrow(memoryFeedbackSchema, request.body ?? {});
       const store = context.assistant.store;
       const memory = store.getMemory(request.params.id);
-      if (!memory) {
-        reply.code(404);
-        return { error: 'No memory ' + request.params.id + '.' };
-      }
+      if (!memory) return memoryMissing(reply, request.params.id);
       // `userLabel` (dream/label.ts) is built for this claim, but it asks
       // for a `sessionId` this route has no honest way to produce: nothing
       // here maps an arbitrary turn id back to the session it fell in
@@ -232,14 +226,4 @@ function parseKinds(raw: string | string[] | undefined): MemoryKind[] {
   return parts
     .map((part) => part.trim())
     .filter((part) => known.has(part)) as MemoryKind[];
-}
-
-function clampLimit(raw: string | undefined, fallback: number, max: number): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.min(Math.floor(parsed), max);
-}
-
-function isTruthy(value: string | undefined): boolean {
-  return value === '1' || value === 'true' || value === 'yes';
 }

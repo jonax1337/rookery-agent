@@ -15,12 +15,16 @@ import { EventRenderer, shortId } from '../ui/render.js';
 import { Spinner } from '../ui/spinner.js';
 import { glyph, theme } from '../ui/theme.js';
 import {
+  EXIT_INTERRUPTED,
+  agentSlugOf,
   parseEffort,
   parsePermission,
   parseProvider,
+  printInterrupted,
   resolveAgent,
   resolveProject,
   withAssistant,
+  withInterruptSignal,
 } from './shared.js';
 
 export interface TurnOptions {
@@ -49,38 +53,15 @@ export async function runTurn(
   options: TurnOptions = {},
 ): Promise<TurnResult> {
   const decorated = !options.json && !options.quiet;
-  const spinner = decorated ? new Spinner(options.spinnerLabel ?? 'thinking') : null;
   const renderer = new EventRenderer({
     json: options.json ?? false,
     quiet: options.quiet ?? false,
     verbose: options.verbose ?? false,
-    spinner,
-    agentSlug: (id) => assistant.store.org.getAgent(id)?.slug ?? shortId(id),
+    spinner: decorated ? new Spinner(options.spinnerLabel ?? 'thinking') : null,
+    agentSlug: agentSlugOf(assistant),
   });
 
-  let sessionId: string | undefined;
-  let failed = false;
-
-  spinner?.start();
-  try {
-    for await (const event of assistant.chat(input)) {
-      if (event.type === 'session') sessionId = event.sessionId;
-      if (event.type === 'error') {
-        // A killed provider reports its own death; the user already knows
-        // they pressed Ctrl+C, so do not shout at them about it.
-        if (input.signal?.aborted) continue;
-        if (event.fatal) failed = true;
-      }
-      renderer.handle(event);
-    }
-  } catch (error) {
-    if (!input.signal?.aborted) {
-      failed = true;
-      renderer.handle({ type: 'error', message: (error as Error).message, fatal: true });
-    }
-  } finally {
-    spinner?.stop();
-  }
+  const { sessionId, failed } = await renderer.consume(assistant.chat(input), input.signal);
 
   const aborted = Boolean(input.signal?.aborted);
   const text = renderer.finish();
@@ -115,14 +96,8 @@ export async function chatCommand(
   const text = promptParts.join(' ').trim();
   if (!text) throw new Error('Nothing to send. Pass a prompt, or run `rookery` for the REPL.');
 
-  const controller = new AbortController();
-  const onInterrupt = (): void => {
-    controller.abort();
-  };
-  process.on('SIGINT', onInterrupt);
-
-  try {
-    return await withAssistant(async (assistant) => {
+  return withInterruptSignal((signal) =>
+    withAssistant(async (assistant) => {
       const agent = options.agent ? resolveAgent(assistant, options.agent) : null;
       const input: ChatInput = {
         text,
@@ -134,7 +109,7 @@ export async function chatCommand(
         projectId: resolveProject(assistant, options.project)?.id,
         agentId: agent?.id,
         voice: options.voice ?? false,
-        signal: controller.signal,
+        signal,
       };
 
       const result = await runTurn(assistant, input, {
@@ -145,22 +120,19 @@ export async function chatCommand(
         ...(agent ? { spinnerLabel: agent.slug + ' thinking' } : {}),
       });
 
+      const decorated = !options.json && !options.quiet;
       if (result.aborted) {
-        if (!options.json && !options.quiet) {
-          process.stderr.write(theme.dim(glyph.warn + ' interrupted') + '\n');
-        }
-        return 130;
+        if (decorated) printInterrupted();
+        return EXIT_INTERRUPTED;
       }
       if (result.failed) return 1;
 
-      if (!options.json && !options.quiet && result.sessionId) {
+      if (decorated && result.sessionId) {
         process.stderr.write(
-          theme.dim(glyph.dot + ' session ' + result.sessionId.slice(0, 8)) + '\n',
+          theme.dim(glyph.dot + ' session ' + shortId(result.sessionId)) + '\n',
         );
       }
       return 0;
-    });
-  } finally {
-    process.off('SIGINT', onInterrupt);
-  }
+    }),
+  );
 }

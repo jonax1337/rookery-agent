@@ -15,7 +15,7 @@ import { Banner } from './Banner.js';
 import { AssistantMessage, UserMessage } from './Message.js';
 import { AssignmentsSummaryView } from './AssignmentsView.js';
 import { ToolGroup } from './ToolGroup.js';
-import type { Entry } from '../types.js';
+import type { Entry, NoticeLine } from '../types.js';
 
 export interface ScrollbackProps {
   entries: Entry[];
@@ -81,21 +81,25 @@ export function EntryView({ entry }: { entry: Entry }): React.JSX.Element {
 
     case 'notice':
     default:
-      return (
-        <Box flexDirection="column" marginTop={1}>
-          {entry.lines.map((line, index) => (
-            // Notice lines have no identity beyond their position.
-            <Text
-              key={index}
-              color={line.color ?? ui.muted}
-              dimColor={line.dim ?? false}
-              bold={line.bold}
-              wrap="wrap"
-            >
-              {line.text || ' '}
-            </Text>
-          ))}
-        </Box>
-      );
+      return <NoticeView lines={entry.lines} />;
   }
+}
+
+function NoticeView({ lines }: { lines: NoticeLine[] }): React.JSX.Element {
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {lines.map((line, index) => (
+        // Notice lines have no identity beyond their position.
+        <Text
+          key={index}
+          color={line.color ?? ui.muted}
+          dimColor={line.dim ?? false}
+          bold={line.bold}
+          wrap="wrap"
+        >
+          {line.text || ' '}
+        </Text>
+      ))}
+    </Box>
+  );
 }

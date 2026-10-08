@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderId, ProviderModel, ProviderProfile } from '../types.js';
+import { codexHome } from './codex-auth.js';
 
 /**
  * The providers Rookery knows how to set up.
@@ -84,6 +84,9 @@ interface CachedModel {
   max_context_window?: number;
 }
 
+/** Sorts after every model the backend gave an explicit priority. */
+const UNPRIORITISED = 99;
+
 /** `gpt-5.6-sol` -> `GPT-5.6-sol`. Shared with the terminal front-ends. */
 export function prettifyModelId(id: string): string {
   const prefixed = id.startsWith('gpt-') ? 'GPT' + id.slice(3) : id;
@@ -97,21 +100,25 @@ export function prettifyModelId(id: string): string {
  * talks to, and a stale constant here would offer models that no longer exist.
  */
 export function codexModels(): ProviderModel[] {
+  return readCodexModelCache()
+    .filter((model): model is CachedModel => typeof model.slug === 'string')
+    // `hide` is the backend's own "serve it, do not offer it" flag.
+    .filter((model) => model.visibility !== 'hide')
+    .sort((a, b) => (a.priority ?? UNPRIORITISED) - (b.priority ?? UNPRIORITISED))
+    .map((model, index) => ({
+      id: model.slug,
+      name: prettifyModelId(model.slug),
+      isDefault: index === 0,
+    }));
+}
+
+/** The cache's rows, or none when the CLI never wrote one or it is unreadable. */
+function readCodexModelCache(): Partial<CachedModel>[] {
   try {
-    const home = process.env.CODEX_HOME ?? join(homedir(), '.codex');
-    const raw = JSON.parse(readFileSync(join(home, 'models_cache.json'), 'utf8')) as {
+    const cache = JSON.parse(readFileSync(join(codexHome(), 'models_cache.json'), 'utf8')) as {
       models?: Partial<CachedModel>[];
     };
-    return (raw.models ?? [])
-      .filter((model): model is CachedModel => typeof model.slug === 'string')
-      // `hide` is the backend's own "serve it, do not offer it" flag.
-      .filter((model) => model.visibility !== 'hide')
-      .sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99))
-      .map((model, index) => ({
-        id: model.slug,
-        name: prettifyModelId(model.slug),
-        isDefault: index === 0,
-      }));
+    return Array.isArray(cache.models) ? cache.models : [];
   } catch {
     return [];
   }
@@ -126,17 +133,9 @@ export function providerContextWindow(profile: ProviderProfile, model = profile.
 }
 
 function codexContextWindow(slug: string): number | undefined {
-  try {
-    const home = process.env.CODEX_HOME ?? join(homedir(), '.codex');
-    const raw = JSON.parse(readFileSync(join(home, 'models_cache.json'), 'utf8')) as {
-      models?: Partial<CachedModel>[];
-    };
-    const entry = raw.models?.find((model) => model.slug === slug);
-    const window = entry?.max_context_window ?? entry?.context_window;
-    return typeof window === 'number' ? window : undefined;
-  } catch {
-    return undefined;
-  }
+  const entry = readCodexModelCache().find((model) => model.slug === slug);
+  const window = entry?.max_context_window ?? entry?.context_window;
+  return typeof window === 'number' ? window : undefined;
 }
 
 export function providerCatalogEntry(id: string): ProviderCatalogEntry | undefined {

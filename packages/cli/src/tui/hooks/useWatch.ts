@@ -13,15 +13,16 @@
  * remains (which the org views already show).
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Assistant } from '@rookery/core';
 import type { AgentEvent } from '@rookery/core';
 import { glyph, ui } from '../theme.js';
+import { createCoalescer } from './coalescer.js';
+import { useTicker } from './useTicker.js';
 import { LiveBlocks } from './useTurn.js';
-import type { LiveBlock, NoteActivity, ToolTiming } from '../types.js';
+import { statusText } from '../types.js';
+import type { LiveBlock, ToolTiming } from '../types.js';
 
-/** How often live watch state is pushed into React, in milliseconds. */
-const FLUSH_MS = 40;
 /** Spinner and clock cadence while the watch is open, in milliseconds. */
 const TICK_MS = 80;
 
@@ -51,11 +52,7 @@ const WATCH_IDLE: WatchState = { blocks: [], toolTimes: [], ended: false, starte
  */
 export function useWatch(assistant: Assistant | null, assignmentId: string): WatchFeed {
   const [state, setState] = useState<WatchState>(WATCH_IDLE);
-  const [tick, setTick] = useState({ frame: 0, now: Date.now() });
   const active = Boolean(assistant && assignmentId);
-
-  const latest = useRef({ assistant, assignmentId });
-  latest.current = { assistant, assignmentId };
 
   useEffect(() => {
     if (!assistant || !assignmentId) {
@@ -63,19 +60,15 @@ export function useWatch(assistant: Assistant | null, assignmentId: string): Wat
       return;
     }
 
+    const source = assistant;
     const accumulator = new LiveBlocks();
     let ended = false;
     let cancelled = false;
-    let timer: NodeJS.Timeout | null = null;
     const startedAt = Date.now();
     let noteSeq = 0;
     const nextNoteId = () => 'w' + (noteSeq += 1);
 
-    const flush = (): void => {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
+    const coalescer = createCoalescer(() => {
       if (cancelled) return;
       setState({
         blocks: accumulator.blocks,
@@ -83,52 +76,36 @@ export function useWatch(assistant: Assistant | null, assignmentId: string): Wat
         ended,
         startedAt,
       });
-    };
-    const schedule = (): void => {
-      if (timer) return;
-      timer = setTimeout(flush, FLUSH_MS);
-      timer.unref?.();
-    };
+    });
 
     setState({ blocks: [], toolTimes: [], ended: false, startedAt });
 
     void (async () => {
       try {
-        // Reading through the ref keeps the effect's dependency list about
-        // identity, not whichever assistant instance render captured.
-        const source = latest.current.assistant;
-        if (!source) return;
         for await (const entry of source.assignmentLog(assignmentId)) {
           if (cancelled) break;
           foldWatchEvent(accumulator, entry.event, nextNoteId);
-          schedule();
+          coalescer.schedule();
         }
       } catch {
         // The run vanishing mid-read ends the watch, not the app.
       }
       ended = true;
-      flush();
+      coalescer.flushNow();
     })();
 
     return () => {
       cancelled = true;
-      if (timer) clearTimeout(timer);
+      coalescer.cancel();
     };
   }, [assistant, assignmentId]);
 
   // The watch keeps its own animation clock: the app's ticker slows to half a
   // second when no turn of ours is running, which would make a busy run's
   // pulses look asleep.
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => {
-      setTick((current) => ({ frame: (current.frame + 1) % 100_000, now: Date.now() }));
-    }, TICK_MS);
-    timer.unref?.();
-    return () => clearInterval(timer);
-  }, [active]);
+  const { frame, now } = useTicker(active ? TICK_MS : null);
 
-  return { state, frame: tick.frame, now: tick.now };
+  return { state, frame, now };
 }
 
 /**
@@ -153,23 +130,16 @@ export function foldWatchEvent(
   }
   if (event.type === 'status') {
     blocks.reconcile('');
-    const note: NoteActivity = {
-      kind: 'note',
-      id: nextNoteId(),
-      icon: glyph.status,
-      text: event.label + (event.detail ? ' ' + glyph.dot + ' ' + event.detail : ''),
-    };
-    blocks.pushNote(note);
+    blocks.pushNote({ kind: 'note', id: nextNoteId(), icon: glyph.status, text: statusText(event) });
     return;
   }
   if (event.type === 'error') {
-    const note: NoteActivity = {
+    blocks.pushNote({
       kind: 'note',
       id: nextNoteId(),
       icon: glyph.fail,
       text: event.message,
       color: ui.danger,
-    };
-    blocks.pushNote(note);
+    });
   }
 }

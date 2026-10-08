@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
+import { failureMessage } from '../lib/errors';
 import type { RookerySocket } from '../lib/socket';
 import type { AssignmentLogEntry, AssignmentStatus } from '../lib/types';
 
@@ -106,7 +107,7 @@ export function useAssignmentLog(
         // frames already buffered become the baseline, live ones keep going.
         snapshotRef.current = [];
         setEntries([...framesRef.current]);
-        setError(caught instanceof Error ? caught.message : 'Log nicht erreichbar.');
+        setError(failureMessage(caught));
       });
     return () => {
       cancelled = true;

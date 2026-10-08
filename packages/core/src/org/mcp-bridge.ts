@@ -14,6 +14,8 @@ import { createInterface } from 'node:readline';
 const PIPE = process.env.ROOKERY_BRIDGE_PATH ?? '';
 const TOKEN = process.env.ROOKERY_BRIDGE_TOKEN ?? '';
 const PROTOCOL_FALLBACK = '2025-06-18';
+const JSONRPC_METHOD_NOT_FOUND = -32601;
+const JSONRPC_SERVER_ERROR = -32000;
 
 interface JsonRpc {
   jsonrpc?: string;
@@ -43,6 +45,10 @@ function pipe(): Promise<Socket> {
     client.on('error', (error) => {
       reject(error);
       for (const waiter of pending.values()) waiter.reject(error);
+      pending.clear();
+    });
+    client.on('close', () => {
+      for (const waiter of pending.values()) waiter.reject(new Error('Bridge connection closed.'));
       pending.clear();
     });
     client.on('data', (chunk: string) => {
@@ -91,6 +97,29 @@ function send(message: Record<string, unknown>): void {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 }
 
+function initializeResult(params: Record<string, unknown> | undefined): Record<string, unknown> {
+  return {
+    protocolVersion: (params?.protocolVersion as string | undefined) ?? PROTOCOL_FALLBACK,
+    capabilities: { tools: {} },
+    serverInfo: { name: 'rookery', version: '0.2.0' },
+  };
+}
+
+async function listTools(): Promise<Record<string, unknown>> {
+  const result = await request('hello', {});
+  return { tools: result.tools ?? [] };
+}
+
+async function callTool(params: Record<string, unknown> | undefined): Promise<Record<string, unknown>> {
+  const name = String(params?.name ?? '');
+  const args = (params?.arguments ?? {}) as Record<string, unknown>;
+  const result = await request('call', { name, args });
+  return {
+    content: [{ type: 'text', text: String(result.text ?? '') }],
+    isError: Boolean(result.isError),
+  };
+}
+
 async function handle(message: JsonRpc): Promise<void> {
   const { id, method, params } = message;
   // Notifications carry no id and expect no reply.
@@ -99,41 +128,22 @@ async function handle(message: JsonRpc): Promise<void> {
   try {
     switch (method) {
       case 'initialize':
-        send({
-          id,
-          result: {
-            protocolVersion: (params?.protocolVersion as string | undefined) ?? PROTOCOL_FALLBACK,
-            capabilities: { tools: {} },
-            serverInfo: { name: 'rookery', version: '0.2.0' },
-          },
-        });
+        send({ id, result: initializeResult(params) });
         return;
       case 'ping':
         send({ id, result: {} });
         return;
-      case 'tools/list': {
-        const result = await request('hello', {});
-        send({ id, result: { tools: result.tools ?? [] } });
+      case 'tools/list':
+        send({ id, result: await listTools() });
         return;
-      }
-      case 'tools/call': {
-        const name = String(params?.name ?? '');
-        const args = (params?.arguments ?? {}) as Record<string, unknown>;
-        const result = await request('call', { name, args });
-        send({
-          id,
-          result: {
-            content: [{ type: 'text', text: String(result.text ?? '') }],
-            isError: Boolean(result.isError),
-          },
-        });
+      case 'tools/call':
+        send({ id, result: await callTool(params) });
         return;
-      }
       default:
-        send({ id, error: { code: -32601, message: 'Method not found: ' + method } });
+        send({ id, error: { code: JSONRPC_METHOD_NOT_FOUND, message: 'Method not found: ' + method } });
     }
   } catch (error) {
-    send({ id, error: { code: -32000, message: (error as Error).message } });
+    send({ id, error: { code: JSONRPC_SERVER_ERROR, message: (error as Error).message } });
   }
 }
 

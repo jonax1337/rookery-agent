@@ -158,27 +158,15 @@ export function episodeFromEvents(
     const event = unwrap(entry);
     if (!event) continue;
 
-    if (event.type === 'error') {
-      outcome = 'failure';
-      continue;
-    }
-    if (event.type === 'done') {
-      // An errored result ends the turn without a `done`, so a failure seen
-      // earlier stands: the last word is the error, not the absence of one.
-      if (outcome === 'unknown') outcome = 'success';
+    if (event.type === 'error' || event.type === 'done') {
+      outcome = outcomeAfter(outcome, event.type);
       continue;
     }
     if (event.type !== 'tool') continue;
 
     if (event.status === 'start') {
       const index = steps.length;
-      steps.push({
-        step: index,
-        name: event.name,
-        ...(event.argsHash !== undefined ? { argsHash: event.argsHash } : {}),
-        ...(event.input !== undefined ? { input: event.input } : {}),
-        at: source.startedAt,
-      });
+      steps.push(stepFromStart(event, index, source.startedAt));
       if (event.id) open.set(event.id, index);
       continue;
     }
@@ -186,26 +174,59 @@ export function episodeFromEvents(
     const index = event.id !== undefined ? open.get(event.id) : lastOpen(steps);
     if (index === undefined) continue;
     if (event.id !== undefined) open.delete(event.id);
-    const step = steps[index] as DreamEpisodeStep;
-    if (event.result !== undefined) step.result = event.result;
-    if (event.isError !== undefined) step.isError = event.isError;
+    recordObservation(steps[index] as DreamEpisodeStep, event);
   }
 
-  const episode: DreamEpisode = {
+  return { episode: buildEpisode(id, source, steps.length, outcome), steps };
+}
+
+type ToolEvent = Extract<AgentEvent, { type: 'tool' }>;
+
+function outcomeAfter(
+  outcome: DreamEpisode['outcome'],
+  eventType: 'error' | 'done',
+): DreamEpisode['outcome'] {
+  if (eventType === 'error') return 'failure';
+  // An errored result ends the turn without a `done`, so a failure seen
+  // earlier stands: the last word is the error, not the absence of one.
+  return outcome === 'unknown' ? 'success' : outcome;
+}
+
+function stepFromStart(event: ToolEvent, index: number, at: number): DreamEpisodeStep {
+  return {
+    step: index,
+    name: event.name,
+    ...(event.argsHash !== undefined ? { argsHash: event.argsHash } : {}),
+    ...(event.input !== undefined ? { input: event.input } : {}),
+    at,
+  };
+}
+
+function recordObservation(step: DreamEpisodeStep, event: ToolEvent): void {
+  if (event.result !== undefined) step.result = event.result;
+  if (event.isError !== undefined) step.isError = event.isError;
+}
+
+function buildEpisode(
+  id: string,
+  source: EpisodeSource,
+  stepCount: number,
+  eventOutcome: DreamEpisode['outcome'],
+): DreamEpisode {
+  return {
     id,
     owner: source.owner,
     kind: source.kind,
     ...(source.sessionId !== undefined ? { sessionId: source.sessionId } : {}),
     slot: source.slot,
-    steps: steps.length,
-    outcome: source.outcome ?? outcome,
+    steps: stepCount,
+    outcome: source.outcome ?? eventOutcome,
     holdout: source.holdout === true,
     audit: source.audit === true,
     startedAt: source.startedAt,
     ...(source.finishedAt !== undefined ? { finishedAt: source.finishedAt } : {}),
     createdAt: Date.now(),
   };
-  return { episode, steps };
 }
 
 function unwrap(entry: JournalledEvent): AgentEvent | undefined {
@@ -489,35 +510,16 @@ export function divergenceProxyReport(
   const agreement = samples.length ? agreed / samples.length : 0;
   const thin = samples.length < minSamples;
   const passed = !thin && agreement >= agreementFloor;
-  const percent = (value: number): string => String(Math.round(value * 100)) + '%';
-
-  const note = thin
-    ? 'Only ' +
-      samples.length +
-      ' sample(s); the gate needs ' +
-      minSamples +
-      ' before it says anything. Not passed.'
-    : passed
-      ? 'The proxy found the same first diverging step as the free run in ' +
-        agreed +
-        ' of ' +
-        samples.length +
-        ' samples (' +
-        percent(agreement) +
-        ', floor ' +
-        percent(agreementFloor) +
-        ').'
-      : 'The proxy disagreed with the free run in ' +
-        disagreements.length +
-        ' of ' +
-        samples.length +
-        ' samples (' +
-        percent(agreement) +
-        ' agreement, floor ' +
-        percent(agreementFloor) +
-        '). Phase 6 is dead as designed: first-divergence judging is then ' +
-        'measuring the prompt shape, not divergence, and the only honest way ' +
-        'back is the full double run (concept version 1, section 9).';
+  const note = proxyNote({
+    thin,
+    passed,
+    sampleCount: samples.length,
+    agreed,
+    disagreed: disagreements.length,
+    agreement,
+    agreementFloor,
+    minSamples,
+  });
 
   return {
     samples: samples.length,
@@ -532,4 +534,57 @@ export function divergenceProxyReport(
     passed,
     note,
   };
+}
+
+interface ProxyNoteFacts {
+  thin: boolean;
+  passed: boolean;
+  sampleCount: number;
+  agreed: number;
+  disagreed: number;
+  agreement: number;
+  agreementFloor: number;
+  minSamples: number;
+}
+
+function percent(value: number): string {
+  return String(Math.round(value * 100)) + '%';
+}
+
+function proxyNote(facts: ProxyNoteFacts): string {
+  if (facts.thin) {
+    return (
+      'Only ' +
+      facts.sampleCount +
+      ' sample(s); the gate needs ' +
+      facts.minSamples +
+      ' before it says anything. Not passed.'
+    );
+  }
+  if (facts.passed) {
+    return (
+      'The proxy found the same first diverging step as the free run in ' +
+      facts.agreed +
+      ' of ' +
+      facts.sampleCount +
+      ' samples (' +
+      percent(facts.agreement) +
+      ', floor ' +
+      percent(facts.agreementFloor) +
+      ').'
+    );
+  }
+  return (
+    'The proxy disagreed with the free run in ' +
+    facts.disagreed +
+    ' of ' +
+    facts.sampleCount +
+    ' samples (' +
+    percent(facts.agreement) +
+    ' agreement, floor ' +
+    percent(facts.agreementFloor) +
+    '). Phase 6 is dead as designed: first-divergence judging is then ' +
+    'measuring the prompt shape, not divergence, and the only honest way ' +
+    'back is the full double run (concept version 1, section 9).'
+  );
 }

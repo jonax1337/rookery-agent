@@ -34,7 +34,14 @@ export interface ComputerToolDefinition {
 }
 
 export const UI_ACTIONS = ['invoke', 'set_value', 'toggle', 'select', 'expand', 'collapse', 'scroll_up', 'scroll_down'] as const;
+/** The tools a batch may run as steps. */
+export const BATCH_STEP_TOOLS = ['act', 'click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'wait'] as const;
 const windowProperty = { type: 'integer', minimum: 1, description: 'Exact window handle returned by list_windows.' };
+const rectangleProperty = (description: string): Record<string, unknown> => ({
+  type: 'object', description,
+  properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } },
+  required: ['x', 'y', 'width', 'height'], additionalProperties: false,
+});
 
 /** The built-in server's tools, before observe is attached. The zavora engine publishes its own list. */
 const TOOLS: ComputerToolDefinition[] = [
@@ -49,11 +56,7 @@ const TOOLS: ComputerToolDefinition[] = [
       'Window capture is app-dependent; use snapshot if pixels are blank or the window is minimized.',
     inputSchema: { type: 'object', properties: {
       window: windowProperty,
-      region: {
-        type: 'object', description: 'Zoom: a rectangle in pixels of the last desktop screenshot.',
-        properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } },
-        required: ['x', 'y', 'width', 'height'], additionalProperties: false,
-      },
+      region: rectangleProperty('Zoom: a rectangle in pixels of the last desktop screenshot.'),
       screen: { type: 'integer', minimum: 1, description: 'One display only, numbered as in screen_info.' },
     }, additionalProperties: false },
   },
@@ -71,7 +74,7 @@ const TOOLS: ComputerToolDefinition[] = [
     name: 'batch',
     description: 'Run up to 12 already-grounded actions sequentially in one call; stop on the first failure. All arguments are checked before starting. Each step waits for the screen to settle, so a dialog one step opens is ready for the next; the batch observes once at the end. Do not batch across unknown UI states or irreversible confirmation steps.',
     inputSchema: { type: 'object', properties: {
-      actions: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', properties: { tool: { type: 'string', enum: ['act', 'click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'wait'] }, arguments: { type: 'object' } }, required: ['tool', 'arguments'], additionalProperties: false } },
+      actions: { type: 'array', minItems: 1, maxItems: 12, items: { type: 'object', properties: { tool: { type: 'string', enum: [...BATCH_STEP_TOOLS] }, arguments: { type: 'object' } }, required: ['tool', 'arguments'], additionalProperties: false } },
       observe: { type: 'string', enum: ['snapshot', 'screenshot', 'text', 'none'], description: 'Default snapshot when window is supplied, otherwise screenshot (none in background-only mode). text is the screen as OCR lines, cheaper than an image.' },
       window: windowProperty,
     }, required: ['actions'], additionalProperties: false },
@@ -196,11 +199,7 @@ const TOOLS: ComputerToolDefinition[] = [
       type: 'object',
       properties: {
         svg: str('An <svg> document with a viewBox; it is scaled into area keeping its aspect ratio, centred.'),
-        area: {
-          type: 'object', description: 'The drawing rectangle in screenshot pixels; required with svg, and clips strokes too.',
-          properties: { x: { type: 'number' }, y: { type: 'number' }, width: { type: 'number' }, height: { type: 'number' } },
-          required: ['x', 'y', 'width', 'height'], additionalProperties: false,
-        },
+        area: rectangleProperty('The drawing rectangle in screenshot pixels; required with svg, and clips strokes too.'),
         hatch: {
           type: 'object', description: 'Shade filled shapes. spacing in screenshot pixels (default 6), angle in degrees (default 45), cross for cross-hatching.',
           properties: { spacing: { type: 'number' }, angle: { type: 'number' }, cross: { type: 'boolean' } },
@@ -356,32 +355,40 @@ export function computerEngine(requested?: string): ComputerEngine {
   return process.platform === 'win32' || !zavoraServerPath() ? 'builtin' : 'zavora';
 }
 
+/** Widest screenshot, in pixels, the built-in server hands the model. */
+const SCREENSHOT_MAX_WIDTH = '1280';
+
 /**
  * The MCP server for this turn. `provider` picks the screenshot sizing the
  * model likes; `profile` is the zavora authority level.
  */
 export function computerServerSpec(config: RookeryConfig, provider?: ProviderId, profile = 'ax', engine?: string, mode = 'desktop'): McpServerSpec {
   if (!['desktop', 'background'].includes(mode)) throw new Error('Unknown computer interaction mode: ' + mode);
-  if (computerEngine(engine) === 'zavora') {
-    const script = zavoraServerPath();
-    if (!script) throw new Error('The Zavora engine is not installed. Select Rookery native on Windows.');
-    return {
-      name: COMPUTER_SERVER_NAME,
-      command: process.execPath,
-      args: [script],
-      env: {
-        COMPUTER_USE_PROFILE: (COMPUTER_PROFILES as readonly string[]).includes(profile) ? profile : 'ax',
-        COMPUTER_USE_PROVIDER: provider === 'codex' ? 'openai' : 'anthropic',
-        COMPUTER_USE_AUDIT_LOG: join(config.home, 'run', 'computer-audit.jsonl'),
-      },
-    };
-  }
+  return computerEngine(engine) === 'zavora' ? zavoraServerSpec(config, provider, profile) : builtinServerSpec(config, mode);
+}
+
+function zavoraServerSpec(config: RookeryConfig, provider: ProviderId | undefined, profile: string): McpServerSpec {
+  const script = zavoraServerPath();
+  if (!script) throw new Error('The Zavora engine is not installed. Select Rookery native on Windows.');
+  return {
+    name: COMPUTER_SERVER_NAME,
+    command: process.execPath,
+    args: [script],
+    env: {
+      COMPUTER_USE_PROFILE: (COMPUTER_PROFILES as readonly string[]).includes(profile) ? profile : 'ax',
+      COMPUTER_USE_PROVIDER: provider === 'codex' ? 'openai' : 'anthropic',
+      COMPUTER_USE_AUDIT_LOG: join(config.home, 'run', 'computer-audit.jsonl'),
+    },
+  };
+}
+
+function builtinServerSpec(config: RookeryConfig, mode: string): McpServerSpec {
   return {
     name: COMPUTER_SERVER_NAME,
     command: process.execPath,
     args: [computerScriptPath()],
     env: {
-      ROOKERY_COMPUTER_MAX_WIDTH: '1280',
+      ROOKERY_COMPUTER_MAX_WIDTH: SCREENSHOT_MAX_WIDTH,
       ROOKERY_COMPUTER_DIR: config.home,
       ROOKERY_COMPUTER_MODE: mode === 'background' ? 'background' : 'desktop',
     },

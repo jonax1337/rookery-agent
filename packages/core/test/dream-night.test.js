@@ -474,7 +474,7 @@ test('a condensation labels the row that was paid for twice, and only negatively
 
     const provider = scriptedProvider({
       condense:
-        '{"merge":true,"content":"The harbor manifest lists every incoming cargo at the quay.",' +
+        '{"merge":true,"content":"The harbor manifest records all incoming cargo at the quay.",' +
         '"supersedes":[1,2],"kind":"fact","importance":0.85,"tags":["harbor"]}',
     });
     const runner = makeRunner(store, config, provider);
@@ -1244,7 +1244,7 @@ test('a merge label writer that throws leaves the condensation and the sweeps st
 
     const provider = scriptedProvider({
       condense:
-        '{"merge":true,"content":"The harbor manifest lists every incoming cargo at the quay.",' +
+        '{"merge":true,"content":"The harbor manifest records all incoming cargo at the quay.",' +
         '"supersedes":[1,2],"kind":"fact","importance":0.85,"tags":["harbor"]}',
     });
     const run = await makeRunner(store, config, provider).run({

@@ -7,6 +7,9 @@ import { cn } from '@/lib/utils';
 
 import { createRookeryColumnHelper, type RookeryColumnDef, type RookeryRow } from './table-features';
 
+export const SELECT_COLUMN_ID = 'select';
+export const ACTIONS_COLUMN_ID = 'actions';
+
 /**
  * The three pieces every Rookery table repeated by hand.
  *
@@ -15,9 +18,8 @@ import { createRookeryColumnHelper, type RookeryColumnDef, type RookeryRow } fro
  * They live here rather than in `table-features.ts` because that file is plain
  * `.ts` and holds no JSX.
  *
- * Nothing here invents behaviour: `DEFAULT_IGNORED_COLUMNS` in `data-table.tsx`
- * already knows the ids `select` and `actions`, so a row click keeps skipping
- * both.
+ * Nothing here invents behaviour: `DataTable` already knows the ids `select`
+ * and `actions`, so a row click keeps skipping both.
  */
 
 /* ------------------------------- selection ------------------------------- */
@@ -25,8 +27,8 @@ import { createRookeryColumnHelper, type RookeryColumnDef, type RookeryRow } fro
 export interface SelectionColumnOptions<TData> {
   /**
    * Accessible name of a row's checkbox. Defaults to the block's own
-   * "Zeile wählen"; pass one when the row has a name worth reading out
-   * ("Aktenzeichen 42 wählen").
+   * "Select row"; pass one when the row has a name worth reading out
+   * ("Select case 42").
    */
   rowLabel?: (row: TData) => string;
   /** Accessible name of the header checkbox. */
@@ -48,7 +50,7 @@ export function selectionColumn<TData extends RowData>(
   const { rowLabel, allLabel = 'Select all rows' } = options;
 
   return column.display({
-    id: 'select',
+    id: SELECT_COLUMN_ID,
     header: ({ table }) => (
       <div className="flex items-center justify-center">
         <Checkbox
@@ -79,8 +81,8 @@ export function selectionColumn<TData extends RowData>(
 
 export interface ActionsColumnOptions {
   /**
-   * What a screen reader hears instead of the empty head. "Aktionen" for a row
-   * menu, "Bericht" where the column holds a single report button.
+   * What a screen reader hears instead of the empty head. "Actions" for a row
+   * menu, "Report" where the column holds a single report button.
    */
   header?: string;
   /** The column id, for the rare page that stacks two action columns. */
@@ -98,7 +100,7 @@ export function actionsColumn<TData extends RowData>(
   options: ActionsColumnOptions = {},
 ): RookeryColumnDef<TData> {
   const column = createRookeryColumnHelper<TData>();
-  const { header = 'Actions', id = 'actions' } = options;
+  const { header = 'Actions', id = ACTIONS_COLUMN_ID } = options;
 
   return column.display({
     id,
@@ -115,7 +117,7 @@ export function actionsColumn<TData extends RowData>(
  * The one character a table cell uses when it has nothing to show.
  *
  * A half-em dash, the way ten of eleven lists already write it. Whole
- * sentences ("Keine Beschreibung") belong in an `EmptyState`, not in a cell.
+ * sentences ("No description") belong in an `EmptyState`, not in a cell.
  */
 export const EMPTY_CELL = '–';
 
@@ -136,13 +138,13 @@ export interface RelativeTimeCellOptions {
 }
 
 /**
- * A timestamp as "vor 5 Min." would be too long for a column, so the cell keeps
- * the bare span `relativeTime` gives it - and puts the exact date in the title,
- * which is what four of the ten hand-written copies did and six forgot.
+ * A timestamp as the bare span `relativeTime` gives it - a longer sentence
+ * would be too long for a column - with the exact date in the title, which is
+ * what four of the ten hand-written copies did and six forgot.
  *
  * `numeric` keeps a column of spans from jittering and sets it in the mono; a
- * missing timestamp
- * gets the fallback word and no title, because there is no date to reveal.
+ * missing timestamp gets the fallback word and no title, because there is no
+ * date to reveal.
  */
 export function relativeTimeCell(
   at: number | null | undefined,

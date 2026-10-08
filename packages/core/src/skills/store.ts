@@ -90,7 +90,7 @@ function parse(text: string): { meta: Record<string, string>; body: string } {
   for (const line of (match[1] ?? '').split(/\r?\n/)) {
     const colon = line.indexOf(':');
     if (colon === -1) continue;
-    meta[line.slice(0, colon).trim()] = line.slice(colon + 1).trim().replace(/^["']|["']$/g, '');
+    meta[line.slice(0, colon).trim()] = line.slice(colon + 1).trim().replace(/^(["'])(.*)\1$/, '$2');
   }
   return { meta, body: (match[2] ?? '').trim() };
 }
@@ -135,11 +135,21 @@ export function readSkillFolder(dir: string, name: string): Skill | null {
   };
 }
 
+/** Whether a skill meant for `audience` may be opened by `who`. */
+export function servesAudience(audience: ToolServerAudience, who: 'assistant' | 'agent'): boolean {
+  return audience === 'both' || (who === 'assistant' ? audience === 'assistant' : audience === 'agents');
+}
+
 export class SkillStore {
   readonly dirs: readonly string[];
 
   constructor(dirs: string | string[]) {
     this.dirs = Array.isArray(dirs) ? dirs : [dirs];
+  }
+
+  /** The first directory: the only one ever written to. */
+  get #home(): string {
+    return this.dirs[0] as string;
   }
 
   list(): Skill[] {
@@ -150,7 +160,7 @@ export class SkillStore {
     for (const dir of this.dirs) {
       if (!existsSync(dir)) continue;
       for (const name of readdirSync(dir)) {
-        const skill = this.#read(dir, name);
+        const skill = readSkillFolder(dir, name);
         if (skill) byName.set(name, skill);
       }
     }
@@ -161,14 +171,10 @@ export class SkillStore {
     if (!NAME.test(name)) return null;
     let found: Skill | null = builtinSkill(name);
     for (const dir of this.dirs) {
-      const skill = this.#read(dir, name);
+      const skill = readSkillFolder(dir, name);
       if (skill) found = skill;
     }
     return found;
-  }
-
-  #read(dir: string, name: string): Skill | null {
-    return readSkillFolder(dir, name);
   }
 
   /** Always the first directory: an agent's job never writes a skill into a project. */
@@ -193,13 +199,13 @@ export class SkillStore {
       // The home directory only - the one being written to. A project skill
       // of the same name shadows this one when read, but it is not what is
       // about to be overwritten.
-      const existing = this.#read(this.dirs[0] as string, name);
+      const existing = readSkillFolder(this.#home, name);
       if (existing && existing.origin === 'user') {
         throw new Error('The skill "' + name + '" was written by the user and is not yours to change.');
       }
     }
 
-    const folder = join(this.dirs[0] as string, name);
+    const folder = join(this.#home, name);
     mkdirSync(folder, { recursive: true });
     const text =
       '---\n' +
@@ -224,7 +230,7 @@ export class SkillStore {
    */
   raw(name: string): string | null {
     if (!NAME.test(name)) return null;
-    const file = join(this.dirs[0] as string, name, 'SKILL.md');
+    const file = join(this.#home, name, 'SKILL.md');
     return existsSync(file) ? readFileSync(file, 'utf8') : null;
   }
 
@@ -240,7 +246,7 @@ export class SkillStore {
   restore(name: string, content: string | null): boolean {
     if (!NAME.test(name)) return false;
     if (content === null) return this.remove(name);
-    const folder = join(this.dirs[0] as string, name);
+    const folder = join(this.#home, name);
     mkdirSync(folder, { recursive: true });
     writeFileSync(join(folder, 'SKILL.md'), content, 'utf8');
     return true;
@@ -253,7 +259,7 @@ export class SkillStore {
    */
   remove(name: string): boolean {
     if (!NAME.test(name)) return false;
-    const folder = join(this.dirs[0] as string, name);
+    const folder = join(this.#home, name);
     if (!existsSync(folder)) return false;
     rmSync(folder, { recursive: true, force: true });
     return true;
@@ -261,9 +267,7 @@ export class SkillStore {
 
   /** The skills one audience may open. */
   for(who: 'assistant' | 'agent'): Skill[] {
-    return this.list().filter(
-      (skill) => skill.audience === 'both' || (who === 'assistant' ? skill.audience === 'assistant' : skill.audience === 'agents'),
-    );
+    return this.list().filter((skill) => servesAudience(skill.audience, who));
   }
 }
 

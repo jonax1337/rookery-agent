@@ -24,9 +24,9 @@ import {
   type TelegramGatewayConfig,
 } from '@rookery/core';
 import type { ServerContext } from '../context.js';
-import { localModelReady, transcribe, SttError } from '../services/stt.js';
+import { localModelReady, transcribe } from '../services/stt.js';
 import { voiceKeys } from '../services/voice-keys.js';
-import { humanDuration, humanSize, pruneInbox, saveAttachment } from './attachments.js';
+import { humanDuration, humanSize, pruneInbox, saveAttachment, type SavedAttachment } from './attachments.js';
 import { toTelegramHtml } from './markdown.js';
 import {
   findOrigin,
@@ -172,7 +172,7 @@ export function questionClosedKeyboard(
  */
 export function questionText(question: QuestionPrompt): string {
   const lines = [
-    '❓ ' + oneLine(question.header, 80),
+    '❓ ' + oneLine(question.header, QUESTION_HEADER_WIDTH),
     '',
     question.question.trim(),
     '',
@@ -348,6 +348,40 @@ const ID_REPLY_INTERVAL_MS = 60 * 60 * 1000;
 const AUDIT_TEXT = 120;
 const REJECT_TEXT = 80;
 
+/** Longest a question's header reads before it is cut. */
+const QUESTION_HEADER_WIDTH = 80;
+
+/** Longest an option label reads in the toast that confirms a tap. */
+const TAP_TOAST_WIDTH = 60;
+
+/** Widths at which one row of a list command is cut for a phone screen. */
+const ROW_TITLE_WIDTH = 70;
+const ROW_NAME_WIDTH = 50;
+
+/** Largest file the Bot API lets a bot download, in megabytes. */
+const BOT_API_DOWNLOAD_LIMIT_MB = 20;
+const BYTES_PER_MB = 1024 * 1024;
+
+/** Telegram deletes at most this many messages per call. */
+const DELETE_BATCH = 100;
+
+/**
+ * How long past its deadline a question's entry may linger before the next
+ * new question sweeps it. The closing event normally removes it first; this
+ * only bounds the map when that event never arrived.
+ */
+const EXPIRED_QUESTION_GRACE_MS = 60_000;
+
+const MINUTE_MS = 60_000;
+const MINUTES_PER_HOUR = 60;
+const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR;
+
+/** The guard's refusals that come before the allowlist has vouched for the sender. */
+const STRANGER_REJECTIONS: readonly GatewayRejection[] = ['not_a_message', 'bot_sender', 'not_allowed'];
+
+const REASON_UNAUTHORIZED = 'Telegram rejected this bot token (401). Gateway stopped.';
+const REASON_CONFLICT = 'Another process is polling the same bot (409). Gateway stopped.';
+
 export interface GatewayStatus {
   id: 'telegram';
   label: string;
@@ -427,23 +461,20 @@ interface QuestionPost {
   at: number;
 }
 
-/**
- * One piece of Markdown as Telegram HTML.
- *
- * The conversion itself lives in `markdown.ts`; what matters here is that it
- * is applied piece by piece. `splitMessage` guarantees every piece carries
- * balanced code fences, so each one converts on its own without the fence
- * state of its neighbours.
- */
-function toHtml(piece: string): string {
-  return toTelegramHtml(piece);
-}
-
 /** What Telegram accepts in one message, counted after escaping. */
 const TELEGRAM_LIMIT = 4096;
 
+/** Smallest budget a re-cut falls back to, and how often it is tried before that. */
+const MIN_PIECE_BUDGET = 400;
+const MAX_RECUT_ATTEMPTS = 4;
+
 /**
  * One message's worth of HTML at a time, each piece guaranteed to fit.
+ *
+ * The Markdown conversion itself lives in `markdown.ts`; what matters here
+ * is that it is applied piece by piece. `splitMessage` guarantees every
+ * piece carries balanced code fences, so each one converts on its own
+ * without the fence state of its neighbours.
  *
  * `splitMessage` counts the text as written, but what goes on the wire is
  * escaped: a line of `&` grows fivefold, and a piece cut at exactly 4096
@@ -457,15 +488,15 @@ const TELEGRAM_LIMIT = 4096;
  */
 export function htmlPieces(text: string): string[] {
   let budget = TELEGRAM_LIMIT;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_RECUT_ATTEMPTS; attempt += 1) {
     const pieces = splitMessage(text, budget);
-    const html = pieces.map(toHtml);
+    const html = pieces.map((piece) => toTelegramHtml(piece));
     if (html.every((piece) => piece.length <= TELEGRAM_LIMIT)) return html;
     // Re-cut against the worst growth actually seen, not a guess about it.
     const growth = Math.max(...html.map((piece, index) => piece.length / Math.max(1, pieces[index]?.length ?? 1)));
-    budget = Math.max(400, Math.floor(TELEGRAM_LIMIT / growth));
+    budget = Math.max(MIN_PIECE_BUDGET, Math.floor(TELEGRAM_LIMIT / growth));
   }
-  return splitMessage(text, 400).map(toHtml);
+  return splitMessage(text, MIN_PIECE_BUDGET).map((piece) => toTelegramHtml(piece));
 }
 
 /**
@@ -497,6 +528,10 @@ export function mergeFinalText(streamed: string, finalText: string): string {
 /** A sleep that neither keeps the process alive nor outlives a stop(). */
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
     const timer = setTimeout(resolve, ms);
     timer.unref?.();
     signal.addEventListener(
@@ -528,8 +563,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 /** The sender's username, straight out of the raw update, for the log only. */
 function usernameOf(update: TelegramUpdate): string | undefined {
-  const message = update.message as Record<string, unknown> | undefined;
-  const from = message?.from as Record<string, unknown> | undefined;
+  const from = asRecord(asRecord(update.message)?.from);
   return typeof from?.username === 'string' ? from.username : undefined;
 }
 
@@ -568,6 +602,418 @@ export async function answerTaskQuestion(
   }
 }
 
+/** What one delivery may be told about itself beyond the text. */
+interface SayOptions {
+  /** Quote a message, so an answer reads as an answer to that one. */
+  replyTo?: number;
+  /**
+   * What this message is about. Kept per chat, so a reply to it can find
+   * its way back to the right conversation days later.
+   */
+  origin?: Omit<MessageOrigin, 'at'>;
+  /** Land in the chat without making the phone ring. */
+  silent?: boolean;
+  /** Buttons under the message. Drawn beneath the last piece of a long one. */
+  keyboard?: TelegramInlineKeyboard;
+}
+
+/** One message on its way to becoming a turn, files and all. */
+interface Incoming {
+  userId: number;
+  chatId: number;
+  messageId?: number;
+  text?: string;
+  attachments: GatewayAttachment[];
+  replyTo?: GatewayReplyTo;
+}
+
+/** What came out of taking the files in. */
+interface Intake {
+  /** One line per file, written for the turn that is about to read them. */
+  lines: string[];
+  /** Spoken words, in the order they were sent. */
+  transcripts: string[];
+  saved: number;
+}
+
+/** An audible file that is already on disk, ready to be listened to. */
+interface StoredAudio {
+  attachment: GatewayAttachment;
+  label: string;
+  bytes: Buffer;
+  path: string;
+}
+
+/** What listening to one file gave: the line for the turn, and the words if there were any. */
+interface Listened {
+  line: string;
+  transcript?: string;
+}
+
+/** The one live progress line of a turn, see `startProgress`. */
+interface ProgressLine {
+  show: (line: string) => void;
+  clear: () => void;
+}
+
+/** The answer of a turn as it is written, see `startStream`. */
+interface AnswerStream {
+  push: (delta: string) => void;
+  finish: (finalText: string) => Promise<number[]>;
+}
+
+/** What the phone sees while a turn works: typing bubble, progress line, and when it began. */
+interface Presence {
+  progress: ProgressLine;
+  openedAt: number;
+  end: () => void;
+}
+
+/**
+ * One turn as it unfolds. The fields after `presence` fill in as the turn
+ * gets further, and they are read after a throw too: a cancelled turn still
+ * flushes whatever it had streamed.
+ */
+interface Turn {
+  job: Incoming;
+  signal: AbortSignal;
+  presence: Presence;
+  answer: string;
+  failed: boolean;
+  session?: Session;
+  origin?: MessageOrigin;
+  stream?: AnswerStream;
+}
+
+type Acknowledge = (text?: string) => Promise<void>;
+
+/** How a file is named in the line the assistant is handed. */
+const KIND_LABEL: Record<GatewayAttachment['kind'], string> = {
+  photo: 'A photo',
+  voice: 'A voice message',
+  audio: 'An audio file',
+  video: 'A video',
+  video_note: 'A video note',
+  animation: 'An animation',
+  document: 'A document',
+  sticker: 'A sticker',
+};
+
+/**
+ * What an allowed sender is told when their own message was refused.
+ *
+ * Every reason in here is one the guard can only reach *after* the
+ * allowlist has said yes, in the sender's own private chat - so the
+ * silence that protects the bot from strangers buys nothing here, and
+ * costs the owner a message that seems to vanish. Everything else stays
+ * silent, `not_private` included: a word in a group chat is exactly what
+ * the guard refused to allow.
+ */
+const REJECTION_NOTE: Partial<Record<GatewayRejection, string>> = {
+  forwarded:
+    'Forwarded messages are not accepted - they carry someone else\'s words. Send the text or the file yourself.',
+  media_off: 'Attachments are switched off for this gateway. You can turn them on in the gateway settings.',
+  unsupported_media: 'Animated and video stickers cannot be read.',
+  too_large: 'That file is larger than this gateway accepts.',
+  too_long: 'That message is too long. Shorten it, or send it as a file.',
+  no_content: 'There was nothing in that message I can work with.',
+};
+
+/** The chat a message was sent from is the sender's own private chat. */
+function isOwnChat(verdict: GatewayVerdict): verdict is GatewayVerdict & { chatId: number; userId: number } {
+  return verdict.chatId !== undefined && verdict.chatId === verdict.userId;
+}
+
+/**
+ * Why a failure will not pass on its own, if it is one of the two that never
+ * do: a token Telegram does not know (401), and a second process polling the
+ * same bot (409). Anything else is weather.
+ */
+function hopelessReason(error: unknown): string | undefined {
+  if (!(error instanceof TelegramApiError)) return undefined;
+  if (error.unauthorized) return REASON_UNAUTHORIZED;
+  if (error.conflict) return REASON_CONFLICT;
+  return undefined;
+}
+
+/** Ids from `top` downwards that go into one delete call, counting at most `CLEAR_SWEEP` back from `newest`. */
+function sweepBatch(top: number, newest: number): number[] {
+  const batch: number[] = [];
+  for (let id = top; id > 0 && id > top - DELETE_BATCH && newest - id < CLEAR_SWEEP; id -= 1) batch.push(id);
+  return batch;
+}
+
+/** The notification the user is replying to, in the words the turn is told, unless this conversation already holds it. */
+function quotedNotification(context: ServerContext, origin: MessageOrigin | undefined, fresh: boolean): string | undefined {
+  if (!origin) return undefined;
+  if (fresh) return originContext(context, origin);
+  // A thread being continued already holds the notification in its history.
+  // A notice that never had a record is the exception: there is nothing to
+  // read back, so its own text is all the context there will ever be.
+  return origin.ref ? undefined : origin.snippet;
+}
+
+/**
+ * Whether a turn would end up listening locally, and so might have to wait
+ * for a model to be fetched. Read fresh: a key added on the voice page
+ * takes effect on the next voice note, not on the next restart.
+ */
+function listensLocally(context: ServerContext, config: TelegramGatewayConfig): boolean {
+  if (config.transcribe === 'local') return true;
+  if (config.transcribe !== 'auto') return false;
+  const keys = voiceKeys(context.config.home);
+  return !keys.openai && !keys.elevenlabs;
+}
+
+/** The line a stored file becomes in the prompt: where it is, and what the assistant should do with it. */
+function describeStoredFile(attachment: GatewayAttachment, label: string, stored: SavedAttachment): string {
+  const size = humanSize(stored.bytes);
+  switch (attachment.kind) {
+    case 'photo':
+    case 'sticker':
+      return `${label} (${size}) is at ${stored.path}. Open it with your file-reading tool before you answer; you can see images.`;
+    case 'video':
+    case 'video_note':
+    case 'animation':
+      return `${label} (${size}) is at ${stored.path}.`;
+    default: {
+      const named = attachment.fileName ? ` named “${attachment.fileName}”` : '';
+      return `${label}${named} (${size}) is at ${stored.path}. Open it before you answer.`;
+    }
+  }
+}
+
+/**
+ * The prompt for a turn that arrived with files, a quoted notification, or
+ * both.
+ *
+ * Everything the assistant did not write itself is introduced as what it
+ * is: the user's own words stand as they are, a transcript says that it is
+ * a transcript, and a quoted notification is fenced off with a line saying
+ * where it ends. None of it is trusted less for that - it is all the
+ * owner's own material - but a turn that cannot tell a notification apart from an
+ * instruction is a turn that will eventually follow the notification.
+ */
+function buildPrompt(job: Incoming, intake: Intake, quoted?: string): string {
+  const parts: string[] = [];
+
+  if (quoted) {
+    parts.push(
+      'The user is replying on Telegram to this notification from Rookery:\n\n' +
+        quoted +
+        '\n\n--- end of the notification; their reply follows ---',
+    );
+  }
+
+  if (intake.lines.length > 0) {
+    parts.push('Sent from Telegram:\n' + intake.lines.map((line) => '- ' + line).join('\n'));
+  }
+
+  for (const transcript of intake.transcripts) {
+    parts.push('What they said:\n"' + transcript + '"');
+  }
+
+  const written = job.text?.trim();
+  if (written) parts.push(intake.transcripts.length > 0 || intake.lines.length > 0 ? 'What they wrote with it:\n' + written : written);
+
+  // A file with nothing said about it is still a request: look at this.
+  if (parts.length === 0 || (!written && intake.transcripts.length === 0)) {
+    parts.push('They sent this without saying anything. Look at it and say what you make of it.');
+  }
+  return parts.join('\n\n');
+}
+
+/* ------------------- the conversation behind a chat ------------------- */
+
+const sessionChatKey = (sessionId: string): string => 'telegram:session:' + sessionId;
+
+/** A conversation of its own for this chat, replacing whichever it had. */
+function startChatSession(context: ServerContext, chatId: number): Session {
+  const session = context.assistant.createSession({ title: 'Telegram', kind: 'chat' });
+  context.assistant.store.setMeta(`telegram:chat:${chatId}`, session.id);
+  return session;
+}
+
+/**
+ * The conversation behind a chat. Deliberately an ordinary `chat` session
+ * rather than a kind of its own, so what was said from the phone shows up
+ * in the same sidebar as everything else.
+ */
+function chatSession(context: ServerContext, chatId: number): Session {
+  const known = context.assistant.store.getMeta(`telegram:chat:${chatId}`);
+  return (known ? context.assistant.getSession(known) : null) ?? startChatSession(context, chatId);
+}
+
+/* ---------------------- what the list commands say ---------------------- */
+
+const NO_COMPANY = 'No company is configured yet.';
+
+/** How many open assignments `/status` counts before it stops counting. */
+const STATUS_ASSIGNMENT_LIMIT = 20;
+const TASK_FETCH_LIMIT = 40;
+const RUNNING_ASSIGNMENT_LIMIT = 50;
+
+/** The order a phone wants tasks in: running first, then what failed, then what is planned, then the rest. */
+const TASK_STATUS_ORDER = ['running', 'failed', 'planned', 'open'];
+
+/** The command list as `/help` prints it, out of the one table above. */
+function helpText(): string {
+  const rows = COMMANDS.map((entry) => `/${entry.command} – ${entry.description}`);
+  return ['What I answer to:', '', ...rows].join('\n');
+}
+
+function greetingText(context: ServerContext): string {
+  return (
+    `Hello, this is ${context.config.assistantName}. Send a message and I will reply in ` +
+    'the same conversation you can access in the browser.\n\n' +
+    'Voice messages are transcribed, and photos and documents are read. ' +
+    'Reply to one of my notifications and I will answer about that notification, ' +
+    'in a conversation of its own, rather than about whatever we last discussed.\n\n' +
+    helpText()
+  );
+}
+
+/** The active organisation, or nothing to report from. */
+function activeOrgId(context: ServerContext): string | undefined {
+  try {
+    return context.assistant.org.activeOrganization().id;
+  } catch {
+    // It throws while no company exists, which is a normal state and not a failure.
+    return undefined;
+  }
+}
+
+/** "in 3 h 20 min", "12 min ago" - a clock reading nobody has to subtract. */
+function relativeTime(at?: number): string {
+  if (!at) return '';
+  const delta = at - Date.now();
+  const minutes = Math.round(Math.abs(delta) / MINUTE_MS);
+  const text =
+    minutes < MINUTES_PER_HOUR
+      ? `${minutes} min`
+      : minutes < MINUTES_PER_DAY * 2
+        ? `${Math.round(minutes / MINUTES_PER_HOUR)} h`
+        : `${Math.round(minutes / MINUTES_PER_DAY)} d`;
+  return delta >= 0 ? `in ${text}` : `${text} ago`;
+}
+
+/** A list command's body, with the same shape for all four of them. */
+function listText(title: string, rows: string[], empty: string, total = rows.length): string {
+  if (rows.length === 0) return empty;
+  const shown = rows.slice(0, LIST_LIMIT);
+  const rest = total - shown.length;
+  return [title, '', ...shown, ...(rest > 0 ? ['', `… and ${rest} more. The web app has the rest.`] : [])].join('\n');
+}
+
+async function usageLimitsLine(provider: string): Promise<string> {
+  try {
+    const quota = await providerQuota(provider);
+    const windows = quota.windows.map((w) => `${w.label} ${w.percent} %`).join(', ');
+    return `Usage limits: ${windows || quota.error || 'unknown'}`;
+  } catch (error) {
+    return `Usage limits: unknown (${errorText(error)})`;
+  }
+}
+
+function activeAssignmentsLine(context: ServerContext): string {
+  const orgId = activeOrgId(context);
+  if (!orgId) return 'Active assignments: no company configured';
+  try {
+    const open = context.assistant.store.org.listAssignments(orgId, {
+      status: ['pending', 'running'],
+      limit: STATUS_ASSIGNMENT_LIMIT,
+    });
+    return `Active assignments: ${open.length}`;
+  } catch (error) {
+    return `Active assignments: unknown (${errorText(error)})`;
+  }
+}
+
+function lastSleepRunLine(context: ServerContext): string {
+  const [last] = context.assistant.store.listSleepRuns({ owner: ASSISTANT_MEMORY_OWNER, limit: 1 });
+  return last
+    ? `Last sleep run: ${new Date(last.startedAt).toLocaleString('en-GB')} (${last.status})`
+    : 'Last sleep run: none yet';
+}
+
+async function statusText(context: ServerContext): Promise<string> {
+  const provider = context.config.defaultProvider;
+  const model = context.config.gateways.telegram.model ?? context.config.defaultModel;
+  return [
+    `Provider: ${provider}${model ? ` (${model})` : ''}`,
+    await usageLimitsLine(provider),
+    activeAssignmentsLine(context),
+    lastSleepRunLine(context),
+  ].join('\n');
+}
+
+function tasksText(context: ServerContext): string {
+  const orgId = activeOrgId(context);
+  if (!orgId) return NO_COMPANY;
+  const store = context.assistant.store.org;
+  const open = store.listTasks(orgId, {
+    status: ['running', 'planned', 'open', 'failed'],
+    limit: TASK_FETCH_LIMIT,
+  });
+  const rank = (status: string): number => {
+    const index = TASK_STATUS_ORDER.indexOf(status);
+    return index === -1 ? TASK_STATUS_ORDER.length : index;
+  };
+  const sorted = [...open].sort((a, b) => rank(a.status) - rank(b.status));
+  const rows = sorted.map((task) => {
+    const who = task.assigneeId ? store.getAgent(task.assigneeId)?.name : undefined;
+    const mark = task.priority === 'high' ? '❗ ' : '';
+    return `• ${mark}${oneLine(task.title, ROW_TITLE_WIDTH)} – ${task.status}${who ? `, ${who}` : ''}`;
+  });
+  // "Unfinished" rather than "open": a failed task is on this list too,
+  // and it is the one most worth seeing from a phone.
+  return listText(`Board: ${open.length} unfinished`, rows, 'Nothing open on the board.', open.length);
+}
+
+function inboxText(context: ServerContext): string {
+  const orgId = activeOrgId(context);
+  if (!orgId) return NO_COMPANY;
+  // Read without marking read: this is a glance at the inbox, not the act
+  // of reading a notification, and the web inbox must not go quiet because
+  // of it.
+  const store = context.assistant.store.org;
+  const total = store.unreadNotificationCount(orgId);
+  const unread = store.listNotifications({ orgId, unread: true, limit: LIST_LIMIT });
+  const rows = unread.map(
+    (notification) =>
+      `• ${oneLine(notification.title, ROW_TITLE_WIDTH)} – ${notification.kind} (${relativeTime(notification.createdAt)})`,
+  );
+  return listText(`Inbox: ${total} unread`, rows, 'No unread notifications.', total);
+}
+
+function agentsText(context: ServerContext): string {
+  const orgId = activeOrgId(context);
+  if (!orgId) return NO_COMPANY;
+  const store = context.assistant.store.org;
+  const agents = store.listAgents(orgId);
+  const running = store.listAssignments(orgId, { status: ['running'], limit: RUNNING_ASSIGNMENT_LIMIT });
+  const busy = new Map<string, number>();
+  for (const assignment of running) busy.set(assignment.agentId, (busy.get(assignment.agentId) ?? 0) + 1);
+  const rows = agents.map((agent) => {
+    const load = busy.get(agent.id);
+    return `• ${agent.name} – ${oneLine(agent.title, ROW_NAME_WIDTH)}${load ? ` (busy: ${load})` : ''}`;
+  });
+  return listText(`Company: ${agents.length} agents`, rows, 'Nobody works here yet.', agents.length);
+}
+
+function schedulesText(context: ServerContext): string {
+  const orgId = activeOrgId(context);
+  if (!orgId) return NO_COMPANY;
+  const jobs = context.assistant.cron.list(orgId);
+  const upcoming = [...jobs].sort((a, b) => (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity));
+  const rows = upcoming.map((job) => {
+    const when = job.enabled ? (job.nextRunAt ? relativeTime(job.nextRunAt) : 'not scheduled') : 'off';
+    const last = job.lastStatus ? `, last ${job.lastStatus}` : '';
+    return `• ${oneLine(job.name, ROW_NAME_WIDTH)} – ${job.schedule}, ${when}${last}`;
+  });
+  return listText(`Schedules: ${jobs.length}`, rows, 'No schedules are set up.', jobs.length);
+}
+
 export function createTelegramGateway(context: ServerContext): GatewayHandle {
   const log = context.log.child('telegram');
 
@@ -602,23 +1048,6 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   const albums = new Map<string, { job: Incoming; timer: NodeJS.Timeout }>();
   /** One running turn per sender, so `/stop` knows what to abort. */
   const turns = new Map<number, AbortController>();
-
-  /**
-   * A turn in one of this chat's conversations that nobody here typed - a
-   * report-back from work handed off from the phone (R3). The conversation
-   * remembers which chat it belongs to; its answer goes there, filed as an
-   * answer of that conversation so a reply to it continues it.
-   */
-  const sessionChatKey = (sessionId: string): string => 'telegram:session:' + sessionId;
-  context.assistant.on('follow-up', (event: FollowUpEvent) => {
-    if (!running || !api) return;
-    const raw = context.assistant.store.getMeta(sessionChatKey(event.sessionId));
-    const chatId = raw ? Number(raw) : NaN;
-    if (!Number.isFinite(chatId)) return;
-    const text = event.text.trim() || (event.error ? 'Error: ' + event.error : '');
-    if (!text) return;
-    say(chatId, text, { origin: { kind: 'answer', sessionId: event.sessionId } });
-  });
   /** Per chat, so two answers never race each other onto the wire. */
   const outbox = new Map<number, Promise<void>>();
   const idReplies = new Map<number, number>();
@@ -649,13 +1078,19 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   // Everything outgoing goes through one chain per chat: a progress line, an
   // answer and a push notification can be produced concurrently, but Telegram
   // shows them in the order they arrive, and out-of-order is confusing.
-  function chain(chatId: number, run: () => Promise<void>): Promise<void> {
+  function chain<T>(chatId: number, run: () => Promise<T>): Promise<T> {
     const previous = outbox.get(chatId) ?? Promise.resolve();
     const next = previous.then(run, run);
-    outbox.set(
-      chatId,
-      next.catch(() => {}),
+    // Only the order is kept here: a failed delivery is for its caller to
+    // handle, and must not stop the next one from going out.
+    const tail = next.then(
+      () => undefined,
+      () => undefined,
     );
+    outbox.set(chatId, tail);
+    void tail.then(() => {
+      if (outbox.get(chatId) === tail) outbox.delete(chatId);
+    });
     return next;
   }
 
@@ -704,9 +1139,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
 
   /** Fire-and-forget delivery: used where a failed line must not break a turn. */
   function say(chatId: number, text: string, options: SayOptions = {}): void {
-    void chain(chatId, async () => {
-      await deliver(chatId, text, options);
-    }).catch((error: unknown) => {
+    void chain(chatId, () => deliver(chatId, text, options)).catch((error: unknown) => {
       log.warn('Telegram send failed', { chatId, error: errorText(error) });
     });
   }
@@ -725,7 +1158,43 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     });
   }
 
+  /** The typing bubble. Decoration like the reaction: a refused one costs nothing but itself. */
+  function showTyping(chatId: number): void {
+    void api?.sendChatAction(chatId, 'typing').catch((error: unknown) => {
+      log.debug('Telegram typing indicator not accepted', { chatId, error: errorText(error) });
+    });
+  }
+
+  /**
+   * A turn in one of this chat's conversations that nobody here typed - a
+   * report-back from work handed off from the phone (R3). The conversation
+   * remembers which chat it belongs to; its answer goes there, filed as an
+   * answer of that conversation so a reply to it continues it.
+   */
+  function relayFollowUp(event: FollowUpEvent): void {
+    if (!running || !api) return;
+    const raw = context.assistant.store.getMeta(sessionChatKey(event.sessionId));
+    const chatId = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(chatId)) return;
+    const text = event.text.trim() || (event.error ? 'Error: ' + event.error : '');
+    if (!text) return;
+    say(chatId, text, { origin: { kind: 'answer', sessionId: event.sessionId } });
+  }
+
+  /** Whether this stranger may be told their own id now; once told, they wait out the interval. */
+  function claimIdReply(userId: number): boolean {
+    const now = Date.now();
+    for (const [id, at] of idReplies) {
+      if (now - at >= ID_REPLY_INTERVAL_MS) idReplies.delete(id);
+    }
+    if (idReplies.has(userId)) return false;
+    idReplies.set(userId, now);
+    return true;
+  }
+
   /* ---------------------------- questions ---------------------------- */
+
+  const postKey = (questionId: string, chatId: number): string => questionId + '@' + String(chatId);
 
   /**
    * The assistant asking the person something, carried to the phone.
@@ -746,7 +1215,6 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
    * the same property for free: a `callback_query` is not a message and never
    * was queued.
    */
-  const postKey = (questionId: string, chatId: number): string => questionId + '@' + String(chatId);
 
   /** Is somebody being asked something in this chat right now? */
   function openQuestion(chatId: number): QuestionPost | undefined {
@@ -762,8 +1230,20 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     return newest;
   }
 
+  /** Forget standing questions whose deadline is long gone and whose closing event never came. */
+  function pruneExpiredPosts(): void {
+    const cutoff = Date.now() - EXPIRED_QUESTION_GRACE_MS;
+    for (const [key, post] of questionPosts) {
+      const { expiresAt } = post.question;
+      if (expiresAt <= 0 || expiresAt > cutoff) continue;
+      questionPosts.delete(key);
+      settlePost(post, 'expired');
+    }
+  }
+
   /** Draw the question in one chat, unless it is already standing there. */
   function offerQuestion(chatId: number, question: QuestionPrompt, origin: 'turn' | 'push'): void {
+    pruneExpiredPosts();
     const key = postKey(question.id, chatId);
     // Claimed before anything is awaited: the turn that asked and the push
     // listener both arrive within the same tick. A Telegram turn claims the
@@ -846,10 +1326,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
    * once the answer is there - it was scaffolding, and scaffolding comes
    * down.
    */
-  function startProgress(chatId: number): {
-    show: (line: string) => void;
-    clear: () => void;
-  } {
+  function startProgress(chatId: number): ProgressLine {
     let messageId: number | undefined;
     let shown = '';
     let shownAt = 0;
@@ -871,7 +1348,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
           messageId = id;
           return;
         }
-        await client.editMessageText(chatId, messageId, toHtml(text), {
+        await client.editMessageText(chatId, messageId, toTelegramHtml(text), {
           parseMode: 'HTML',
           disablePreview: true,
         });
@@ -912,11 +1389,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
    * grows past it. The `done` event has the last word - whatever the deltas
    * added up to, the final text is what stands.
    */
-  function startStream(chatId: number, replyTo?: number): {
-    push: (delta: string) => void;
-    finish: (finalText: string) => Promise<number[]>;
-    started: () => boolean;
-  } {
+  function startStream(chatId: number, replyTo?: number): AnswerStream {
     /** What has been sent so far, by index: message id and the text in it. */
     const ids: number[] = [];
     const texts: string[] = [];
@@ -971,9 +1444,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         return;
       }
       writing = true;
-      void chain(chatId, async () => {
-        await write();
-      })
+      void chain(chatId, write)
         .catch((error: unknown) => {
           // A refused edit is not worth the turn: the next pass rewrites the
           // same text anyway, and the answer still arrives.
@@ -1013,8 +1484,6 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     }
 
     return {
-      started: () => ids.length > 0,
-
       push(delta: string): void {
         if (closed) return;
         text += delta;
@@ -1023,7 +1492,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
 
       async finish(finalText: string): Promise<number[]> {
         closed = true;
-        if (timer) clearTimeout(timer);
+        clearTimeout(timer);
         timer = undefined;
 
         // The streamed text stands, and the provider's closing answer is
@@ -1031,9 +1500,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         // the bug it repairs, are with `mergeFinalText`.
         text = mergeFinalText(text, finalText);
 
-        await chain(chatId, async () => {
-          await write();
-        }).catch((error: unknown) => {
+        await chain(chatId, write).catch((error: unknown) => {
           log.warn('Telegram stream could not be finished', { chatId, error: errorText(error) });
         });
         return ids;
@@ -1041,164 +1508,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     };
   }
 
-  /* --------------------------- sessions --------------------------- */
-
-  /**
-   * The conversation behind a chat. Deliberately an ordinary `chat` session
-   * rather than a kind of its own, so what was said from the phone shows up
-   * in the same sidebar as everything else.
-   */
-  function resolveSession(chatId: number, fresh = false): Session {
-    const key = `telegram:chat:${chatId}`;
-    if (!fresh) {
-      const known = context.assistant.store.getMeta(key);
-      const session = known ? context.assistant.getSession(known) : null;
-      if (session) return session;
-    }
-    const session = context.assistant.createSession({ title: 'Telegram', kind: 'chat' });
-    context.assistant.store.setMeta(key, session.id);
-    return session;
-  }
-
   /* --------------------------- commands --------------------------- */
-
-  async function statusText(): Promise<string> {
-    const lines: string[] = [];
-    const provider = context.config.defaultProvider;
-    const model = settings().model ?? context.config.defaultModel;
-    lines.push(`Provider: ${provider}${model ? ` (${model})` : ''}`);
-
-    try {
-      const quota = await providerQuota(provider);
-      const windows = quota.windows.map((w) => `${w.label} ${w.percent} %`).join(', ');
-      lines.push(`Usage limits: ${windows || quota.error || 'unknown'}`);
-    } catch (error) {
-      lines.push(`Usage limits: unknown (${errorText(error)})`);
-    }
-
-    try {
-      const orgId = context.assistant.org.activeOrganization().id;
-      const open = context.assistant.store.org.listAssignments(orgId, {
-        status: ['pending', 'running'],
-        limit: 20,
-      });
-      lines.push(`Active assignments: ${open.length}`);
-    } catch {
-      lines.push('Active assignments: no company configured');
-    }
-
-    const [last] = context.assistant.store.listSleepRuns({
-      owner: ASSISTANT_MEMORY_OWNER,
-      limit: 1,
-    });
-    lines.push(
-      last
-        ? `Last sleep run: ${new Date(last.startedAt).toLocaleString('en-GB')} (${last.status})`
-        : 'Last sleep run: none yet',
-    );
-    return lines.join('\n');
-  }
-
-  /** The command list as `/help` prints it, out of the one table above. */
-  function helpText(): string {
-    const rows = COMMANDS.map((entry) => `/${entry.command} – ${entry.description}`);
-    return ['What I answer to:', '', ...rows].join('\n');
-  }
-
-  /** One organisation, or nothing to report from. */
-  function orgId(): string | undefined {
-    try {
-      return context.assistant.org.activeOrganization().id;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** "in 3 h 20 min", "12 min ago" - a clock reading nobody has to subtract. */
-  function relativeTime(at?: number): string {
-    if (!at) return '';
-    const delta = at - Date.now();
-    const minutes = Math.round(Math.abs(delta) / 60_000);
-    const text =
-      minutes < 60
-        ? `${minutes} min`
-        : minutes < 60 * 48
-          ? `${Math.round(minutes / 60)} h`
-          : `${Math.round(minutes / (60 * 24))} d`;
-    return delta >= 0 ? `in ${text}` : `${text} ago`;
-  }
-
-  /** A list command's body, with the same shape for all four of them. */
-  function listText(title: string, rows: string[], empty: string, total = rows.length): string {
-    if (rows.length === 0) return empty;
-    const shown = rows.slice(0, LIST_LIMIT);
-    const rest = total - shown.length;
-    return [title, '', ...shown, ...(rest > 0 ? ['', `… and ${rest} more. The web app has the rest.`] : [])].join('\n');
-  }
-
-  function tasksText(): string {
-    const id = orgId();
-    if (!id) return 'No company is configured yet.';
-    const open = context.assistant.store.org.listTasks(id, {
-      status: ['running', 'planned', 'open', 'failed'],
-      limit: 40,
-    });
-    // Running first, then what is planned, then the rest: the order someone
-    // looking at a phone actually wants.
-    const rank: Record<string, number> = { running: 0, failed: 1, planned: 2, open: 3 };
-    const sorted = [...open].sort((a, b) => (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
-    const rows = sorted.map((task) => {
-      const who = task.assigneeId ? context.assistant.store.org.getAgent(task.assigneeId)?.name : undefined;
-      const mark = task.priority === 'high' ? '❗ ' : '';
-      return `• ${mark}${oneLine(task.title, 70)} – ${task.status}${who ? `, ${who}` : ''}`;
-    });
-    // "Unfinished" rather than "open": a failed task is on this list too,
-    // and it is the one most worth seeing from a phone.
-    return listText(`Board: ${open.length} unfinished`, rows, 'Nothing open on the board.', open.length);
-  }
-
-  function inboxText(): string {
-    const id = orgId();
-    if (!id) return 'No company is configured yet.';
-    // Read without marking read: this is a glance at the inbox, not the act
-    // of reading a notification, and the web inbox must not go quiet because
-    // of it.
-    const store = context.assistant.store.org;
-    const total = store.unreadNotificationCount(id);
-    const unread = store.listNotifications({ orgId: id, unread: true, limit: LIST_LIMIT });
-    const rows = unread.map(
-      (notification) =>
-        `• ${oneLine(notification.title, 70)} – ${notification.kind} (${relativeTime(notification.createdAt)})`,
-    );
-    return listText(`Inbox: ${total} unread`, rows, 'No unread notifications.', total);
-  }
-
-  function agentsText(): string {
-    const id = orgId();
-    if (!id) return 'No company is configured yet.';
-    const agents = context.assistant.store.org.listAgents(id);
-    const running = context.assistant.store.org.listAssignments(id, { status: ['running'], limit: 50 });
-    const busy = new Map<string, number>();
-    for (const assignment of running) busy.set(assignment.agentId, (busy.get(assignment.agentId) ?? 0) + 1);
-    const rows = agents.map((agent) => {
-      const load = busy.get(agent.id);
-      return `• ${agent.name} – ${oneLine(agent.title, 50)}${load ? ` (busy: ${load})` : ''}`;
-    });
-    return listText(`Company: ${agents.length} agents`, rows, 'Nobody works here yet.', agents.length);
-  }
-
-  function schedulesText(): string {
-    const id = orgId();
-    if (!id) return 'No company is configured yet.';
-    const jobs = context.assistant.cron.list(id);
-    const upcoming = [...jobs].sort((a, b) => (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity));
-    const rows = upcoming.map((job) => {
-      const when = job.enabled ? (job.nextRunAt ? relativeTime(job.nextRunAt) : 'not scheduled') : 'off';
-      const last = job.lastStatus ? `, last ${job.lastStatus}` : '';
-      return `• ${oneLine(job.name, 50)} – ${job.schedule}, ${when}${last}`;
-    });
-    return listText(`Schedules: ${jobs.length}`, rows, 'No schedules are set up.', jobs.length);
-  }
 
   /**
    * Empty the chat and start over.
@@ -1225,187 +1535,150 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
    * is not.
    */
   async function clearChat(chatId: number, commandMessageId?: number): Promise<void> {
-    const client = api;
     const known = takeMessages(context, chatId);
     const newest = Math.max(commandMessageId ?? 0, ...known, 0);
 
+    const swept = await sweepMessages(chatId, newest);
+
+    const session = startChatSession(context, chatId);
+    log.info('Telegram chat cleared', { chatId, swept, newest, sessionId: session.id });
+    say(chatId, takeClearConfirmation(chatId));
+  }
+
+  /** Delete the id range below `newest`, a batch at a time; returns how many ids were handed to Telegram. */
+  async function sweepMessages(chatId: number, newest: number): Promise<number> {
+    const client = api;
+    if (!client || newest <= 0) return 0;
     let swept = 0;
-    if (client && newest > 0) {
-      // Downwards from the newest, so a flood limit that cuts this short
-      // takes what is on screen first.
-      for (let top = newest; top > 0 && newest - top < CLEAR_SWEEP; top -= 100) {
-        const batch: number[] = [];
-        for (let id = top; id > 0 && id > top - 100 && newest - id < CLEAR_SWEEP; id -= 1) batch.push(id);
-        if (batch.length === 0) break;
-        try {
-          await client.deleteMessages(chatId, batch);
-          swept += batch.length;
-        } catch (error) {
-          // A batch Telegram refuses outright - every id in it too old - is
-          // not a reason to stop: further down is only older, but further up
-          // may still hold something deletable in a chat with gaps.
-          log.debug('Telegram delete batch refused', { chatId, error: errorText(error) });
-        }
+    // Downwards from the newest, so a flood limit that cuts this short
+    // takes what is on screen first.
+    for (let top = newest; top > 0 && newest - top < CLEAR_SWEEP; top -= DELETE_BATCH) {
+      const batch = sweepBatch(top, newest);
+      if (batch.length === 0) break;
+      try {
+        await client.deleteMessages(chatId, batch);
+        swept += batch.length;
+      } catch (error) {
+        // A batch Telegram refuses outright - every id in it too old - is
+        // not a reason to stop: further down is only older, but further up
+        // may still hold something deletable in a chat with gaps.
+        log.debug('Telegram delete batch refused', { chatId, error: errorText(error) });
       }
     }
+    return swept;
+  }
 
-    const session = resolveSession(chatId, true);
-    log.info('Telegram chat cleared', { chatId, swept, newest, sessionId: session.id });
-
-    // One line on an empty screen, which is the whole point of the command.
-    // The footnote about Telegram's 48 hours is true every time and worth
-    // reading once, so it comes with the first clear in a chat and never
-    // again - an explanation repeated on every use stops being read and
-    // starts being clutter.
+  /**
+   * One line on an empty screen, which is the whole point of the command.
+   * The footnote about Telegram's 48 hours is true every time and worth
+   * reading once, so it comes with the first clear in a chat and never
+   * again - an explanation repeated on every use stops being read and
+   * starts being clutter. Taking the confirmation records that it was shown.
+   */
+  function takeClearConfirmation(chatId: number): string {
     const noticeKey = `telegram:clear-notice:${chatId}`;
     const explained = context.assistant.store.getMeta(noticeKey) !== null;
-    if (!explained) context.assistant.store.setMeta(noticeKey, String(Date.now()));
-
-    say(
-      chatId,
-      explained
-        ? '✨ Fresh start.'
-        : '✨ Fresh start — the old conversation is kept in the web app.\n' +
-            'Telegram lets me delete only the last 48 hours; for anything older: hold the chat → Clear History.',
+    if (explained) return '✨ Fresh start.';
+    context.assistant.store.setMeta(noticeKey, String(Date.now()));
+    return (
+      '✨ Fresh start — the old conversation is kept in the web app.\n' +
+      'Telegram lets me delete only the last 48 hours; for anything older: hold the chat → Clear History.'
     );
   }
 
-  /** Returns true when the message was a command and is fully dealt with. */
-  async function handleCommand(verdict: GatewayVerdict): Promise<boolean> {
-    const chatId = verdict.chatId;
-    const userId = verdict.userId;
-    if (chatId === undefined || userId === undefined || !verdict.command) return false;
+  /** Carries out a command that has already passed the guard; commands never queue. */
+  async function handleCommand(verdict: GatewayVerdict): Promise<void> {
+    const { chatId, userId, command } = verdict;
+    if (chatId === undefined || userId === undefined || !command) return;
 
-    switch (verdict.command) {
+    switch (command) {
       case 'start':
-        say(
-          chatId,
-          `Hello, this is ${context.config.assistantName}. Send a message and I will reply in ` +
-            'the same conversation you can access in the browser.\n\n' +
-            'Voice messages are transcribed, and photos and documents are read. ' +
-            'Reply to one of my notifications and I will answer about that notification, ' +
-            'in a conversation of its own, rather than about whatever we last discussed.\n\n' +
-            helpText(),
-        );
-        return true;
+        say(chatId, greetingText(context));
+        return;
 
       case 'help':
       case 'hilfe':
         say(chatId, helpText());
-        return true;
+        return;
 
       case 'new':
       case 'neu': {
-        const session = resolveSession(chatId, true);
+        const session = startChatSession(context, chatId);
         log.info('Telegram session replaced', { from: userId, sessionId: session.id });
         say(chatId, 'New conversation created. The previous one is preserved.');
-        return true;
+        return;
       }
 
       case 'clear':
         await clearChat(chatId, verdict.messageId);
-        return true;
+        return;
 
       case 'tasks':
-        say(chatId, tasksText());
-        return true;
+        say(chatId, tasksText(context));
+        return;
 
       case 'inbox':
-        say(chatId, inboxText());
-        return true;
+        say(chatId, inboxText(context));
+        return;
 
       // Mail was folded into notifications; the old command still works and
       // says where it went.
       case 'mail':
-        say(chatId, '/mail is now /inbox.\n\n' + inboxText());
-        return true;
+        say(chatId, '/mail is now /inbox.\n\n' + inboxText(context));
+        return;
 
       case 'agents':
-        say(chatId, agentsText());
-        return true;
+        say(chatId, agentsText(context));
+        return;
 
       case 'schedules':
       case 'cron':
-        say(chatId, schedulesText());
-        return true;
+        say(chatId, schedulesText(context));
+        return;
 
-      case 'stop': {
-        const turn = turns.get(userId);
-        // The turn itself reports "Cancelled." on its way out, so this
-        // branch stays silent unless there was nothing to stop.
-        if (turn) turn.abort();
-        else say(chatId, 'Nothing is running.');
-        return true;
-      }
+      case 'stop':
+        stopRunningTurn(userId, chatId);
+        return;
 
       case 'status':
-        say(chatId, await statusText());
-        return true;
+        say(chatId, await statusText(context));
+        return;
 
       case 'id':
         say(chatId, String(userId));
-        return true;
+        return;
 
       case 'off':
       case 'aus':
-        silenced = true;
-        say(chatId, 'The gateway is silenced until restart.');
-        // Let the farewell leave before the socket does.
-        void chain(chatId, () => Promise.resolve()).finally(() => {
-          void stop();
-        });
-        return true;
+        silenceUntilRestart(chatId);
+        return;
 
       default:
         say(chatId, 'I do not know that one.\n\n' + helpText());
-        return true;
     }
   }
 
+  function stopRunningTurn(userId: number, chatId: number): void {
+    const turn = turns.get(userId);
+    // The turn itself reports "Cancelled." on its way out, so this stays
+    // silent unless there was nothing to stop.
+    if (turn) turn.abort();
+    else say(chatId, 'Nothing is running.');
+  }
+
+  function silenceUntilRestart(chatId: number): void {
+    silenced = true;
+    say(chatId, 'The gateway is silenced until restart.');
+    // Let the farewell leave before the socket does: the chat's chain is in
+    // order, so once an empty link has run, the farewell is out.
+    void chain(chatId, () => Promise.resolve())
+      .then(() => stop())
+      .catch((error: unknown) => {
+        log.warn('Telegram gateway could not be silenced cleanly', { error: errorText(error) });
+      });
+  }
+
   /* --------------------------- attachments --------------------------- */
-
-  /** One message on its way to becoming a turn, files and all. */
-  interface Incoming {
-    userId: number;
-    chatId: number;
-    messageId?: number;
-    text?: string;
-    attachments: GatewayAttachment[];
-    replyTo?: GatewayReplyTo;
-  }
-
-  /** What came out of taking the files in. */
-  interface Intake {
-    /** One line per file, written for the turn that is about to read them. */
-    lines: string[];
-    /** Spoken words, in the order they were sent. */
-    transcripts: string[];
-    saved: number;
-  }
-
-  /** How a file is named in the line the assistant is handed. */
-  const KIND_LABEL: Record<GatewayAttachment['kind'], string> = {
-    photo: 'A photo',
-    voice: 'A voice message',
-    audio: 'An audio file',
-    video: 'A video',
-    video_note: 'A video note',
-    animation: 'An animation',
-    document: 'A document',
-    sticker: 'A sticker',
-  };
-
-  /**
-   * Whether a turn would end up listening locally, and so might have to wait
-   * for a model to be fetched. Read fresh: a key added on the voice page
-   * takes effect on the next voice note, not on the next restart.
-   */
-  function listensLocally(config: TelegramGatewayConfig): boolean {
-    if (config.transcribe === 'local') return true;
-    if (config.transcribe !== 'auto') return false;
-    const keys = voiceKeys(context.config.home);
-    return !keys.openai && !keys.elevenlabs;
-  }
 
   /**
    * Fetch, store and, where there is something to hear, transcribe.
@@ -1416,12 +1689,12 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
    * instead of answering a question it never saw.
    */
   async function takeIn(job: Incoming, signal: AbortSignal): Promise<Intake> {
-    const config = settings();
     const intake: Intake = { lines: [], transcripts: [], saved: 0 };
     const client = api;
     if (!client || job.attachments.length === 0) return intake;
 
-    const maxBytes = Math.min(Math.max(1, config.maxAttachmentMb), 20) * 1024 * 1024;
+    const config = settings();
+    const maxBytes = Math.min(Math.max(1, config.maxAttachmentMb), BOT_API_DOWNLOAD_LIMIT_MB) * BYTES_PER_MB;
     let announcedColdStart = false;
 
     for (const attachment of job.attachments.slice(0, MAX_ATTACHMENTS)) {
@@ -1435,71 +1708,24 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         const bytes = await client.downloadFile(file.path, { maxBytes, signal });
         const stored = saveAttachment(context.config.workspace, attachment, bytes);
         intake.saved += 1;
-        const size = humanSize(stored.bytes);
-        const named = attachment.fileName ? ` named “${attachment.fileName}”` : '';
 
-        if (isAudible(attachment) && config.transcribe !== 'off') {
-          const length = humanDuration(attachment.duration);
-          // The local model is fetched once, and that once takes about a
-          // minute on a normal line. Saying so beats a silence that looks
-          // like a bot which stopped working.
-          if (!announcedColdStart && listensLocally(config) && !localModelReady(config.transcribeModel)) {
-            announcedColdStart = true;
-            say(job.chatId, 'Listening. The speech model is being downloaded once, which takes a minute.');
-          }
-          try {
-            const result = await transcribe({
-              audio: bytes,
-              mime: attachment.mime,
-              fileName: attachment.fileName,
-              engine: config.transcribe,
-              model: config.transcribeModel,
-              lang: context.config.voice.lang,
-              home: context.config.home,
-              signal,
-            });
-            intake.transcripts.push(result.text);
-            intake.lines.push(
-              `${label}${length ? ` (${length})` : ''}, transcribed by ${result.engine}; the wording may be` +
-                ` imperfect. The audio itself is at ${stored.path}.`,
-            );
-            // Echoed back, because a transcript nobody can check is a
-            // misheard sentence the assistant answers with a straight face.
-            const echo = result.text.length > TRANSCRIPT_ECHO ? result.text.slice(0, TRANSCRIPT_ECHO) + ' …' : result.text;
-            say(job.chatId, '🎤 ' + echo);
-            log.info('Telegram voice note transcribed', {
-              from: job.userId,
-              engine: result.engine,
-              ms: result.ms,
-              chars: result.text.length,
-            });
-          } catch (error) {
-            const reason = error instanceof SttError ? error.message : errorText(error);
-            intake.lines.push(`${label}${length ? ` (${length})` : ''} could not be transcribed: ${reason} The audio is at ${stored.path}.`);
-            log.warn('Telegram transcription failed', { from: job.userId, error: reason });
-          }
+        if (!isAudible(attachment) || config.transcribe === 'off') {
+          intake.lines.push(describeStoredFile(attachment, label, stored));
           continue;
         }
 
-        switch (attachment.kind) {
-          case 'photo':
-          case 'sticker':
-            intake.lines.push(
-              `${label} (${size}) is at ${stored.path}. Open it with your file-reading tool before you answer; you can see images.`,
-            );
-            break;
-          case 'video':
-          case 'video_note':
-          case 'animation':
-            intake.lines.push(`${label} (${size}) is at ${stored.path}.`);
-            break;
-          default:
-            intake.lines.push(
-              `${label}${named} (${size}) is at ${stored.path}. Open it before you answer.`,
-            );
+        // The local model is fetched once, and that once takes about a
+        // minute on a normal line. Saying so beats a silence that looks
+        // like a bot which stopped working.
+        if (!announcedColdStart && listensLocally(context, config) && !localModelReady(config.transcribeModel)) {
+          announcedColdStart = true;
+          say(job.chatId, 'Listening. The speech model is being downloaded once, which takes a minute.');
         }
+        const heard = await listen(job, { attachment, label, bytes, path: stored.path }, signal);
+        intake.lines.push(heard.line);
+        if (heard.transcript !== undefined) intake.transcripts.push(heard.transcript);
       } catch (error) {
-        const reason = error instanceof TelegramApiError ? error.message : errorText(error);
+        const reason = errorText(error);
         intake.lines.push(`${label} could not be taken in: ${reason}`);
         log.warn('Telegram attachment failed', { from: job.userId, kind: attachment.kind, error: reason });
       }
@@ -1514,254 +1740,291 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   }
 
   /**
-   * The prompt for a turn that arrived with files, a quoted notification, or
-   * both.
-   *
-   * Everything the assistant did not write itself is introduced as what it
-   * is: the user's own words stand as they are, a transcript says that it is
-   * a transcript, and a quoted notification is fenced off with a line saying
-   * where it ends. None of it is trusted less for that - it is all the
-   * owner's own material - but a turn that cannot tell a notification apart from an
-   * instruction is a turn that will eventually follow the notification.
+   * The words in one audible file. A failed transcription is reported in the
+   * line the turn is handed rather than thrown: the audio itself is still on
+   * disk, and the assistant can say so.
    */
-  function buildPrompt(job: Incoming, intake: Intake, quoted?: string): string {
-    const parts: string[] = [];
-
-    if (quoted) {
-      parts.push(
-        'The user is replying on Telegram to this notification from Rookery:\n\n' +
-          quoted +
-          '\n\n--- end of the notification; their reply follows ---',
-      );
+  async function listen(job: Incoming, heard: StoredAudio, signal: AbortSignal): Promise<Listened> {
+    const { attachment, label, bytes, path } = heard;
+    const config = settings();
+    const length = humanDuration(attachment.duration);
+    const spoken = length ? `${label} (${length})` : label;
+    try {
+      const result = await transcribe({
+        audio: bytes,
+        mime: attachment.mime,
+        fileName: attachment.fileName,
+        engine: config.transcribe,
+        model: config.transcribeModel,
+        lang: context.config.voice.lang,
+        home: context.config.home,
+        signal,
+      });
+      // Echoed back, because a transcript nobody can check is a
+      // misheard sentence the assistant answers with a straight face.
+      say(job.chatId, '🎤 ' + (result.text.length > TRANSCRIPT_ECHO ? result.text.slice(0, TRANSCRIPT_ECHO) + ' …' : result.text));
+      log.info('Telegram voice note transcribed', {
+        from: job.userId,
+        engine: result.engine,
+        ms: result.ms,
+        chars: result.text.length,
+      });
+      return {
+        line: `${spoken}, transcribed by ${result.engine}; the wording may be imperfect. The audio itself is at ${path}.`,
+        transcript: result.text,
+      };
+    } catch (error) {
+      const reason = errorText(error);
+      log.warn('Telegram transcription failed', { from: job.userId, error: reason });
+      return { line: `${spoken} could not be transcribed: ${reason} The audio is at ${path}.` };
     }
-
-    if (intake.lines.length > 0) {
-      parts.push('Sent from Telegram:\n' + intake.lines.map((line) => '- ' + line).join('\n'));
-    }
-
-    for (const transcript of intake.transcripts) {
-      parts.push('What they said:\n"' + transcript + '"');
-    }
-
-    const written = job.text?.trim();
-    if (written) parts.push(intake.transcripts.length > 0 || intake.lines.length > 0 ? 'What they wrote with it:\n' + written : written);
-
-    // A file with nothing said about it is still a request: look at this.
-    if (parts.length === 0 || (!written && intake.transcripts.length === 0)) {
-      parts.push('They sent this without saying anything. Look at it and say what you make of it.');
-    }
-    return parts.join('\n\n');
   }
 
   /* ----------------------------- turns ----------------------------- */
 
-  async function runTurn(job: Incoming): Promise<void> {
-    const config = settings();
-    const { userId, chatId } = job;
-
-    const turn = new AbortController();
-    turns.set(userId, turn);
-
+  /**
+   * What the phone shows while a turn works. Nothing to show yet is the
+   * normal state of a long turn; without a sign of life the phone looks
+   * broken. So: the typing bubble, a reaction on the message that says it
+   * was seen (without adding a message to a chat the answer is about to
+   * land in anyway), and after a while one progress line, rewritten as the
+   * turn moves on and gone once the answer is there.
+   */
+  function startPresence(job: Incoming): Presence {
+    const { chatId } = job;
     const typing = setInterval(() => {
       // Not while the turn is waiting on an answer: a typing bubble over an
       // open question claims the machine is busy when it is the person who
       // is being waited for.
       if (openQuestion(chatId)) return;
-      void api?.sendChatAction(chatId, 'typing').catch(() => {});
+      showTyping(chatId);
     }, TYPING_INTERVAL_MS);
     typing.unref?.();
-    void api?.sendChatAction(chatId, 'typing').catch(() => {});
+    showTyping(chatId);
 
-    // Seen, and being worked on. A reaction says that without adding a
-    // message to a chat the answer is about to land in anyway.
     react(chatId, job.messageId, REACTION.working);
 
-    // Nothing to show yet is the normal state of a long turn; without a sign
-    // of life the phone looks broken. One line, rewritten as the turn moves
-    // on, and gone once the answer is there.
-    const openedAt = Date.now();
     const progress = startProgress(chatId);
     const firstNote = setTimeout(() => progress.show('Working on it …'), FIRST_NOTE_MS);
     firstNote.unref?.();
 
-    let answer = '';
-    let failed = false;
-    // Set inside the try, so a failure on the way in still runs through the
-    // one `finally` that stops the typing bubble and the progress timer.
-    let session: Session | undefined;
-    let origin: MessageOrigin | undefined;
-    let stream: ReturnType<typeof startStream> | undefined;
+    return {
+      progress,
+      openedAt: Date.now(),
+      end: () => {
+        clearTimeout(firstNote);
+        clearInterval(typing);
+        progress.clear();
+      },
+    };
+  }
+
+  async function runTurn(job: Incoming): Promise<void> {
+    const { userId, chatId } = job;
+
+    const cancel = new AbortController();
+    turns.set(userId, cancel);
+    const turn: Turn = { job, signal: cancel.signal, presence: startPresence(job), answer: '', failed: false };
+
     // Set when the message turned out to be the answer to a task's question
     // and was handed to the card instead of a turn.
     let answeredTask = false;
     try {
-      // Files first: downloading and listening is part of the turn, and the
-      // typing bubble and the progress note above already cover the wait.
-      const intake = await takeIn(job, turn.signal);
-
-      // Where this belongs. A reply to something the bot sent goes back to
-      // whatever that message was about; everything else is the running
-      // Telegram conversation, exactly as before.
-      origin = job.replyTo?.fromBot === true ? findOrigin(context, chatId, job.replyTo.messageId) : undefined;
-
-      // A reply to an agent's question is the answer, not a conversation:
-      // it goes onto the card and the task carries on, and no chat turn is
-      // started about it.
-      const asked = origin ? questionForOrigin(context, origin) : undefined;
-      if (asked) {
-        answeredTask = true;
-        const text = [job.text?.trim() ?? '', ...intake.transcripts].filter((part) => part.length > 0).join('\n\n');
-        if (!text) {
-          say(chatId, 'Write the answer as text (or say it in a voice message) to answer that question.', {
-            ...(job.messageId !== undefined ? { replyTo: job.messageId } : {}),
-          });
-          failed = true;
-        } else {
-          const result = await answerTaskQuestion(context, asked, text);
-          failed = !result.ok;
-          log.info('Telegram reply answered a task question', {
-            from: userId,
-            task: asked.taskId,
-            ok: result.ok,
-          });
-          say(chatId, result.ok ? 'Answered — the task continues.' : `Could not answer: ${result.reason}`, {
-            ...(job.messageId !== undefined ? { replyTo: job.messageId } : {}),
-          });
-        }
-        return;
-      }
-
-      const thread = origin
-        ? openThread(context, origin, () => resolveSession(chatId))
-        : { session: resolveSession(chatId), fresh: false };
-      session = thread.session;
-      // Whatever answers in this conversation later without being asked
-      // here - a report-back - knows where to find this chat.
-      context.assistant.store.setMeta(sessionChatKey(session.id), String(chatId));
-      // The notification itself goes in front of the turn only when this
-      // conversation has not seen it yet. A thread being continued already
-      // holds it in its history, and repeating it every time would push the
-      // actual exchange out of the window. A notice that never had a record
-      // is the exception: there is nothing to read back, so its own text is
-      // all the context there will ever be.
-      const quoted = origin
-        ? thread.fresh
-          ? originContext(context, origin)
-          : origin.ref
-            ? undefined
-            : origin.snippet
-        : undefined;
-
-      const prompt = buildPrompt(job, intake, quoted);
-
-      log.info('Telegram message accepted', {
-        from: userId,
-        sessionId: session.id,
-        permission: config.permission,
-        attachments: intake.saved,
-        spoken: intake.transcripts.length,
-        replyingTo: origin?.kind,
-        thread: thread.fresh ? 'new' : 'continued',
-        text: prompt.slice(0, AUDIT_TEXT),
-      });
-
-      // A streamed answer quotes what it answers on its first message, the
-      // way a whole one would.
-      stream = config.stream
-        ? startStream(chatId, origin && job.messageId !== undefined ? job.messageId : undefined)
-        : undefined;
-
-      for await (const event of context.assistant.chat({
-        text: prompt,
-        sessionId: session.id,
-        permission: config.permission,
-        model: config.model,
-        signal: turn.signal,
-      })) {
-        if (event.type === 'text') {
-          if (!stream) continue;
-          // The progress line was standing in for an answer that had not
-          // started. It has started.
-          progress.clear();
-          stream.push(event.delta);
-        } else if (event.type === 'done') {
-          answer = event.text;
-        } else if (event.type === 'error') {
-          // Never swallowed: an error the user does not see is an answer that
-          // simply never arrives.
-          failed = true;
-          say(chatId, `Error: ${event.message}`);
-        } else if (event.type === 'question') {
-          // The turn has stopped and is waiting on a person. Whatever the
-          // progress line last claimed it was doing, it is not doing that.
-          progress.clear();
-          // Idempotent: push may put the same question here in the same tick,
-          // because it cannot know this turn came from the phone.
-          offerQuestion(chatId, event, 'turn');
-        } else if (event.type === 'question-closed') {
-          closeQuestion(event.id, event.reason, event.answer);
-        } else if (event.type === 'status' && Date.now() - openedAt >= FIRST_NOTE_MS) {
-          // Only once the turn has been quiet long enough to worry about;
-          // the line itself then rewrites at its own pace.
-          progress.show(event.detail ? `${event.label} – ${event.detail}` : event.label);
-        }
-      }
+      answeredTask = await converse(turn);
     } catch (error) {
       if (!turn.signal.aborted) {
-        failed = true;
+        turn.failed = true;
         log.error('Telegram turn failed', { from: userId, error: errorText(error) });
         say(chatId, `Error: ${errorText(error)}`);
       }
     } finally {
-      clearTimeout(firstNote);
-      clearInterval(typing);
-      progress.clear();
-      if (turns.get(userId) === turn) turns.delete(userId);
+      turn.presence.end();
+      if (turns.get(userId) === cancel) turns.delete(userId);
     }
 
     if (answeredTask) {
-      react(chatId, job.messageId, failed ? REACTION.failed : REACTION.done);
+      react(chatId, job.messageId, turn.failed ? REACTION.failed : REACTION.done);
       return;
     }
+    await concludeTurn(turn);
+  }
+
+  /**
+   * Everything up to the end of the provider's event stream. Returns true
+   * when the message was the answer to a task's question and no chat turn
+   * was started for it.
+   */
+  async function converse(turn: Turn): Promise<boolean> {
+    const { job, signal } = turn;
+    const { userId, chatId } = job;
+    const config = settings();
+
+    // Files first: downloading and listening is part of the turn, and the
+    // typing bubble and the progress note already cover the wait.
+    const intake = await takeIn(job, signal);
+
+    // Where this belongs. A reply to something the bot sent goes back to
+    // whatever that message was about; everything else is the running
+    // Telegram conversation, exactly as before.
+    turn.origin = job.replyTo?.fromBot === true ? findOrigin(context, chatId, job.replyTo.messageId) : undefined;
+
+    // A reply to an agent's question is the answer, not a conversation:
+    // it goes onto the card and the task carries on, and no chat turn is
+    // started about it.
+    const asked = turn.origin ? questionForOrigin(context, turn.origin) : undefined;
+    if (asked) {
+      turn.failed = !(await answerFromReply(job, intake, asked));
+      return true;
+    }
+
+    const thread = turn.origin
+      ? openThread(context, turn.origin, () => chatSession(context, chatId))
+      : { session: chatSession(context, chatId), fresh: false };
+    turn.session = thread.session;
+    // Whatever answers in this conversation later without being asked
+    // here - a report-back - knows where to find this chat.
+    context.assistant.store.setMeta(sessionChatKey(thread.session.id), String(chatId));
+
+    const prompt = buildPrompt(job, intake, quotedNotification(context, turn.origin, thread.fresh));
+
+    log.info('Telegram message accepted', {
+      from: userId,
+      sessionId: thread.session.id,
+      permission: config.permission,
+      attachments: intake.saved,
+      spoken: intake.transcripts.length,
+      replyingTo: turn.origin?.kind,
+      thread: thread.fresh ? 'new' : 'continued',
+      text: prompt.slice(0, AUDIT_TEXT),
+    });
+
+    // A streamed answer quotes what it answers on its first message, the
+    // way a whole one would.
+    turn.stream = config.stream
+      ? startStream(chatId, turn.origin && job.messageId !== undefined ? job.messageId : undefined)
+      : undefined;
+
+    for await (const event of context.assistant.chat({
+      text: prompt,
+      sessionId: thread.session.id,
+      permission: config.permission,
+      model: config.model,
+      signal,
+    })) {
+      relayEvent(turn, event);
+    }
+    return false;
+  }
+
+  /** Put a reply onto the task card it answers. True when the card took it. */
+  async function answerFromReply(
+    job: Incoming,
+    intake: Intake,
+    asked: { taskId: string; orgId: string },
+  ): Promise<boolean> {
+    const { userId, chatId } = job;
+    const quote: SayOptions = job.messageId !== undefined ? { replyTo: job.messageId } : {};
+    const text = [job.text?.trim() ?? '', ...intake.transcripts].filter((part) => part.length > 0).join('\n\n');
+    if (!text) {
+      say(chatId, 'Write the answer as text (or say it in a voice message) to answer that question.', quote);
+      return false;
+    }
+    const result = await answerTaskQuestion(context, asked, text);
+    log.info('Telegram reply answered a task question', { from: userId, task: asked.taskId, ok: result.ok });
+    say(chatId, result.ok ? 'Answered — the task continues.' : `Could not answer: ${result.reason}`, quote);
+    return result.ok;
+  }
+
+  /** Carry one event of the provider's stream onto the phone and into the turn's state. */
+  function relayEvent(turn: Turn, event: AgentEvent): void {
+    const { chatId } = turn.job;
+    const { presence } = turn;
+    switch (event.type) {
+      case 'text':
+        if (!turn.stream) return;
+        // The progress line was standing in for an answer that had not
+        // started. It has started.
+        presence.progress.clear();
+        turn.stream.push(event.delta);
+        return;
+
+      case 'done':
+        turn.answer = event.text;
+        return;
+
+      case 'error':
+        // Never swallowed: an error the user does not see is an answer that
+        // simply never arrives.
+        turn.failed = true;
+        say(chatId, `Error: ${event.message}`);
+        return;
+
+      case 'question':
+        // The turn has stopped and is waiting on a person. Whatever the
+        // progress line last claimed it was doing, it is not doing that.
+        presence.progress.clear();
+        // Idempotent: push may put the same question here in the same tick,
+        // because it cannot know this turn came from the phone.
+        offerQuestion(chatId, event, 'turn');
+        return;
+
+      case 'question-closed':
+        closeQuestion(event.id, event.reason, event.answer);
+        return;
+
+      case 'status':
+        // Only once the turn has been quiet long enough to worry about;
+        // the line itself then rewrites at its own pace.
+        if (Date.now() - presence.openedAt >= FIRST_NOTE_MS) {
+          presence.progress.show(event.detail ? `${event.label} – ${event.detail}` : event.label);
+        }
+        return;
+    }
+  }
+
+  /** What happens once the provider's stream has ended, however it ended. */
+  async function concludeTurn(turn: Turn): Promise<void> {
+    const { job, signal } = turn;
+    const { chatId } = job;
 
     // Whatever was streamed is written out one last time, cancelled turns
     // included: half an answer that stands is better than half an answer
     // that is quietly wound back.
-    const streamed = stream ? await stream.finish(answer) : [];
+    const streamed = turn.stream ? await turn.stream.finish(turn.answer) : [];
 
-    if (turn.signal.aborted) {
+    if (signal.aborted) {
       react(chatId, job.messageId, REACTION.failed);
       say(chatId, 'Cancelled.');
       return;
     }
 
-    react(chatId, job.messageId, failed ? REACTION.failed : REACTION.done);
+    react(chatId, job.messageId, turn.failed ? REACTION.failed : REACTION.done);
 
     // The answer carries its own origin: replying to it comes back to this
     // conversation, whichever one it turned out to be. That is what lets a
     // thread continue days later, and what keeps a reply to an old answer
     // out of today's chat.
-    const answered: SayOptions = {
-      origin: {
-        kind: 'answer',
-        ...(session ? { sessionId: session.id } : {}),
-        ...(origin?.title ? { title: origin.title } : {}),
-      },
-      // Quote the message being answered when this turn belongs to a thread
-      // of its own, so the phone shows which of the day's notifications it
-      // is about. In the plain chat the quoted line would only be noise.
-      ...(origin && job.messageId !== undefined ? { replyTo: job.messageId } : {}),
+    const origin: Omit<MessageOrigin, 'at'> = {
+      kind: 'answer',
+      ...(turn.session ? { sessionId: turn.session.id } : {}),
+      ...(turn.origin?.title ? { title: turn.origin.title } : {}),
     };
 
     if (streamed.length > 0) {
       // The answer is already on the screen. What is left is filing it, so
       // that a reply to it finds its way back to this conversation.
-      if (answered.origin) rememberOrigin(context, chatId, streamed, answered.origin);
-    } else if (answer.trim().length > 0) {
-      say(chatId, answer, answered);
-    } else {
-      say(chatId, 'No answer was returned.', answered);
+      rememberOrigin(context, chatId, streamed, origin);
+      return;
     }
+
+    const options: SayOptions = {
+      origin,
+      // Quote the message being answered when this turn belongs to a thread
+      // of its own, so the phone shows which of the day's notifications it
+      // is about. In the plain chat the quoted line would only be noise.
+      ...(turn.origin && job.messageId !== undefined ? { replyTo: job.messageId } : {}),
+    };
+    say(chatId, turn.answer.trim().length > 0 ? turn.answer : 'No answer was returned.', options);
   }
 
   /* ---------------------------- dispatch ---------------------------- */
@@ -1784,26 +2047,6 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   }
 
   /**
-   * What an allowed sender is told when their own message was refused.
-   *
-   * Every reason in here is one the guard can only reach *after* the
-   * allowlist has said yes, in the sender's own private chat - so the
-   * silence that protects the bot from strangers buys nothing here, and
-   * costs the owner a message that seems to vanish. Everything else stays
-   * silent, `not_private` included: a word in a group chat is exactly what
-   * the guard refused to allow.
-   */
-  const REJECTION_NOTE: Partial<Record<GatewayRejection, string>> = {
-    forwarded:
-      'Forwarded messages are not accepted - they carry someone else\'s words. Send the text or the file yourself.',
-    media_off: 'Attachments are switched off for this gateway. You can turn them on in the gateway settings.',
-    unsupported_media: 'Animated and video stickers cannot be read.',
-    too_large: 'That file is larger than this gateway accepts.',
-    too_long: 'That message is too long. Shorten it, or send it as a file.',
-    no_content: 'There was nothing in that message I can work with.',
-  };
-
-  /**
    * A tap on one of a question's options.
    *
    * The button is only trusted as far as the entry behind it: the index has
@@ -1816,7 +2059,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     questionId: string,
     option: number,
     chatId: number | undefined,
-    acknowledge: (text?: string) => Promise<void>,
+    acknowledge: Acknowledge,
   ): Promise<void> {
     const post = chatId === undefined ? undefined : questionPosts.get(postKey(questionId, chatId));
     if (!post) {
@@ -1830,7 +2073,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     }
 
     const taken = submitAnswer(post, { selected: [option], source: 'telegram', at: Date.now() });
-    await acknowledge(taken ? '✓ ' + oneLine(chosen.label, 60) : 'That question is no longer open.');
+    await acknowledge(taken ? '✓ ' + oneLine(chosen.label, TAP_TOAST_WIDTH) : 'That question is no longer open.');
   }
 
   /**
@@ -1857,7 +2100,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
 
     // Acknowledged even when refused: an unanswered tap spins on the phone
     // for a minute, and a stranger learns nothing from a silent button.
-    const acknowledge = async (text?: string): Promise<void> => {
+    const acknowledge: Acknowledge = async (text) => {
       if (!client || !callbackId) return;
       try {
         await client.answerCallbackQuery(callbackId, text);
@@ -1877,70 +2120,88 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     // already proved who pressed it.
     const action = readCallbackData(data);
 
-    if (action.kind === 'notification-read-done' || action.kind === 'mail-read-done') {
-      await acknowledge('Already marked as read.');
-      return;
-    }
+    switch (action.kind) {
+      case 'notification-read-done':
+      case 'mail-read-done':
+        await acknowledge('Already marked as read.');
+        return;
 
-    if (action.kind === 'question-done') {
-      await acknowledge('That question is already settled.');
-      return;
-    }
+      case 'question-done':
+        await acknowledge('That question is already settled.');
+        return;
 
-    if (action.kind === 'question') {
-      await answerFromTap(action.questionId, action.option, chatId, acknowledge);
-      return;
-    }
+      case 'question':
+        await answerFromTap(action.questionId, action.option, chatId, acknowledge);
+        return;
 
+      case 'mail-read':
+        // A button under a mail pushed before mail was removed. The migration
+        // kept the mail's id for the notification it became, so the tap still
+        // lands where it should when that notification is there; otherwise
+        // there is nothing left to mark.
+        markMigratedMailRead(action.mailId);
+        await acknowledge('Already handled.');
+        return;
+
+      case 'notification-read':
+        await markNotificationRead(
+          action.notificationId,
+          { from: verdict.userId, chatId, messageId },
+          acknowledge,
+        );
+        return;
+
+      case 'unknown':
+        // A button from an older version of this code, or one we no longer
+        // draw. Saying so beats leaving the phone to guess.
+        await acknowledge('This button no longer does anything.');
+        return;
+    }
+  }
+
+  function markMigratedMailRead(mailId: string): void {
     const store = context.assistant.store.org;
+    const migrated = store.getNotification(mailId);
+    if (!migrated || migrated.readAt) return;
+    store.markNotificationsRead([migrated.id]);
+    announceNotificationsChanged();
+  }
 
-    if (action.kind === 'mail-read') {
-      // A button under a mail pushed before mail was removed. The migration
-      // kept the mail's id for the notification it became, so the tap still
-      // lands where it should when that notification is there; otherwise
-      // there is nothing left to mark.
-      const migrated = action.mailId ? store.getNotification(action.mailId) : null;
-      if (migrated && !migrated.readAt) {
-        store.markNotificationsRead([migrated.id]);
-        context.assistant.emit('changed', { kind: 'notifications', id: 'all' });
-      }
-      await acknowledge('Already handled.');
-      return;
-    }
+  /**
+   * The web inbox follows the socket, so it has to hear about a read - on
+   * `changed`, never on `notification`: push listens to that one and would
+   * send the very notification that was just marked read straight back.
+   */
+  function announceNotificationsChanged(): void {
+    context.assistant.emit('changed', { kind: 'notifications', id: 'all' });
+  }
 
-    if (action.kind !== 'notification-read') {
-      // A button from an older version of this code, or one we no longer
-      // draw. Saying so beats leaving the phone to guess.
-      await acknowledge('This button no longer does anything.');
-      return;
-    }
-
-    const notification = action.notificationId ? store.getNotification(action.notificationId) : null;
+  async function markNotificationRead(
+    notificationId: string,
+    tap: { from?: number; chatId?: number; messageId?: number },
+    acknowledge: Acknowledge,
+  ): Promise<void> {
+    const store = context.assistant.store.org;
+    const notification = store.getNotification(notificationId);
     if (!notification) {
       await acknowledge('That notification is gone.');
       return;
     }
 
     store.markNotificationsRead([notification.id]);
-
-    // The web inbox follows the socket, so it has to hear about this - on
-    // `changed`, never on `notification`: push listens to that one and would
-    // send the very notification that was just marked read straight back.
-    context.assistant.emit('changed', { kind: 'notifications', id: 'all' });
-
-    log.info('Notification marked read from Telegram', { from: verdict.userId, notification: notification.id });
-
+    announceNotificationsChanged();
+    log.info('Notification marked read from Telegram', { from: tap.from, notification: notification.id });
     await acknowledge('✓ Marked as read.');
 
     // The button has done its work; what is left in the chat should say so
     // rather than invite a second tap. A failure here costs a stale button,
     // never the read state that was already written.
-    if (client && chatId !== undefined && messageId !== undefined) {
-      try {
-        await client.editMessageReplyMarkup(chatId, messageId, notificationReadDone(Date.now()));
-      } catch (error) {
-        log.debug('Telegram read button could not be redrawn', { error: errorText(error) });
-      }
+    const client = api;
+    if (!client || tap.chatId === undefined || tap.messageId === undefined) return;
+    try {
+      await client.editMessageReplyMarkup(tap.chatId, tap.messageId, notificationReadDone(Date.now()));
+    } catch (error) {
+      log.debug('Telegram read button could not be redrawn', { error: errorText(error) });
     }
   }
 
@@ -1958,44 +2219,15 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     lastEventAt = Date.now();
 
     // Noted before anything is decided about it: `/clear` empties the chat,
-    // and a message that was refused is standing in it just the same.
-    if (verdict.chatId !== undefined && verdict.chatId === verdict.userId) {
+    // and a message that was refused is standing in it just the same. Not
+    // for strangers, though: they can never clear anything, and a ledger
+    // entry per stranger would be storage that anybody on Telegram can grow.
+    if (isOwnChat(verdict) && (verdict.reason === undefined || !STRANGER_REJECTIONS.includes(verdict.reason))) {
       noteMessages(context, verdict.chatId, [verdict.messageId]);
     }
 
     if (!verdict.ok) {
-      log.warn('Telegram update rejected', {
-        from: verdict.userId,
-        username: usernameOf(update),
-        reason: verdict.reason,
-        text: verdict.text?.slice(0, REJECT_TEXT),
-      });
-
-      // An allowed sender in their own chat hears why. Which is not a leak:
-      // they already know the bot answers them.
-      const note = verdict.reason ? REJECTION_NOTE[verdict.reason] : undefined;
-      if (note && verdict.chatId !== undefined && verdict.chatId === verdict.userId) {
-        say(verdict.chatId, note);
-        return;
-      }
-
-      // The one and only answer a rejected update ever gets: the number the
-      // sender already carries. Without it nobody can put themselves on the
-      // allowlist; with it they learn nothing new. Once an hour, so it cannot
-      // be used as an echo, and only in the sender's own chat - the
-      // allowlist check comes before the private-chat one, so this is the
-      // last place that could turn the bot into a voice in a group.
-      if (verdict.reason === 'not_allowed' && verdict.command === 'id') {
-        const userId = verdict.userId;
-        const chatId = verdict.chatId;
-        if (userId !== undefined && chatId === userId) {
-          const last = idReplies.get(userId) ?? 0;
-          if (Date.now() - last >= ID_REPLY_INTERVAL_MS) {
-            idReplies.set(userId, Date.now());
-            say(chatId, String(userId));
-          }
-        }
-      }
+      refuseUpdate(update, verdict);
       return;
     }
 
@@ -2011,47 +2243,45 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       return;
     }
 
+    acceptMessage(verdict);
+  }
+
+  /** A refused update gets no answer, except in the two cases below. */
+  function refuseUpdate(update: TelegramUpdate, verdict: GatewayVerdict): void {
+    log.warn('Telegram update rejected', {
+      from: verdict.userId,
+      username: usernameOf(update),
+      reason: verdict.reason,
+      text: verdict.text?.slice(0, REJECT_TEXT),
+    });
+
+    // An allowed sender in their own chat hears why. Which is not a leak:
+    // they already know the bot answers them.
+    const note = verdict.reason ? REJECTION_NOTE[verdict.reason] : undefined;
+    if (note && isOwnChat(verdict)) {
+      say(verdict.chatId, note);
+      return;
+    }
+
+    // The one and only answer a rejected update ever gets: the number the
+    // sender already carries. Without it nobody can put themselves on the
+    // allowlist; with it they learn nothing new. Once an hour, so it cannot
+    // be used as an echo, and only in the sender's own chat - the
+    // allowlist check comes before the private-chat one, so this is the
+    // last place that could turn the bot into a voice in a group.
+    if (verdict.reason === 'not_allowed' && verdict.command === 'id' && isOwnChat(verdict) && claimIdReply(verdict.userId)) {
+      say(verdict.chatId, String(verdict.userId));
+    }
+  }
+
+  /** An accepted message that is not a command: an answer to an open question, or a turn. */
+  function acceptMessage(verdict: GatewayVerdict): void {
     // An accepted verdict always carries the ids, but they are checked
     // rather than asserted - nothing here narrows foreign input by claim.
     const { userId, chatId } = verdict;
     if (userId === undefined || chatId === undefined) return;
 
-    // A question is standing in this chat, so a written message may be its
-    // answer and not a new turn.
-    //
-    // This is the branch the whole typed path depends on. Turns are
-    // serialised per sender, and the turn that asked is still holding that
-    // queue while it waits - so an answer that went in as a turn would be
-    // queued behind the very turn it releases, and the two would deadlock
-    // until the question expired. A tap never had this problem: a
-    // `callback_query` is not a message and bypasses the queue by nature.
-    //
-    // But "the turn that asked" is the condition, not "a question exists
-    // somewhere". A card the phone only received as a push - the question
-    // came from a browser tab - leaves an ordinary message alone: swallowing
-    // it would eat the user's next request and hand the blocked turn an
-    // answer nobody gave. Such a card is answered by its buttons, or by a
-    // reply addressed to the card itself.
-    //
-    // Only plain text, though. A photo is content in its own right, and
-    // "here, look at this" is a new turn even mid-question.
-    const candidate = (verdict.text ?? '').trim() && (verdict.attachments ?? []).length === 0 ? openQuestion(chatId) : undefined;
-    const asked =
-      candidate &&
-      (candidate.origin === 'turn' ||
-        (verdict.replyTo?.fromBot === true && verdict.replyTo.messageId === candidate.messageId))
-        ? candidate
-        : undefined;
-    if (asked) {
-      if (submitAnswer(asked, readTypedAnswer(verdict.text ?? '', asked.question))) {
-        // No message back: the reaction says it arrived, and the turn that
-        // was waiting is about to say the rest.
-        react(chatId, verdict.messageId, REACTION.done);
-        return;
-      }
-      // The question was already over by the time this got here. Then it was
-      // never an answer, and it goes on as what it looks like: a message.
-    }
+    if (answeredOpenQuestion(verdict, chatId)) return;
 
     const job: Incoming = {
       userId,
@@ -2072,13 +2302,64 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     dispatch(job);
   }
 
+  /** Takes the message as the answer to the open question, if it is one. False when it is an ordinary message. */
+  function answeredOpenQuestion(verdict: GatewayVerdict, chatId: number): boolean {
+    const asked = questionBeingAnswered(verdict, chatId);
+    if (!asked) return false;
+    // The question may already have been over by the time this got here.
+    // Then it was never an answer, and it goes on as what it looks like: a
+    // message.
+    if (!submitAnswer(asked, readTypedAnswer(verdict.text ?? '', asked.question))) return false;
+    // No message back: the reaction says it arrived, and the turn that
+    // was waiting is about to say the rest.
+    react(chatId, verdict.messageId, REACTION.done);
+    return true;
+  }
+
+  /**
+   * The standing question a written message may be the answer to.
+   *
+   * This is the branch the whole typed path depends on. Turns are
+   * serialised per sender, and the turn that asked is still holding that
+   * queue while it waits - so an answer that went in as a turn would be
+   * queued behind the very turn it releases, and the two would deadlock
+   * until the question expired. A tap never had this problem: a
+   * `callback_query` is not a message and bypasses the queue by nature.
+   *
+   * But "the turn that asked" is the condition, not "a question exists
+   * somewhere". A card the phone only received as a push - the question
+   * came from a browser tab - leaves an ordinary message alone: swallowing
+   * it would eat the user's next request and hand the blocked turn an
+   * answer nobody gave. Such a card is answered by its buttons, or by a
+   * reply addressed to the card itself.
+   *
+   * Only plain text, though. A photo is content in its own right, and
+   * "here, look at this" is a new turn even mid-question.
+   */
+  function questionBeingAnswered(verdict: GatewayVerdict, chatId: number): QuestionPost | undefined {
+    const isPlainText = (verdict.text ?? '').trim() !== '' && (verdict.attachments ?? []).length === 0;
+    if (!isPlainText) return undefined;
+    const candidate = openQuestion(chatId);
+    if (!candidate) return undefined;
+    const repliesToCard = verdict.replyTo?.fromBot === true && verdict.replyTo.messageId === candidate.messageId;
+    return candidate.origin === 'turn' || repliesToCard ? candidate : undefined;
+  }
+
   /** Hand one message to the queue, or say why it is not being taken. */
   function dispatch(job: Incoming): void {
-    if (!enqueue(job.userId, () => runTurn(job))) {
-      say(
-        job.chatId,
-        'The queue is full. Please wait until I have answered the previous messages.',
-      );
+    const epoch = lifecycleEpoch;
+    const accepted = enqueue(job.userId, async () => {
+      // A stop or restart while this waited its turn: it belongs to a
+      // connection that is gone, and must not start a provider run now.
+      if (epoch !== lifecycleEpoch) {
+        log.info('Telegram message dropped, the gateway restarted while it was queued', { from: job.userId });
+        say(job.chatId, 'The gateway restarted before I got to this message. Please send it again.');
+        return;
+      }
+      await runTurn(job);
+    });
+    if (!accepted) {
+      say(job.chatId, 'The queue is full. Please wait until I have answered the previous messages.');
     }
   }
 
@@ -2121,49 +2402,47 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
           signal,
         });
         backoff = BACKOFF_START_MS;
-        for (const update of updates) {
-          if (signal.aborted) break;
-          try {
-            handleUpdate(update);
-          } catch (error) {
-            // One unclassifiable update must not become a wall: retrying it
-            // forever would only reproduce the same throw, and leaving the
-            // offset where it is would hand it to us again on every poll.
-            log.error('Telegram update could not be handled', { error: errorText(error) });
-          }
-          // Only now, so a crash mid-poll costs at most this one update
-          // rather than the whole backlog behind it.
-          offset = update.update_id + 1;
-        }
+        handleUpdates(updates, signal);
       } catch (error) {
         if (signal.aborted) break;
 
-        // Two processes polling the same bot steal each other's updates
-        // forever. Stopping with a visible reason beats a silent tug of war.
-        if (error instanceof TelegramApiError && error.conflict) {
-          lastError = 'Another process is polling the same bot (409). Gateway stopped.';
-          blocked = { reason: lastError, token: activeToken };
-          log.error('Telegram polling conflict, gateway stopped', { error: error.message });
+        // Retrying a hopeless failure on a timer is a log full of the same
+        // line forever. Stopping with a visible reason beats a silent tug of
+        // war with a second process, or a token Telegram will reject again
+        // in sixty seconds and in sixty after that.
+        const hopeless = hopelessReason(error);
+        if (hopeless) {
+          blockGateway(hopeless, activeToken);
           break;
         }
 
-        // A token Telegram rejects will be rejected again in sixty seconds,
-        // and in sixty after that. Say so once and wait for a new one.
-        if (error instanceof TelegramApiError && error.unauthorized) {
-          lastError = 'Telegram rejected this bot token (401). Gateway stopped.';
-          blocked = { reason: lastError, token: activeToken };
-          log.error('Telegram rejected the bot token, gateway stopped');
-          break;
-        }
-
-        lastError = error instanceof TelegramApiError ? error.message : errorText(error);
+        lastError = errorText(error);
         log.warn('Telegram polling failed, backing off', { waitMs: backoff, error: lastError });
         await delay(backoff, signal);
         backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
       }
     }
 
-    running = false;
+    // A loop that a stop() already replaced must not take the news to a
+    // gateway that has been started again since.
+    if (controller?.signal === signal) running = false;
+  }
+
+  function handleUpdates(updates: TelegramUpdate[], signal: AbortSignal): void {
+    for (const update of updates) {
+      if (signal.aborted) break;
+      try {
+        handleUpdate(update);
+      } catch (error) {
+        // One unclassifiable update must not become a wall: retrying it
+        // forever would only reproduce the same throw, and leaving the
+        // offset where it is would hand it to us again on every poll.
+        log.error('Telegram update could not be handled', { error: errorText(error) });
+      }
+      // Only now, so a crash mid-poll costs at most this one update
+      // rather than the whole backlog behind it.
+      offset = update.update_id + 1;
+    }
   }
 
   /* ---------------------------- lifecycle ---------------------------- */
@@ -2172,8 +2451,17 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   let retryTimer: NodeJS.Timeout | undefined;
   let retryDelay = RETRY_START_MS;
 
+  /**
+   * Counts the stops. A start that was still connecting when one happened
+   * must not turn into a running gateway afterwards, and a message queued
+   * before one must not become a turn after it.
+   */
+  let lifecycleEpoch = 0;
+  /** Starts run one after another, so two callers can never leave two pollers on one bot. */
+  let startQueue: Promise<void> = Promise.resolve();
+
   function clearRetry(): void {
-    if (retryTimer) clearTimeout(retryTimer);
+    clearTimeout(retryTimer);
     retryTimer = undefined;
     retryDelay = RETRY_START_MS;
   }
@@ -2200,9 +2488,25 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     retryTimer.unref?.();
   }
 
-  async function start(): Promise<void> {
+  /**
+   * Why the channel gave up for good. The token it failed with is part of the
+   * record, see `blocked`.
+   */
+  function blockGateway(reason: string, failedToken: string): void {
+    lastError = reason;
+    blocked = { reason, token: failedToken };
+    log.error('Telegram gateway blocked', { reason });
+  }
+
+  function start(): Promise<void> {
+    const attempt = startQueue.then(launch);
+    // The queue only orders attempts; this call's own caller still gets its failure.
+    startQueue = attempt.catch(() => undefined);
+    return attempt;
+  }
+
+  async function launch(): Promise<void> {
     if (running) return;
-    const config = settings();
     const secret = token();
 
     // Whoever calls start directly gets the same answer refresh would give:
@@ -2214,57 +2518,76 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
 
     // Say which condition was missing, never what the token was. The
     // decision itself lives in core/gateway/policy.ts, tested there.
-    const missing = missingGatewaySettings(config, secret, silenced);
+    const missing = missingGatewaySettings(settings(), secret, silenced);
     if (missing.length > 0) {
       log.info('Telegram gateway not started', { missing });
       return;
     }
 
+    const epoch = lifecycleEpoch;
     const client = createTelegramApi(secret);
     try {
-      // Webhook and backlog go first. A restart must not replay yesterday's
-      // commands, so the offset is parked behind the last known update.
-      await client.deleteWebhook(true);
-      const me = await client.getMe();
-      botUsername = me.username;
-      const newest = (await client.getUpdates({ offset: -1, limit: 1, timeout: 0 })).at(-1);
-      offset = newest ? newest.update_id + 1 : 0;
+      await connect(client);
     } catch (error) {
-      // The same two hopeless cases, caught on the way up rather than in the
-      // loop: getMe is where a bad token usually announces itself.
-      if (error instanceof TelegramApiError && (error.unauthorized || error.conflict)) {
-        lastError = error.unauthorized
-          ? 'Telegram rejected this bot token (401). Gateway stopped.'
-          : 'Another process is polling the same bot (409). Gateway stopped.';
-        blocked = { reason: lastError, token: secret };
-        clearRetry();
-        log.error('Telegram gateway cannot run with these settings', { reason: lastError });
-        return;
-      }
-      // Everything else is weather: a DNS hiccup, a laptop whose network
-      // came up a second after the server did, Telegram having a moment.
-      // The first version gave up here and stayed down until somebody
-      // noticed and restarted - which is how a channel that exists to be
-      // reachable ends up silently unreachable for a day. So it tries
-      // again, further apart each time, for as long as the config still
-      // wants it running.
-      lastError = error instanceof TelegramApiError ? error.message : errorText(error);
-      log.error('Telegram gateway failed to start', { error: lastError, retryInMs: retryDelay });
-      scheduleRetry();
+      if (epoch === lifecycleEpoch) failStart(error, secret);
+      return;
+    }
+    if (epoch !== lifecycleEpoch) {
+      log.info('Telegram gateway start abandoned, it was stopped while connecting');
       return;
     }
 
-    // Yesterday's photos are not worth keeping for ever. Best-effort, and
-    // never a reason not to start.
+    sweepInbox();
+    publishBotProfile(client);
+    begin(client, secret);
+  }
+
+  /**
+   * Webhook and backlog go first. A restart must not replay yesterday's
+   * commands, so the offset is parked behind the last known update.
+   */
+  async function connect(client: TelegramApi): Promise<void> {
+    await client.deleteWebhook(true);
+    const me = await client.getMe();
+    botUsername = me.username;
+    const newest = (await client.getUpdates({ offset: -1, limit: 1, timeout: 0 })).at(-1);
+    offset = newest ? newest.update_id + 1 : 0;
+  }
+
+  function failStart(error: unknown, secret: string): void {
+    // The same two hopeless cases, caught on the way up rather than in the
+    // loop: getMe is where a bad token usually announces itself.
+    const hopeless = hopelessReason(error);
+    if (hopeless) {
+      blockGateway(hopeless, secret);
+      clearRetry();
+      return;
+    }
+    // Everything else is weather: a DNS hiccup, a laptop whose network
+    // came up a second after the server did, Telegram having a moment.
+    // The first version gave up here and stayed down until somebody
+    // noticed and restarted - which is how a channel that exists to be
+    // reachable ends up silently unreachable for a day. So it tries
+    // again, further apart each time, for as long as the config still
+    // wants it running.
+    lastError = errorText(error);
+    log.error('Telegram gateway failed to start', { error: lastError, retryInMs: retryDelay });
+    scheduleRetry();
+  }
+
+  /** Yesterday's photos are not worth keeping for ever. Best-effort, and never a reason not to start. */
+  function sweepInbox(): void {
     try {
       const removed = pruneInbox(context.config.workspace);
       if (removed > 0) log.info('Telegram inbox swept', { folders: removed });
     } catch (error) {
       log.warn('Telegram inbox could not be swept', { error: errorText(error) });
     }
+  }
 
-    // What draws the blue menu button in the app. Best-effort: a bot whose
-    // menu is a day out of date still answers every one of its commands.
+  /** Best-effort: a bot whose menu or description is a day out of date still answers every one of its commands. */
+  function publishBotProfile(client: TelegramApi): void {
+    // What draws the blue menu button in the app.
     void client.setMyCommands(COMMANDS).catch((error: unknown) => {
       log.warn('Telegram command menu could not be published', { error: errorText(error) });
     });
@@ -2281,7 +2604,10 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       .catch((error: unknown) => {
         log.debug('Telegram description could not be set', { error: errorText(error) });
       });
+  }
 
+  function begin(client: TelegramApi, secret: string): void {
+    const config = settings();
     api = client;
     activeToken = secret;
     lastError = undefined;
@@ -2297,9 +2623,10 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
   }
 
   async function stop(): Promise<void> {
+    lifecycleEpoch += 1;
     clearRetry();
     controller?.abort();
-    for (const turn of turns.values()) turn.abort();
+    for (const cancel of turns.values()) cancel.abort();
     turns.clear();
     // A half-collected album belongs to a connection that is going away.
     for (const album of albums.values()) clearTimeout(album.timer);
@@ -2312,7 +2639,11 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
     // the phone through `send`: push holds this handle and only stops asking
     // when there is nothing left to send with.
     api = undefined;
-    if (pending) await pending.catch(() => {});
+    if (pending) {
+      await pending.catch((error: unknown) => {
+        log.warn('Telegram polling loop ended with an error', { error: errorText(error) });
+      });
+    }
     log.info('Telegram gateway stopped');
   }
 
@@ -2342,6 +2673,8 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
         return;
     }
   }
+
+  context.assistant.on('follow-up', relayFollowUp);
 
   return {
     id: 'telegram',
@@ -2382,11 +2715,7 @@ export function createTelegramGateway(context: ServerContext): GatewayHandle {
       text: string,
       options: { origin?: Omit<MessageOrigin, 'at'>; silent?: boolean; keyboard?: TelegramInlineKeyboard } = {},
     ): Promise<number[]> {
-      let ids: number[] = [];
-      await chain(userId, async () => {
-        ids = await deliver(userId, text, options);
-      });
-      return ids;
+      return chain(userId, () => deliver(userId, text, options));
     },
 
     /**

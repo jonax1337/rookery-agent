@@ -1,16 +1,14 @@
-
 import {
   CalendarCheckIcon as CalendarClockIcon,
   MailboxIcon as MailIcon,
   MessageSquareIcon,
   MicIcon,
-} from "@/components/icons";
+} from '@/components/icons';
 
 import type {
   AssignmentStatus,
   CronJobKind,
   EffortLevel,
-  EntityKind,
   MemoryKind,
   MemoryOrigin,
   MemoryRelation,
@@ -21,14 +19,14 @@ import type {
   TaskPriority,
   TaskStatus,
 } from './types';
-import type { IconComponent } from "@/components/icons";
+import type { IconComponent } from '@/components/icons';
 
 /**
- * The canonical timestamp format, `11. Sep. 2026, 14:03`.
+ * The canonical timestamp format, `11 Sept 2026, 14:03`.
  *
  * It lives in `lib/stats.ts` with the rest of the `en-GB` formatting and is
- * re-exported here (and from `lib/cron.ts`) so every caller reaches the same
- * implementation instead of a second copy drifting away from it.
+ * re-exported here so every caller reaches the same implementation instead of
+ * a second copy drifting away from it.
  */
 export { formatDateTime } from './stats';
 
@@ -50,13 +48,13 @@ export function relativeTime(timestamp: number, now = Date.now()): string {
  *
  * `relativeTime` hands back a bare span ("5 Min.", "3 Tg.") because a table
  * column has no room for more. Four footnotes glued their own prefix in front
- * of it and produced "Angelegt 5 Min." and "Zuletzt geändert 2 Tg."; one wrote
- * "zuletzt vor " and tipped over into "zuletzt vor 04.09.2026" as soon as the
+ * of it and produced "Created 5 min." and "Last changed 2 d."; one wrote
+ * "last seen " and tipped over into "last seen 04.09.2026" as soon as the
  * span passed a week and turned into a date.
  *
  * So the preposition belongs to the formatter, which is the only place that
- * knows whether it is looking at a span or at a date: "vor 5 Min.", "am
- * 04.09.2026", and "gerade eben" with no preposition at all.
+ * knows whether it is looking at a span or at a date: "5 min ago", "on
+ * 04/09/2026", and "just now" with no preposition at all.
  *
  * Prose uses this, table cells keep `relativeTime`.
  */
@@ -88,20 +86,10 @@ export const MEMORY_KIND_LABEL: Record<MemoryKind, string> = {
 /**
  * Every kind, in the order the labels declare them.
  *
- * The list and the layout's Merken-dialog derived this the same way in two
+ * The list and the layout's save-memory dialog derived this the same way in two
  * files; one derivation means a new kind reaches both at once.
  */
 export const MEMORY_KINDS = Object.keys(MEMORY_KIND_LABEL) as MemoryKind[];
-
-/** What an entity is a name for. */
-export const ENTITY_KIND_LABEL: Record<EntityKind, string> = {
-  person: 'Person',
-  project: 'Project',
-  tool: 'Tool',
-  place: 'Place',
-  org: 'Organization',
-  topic: 'Topic',
-};
 
 /** How two memories relate, said the way a person would say it. */
 export const RELATION_LABEL: Record<MemoryRelation, string> = {
@@ -142,6 +130,9 @@ export const SLEEP_PHASE_DETAIL: Record<string, string> = {
   rem: 'connecting memories and drawing conclusions',
   finished: 'done',
 };
+
+/** Every access level, least to most powerful - the order a picker lists them. */
+export const PERMISSION_LEVELS: PermissionLevel[] = ['chat', 'read', 'write', 'full'];
 
 export const PERMISSION_LABEL: Record<PermissionLevel, string> = {
   chat: 'Chat only',
@@ -187,7 +178,7 @@ export const PERMISSION_CHOICES: {
     label: 'Default',
     description: 'Uses the default from Settings.',
   },
-  ...(['chat', 'read', 'write', 'full'] as PermissionLevel[]).map((level) => ({
+  ...PERMISSION_LEVELS.map((level) => ({
     value: level as PermissionChoice,
     label: PERMISSION_LABEL[level],
     description: PERMISSION_HINT[level],
@@ -314,11 +305,11 @@ export const TASK_PRIORITY_RANK: Record<TaskPriority, number> = { high: 0, norma
 /**
  * How a conversation was held.
  *
- * Two pages named the same field differently - "Sprache"/"Chat" on the
- * conversations list, "Gesprochen"/"Getippt" on the dashboard. The first pair
- * wins: it names the channel, which is what the column head ("Art") asks for,
+ * Two pages named the same field differently - "Voice"/"Chat" on the
+ * conversations list, "Spoken"/"Typed" on the dashboard. The first pair
+ * wins: it names the channel, which is what the column head ("Kind") asks for,
  * and "Chat" is the word the rest of the app uses for the typed kind
- * (`/chats`, "Neues Gespräch" in the chat hub).
+ * (`/chats`, "New conversation" in the chat hub).
  */
 export const SESSION_KIND_LABEL: Record<SessionKind, string> = {
   chat: 'Chat',
@@ -351,7 +342,7 @@ export const UNTITLED_SESSION = 'New conversation';
  *
  * `sleep` is the system's own row - `ensureSleepSchedule` keeps exactly one,
  * nobody wrote its prompt and nobody may delete it - so it is labelled as
- * what it is rather than left with an empty Wer-column.
+ * what it is rather than left with an empty "Who" column.
  */
 export const CRON_JOB_KIND_LABEL: Record<CronJobKind, string> = {
   script: 'Imported script',
@@ -367,7 +358,7 @@ export const CRON_JOB_KIND_LABEL: Record<CronJobKind, string> = {
  * the app - the API only knows these three.
  *
  * Three detail pages wrote this map out with identical wording; the column is
- * called "Erteilt von" on one and "Angelegt von" on another, but the values
+ * called "Requested by" on one and "Created by" on another, but the values
  * are the same three sentences either way.
  */
 export const REQUESTER_LABEL: Record<RequesterKind, string> = {
@@ -428,7 +419,7 @@ export const NO_PROJECT = '__none__';
  *
  * Both the typed chat and the hands-free screen greet an empty session, and
  * they disagreed by one bucket before this moved here. `/voice` appends its
- * own "Ich höre." rather than keeping a second table.
+ * own "I am listening." rather than keeping a second table.
  */
 export function greeting(now: Date = new Date(), user?: { honorific?: string; userName?: string }): string {
   const hour = now.getHours();
@@ -447,8 +438,8 @@ export interface RecencyGroup<T> {
 }
 
 /**
- * Buckets anything with a timestamp by how recent it is: Heute, Gestern,
- * Diese Woche, Früher.
+ * Buckets anything with a timestamp by how recent it is: Today, Yesterday,
+ * This week, Earlier.
  *
  * Lifted out of the sidebar's thread list, which is going away, and kept as a
  * plain function so the conversations table can draw the same group rows.
@@ -457,7 +448,7 @@ export interface RecencyGroup<T> {
  * nothing to group by and the caller should render the list flat, exactly as
  * the thread list did.
  *
- * Undated items sort first and land in "Heute", which is the old behaviour: a
+ * Undated items sort first and land in "Today", which is the old behaviour: a
  * conversation the server has not dated yet was just created.
  */
 export function groupByRecency<T>(
@@ -477,7 +468,7 @@ export function groupByRecency<T>(
   yesterday.setDate(yesterday.getDate() - 1);
   const startOfYesterday = yesterday.getTime();
   const week = new Date(today);
-  // Monday starts the week here, the way a German calendar prints it.
+  // Monday starts the week here, the way an ISO calendar prints it.
   week.setDate(week.getDate() - ((week.getDay() + 6) % 7));
   const startOfWeek = week.getTime();
 
@@ -507,8 +498,8 @@ function recencyLabel(
 ): string {
   if (at === undefined || at >= startOfToday) return 'Today';
   if (at >= startOfYesterday) return 'Yesterday';
-  // Only worth a "Diese Woche" row when the week actually started earlier
-  // than yesterday; on a Monday everything older is simply "Früher".
+  // Only worth a "This week" row when the week actually started earlier
+  // than yesterday; on a Monday everything older is simply "Earlier".
   if (at >= startOfWeek && startOfWeek < startOfYesterday) return 'This week';
   return 'Earlier';
 }

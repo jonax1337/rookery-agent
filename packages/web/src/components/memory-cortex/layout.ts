@@ -314,12 +314,48 @@ export const SURFACE = {
 export function layoutCortex(graph: MemoryGraph | null, surface: Surface = brainRadius): CortexLayout {
   if (!graph) return { entities: [], memories: [] };
 
-  /* Topics: spread over the surface, big ones pushing harder. */
+  const memoryKindById = new Map(graph.memories.map((memory) => [memory.id, memory.kind as string]));
+  const topics = settleTopics(graph, memoryKindById);
+  const neurons = settleNeurons(graph, topics);
 
+  const entities: CortexEntity[] = [...topics.dirs].map(([id, dir]) => ({
+    id,
+    dir,
+    position: scale(dir, surface(dir) * SURFACE.entity),
+    weight: topics.weight.get(id)!,
+    region: topics.region.get(id)!,
+  }));
+
+  const memories: CortexMemory[] = neurons.map((neuron) => {
+    const offset = neuron.deep ? SURFACE.deep : neuron.dormant ? SURFACE.dormant : SURFACE.memory;
+    return {
+      id: neuron.id,
+      dir: neuron.dir,
+      position: scale(neuron.dir, surface(neuron.dir) * offset),
+      deep: neuron.deep,
+      dormant: neuron.dormant,
+      region: regionForKind(memoryKindById.get(neuron.id) ?? 'fact'),
+    };
+  });
+
+  return { entities, memories };
+}
+
+/* ------------------------------- topics --------------------------------- */
+
+interface SettledTopics {
+  dirs: Map<string, Vec3>;
+  region: Map<string, CortexRegion>;
+  weight: Map<string, number>;
+  /** The topics each memory mentions, for the topics that exist. */
+  entitiesOfMemory: Map<string, string[]>;
+}
+
+/** Topics: spread over the surface, big ones pushing harder. */
+function settleTopics(graph: MemoryGraph, memoryKindById: Map<string, string>): SettledTopics {
   const mentions = new Map<string, number>();
   for (const link of graph.links) mentions.set(link.entityId, (mentions.get(link.entityId) ?? 0) + 1);
 
-  const memoryKindById = new Map(graph.memories.map((memory) => [memory.id, memory.kind as string]));
   const kindsOfEntity = new Map<string, string[]>();
   for (const link of graph.links) {
     const kind = memoryKindById.get(link.memoryId);
@@ -332,33 +368,41 @@ export function layoutCortex(graph: MemoryGraph | null, surface: Surface = brain
   // A topic starts in its region, on a hemisphere its id decides, a little
   // off the region's centre so two topics of one region do not start on
   // top of each other.
-  const entityDirs = new Map<string, Vec3>();
-  const entityHome = new Map<string, Vec3>();
-  const entityRegion = new Map<string, CortexRegion>();
-  const entityWeight = new Map<string, number>();
+  const dirs = new Map<string, Vec3>();
+  const homes = new Map<string, Vec3>();
+  const region = new Map<string, CortexRegion>();
+  const weight = new Map<string, number>();
   for (const entity of graph.entities) {
     const hemisphere: 1 | -1 = hash01(entity.id, 9) < 0.5 ? 1 : -1;
-    const region = regionForEntity(entity.kind, kindsOfEntity.get(entity.id) ?? []);
-    const home = regionDir(region, hemisphere);
-    entityRegion.set(entity.id, region);
+    const entityRegion = regionForEntity(entity.kind, kindsOfEntity.get(entity.id) ?? []);
+    const home = regionDir(entityRegion, hemisphere);
+    region.set(entity.id, entityRegion);
     const jitter = directionFrom(hash01(entity.id, 1), hash01(entity.id, 2));
-    entityHome.set(entity.id, home);
-    entityDirs.set(entity.id, normalize(add(home, scale(jitter, 0.35))));
-    entityWeight.set(entity.id, 1 + Math.log1p(mentions.get(entity.id) ?? entity.mentions ?? 0));
+    homes.set(entity.id, home);
+    dirs.set(entity.id, normalize(add(home, scale(jitter, 0.35))));
+    weight.set(entity.id, 1 + Math.log1p(mentions.get(entity.id) ?? entity.mentions ?? 0));
   }
 
-  // Topics named in the same memory belong to the same region of the
-  // cortex. Without this pull every topic lands somewhere on its own and a
-  // memory of three topics strings three long fibres across the brain; with
-  // it the topics of one subject gather into a lobe and the fibres stay short.
-  const together = new Map<string, number>();
   const entitiesOfMemory = new Map<string, string[]>();
   for (const link of graph.links) {
-    if (!entityDirs.has(link.entityId)) continue;
+    if (!dirs.has(link.entityId)) continue;
     const list = entitiesOfMemory.get(link.memoryId);
     if (list) list.push(link.entityId);
     else entitiesOfMemory.set(link.memoryId, [link.entityId]);
   }
+  relaxTopics(dirs, homes, weight, comentions(graph, entitiesOfMemory));
+  return { dirs, region, weight, entitiesOfMemory };
+}
+
+/**
+ * Topics named in the same memory belong to the same region of the
+ * cortex. Without this pull every topic lands somewhere on its own and a
+ * memory of three topics strings three long fibres across the brain; with
+ * it the topics of one subject gather into a lobe and the fibres stay short.
+ * Keyed by the pair's ids, smaller first, joined with `|`.
+ */
+function comentions(graph: MemoryGraph, entitiesOfMemory: Map<string, string[]>): Map<string, number> {
+  const together = new Map<string, number>();
   const pair = (a: string, b: string, count: number): void => {
     if (a === b) return;
     const key = a < b ? a + '|' + b : b + '|' + a;
@@ -376,56 +420,78 @@ export function layoutCortex(graph: MemoryGraph | null, surface: Surface = brain
     const to = entitiesOfMemory.get(edge.dstId) ?? [];
     for (const a of from) for (const b of to) pair(a, b, 0.4);
   }
+  return together;
+}
 
-  const entityIds = [...entityDirs.keys()];
+/** Moves the topics in `dirs` to where repulsion, their region and co-mention settle them. */
+function relaxTopics(
+  dirs: Map<string, Vec3>,
+  homes: Map<string, Vec3>,
+  weights: Map<string, number>,
+  together: Map<string, number>,
+): void {
+  const entityIds = [...dirs.keys()];
   for (let round = 0; round < ENTITY_ROUNDS; round++) {
     const step = 0.09 * (1 - round / ENTITY_ROUNDS);
     const forces = new Map<string, Vec3>();
     for (let i = 0; i < entityIds.length; i++) {
       const a = entityIds[i]!;
-      const da = entityDirs.get(a)!;
+      const da = dirs.get(a)!;
       let force = { x: 0, y: 0, z: 0 };
       for (let j = 0; j < entityIds.length; j++) {
         if (i === j) continue;
         const b = entityIds[j]!;
-        const away = sub(da, entityDirs.get(b)!);
+        const away = sub(da, dirs.get(b)!);
         const distance = Math.hypot(away.x, away.y, away.z) + 0.02;
-        const strength = ((entityWeight.get(a)! * entityWeight.get(b)!) / (distance * distance)) * 0.02;
+        const strength = ((weights.get(a)! * weights.get(b)!) / (distance * distance)) * 0.02;
         force = add(force, scale(away, strength / distance));
       }
       // Stay out of the fissure on the crown: a region sitting in the cut
       // between the hemispheres belongs to neither.
       if (da.y > 0) force.x += Math.sign(da.x || 1) * 0.15 * Math.exp(-(da.x * da.x) / 0.02);
       // And home: the region its memories say it belongs to.
-      force = add(force, scale(sub(entityHome.get(a)!, da), REGION_PULL));
+      force = add(force, scale(sub(homes.get(a)!, da), REGION_PULL));
       forces.set(a, force);
     }
     for (const [key, count] of together) {
       const [a, b] = key.split('|') as [string, string];
-      const da = entityDirs.get(a)!;
-      const db = entityDirs.get(b)!;
-      const pull = scale(sub(db, da), 0.05 * Math.sqrt(count));
+      const pull = scale(sub(dirs.get(b)!, dirs.get(a)!), 0.05 * Math.sqrt(count));
       forces.set(a, add(forces.get(a)!, pull));
       forces.set(b, sub(forces.get(b)!, pull));
     }
-    for (const id of entityIds) entityDirs.set(id, nudge(entityDirs.get(id)!, scale(forces.get(id)!, step)));
+    for (const id of entityIds) dirs.set(id, nudge(dirs.get(id)!, scale(forces.get(id)!, step)));
   }
+}
 
-  /* Neurons: near what they mention, apart from each other. */
+/* ------------------------------- neurons -------------------------------- */
 
-  const memoryEntities = entitiesOfMemory;
+interface Neuron {
+  id: string;
+  dir: Vec3;
+  anchor: Vec3;
+  deep: boolean;
+  dormant: boolean;
+}
 
+/** Neurons: near what they mention, apart from each other. */
+function settleNeurons(graph: MemoryGraph, topics: SettledTopics): Neuron[] {
+  const anchors = topicAnchors(graph, topics);
+  const neurons = graph.memories.map((memory) =>
+    startingNeuron(memory, anchors.get(memory.id) ?? null, topics.entitiesOfMemory.get(memory.id)?.length ?? 0),
+  );
+  repelNeurons(neurons, [...topics.dirs.values()]);
+  return neurons;
+}
+
+/** Where each memory's topics are, as one direction; only memories that have a place through topics or relations. */
+function topicAnchors(graph: MemoryGraph, topics: SettledTopics): Map<string, Vec3> {
   const anchors = new Map<string, Vec3>();
-  const resolveAnchor = (memoryId: string): Vec3 | null => {
-    const owned = memoryEntities.get(memoryId);
-    if (!owned?.length) return null;
-    let sum = { x: 0, y: 0, z: 0 };
-    for (const entityId of owned) sum = add(sum, entityDirs.get(entityId)!);
-    return normalize(sum);
-  };
   for (const memory of graph.memories) {
-    const anchor = resolveAnchor(memory.id);
-    if (anchor) anchors.set(memory.id, anchor);
+    const owned = topics.entitiesOfMemory.get(memory.id);
+    if (!owned?.length) continue;
+    let sum = { x: 0, y: 0, z: 0 };
+    for (const entityId of owned) sum = add(sum, topics.dirs.get(entityId)!);
+    anchors.set(memory.id, normalize(sum));
   }
   // A memory without a topic of its own borrows its neighbours' place - one
   // hop over a relation is enough to put it beside what it refines.
@@ -449,45 +515,35 @@ export function layoutCortex(graph: MemoryGraph | null, surface: Surface = brain
     leaned.set(id, normalize(sum));
   }
   for (const [id, anchor] of leaned) anchors.set(id, anchor);
+  return anchors;
+}
 
-  interface Working {
-    id: string;
-    dir: Vec3;
-    anchor: Vec3 | null;
-    deep: boolean;
-    dormant: boolean;
-  }
+function startingNeuron(memory: MemoryGraph['memories'][number], topics: Vec3 | null, topicCount: number): Neuron {
+  const jitter = directionFrom(hash01(memory.id, 3), hash01(memory.id, 4));
+  const kindHome = regionDir(regionForKind(memory.kind), (topics ? topics.x : jitter.x) < 0 ? -1 : 1);
+  // Where its topics are, leaning toward where its kind belongs: an event
+  // filed under a topic of facts still drifts to the underside of that
+  // topic's lobe rather than sitting in the middle of the facts. A memory
+  // with no topic at all has only its kind, and goes where that lives.
+  const anchor = topics ? normalize(add(scale(topics, 1 - KIND_LEAN), scale(kindHome, KIND_LEAN))) : kindHome;
+  // A neuron of one topic forms a cloud around that core; one of several
+  // topics sits between them and needs less room to be told apart; one
+  // of none has a whole region to itself and spreads out in it.
+  const spread = topicCount > 1 ? 0.12 : topicCount === 1 ? 0.24 : 0.4;
+  const dir = normalize(add(anchor, scale(jitter, spread)));
+  return { id: memory.id, dir, anchor, deep: false, dormant: Boolean(memory.dormantAt) };
+}
 
-  const working: Working[] = graph.memories.map((memory) => {
-    const topics = anchors.get(memory.id) ?? null;
-    const jitter = directionFrom(hash01(memory.id, 3), hash01(memory.id, 4));
-    const owned = memoryEntities.get(memory.id)?.length ?? 0;
-    const kindHome = regionDir(regionForKind(memory.kind), (topics ? topics.x : jitter.x) < 0 ? -1 : 1);
-    // Where its topics are, leaning toward where its kind belongs: an event
-    // filed under a topic of facts still drifts to the underside of that
-    // topic's lobe rather than sitting in the middle of the facts. A memory
-    // with no topic at all has only its kind, and goes where that lives.
-    const anchor = topics ? normalize(add(scale(topics, 1 - KIND_LEAN), scale(kindHome, KIND_LEAN))) : kindHome;
-    // A neuron of one topic forms a cloud around that core; one of several
-    // topics sits between them and needs less room to be told apart; one
-    // of none has a whole region to itself and spreads out in it.
-    const spread = owned > 1 ? 0.12 : owned === 1 ? 0.24 : 0.4;
-    const dir = normalize(add(anchor, scale(jitter, spread)));
-    return { id: memory.id, dir, anchor, deep: false, dormant: Boolean(memory.dormantAt) };
-  });
-
-  const coreDirs = entityIds.map((id) => entityDirs.get(id)!);
-  const onSurface = working;
-
+/** Moves the neurons in place until none crowds another or a core. */
+function repelNeurons(neurons: Neuron[], coreDirs: Vec3[]): void {
   for (let round = 0; round < MEMORY_ROUNDS; round++) {
     const step = 1 - round / MEMORY_ROUNDS;
-    for (let i = 0; i < onSurface.length; i++) {
-      const me = onSurface[i]!;
+    for (let i = 0; i < neurons.length; i++) {
+      const me = neurons[i]!;
       let force = { x: 0, y: 0, z: 0 };
-      for (let j = 0; j < onSurface.length; j++) {
+      for (let j = 0; j < neurons.length; j++) {
         if (i === j) continue;
-        const other = onSurface[j]!;
-        const away = sub(me.dir, other.dir);
+        const away = sub(me.dir, neurons[j]!.dir);
         const distance = Math.hypot(away.x, away.y, away.z);
         if (distance >= NEURON_SEPARATION || distance === 0) continue;
         force = add(force, scale(away, ((NEURON_SEPARATION - distance) / distance) * 0.5));
@@ -500,35 +556,10 @@ export function layoutCortex(graph: MemoryGraph | null, surface: Surface = brain
       }
       // The tether back to the topic: without it the repulsion would walk a
       // crowded cluster right across the brain.
-      if (me.anchor) force = add(force, scale(sub(me.anchor, me.dir), 0.03));
+      force = add(force, scale(sub(me.anchor, me.dir), 0.03));
       me.dir = nudge(me.dir, scale(force, step));
     }
   }
-
-  const entities: CortexEntity[] = entityIds.map((id) => {
-    const dir = entityDirs.get(id)!;
-    return {
-      id,
-      dir,
-      position: scale(dir, surface(dir) * SURFACE.entity),
-      weight: entityWeight.get(id)!,
-      region: entityRegion.get(id)!,
-    };
-  });
-
-  const memories: CortexMemory[] = working.map((item) => {
-    const offset = item.deep ? SURFACE.deep : item.dormant ? SURFACE.dormant : SURFACE.memory;
-    return {
-      id: item.id,
-      dir: item.dir,
-      position: scale(item.dir, surface(item.dir) * offset),
-      deep: item.deep,
-      dormant: item.dormant,
-      region: regionForKind(memoryKindById.get(item.id) ?? 'fact'),
-    };
-  });
-
-  return { entities, memories };
 }
 
 /* ---------------------------------- arcs --------------------------------- */

@@ -70,6 +70,12 @@ const GAP = 3;
 const DAY_GUTTER = 30;
 const GRID_LEFT = DAY_GUTTER + 8;
 
+/** A window this long reads as "the last year" instead of a day count. */
+const YEAR_WINDOW_MIN_DAYS = 330;
+
+/** Grid rows run Monday (0) to Sunday (6); only Monday, Wednesday and Friday are labelled. */
+const LAST_LABELLED_ROW = 4;
+
 const HEAT_COLORS = [
   'var(--secondary)',
   'color-mix(in oklab, var(--chart-1) 30%, transparent)',
@@ -90,6 +96,52 @@ export interface ActivityHeatmapCardProps {
   className?: string;
 }
 
+/**
+ * Week columns the grid draws: the package snaps the window start back to
+ * Monday before laying out, so the lead days of the first week count.
+ */
+function weekColumnCount(data: readonly StatsDay[]): number {
+  const first = data[0];
+  if (!first) return 0;
+  const [year, month, day] = first.day.split('-').map(Number);
+  const start = new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
+  const daysSinceMonday = (start.getDay() + 6) % 7;
+  return Math.ceil((daysSinceMonday + data.length) / 7);
+}
+
+interface DayTooltipProps {
+  date: Date;
+  entry: StatsDay | undefined;
+  tokensAvailable: boolean;
+}
+
+function DayTooltip({ date, entry, tokensAvailable }: DayTooltipProps) {
+  const messages = entry?.messages ?? 0;
+  const sessions = entry?.sessions ?? 0;
+  const assignments = entry?.assignments ?? 0;
+  const inputTokens = entry?.inputTokens ?? 0;
+  const outputTokens = entry?.outputTokens ?? 0;
+  const tokens = inputTokens + outputTokens;
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="text-xs font-medium">{formatDate(date)}</div>
+      <div className="text-[11px] text-muted-foreground">
+        {messages + sessions + assignments > 0
+          ? `${formatNumber(messages)} messages · ${formatNumber(sessions)} conversations · ${formatNumber(assignments)} assignments`
+          : 'No activity'}
+      </div>
+      {tokensAvailable ? (
+        <div className="text-[11px] text-muted-foreground">
+          {formatNumber(tokens)} tokens
+          {tokens > 0
+            ? ` (${formatNumber(inputTokens)} in · ${formatNumber(outputTokens)} out)`
+            : ''}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function ActivityHeatmapCard({ data, tokensAvailable = false, className }: ActivityHeatmapCardProps) {
   // Per-day numbers for the tooltip. The package hands out only the cell's
   // own count, so the rest of the day is looked up here, keyed the way the
@@ -105,15 +157,8 @@ export function ActivityHeatmapCard({ data, tokensAvailable = false, className }
   const gridRef = useRef<HTMLDivElement>(null);
   const [gridWidth, setGridWidth] = useState(0);
 
-  // Week columns the grid will draw: the package snaps the window start back
-  // to Monday before laying out, so the lead days of the first week count.
-  const weeks = useMemo(() => {
-    if (data.length === 0) return 0;
-    const [year, month, day] = data[0]?.day.split('-').map(Number) ?? [];
-    const start = new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
-    const lead = (start.getDay() + 6) % 7; // days since Monday, the chosen week start
-    return Math.ceil((lead + data.length) / 7);
-  }, [data]);
+  // Week columns the grid will draw.
+  const weeks = useMemo(() => weekColumnCount(data), [data]);
 
   // Keyed on `weeks` rather than run-once: with an empty `data` prop (before
   // the page's fetch resolves) the component below returns `null` and the
@@ -148,7 +193,8 @@ export function ActivityHeatmapCard({ data, tokensAvailable = false, className }
 
   // A year-long window reads better as "the last year"; a young database's
   // short series keeps its day count.
-  const windowLabel = data.length >= 330 ? 'the last year' : `the last ${data.length} days`;
+  const windowLabel =
+    data.length >= YEAR_WINDOW_MIN_DAYS ? 'the last year' : `the last ${data.length} days`;
 
   // An empty series would draw a card with no grid in it; the trend card
   // above already carries the empty state for that case.
@@ -230,7 +276,7 @@ export function ActivityHeatmapCard({ data, tokensAvailable = false, className }
                     >
                       <HeatGraph.DayLabels>
                         {({ label }) =>
-                          label.row % 2 === 0 && label.row < 5 ? (
+                          label.row % 2 === 0 && label.row <= LAST_LABELLED_ROW ? (
                             <span
                               style={{ gridRow: label.row + 1 }}
                               className="text-[10px] leading-none text-muted-foreground"
@@ -283,33 +329,13 @@ export function ActivityHeatmapCard({ data, tokensAvailable = false, className }
               stays inside the card and dies with the hover that opened it.
             */}
             <HeatGraph.Tooltip className="z-50 rounded-lg border bg-popover px-3 py-2 shadow-md">
-              {({ cell }) => {
-                const entry = byDay.get(dayKey(cell.date));
-                const messages = entry?.messages ?? 0;
-                const sessions = entry?.sessions ?? 0;
-                const assignments = entry?.assignments ?? 0;
-                const inputTokens = entry?.inputTokens ?? 0;
-                const outputTokens = entry?.outputTokens ?? 0;
-                const tokens = inputTokens + outputTokens;
-                return (
-                  <div className="flex flex-col gap-0.5">
-                    <div className="text-xs font-medium">{formatDate(cell.date)}</div>
-                    <div className="text-[11px] text-muted-foreground">
-                      {messages + sessions + assignments > 0
-                        ? `${formatNumber(messages)} messages · ${formatNumber(sessions)} conversations · ${formatNumber(assignments)} assignments`
-                        : 'No activity'}
-                    </div>
-                    {tokensAvailable ? (
-                      <div className="text-[11px] text-muted-foreground">
-                        {formatNumber(tokens)} tokens
-                        {tokens > 0
-                          ? ` (${formatNumber(inputTokens)} in · ${formatNumber(outputTokens)} out)`
-                          : ''}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              }}
+              {({ cell }) => (
+                <DayTooltip
+                  date={cell.date}
+                  entry={byDay.get(dayKey(cell.date))}
+                  tokensAvailable={tokensAvailable}
+                />
+              )}
             </HeatGraph.Tooltip>
           </HeatGraph.Root>
           {/*

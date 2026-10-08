@@ -38,6 +38,7 @@ export function AppShell() {
   const org = useOrgState();
   const tasks = useTasksState();
   const { resolvedTheme, setTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
 
   const actions: CommandAction[] = [
     {
@@ -49,31 +50,29 @@ export function AppShell() {
     },
     {
       id: 'theme',
-      label: resolvedTheme === 'dark' ? 'Light theme' : 'Dark theme',
-      icon: resolvedTheme === 'dark' ? SunIcon : MoonIcon,
+      label: isDark ? 'Light theme' : 'Dark theme',
+      icon: isDark ? SunIcon : MoonIcon,
       keywords: ['theme', 'light', 'dark', 'hell', 'dunkel'],
-      run: () => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark'),
+      run: () => setTheme(isDark ? 'light' : 'dark'),
     },
   ];
 
   return (
     <div className="[--header-height:calc(--spacing(14))]">
       <SidebarProvider className="flex h-svh flex-col overflow-hidden">
-          {/* First in tab order so keyboard users can skip navigation.
+        {/* First in tab order so keyboard users can skip navigation.
             The link becomes visible on focus and targets the main element. */}
         <a
-          href="#inhalt"
+          href="#main-content"
           className="sr-only z-50 focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-md focus:outline-2 focus:outline-offset-2 focus:outline-ring"
         >
           Skip to content
         </a>
         <SiteHeader onSearch={() => setPaletteOpen(true)} />
         <div className="flex min-h-0 flex-1">
-          {/* The rail knows where the header ends and what it links to; all it
-              needs from the shell is the way into the palette. */}
-          <AppSidebar onSearch={() => setPaletteOpen(true)} />
+          <AppSidebar />
           <SidebarInset
-            id="inhalt"
+            id="main-content"
             tabIndex={-1}
             className="flex min-h-0 flex-col overflow-hidden outline-none"
           >

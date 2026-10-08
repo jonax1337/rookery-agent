@@ -4,7 +4,8 @@ import type { Ref, RefObject } from 'react';
 import { MEMORY_KIND_LABEL } from '@/lib/format';
 import type { MemoryGraph, MemoryKind, MemoryRecord, MemoryRelation } from '@/lib/types';
 
-import type { CortexHit, CortexPalette } from './scene';
+import { MODEL_URL } from './model-url';
+import type { CortexHit, CortexPalette, CortexScene } from './scene';
 
 /**
  * The brain, as a component.
@@ -151,7 +152,7 @@ export function useCortexPalette(stage: RefObject<HTMLElement | null>): CortexPa
 let modelBytes: Promise<ArrayBuffer | null> | null = null;
 
 function preloadModel(): Promise<ArrayBuffer | null> {
-  modelBytes ??= fetch('/models/brain.glb')
+  modelBytes ??= fetch(MODEL_URL)
     .then((response) => (response.ok ? response.arrayBuffer() : null))
     .catch(() => null);
   return modelBytes;
@@ -201,17 +202,8 @@ export function MemoryCortex({
   ref,
 }: MemoryCortexProps) {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  // The scene's class comes from the same on-demand chunk as three.js, so
-  // the ref is typed by its shape rather than by an import that would pull
-  // the whole library into the page bundle.
-  const sceneRef = useRef<{
-    setGraph(graph: MemoryGraph | null, atlas: MemoryGraph | null): void;
-    setPalette(palette: CortexPalette): void;
-    setDreaming(dreaming: boolean): void;
-    setSelected(key: string | null): void;
-    fit(): void;
-    dispose(): void;
-  } | null>(null);
+  // Type-only import: the class itself arrives with the on-demand chunk below.
+  const sceneRef = useRef<CortexScene | null>(null);
   const [ready, setReady] = useState(false);
   const [hover, setHover] = useState<CortexHit | null>(null);
 

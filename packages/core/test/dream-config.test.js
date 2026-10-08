@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -60,6 +60,7 @@ const EXPECTED_KEYS = [
   'labelModelCalls',
   'userLabelWindow',
   'agreementFloor',
+  'requireUserLabels',
   'calibrationTraces',
   'tolerance',
   'cooldownNights',
@@ -68,43 +69,6 @@ const EXPECTED_KEYS = [
   'trialEpisodes',
 ];
 
-/** Every new stage-2 default, exactly as config.ts's table declares it. */
-const EXPECTED_STAGE2_DEFAULTS = {
-  promote: false,
-  slots: ['recall'],
-  candidates: 6,
-  model: 'sonnet',
-  effort: 'medium',
-  minTraces: 200,
-  margin: 0.02,
-  coverageFloor: 0.3,
-  costOnlyCeiling: 0.5,
-  abstainEps: 0.05,
-  abstainFloor: 0.3,
-  reachableFloor: 0.5,
-  correctionPrecisionFloor: 0.6,
-  labelModelCalls: 0,
-  userLabelWindow: 7 * 24 * 60 * 60 * 1000,
-  agreementFloor: 0.4,
-  calibrationTraces: 50,
-  tolerance: 0.05,
-  cooldownNights: 7,
-  maxPromotionsPerNight: 1,
-  explorationRate: 0,
-  trialEpisodes: 0,
-};
-
-test('the dream block ships complete and switched off', () => {
-  assert.ok(DEFAULT_CONFIG.memory.dream);
-  assert.equal(DEFAULT_CONFIG.memory.dream.enabled, false);
-  assert.equal(DEFAULT_CONFIG.memory.dream.record, false);
-  // Three switches, all off (S22/E20 and plan section 1.2 "kein Default an").
-  assert.equal(DEFAULT_CONFIG.memory.dream.promote, false);
-  // Stage 2 spends model calls on the candidate writer, so the run-global
-  // ceiling is no longer zero - it is a real wallet from here on.
-  assert.equal(DEFAULT_CONFIG.memory.dream.maxCallsPerNight, 6);
-});
-
 test('no key without a reader: the dream block is exactly the key table', () => {
   assert.deepEqual(
     Object.keys(DEFAULT_CONFIG.memory.dream).sort(),
@@ -112,26 +76,48 @@ test('no key without a reader: the dream block is exactly the key table', () => 
   );
 });
 
-test('every stage-2 default matches the build plan table', () => {
-  for (const [key, value] of Object.entries(EXPECTED_STAGE2_DEFAULTS)) {
-    assert.deepEqual(
-      DEFAULT_CONFIG.memory.dream[key],
-      value,
-      `memory.dream.${key} should default to ${JSON.stringify(value)}`,
-    );
-  }
-});
-
 test('a partial dream patch merges without wiping the rest of the block', () => {
   const home = mkdtempSync(join(tmpdir(), 'rookery-dream-config-'));
   const config = loadConfig({ home });
-  assert.equal(config.memory.dream.frameRate, 0.25);
+  const before = { ...config.memory.dream };
 
   applyConfig(config, { memory: { dream: { frameRate: 0.5 } } });
 
   assert.equal(config.memory.dream.frameRate, 0.5);
-  assert.equal(config.memory.dream.limitMax, 16, 'an untouched neighbour keeps its value');
-  assert.equal(config.memory.dream.promote, false, 'and a stage-2 neighbour keeps its value too');
+  assert.deepEqual(
+    { ...config.memory.dream, frameRate: before.frameRate },
+    before,
+    'every other key of the block keeps its value',
+  );
+});
+
+test('an old config file stops pinning the retired volume-bound defaults', () => {
+  const home = mkdtempSync(join(tmpdir(), 'rookery-dream-config-upgrade-'));
+  writeFileSync(
+    join(home, 'config.json'),
+    JSON.stringify({
+      memory: {
+        dream: { enabled: false, frameRate: 0.25, minTraces: 200, coverageFloor: 0.3, calibrationTraces: 25 },
+      },
+    }),
+  );
+
+  const dream = loadConfig({ home }).memory.dream;
+
+  assert.equal(dream.frameRate, DEFAULT_CONFIG.memory.dream.frameRate, 'the retired default moves on');
+  assert.equal(dream.minTraces, DEFAULT_CONFIG.memory.dream.minTraces);
+  assert.equal(dream.coverageFloor, DEFAULT_CONFIG.memory.dream.coverageFloor);
+  assert.equal(dream.calibrationTraces, 25, 'a value somebody chose is not touched');
+  assert.equal(dream.enabled, false, 'and neither is a switch somebody turned off');
+});
+
+test('a host override outranks the upgrade of a pinned default', () => {
+  const home = mkdtempSync(join(tmpdir(), 'rookery-dream-config-override-'));
+  writeFileSync(join(home, 'config.json'), JSON.stringify({ memory: { dream: { minTraces: 200 } } }));
+
+  const dream = loadConfig({ home, memory: { dream: { minTraces: 90 } } }).memory.dream;
+
+  assert.equal(dream.minTraces, 90, 'the file pinned the retired default, the host asked for something else');
 });
 
 test('a fresh sleep run carries the dream counters', () => {

@@ -628,6 +628,24 @@ export function powershellBinary(): string {
   return system + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 }
 
+const DEFAULT_TIMEOUT_MS = 30_000;
+/** How much worker stderr is kept, and how much of it an error message quotes. */
+const STDERR_KEPT = 4000;
+const STDERR_TAIL_IN_ERRORS = 600;
+const UNREADABLE_REPLY_PREVIEW = 200;
+
+/** The worker's JSON reply: its value, or the error it reported or that made it unreadable. */
+function parseReply<T>(text: string): { value: T; error?: undefined } | { value?: undefined; error: Error } {
+  let parsed: unknown;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    return { error: new Error('Unreadable reply from PowerShell: ' + text.slice(0, UNREADABLE_REPLY_PREVIEW)) };
+  }
+  if (parsed && typeof parsed === 'object' && 'error' in parsed && parsed.error) return { error: new Error(String(parsed.error)) };
+  return { value: parsed as T };
+}
+
 export class PowerShellSession {
   #child: ChildProcess | null = null;
   #queue: Promise<unknown> = Promise.resolve();
@@ -654,7 +672,7 @@ export class PowerShellSession {
     );
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk: string) => {
-      this.#stderr = (this.#stderr + chunk).slice(-4000);
+      this.#stderr = (this.#stderr + chunk).slice(-STDERR_KEPT);
     });
     const reader = createInterface({ input: child.stdout! });
     reader.on('line', (line) => { if (this.#child === child) this.#lines?.(line); });
@@ -681,7 +699,7 @@ export class PowerShellSession {
   }
 
   /** Evaluate one expression and parse the JSON it prints. Calls are serialised. */
-  run<T = Record<string, unknown>>(expression: string, timeoutMs = 30_000): Promise<T> {
+  run<T = Record<string, unknown>>(expression: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
     const task = this.#queue.then(() => this.#exec<T>(expression, timeoutMs));
     this.#queue = task.catch(() => undefined);
     return task;
@@ -724,24 +742,16 @@ export class PowerShellSession {
           return;
         }
         finish();
-        const text = chunks.join('\n').trim();
-        let parsed: unknown;
-        try {
-          parsed = text ? JSON.parse(text) : {};
-        } catch {
-          reject(new Error('Unreadable reply from PowerShell: ' + text.slice(0, 200)));
-          return;
-        }
-        const error = (parsed as { error?: string }).error;
-        if (error) reject(new Error(error));
-        else resolve(parsed as T);
+        const reply = parseReply<T>(chunks.join('\n').trim());
+        if (reply.error) reject(reply.error);
+        else resolve(reply.value);
       };
       child.stdin!.write(Buffer.from('$rkId = ' + id + '; ' + expression, 'utf8').toString('base64') + '\n');
     });
   }
 
   #tail(): string {
-    return this.#stderr.trim() ? '\n' + this.#stderr.trim().slice(-600) : '';
+    return this.#stderr.trim() ? '\n' + this.#stderr.trim().slice(-STDERR_TAIL_IN_ERRORS) : '';
   }
 
   /** Stop the worker, preserving user apps launched with the open tool. */

@@ -4,7 +4,7 @@
  * Ink takes colours as plain strings and hands them to chalk itself, so this
  * module deliberately exports raw values instead of the pre-painted functions
  * `src/ui/theme.ts` exposes for the line-based renderer. The brand hexes are
- * the single source of truth and are re-exported from there so the two
+ * the single source of truth and are imported from there so the two
  * front-ends can never drift apart.
  *
  * Everything visual the TUI does is named here: the semantic colour roles, the
@@ -15,9 +15,8 @@
 
 import { ACCENT, BRAND, glyph as baseGlyph } from '../ui/theme.js';
 
-export { ACCENT, BRAND };
-
-const ASCII = process.env.ROOKERY_ASCII === '1';
+/** Terminals that cannot draw box and block characters opt out with this env var. */
+export const ASCII = process.env.ROOKERY_ASCII === '1';
 
 /**
  * Semantic colours.
@@ -39,8 +38,6 @@ export const ui = {
   accentSoft: BRAND.celadon,
   /** Frost: body text. */
   frost: BRAND.frost,
-  /** Evergreen, only useful as a background. */
-  evergreen: BRAND.evergreen,
   /** Secondary text: metadata, tool arguments, timings. */
   muted: '#7E948B',
   /** Chrome: borders, rules, separators. Never carries information alone. */
@@ -64,9 +61,14 @@ export const ui = {
 export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'] as const;
 
 /** Slower, heavier spinner for a single running tool call. */
-export const PULSE_FRAMES = ASCII
+const PULSE_FRAMES = ASCII
   ? (['-', '\\', '|', '/'] as const)
   : (['◐', '◓', '◑', '◒'] as const);
+
+/** The pulse glyph for an animation tick. */
+export function pulseFrame(frame: number): string {
+  return PULSE_FRAMES[frame % PULSE_FRAMES.length] ?? glyph.dot;
+}
 
 /** Cursor block shown while the assistant is still typing. */
 export const STREAM_CURSOR = '▋';
@@ -93,8 +95,6 @@ export const glyph = {
   /** Tokens in and out, in the usage readout. */
   up: ASCII ? '^' : '↑',
   down: ASCII ? 'v' : '↓',
-  /** Nested list bullet, one level in. */
-  bulletSub: ASCII ? '-' : '◦',
   /** Unchecked and checked task-list item. */
   boxOff: ASCII ? '[ ]' : '☐',
   boxOn: ASCII ? '[x]' : '☑',
@@ -110,9 +110,9 @@ export const glyph = {
 export const GUTTER = 2;
 
 /** Cells in the context gauge. */
-export const GAUGE_WIDTH = 10;
+const GAUGE_WIDTH = 10;
 
-/** Assignment status -> glyph, shared by the live and the collapsed views. */
+/** Assignment status -> glyph, for the live view. */
 export const ASSIGNMENT_MARK = {
   pending: glyph.dot,
   running: SPINNER_FRAMES[0],
@@ -135,14 +135,18 @@ export const ASSIGNMENT_COLOR = {
  * `fraction` is clamped, so a provider that reports more context used than the
  * window holds draws a full bar instead of overflowing the layout.
  */
-export function gauge(fraction: number, width = GAUGE_WIDTH): string {
-  const filled = Math.round(Math.max(0, Math.min(1, fraction)) * width);
-  return glyph.gaugeOn.repeat(filled) + glyph.gaugeOff.repeat(Math.max(0, width - filled));
+export function gauge(fraction: number): string {
+  const filled = Math.round(Math.max(0, Math.min(1, fraction)) * GAUGE_WIDTH);
+  return glyph.gaugeOn.repeat(filled) + glyph.gaugeOff.repeat(GAUGE_WIDTH - filled);
 }
+
+/** Context fraction from which the gauge warns, and from which it turns red. */
+const GAUGE_WARN_FROM = 0.66;
+const GAUGE_DANGER_FROM = 0.9;
 
 /** Calm under two thirds, warning past it, red when the window is nearly full. */
 export function gaugeColor(fraction: number): string {
-  if (fraction >= 0.9) return ui.danger;
-  if (fraction >= 0.66) return ui.warn;
+  if (fraction >= GAUGE_DANGER_FROM) return ui.danger;
+  if (fraction >= GAUGE_WARN_FROM) return ui.warn;
   return ui.ok;
 }

@@ -106,32 +106,36 @@ function parseField(field: string, spec: FieldSpec): Set<number> {
     if (!item) throw new CronSyntaxError('Empty entry in the ' + spec.name + ' field.');
     const [rangePart, stepPart, extra] = item.split('/');
     if (extra !== undefined) throw new CronSyntaxError('Too many "/" in "' + item + '".');
-    let step = 1;
-    if (stepPart !== undefined) {
-      step = Number(stepPart);
-      if (!Number.isInteger(step) || step < 1) {
-        throw new CronSyntaxError('The step in "' + item + '" must be a whole number of at least 1.');
-      }
-    }
-    let low: number;
-    let high: number;
-    if (rangePart === '*') {
-      low = spec.min;
-      high = spec.max;
-    } else if (rangePart!.includes('-')) {
-      const [a, b, more] = rangePart!.split('-');
-      if (more !== undefined || !a || !b) throw new CronSyntaxError('Bad range "' + item + '" in the ' + spec.name + ' field.');
-      low = parseValue(a, spec);
-      high = parseValue(b, spec);
-      if (low > high) throw new CronSyntaxError('Range "' + item + '" runs backwards in the ' + spec.name + ' field.');
-    } else {
-      low = parseValue(rangePart!, spec);
-      // "5/10" means "from 5 to the end, every 10"; a plain "5" is just 5.
-      high = stepPart !== undefined ? spec.max : low;
-    }
+    const step = parseStep(item, stepPart);
+    const [low, high] = parseBounds(item, rangePart!, stepPart !== undefined, spec);
     for (let value = low; value <= high; value += step) values.add(value);
   }
   return values;
+}
+
+function parseStep(item: string, stepPart: string | undefined): number {
+  if (stepPart === undefined) return 1;
+  const step = Number(stepPart);
+  if (!Number.isInteger(step) || step < 1) {
+    throw new CronSyntaxError('The step in "' + item + '" must be a whole number of at least 1.');
+  }
+  return step;
+}
+
+/** The first and last value an item covers, before its step is applied. */
+function parseBounds(item: string, rangePart: string, hasStep: boolean, spec: FieldSpec): [low: number, high: number] {
+  if (rangePart === '*') return [spec.min, spec.max];
+  if (rangePart.includes('-')) {
+    const [a, b, more] = rangePart.split('-');
+    if (more !== undefined || !a || !b) throw new CronSyntaxError('Bad range "' + item + '" in the ' + spec.name + ' field.');
+    const low = parseValue(a, spec);
+    const high = parseValue(b, spec);
+    if (low > high) throw new CronSyntaxError('Range "' + item + '" runs backwards in the ' + spec.name + ' field.');
+    return [low, high];
+  }
+  const low = parseValue(rangePart, spec);
+  // "5/10" means "from 5 to the end, every 10"; a plain "5" is just 5.
+  return [low, hasStep ? spec.max : low];
 }
 
 function parseValue(raw: string, spec: FieldSpec): number {
@@ -247,55 +251,64 @@ export function describeCron(input: string | CronSchedule): string {
     return typeof input === 'string' ? input : input.expression;
   }
   const [minuteField, hourField, , monthField] = schedule.expression.split(' ') as [string, string, string, string, string];
-  const everyMinute = minuteField === '*';
-  const everyHour = hourField === '*';
   const anyMonth = monthField === '*';
 
-  const time = (): string | null => {
-    if (schedule.minutes.size !== 1 || schedule.hours.size > 4) return null;
-    const minute = [...schedule.minutes][0]!;
-    return [...schedule.hours].sort((a, b) => a - b).map((hour) => two(hour) + ':' + two(minute)).join(', ');
-  };
-
+  let description: string | null = null;
   if (schedule.anyDayOfMonth && schedule.anyDayOfWeek && anyMonth) {
-    if (everyHour) {
-      const step = /^\*\/(\d+)$/.exec(minuteField);
-      if (everyMinute) return 'every minute';
-      if (step) return 'every ' + step[1] + ' minutes';
-      if (schedule.minutes.size === 1) return 'hourly at minute ' + [...schedule.minutes][0];
-    } else if (schedule.minutes.size === 1 && [...schedule.minutes][0] === 0) {
-      const step = /^\*\/(\d+)$/.exec(hourField);
-      if (step) return 'every ' + step[1] + ' hours';
-    }
-    const at = time();
-    if (at) return 'daily at ' + at;
+    description = describeEveryDay(schedule, minuteField, hourField);
+  } else if (schedule.anyDayOfMonth && !schedule.anyDayOfWeek && anyMonth) {
+    description = describeWeekdays(schedule);
+  } else if (!schedule.anyDayOfMonth && schedule.anyDayOfWeek) {
+    description = describeMonthDays(schedule, minuteField, hourField, anyMonth);
   }
+  return description ?? schedule.expression;
+}
 
-  if (schedule.anyDayOfMonth && !schedule.anyDayOfWeek && anyMonth) {
-    const days = [...schedule.daysOfWeek].sort((a, b) => a - b);
-    const at = time();
-    if (at) {
-      const weekdays = days.join() === '1,2,3,4,5';
-      const weekend = days.join() === '0,6';
-      const label = weekdays
-        ? 'Monday to Friday'
-        : weekend
-          ? 'weekends'
-          : days.map((day) => WEEKDAYS[day] + 's').join(', ');
-      return label + ' at ' + at;
-    }
+const STEP_OF_ANY = /^\*\/(\d+)$/;
+const MAX_LISTED_HOURS = 4;
+const MAX_LISTED_MONTH_DAYS = 4;
+const ascending = (a: number, b: number): number => a - b;
+
+/** "08:00" or "08:00, 20:00" for a schedule with one minute and a few hours; null for anything wider. */
+function clockTimes(schedule: CronSchedule): string | null {
+  if (schedule.minutes.size !== 1 || schedule.hours.size > MAX_LISTED_HOURS) return null;
+  const minute = [...schedule.minutes][0]!;
+  return [...schedule.hours].sort(ascending).map((hour) => two(hour) + ':' + two(minute)).join(', ');
+}
+
+function describeEveryDay(schedule: CronSchedule, minuteField: string, hourField: string): string | null {
+  if (hourField === '*') {
+    const step = STEP_OF_ANY.exec(minuteField);
+    if (minuteField === '*') return 'every minute';
+    if (step) return 'every ' + step[1] + ' minutes';
+    if (schedule.minutes.size === 1) return 'hourly at minute ' + [...schedule.minutes][0];
+  } else if (schedule.minutes.size === 1 && [...schedule.minutes][0] === 0) {
+    const step = STEP_OF_ANY.exec(hourField);
+    if (step) return 'every ' + step[1] + ' hours';
   }
+  const at = clockTimes(schedule);
+  return at ? 'daily at ' + at : null;
+}
 
-  if (!schedule.anyDayOfMonth && schedule.anyDayOfWeek && !everyMinute && !everyHour) {
-    const at = time();
-    const days = [...schedule.daysOfMonth].sort((a, b) => a - b);
-    if (at && days.length <= 4) {
-      const dayLabel = days.join(', ');
-      if (anyMonth) return 'monthly on day ' + dayLabel + ' at ' + at;
-      const months = [...schedule.months].sort((a, b) => a - b);
-      if (months.length === 1) return 'on ' + dayLabel + ' ' + MONTHS[months[0]! - 1] + ' at ' + at;
-    }
-  }
+function describeWeekdays(schedule: CronSchedule): string | null {
+  const at = clockTimes(schedule);
+  if (!at) return null;
+  const days = [...schedule.daysOfWeek].sort(ascending);
+  const label = days.join() === '1,2,3,4,5'
+    ? 'Monday to Friday'
+    : days.join() === '0,6'
+      ? 'weekends'
+      : days.map((day) => WEEKDAYS[day] + 's').join(', ');
+  return label + ' at ' + at;
+}
 
-  return schedule.expression;
+function describeMonthDays(schedule: CronSchedule, minuteField: string, hourField: string, anyMonth: boolean): string | null {
+  if (minuteField === '*' || hourField === '*') return null;
+  const at = clockTimes(schedule);
+  const days = [...schedule.daysOfMonth].sort(ascending);
+  if (!at || days.length > MAX_LISTED_MONTH_DAYS) return null;
+  const dayLabel = days.join(', ');
+  if (anyMonth) return 'monthly on day ' + dayLabel + ' at ' + at;
+  const months = [...schedule.months].sort(ascending);
+  return months.length === 1 ? 'on ' + dayLabel + ' ' + MONTHS[months[0]! - 1] + ' at ' + at : null;
 }

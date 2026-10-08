@@ -53,7 +53,8 @@ import {
   tasksBoardCommand,
 } from './commands/tasks.js';
 import { CliError, printError } from './commands/shared.js';
-import { startRepl, type ReplOptions } from './repl.js';
+import { startRepl } from './repl.js';
+import type { ReplOptions } from './replState.js';
 
 const VERSION = '0.1.0';
 
@@ -107,88 +108,83 @@ function drain(stream: NodeJS.WriteStream): Promise<void> {
   });
 }
 
+type RawOptions = Record<string, unknown>;
+
+/** The options that pick the conversation, shared by the root command and `chat`. */
+function conversationOptions(options: RawOptions): ReplOptions {
+  return {
+    session: options.session as string | undefined,
+    provider: options.provider as string | undefined,
+    model: options.model as string | undefined,
+    effort: options.effort as string | undefined,
+    permission: options.permission as string | undefined,
+    project: options.project as string | undefined,
+    agent: options.agent as string | undefined,
+    voice: Boolean(options.voice),
+    verbose: Boolean(options.verbose),
+  };
+}
+
+function addConversationOptions(command: Command): Command {
+  return command
+    .option('-s, --session <id>', 'continue a session')
+    .option('-p, --provider <id>', 'claude | codex | profile id')
+    .option('-m, --model <model>', 'model to use')
+    .option('--effort <level>', 'low | medium | high | xhigh | max')
+    .option('--permission <level>', 'chat | read | write | full')
+    .option('--project <name>', 'project this conversation is about')
+    .option('--agent <slug>', 'talk to one agent instead of the assistant');
+}
+
 const program = new Command();
 
+/**
+ * The root command and `chat` deliberately share option names (`-s`, `-p`,
+ * `-m`, `--permission`, `--project`, `--agent`), because `rookery chat` with
+ * no prompt just drops into the same interactive session. Commander's
+ * default is to let a parent swallow its own option names wherever they
+ * appear, so `rookery chat --agent ada "hi"` would hand `--agent` to the
+ * program and leave the subcommand with nothing. Positional parsing puts
+ * each option where it was typed: program options before the subcommand
+ * name, the subcommand's own after it.
+ */
 program
   .name('rookery')
-  /**
-   * The root command and `chat` deliberately share option names (`-s`, `-p`,
-   * `-m`, `--permission`, `--project`, `--agent`), because `rookery chat` with
-   * no prompt just drops into the same interactive session. Commander's
-   * default is to let a parent swallow its own option names wherever they
-   * appear, so `rookery chat --agent ada "hi"` would hand `--agent` to the
-   * program and leave the subcommand with nothing. Positional parsing puts
-   * each option where it was typed: program options before the subcommand
-   * name, the subcommand's own after it.
-   */
   .enablePositionalOptions()
   .description('Rookery - a personal AI assistant on top of your Claude Code and ChatGPT logins.')
-  .version(VERSION, '-V, --version')
-  .option('-s, --session <id>', 'continue a session')
-  .option('-p, --provider <id>', 'claude | codex | profile id')
-  .option('-m, --model <model>', 'model to use')
-  .option('--effort <level>', 'low | medium | high | xhigh | max')
-  .option('--permission <level>', 'chat | read | write | full')
-  .option('--project <name>', 'project this conversation is about')
-  .option('--agent <slug>', 'talk to one agent instead of the assistant')
+  .version(VERSION, '-V, --version');
+
+addConversationOptions(program)
   .option('--voice', 'speak replies aloud', false)
   .option('-v, --verbose', 'show thinking traces and tool detail', false)
   .option('--plain', 'skip the full-screen TUI and use the line-based REPL', false)
-  .action(async (options: Record<string, string | boolean | undefined>) => {
-    await run(() =>
-      startInteractive({
-        session: options.session as string | undefined,
-        provider: options.provider as string | undefined,
-        model: options.model as string | undefined,
-        effort: options.effort as string | undefined,
-        permission: options.permission as string | undefined,
-        project: options.project as string | undefined,
-        agent: options.agent as string | undefined,
-        voice: Boolean(options.voice),
-        verbose: Boolean(options.verbose),
-        plain: Boolean(options.plain),
-      }),
-    );
+  .action(async (options: RawOptions) => {
+    await run(() => startInteractive({ ...conversationOptions(options), plain: Boolean(options.plain) }));
   });
 
 /* -------------------------------- chat -------------------------------- */
 
-program
-  .command('chat')
-  .description('one-shot turn; with no prompt this drops into the REPL')
-  .argument('[prompt...]', 'what to say')
-  .option('-s, --session <id>', 'continue a session')
-  .option('-p, --provider <id>', 'claude | codex | profile id')
-  .option('-m, --model <model>', 'model to use')
-  .option('--effort <level>', 'low | medium | high | xhigh | max')
-  .option('--permission <level>', 'chat | read | write | full')
-  .option('--project <name>', 'project this conversation is about')
-  .option('--agent <slug>', 'talk to one agent instead of the assistant')
+addConversationOptions(
+  program
+    .command('chat')
+    .description('one-shot turn; with no prompt this drops into the REPL')
+    .argument('[prompt...]', 'what to say'),
+)
   .option('--json', 'emit raw AgentEvent JSON lines', false)
   .option('--quiet', 'print only the final answer', false)
   .option('--voice', 'shape the reply for speech and speak it', false)
   .option('-v, --verbose', 'show thinking traces', false)
   .option('--plain', 'skip the full-screen TUI and use the line-based REPL', false)
-  .action(async (promptParts: string[], options: Record<string, unknown>) => {
-    const shared = {
-      session: options.session as string | undefined,
-      provider: options.provider as string | undefined,
-      model: options.model as string | undefined,
-      effort: options.effort as string | undefined,
-      permission: options.permission as string | undefined,
-      project: options.project as string | undefined,
-      agent: options.agent as string | undefined,
-      voice: Boolean(options.voice),
-      verbose: Boolean(options.verbose),
-    };
+  .action(async (promptParts: string[], options: RawOptions) => {
+    const conversation = conversationOptions(options);
     await run(() =>
       promptParts.length
         ? chatCommand(promptParts, {
-            ...shared,
+            ...conversation,
             json: Boolean(options.json),
             quiet: Boolean(options.quiet),
           })
-        : startInteractive({ ...shared, plain: Boolean(options.plain) }),
+        : startInteractive({ ...conversation, plain: Boolean(options.plain) }),
     );
   });
 

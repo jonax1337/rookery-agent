@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { NavLink, useNavigate } from 'react-router';
+import { NavLink, useNavigate, type NavigateFunction } from 'react-router';
 
 import {
   AlarmClockIcon as ClockAlertIcon,
@@ -16,13 +16,15 @@ import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
 import { BOARD_WATCH_HINT, cronRunReport, cronRunTrigger, isBoardWatch } from '@/lib/cron';
+import { isRunBlocked } from '@/lib/cron-availability';
 import { reportFailure } from '@/lib/errors';
 import { CRON_JOB_KIND_LABEL, formatDateTime, formatDuration } from '@/lib/format';
 import { daysAgo, formatNumber } from '@/lib/stats';
-import type { CronJob, CronRun } from '@/lib/types';
+import type { Agent, CronJob, CronRun } from '@/lib/types';
+import type { CronState } from '@/hooks/useCron';
 import { useCronState, useOrgState } from '@/providers/rookery-provider';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
-import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
+import { LiveNumber } from '@/components/common/live-number';
 import {
   RotatingText,
   RotatingTextContainer,
@@ -52,6 +54,9 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+
+/** How many runs `GET /api/cron` hands out across all jobs. */
+const RUN_LIST_CEILING = 50;
 
 /**
  * The schedules: standing orders that fire while the server runs.
@@ -193,8 +198,6 @@ export function CronPage() {
     [confirm],
   );
 
-  /* ------------------------------ Kennzahlen ----------------------------- */
-
   // The sleep schedule is the system's own row - counting it as an active
   // standing order would inflate a number nobody created.
   const own = jobs.filter((job) => job.kind !== 'sleep');
@@ -212,21 +215,275 @@ export function CronPage() {
     return cron.runs.filter((run) => !watchers.has(run.jobId));
   }, [cron.jobs, cron.runs]);
   const failed = runs.filter((run) => run.status === 'failed' && run.startedAt >= since).length;
-  // Fifty is the server's ceiling for the shared run list; at exactly fifty
-  // there may be more that nobody can reach.
-  const runsCapped = cron.runs.length >= 50;
+  // At exactly the server's ceiling there may be more runs that nobody can reach.
+  const runsCapped = cron.runs.length >= RUN_LIST_CEILING;
 
-  // The headline numbers are this page's living values: they roll in from
-  // zero once the hook has data and keep rolling whenever the socket moves
-  // them. `thousandSeparator` keeps `formatNumber`'s en-GB comma in the
-  // resting pose - `CountingNumber` has no separator support and would
-  // quietly drop it above a thousand.
-  const liveNumber = (value: number) => (
-    <SlidingNumber number={value} fromNumber={0} thousandSeparator="," />
+  const jobColumns = useJobColumns({
+    busy,
+    running: cron.running,
+    agentById: org.agentById,
+    navigate,
+    toggle,
+    runNow,
+    remove,
+  });
+  const runColumns = useRunColumns(cron, setReport);
+
+  const offline = cron.error ? (
+    <Fade>
+      <ServerOffline onRetry={() => void cron.refresh()} />
+    </Fade>
+  ) : undefined;
+
+  return (
+    <PageBody>
+      {dialog}
+
+      <Fade>
+        <StatCards
+          items={[
+            {
+              label: 'Active',
+              value: <LiveNumber value={active} />,
+              headline: 'Run on schedule',
+              footnote: 'The system memory sleep schedule is not included',
+            },
+            {
+              label: 'Paused',
+              value: <LiveNumber value={paused} />,
+              headline: 'Disabled but retained',
+              footnote: 'A paused schedule will not run again until it is enabled',
+            },
+            {
+              label: 'Running now',
+              value: <LiveNumber value={cron.running.size} />,
+              headline: (
+                <RotatingHeadline
+                  text={cron.running.size > 0 ? 'Work in progress' : 'No work in progress'}
+                />
+              ),
+              footnote: 'Runs whose assignments have not returned yet',
+            },
+            {
+              label: 'Failed (24 h)',
+              value: <LiveNumber value={failed} />,
+              ...cappedBadge(runsCapped),
+              headline: <RotatingHeadline text={failed > 0 ? 'Needs attention' : 'No incidents'} />,
+              footnote: 'Based on the latest ' + RUN_LIST_CEILING + ' runs across all schedules',
+            },
+          ]}
+        />
+      </Fade>
+
+      <Fade delay={50}>
+        <DataTable
+          data={jobs}
+          columns={jobColumns}
+          getRowId={(job) => job.id}
+          idPrefix="zeitplaene"
+          tabLabel="Schedules"
+          tabs={[
+            { value: 'alle', label: 'All', count: jobs.length },
+            { value: 'aktiv', label: 'Active', count: jobs.filter((job) => job.enabled).length },
+            { value: 'pausiert', label: 'Paused', count: jobs.filter((job) => !job.enabled).length },
+            { value: 'einmalig', label: 'One-time', count: jobs.filter((job) => job.once).length },
+          ]}
+          searchable
+          searchPlaceholder="Search schedules"
+          columnLabels={JOB_COLUMN_LABELS}
+          rowLabel={{ singular: 'Schedule', plural: 'schedules' }}
+          rowClickIgnoreColumns={['enabled', 'actions']}
+          onRowClick={(job) => void navigate('/cron/' + job.id)}
+          loading={cron.loading}
+          error={offline}
+          empty={
+            <Fade>
+              <EmptyState
+                icon={CalendarClockIcon}
+                title="No schedules yet"
+                description="A schedule handles something automatically, such as a morning briefing at 8:00 AM or a reminder for tomorrow afternoon. You can also create one in chat: “Every morning at 8…”"
+                actionLabel="Create schedule"
+                actionTo="/cron/new"
+                variant="plain"
+                size="sm"
+              />
+            </Fade>
+          }
+          filteredEmpty={
+            <Fade>
+              <NoResults />
+            </Fade>
+          }
+        />
+      </Fade>
+
+      <Fade delay={100}>
+        <SectionHeading title="Recent runs" hint={'The latest ' + RUN_LIST_CEILING + ' runs across all schedules.'}>
+          <DataTable
+            data={runs}
+            columns={runColumns}
+            getRowId={(run) => run.id}
+            idPrefix="laeufe"
+            initialSorting={[{ id: 'startedAt', desc: true }]}
+            pageSize={10}
+            capped={runsCapped}
+            rowLabel={{ singular: 'Run', plural: 'runs' }}
+            columnLabels={RUN_COLUMN_LABELS}
+            loading={cron.loading}
+            error={offline}
+            empty={
+              <Fade>
+                <EmptyState
+                  icon={HistoryIcon}
+                  title="No runs yet"
+                  description="When a schedule runs, its run and report appear here."
+                  actionLabel="Create schedule"
+                  actionTo="/cron/new"
+                  variant="plain"
+                  size="sm"
+                />
+              </Fade>
+            }
+          />
+        </SectionHeading>
+      </Fade>
+
+      {/*
+        One drawer for the whole table instead of one per row: fifty mounted
+        vaul instances would each bring their own portal and focus trap.
+      */}
+      <RunReportDrawer
+        run={report}
+        scheduleName={report ? cron.jobById(report.jobId)?.name : undefined}
+        onClose={() => setReport(null)}
+      />
+    </PageBody>
   );
+}
 
-  /* -------------------------------- Spalten ------------------------------- */
+/** Column names for the visibility menu. */
+const JOB_COLUMN_LABELS: Record<string, string> = {
+  enabled: 'Active',
+  name: 'Name',
+  owner: 'Run as',
+  schedule: 'Expression',
+  nextRunAt: 'Next run',
+  lastStatus: 'Latest status',
+  runCount: 'Runs',
+};
 
+const RUN_COLUMN_LABELS: Record<string, string> = {
+  job: 'Schedule',
+  status: 'Status',
+  startedAt: 'Start',
+  trigger: 'Trigger',
+  duration: 'Duration',
+};
+
+/**
+ * Who fires a schedule, as text: the agent's own name where there is one, the
+ * kind's label otherwise. `sleep` reads "System" rather than leaving the
+ * column blank - nobody wrote that row and nobody may delete it.
+ */
+function ownerLabel(job: CronJob, agentName: string | undefined): string {
+  if (job.kind === 'agent') return agentName ?? CRON_JOB_KIND_LABEL.agent;
+  return CRON_JOB_KIND_LABEL[job.kind];
+}
+
+/**
+ * The stat-card sentence that flips with live data: the number rolls its
+ * digits (`SlidingNumber`), the headline rolls its words when the socket
+ * turns the state around.
+ */
+function RotatingHeadline({ text }: { text: string }) {
+  return (
+    <RotatingTextContainer text={text}>
+      <RotatingText />
+    </RotatingTextContainer>
+  );
+}
+
+/**
+ * Says why an action is off.
+ *
+ * A disabled `DropdownMenuItem` carries `pointer-events: none`, so the
+ * tooltip has to hang on a wrapper around it, not on the item itself.
+ */
+function ManagedHint({
+  show,
+  reason,
+  children,
+}: {
+  show: boolean;
+  /** What is managing it, if not the Memory setting. */
+  reason?: string;
+  children: ReactNode;
+}) {
+  if (!show) return <>{children}</>;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div>{children}</div>
+      </TooltipTrigger>
+      <TooltipContent side="left">
+        <ClockAlertIcon className="size-3.5" aria-hidden="true" />
+        {reason ?? 'Managed by the Memory setting'}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function RunReportDrawer({
+  run,
+  scheduleName,
+  onClose,
+}: {
+  run: CronRun | null;
+  scheduleName: string | undefined;
+  onClose(): void;
+}) {
+  return (
+    <DetailDrawer
+      open={run !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title={scheduleName ?? 'Run'}
+      description={run ? formatDateTime(run.startedAt) + ' · ' + cronRunTrigger(run) : undefined}
+    >
+      {run ? (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge kind="cronRun" status={run.status} />
+            {run.durationMs !== undefined ? (
+              <span className="text-muted-foreground">{formatDuration(run.durationMs)}</span>
+            ) : null}
+          </div>
+          <pre
+            className={
+              'max-h-none whitespace-pre-wrap break-words font-mono text-xs ' +
+              (run.error ? 'text-destructive' : '')
+            }
+          >
+            {cronRunReport(run)}
+          </pre>
+        </>
+      ) : null}
+    </DetailDrawer>
+  );
+}
+
+interface JobColumnsContext {
+  busy: ReadonlySet<string>;
+  running: ReadonlySet<string>;
+  agentById(id: string | undefined): Agent | undefined;
+  navigate: NavigateFunction;
+  toggle(job: CronJob, enabled: boolean): Promise<void>;
+  runNow(job: CronJob): Promise<void>;
+  remove(job: CronJob): Promise<void>;
+}
+
+function useJobColumns({ busy, running, agentById, navigate, toggle, runNow, remove }: JobColumnsContext) {
   const jobColumn = useMemo(() => createRookeryColumnHelper<CronJob>(), []);
 
   const jobColumns = useMemo(
@@ -241,7 +498,7 @@ export function CronPage() {
             return (
               <Switch
                 checked={job.enabled}
-                disabled={busy.has(job.id) || job.kind === 'script' && job.permission !== 'full' || job.remainingRuns === 0}
+                disabled={busy.has(job.id) || isRunBlocked(job)}
                 aria-label={job.enabled ? 'Pause schedule' : 'Enable schedule'}
                 onCheckedChange={(checked) => void toggle(job, checked)}
               />
@@ -265,7 +522,7 @@ export function CronPage() {
             </div>
           ),
         }),
-        jobColumn.accessor((job) => ownerLabel(job, org.agentById(job.agentId)?.name), {
+        jobColumn.accessor((job) => ownerLabel(job, agentById(job.agentId)?.name), {
           id: 'owner',
           header: ({ column }) => <DataTableColumnHeader column={column} title="Run as" />,
           cell: ({ getValue }) => (
@@ -301,12 +558,13 @@ export function CronPage() {
             return <span className="tabular-nums">{formatDateTime(row.original.nextRunAt)}</span>;
           },
         }),
-        jobColumn.accessor((job) => statusLabel(job), {
+        // Sortable text behind the status badge; empty for a job that never ran.
+        jobColumn.accessor((job) => job.lastStatus ?? '', {
           id: 'lastStatus',
           header: ({ column }) => <DataTableColumnHeader column={column} title="Latest status" />,
           cell: ({ row }) => {
             const job = row.original;
-            if (cron.running.has(job.id)) return <StatusBadge kind="cronRun" status="running" />;
+            if (running.has(job.id)) return <StatusBadge kind="cronRun" status="running" />;
             if (!job.lastStatus) return emptyCell();
             const badge = <StatusBadge kind="cronRun" status={job.lastStatus} />;
             // The error text is the only thing that turns "Failed"
@@ -332,7 +590,7 @@ export function CronPage() {
           ),
         }),
         actionsColumn<CronJob>((job) => {
-          const running = cron.running.has(job.id);
+          const isRunning = running.has(job.id);
           const managed = job.kind === 'sleep';
           // The board watcher stays editable - its schedule and its brief
           // are meant to be yours - but deleting it was a lie: the row came
@@ -359,10 +617,10 @@ export function CronPage() {
                   </DropdownMenuItem>
                 </ManagedHint>
                 <DropdownMenuItem
-                  disabled={running || busy.has(job.id) || job.kind === 'script' && job.permission !== 'full' || job.remainingRuns === 0}
+                  disabled={isRunning || busy.has(job.id) || isRunBlocked(job)}
                   onSelect={() => void runNow(job)}
                 >
-                  {running ? (
+                  {isRunning ? (
                     <Spinner data-icon="inline-start" aria-label="Running" />
                   ) : (
                     <PlayIcon data-icon="inline-start" />
@@ -385,9 +643,13 @@ export function CronPage() {
           );
         }),
       ]),
-    [busy, cron.running, jobColumn, navigate, org, remove, runNow, toggle],
+    [agentById, busy, jobColumn, navigate, remove, runNow, running, toggle],
   );
 
+  return jobColumns;
+}
+
+function useRunColumns(cron: CronState, onShowReport: (run: CronRun) => void) {
   const runColumn = useMemo(() => createRookeryColumnHelper<CronRun>(), []);
 
   const runColumns = useMemo(
@@ -441,245 +703,13 @@ export function CronPage() {
         actionsColumn<CronRun>(
           (run) => {
             if (!cronRunReport(run)) return emptyCell();
-            return <DetailDrawerTrigger onClick={() => setReport(run)}>Report</DetailDrawerTrigger>;
+            return <DetailDrawerTrigger onClick={() => onShowReport(run)}>Report</DetailDrawerTrigger>;
           },
           { header: 'Report' },
         ),
       ]),
-    [cron, runColumn],
+    [cron, onShowReport, runColumn],
   );
 
-  const offline = cron.error ? (
-    <Fade>
-      <ServerOffline onRetry={() => void cron.refresh()} />
-    </Fade>
-  ) : undefined;
-
-  return (
-    <PageBody>
-      {dialog}
-
-      <Fade>
-        <StatCards
-          items={[
-            {
-              label: 'Active',
-              value: liveNumber(active),
-              headline: 'Run on schedule',
-              footnote: 'The system memory sleep schedule is not included',
-            },
-            {
-              label: 'Paused',
-              value: liveNumber(paused),
-              headline: 'Disabled but retained',
-              footnote: 'A paused schedule will not run again until it is enabled',
-            },
-            {
-              label: 'Running now',
-              value: liveNumber(cron.running.size),
-              headline: (
-                <RotatingHeadline
-                  text={cron.running.size > 0 ? 'Work in progress' : 'No work in progress'}
-                />
-              ),
-              footnote: 'Runs whose assignments have not returned yet',
-            },
-            {
-              label: 'Failed (24 h)',
-              value: liveNumber(failed),
-              ...cappedBadge(runsCapped),
-              headline: <RotatingHeadline text={failed > 0 ? 'Needs attention' : 'No incidents'} />,
-              footnote: 'Based on the latest 50 runs across all schedules',
-            },
-          ]}
-        />
-      </Fade>
-
-      <Fade delay={50}>
-        <DataTable
-          data={jobs}
-          columns={jobColumns}
-          getRowId={(job) => job.id}
-          idPrefix="zeitplaene"
-          tabLabel="Schedules"
-          tabs={[
-            { value: 'alle', label: 'All', count: jobs.length },
-            { value: 'aktiv', label: 'Active', count: jobs.filter((job) => job.enabled).length },
-            { value: 'pausiert', label: 'Paused', count: jobs.filter((job) => !job.enabled).length },
-            { value: 'einmalig', label: 'One-time', count: jobs.filter((job) => job.once).length },
-          ]}
-          searchable
-          searchPlaceholder="Search schedules"
-          columnLabels={JOB_COLUMN_LABELS}
-          rowLabel={{ singular: 'Schedule', plural: 'schedules' }}
-          rowClickIgnoreColumns={['enabled', 'actions']}
-          onRowClick={(job) => void navigate('/cron/' + job.id)}
-          loading={cron.loading}
-          error={offline}
-          empty={
-            <Fade>
-              <EmptyState
-                icon={CalendarClockIcon}
-                title="No schedules yet"
-                description="A schedule handles something automatically, such as a morning briefing at 8:00 AM or a reminder for tomorrow afternoon. You can also create one in chat: “Every morning at 8…”"
-                actionLabel="Create schedule"
-                actionTo="/cron/new"
-                variant="plain"
-                size="sm"
-              />
-            </Fade>
-          }
-          filteredEmpty={
-            <Fade>
-              <NoResults />
-            </Fade>
-          }
-        />
-      </Fade>
-
-      <Fade delay={100}>
-        <SectionHeading title="Recent runs" hint="The latest 50 runs across all schedules.">
-          <DataTable
-            data={runs}
-            columns={runColumns}
-            getRowId={(run) => run.id}
-            idPrefix="laeufe"
-            initialSorting={[{ id: 'startedAt', desc: true }]}
-            pageSize={10}
-            capped={runsCapped}
-            rowLabel={{ singular: 'Run', plural: 'runs' }}
-            columnLabels={RUN_COLUMN_LABELS}
-            loading={cron.loading}
-            error={offline}
-            empty={
-              <Fade>
-                <EmptyState
-                  icon={HistoryIcon}
-                  title="No runs yet"
-                  description="When a schedule runs, its run and report appear here."
-                  actionLabel="Create schedule"
-                  actionTo="/cron/new"
-                  variant="plain"
-                  size="sm"
-                />
-              </Fade>
-            }
-          />
-        </SectionHeading>
-      </Fade>
-
-      {/*
-        One drawer for the whole table instead of one per row: fifty mounted
-        vaul instances would each bring their own portal and focus trap.
-      */}
-      <DetailDrawer
-        open={report !== null}
-        onOpenChange={(open) => {
-          if (!open) setReport(null);
-        }}
-        title={report ? (cron.jobById(report.jobId)?.name ?? 'Run') : 'Run'}
-        description={
-          report
-            ? formatDateTime(report.startedAt) + ' · ' + cronRunTrigger(report)
-            : undefined
-        }
-      >
-        {report ? (
-          <>
-            <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge kind="cronRun" status={report.status} />
-              {report.durationMs !== undefined ? (
-                <span className="text-muted-foreground">{formatDuration(report.durationMs)}</span>
-              ) : null}
-            </div>
-            <pre
-              className={
-                'max-h-none whitespace-pre-wrap break-words font-mono text-xs ' +
-                (report.error ? 'text-destructive' : '')
-              }
-            >
-              {cronRunReport(report)}
-            </pre>
-          </>
-        ) : null}
-      </DetailDrawer>
-    </PageBody>
-  );
-}
-
-/** German column names for the visibility menu. */
-const JOB_COLUMN_LABELS: Record<string, string> = {
-  enabled: 'Active',
-  name: 'Name',
-  owner: 'Run as',
-  schedule: 'Expression',
-  nextRunAt: 'Next run',
-  lastStatus: 'Latest status',
-  runCount: 'Runs',
-};
-
-const RUN_COLUMN_LABELS: Record<string, string> = {
-  job: 'Schedule',
-  status: 'Status',
-  startedAt: 'Start',
-  trigger: 'Trigger',
-  duration: 'Duration',
-};
-
-/**
- * Who fires a schedule, as text: the agent's own name where there is one, the
- * kind's label otherwise. `sleep` reads "System" rather than leaving the
- * column blank - nobody wrote that row and nobody may delete it.
- */
-function ownerLabel(job: CronJob, agentName: string | undefined): string {
-  if (job.kind === 'agent') return agentName ?? CRON_JOB_KIND_LABEL.agent;
-  return CRON_JOB_KIND_LABEL[job.kind];
-}
-
-/** Sortable text behind the status badge; empty for a job that never ran. */
-function statusLabel(job: CronJob): string {
-  return job.lastStatus ?? '';
-}
-
-/**
- * The stat-card sentence that flips with live data: the number rolls its
- * digits (`SlidingNumber`), the headline rolls its words when the socket
- * turns the state around.
- */
-function RotatingHeadline({ text }: { text: string }) {
-  return (
-    <RotatingTextContainer text={text}>
-      <RotatingText />
-    </RotatingTextContainer>
-  );
-}
-
-/**
- * Says why an action is off.
- *
- * A disabled `DropdownMenuItem` carries `pointer-events: none`, so the
- * tooltip has to hang on a wrapper around it, not on the item itself.
- */
-function ManagedHint({
-  show,
-  reason,
-  children,
-}: {
-  show: boolean;
-  /** What is managing it, if not the Memory setting. */
-  reason?: string;
-  children: ReactNode;
-}) {
-  if (!show) return <>{children}</>;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div>{children}</div>
-      </TooltipTrigger>
-      <TooltipContent side="left">
-        <ClockAlertIcon className="size-3.5" aria-hidden="true" />
-        {reason ?? 'Managed by the Memory setting'}
-      </TooltipContent>
-    </Tooltip>
-  );
+  return runColumns;
 }

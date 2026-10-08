@@ -4,8 +4,17 @@
 
 import { createInterface } from 'node:readline/promises';
 import { glyph, theme } from '../ui/theme.js';
-import { heading, keyValue, sessionLine, relativeTime, transcriptBlock } from '../ui/render.js';
-import { CliError, counterpartLabel, parseLimit, resolveSession, withAssistant } from './shared.js';
+import { heading, keyValue, listHeader, sessionLine, relativeTime, shortId, transcriptBlock } from '../ui/render.js';
+import {
+  CliError,
+  counterpartLabel,
+  parseLimit,
+  printJson,
+  resolveSession,
+  withAssistant,
+} from './shared.js';
+
+const out = process.stdout;
 
 export interface ListOptions {
   limit?: string;
@@ -19,20 +28,20 @@ export async function sessionsCommand(options: ListOptions = {}): Promise<number
     const sessions = assistant.store.listSessions({ limit, includeArchived: options.all ?? false });
 
     if (options.json) {
-      process.stdout.write(JSON.stringify(sessions, null, 2) + '\n');
+      printJson(sessions);
       return 0;
     }
 
     if (!sessions.length) {
-      process.stdout.write(theme.dim('No sessions yet. Run `rookery` and say something.') + '\n');
+      out.write(theme.dim('No sessions yet. Run `rookery` and say something.') + '\n');
       return 0;
     }
 
-    process.stdout.write('\n' + heading('Sessions') + theme.dim('  (' + sessions.length + ')') + '\n\n');
+    out.write(listHeader('Sessions', sessions.length));
     for (const session of sessions) {
-      process.stdout.write(sessionLine(session, counterpartLabel(assistant, session.agentId)) + '\n');
+      out.write(sessionLine(session, counterpartLabel(assistant, session.agentId)) + '\n');
     }
-    process.stdout.write('\n' + theme.dim('rookery session <id>  to read one') + '\n\n');
+    out.write('\n' + theme.dim('rookery session <id>  to read one') + '\n\n');
     return 0;
   });
 }
@@ -47,16 +56,16 @@ export async function sessionShowCommand(id: string, options: ShowOptions = {}):
     const messages = assistant.store.getMessages(session.id);
 
     if (options.json) {
-      process.stdout.write(JSON.stringify({ session, messages }, null, 2) + '\n');
+      printJson({ session, messages });
       return 0;
     }
 
-    process.stdout.write('\n' + heading(session.title) + '\n');
-    process.stdout.write(keyValue('id', session.id) + '\n');
+    out.write('\n' + heading(session.title) + '\n');
+    out.write(keyValue('id', session.id) + '\n');
     // Who the conversation is with. An agent chat runs in that agent's voice
     // and its memory, so this is not decoration - it says whose words these are.
     const agent = session.agentId ? assistant.store.org.getAgent(session.agentId) : null;
-    process.stdout.write(
+    out.write(
       keyValue(
         'with',
         agent
@@ -64,29 +73,27 @@ export async function sessionShowCommand(id: string, options: ShowOptions = {}):
           : counterpartLabel(assistant, session.agentId),
       ) + '\n',
     );
-    process.stdout.write(
+    out.write(
       keyValue('provider', session.provider + (session.model ? theme.dim('  ' + session.model) : '')) + '\n',
     );
     // The session's cwd is always the workspace, so it says nothing. What the
     // conversation is about does: the project its assignments default to.
     const project = session.projectId ? assistant.store.org.getProject(session.projectId) : null;
     if (project) {
-      process.stdout.write(
-        keyValue('project', project.name + (project.path ? theme.dim('  ' + project.path) : '')) + '\n',
-      );
+      out.write(keyValue('project', project.name + (project.path ? theme.dim('  ' + project.path) : '')) + '\n');
     }
-    process.stdout.write(
+    out.write(
       keyValue('updated', relativeTime(session.updatedAt) + theme.dim('  ' + session.messageCount + ' messages')) +
         '\n\n',
     );
 
     if (!messages.length) {
-      process.stdout.write(theme.dim('This session has no messages.') + '\n\n');
+      out.write(theme.dim('This session has no messages.') + '\n\n');
       return 0;
     }
 
     for (const message of messages) {
-      process.stdout.write(transcriptBlock(message) + '\n');
+      out.write(transcriptBlock(message) + '\n');
     }
     return 0;
   });
@@ -120,7 +127,7 @@ export async function sessionRemoveCommand(id: string, options: RemoveOptions = 
     }
 
     assistant.deleteSession(session.id);
-    process.stdout.write(theme.green(glyph.ok + ' Deleted session ' + session.id.slice(0, 8)) + '\n');
+    out.write(theme.green(glyph.ok + ' Deleted session ' + shortId(session.id)) + '\n');
     return 0;
   });
 }

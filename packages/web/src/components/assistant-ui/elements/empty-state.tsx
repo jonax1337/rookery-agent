@@ -6,6 +6,10 @@ import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
 import { inkButton, paper } from "./surfaces";
 
+const SUGGESTION_BASE_DELAY_MS = 120;
+const SUGGESTION_STAGGER_MS = 70;
+const COMPOSER_DELAY_MS = 360;
+
 export function EmptyState({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
@@ -58,7 +62,10 @@ export function EmptyStateSuggestion({
     <button
       type="button"
       data-slot="empty-state-suggestion"
-      style={{ animationDelay: `${120 + index * 70}ms`, ...style }}
+      style={{
+        animationDelay: `${SUGGESTION_BASE_DELAY_MS + index * SUGGESTION_STAGGER_MS}ms`,
+        ...style,
+      }}
       className={cn(
         paper,
         "fade-in slide-in-from-bottom-2 animate-in fill-mode-both focus-visible:ring-foreground/20 rounded-full px-4 py-2 text-[13px] transition-transform duration-500 outline-none hover:-translate-y-px focus-visible:ring-1 active:scale-[0.96] motion-reduce:animate-none",
@@ -82,7 +89,7 @@ export function EmptyStateComposer({
   return (
     <div
       data-slot="empty-state-composer"
-      style={{ animationDelay: "360ms", ...style }}
+      style={{ animationDelay: `${COMPOSER_DELAY_MS}ms`, ...style }}
       className={cn(
         paper,
         "fade-in slide-in-from-bottom-2 animate-in fill-mode-both flex h-13 w-full items-center justify-between rounded-xl py-2 ps-5 pe-2.5 duration-500 motion-reduce:animate-none",

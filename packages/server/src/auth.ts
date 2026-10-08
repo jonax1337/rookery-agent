@@ -35,15 +35,6 @@ export function createSameOriginHook(): preHandlerAsyncHookHandler {
   };
 }
 
-/**
- * Auth is one shared bearer token, not user accounts.
- *
- * Rookery binds to loopback by default, where a token buys nothing, so an
- * empty `config.token` means "allow everything". The moment a token is set -
- * which is what you do before exposing the port to the LAN or a tunnel - it is
- * required on every /api call and on the websocket upgrade.
- */
-
 /** Constant-time compare that also tolerates different lengths. */
 function tokensMatch(expected: string, given: string): boolean {
   const a = Buffer.from(expected, 'utf8');
@@ -67,6 +58,14 @@ export function queryToken(request: FastifyRequest): string | null {
   return typeof value === 'string' && value.length ? value : null;
 }
 
+/**
+ * Auth is one shared bearer token, not user accounts.
+ *
+ * Rookery binds to loopback by default, where a token buys nothing, so an
+ * empty `config.token` means "allow everything". The moment a token is set -
+ * which is what you do before exposing the port to the LAN or a tunnel - it is
+ * required on every /api call and on the websocket upgrade.
+ */
 export function isAuthorized(context: ServerContext, request: FastifyRequest): boolean {
   const expected = context.config.token;
   if (!expected) return true;

@@ -1,6 +1,6 @@
 import type { AgentEvent, Logger } from '@rookery/core';
 import type { WebSocket } from '@fastify/websocket';
-import { sendFrame } from './stream.js';
+import { sendFrame, type ServerFrame } from './stream.js';
 
 /**
  * The turn hub: transport without ownership.
@@ -28,6 +28,11 @@ interface RunningTurn {
   seq: number;
 }
 
+/** The slice of the core journal the hub reads: the events a turn has recorded, in sequence order. */
+export interface TurnJournal {
+  events(turnId: string): { seq: number; event: unknown }[];
+}
+
 export class TurnHub {
   readonly #turns = new Map<string, RunningTurn>();
   /**
@@ -40,9 +45,9 @@ export class TurnHub {
   readonly #subscriptions = new Map<WebSocket, Set<RunningTurn>>();
   readonly #log: Logger;
   /** The journal, read on attach so the handover to live is gapless. */
-  readonly #journal: { events(turnId: string): { seq: number; event: unknown }[] } | null;
+  readonly #journal: TurnJournal | null;
 
-  constructor(log: Logger, journal?: { events(turnId: string): { seq: number; event: unknown }[] }) {
+  constructor(log: Logger, journal?: TurnJournal) {
     this.#log = log;
     this.#journal = journal ?? null;
   }
@@ -85,31 +90,39 @@ export class TurnHub {
     if (input.socket) this.#remember(input.socket, turn);
     this.#announce(turn);
 
-    void (async () => {
-      try {
-        for await (const event of input.events) {
-          // The first turn of a new conversation starts before its session
-          // exists - the client cannot name what it is about to create. The
-          // session event closes that gap one event in, and an `attach` that
-          // arrives a moment later (a reload, a second tab) finds the turn.
-          if (event.type === 'session' && !turn.sessionId && event.sessionId) {
-            turn.sessionId = event.sessionId;
-            this.#announce(turn);
-          }
-          turn.seq += 1;
-          for (const socket of turn.subscribers) {
-            sendFrame(socket, { type: 'event', id: turn.id, seq: turn.seq, event });
-          }
-        }
-      } catch (error) {
-        for (const socket of turn.subscribers) {
-          sendFrame(socket, { type: 'error', id: turn.id, message: (error as Error).message });
-        }
-      } finally {
-        this.#turns.delete(turn.id);
-        for (const socket of turn.subscribers) this.#forget(socket, turn);
+    void this.#drain(turn, input.events);
+  }
+
+  /** Pump a generator into the turn's subscribers until it ends or fails; the turn is gone from the hub afterwards. */
+  async #drain(turn: RunningTurn, events: AsyncGenerator<AgentEvent, void, unknown>): Promise<void> {
+    try {
+      for await (const event of events) {
+        this.#adoptSession(turn, event);
+        turn.seq += 1;
+        this.#fanOut(turn, { type: 'event', id: turn.id, seq: turn.seq, event });
       }
-    })();
+    } catch (error) {
+      this.#fanOut(turn, { type: 'error', id: turn.id, message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      this.#turns.delete(turn.id);
+      for (const socket of turn.subscribers) this.#forget(socket, turn);
+    }
+  }
+
+  /**
+   * The first turn of a new conversation starts before its session
+   * exists - the client cannot name what it is about to create. The
+   * session event closes that gap one event in, and an `attach` that
+   * arrives a moment later (a reload, a second tab) finds the turn.
+   */
+  #adoptSession(turn: RunningTurn, event: AgentEvent): void {
+    if (event.type !== 'session' || turn.sessionId || !event.sessionId) return;
+    turn.sessionId = event.sessionId;
+    this.#announce(turn);
+  }
+
+  #fanOut(turn: RunningTurn, frame: ServerFrame): void {
+    for (const socket of turn.subscribers) sendFrame(socket, frame);
   }
 
   /**
@@ -170,10 +183,7 @@ export class TurnHub {
 
   /** A socket went away: its subscriptions go with it, the turns stay. */
   detach(socket: WebSocket): void {
-    for (const [sessionId, watching] of this.#conversations) {
-      watching.delete(socket);
-      if (watching.size === 0) this.#conversations.delete(sessionId);
-    }
+    for (const sessionId of this.#conversations.keys()) this.leave(sessionId, socket);
     const mine = this.#subscriptions.get(socket);
     if (!mine) return;
     for (const turn of mine) turn.subscribers.delete(socket);

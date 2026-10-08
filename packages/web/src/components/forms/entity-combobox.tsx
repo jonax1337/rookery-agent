@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils';
  *
  * Every form in this app had the same select, and every one of them carried a
  * `'__none__'` sentinel because Radix' `Select` refuses an empty value. The
- * combobox does not: `null` is a real value here, so "Noch offen" is an
+ * combobox does not: `null` is a real value here, so "Not assigned yet" is an
  * absent id rather than a magic string that a `save()` has to translate back.
  * It also filters as you type, which the company's agent list needs long
  * before a person would want to scroll it.
@@ -36,7 +36,7 @@ export interface EntityComboboxProps {
   /** `null` means nothing is chosen - and that is a value the API accepts. */
   value: string | null;
   onChange(value: string | null): void;
-  /** What the empty field says: "Kein Projekt", "Noch offen", "Ohne Team". */
+  /** What the empty field says: "No project", "Not assigned yet", "No team". */
   placeholder?: string;
   /** Shown when the typed query matches nothing. */
   emptyLabel?: string;

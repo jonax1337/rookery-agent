@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
+const KEY_FILE = 'voice-keys.json';
+
 export const voiceKeysSchema = z.object({
   openai: z.string().trim().max(4096).regex(/^[\x21-\x7e]*$/).nullable().optional(),
   elevenlabs: z.string().trim().max(4096).regex(/^[\x21-\x7e]*$/).nullable().optional(),
@@ -11,10 +13,11 @@ export type VoiceKeys = Partial<Record<'openai' | 'elevenlabs', string>>;
 const names = ['openai', 'elevenlabs'] as const;
 
 function savedKeys(home: string): VoiceKeys {
-  const file = join(home, 'voice-keys.json');
+  const file = join(home, KEY_FILE);
   try {
     return existsSync(file) ? voiceKeysSchema.parse(JSON.parse(readFileSync(file, 'utf8'))) as VoiceKeys : {};
   } catch {
+    // The parse error is left out on purpose: its message can quote the file, and the file holds the keys.
     throw new Error('Voice key storage could not be read. Check voice-keys.json in your Rookery home.');
   }
 }
@@ -39,7 +42,7 @@ export function saveVoiceKeys(home: string, patch: z.infer<typeof voiceKeysSchem
     if (patch[name] === null) delete saved[name];
     else if (patch[name]) saved[name] = patch[name];
   }
-  const file = join(home, 'voice-keys.json');
+  const file = join(home, KEY_FILE);
   const temporary = file + '.' + randomUUID() + '.tmp';
   try {
     writeFileSync(temporary, JSON.stringify(saved) + '\n', { mode: 0o600, flag: 'wx' });

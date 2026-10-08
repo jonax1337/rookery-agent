@@ -71,6 +71,30 @@ export type AttachedFrame = Extract<ServerFrame, { type: 'attached' }>;
 
 const MAX_BACKOFF_MS = 15000;
 const PING_INTERVAL_MS = 25000;
+const TUI_OPEN_TIMEOUT_MS = 60_000;
+const NOT_CONNECTED_MESSAGE = 'Not connected to the Rookery server.';
+const CONNECTION_LOST_MESSAGE = 'Connection to the Rookery server was lost.';
+/** How many unadopted turns keep their early frames, and how many frames per turn. */
+const MAX_UNCLAIMED_TURNS = 8;
+const MAX_UNCLAIMED_FRAMES = 2000;
+
+type Listener<T> = (value: T) => void;
+
+/** The `memory` broadcast: what a finished turn taught the memory, in the conversation it came from. */
+export interface LearnedMemories {
+  sessionId: string;
+  stored: MemoryRecord[];
+}
+
+/** Adds `listener`; the function returned takes it out again. */
+function subscribe<T>(listeners: Set<Listener<T>>, listener: Listener<T>): () => void {
+  listeners.add(listener);
+  return () => void listeners.delete(listener);
+}
+
+function emit<T>(listeners: Set<Listener<T>>, value: T): void {
+  for (const listener of listeners) listener(value);
+}
 
 export class RookerySocket {
   #url: string;
@@ -91,23 +115,23 @@ export class RookerySocket {
   #attachedConversations = new Set<string>();
   /** The latest `attachConversation` handler; one page attaches one conversation. */
   #onAttached: ((frame: AttachedFrame) => void) | null = null;
-  #statusListeners = new Set<(status: SocketStatus) => void>();
-  #memoryListeners = new Set<(event: { sessionId: string; stored: MemoryRecord[] }) => void>();
-  #assignmentListeners = new Set<(assignment: AssignmentView) => void>();
-  #messageListeners = new Set<(message: AgentMessage) => void>();
-  #notificationListeners = new Set<(notification: Notification) => void>();
-  #taskEventListeners = new Set<(event: TaskEvent) => void>();
-  #taskListeners = new Set<(task: Task) => void>();
-  #cronListeners = new Set<(event: CronEvent) => void>();
-  #changedListeners = new Set<(change: OrgChange) => void>();
-  #sleepListeners = new Set<(event: SleepEvent) => void>();
-  #quotaListeners = new Set<(quota: ProviderQuota) => void>();
-  #questionListeners = new Set<(event: QuestionEvent) => void>();
-  #questionClosedListeners = new Set<(event: QuestionClosedEvent) => void>();
-  #assignmentLogListeners = new Set<(frame: AssignmentLogFrame) => void>();
+  #statusListeners = new Set<Listener<SocketStatus>>();
+  #memoryListeners = new Set<Listener<LearnedMemories>>();
+  #assignmentListeners = new Set<Listener<AssignmentView>>();
+  #messageListeners = new Set<Listener<AgentMessage>>();
+  #notificationListeners = new Set<Listener<Notification>>();
+  #taskEventListeners = new Set<Listener<TaskEvent>>();
+  #taskListeners = new Set<Listener<Task>>();
+  #cronListeners = new Set<Listener<CronEvent>>();
+  #changedListeners = new Set<Listener<OrgChange>>();
+  #sleepListeners = new Set<Listener<SleepEvent>>();
+  #quotaListeners = new Set<Listener<ProviderQuota>>();
+  #questionListeners = new Set<Listener<QuestionEvent>>();
+  #questionClosedListeners = new Set<Listener<QuestionClosedEvent>>();
+  #assignmentLogListeners = new Set<Listener<AssignmentLogFrame>>();
   /** Assignments this socket should be watching, so a reconnect can re-arm them. */
   #watchedAssignments = new Set<string>();
-  #tuiListeners = new Set<(frame: TuiFrame) => void>();
+  #tuiListeners = new Set<Listener<TuiFrame>>();
   /** Terminals this socket has open; re-armed on reconnect like the watches. */
   #watchedTuis = new Set<string>();
   /** `tui-open` requests waiting for their `tui-opened` reply. */
@@ -123,57 +147,50 @@ export class RookerySocket {
     return this.#status;
   }
 
-  onStatus(listener: (status: SocketStatus) => void): () => void {
-    this.#statusListeners.add(listener);
+  /** Called at once with the current status, then on every change. */
+  onStatus(listener: Listener<SocketStatus>): () => void {
+    const unsubscribe = subscribe(this.#statusListeners, listener);
     listener(this.#status);
-    return () => this.#statusListeners.delete(listener);
+    return unsubscribe;
   }
 
-  onMemory(listener: (event: { sessionId: string; stored: MemoryRecord[] }) => void): () => void {
-    this.#memoryListeners.add(listener);
-    return () => this.#memoryListeners.delete(listener);
+  onMemory(listener: Listener<LearnedMemories>): () => void {
+    return subscribe(this.#memoryListeners, listener);
   }
 
   /** Every assignment state change in the company, whoever started it. */
-  onAssignment(listener: (assignment: AssignmentView) => void): () => void {
-    this.#assignmentListeners.add(listener);
-    return () => this.#assignmentListeners.delete(listener);
+  onAssignment(listener: Listener<AssignmentView>): () => void {
+    return subscribe(this.#assignmentListeners, listener);
   }
 
   /** Every message posted between agents, their manager or the assistant. */
-  onMessage(listener: (message: AgentMessage) => void): () => void {
-    this.#messageListeners.add(listener);
-    return () => this.#messageListeners.delete(listener);
+  onMessage(listener: Listener<AgentMessage>): () => void {
+    return subscribe(this.#messageListeners, listener);
   }
 
   /** Every notification stored for the user - a schedule result, a question, a report. */
-  onNotification(listener: (notification: Notification) => void): () => void {
-    this.#notificationListeners.add(listener);
-    return () => this.#notificationListeners.delete(listener);
+  onNotification(listener: Listener<Notification>): () => void {
+    return subscribe(this.#notificationListeners, listener);
   }
 
   /** Every line added to any task's activity. */
-  onTaskEvent(listener: (event: TaskEvent) => void): () => void {
-    this.#taskEventListeners.add(listener);
-    return () => this.#taskEventListeners.delete(listener);
+  onTaskEvent(listener: Listener<TaskEvent>): () => void {
+    return subscribe(this.#taskEventListeners, listener);
   }
 
   /** Every task on the board that was created or changed state, whoever did it. */
-  onTask(listener: (task: Task) => void): () => void {
-    this.#taskListeners.add(listener);
-    return () => this.#taskListeners.delete(listener);
+  onTask(listener: Listener<Task>): () => void {
+    return subscribe(this.#taskListeners, listener);
   }
 
   /** A schedule was created, edited or deleted, or one of its runs changed state. */
-  onCron(listener: (event: CronEvent) => void): () => void {
-    this.#cronListeners.add(listener);
-    return () => this.#cronListeners.delete(listener);
+  onCron(listener: Listener<CronEvent>): () => void {
+    return subscribe(this.#cronListeners, listener);
   }
 
   /** The memory fell asleep, moved on a phase, or woke up again. */
-  onSleep(listener: (event: SleepEvent) => void): () => void {
-    this.#sleepListeners.add(listener);
-    return () => this.#sleepListeners.delete(listener);
+  onSleep(listener: Listener<SleepEvent>): () => void {
+    return subscribe(this.#sleepListeners, listener);
   }
 
   /**
@@ -185,9 +202,8 @@ export class RookerySocket {
    * ever learn about quota while a turn happened to be running in the chat.
    * Outside a turn, `GET /api/providers/:id/usage` stays the source.
    */
-  onQuota(listener: (quota: ProviderQuota) => void): () => void {
-    this.#quotaListeners.add(listener);
-    return () => this.#quotaListeners.delete(listener);
+  onQuota(listener: Listener<ProviderQuota>): () => void {
+    return subscribe(this.#quotaListeners, listener);
   }
 
   /**
@@ -199,21 +215,18 @@ export class RookerySocket {
    * turn. A client that started the turn itself sees the same event twice,
    * once here and once on its stream, so listeners merge by id.
    */
-  onQuestion(listener: (event: QuestionEvent) => void): () => void {
-    this.#questionListeners.add(listener);
-    return () => this.#questionListeners.delete(listener);
+  onQuestion(listener: Listener<QuestionEvent>): () => void {
+    return subscribe(this.#questionListeners, listener);
   }
 
   /** That question is over - answered, cancelled or expired. Take the card away. */
-  onQuestionClosed(listener: (event: QuestionClosedEvent) => void): () => void {
-    this.#questionClosedListeners.add(listener);
-    return () => this.#questionClosedListeners.delete(listener);
+  onQuestionClosed(listener: Listener<QuestionClosedEvent>): () => void {
+    return subscribe(this.#questionClosedListeners, listener);
   }
 
   /** An agent, team, project or the company itself was created or edited. */
-  onChanged(listener: (change: OrgChange) => void): () => void {
-    this.#changedListeners.add(listener);
-    return () => this.#changedListeners.delete(listener);
+  onChanged(listener: Listener<OrgChange>): () => void {
+    return subscribe(this.#changedListeners, listener);
   }
 
   /**
@@ -222,9 +235,8 @@ export class RookerySocket {
    * listener does not need to filter - but it gets the whole frame, id
    * included, because one terminal component may serve several rows.
    */
-  onAssignmentLog(listener: (frame: AssignmentLogFrame) => void): () => void {
-    this.#assignmentLogListeners.add(listener);
-    return () => this.#assignmentLogListeners.delete(listener);
+  onAssignmentLog(listener: Listener<AssignmentLogFrame>): () => void {
+    return subscribe(this.#assignmentLogListeners, listener);
   }
 
   /**
@@ -247,9 +259,8 @@ export class RookerySocket {
   }
 
   /** Frames of the run terminals this socket has open (`watchTui`). */
-  onTui(listener: (frame: TuiFrame) => void): () => void {
-    this.#tuiListeners.add(listener);
-    return () => this.#tuiListeners.delete(listener);
+  onTui(listener: Listener<TuiFrame>): () => void {
+    return subscribe(this.#tuiListeners, listener);
   }
 
   /**
@@ -299,7 +310,7 @@ export class RookerySocket {
       const timer = setTimeout(() => {
         this.#tuiOpens.delete(id);
         reject(new Error('The terminal did not open in time.'));
-      }, 60_000);
+      }, TUI_OPEN_TIMEOUT_MS);
       this.#tuiOpens.set(id, {
         resolve: (value) => {
           clearTimeout(timer);
@@ -310,7 +321,12 @@ export class RookerySocket {
           reject(error);
         },
       });
-      this.#send({ type: 'tui-open', id, ...payload });
+      // Without a connection no reply can ever come: say so now, not after the timeout.
+      if (!this.#send({ type: 'tui-open', id, ...payload })) {
+        this.#tuiOpens.delete(id);
+        clearTimeout(timer);
+        reject(new Error(NOT_CONNECTED_MESSAGE));
+      }
     });
   }
 
@@ -328,6 +344,7 @@ export class RookerySocket {
     try {
       socket = new WebSocket(this.#url);
     } catch {
+      this.#setStatus('closed');
       this.#scheduleReconnect();
       return;
     }
@@ -375,18 +392,15 @@ export class RookerySocket {
       this.#clearPing();
       this.#ws = null;
       this.#setStatus('closed');
-      // A drop mid-turn must not leave the UI spinning forever.
-      for (const turn of this.#pending.values()) {
-        turn.onError('Connection to the Rookery server was lost.');
-      }
-      this.#pending.clear();
+      this.#failPendingWork();
       if (!this.#closedByUs) this.#scheduleReconnect();
     };
   }
 
   close(): void {
     this.#closedByUs = true;
-    if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
+    clearTimeout(this.#reconnectTimer ?? undefined);
+    this.#failPendingWork();
     this.#clearPing();
     // Detached before closing. A CONNECTING socket cannot be stopped
     // synchronously, so without this its events would still land after the
@@ -401,6 +415,14 @@ export class RookerySocket {
       socket.close();
     }
     this.#setStatus('closed');
+  }
+
+  /** Turns and terminal opens owed a reply by a connection that is gone: a drop must not leave the UI waiting forever. */
+  #failPendingWork(): void {
+    for (const turn of this.#pending.values()) turn.onError(CONNECTION_LOST_MESSAGE);
+    this.#pending.clear();
+    for (const opening of this.#tuiOpens.values()) opening.reject(new Error(CONNECTION_LOST_MESSAGE));
+    this.#tuiOpens.clear();
   }
 
   /** Start a turn. Returns its id so the caller can abort it. */
@@ -435,10 +457,9 @@ export class RookerySocket {
     const id = crypto.randomUUID();
     this.#pending.set(id, { id, cursor: 0, ...handlers });
 
-    const delivered = this.#send({ ...frame, id } as ClientFrame);
-    if (!delivered) {
+    if (!this.#send({ ...frame, id } as ClientFrame)) {
       this.#pending.delete(id);
-      handlers.onError('Not connected to the Rookery server.');
+      handlers.onError(NOT_CONNECTED_MESSAGE);
     }
     return id;
   }
@@ -516,154 +537,115 @@ export class RookerySocket {
       return;
     }
 
-    if (frame.type === 'pong') return;
+    switch (frame.type) {
+      case 'memory':
+        emit(this.#memoryListeners, frame.event);
+        return;
 
-    if (frame.type === 'memory') {
-      for (const listener of this.#memoryListeners) listener(frame.event);
-      return;
-    }
+      case 'assignment':
+        if (frame.event.type === 'assignment') emit(this.#assignmentListeners, frame.event.assignment);
+        return;
 
-    if (frame.type === 'assignment') {
-      if (frame.event.type === 'assignment') {
-        const view = frame.event.assignment;
-        for (const listener of this.#assignmentListeners) listener(view);
-      }
-      return;
-    }
+      case 'message':
+        if (frame.event.type === 'message') emit(this.#messageListeners, frame.event.message);
+        return;
 
-    if (frame.type === 'message') {
-      if (frame.event.type === 'message') {
-        const message = frame.event.message;
-        for (const listener of this.#messageListeners) listener(message);
-      }
-      return;
-    }
-
-    if (frame.type === 'notification') {
-      // The contract sends the notification flat; tolerate it wrapped as an event too.
-      const notification = frame.notification ?? (frame.event?.type === 'notification' ? frame.event.notification : undefined);
-      if (notification) for (const listener of this.#notificationListeners) listener(notification);
-      return;
-    }
-
-    if (frame.type === 'task-event') {
-      const raw = frame.event as TaskEvent | AgentEvent;
-      const event = 'type' in raw ? (raw.type === 'task-event' ? raw.event : undefined) : raw;
-      if (event) for (const listener of this.#taskEventListeners) listener(event);
-      return;
-    }
-
-    if (frame.type === 'task') {
-      if (frame.event.type === 'task') {
-        const task = frame.event.task;
-        for (const listener of this.#taskListeners) listener(task);
-      }
-      return;
-    }
-
-    if (frame.type === 'cron') {
-      if (frame.event.type === 'cron') {
-        const event = frame.event;
-        for (const listener of this.#cronListeners) listener(event);
-      }
-      return;
-    }
-
-    if (frame.type === 'sleep') {
-      if (frame.event.type === 'sleep') {
-        const event = frame.event;
-        for (const listener of this.#sleepListeners) listener(event);
-      }
-      return;
-    }
-
-    if (frame.type === 'question') {
-      if (frame.event.type === 'question') {
-        const event = frame.event;
-        for (const listener of this.#questionListeners) listener(event);
-      }
-      return;
-    }
-
-    if (frame.type === 'question-closed') {
-      if (frame.event.type === 'question-closed') {
-        const event = frame.event;
-        for (const listener of this.#questionClosedListeners) listener(event);
-      }
-      return;
-    }
-
-    if (frame.type === 'changed') {
-      for (const listener of this.#changedListeners) listener(frame.change ?? { kind: frame.kind ?? '', id: frame.id ?? '' });
-      return;
-    }
-
-    if (frame.type === 'assignment-log') {
-      for (const listener of this.#assignmentLogListeners) listener(frame);
-      return;
-    }
-
-    if (frame.type === 'tui-opened') {
-      const pending = this.#tuiOpens.get(frame.id);
-      this.#tuiOpens.delete(frame.id);
-      pending?.resolve({ sessionId: frame.sessionId, key: frame.key });
-      return;
-    }
-
-    if (frame.type === 'tui-snapshot' || frame.type === 'tui-data' || frame.type === 'tui-state') {
-      for (const listener of this.#tuiListeners) listener(frame);
-      return;
-    }
-
-    if (frame.type === 'error') {
-      const opening = frame.id ? this.#tuiOpens.get(frame.id) : undefined;
-      if (frame.id && opening) {
-        this.#tuiOpens.delete(frame.id);
-        opening.reject(new Error(frame.message));
+      case 'notification': {
+        // The contract sends the notification flat; tolerate it wrapped as an event too.
+        const notification =
+          frame.notification ?? (frame.event?.type === 'notification' ? frame.event.notification : undefined);
+        if (notification) emit(this.#notificationListeners, notification);
         return;
       }
-      if (frame.id) {
-        const turn = this.#pending.get(frame.id);
-        this.#pending.delete(frame.id);
-        turn?.onError(frame.message);
-      }
-      return;
-    }
 
-    if (frame.type === 'attached') {
-      this.#onAttached?.(frame);
-      return;
-    }
-
-    if (frame.type === 'event') {
-      // Quota is about the account, not the turn, so it is handed on even
-      // when the turn itself is no longer ours to render (a reload mid-turn,
-      // say). Everything else below belongs to a registered turn.
-      if (frame.event.type === 'quota') {
-        const quota = frame.event.quota;
-        for (const listener of this.#quotaListeners) listener(quota);
+      case 'task-event': {
+        const payload = frame.event as TaskEvent | AgentEvent;
+        const event = 'type' in payload ? (payload.type === 'task-event' ? payload.event : undefined) : payload;
+        if (event) emit(this.#taskEventListeners, event);
+        return;
       }
 
-      this.#handleEventFrame(frame);
+      case 'task':
+        if (frame.event.type === 'task') emit(this.#taskListeners, frame.event.task);
+        return;
+
+      case 'cron':
+        if (frame.event.type === 'cron') emit(this.#cronListeners, frame.event);
+        return;
+
+      case 'sleep':
+        if (frame.event.type === 'sleep') emit(this.#sleepListeners, frame.event);
+        return;
+
+      case 'question':
+        if (frame.event.type === 'question') emit(this.#questionListeners, frame.event);
+        return;
+
+      case 'question-closed':
+        if (frame.event.type === 'question-closed') emit(this.#questionClosedListeners, frame.event);
+        return;
+
+      case 'changed':
+        emit(this.#changedListeners, frame.change ?? { kind: frame.kind ?? '', id: frame.id ?? '' });
+        return;
+
+      case 'assignment-log':
+        emit(this.#assignmentLogListeners, frame);
+        return;
+
+      case 'tui-opened': {
+        const opening = this.#tuiOpens.get(frame.id);
+        this.#tuiOpens.delete(frame.id);
+        opening?.resolve({ sessionId: frame.sessionId, key: frame.key });
+        return;
+      }
+
+      case 'tui-snapshot':
+      case 'tui-data':
+      case 'tui-state':
+        emit(this.#tuiListeners, frame);
+        return;
+
+      case 'error':
+        this.#handleErrorFrame(frame);
+        return;
+
+      case 'attached':
+        this.#onAttached?.(frame);
+        return;
+
+      case 'event':
+        // Quota is about the account, not the turn, so it is handed on even
+        // when the turn itself is no longer ours to render (a reload mid-turn,
+        // say). Everything else below belongs to a registered turn.
+        if (frame.event.type === 'quota') emit(this.#quotaListeners, frame.event.quota);
+        this.#handleEventFrame(frame);
+        return;
+
+      default:
+        // `pong` and anything a newer server may add.
+        return;
     }
+  }
+
+  /** An error names the `tui-open` or the turn it belongs to; one that names neither concerns nobody here. */
+  #handleErrorFrame(frame: Extract<ServerFrame, { type: 'error' }>): void {
+    if (!frame.id) return;
+    const opening = this.#tuiOpens.get(frame.id);
+    if (opening) {
+      this.#tuiOpens.delete(frame.id);
+      opening.reject(new Error(frame.message));
+      return;
+    }
+    const turn = this.#pending.get(frame.id);
+    this.#pending.delete(frame.id);
+    turn?.onError(frame.message);
   }
 
   #handleEventFrame(frame: Extract<ServerFrame, { type: 'event' }>): void {
     const turn = this.#pending.get(frame.id);
     if (!turn) {
-      let early = this.#unclaimed.get(frame.id);
-      if (!early) {
-        early = [];
-        this.#unclaimed.set(frame.id, early);
-        // Only the newest few turns: an announced turn is adopted within a
-        // round trip or not at all.
-        while (this.#unclaimed.size > 8) {
-          const oldest = this.#unclaimed.keys().next().value;
-          if (oldest === undefined) break;
-          this.#unclaimed.delete(oldest);
-        }
-      }
-      if (early.length < 2000) early.push(frame);
+      this.#holdUnclaimed(frame);
       return;
     }
     // The journal position this frame carries is the guard of the handover:
@@ -684,6 +666,23 @@ export class RookerySocket {
     }
   }
 
+  /** Keep a frame of a turn nobody has adopted yet until someone does. */
+  #holdUnclaimed(frame: Extract<ServerFrame, { type: 'event' }>): void {
+    let early = this.#unclaimed.get(frame.id);
+    if (!early) {
+      early = [];
+      this.#unclaimed.set(frame.id, early);
+      // Only the newest few turns: an announced turn is adopted within a
+      // round trip or not at all.
+      while (this.#unclaimed.size > MAX_UNCLAIMED_TURNS) {
+        const oldest = this.#unclaimed.keys().next().value;
+        if (oldest === undefined) break;
+        this.#unclaimed.delete(oldest);
+      }
+    }
+    if (early.length < MAX_UNCLAIMED_FRAMES) early.push(frame);
+  }
+
   #send(frame: ClientFrame): boolean {
     if (!this.#ws || this.#ws.readyState !== WebSocket.OPEN) return false;
     this.#ws.send(JSON.stringify(frame));
@@ -693,11 +692,11 @@ export class RookerySocket {
   #setStatus(status: SocketStatus): void {
     if (this.#status === status) return;
     this.#status = status;
-    for (const listener of this.#statusListeners) listener(status);
+    emit(this.#statusListeners, status);
   }
 
   #scheduleReconnect(): void {
-    if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
+    clearTimeout(this.#reconnectTimer ?? undefined);
     this.#attempt += 1;
     // 500ms, 1s, 2s, 4s ... capped, with jitter so reloads do not sync up.
     const base = Math.min(MAX_BACKOFF_MS, 500 * 2 ** (this.#attempt - 1));
@@ -706,7 +705,7 @@ export class RookerySocket {
   }
 
   #clearPing(): void {
-    if (this.#pingTimer) clearInterval(this.#pingTimer);
+    clearInterval(this.#pingTimer ?? undefined);
     this.#pingTimer = null;
   }
 }

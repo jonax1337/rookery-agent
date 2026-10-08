@@ -14,6 +14,7 @@ import {
 } from '@/components/animate-ui/primitives/texts/rotating';
 import { ProviderIcon } from '@/components/provider-icon';
 import { AssistantAvatar } from '@/components/shell/assistant-avatar';
+import { CONNECTION_LABEL, connectionStatus, type ConnectionStatus } from '@/components/shell/connection-status';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,6 +42,18 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar';
 
+const STATUS_DETAIL: Record<ConnectionStatus, string> = {
+  online: 'Connected to the Rookery server',
+  offline: 'The Rookery server is not responding',
+  connecting: 'Connecting to the server',
+};
+
+const STATUS_TONE: Record<ConnectionStatus, string> = {
+  online: 'text-status-ok',
+  offline: 'text-destructive',
+  connecting: 'text-status-warn',
+};
+
 /**
  * The sidebar's footer: who the app is and whether it is reachable.
  *
@@ -61,29 +74,13 @@ export function NavStatus() {
   const { chat } = useChatSession();
   const { theme, setTheme } = useTheme();
 
-  // Three states, not two: the socket needs a moment after a reload, and
-  // "Verbindet ..." is the honest word for it. Only a failed REST call is a
-  // real outage.
-  const status = connected ? 'online' : offline ? 'offline' : 'connecting';
-  const statusLabel =
-    status === 'online' ? 'Connected' : status === 'offline' ? 'Disconnected' : 'Connecting …';
+  const status = connectionStatus(connected, offline);
   // The menu names the machine rather than describing the state again - the
   // line above it already says "Connected". `0.0.0.0` means "every interface",
   // which is not an address anyone can type, so the page's own hostname stands
   // in for it; the port is always the server's own.
-  const address =
-    config?.port === undefined
-      ? null
-      : (config.host && config.host !== '0.0.0.0' ? config.host : window.location.hostname) +
-        ':' +
-        config.port;
-  const statusDetail =
-    address ??
-    (status === 'online'
-      ? 'Connected to the Rookery server'
-      : status === 'offline'
-        ? 'The Rookery server is not responding'
-        : 'Connecting to the server');
+  const host = config?.host && config.host !== '0.0.0.0' ? config.host : window.location.hostname;
+  const statusDetail = config?.port === undefined ? STATUS_DETAIL[status] : `${host}:${config.port}`;
 
   const reconnect = useCallback(() => {
     // The socket reconnects on a backoff timer by itself; `connect()` is the
@@ -104,16 +101,11 @@ export function NavStatus() {
               <AssistantAvatar busy={chat.busy} label={assistantName} />
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-medium">{assistantName}</span>
-                <span className={cn(
-                  'mt-1 flex items-center gap-1.5 text-xs',
-                  status === 'online' && 'text-status-ok',
-                  status === 'offline' && 'text-destructive',
-                  status === 'connecting' && 'text-status-warn',
-                )}>
+                <span className={cn('mt-1 flex items-center gap-1.5 text-xs', STATUS_TONE[status])}>
                   <StatusDot status={status} />
                   {/* The one label here that changes on its own; RotatingText
                       slides it over whenever the connection state flips. */}
-                  <RotatingTextContainer text={statusLabel}>
+                  <RotatingTextContainer text={CONNECTION_LABEL[status]}>
                     <RotatingText />
                   </RotatingTextContainer>
                 </span>
@@ -183,7 +175,7 @@ export function NavStatus() {
   );
 }
 
-function StatusDot({ status }: { status: 'online' | 'offline' | 'connecting' }) {
+function StatusDot({ status }: { status: ConnectionStatus }) {
   return (
     <span
       aria-hidden="true"
@@ -207,16 +199,19 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
   const [quota, setQuota] = useState<ProviderQuota | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const failure = error ?? quota?.error;
 
   useEffect(() => {
-    if (!open || quota || loading) return;
+    // `error` is in the guard on purpose: the effect re-runs when `loading`
+    // flips back, and a failed fetch would otherwise be retried in a loop.
+    if (!open || quota || error || loading) return;
     setLoading(true);
     api
       .providerUsage(provider.id)
       .then(setQuota)
       .catch(() => setError('Usage unavailable'))
       .finally(() => setLoading(false));
-  }, [loading, open, provider.id, quota]);
+  }, [error, loading, open, provider.id, quota]);
 
   return (
     <DropdownMenuSub open={open} onOpenChange={setOpen}>
@@ -233,10 +228,7 @@ function ProviderQuotaSub({ provider }: { provider: ProviderStatus }) {
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="w-64 p-3">
         {loading && <p className="text-xs text-muted-foreground">Loading …</p>}
-        {!loading && error && <p className="mb-2 text-xs text-destructive">{error}</p>}
-        {!loading && !error && quota?.error && (
-          <p className="mb-2 text-xs text-destructive">{quota.error}</p>
-        )}
+        {!loading && failure && <p className="mb-2 text-xs text-destructive">{failure}</p>}
         {!loading && !error && quota && !quota.error && quota.windows.length === 0 && (
           <p className="text-xs text-muted-foreground">No usage reported.</p>
         )}

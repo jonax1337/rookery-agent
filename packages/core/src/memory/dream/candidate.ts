@@ -9,6 +9,7 @@ import type {
   ScoredMemory,
 } from '../../types.js';
 import { byScoreThenId, recencyOf } from '../recall.js';
+import { DEFAULT_LIMIT, tagHitOf, usageOf } from './frame.js';
 import type { GainFunction } from './measure.js';
 import {
   dropContradictedFromFrame,
@@ -32,7 +33,7 @@ import {
  *   of the structure, not a substring test over the prompt - a prompt built
  *   from numbers cannot fail a substring test, so such a test proves nothing.
  * - **The writer does not run at `ask`'s effort (S16/E14).** `ask`
- *   (memory/sleep.ts) wires `effort: 'low'`, which is right for the
+ *   (memory/sleep-model.ts) wires `effort: 'low'`, which is right for the
  *   housekeeping phases it serves and wrong here: designing a parameter set
  *   from failure cases is judgement, not extraction. The dream therefore gets
  *   its own narrow caller below, with the effort the request carries. Like
@@ -45,11 +46,8 @@ import {
  * after this, in dream/admission.ts (AP5).
  */
 
-/** Weight of the flat tag bonus one row can earn (`scoreFrame`). */
-const TAG_BONUS = 0.1;
-
-/** The usage term's saturation: `log2(accessCount + 1) / 5`, capped at 1. */
-const USAGE_SATURATION = 5;
+/** Profile rows the agent pipeline merges into its ranking (`pipelineAgent`). */
+const AGENT_PROFILE_ROWS = 3;
 
 /**
  * Effort the writer falls back to when the request names none. Never `'low'`
@@ -197,8 +195,8 @@ function componentsOf(
     relevance: relevanceById.get(record.id) ?? 0,
     importance: record.importance,
     recency: recencyOf(record.updatedAt, frame.now),
-    usage: Math.min(1, Math.log2(record.accessCount + 1) / USAGE_SATURATION),
-    tagHit: record.tags.some((tag) => queryTokens.has(tag.toLowerCase())) ? TAG_BONUS : 0,
+    usage: usageOf(record.accessCount),
+    tagHit: tagHitOf(record.tags, queryTokens),
   };
 }
 
@@ -230,8 +228,10 @@ function orderedRanking(
   policy: FrameScoringPolicy,
   ranked: ScoredMemory[],
 ): ScoredMemory[] {
-  if (frame.pipeline === 'agent') return [...mergeProfile(frame, ranked, 3)].sort(byScoreThenId);
-  const merged = mergeProfile(frame, ranked, policy.limit ?? 8);
+  if (frame.pipeline === 'agent') {
+    return [...mergeProfile(frame, ranked, AGENT_PROFILE_ROWS)].sort(byScoreThenId);
+  }
+  const merged = mergeProfile(frame, ranked, policy.limit ?? DEFAULT_LIMIT);
   return [...dropContradictedFromFrame(frame, merged)].sort(byScoreThenId);
 }
 
@@ -249,105 +249,148 @@ export function buildAggregates(
   gain: GainFunction,
   policy: FrameScoringPolicy,
 ): CandidateAggregates {
-  const missed = emptyMeans();
-  const delivered = emptyMeans();
-  const firstHitRanks: number[] = [];
-  let scored = 0;
-  let abstained = 0;
-  let cases = 0;
-  let missedCount = 0;
-  let deliveredCount = 0;
-  let renderedCount = 0;
-  let budgetCut = 0;
-  let hop2 = 0;
-  let coverage = 0;
-  let chars = 0;
+  const tally = new BadCaseTally(gain, policy);
+  for (const frame of frames) tally.add(frame);
+  return tally.toAggregates(frames.length);
+}
 
-  for (const frame of frames) {
+/** One scored frame that left proven, deliverable rows out of its block. */
+interface BadCase {
+  frame: RecallFrame;
+  /** The rows the block rendered, in prompt order. */
+  lines: ScoredMemory[];
+  renderedIds: ReadonlySet<string>;
+  missedRecords: MemoryRecordSnapshot[];
+}
+
+/** Running sums over a night's frames; `toAggregates` turns them into means and shares. */
+class BadCaseTally {
+  private readonly gain: GainFunction;
+  private readonly policy: FrameScoringPolicy;
+  private readonly missed = emptyMeans();
+  private readonly delivered = emptyMeans();
+  private readonly firstHitRanks: number[] = [];
+  private scored = 0;
+  private abstained = 0;
+  private cases = 0;
+  private missedCount = 0;
+  private deliveredCount = 0;
+  private renderedCount = 0;
+  private budgetCut = 0;
+  private hop2 = 0;
+  private coverage = 0;
+  private chars = 0;
+
+  constructor(gain: GainFunction, policy: FrameScoringPolicy) {
+    this.gain = gain;
+    this.policy = policy;
+  }
+
+  add(frame: RecallFrame): void {
     const run =
-      frame.pipeline === 'agent' ? pipelineAgent(frame, policy) : pipelineAssistant(frame, policy);
+      frame.pipeline === 'agent'
+        ? pipelineAgent(frame, this.policy)
+        : pipelineAssistant(frame, this.policy);
     if (!run.ok) {
-      abstained += 1;
-      continue;
+      this.abstained += 1;
+      return;
     }
-    scored += 1;
-    renderedCount += run.lines.length;
-    coverage += run.lines.length
-      ? run.lines.filter((memory) => gain(memory.id) > 0).length / run.lines.length
+    this.scored += 1;
+    this.renderedCount += run.lines.length;
+    this.coverage += run.lines.length
+      ? run.lines.filter((memory) => this.isProven(memory.id)).length / run.lines.length
       : 0;
-    chars += Math.min(1, run.block.length / frame.budgetChars);
+    this.chars += Math.min(1, run.block.length / frame.budgetChars);
 
     const renderedIds = new Set(run.lines.map((memory) => memory.id));
     const missedRecords = Object.values(frame.records).filter(
       (record) =>
-        gain(record.id) > 0 && reachable(record, frame.owner) && !renderedIds.has(record.id),
+        this.isProven(record.id) && reachable(record, frame.owner) && !renderedIds.has(record.id),
     );
-    if (!missedRecords.length) continue;
+    if (!missedRecords.length) return;
+    this.addCase({ frame, lines: run.lines, renderedIds, missedRecords });
+  }
 
-    cases += 1;
-    missedCount += missedRecords.length;
+  toAggregates(frameCount: number): CandidateAggregates {
+    const { cases, scored } = this;
+    return {
+      frames: frameCount,
+      scored,
+      abstained: this.abstained,
+      cases,
+      missed: divideMeans(this.missed, this.missedCount),
+      delivered: divideMeans(this.delivered, this.deliveredCount),
+      missedRows: cases ? this.missedCount / cases : 0,
+      renderedRows: scored ? this.renderedCount / scored : 0,
+      firstHitRanks: this.firstHitRanks,
+      budgetCutShare: cases ? this.budgetCut / cases : 0,
+      hop2Share: cases ? this.hop2 / cases : 0,
+      coverage: scored ? this.coverage / scored : 0,
+      chars: scored ? this.chars / scored : 0,
+    };
+  }
+
+  private isProven(id: string): boolean {
+    return this.gain(id) > 0;
+  }
+
+  private addCase(badCase: BadCase): void {
+    const { frame, lines, missedRecords } = badCase;
+    this.cases += 1;
+    this.missedCount += missedRecords.length;
     const relevanceById = new Map(
       frame.hop1.map((row) => [row.id, row.relevance / frame.maxRelevanceClamped] as const),
     );
     const queryTokens = new Set(frame.query.tokens);
     for (const record of missedRecords) {
-      addMeans(missed, componentsOf(record, frame, relevanceById, queryTokens));
+      addMeans(this.missed, componentsOf(record, frame, relevanceById, queryTokens));
     }
 
     // What stood on top instead: the head of the block, as long as the list
     // of rows that should have been there.
-    const head = run.lines.slice(0, Math.max(1, missedRecords.length));
+    const head = lines.slice(0, Math.max(1, missedRecords.length));
     for (const memory of head) {
-      addMeans(delivered, componentsOf(memory, frame, relevanceById, queryTokens));
+      addMeans(this.delivered, componentsOf(memory, frame, relevanceById, queryTokens));
     }
-    deliveredCount += head.length;
+    this.deliveredCount += head.length;
 
-    const hitIndex = run.lines.findIndex((memory) => gain(memory.id) > 0);
-    firstHitRanks.push(hitIndex === -1 ? 0 : hitIndex + 1);
+    const hitIndex = lines.findIndex((memory) => this.isProven(memory.id));
+    this.firstHitRanks.push(hitIndex === -1 ? 0 : hitIndex + 1);
 
-    const ranked = scoreFrame(frame, policy);
-    if (ranked.ok) {
-      // The budget ripped before the first proven row exactly when the
-      // ranking had it and the renderer never reached it.
-      const first = orderedRanking(frame, policy, ranked.ranked).find(
-        (memory) => gain(memory.id) > 0,
-      );
-      if (first && !renderedIds.has(first.id)) budgetCut += 1;
-    }
+    if (this.budgetRippedBeforeFirstHit(badCase)) this.budgetCut += 1;
+    if (this.secondHopWouldReachMissed(badCase)) this.hop2 += 1;
+  }
 
-    // Would the second hop have found one of them? Asked at the box's widest
-    // hop weights, with expansion forced on, because that is the question -
-    // not what this policy point happened to do.
+  /**
+   * The budget ripped before the first proven row exactly when the ranking
+   * had it and the renderer never reached it.
+   */
+  private budgetRippedBeforeFirstHit({ frame, renderedIds }: BadCase): boolean {
+    const ranked = scoreFrame(frame, this.policy);
+    if (!ranked.ok) return false;
+    const first = orderedRanking(frame, this.policy, ranked.ranked).find((memory) =>
+      this.isProven(memory.id),
+    );
+    return first !== undefined && !renderedIds.has(first.id);
+  }
+
+  /**
+   * Would the second hop have found one of them? Asked at the box's widest
+   * hop weights, with expansion forced on, because that is the question -
+   * not what this policy point happened to do.
+   */
+  private secondHopWouldReachMissed({ frame, missedRecords }: BadCase): boolean {
     const missedIds = new Set(missedRecords.map((record) => record.id));
     const widest = scoreFrame(frame, {
-      ...policy,
+      ...this.policy,
       hopEntity: frame.box.hopEntity[1],
       hopEdge: frame.box.hopEdge[1],
       expand: true,
     });
-    if (
-      widest.ok &&
-      widest.ranked.some((memory) => memory.hop !== 'direct' && missedIds.has(memory.id))
-    ) {
-      hop2 += 1;
-    }
+    return (
+      widest.ok && widest.ranked.some((memory) => memory.hop !== 'direct' && missedIds.has(memory.id))
+    );
   }
-
-  return {
-    frames: frames.length,
-    scored,
-    abstained,
-    cases,
-    missed: divideMeans(missed, missedCount),
-    delivered: divideMeans(delivered, deliveredCount),
-    missedRows: cases ? missedCount / cases : 0,
-    renderedRows: scored ? renderedCount / scored : 0,
-    firstHitRanks,
-    budgetCutShare: cases ? budgetCut / cases : 0,
-    hop2Share: cases ? hop2 / cases : 0,
-    coverage: scored ? coverage / scored : 0,
-    chars: scored ? chars / scored : 0,
-  };
 }
 
 /* -------------------------------- prompt -------------------------------- */
@@ -529,7 +572,7 @@ export function renderCandidatePrompt(
 
 /**
  * Pull one JSON object out of a reply that may carry prose or a fence. The
- * same extraction `parseObject` does (memory/sleep.ts), kept local so that
+ * same extraction `parseObject` does (memory/sleep-model.ts), kept local so that
  * the night's entry point can import this module without importing itself
  * back through it.
  */
@@ -605,15 +648,18 @@ export function parseCandidate(raw: string, box: RecallBox): CandidateParse {
 
   // A fractional limit is not a rounding job: the writer was told it is a
   // whole number, and guessing what it meant invents a point nobody proposed.
-  if (!Number.isInteger(limit)) return { ok: false, reason: 'out-of-box' };
-  if (limit < 0 || limit > box.limitMax) return { ok: false, reason: 'out-of-box' };
-  if (!inside(threshold, box.threshold)) return { ok: false, reason: 'out-of-box' };
-  if (!inside(hopEntity, box.hopEntity)) return { ok: false, reason: 'out-of-box' };
-  if (!inside(hopEdge, box.hopEdge)) return { ok: false, reason: 'out-of-box' };
-  if (!inside(relevance, box.w.relevance)) return { ok: false, reason: 'out-of-box' };
-  if (!inside(importance, box.w.importance)) return { ok: false, reason: 'out-of-box' };
-  if (!inside(recency, box.w.recency)) return { ok: false, reason: 'out-of-box' };
-  if (!inside(usage, box.w.usage)) return { ok: false, reason: 'out-of-box' };
+  const inBox =
+    Number.isInteger(limit) &&
+    limit >= 0 &&
+    limit <= box.limitMax &&
+    inside(threshold, box.threshold) &&
+    inside(hopEntity, box.hopEntity) &&
+    inside(hopEdge, box.hopEdge) &&
+    inside(relevance, box.w.relevance) &&
+    inside(importance, box.w.importance) &&
+    inside(recency, box.w.recency) &&
+    inside(usage, box.w.usage);
+  if (!inBox) return { ok: false, reason: 'out-of-box' };
 
   return {
     ok: true,
@@ -645,7 +691,7 @@ export function parseCandidate(raw: string, box: RecallBox): CandidateParse {
 
 /**
  * One candidate call. The dream's own narrow caller (S16/E14): same shape as
- * `ask` (memory/sleep.ts), but the effort comes from the request instead of
+ * `ask` (memory/sleep-model.ts), but the effort comes from the request instead of
  * being wired to `'low'` - housekeeping may not out-think its work, a
  * parameter proposal has to think. Never throws; an empty string means
  * "nothing usable", and the caller counts that as a failure.

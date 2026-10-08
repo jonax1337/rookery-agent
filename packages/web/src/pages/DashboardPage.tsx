@@ -1,22 +1,19 @@
-import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { NavLink, useNavigate } from 'react-router';
+import { useMemo } from 'react';
 
-
-import { api } from '@/lib/api';
-import { PROVIDER_LABEL, shorten } from '@/lib/format';
-import { dayKey, fillDayGaps, formatDateTime, formatNumber } from '@/lib/stats';
-import type {
-  Assignment,
-  OrgPerformanceEntry,
-  ProviderId,
-  ProviderQuota,
-  ProviderStatus,
-  Session,
-  StatsDay,
-  StatsSnapshot,
-  Task,
-} from '@/lib/types';
-import { useAllSessions } from '@/hooks/useAllSessions';
+import { Fade } from '@/components/animate-ui/primitives/effects/fade';
+import { usePageMeta } from '@/components/shell/page-meta';
+import { PageBody } from '@/components/blocks/page-body';
+import { StatCards } from '@/components/blocks/stat-cards';
+import { ActivityHeatmapCard } from '@/components/blocks/activity-heatmap-card';
+import { ServerOffline } from '@/components/common/empty-state';
+import { PlusIcon } from '@/components/icons';
+import { Button } from '@/components/ui/button';
+import { useDashboardStats } from '@/hooks/useDashboardStats';
+import { usePerformanceAlerts } from '@/hooks/usePerformanceAlerts';
+import { useProviderQuotas } from '@/hooks/useProviderQuotas';
+import { fillDayGaps } from '@/lib/stats';
+import { sumSince } from '@/lib/stats-window';
+import type { StatsTotals } from '@/lib/types';
 import {
   useChatSession,
   useConfig,
@@ -25,65 +22,20 @@ import {
   useOrgState,
   useTasksState,
 } from '@/providers/rookery-provider';
-import { Fade } from '@/components/animate-ui/primitives/effects/fade';
-import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
-import { usePageMeta } from '@/components/shell/page-meta';
-import { PageBody } from '@/components/blocks/page-body';
-import { SectionHeading } from '@/components/blocks/section-heading';
-import { StatCards, type StatCardProps } from '@/components/blocks/stat-cards';
-import { ActivityHeatmapCard } from '@/components/blocks/activity-heatmap-card';
-import { DataTable, type DataTableTab } from '@/components/blocks/data-table/data-table';
-import { relativeTimeCell } from '@/components/blocks/data-table/table-columns';
-import {
-  createRookeryColumnHelper,
-  type RookeryColumnDef,
-} from '@/components/blocks/data-table/table-features';
-import { EmptyState, ServerOffline } from '@/components/common/empty-state';
-import { ProviderCell } from '@/components/common/provider-cell';
-import { buildSessionColumns } from '@/components/common/session-columns';
-import { RunningBadge, StatusBadge } from '@/components/common/status-badge';
-import { buildTaskColumns } from '@/components/common/task-columns';
-import { ProviderIcon } from '@/components/provider-icon';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
-import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemFooter,
-  ItemGroup,
-  ItemMedia,
-  ItemTitle,
-} from '@/components/ui/item';
-import { Progress } from '@/components/ui/progress';
-import { Skeleton } from '@/components/ui/skeleton';
-import type { IconComponent } from "@/components/icons";
-import {
-  ActivityIcon,
-  BotIcon,
-  ClipboardCheckIcon as ListTodoIcon,
-  MessageSquareIcon as MessagesSquareIcon,
-  PlusIcon,
-  SendIcon,
-} from "@/components/icons";
+import { buildDashboardCards } from './dashboard/dashboard-cards';
+import { GetStarted } from './dashboard/GetStarted';
+import { ProviderPanel } from './dashboard/ProviderPanel';
+import { RecentActivity } from './dashboard/RecentActivity';
+import { RECENT_ROWS } from './dashboard/recent-tabs';
 
 /**
  * The one page that answers "what is going on" - and the reference
  * composition of the whole rebuild: `dashboard-01` in its intended order,
  * headline numbers, then the activity calendar, then the recent rows, then
  * the machine underneath. The area curve the original block puts here made
- * way for the calendar in September 2026 - one activity view that shows a
- * quiet stretch as a pale band beats a second axis to parse, and the curve
- * still lives on the tasks, assignments and memory pages where a range
- * switch is wanted.
+ * way for the calendar - one activity view that shows a quiet stretch as a
+ * pale band beats a second axis to parse, and the curve still lives on the
+ * tasks, assignments and memory pages where a range switch is wanted.
  *
  * Every figure here comes from `GET /api/stats`, which counts in the
  * database. That matters more than it sounds: before it existed, each total
@@ -94,89 +46,29 @@ import {
  * from.
  *
  * Growth is stated only where the API can prove it: nothing returns a
- * previous-period value, and "+12,5 % gegenüber Vormonat" invented on the
+ * previous-period value, and "+12.5 % vs. last month" invented on the
  * client would be the most convincing lie on the page - so every badge here
  * counts forward ("learned · 7 days"), never against a fictive baseline.
  */
 
-/** How many rows the "Recent" table shows per facet. A preview, not a list. */
-const RECENT_ROWS = 10;
-
-/**
- * The calendar's window: a whole year, straight up to the server's cap for
- * one stats call. Fifty-three week columns fill the card's width at a
- * readable cell size - the ninety days this fetched before stretched each
- * day into a bar once the calendar became the page's only activity view.
- */
-const CALENDAR_DAYS = 366;
-
-/** Org broadcasts arrive in bursts while work runs; one refetch per burst. */
-const REFETCH_DEBOUNCE_MS = 400;
-
-type RecentTab = 'tasks' | 'assignments' | 'sessions';
-
-/** Where "Show all" goes, per facet. */
-const TAB_TARGET: Record<RecentTab, string> = {
-  tasks: '/tasks',
-  assignments: '/assignments',
-  sessions: '/chats',
-};
-
-const assignmentColumn = createRookeryColumnHelper<Assignment>();
-
-/**
- * First day of a range, as the `YYYY-MM-DD` key the series is keyed by.
- *
- * Stepping with `setDate` instead of subtracting milliseconds is what keeps
- * the window right across a DST change.
- */
-function windowStartKey(days: number): string {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() - (days - 1));
-  return dayKey(start);
-}
-
-/** Sums one field of the series over the last `days` days. */
-function sumSince(series: readonly StatsDay[], days: number, pick: (day: StatsDay) => number) {
-  const from = windowStartKey(days);
-  let total = 0;
-  // Day keys sort lexicographically because they are zero-padded, so the
-  // comparison needs no date parsing.
-  for (const day of series) if (day.day >= from) total += pick(day);
-  return total;
-}
-
-/**
- * The empty states draw their icon in when it enters the view. `EmptyState`
- * takes its icon as a `IconComponent`, which these `forwardRef` shells satisfy
- * for the animated equivalents - the explicit `size` keeps the 24px the
- * lucide default rests at (animate-ui would otherwise rest at 28 and grow
- * the media circle).
- */
-const AnimatedActivityIcon = forwardRef<SVGSVGElement>(function AnimatedActivityIcon() {
-  return <ActivityIcon size={24} />;
-});
-
-const AnimatedBotIcon = forwardRef<SVGSVGElement>(function AnimatedBotIcon() {
-  return <BotIcon size={24} />;
-});
-
-const AnimatedSendIcon = forwardRef<SVGSVGElement>(function AnimatedSendIcon() {
-  return <SendIcon size={24} />;
-});
+/** Days that count as "learned this week" for the memories badge. */
+const NEW_MEMORY_DAYS = 7;
 
 export function DashboardPage() {
-  const navigate = useNavigate();
-  const { socket, offline, reload } = useConnection();
+  const { socket, offline, reload: reloadConnection } = useConnection();
   const { config, providers, assistantName } = useConfig();
-  const { newConversation, openConversation } = useChatSession();
+  const { newConversation } = useChatSession();
   const org = useOrgState();
   const tasks = useTasksState();
   const { memories } = useMemoryState();
-  const sessions = useAllSessions(socket, { limit: RECENT_ROWS });
+  const { stats, statsFailed, recentRuns, runsFailed, reload } = useDashboardStats(
+    socket,
+    RECENT_ROWS,
+  );
+  const { flagged, proposals } = usePerformanceAlerts();
+  const quotas = useProviderQuotas(providers);
 
-  // No breadcrumb of its own: `ROUTE_META` calls this page „Übersicht“, and the
+  // No breadcrumb of its own: `ROUTE_META` calls this page "Overview", and the
   // sidebar entry, the browser tab and the crumb have to agree on that name.
   usePageMeta(
     {
@@ -194,65 +86,7 @@ export function DashboardPage() {
     [newConversation],
   );
 
-  /* ------------------------------ the numbers ----------------------------- */
-
-  const [stats, setStats] = useState<StatsSnapshot | null>(null);
-  const [statsFailed, setStatsFailed] = useState(false);
-  const [recentRuns, setRecentRuns] = useState<Assignment[] | null>(null);
-  const [runsFailed, setRunsFailed] = useState(false);
-  // Sequence guard: the debounced socket refetch can overtake a load that is
-  // still in flight; only the newest run may write state.
-  const loadSeq = useRef(0);
-
-  // Two requests, one refresh: the counts and the newest runs are the only
-  // things on this page that have no hook of their own yet.
-  const load = useCallback(async (): Promise<void> => {
-    const seq = ++loadSeq.current;
-    const [snapshot, runs] = await Promise.allSettled([
-      api.stats({ days: CALENDAR_DAYS }),
-      api.assignments({ limit: RECENT_ROWS }),
-    ]);
-    if (seq !== loadSeq.current) return;
-    if (snapshot.status === 'fulfilled') {
-      setStats(snapshot.value);
-      setStatsFailed(false);
-    } else {
-      setStatsFailed(true);
-    }
-    if (runs.status === 'fulfilled') {
-      setRecentRuns(runs.value);
-      setRunsFailed(false);
-    } else {
-      setRunsFailed(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  // Anything the company does moves at least one of these counts, and a
-  // dashboard that needs a reload to be current is a screenshot.
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () =>
-      socket.onChanged(() => {
-        if (timerRef.current) clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => void load(), REFETCH_DEBOUNCE_MS);
-      }),
-    [socket, load],
-  );
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    },
-    [],
-  );
-
   const totals = stats?.totals ?? null;
-  const memoryStats = memories.stats;
-
-  /* ------------------------------ the calendar ----------------------------- */
 
   // The server leaves days with nothing on them out of the series; a
   // calendar drawn over that would show only the days that carried
@@ -263,285 +97,35 @@ export function DashboardPage() {
     [stats],
   );
 
-  const newMemories = useMemo(
-    () => sumSince(chartData, 7, (day) => day.memories),
-    [chartData],
-  );
-
-  /* ------------------------------- the cards ------------------------------- */
-
-  const teams = org.teams.length;
-  const runningTasks = tasks.countByStatus.running;
-  const waiting = <Skeleton className="h-7 w-20" />;
-
-  // Fetched once, not through the socket: a performance recalculation is a
-  // read-model detail, not something worth a live subscription for.
-  const [performance, setPerformance] = useState<OrgPerformanceEntry[]>([]);
-  useEffect(() => {
-    api.orgPerformance().then(setPerformance).catch(() => setPerformance([]));
-  }, []);
-  const flagged = performance.filter((row) => row.performance.stage > 0).length;
-  const proposals = performance.filter((row) => row.pendingProposal).length;
-
-  // The headline numbers are this page's living values: they roll in from
-  // zero once the snapshot arrives and keep rolling whenever a socket
-  // refetch moves them. `thousandSeparator` keeps `formatNumber`'s en-GB
-  // comma in the resting pose - `CountingNumber` has no separator support
-  // and would quietly drop it above a thousand.
-  const liveNumber = (value: number) => (
-    <SlidingNumber number={value} fromNumber={0} thousandSeparator="," />
-  );
-
-  const cards: StatCardProps[] = [
-    {
-      label: 'Memories',
-      value: totals ? liveNumber(totals.memories) : waiting,
-      // "gelernt", not "dazugekommen": the day series counts every memory
-      // the assistant wrote, the number above counts the ones still awake.
-      // A night that compacts or puts to sleep what was learned this week
-      // lowers the number without touching the badge, and the footnote below
-      // says so rather than letting the two look like the same quantity.
-      ...(newMemories > 0
-        ? { badge: <Badge variant="outline">+{formatNumber(newMemories)} learned · 7 days</Badge> }
-        : {}),
-      ...(memoryStats
-        ? {
-            headline:
-              formatNumber(memoryStats.pinned) +
-              ' pinned · ' +
-              formatNumber(memoryStats.dormant) +
-              ' sleeping',
-          }
-        : {}),
-      footnote:
-        'Active, excluding sleeping and forgotten. Newly learned also includes memories consolidated since.',
-      to: '/memory',
-    },
-    {
-      label: 'Agents',
-      value: totals ? liveNumber(totals.agents) : waiting,
-      ...(proposals > 0
-        ? { badge: <Badge variant="destructive">{formatNumber(proposals)} replacement proposed</Badge> }
-        : totals && totals.runningAssignments > 0
-          ? { badge: <RunningBadge count={totals.runningAssignments} /> }
-          : {}),
-      headline:
-        flagged > 0
-          ? formatNumber(flagged) + (flagged === 1 ? ' agent needs attention' : ' agents need attention')
-          : teams === 1
-            ? 'In a team'
-            : 'In ' + formatNumber(teams) + ' teams',
-      footnote: 'Excluding archived agents',
-      to: flagged > 0 ? '/org/performance' : '/org/agents',
-    },
-    {
-      label: 'Open tasks',
-      value: totals ? liveNumber(totals.openTasks) : waiting,
-      ...(runningTasks > 0 ? { badge: <RunningBadge count={runningTasks} /> } : {}),
-      headline: totals ? 'Of ' + formatNumber(totals.tasks) + ' tasks total' : ' ',
-      footnote:
-        'Open, planned, or running, including subtasks. The running badge counts top-level tasks only.',
-      to: '/tasks',
-    },
-    {
-      label: 'Conversations',
-      value: totals ? liveNumber(totals.sessions) : waiting,
-      ...(totals && totals.archivedSessions > 0
-        ? {
-            badge: (
-              <Badge variant="outline">
-                {formatNumber(totals.archivedSessions)} archived
-              </Badge>
-            ),
-          }
-        : {}),
-      headline: totals ? formatNumber(totals.messages) + ' messages total' : ' ',
-      footnote:
-        'Conversations excluding archive. Messages including archive.',
-      to: '/chats',
-    },
-  ];
-
-  /* ------------------------------- the table ------------------------------- */
-
-  const [selectedTab, setTab] = useState<RecentTab | null>(null);
-  const tab: RecentTab = selectedTab ?? (
-    totals && totals.tasks === 0
-      ? (totals.assignments > 0 ? 'assignments' : 'sessions')
-      : 'tasks'
-  );
-
-  const agentName = useCallback(
-    (id: string | undefined) => org.agentById(id)?.name ?? 'Unknown',
-    [org],
-  );
-
-  const recentTasks = useMemo(
-    () => [...tasks.tasks].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, RECENT_ROWS),
-    [tasks.tasks],
-  );
-
-  // The same table `/tasks` draws, in its short form. The dashboard used to
-  // define it a third time and lost the sortable heads, the rank-based
-  // priority order and the link to the agent along the way.
-  const taskColumns = useMemo<RookeryColumnDef<Task>[]>(
-    () => buildTaskColumns({ agentById: org.agentById, showParentHint: true }),
-    [org],
-  );
-
-  const assignmentColumns = useMemo<RookeryColumnDef<Assignment>[]>(
-    () =>
-      assignmentColumn.columns([
-        assignmentColumn.accessor('task', {
-          header: 'Assignment',
-          cell: ({ row }) => (
-            <div className="max-w-[42ch] truncate font-medium">
-              {shorten(row.original.task, 90)}
-            </div>
-          ),
-        }),
-        assignmentColumn.accessor('agentId', {
-          header: 'Agent',
-          cell: ({ row }) => <span className="text-sm">{agentName(row.original.agentId)}</span>,
-        }),
-        assignmentColumn.accessor('status', {
-          header: 'Status',
-          cell: ({ row }) => <StatusBadge kind="assignment" status={row.original.status} />,
-        }),
-        assignmentColumn.accessor('provider', {
-          header: 'Model',
-          cell: ({ row }) => (
-            <ProviderCell
-              {...(row.original.provider ? { provider: row.original.provider } : {})}
-              {...(row.original.model ? { model: row.original.model } : {})}
-            />
-          ),
-        }),
-        assignmentColumn.accessor('createdAt', {
-          header: () => <div className="w-full text-right">Started</div>,
-          cell: ({ row }) => relativeTimeCell(row.original.createdAt, { align: 'end' }),
-        }),
-      ]),
-    [agentName],
-  );
-
-  // The same table `/chats` draws. Both used to write it out, and disagreed
-  // about the words: „Gesprochen“/„Getippt“ here, „Voice“/„Chat“ there, and a
-  // deleted agent was „Unknown“ on one page and „Unbekannter Agent“ on the
-  // other.
-  const sessionColumns = useMemo<RookeryColumnDef<Session>[]>(() => buildSessionColumns({}), []);
-
-  // The counts on the tabs are the database's, not the preview's: the table
-  // shows ten rows, but "Tasks 128" is the honest answer to how many there
-  // are - and the reason "Show all" is worth clicking.
-  const tabs: DataTableTab[] = [
-    { value: 'tasks', label: 'Tasks', ...(totals ? { count: totals.tasks } : {}) },
-    { value: 'assignments', label: 'Runs', ...(totals ? { count: totals.assignments } : {}) },
-    { value: 'sessions', label: 'Conversations', ...(totals ? { count: totals.sessions } : {}) },
-  ];
-
-  const shared = {
-    tabs,
-    tab,
-    onTabChange: (value: string) => setTab(value as RecentTab),
-    tabLabel: 'Section',
-    paginate: false,
-    showColumnMenu: false,
-    idPrefix: 'zuletzt',
-    skeletonRows: 5,
-    actions: (
-      <Button variant="outline" size="sm" asChild>
-        <NavLink to={TAB_TARGET[tab]}>Show all</NavLink>
-      </Button>
-    ),
-  };
-
-  /* ------------------------------ the machine ------------------------------ */
-
-  const [quotas, setQuotas] = useState<Partial<Record<ProviderId, ProviderQuota>>>({});
-
-  // Only a provider that is actually signed in has a quota to report, and the
-  // server caches each answer for a minute, so this runs once per status list.
-  useEffect(() => {
-    const ready = providers.filter((entry) => entry.available && entry.authenticated);
-    if (ready.length === 0) return;
-    let cancelled = false;
-    for (const entry of ready) {
-      void api
-        .providerUsage(entry.id)
-        .then((quota) => {
-          if (!cancelled) setQuotas((current) => ({ ...current, [entry.id]: quota }));
-        })
-        // A provider without a usage endpoint simply gets no bars. It is not
-        // an error worth putting on the page.
-        .catch(() => undefined);
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [providers]);
-
-  /* -------------------------------- render -------------------------------- */
-
-  // "Nothing at all" is a different page from "nothing loaded yet": only a
-  // snapshot that came back with zeroes everywhere means a fresh install.
-  const untouched =
-    totals !== null &&
-    totals.sessions === 0 &&
-    totals.messages === 0 &&
-    totals.tasks === 0 &&
-    totals.assignments === 0 &&
-    totals.memories === 0;
+  const cards = buildDashboardCards({
+    totals,
+    memoryStats: memories.stats,
+    newMemories: sumSince(chartData, NEW_MEMORY_DAYS, (day) => day.memories),
+    proposals,
+    flagged,
+    teams: org.teams.length,
+    runningTasks: tasks.countByStatus.running,
+  });
 
   if (statsFailed && !stats) {
     return (
       <PageBody width="3xl">
         <Fade>
-          <ServerOffline onRetry={() => void Promise.all([reload(), load()])} />
+          <ServerOffline onRetry={() => void Promise.all([reloadConnection(), reload()])} />
         </Fade>
       </PageBody>
     );
   }
 
-  if (untouched) {
+  if (isFreshInstall(totals)) {
     return (
-      <PageBody>
-        <Fade>
-          <div className="px-4 lg:px-6">
-            <EmptyState
-              icon={AnimatedActivityIcon}
-              title="Get started"
-              description={
-                assistantName +
-                ' has nothing to show yet. One conversation, task, or agent is enough to bring this page to life.'
-              }
-              actionLabel="New conversation"
-              onAction={newConversation}
-              action={
-                <>
-                  <Button variant="outline" asChild>
-                    <NavLink to="/tasks/new">Create task</NavLink>
-                  </Button>
-                  <Button variant="outline" asChild>
-                    <NavLink to="/org/agents/new">Hire agent</NavLink>
-                  </Button>
-                </>
-              }
-            />
-          </div>
-        </Fade>
-        {/* The providers stay visible: on a fresh install the first question
-            is usually whether the CLIs are signed in at all. */}
-        <Fade delay={50}>
-          <div className="px-4 lg:px-6">
-            <ProviderPanel
-              providers={providers}
-              quotas={quotas}
-              defaultProvider={config?.defaultProvider}
-            />
-          </div>
-        </Fade>
-      </PageBody>
+      <GetStarted
+        assistantName={assistantName}
+        onNewConversation={newConversation}
+        providers={providers}
+        quotas={quotas}
+        defaultProvider={config?.defaultProvider}
+      />
     );
   }
 
@@ -562,94 +146,12 @@ export function DashboardPage() {
         </div>
       </Fade>
 
-      <SectionHeading
-        title="Recent"
-        hint={'The ' + RECENT_ROWS + ' most recent entries in each section.'}
-      >
-
-        {/*
-          One table per facet instead of one table with three filters: the
-          three rows are different records with different columns, so they
-          cannot share a column set. Only the active one is mounted, which is
-          also what keeps the tab switch instant.
-        */}
-        {tab === 'tasks' ? (
-          <Fade delay={100}>
-            <DataTable
-              {...shared}
-              data={recentTasks}
-              columns={taskColumns}
-              loading={tasks.loading && recentTasks.length === 0}
-              onRowClick={(task) => void navigate('/tasks/' + task.id)}
-              rowClickIgnoreColumns={['title', 'assignee']}
-              {...(tasks.error ? { error: <ServerOffline onRetry={() => void tasks.refresh()} size="sm" /> } : {})}
-              empty={
-                <EmptyState
-                  icon={ListTodoIcon}
-                  title="No tasks yet"
-                  description="A task is planned, broken down, and assigned to agents."
-                  actionLabel="Create task"
-                  actionTo="/tasks/new"
-                  variant="plain"
-                  size="sm"
-                />
-              }
-            />
-          </Fade>
-        ) : null}
-
-        {tab === 'assignments' ? (
-          <Fade delay={100}>
-            <DataTable
-              {...shared}
-              data={recentRuns ?? []}
-              columns={assignmentColumns}
-              loading={recentRuns === null && !runsFailed}
-              onRowClick={(assignment) => void navigate('/assignments/' + assignment.id)}
-              {...(runsFailed
-                ? { error: <ServerOffline onRetry={() => void load()} size="sm" /> }
-                : {})}
-              empty={
-                <EmptyState
-                  icon={AnimatedSendIcon}
-                  title="Nothing has run yet"
-                  description="Runs appear when work is handed to an agent."
-                  actionLabel="View agents"
-                  actionTo="/org/agents"
-                  variant="plain"
-                  size="sm"
-                />
-              }
-            />
-          </Fade>
-        ) : null}
-
-        {tab === 'sessions' ? (
-          <Fade delay={100}>
-            <DataTable
-              {...shared}
-              data={sessions.sessions}
-              columns={sessionColumns}
-              loading={sessions.loading}
-              onRowClick={(session) => openConversation(session.id)}
-              {...(sessions.error
-                ? { error: <ServerOffline onRetry={() => void sessions.refresh()} size="sm" /> }
-                : {})}
-              empty={
-                <EmptyState
-                  icon={MessagesSquareIcon}
-                  title="No conversations yet"
-                  description={'The first conversation with ' + assistantName + ' starts here.'}
-                  actionLabel="New conversation"
-                  onAction={newConversation}
-                  variant="plain"
-                  size="sm"
-                />
-              }
-            />
-          </Fade>
-        ) : null}
-      </SectionHeading>
+      <RecentActivity
+        totals={totals}
+        recentRuns={recentRuns}
+        runsFailed={runsFailed}
+        onRetryRuns={() => void reload()}
+      />
 
       <Fade delay={150}>
         <div className="px-4 lg:px-6">
@@ -665,112 +167,17 @@ export function DashboardPage() {
   );
 }
 
-/* ------------------------------- providers -------------------------------- */
-
-function providerBadge(status: ProviderStatus) {
-  if (!status.available) return <Badge variant="destructive">Not found</Badge>;
-  if (!status.authenticated) return <Badge variant="secondary">Not signed in</Badge>;
-  return <Badge>Ready</Badge>;
-}
-
 /**
- * The CLIs the whole app runs on, and how much of the subscription is left.
- *
- * The quota windows come from `GET /api/providers/:id/usage`, which is the
- * only place they exist - the socket has no quota event outside a running
- * turn. A provider that reports none simply shows its status and nothing
- * else, rather than an empty bar that would read as "zero used".
- *
- * Which of them a new turn takes unless the composer says otherwise is the
- * first thing anyone wants to know here, so the preset one is marked. The
- * setting itself stays where it is changed, under Settings.
+ * "Nothing at all" is a different page from "nothing loaded yet": only a
+ * snapshot that came back with zeroes everywhere means a fresh install.
  */
-function ProviderPanel({
-  providers,
-  quotas,
-  defaultProvider,
-  offline = false,
-}: {
-  providers: ProviderStatus[];
-  quotas: Partial<Record<ProviderId, ProviderQuota>>;
-  defaultProvider?: ProviderId | undefined;
-  offline?: boolean;
-}) {
+function isFreshInstall(totals: StatsTotals | null): boolean {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Provider</CardTitle>
-        <CardDescription>
-          Rookery signs in through existing CLI sessions on this computer.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {providers.length === 0 ? (
-          offline ? (
-            <ServerOffline size="sm" />
-          ) : (
-            <EmptyState
-              icon={AnimatedBotIcon}
-              title="No status data yet"
-              description="The server has not reported which CLIs it found yet."
-              variant="plain"
-              size="sm"
-            />
-          )
-        ) : (
-          <ItemGroup className="gap-2">
-            {providers.map((status) => {
-              const quota = quotas[status.id];
-              const detail = [status.version, status.detail].filter(Boolean).join(' · ');
-              return (
-                <Item key={status.id} variant="outline" size="sm" className="flex-wrap">
-                  <ItemMedia variant="icon">
-                    <ProviderIcon provider={status.id} label={status.displayName} />
-                  </ItemMedia>
-                  <ItemContent>
-                    <ItemTitle>{PROVIDER_LABEL[status.id] ?? status.displayName}</ItemTitle>
-                    <ItemDescription>{detail || status.binary}</ItemDescription>
-                  </ItemContent>
-                  <ItemActions>
-                    {status.id === defaultProvider ? (
-                      <Badge variant="outline">Default</Badge>
-                    ) : null}
-                    {status.usageBlocked ? (
-                      <Badge variant="outline">
-                        {status.usageBlocked.until ? 'Avoided until ' + formatDateTime(status.usageBlocked.until) : 'Avoided'}
-                      </Badge>
-                    ) : null}
-                    {providerBadge(status)}
-                  </ItemActions>
-                  {quota && quota.windows.length > 0 ? (
-                    <ItemFooter className="mt-1 flex-col items-stretch gap-2 border-t pt-3">
-                      {quota.plan ? (
-                        <div className="text-xs text-muted-foreground">{quota.plan}</div>
-                      ) : null}
-                      {quota.windows.map((window) => (
-                        <div key={window.kind} className="flex flex-col gap-1">
-                          <div className="flex items-baseline justify-between gap-2 text-xs">
-                            <span className="text-muted-foreground">{window.label}</span>
-                            <span className="tabular-nums">
-                              {formatNumber(Math.round(window.percent))} % used
-                            </span>
-                          </div>
-                          <Progress value={Math.min(100, Math.max(0, window.percent))} />
-                          {window.resetsAt ? (
-                            <div className="text-xs text-muted-foreground">
-                              Reset on {formatDateTime(window.resetsAt)}
-                            </div>
-                          ) : null}
-                        </div>
-                      ))}
-                    </ItemFooter>
-                  ) : null}
-                </Item>
-              );
-            })}
-          </ItemGroup>
-        )}
-      </CardContent>
-    </Card>
+    totals !== null &&
+    totals.sessions === 0 &&
+    totals.messages === 0 &&
+    totals.tasks === 0 &&
+    totals.assignments === 0 &&
+    totals.memories === 0
   );
 }

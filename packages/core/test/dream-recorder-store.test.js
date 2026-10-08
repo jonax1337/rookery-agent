@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { ASSISTANT_MEMORY_OWNER, Store } from '../dist/index.js';
 
 /**
@@ -152,16 +153,48 @@ test('a failure inside the bracket leaves nothing half written', () => {
   store.close();
 });
 
-test('a frame over the size cap is refused, not thrown at', () => {
+test('a frame is stored compressed and reads back whole', () => {
   const store = makeStore();
   const trace = store.beginTrace(traceInput());
-  const huge = framePayload({ records: { big: { content: 'a'.repeat(130_000) } } });
+  const frame = framePayload({ records: { big: { content: 'a long, repetitive sentence. '.repeat(8_000) } } });
+  const raw = Buffer.byteLength(JSON.stringify(frame));
+  assert.ok(raw > 200_000, 'the fixture is bigger than the cap on its own');
+
+  assert.equal(store.saveFrame(trace.id, 'recall', frame), true, 'the cap measures what is stored');
+
+  const [entry] = store.framesFor(ASSISTANT_MEMORY_OWNER, { limit: 10 });
+  assert.deepEqual(entry.frame.payload, frame);
+  assert.ok(entry.frame.bytes < raw / 10, 'the stored size is the compressed one');
+  store.close();
+});
+
+test('a frame that stays over the cap after compression is refused, not thrown at', () => {
+  const store = makeStore();
+  const trace = store.beginTrace(traceInput());
+  const huge = framePayload({ records: { big: { content: randomBytes(200_000).toString('base64') } } });
   assert.equal(store.saveFrame(trace.id, 'recall', huge), false);
   assert.equal(store.saveFrame(trace.id, 'recall', framePayload(), { maxFrameBytes: 10 }), false);
   assert.equal(count(store, 'dream_frames'), 0);
   // The trace itself stays: a refused frame is a closed turn without a
   // frame, not a lost turn.
   assert.equal(count(store, 'dream_traces'), 1);
+  store.close();
+});
+
+test('a frame written before compression arrived still reads', () => {
+  const store = makeStore();
+  const trace = store.beginTrace(traceInput());
+  const frame = framePayload();
+  store.db
+    .prepare(
+      `INSERT INTO dream_frames
+         (trace_id, slot, frame_v, owner, session_id, box, corpus_stamp_id, payload, bytes, created_at)
+       VALUES (?, 'recall', 1, ?, NULL, ?, 'stamp-1', ?, 2, ?)`,
+    )
+    .run(trace.id, ASSISTANT_MEMORY_OWNER, JSON.stringify(frame.box), JSON.stringify(frame), Date.now());
+
+  const [entry] = store.framesFor(ASSISTANT_MEMORY_OWNER, { limit: 10 });
+  assert.deepEqual(entry.frame.payload, frame);
   store.close();
 });
 
@@ -189,12 +222,13 @@ test('touchMemories with a context is append-only', () => {
   store.close();
 });
 
-test('forgetting, archiving and deleting memories all reach the frames', () => {
+test('forgetting, archiving and deleting memories all reach the frames that hold them', () => {
   function bankWithFrame() {
     const store = makeStore();
     const memory = store.upsertMemory({ kind: 'fact', content: 'Quoted verbatim by a frame.', importance: 0.7 });
     const trace = store.beginTrace(traceInput());
-    assert.equal(store.saveFrame(trace.id, 'recall', framePayload()), true);
+    const records = { [memory.id]: store.getMemory(memory.id) };
+    assert.equal(store.saveFrame(trace.id, 'recall', framePayload({ records })), true);
     return { store, memory };
   }
 
@@ -205,13 +239,58 @@ test('forgetting, archiving and deleting memories all reach the frames', () => {
 
   let forgotten = bankWithFrame();
   forgotten.store.forgetMemory(forgotten.memory.id);
-  assert.equal(count(forgotten.store, 'dream_frames'), 0, 'forgetMemory drops the owner frames');
+  assert.equal(count(forgotten.store, 'dream_frames'), 0, 'forgetMemory drops the frame quoting it');
   forgotten.store.close();
 
   let deleted = bankWithFrame();
   deleted.store.deleteMemory(deleted.memory.id);
-  assert.equal(count(deleted.store, 'dream_frames'), 0, 'deleteMemory drops the owner frames');
+  assert.equal(count(deleted.store, 'dream_frames'), 0, 'deleteMemory drops the frame quoting it');
   deleted.store.close();
+});
+
+test('forgetting a memory leaves the frames that never held it', () => {
+  const store = makeStore();
+  const doomed = store.upsertMemory({ kind: 'fact', content: 'Forgotten on purpose.', importance: 0.7 });
+  const kept = store.upsertMemory({ kind: 'fact', content: 'Stays in every frame.', importance: 0.7 });
+  const quoting = store.beginTrace(traceInput({ turnId: 'turn-quoting' }));
+  const unrelated = store.beginTrace(traceInput({ turnId: 'turn-unrelated' }));
+  store.saveFrame(
+    quoting.id,
+    'recall',
+    framePayload({ records: { [doomed.id]: store.getMemory(doomed.id), [kept.id]: store.getMemory(kept.id) } }),
+  );
+  store.saveFrame(unrelated.id, 'recall', framePayload({ records: { [kept.id]: store.getMemory(kept.id) } }));
+
+  store.forgetMemory(doomed.id);
+
+  const left = store.framesFor(ASSISTANT_MEMORY_OWNER, { limit: 10 }).map((entry) => entry.frame.traceId);
+  assert.deepEqual(left, [unrelated.id], 'one forget no longer wipes the whole evidence pool');
+  store.close();
+});
+
+test('a frame nobody can read goes with a forget rather than outliving it', () => {
+  const store = makeStore();
+  const memory = store.upsertMemory({ kind: 'fact', content: 'Forgotten with a broken frame around.', importance: 0.7 });
+  const trace = store.beginTrace(traceInput());
+  store.saveFrame(trace.id, 'recall', framePayload());
+  store.db.prepare('UPDATE dream_frames SET payload = ?').run(Buffer.from('not gzip at all'));
+
+  store.forgetMemory(memory.id);
+
+  assert.equal(count(store, 'dream_frames'), 0);
+  store.close();
+});
+
+test('countFramelessTraces counts framed traces that hold no frame', () => {
+  const store = makeStore();
+  const framed = store.beginTrace(traceInput({ turnId: 'turn-framed' }));
+  store.saveFrame(framed.id, 'recall', framePayload());
+  store.beginTrace(traceInput({ turnId: 'turn-refused' }));
+  store.beginTrace(traceInput({ turnId: 'turn-unframed', framed: false }));
+
+  assert.equal(store.countFramelessTraces(ASSISTANT_MEMORY_OWNER, 0), 1);
+  assert.equal(store.countFramelessTraces(ASSISTANT_MEMORY_OWNER, Date.now() + 60_000), 0, 'only since the cut');
+  store.close();
 });
 
 test('undoing a night run drops the frames that quote what it wrote (R17)', () => {
@@ -374,7 +453,8 @@ test('framesFor hands frames back with their traces', () => {
   assert.equal(rows[0].frame.slot, 'recall');
   assert.equal(rows[0].frame.traceId, trace.id);
   assert.deepEqual(rows[0].frame.payload, frame);
-  assert.equal(rows[0].frame.bytes, Buffer.byteLength(JSON.stringify(frame), 'utf8'));
+  const stored = store.db.prepare('SELECT length(payload) AS length FROM dream_frames').get();
+  assert.equal(rows[0].frame.bytes, stored.length, 'bytes is the stored size, not the JSON size');
   assert.equal(store.framesFor('somebody-else').length, 0);
   store.close();
 });

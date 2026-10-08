@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, openSync, readSync, closeSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { ToolServerAudience } from '../types.js';
 import { EXTERNAL_KIND, readJsonFile, readTextFile } from './homes.js';
 
@@ -159,13 +159,22 @@ function frontmatter(text: string): Record<string, string> {
     const colon = line.indexOf(':');
     // A wrapped description continues on the next line; only real keys count.
     if (colon === -1 || /^\s/.test(line)) continue;
-    meta[line.slice(0, colon).trim()] = line.slice(colon + 1).trim().replace(/^["']|["']$/g, '');
+    meta[line.slice(0, colon).trim()] = line.slice(colon + 1).trim().replace(/^(["'])(.*)\1$/, '$2');
   }
   return meta;
 }
 
 function asAudience(value: string | undefined): ToolServerAudience {
   return value === 'agents' || value === 'assistant' ? value : 'both';
+}
+
+/** The entries of a folder; none when it is missing or unreadable. */
+function listDirectory(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -176,13 +185,7 @@ function asAudience(value: string | undefined): ToolServerAudience {
  * and the search need, and `use_skill` reads the rest when it is asked for.
  */
 export function scanSkills(dir: string, sourceId: string): ExternalSkillRef[] {
-  if (!existsSync(dir)) return [];
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return [];
-  }
+  const names = listDirectory(dir);
   const skills: ExternalSkillRef[] = [];
   for (const name of names) {
     if (!NAME.test(name)) continue;
@@ -227,43 +230,49 @@ const agentFingerprint = (name: string, description: string, model: string, tool
  * nobody has seen since they changed.
  */
 export function scanAgents(dir: string, sourceId: string): ExternalAgentRef[] {
-  if (!existsSync(dir)) return [];
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return [];
-  }
+  const names = listDirectory(dir);
   const agents: ExternalAgentRef[] = [];
   for (const file of names) {
     if (!file.endsWith('.md')) continue;
-    const stem = file.slice(0, -3);
-    const text = readTextFile(join(dir, file));
+    const path = join(dir, file);
+    const text = readTextFile(path);
     if (text === null) continue;
-    const meta = frontmatter(text);
-    // The frontmatter name wins, the file name stands in for a file that
-    // forgot one; anything that is not a usable tool name is skipped rather
-    // than handed to the CLI, which would only reject it later.
-    const name = NAME.test(meta.name ?? '') ? (meta.name as string) : stem;
-    if (!NAME.test(name)) continue;
-    const tools = (meta.tools ?? '')
-      .split(',')
-      .map((tool) => tool.trim())
-      .filter(Boolean);
-    const description = meta.description ?? '';
-    const model = meta.model ?? '';
-    agents.push({
-      id: sourceId + '/' + name,
-      name,
-      description,
-      sourceId,
-      path: join(dir, file),
-      ...(model ? { model } : {}),
-      ...(tools.length ? { tools } : {}),
-      fingerprint: agentFingerprint(name, description, model, tools, text),
-    });
+    const agent = agentFromText(path, file.slice(0, -3), sourceId, text);
+    if (agent) agents.push(agent);
   }
   return agents;
+}
+
+/**
+ * One agent reference from a file's text, or null when its name is not a
+ * usable tool name.
+ *
+ * The frontmatter name wins, the file name stands in for a file that forgot
+ * one; anything unusable is skipped rather than handed to the CLI, which
+ * would only reject it later.
+ */
+function agentFromText(path: string, stem: string, sourceId: string, text: string): ExternalAgentRef | null {
+  const meta = frontmatter(text);
+  const name = NAME.test(meta.name ?? '') ? (meta.name as string) : stem;
+  if (!NAME.test(name)) return null;
+  const tools = (meta.tools ?? '')
+    .split(',')
+    .map((tool) => tool.trim())
+    .filter(Boolean);
+  const description = meta.description ?? '';
+  const model = meta.model ?? '';
+  return {
+    id: sourceId + '/' + name,
+    name,
+    description,
+    sourceId,
+    path,
+    ...(model ? { model } : {}),
+    ...(tools.length ? { tools } : {}),
+    // Body included, so a comparison with an approved fingerprint really is
+    // "still the approved file" and not "still the approved name".
+    fingerprint: agentFingerprint(name, description, model, tools, text),
+  };
 }
 
 /** `hooks.json` as Claude Code writes it: events, each with matcher groups. */
@@ -347,33 +356,10 @@ export function readHookDocument(path: string): {
 export function readAgentFile(path: string, sourceId: string): { ref: ExternalAgentRef; prompt: string } | null {
   const text = readTextFile(path);
   if (text === null) return null;
-  const stem = path.replace(/\\/g, '/').split('/').pop()?.replace(/\.md$/, '') ?? '';
-  const meta = frontmatter(text);
-  const name = NAME.test(meta.name ?? '') ? (meta.name as string) : stem;
-  if (!NAME.test(name)) return null;
-  const tools = (meta.tools ?? '')
-    .split(',')
-    .map((tool) => tool.trim())
-    .filter(Boolean);
-  const description = meta.description ?? '';
-  const model = meta.model ?? '';
-  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text);
-  return {
-    ref: {
-      id: sourceId + '/' + name,
-      name,
-      description,
-      sourceId,
-      path,
-      ...(model ? { model } : {}),
-      ...(tools.length ? { tools } : {}),
-      // The same material the scan hashed, body included, so the caller's
-      // comparison really is "still the approved file" and not "still the
-      // approved name".
-      fingerprint: agentFingerprint(name, description, model, tools, text),
-    },
-    prompt: (match ? text.slice(match[0].length) : text).trim(),
-  };
+  const ref = agentFromText(path, basename(path, '.md'), sourceId, text);
+  if (!ref) return null;
+  const frontmatterBlock = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text);
+  return { ref, prompt: (frontmatterBlock ? text.slice(frontmatterBlock[0].length) : text).trim() };
 }
 
 /** A short hash over what would be started, so a later edit is noticed. */
@@ -381,7 +367,7 @@ export function fingerprintServer(
   server: Pick<ExternalMcpServer, 'transport' | 'args' | 'env'> &
     Partial<Pick<ExternalMcpServer, 'command' | 'url' | 'headers'>>,
 ): string {
-  const material = JSON.stringify([
+  return fingerprintOf([
     server.transport,
     server.command ?? '',
     server.args,
@@ -389,7 +375,6 @@ export function fingerprintServer(
     server.url ?? '',
     Object.keys(server.headers ?? {}).sort(),
   ]);
-  return createHash('sha256').update(material).digest('hex').slice(0, 16);
 }
 
 const slug = (text: string): string =>

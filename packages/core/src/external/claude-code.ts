@@ -56,9 +56,8 @@ function configFile(dir: string, home: string): string {
 }
 
 /** The plugins that are installed and not switched off. */
-function enabledPlugins(dir: string): { key: string; path: string }[] {
+function enabledPlugins(dir: string, settings: ClaudeSettings | null): { key: string; path: string }[] {
   const installed = readJsonFile<InstalledPlugins>(join(dir, 'plugins', 'installed_plugins.json'));
-  const settings = readJsonFile<ClaudeSettings>(join(dir, 'settings.json'));
   const switches = settings?.enabledPlugins ?? {};
   const found: { key: string; path: string }[] = [];
   for (const [key, entries] of Object.entries(installed?.plugins ?? {})) {
@@ -75,13 +74,29 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
   const dir = claudeHome(home);
   if (!existsSync(dir)) return EMPTY_SCAN;
 
+  const settings = readJsonFile<ClaudeSettings>(join(dir, 'settings.json'));
+  const config = readJsonFile<ClaudeConfig>(configFile(dir, home));
+  const shelves = scanShelves(dir, settings);
+  const servers = [...shelves.pluginServers, ...ownServers(settings, config), ...projectServers(config)];
+  const { sources, skills, agents, hooks } = shelves;
+  agents.sort((a, b) => a.name.localeCompare(b.name));
+  hooks.sort((a, b) => a.sourceId.localeCompare(b.sourceId));
+  return { sources, skills, servers, agents, hooks };
+}
+
+interface Shelves {
+  sources: ExternalSource[];
+  skills: ExternalSkillRef[];
+  agents: ExternalAgentRef[];
+  hooks: ExternalHookSet[];
+  /** The MCP servers the enabled plugins declare in their `.mcp.json`. */
+  pluginServers: ExternalMcpServer[];
+}
+
+/** The person's own skills folder and every enabled plugin, each as one source. */
+function scanShelves(dir: string, settings: ClaudeSettings | null): Shelves {
   const kind = EXTERNAL_KIND;
-  const label = EXTERNAL_LABEL;
-  const sources: ExternalSource[] = [];
-  const skills: ExternalSkillRef[] = [];
-  const servers: ExternalMcpServer[] = [];
-  const agents: ExternalAgentRef[] = [];
-  const hooks: ExternalHookSet[] = [];
+  const shelves: Shelves = { sources: [], skills: [], agents: [], hooks: [], pluginServers: [] };
 
   /**
    * One shelf: its skills, its subagent types, its hook set. The source is
@@ -93,17 +108,17 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
     const foundAgents = scanAgents(join(root, 'agents'), source.id);
     const foundHooks = readHookSet(join(root, 'hooks'), source.id);
     if (!foundSkills.length && !foundAgents.length && !foundHooks) return;
-    sources.push({ ...source, skillCount: foundSkills.length });
-    skills.push(...foundSkills);
-    agents.push(...foundAgents);
-    if (foundHooks) hooks.push(foundHooks);
+    shelves.sources.push({ ...source, skillCount: foundSkills.length });
+    shelves.skills.push(...foundSkills);
+    shelves.agents.push(...foundAgents);
+    if (foundHooks) shelves.hooks.push(foundHooks);
   };
 
-  collect({ id: kind + ':home', label, origin: 'home', dir: join(dir, 'skills') }, dir);
+  collect({ id: kind + ':home', label: EXTERNAL_LABEL, origin: 'home', dir: join(dir, 'skills') }, dir);
 
-  for (const plugin of enabledPlugins(dir)) {
+  for (const plugin of enabledPlugins(dir, settings)) {
     const sourceId = kind + ':plugin/' + plugin.key;
-    const pluginLabel = label + ' - ' + (plugin.key.split('@')[0] ?? plugin.key);
+    const pluginLabel = EXTERNAL_LABEL + ' - ' + (plugin.key.split('@')[0] ?? plugin.key);
     collect(
       {
         id: sourceId,
@@ -120,35 +135,42 @@ export function scanClaudeCode(home = homedir()): ExternalScan {
     const mcp = readJsonFile<{ mcpServers?: Record<string, McpServerJson> }>(join(plugin.path, '.mcp.json'));
     for (const [name, json] of Object.entries(mcp?.mcpServers ?? {})) {
       const server = toExternalServer(name, json, { sourceId, label: pluginLabel, scope: plugin.key });
-      if (server) servers.push(server);
+      if (server) shelves.pluginServers.push(server);
     }
   }
+  return shelves;
+}
 
-  // The person's own servers. `settings.json` may carry them too; the ones in
-  // `.claude.json` win because that is what `claude mcp add` writes.
-  const settings = readJsonFile<ClaudeSettings>(join(dir, 'settings.json'));
-  const config = readJsonFile<ClaudeConfig>(configFile(dir, home));
+/**
+ * The person's own servers. `settings.json` may carry them too; the ones in
+ * `.claude.json` win because that is what `claude mcp add` writes.
+ */
+function ownServers(settings: ClaudeSettings | null, config: ClaudeConfig | null): ExternalMcpServer[] {
   const own = { ...(settings?.mcpServers ?? {}), ...(config?.mcpServers ?? {}) };
+  const servers: ExternalMcpServer[] = [];
   for (const [name, json] of Object.entries(own)) {
-    const server = toExternalServer(name, json, { sourceId: kind + ':home', label });
+    const server = toExternalServer(name, json, { sourceId: EXTERNAL_KIND + ':home', label: EXTERNAL_LABEL });
     if (server) servers.push(server);
   }
+  return servers;
+}
 
-  // Servers Claude Code keeps under one project path. They only make sense in
-  // that directory, so the path travels with them and `hub.ts` scopes them.
+/**
+ * Servers Claude Code keeps under one project path. They only make sense in
+ * that directory, so the path travels with them and `hub.ts` scopes them.
+ */
+function projectServers(config: ClaudeConfig | null): ExternalMcpServer[] {
+  const servers: ExternalMcpServer[] = [];
   for (const [path, project] of Object.entries(config?.projects ?? {})) {
     for (const [name, json] of Object.entries(project?.mcpServers ?? {})) {
       const server = toExternalServer(name, json, {
-        sourceId: kind + ':home',
-        label: label + ' - ' + path,
+        sourceId: EXTERNAL_KIND + ':home',
+        label: EXTERNAL_LABEL + ' - ' + path,
         scope: path,
         projectPath: resolve(path),
       });
       if (server) servers.push(server);
     }
   }
-
-  agents.sort((a, b) => a.name.localeCompare(b.name));
-  hooks.sort((a, b) => a.sourceId.localeCompare(b.sourceId));
-  return { sources, skills, servers, agents, hooks };
+  return servers;
 }

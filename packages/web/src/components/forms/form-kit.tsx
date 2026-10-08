@@ -41,7 +41,7 @@ import type { IconComponent } from "@/components/icons";
 
 export interface DraftHandle<T> {
   draft: T;
-  /** True once the person has touched anything. Gates "Speichern". */
+  /** True once the person has touched anything. Gates "Save". */
   dirty: boolean;
   set(patch: Partial<T>): void;
   /**
@@ -129,8 +129,7 @@ export interface FormSubmitHandle {
  * All seven kept the same three states (`errors`, `failure`, `saving`) and the
  * same skeleton around the one call that differed: `safeParse` -> collect the
  * issues and stop -> clear both messages -> set saving -> try the call -> catch
- * into `failure` -> clear saving. The project form and the team form were
- * character-identical apart from two words and the route they navigated to.
+ * into `failure` -> clear saving.
  *
  * `run` gets the parsed draft and keeps what is genuinely the page's: the api
  * call, `markSaved()`, the toast and the navigation. Anything it throws lands
@@ -140,7 +139,7 @@ export interface FormSubmitHandle {
  * const { errors, failure, saving, submit } = useFormSubmit(schema, draft, async (parsed) => {
  *   await api.updateProject(id, parsed);
  *   markSaved();
- *   toast('Projekt gespeichert');
+ *   toast('Project saved');
  *   void navigate('/org/projects');
  * });
  * ```
@@ -232,8 +231,8 @@ export function fieldAria(
   options?: { described?: boolean },
 ): FieldAria {
   const invalid = Boolean(error);
-  const errorId = id + '-fehler';
-  const descriptionId = id + '-hinweis';
+  const errorId = id + '-error';
+  const descriptionId = id + '-hint';
   const described = [options?.described ? descriptionId : null, invalid ? errorId : null]
     .filter((value): value is string => value !== null)
     .join(' ');
@@ -327,8 +326,8 @@ export interface ChoiceFieldProps<T extends string> {
 /**
  * A radio group drawn as labelled cards.
  *
- * Five of the seven forms pick from a small closed set - Zugriff, Anbieter,
- * Priorität, Für wen, Wer führt aus - and every one of them deserves the hint
+ * Five of the seven forms pick from a small closed set - access, provider,
+ * priority, audience, assignee - and every one of them deserves the hint
  * that already exists next to its label map (`PERMISSION_HINT`,
  * `AUDIENCE_HINT`, …). A `Select` hides those hints behind a click, so the
  * choice is made blind; these cards show them.
@@ -395,17 +394,17 @@ export interface FormMenuAction {
 }
 
 export interface FormHeaderActionsProps extends Omit<FormActionsProps, 'destructive'> {
-  /** Archivieren, auflösen, löschen - apart from the save group on purpose. */
+  /** Archive, dissolve, delete - apart from the save group on purpose. */
   menu?: readonly FormMenuAction[];
 }
 
 /**
  * What a form page hands to `usePageMeta`: the destructive actions folded
- * into a menu, then [Abbrechen | Speichern].
+ * into a menu, then [Cancel | Save].
  *
  * The template's own `destructive` prop puts a red button next to the save
  * button, which is right at the foot of a form but wrong in a header strip
- * three centimetres from "Speichern" - hence the menu.
+ * three centimetres from "Save" - hence the menu.
  */
 export function FormHeaderActions({ menu = [], ...actions }: FormHeaderActionsProps) {
   return (
@@ -470,9 +469,9 @@ export interface SliderFieldProps {
   min: number;
   max: number;
   step: number;
-  /** What "Zurücksetzen" restores. */
+  /** What "Reset" restores. */
   fallback: number;
-  /** The value as the reader sees it next to the label: "1,00×", "12 %". */
+  /** The value as the reader sees it next to the label: "1.00×", "12 %". */
   format(value: number): string;
   /** The line under the slider. Left out on the sheet, where space is tight. */
   description?: ReactNode;
@@ -487,12 +486,11 @@ export interface SliderFieldProps {
 /**
  * A slider with its value spelled out and a way back to the default.
  *
- * The settings page called it `SliderField` and the voice sheet `SheetSlider`,
- * and the comment above the second one said outright that it was the first one
- * again. They were identical but for `onCommit`, which is now a prop.
+ * One component serves the settings page and the voice sheet; `onCommit` is
+ * the only thing that differs between them.
  *
  * The badge is what makes the control readable: a bare track says "somewhere
- * between slow and fast", the badge says "1,08×".
+ * between slow and fast", the badge says "1.08×".
  */
 export function SliderField({
   id,

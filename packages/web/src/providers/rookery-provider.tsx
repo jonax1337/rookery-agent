@@ -13,9 +13,12 @@ import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
 import {
+  NO_PROJECT,
   PERMISSION_HINT,
   PERMISSION_LABEL,
+  PERMISSION_LEVELS,
 } from '@/lib/format';
+import { reportFailure } from '@/lib/errors';
 import { NOTIFICATION_KIND_LABEL } from '@/lib/notifications';
 import type { CronEvent, RookerySocket, SleepEvent } from '@/lib/socket';
 import type {
@@ -66,11 +69,7 @@ import {
  * turn. Pages never call it; they take what they need from the hooks below.
  */
 
-const PERMISSIONS: PermissionLevel[] = ['chat', 'read', 'write', 'full'];
-
-/** Radix' radio groups have no empty value, so "no project" needs a sentinel. */
-const NO_PROJECT = '__none__';
-/** Same for "the provider's own default" in the model and effort menus. */
+/** Radix' radio groups have no empty value, so "the provider's own default" needs a sentinel. */
 const DEFAULT = '__default__';
 
 const CHAT_PATH = '/c/';
@@ -226,15 +225,23 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
 
   /* --------------------------- initial load --------------------------- */
 
+  // The pickers start from the saved defaults once. A later reload - the
+  // socket coming back up after a blip - must not undo what the person has
+  // picked since, nor swap the provider of the thread they are in.
+  const defaultsAppliedRef = useRef(false);
+
   const reload = useCallback(async (): Promise<void> => {
     try {
       const [nextConfig, nextProviders] = await Promise.all([api.getConfig(), api.providers()]);
       setConfig(nextConfig);
       setProviders(nextProviders);
-      setProvider(nextConfig.defaultProvider);
-      setModel(nextConfig.defaultModel || DEFAULT);
-      setEffort(nextConfig.defaultEffort || DEFAULT);
-      setPermission(nextConfig.defaultPermission);
+      if (!defaultsAppliedRef.current) {
+        defaultsAppliedRef.current = true;
+        setProvider(nextConfig.defaultProvider);
+        setModel(nextConfig.defaultModel || DEFAULT);
+        setEffort(nextConfig.defaultEffort || DEFAULT);
+        setPermission(nextConfig.defaultPermission);
+      }
       setOffline(false);
     } catch (error) {
       setOffline(true);
@@ -256,8 +263,8 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       setConfig(await api.updateConfig(patch));
       toast('Settings saved');
       return true;
-    } catch {
-      toast.error('Save failed');
+    } catch (caught) {
+      reportFailure('Save', caught);
       return false;
     }
   }, []);
@@ -302,7 +309,7 @@ export function RookeryProvider({ children }: { children: ReactNode }) {
       void api
         .patchSession(active, { projectId: next === NO_PROJECT ? null : next })
         .then(() => void sessions.refresh())
-        .catch(() => toast.error('Project could not be set'));
+        .catch((caught) => reportFailure('Setting the project', caught));
     },
     [sessions],
   );
@@ -645,7 +652,7 @@ export interface ConnectionState {
   socket: RookerySocket;
   connected: boolean;
   offline: boolean;
-  /** Re-reads config and providers, e.g. behind a "Erneut versuchen" button. */
+  /** Re-reads config and providers, e.g. behind a "Try again" button. */
   reload(): Promise<void>;
 }
 
@@ -682,17 +689,10 @@ export interface ChatSessionState {
 }
 
 export function useChatSession(): ChatSessionState {
-  const rookery = useRookery();
+  const { chat, context, highlighted, turn, openConversation, newConversation } = useRookery();
   return useMemo(
-    () => ({
-      chat: rookery.chat,
-      context: rookery.context,
-      highlighted: rookery.highlighted,
-      turn: rookery.turn,
-      openConversation: rookery.openConversation,
-      newConversation: rookery.newConversation,
-    }),
-    [rookery],
+    () => ({ chat, context, highlighted, turn, openConversation, newConversation }),
+    [chat, context, highlighted, turn, openConversation, newConversation],
   );
 }
 
@@ -823,7 +823,7 @@ export function RookeryComposerSlots({ children }: { children: ReactNode }) {
             value={turn.permission}
             onValueChange={(value) => turn.setPermission(value as PermissionLevel)}
           >
-            {PERMISSIONS.map((level) => (
+            {PERMISSION_LEVELS.map((level) => (
               <DropdownMenuRadioItem
                 key={level}
                 value={level}

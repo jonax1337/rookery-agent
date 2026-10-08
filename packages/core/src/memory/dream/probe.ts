@@ -14,6 +14,16 @@ import { fetchFrame } from './frame.js';
 import { resolvePolicy } from './policy.js';
 import { measure, type GainFunction, type MeasureResult } from './measure.js';
 import type { FrameScoringPolicy } from './score.js';
+import {
+  ABSTAIN_REASONS,
+  NO_GAIN,
+  clampNumber,
+  emptyReasons,
+  expectedBudgetChars,
+  frameDeadline,
+  mean,
+  readCorpusStamp,
+} from './util.js';
 
 /**
  * The night's grid probe (dream stage 1, AP10; concept 6.1, 5.5a, 3.3).
@@ -59,14 +69,11 @@ import type { FrameScoringPolicy } from './score.js';
  * `framesTotal`/`poolTruncated`, never hidden inside a smaller count.
  */
 const FRAME_POOL_LIMIT = 500;
-/**
- * Inner sub-cap of `dream.maxEvalMs`: the processing of a single frame is cut
- * off after this many milliseconds and the frame is abstained - no monstrous
- * frame may eat the shared wall clock on its own (build plan, AP10).
- */
-const FRAME_TIME_LIMIT_MS = 2000;
 /** Cluster-bootstrap draws over sessions, percentile interval 2.5/97.5. */
 const BOOTSTRAP_B = 2000;
+/** Percentile interval bounds of the bootstrap: 2.5 / 97.5. */
+const BOOTSTRAP_LOW_QUANTILE = 0.025;
+const BOOTSTRAP_HIGH_QUANTILE = 0.975;
 /** Fixed seed: the interval must be reproducible, never per-run random. */
 const BOOTSTRAP_SEED = 20260917;
 /**
@@ -75,62 +82,24 @@ const BOOTSTRAP_SEED = 20260917;
  * has no reader in stage 1 (R16), so the probe carries the literal.
  */
 const FRESHNESS_MARGIN = 0.02;
-/** Mirrors the prefix `Store` writes corpus stamps under (store.ts, AP7). */
-const CORPUS_STAMP_PREFIX = 'dream.corpus_stamp.';
 /** Written by `reindex` and the bulk import (db.ts, AP1); read here. */
 const CORPUS_INVALIDATED_KEY = 'dream.corpus_invalidated_at';
 /** The grid the stage prescribes: at least 8, at most 12 placements. */
 const GRID_MIN = 8;
 const GRID_MAX = 12;
-
-/** Every reason a frame can go unscored, zeroed - counted, never swallowed. */
-const ABSTAIN_REASONS: readonly AbstainReason[] = [
-  'limit-out-of-box',
-  'seeds-capped',
-  'degraded-turn',
-  'frame-missing',
-  'corpus-drifted',
-  'corpus-invalidated',
-  'budget-changed',
-  'no-reachable-label',
-  'no-labelled-move',
-  'pipeline-mismatch',
-  'no-label-source',
-  'unfinished',
-];
-
-function emptyReasons(): Record<AbstainReason, number> {
-  const reasons = {} as Record<AbstainReason, number>;
-  for (const reason of ABSTAIN_REASONS) reasons[reason] = 0;
-  return reasons;
-}
+/** What a `dream.gridSize` that is not a number falls back to. */
+const DEFAULT_GRID_SIZE = 10;
+/** The incumbent is placement 0 of every grid, and every delta is read against it. */
+const INCUMBENT_INDEX = 0;
+/** One hour: the most `dream.maxEvalMs` may ask for. */
+const MAX_EVAL_MS_CEILING = 3_600_000;
 
 function addReasons(target: Record<AbstainReason, number>, source: Record<AbstainReason, number>): void {
   for (const reason of ABSTAIN_REASONS) target[reason] += source[reason] ?? 0;
 }
 
-/** Clamp to a range, for dream keys read outside the patch schema (E21). */
-function clampNumber(value: number, lo: number, hi: number): number {
-  const safe = Number.isFinite(value) ? value : lo;
-  return Math.min(hi, Math.max(lo, safe));
-}
-
-/**
- * The corpus stamp a frame was recorded under, read from `meta`. The prefix
- * mirrors the writer in store.ts (AP7 owns it; this module only reads). An
- * empty id - a frame recorded before any night stamped a fingerprint - and a
- * corrupted row both return null: a stamp that cannot be read certifies
- * nothing, and the drift check is waived rather than guessed.
- */
-function stampById(store: Store, id: string): FrameCorpus | null {
-  if (!id) return null;
-  const raw = store.getMeta(CORPUS_STAMP_PREFIX + id);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as FrameCorpus;
-  } catch {
-    return null;
-  }
+function countAbstains(target: Record<AbstainReason, number>, reasons: readonly AbstainReason[]): void {
+  for (const reason of reasons) target[reason] += 1;
 }
 
 /** When `reindex` or the bulk import last moved the corpus stamp (0 = never). */
@@ -193,25 +162,7 @@ function cornerValue(corner: Corner, interval: Interval, incumbent: number): num
 function weightVector(choice: WeightChoice, box: RecallBox, policy: RecallPolicy): RecallWeights {
   const w = box.w;
   const p = policy.w;
-  const pick = (corner: Corner, interval: Interval, value: number): number =>
-    cornerValue(corner, interval, value);
   switch (choice) {
-    case 'incumbent':
-      return {
-        relevance: pick('incumbent', w.relevance, p.relevance),
-        importance: pick('incumbent', w.importance, p.importance),
-        recency: pick('incumbent', w.recency, p.recency),
-        usage: pick('incumbent', w.usage, p.usage),
-      };
-    case 'lo':
-    case 'hi':
-    case 'mid':
-      return {
-        relevance: pick(choice, w.relevance, p.relevance),
-        importance: pick(choice, w.importance, p.importance),
-        recency: pick(choice, w.recency, p.recency),
-        usage: pick(choice, w.usage, p.usage),
-      };
     case 'relevance-heavy':
       // Trust the text match, nothing else.
       return { relevance: w.relevance[1], importance: w.importance[0], recency: w.recency[0], usage: w.usage[0] };
@@ -221,7 +172,20 @@ function weightVector(choice: WeightChoice, box: RecallBox, policy: RecallPolicy
     case 'usage-off':
       // Close the usage channel entirely (H2 lives on it) and stay aggressive.
       return { relevance: w.relevance[1], importance: w.importance[1], recency: (w.recency[0] + w.recency[1]) / 2, usage: w.usage[0] };
+    default:
+      return {
+        relevance: cornerValue(choice, w.relevance, p.relevance),
+        importance: cornerValue(choice, w.importance, p.importance),
+        recency: cornerValue(choice, w.recency, p.recency),
+        usage: cornerValue(choice, w.usage, p.usage),
+      };
   }
+}
+
+/** `dream.gridSize` clamped into the 8..12 the stage prescribes; a non-finite size takes the default. */
+function gridCount(size: number): number {
+  if (!Number.isFinite(size)) return DEFAULT_GRID_SIZE;
+  return Math.min(GRID_MAX, Math.max(GRID_MIN, Math.round(size)));
 }
 
 /**
@@ -233,9 +197,8 @@ function weightVector(choice: WeightChoice, box: RecallBox, policy: RecallPolicy
  * firing is a recorder error, concept 5.4 - the box promised closure).
  */
 export function buildGrid(policy: RecallPolicy, box: RecallBox, size: number): FrameScoringPolicy[] {
-  const count = Number.isFinite(size) ? Math.min(GRID_MAX, Math.max(GRID_MIN, Math.round(size))) : 10;
   const limit = Math.max(0, Math.min(policy.limit, box.limitMax));
-  return GRID.slice(0, count).map((spec) => ({
+  return GRID.slice(0, gridCount(size)).map((spec) => ({
     limit,
     threshold: cornerValue(spec.threshold, box.threshold, policy.threshold),
     hopEntity: cornerValue(spec.hopEntity, box.hopEntity, policy.hopEntity),
@@ -334,9 +297,57 @@ export function bootstrapCi(
     means.push(count ? sum / count : 0);
   }
   means.sort((x, y) => x - y);
-  const low = means[Math.min(means.length - 1, Math.floor(0.025 * means.length))]!;
-  const high = means[Math.max(0, Math.min(means.length - 1, Math.ceil(0.975 * means.length) - 1))]!;
+  const low = means[Math.min(means.length - 1, Math.floor(BOOTSTRAP_LOW_QUANTILE * means.length))]!;
+  const high = means[
+    Math.max(0, Math.min(means.length - 1, Math.ceil(BOOTSTRAP_HIGH_QUANTILE * means.length) - 1))
+  ]!;
   return { low, high: Math.max(high, low) };
+}
+
+/* ------------------------------ the pre-checks ------------------------------ */
+
+/** A stored frame with the trace it was recorded under, as `store.framesFor` hands it over. */
+export interface RecordedFrame {
+  trace: DreamTrace;
+  frame: DreamFrame;
+}
+
+/** What the pre-checks compare a frame against. */
+export interface PrecheckContext {
+  /** The night's fingerprint; without one the drift check is skipped. */
+  corpus?: FrameCorpus | null;
+  tolerance: number;
+  /** The budget the assistant turn would render with today. */
+  budget: number;
+  /** When a reindex or bulk import last moved the corpus (0 or absent = never, the rule is skipped). */
+  invalidatedAt?: number;
+}
+
+/**
+ * The one place the pre-check order lives: an unfinished trace first, then
+ * `corpus-invalidated` (older than a reindex or bulk import - never guessed as
+ * drift), then `corpus-drifted` against the night's fingerprint, then
+ * `budget-changed`. `null` = the frame may be scored. Shared by the probe and
+ * the candidate evaluation, so both nights ask the same questions in the same
+ * order.
+ */
+export function precheckReason(
+  store: Store,
+  entry: RecordedFrame,
+  context: PrecheckContext,
+): AbstainReason | null {
+  const payload = entry.frame.payload;
+  const invalidatedAt = context.invalidatedAt ?? 0;
+  if (!entry.trace.finishedAt) return 'unfinished';
+  if (invalidatedAt > 0 && entry.frame.createdAt < invalidatedAt) return 'corpus-invalidated';
+  if (
+    context.corpus &&
+    corpusDrifted(payload, context.corpus, context.tolerance, readCorpusStamp(store, payload.corpusStampId))
+  ) {
+    return 'corpus-drifted';
+  }
+  if (payload.pipeline === 'assistant' && payload.budgetChars !== context.budget) return 'budget-changed';
+  return null;
 }
 
 /* ---------------------------- the freshness test ---------------------------- */
@@ -348,6 +359,56 @@ function rowsSignature(frame: RecallFrame): string {
     frame.possibleSeeds,
     frame.profile.map((row) => row.id),
   ]);
+}
+
+/**
+ * Whether the frozen and the live delta point the same way; `null` when the
+ * frozen delta sits inside `margin`, where the comparison is moot and
+ * "undetermined" is the honest answer - not "they disagree" (concept 5.5a).
+ */
+export function signsAgree(frozenDelta: number, liveDelta: number, margin: number): boolean | null {
+  if (Math.abs(frozenDelta) <= margin) return null;
+  return Math.sign(frozenDelta) === Math.sign(liveDelta);
+}
+
+/**
+ * The live re-fetch of a frame's own query. A MATCH the parser rejects
+ * degrades inside the frame (three worlds, not two); anything else that throws
+ * skips this frame's live side - the caller counts it as `frame-missing`
+ * rather than breaking the night.
+ */
+function refetchLive(store: Store, payload: RecallFrame): RecallFrame | null {
+  try {
+    return fetchFrame(store, {
+      text: payload.query.text,
+      owner: payload.owner,
+      limit: payload.box.limitMax,
+      kinds: payload.box.kinds,
+      minImportance: payload.box.minImportance,
+      box: payload.box,
+      site: payload.site,
+      pipeline: payload.pipeline,
+      budgetChars: payload.budgetChars,
+      subject: payload.subject,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** One frame's paired delta of a candidate arm over a baseline arm, and why either arm abstained. */
+function pairedDelta(
+  frame: RecallFrame,
+  baseline: FrameScoringPolicy,
+  candidate: FrameScoringPolicy,
+  options: Pick<FreshnessOptions, 'gain' | 'costWeight'>,
+): { delta: number | null; abstained: AbstainReason[] } {
+  const base = measure(frame, baseline, options.gain, options.costWeight);
+  const cand = measure(frame, candidate, options.gain, options.costWeight);
+  const abstained: AbstainReason[] = [];
+  if (!base.ok) abstained.push(base.abstain);
+  if (!cand.ok) abstained.push(cand.abstain);
+  return { delta: base.ok && cand.ok ? cand.score - base.score : null, abstained };
 }
 
 export interface FreshnessOptions {
@@ -413,7 +474,7 @@ export interface FreshnessReport {
  */
 export function freshnessCheck(
   store: Store,
-  entries: readonly { trace: DreamTrace; frame: DreamFrame }[],
+  entries: readonly RecordedFrame[],
   options: FreshnessOptions,
 ): FreshnessReport {
   const report: FreshnessReport = {
@@ -432,7 +493,6 @@ export function freshnessCheck(
   // First line of work: the abort guard.
   if (options.signal?.aborted) return report;
 
-  const gain = options.gain;
   const frozenDeltas: number[] = [];
   const liveDeltas: number[] = [];
   let rowsDiffer = 0;
@@ -442,10 +502,7 @@ export function freshnessCheck(
     if (options.signal?.aborted) break;
     const now = Date.now();
     if (options.deadline !== undefined && now > options.deadline) break;
-    const frameDeadline =
-      options.deadline !== undefined
-        ? Math.min(options.deadline, now + FRAME_TIME_LIMIT_MS)
-        : now + FRAME_TIME_LIMIT_MS;
+    const cutoff = frameDeadline(now, options.deadline);
 
     const payload = entry.frame.payload;
     const policy =
@@ -455,27 +512,7 @@ export function freshnessCheck(
     const baseline = options.baseline ?? grid[0]!;
     const candidate = options.candidate ?? grid[1]!;
 
-    // The live re-fetch. A MATCH the parser rejects degrades inside the
-    // frame (three worlds, not two); anything else that throws skips this
-    // frame's live side as `frame-missing` rather than breaking the night.
-    let fresh: RecallFrame | null = null;
-    try {
-      fresh = fetchFrame(store, {
-        text: payload.query.text,
-        owner: payload.owner,
-        limit: payload.box.limitMax,
-        kinds: payload.box.kinds,
-        minImportance: payload.box.minImportance,
-        box: payload.box,
-        site: payload.site,
-        pipeline: payload.pipeline,
-        budgetChars: payload.budgetChars,
-        subject: payload.subject,
-      });
-    } catch {
-      fresh = null;
-    }
-
+    const fresh = refetchLive(store, payload);
     const differ = fresh !== null && rowsSignature(payload) !== rowsSignature(fresh);
     if (fresh !== null) {
       compared += 1;
@@ -491,33 +528,25 @@ export function freshnessCheck(
       frozenDelta: null,
       liveDelta: null,
     };
+    report.entries.push(entryOut);
 
     // A frame past its sub-cap is abstained: no monstrous frame may eat the
     // shared wall clock on its own.
-    if (Date.now() > frameDeadline) {
+    if (Date.now() > cutoff) {
       report.frameTimeouts += 1;
-      report.entries.push(entryOut);
       continue;
     }
 
-    const frozenBase = measure(payload, baseline, gain, options.costWeight);
-    const frozenCand = measure(payload, candidate, gain, options.costWeight);
-    if (!frozenBase.ok) report.abstainReasons[frozenBase.abstain] += 1;
-    if (!frozenCand.ok) report.abstainReasons[frozenCand.abstain] += 1;
-    if (frozenBase.ok && frozenCand.ok) {
-      entryOut.frozenDelta = frozenCand.score - frozenBase.score;
-      report.closedFrozen += 1;
-    }
+    const frozen = pairedDelta(payload, baseline, candidate, options);
+    countAbstains(report.abstainReasons, frozen.abstained);
+    entryOut.frozenDelta = frozen.delta;
+    if (frozen.delta !== null) report.closedFrozen += 1;
 
     if (fresh) {
-      const liveBase = measure(fresh, baseline, gain, options.costWeight);
-      const liveCand = measure(fresh, candidate, gain, options.costWeight);
-      if (!liveBase.ok) report.abstainReasons[liveBase.abstain] += 1;
-      if (!liveCand.ok) report.abstainReasons[liveCand.abstain] += 1;
-      if (liveBase.ok && liveCand.ok) {
-        entryOut.liveDelta = liveCand.score - liveBase.score;
-        report.closedLive += 1;
-      }
+      const live = pairedDelta(fresh, baseline, candidate, options);
+      countAbstains(report.abstainReasons, live.abstained);
+      entryOut.liveDelta = live.delta;
+      if (live.delta !== null) report.closedLive += 1;
     }
 
     if (entryOut.frozenDelta !== null && entryOut.liveDelta !== null) {
@@ -525,21 +554,14 @@ export function freshnessCheck(
       frozenDeltas.push(entryOut.frozenDelta);
       liveDeltas.push(entryOut.liveDelta);
     }
-    report.entries.push(entryOut);
   }
 
-  const mean = (values: number[]): number | null =>
-    values.length ? values.reduce((total, value) => total + value, 0) / values.length : null;
   report.deltaFrozen = mean(frozenDeltas);
   report.deltaLive = mean(liveDeltas);
   report.rowsDifferShare = compared ? rowsDiffer / compared : 0;
   if (report.deltaFrozen !== null && report.deltaLive !== null) {
-    if (Math.abs(report.deltaFrozen) <= FRESHNESS_MARGIN) report.signAgree = null;
-    else {
-      const frozenSign = Math.sign(report.deltaFrozen);
-      const liveSign = Math.sign(report.deltaLive);
-      report.signAgree = frozenSign === liveSign ? 1 : 0;
-    }
+    const agree = signsAgree(report.deltaFrozen, report.deltaLive, FRESHNESS_MARGIN);
+    report.signAgree = agree === null ? null : agree ? 1 : 0;
   }
   return report;
 }
@@ -643,9 +665,184 @@ function emptyProbeReport(): ProbeReport {
   };
 }
 
-/** The budget the assistant turn renders with; mirrors runtime.ts (AP9). */
-function expectedBudgetChars(config: RookeryConfig): number {
-  return Math.floor(config.memory.contextBudget * 0.4);
+/** What one probe run shares between its steps. `report` fills in as the steps go. */
+interface ProbeRun {
+  store: Store;
+  config: RookeryConfig;
+  signal: AbortSignal;
+  gain: GainFunction;
+  costWeight: number;
+  /** Wall-clock deadline in epoch ms. */
+  deadline: number;
+  /** Written to as the steps proceed, so a throw leaves everything measured so far. */
+  report: ProbeReport;
+}
+
+/** The frames that passed the pre-checks, with every placement scored on each. */
+interface ScoredPool {
+  frames: RecordedFrame[];
+  /** Per frame, the cluster the bootstrap draws it under (its session). */
+  clusters: string[];
+  /** Per frame, one result per placement, in grid order; shorter when the sub-cap cut it. */
+  armsByFrame: MeasureResult[][];
+  /** Abstentions every placement shares, counted once per frame. */
+  preReasons: Record<AbstainReason, number>;
+}
+
+/**
+ * One wall clock for the whole dream, not one per part (concept 6.1): where
+ * the night hands its own deadline down, that is the ceiling. A pool cut into
+ * pieces must not be able to buy itself a second budget, and the probe running
+ * its own copy of `maxEvalMs` was exactly that - it could legally spend the
+ * whole of it and leave the slot behind it starting past its deadline.
+ */
+function resolveDeadline(handed: number | undefined, startedAt: number, maxEvalMs: number): number {
+  if (handed !== undefined && Number.isFinite(handed)) return handed;
+  return startedAt + clampNumber(maxEvalMs, 0, MAX_EVAL_MS_CEILING);
+}
+
+/**
+ * Load the night's pool. Frames this very night wrote are not measuring
+ * material - a night never scores its own writes (in stage 1 it writes none,
+ * but the exclusion is the reason the run id is a parameter at all).
+ *
+ * The pool cut is reported before anything that could throw: `framesFor`
+ * walks oldest first, so a pool at the limit has dropped the newest frames -
+ * the measurement covers fewer frames than exist, and the report says so
+ * instead of hiding it.
+ */
+function loadPool(run: ProbeRun, owner: string, runId: string): RecordedFrame[] {
+  const { store, report } = run;
+  const pool = store.framesFor(owner, { limit: FRAME_POOL_LIMIT });
+  report.framesTotal = store.dreamFrameCount(owner);
+  report.poolTruncated = report.framesTotal > pool.length;
+  const frames = pool.filter((entry) => entry.trace.sleepRunId !== runId);
+  report.frames = frames.length;
+  report.tracesSeen = new Set(frames.map((entry) => entry.trace.id)).size;
+  return frames;
+}
+
+/**
+ * The night's one corpus fingerprint, over the tokens of its own frames (R10):
+ * the vocabulary scan walks the whole index, which is why it runs here and
+ * never inside a turn. It also becomes the stamp the next day's turns carry.
+ */
+function stampNightCorpus(
+  run: ProbeRun,
+  owner: string,
+  frames: readonly RecordedFrame[],
+): FrameCorpus {
+  const tokens = [...new Set(frames.flatMap((entry) => entry.frame.payload.query.tokens))];
+  const corpus = run.store.corpusFingerprint(owner, tokens);
+  run.report.corpusStampId = corpus.id;
+  return corpus;
+}
+
+/** Score every placement of one frame's grid, stopping at the frame's sub-cap. */
+function scoreGrid(
+  run: ProbeRun,
+  payload: RecallFrame,
+  grid: readonly FrameScoringPolicy[],
+  cutoff: number,
+): MeasureResult[] {
+  const { report } = run;
+  const arms: MeasureResult[] = [];
+  for (const placement of grid) {
+    // The inner sub-cap: one frame may not eat the shared wall clock.
+    if (Date.now() > cutoff) {
+      report.frameTimeouts += 1;
+      break;
+    }
+    const result = measure(payload, placement, run.gain, run.costWeight);
+    report.framesScored += 1;
+    if (!result.ok) report.abstainReasons[result.abstain] += 1;
+    arms.push(result);
+  }
+  return arms;
+}
+
+/**
+ * Pre-check and score the pool, oldest frame first, until it is exhausted,
+ * aborted or out of wall clock. A frame a pre-check abstains is counted in
+ * `preReasons` and in the report, and never scored.
+ */
+function scorePool(
+  run: ProbeRun,
+  frames: readonly RecordedFrame[],
+  precheck: PrecheckContext,
+  gridSize: number,
+): ScoredPool {
+  const { store, config, report } = run;
+  const scored: ScoredPool = { frames: [], clusters: [], armsByFrame: [], preReasons: emptyReasons() };
+
+  for (const entry of frames) {
+    if (run.signal.aborted) break;
+    const now = Date.now();
+    if (now > run.deadline) {
+      report.deadlineHit = true;
+      break;
+    }
+    const payload = entry.frame.payload;
+
+    const reason = precheckReason(store, entry, precheck);
+    if (reason) {
+      if (reason === 'corpus-invalidated') report.invalidated += 1;
+      scored.preReasons[reason] += 1;
+      report.abstainReasons[reason] += 1;
+      continue;
+    }
+
+    scored.frames.push(entry);
+    scored.clusters.push(entry.trace.sessionId ?? entry.trace.id);
+    const policy = entry.trace.policySet.recall ?? resolvePolicy(store, config, entry.trace.owner, 'recall');
+    const grid = buildGrid(policy, payload.box, gridSize);
+    scored.armsByFrame.push(scoreGrid(run, payload, grid, frameDeadline(now, run.deadline)));
+  }
+  return scored;
+}
+
+/**
+ * One placement's result paired against the incumbent of the SAME frame: both
+ * arms come from one grid, so a delta is a within-frame comparison and never
+ * a number against yesterday's incumbent.
+ */
+function placementReport(index: number, pool: ScoredPool): GridPlacementReport {
+  const reasons = emptyReasons();
+  addReasons(reasons, pool.preReasons);
+  const deltas: number[] = [];
+  const deltasBySession = new Map<string, number[]>();
+  const coverages: number[] = [];
+  let closed = 0;
+  pool.armsByFrame.forEach((arms, frameIndex) => {
+    const arm = arms[index];
+    const base = arms[INCUMBENT_INDEX];
+    if (!arm || !base) return;
+    if (!arm.ok) {
+      reasons[arm.abstain] += 1;
+      return;
+    }
+    coverages.push(arm.coverage);
+    if (!base.ok) return;
+    closed += 1;
+    if (index === INCUMBENT_INDEX) return;
+    const delta = arm.score - base.score;
+    deltas.push(delta);
+    const session = pool.clusters[frameIndex] ?? '';
+    const bucket = deltasBySession.get(session);
+    if (bucket) bucket.push(delta);
+    else deltasBySession.set(session, [delta]);
+  });
+  const interval = bootstrapCi([...deltasBySession.values()]);
+  return {
+    index,
+    incumbent: index === INCUMBENT_INDEX,
+    closed,
+    delta: index === INCUMBENT_INDEX ? (closed > 0 ? 0 : null) : mean(deltas),
+    ciLow: interval?.low ?? null,
+    ciHigh: interval?.high ?? null,
+    coverage: mean(coverages),
+    abstainReasons: reasons,
+  };
 }
 
 /**
@@ -677,194 +874,66 @@ export function runGridProbe(
   if (signal.aborted) return emptyProbeReport();
 
   const startedAt = Date.now();
-  const state: ProbeReport = emptyProbeReport();
+  const report = emptyProbeReport();
   try {
     const dream = config.memory.dream;
-    const maxEvalMs = clampNumber(dream.maxEvalMs, 0, 3_600_000);
-    // One wall clock for the whole dream, not one per part (concept 6.1):
-    // where the night hands its own deadline down, that is the ceiling. A
-    // pool cut into pieces must not be able to buy itself a second budget,
-    // and the probe running its own copy of `maxEvalMs` was exactly that -
-    // it could legally spend the whole of it and leave the slot behind it
-    // starting past its deadline.
-    const handed = options.deadline;
-    const deadline =
-      handed !== undefined && Number.isFinite(handed) ? handed : startedAt + maxEvalMs;
+    const deadline = resolveDeadline(options.deadline, startedAt, dream.maxEvalMs);
     // A budget that is switched off, or one the caller has already spent, is
     // a legitimate state and not an error: the probe reports nothing scored
     // and the night carries on (the wall-clock test).
     if (deadline <= startedAt) {
-      state.deadlineHit = true;
-      state.evalMs = Date.now() - startedAt;
-      return state;
+      report.deadlineHit = true;
+      report.evalMs = Date.now() - startedAt;
+      return report;
     }
-    const gain = options.gain ?? ((): number => 0);
-    const costWeight = clampNumber(dream.costWeight, 0, 1);
-    const tolerance = clampNumber(dream.corpusTolerance, 0, 10);
+    const run: ProbeRun = {
+      store,
+      config,
+      signal,
+      gain: options.gain ?? NO_GAIN,
+      costWeight: clampNumber(dream.costWeight, 0, 1),
+      deadline,
+      report,
+    };
 
-    // Frames this very night wrote are not measuring material - a night
-    // never scores its own writes (in stage 1 it writes none, but the
-    // exclusion is the reason the run id is a parameter at all).
-    const pool = store.framesFor(owner, { limit: FRAME_POOL_LIMIT });
-    // Before anything that could throw: the pool cut must be visible even
-    // in a run that errors later. `framesFor` walks oldest first, so a pool
-    // at the limit has dropped the newest frames - the measurement covers
-    // fewer frames than exist, and the report says so instead of hiding it.
-    state.framesTotal = store.dreamFrameCount(owner);
-    state.poolTruncated = state.framesTotal > pool.length;
-    const entries = pool.filter((entry) => entry.trace.sleepRunId !== runId);
-    state.frames = entries.length;
-    state.tracesSeen = new Set(entries.map((entry) => entry.trace.id)).size;
-
-    // The night's one corpus fingerprint, over the tokens of its own frames
-    // (R10): the vocabulary scan walks the whole index, which is why it runs
-    // here and never inside a turn. It also becomes the stamp the next day's
-    // turns carry.
-    const corpus = store.corpusFingerprint(
-      owner,
-      [...new Set(entries.flatMap((entry) => entry.frame.payload.query.tokens))],
-    );
-    state.corpusStampId = corpus.id;
+    const frames = loadPool(run, owner, runId);
+    const corpus = stampNightCorpus(run, owner, frames);
     const invalidatedAt = readInvalidatedAt(store);
-    const budget = expectedBudgetChars(config);
+    const precheck: PrecheckContext = {
+      corpus,
+      tolerance: clampNumber(dream.corpusTolerance, 0, 10),
+      budget: expectedBudgetChars(config),
+      invalidatedAt,
+    };
+    const pool = scorePool(run, frames, precheck, dream.gridSize);
 
-    const preReasons = emptyReasons();
-    const eligible: { trace: DreamTrace; frame: DreamFrame }[] = [];
-    const clusters: string[] = [];
-    const grids: FrameScoringPolicy[][] = [];
-    const armsByFrame: { placement: number; result: MeasureResult }[][] = [];
-
-    for (const entry of entries) {
-      if (signal.aborted) break;
-      const now = Date.now();
-      if (now > deadline) {
-        state.deadlineHit = true;
-        break;
-      }
-      const frameDeadline = Math.min(deadline, now + FRAME_TIME_LIMIT_MS);
-      const payload = entry.frame.payload;
-
-      let reason: AbstainReason | null = null;
-      if (!entry.trace.finishedAt) reason = 'unfinished';
-      else if (invalidatedAt > 0 && entry.frame.createdAt < invalidatedAt) {
-        reason = 'corpus-invalidated';
-        state.invalidated += 1;
-      } else if (
-        corpusDrifted(payload, corpus, tolerance, stampById(store, payload.corpusStampId))
-      ) {
-        reason = 'corpus-drifted';
-      } else if (payload.pipeline === 'assistant' && payload.budgetChars !== budget) {
-        reason = 'budget-changed';
-      }
-
-      if (reason) {
-        preReasons[reason] += 1;
-        state.abstainReasons[reason] += 1;
-        continue;
-      }
-
-      eligible.push(entry);
-      clusters.push(entry.trace.sessionId ?? entry.trace.id);
-      const policy = entry.trace.policySet.recall ?? resolvePolicy(store, config, owner, 'recall');
-      const grid = buildGrid(policy, payload.box, dream.gridSize);
-      grids.push(grid);
-
-      const arms: { placement: number; result: MeasureResult }[] = [];
-      for (let index = 0; index < grid.length; index += 1) {
-        // The inner sub-cap: one frame may not eat the shared wall clock.
-        if (Date.now() > frameDeadline) {
-          state.frameTimeouts += 1;
-          break;
-        }
-        const result = measure(payload, grid[index]!, gain, costWeight);
-        state.framesScored += 1;
-        if (!result.ok) state.abstainReasons[result.abstain] += 1;
-        arms.push({ placement: index, result });
-      }
-      armsByFrame.push(arms);
-    }
-
-    // Aggregate per placement, paired against the incumbent of the SAME
-    // frame: both arms come from one grid, so a delta is a within-frame
-    // comparison and never a number against yesterday's incumbent.
-    const placementCount = grids[0]?.length ?? 0;
+    const placementCount = pool.frames.length ? gridCount(dream.gridSize) : 0;
     for (let index = 0; index < placementCount; index += 1) {
-      const ownReasons = emptyReasons();
-      addReasons(ownReasons, preReasons);
-      const deltas: { cluster: string; value: number }[] = [];
-      const coverages: number[] = [];
-      let closed = 0;
-      for (let entryIndex = 0; entryIndex < eligible.length; entryIndex += 1) {
-        const arms = armsByFrame[entryIndex] ?? [];
-        const arm = arms.find((candidate) => candidate.placement === index);
-        const base = arms.find((candidate) => candidate.placement === 0);
-        if (!arm || !base) continue;
-        if (!arm.result.ok) {
-          ownReasons[arm.result.abstain] += 1;
-          continue;
-        }
-        coverages.push(arm.result.coverage);
-        if (base.result.ok) {
-          closed += 1;
-          if (index > 0) {
-            deltas.push({
-              cluster: clusters[entryIndex] ?? '',
-              value: arm.result.score - base.result.score,
-            });
-          }
-        }
-      }
-      const grouped = new Map<string, number[]>();
-      for (const delta of deltas) {
-        const bucket = grouped.get(delta.cluster);
-        if (bucket) bucket.push(delta.value);
-        else grouped.set(delta.cluster, [delta.value]);
-      }
-      const ci =
-        index === 0 || !deltas.length ? null : bootstrapCi([...grouped.values()]);
-      state.placements.push({
-        index,
-        incumbent: index === 0,
-        closed,
-        delta:
-          index === 0
-            ? closed > 0
-              ? 0
-              : null
-            : deltas.length
-              ? deltas.reduce((total, delta) => total + delta.value, 0) / deltas.length
-              : null,
-        ciLow: ci?.low ?? null,
-        ciHigh: ci?.high ?? null,
-        coverage: coverages.length
-          ? coverages.reduce((total, value) => total + value, 0) / coverages.length
-          : null,
-        abstainReasons: ownReasons,
-      });
+      report.placements.push(placementReport(index, pool));
     }
 
     // The freshness sensor over what passed the pre-checks, inside the same
     // wall clock. Its default arms are each frame's own incumbent and first
     // non-incumbent placement - deterministic, and in-box by construction.
-    if (eligible.length) {
-      state.freshness = freshnessCheck(store, eligible, {
+    if (pool.frames.length) {
+      report.freshness = freshnessCheck(store, pool.frames, {
         config,
-        gain,
-        costWeight,
+        gain: run.gain,
+        costWeight: run.costWeight,
         deadline,
         signal,
       });
     }
-    if (Date.now() > deadline) state.deadlineHit = true;
-    if (state.invalidated > 0 && invalidatedAt > 0) state.invalidatedAt = invalidatedAt;
-    state.evalMs = Date.now() - startedAt;
-    return state;
+    if (Date.now() > deadline) report.deadlineHit = true;
+    if (report.invalidated > 0 && invalidatedAt > 0) report.invalidatedAt = invalidatedAt;
+    report.evalMs = Date.now() - startedAt;
+    return report;
   } catch (cause) {
     // `ask` never throws and neither does the probe: an internal failure is
     // reported, and the night goes on (the corrupted-payload test).
-    state.error = (cause as Error).message;
-    state.evalMs = Date.now() - startedAt;
-    return state;
+    report.error = (cause as Error).message;
+    report.evalMs = Date.now() - startedAt;
+    return report;
   }
 }
 

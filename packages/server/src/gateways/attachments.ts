@@ -22,6 +22,20 @@ import type { GatewayAttachment } from '@rookery/core';
 /** How long a saved attachment stays before the next sweep removes it. */
 const KEEP_DAYS = 30;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The sender's name for a file, as far as it is kept in the saved name. */
+const STEM_MAX_CHARS = 40;
+
+/** The tail of the file's unique id that keeps two saved names apart. */
+const UNIQUE_ID_CHARS = 8;
+
+/** A short alphanumeric extension at the very end of a file name. */
+const TRAILING_EXTENSION = /\.([A-Za-z0-9]{1,6})$/;
+
+/** `2026-10-08`, the name of a day folder. */
+const DAY_FOLDER = /^\d{4}-\d{2}-\d{2}$/;
+
 /** Extension per kind, when neither the name nor the mime type offers one. */
 const FALLBACK_EXTENSION: Record<GatewayAttachment['kind'], string> = {
   photo: 'jpg',
@@ -74,7 +88,7 @@ export function inboxDir(workspace: string): string {
 }
 
 function twoDigits(value: number): string {
-  return value < 10 ? '0' + value : String(value);
+  return String(value).padStart(2, '0');
 }
 
 /**
@@ -82,8 +96,8 @@ function twoDigits(value: number): string {
  * sender's file name as-is, which is foreign text that ends up in a path.
  */
 function extensionOf(attachment: GatewayAttachment): string {
-  const named = /\.([A-Za-z0-9]{1,6})$/.exec(attachment.fileName ?? '')?.[1];
-  if (named && /^[A-Za-z0-9]+$/.test(named)) return named.toLowerCase();
+  const named = TRAILING_EXTENSION.exec(attachment.fileName ?? '')?.[1];
+  if (named) return named.toLowerCase();
   const mime = attachment.mime?.toLowerCase().split(';')[0]?.trim();
   if (mime && MIME_EXTENSION[mime]) return MIME_EXTENSION[mime];
   if (mime?.startsWith('image/')) return 'jpg';
@@ -100,8 +114,11 @@ function extensionOf(attachment: GatewayAttachment): string {
  */
 function safeStem(fileName?: string): string | undefined {
   if (!fileName) return undefined;
-  const withoutExtension = fileName.replace(/\.[A-Za-z0-9]{1,6}$/, '');
-  const clean = withoutExtension.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  const withoutExtension = fileName.replace(TRAILING_EXTENSION, '');
+  const clean = withoutExtension
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, STEM_MAX_CHARS);
   return clean.length >= 2 ? clean.toLowerCase() : undefined;
 }
 
@@ -124,7 +141,8 @@ export function saveAttachment(
   mkdirSync(folder, { recursive: true });
 
   const stem = safeStem(attachment.fileName);
-  const unique = (attachment.uniqueId ?? attachment.fileId).replace(/[^A-Za-z0-9_-]/g, '').slice(-8) || 'file';
+  const unique =
+    (attachment.uniqueId ?? attachment.fileId).replace(/[^A-Za-z0-9_-]/g, '').slice(-UNIQUE_ID_CHARS) || 'file';
   const name = `${time}-${attachment.kind}${stem ? '-' + stem : ''}-${unique}.${extensionOf(attachment)}`;
   const path = join(folder, name);
   writeFileSync(path, bytes);
@@ -141,28 +159,32 @@ export function saveAttachment(
  */
 export function pruneInbox(workspace: string, keepDays = KEEP_DAYS, now = Date.now()): number {
   const root = inboxDir(workspace);
-  let removed = 0;
   let entries: string[];
   try {
     entries = readdirSync(root);
   } catch {
     return 0;
   }
-  const cutoff = now - keepDays * 24 * 60 * 60 * 1000;
+  const cutoff = now - keepDays * DAY_MS;
+  let removed = 0;
   for (const entry of entries) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(entry)) continue;
+    if (!DAY_FOLDER.test(entry)) continue;
     const day = Date.parse(entry + 'T23:59:59');
     if (!Number.isFinite(day) || day >= cutoff) continue;
-    try {
-      const folder = join(root, entry);
-      if (!statSync(folder).isDirectory()) continue;
-      rmSync(folder, { recursive: true, force: true });
-      removed += 1;
-    } catch {
-      // Nothing here is worth failing a start over.
-    }
+    if (removeDayFolder(join(root, entry))) removed += 1;
   }
   return removed;
+}
+
+/** Whether the folder was there to remove; a failure to remove it is not worth failing a start over. */
+function removeDayFolder(folder: string): boolean {
+  try {
+    if (!statSync(folder).isDirectory()) return false;
+    rmSync(folder, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Bytes as a phone would show them, for the line the turn is handed. */
@@ -175,7 +197,8 @@ export function humanSize(bytes: number): string {
 /** "0:42" out of seconds, for a voice note's length. */
 export function humanDuration(seconds?: number): string {
   if (!seconds || seconds < 0) return '';
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds % 60);
-  return minutes + ':' + (rest < 10 ? '0' + rest : String(rest));
+  // Rounded once, before splitting: rounding only the remainder turns 59.6
+  // seconds into "0:60".
+  const total = Math.round(seconds);
+  return Math.floor(total / 60) + ':' + twoDigits(total % 60);
 }

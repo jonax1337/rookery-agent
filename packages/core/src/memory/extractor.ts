@@ -116,6 +116,17 @@ export interface ExtractionInput {
   perspective?: 'user' | 'agent';
 }
 
+const MAX_KNOWN_MEMORIES = 40;
+const MAX_EXCHANGE_CHARS = 4000;
+const MIN_CANDIDATE_CHARS = 8;
+const MAX_CANDIDATE_CHARS = 500;
+const MAX_CANDIDATE_TAGS = 6;
+const MAX_CANDIDATES_PER_REPLY = 8;
+const DEFAULT_IMPORTANCE = 0.5;
+
+/** Kinds a reply may propose; `insight` is written by the nights only. */
+const EXTRACTABLE_KINDS: readonly MemoryKind[] = ['fact', 'preference', 'project', 'event', 'summary'];
+
 /**
  * Ask the provider for memory candidates. Never throws: extraction is a
  * best-effort background step and must not fail the turn the user waited for.
@@ -125,24 +136,38 @@ export async function extractMemories(
   input: ExtractionInput,
   signal?: AbortSignal,
 ): Promise<MemoryCandidate[]> {
-  const known = (input.known ?? []).slice(0, 40);
+  const output = await collectReply(provider, buildPrompt(input), input.model, signal);
+  return parseCandidates(output);
+}
+
+function buildPrompt(input: ExtractionInput): string {
+  const known = (input.known ?? []).slice(0, MAX_KNOWN_MEMORIES);
   const agent = input.perspective === 'agent';
-  const prompt =
+  return (
     (agent ? AGENT_EXTRACTION_PROMPT : EXTRACTION_PROMPT) +
     '\n\nCURRENT DATE: ' +
     new Date().toISOString().slice(0, 10) +
     '\n\nALREADY KNOWN:\n' +
     (known.length ? known.map((item) => '- ' + item).join('\n') : '(nothing yet)') +
     (agent ? '\n\nASSIGNMENT:\n' : '\n\nEXCHANGE\nUser: ') +
-    clip(input.userText, 4000) +
+    clip(input.userText, MAX_EXCHANGE_CHARS) +
     (agent ? '\n\nREPORT:\n' : '\nAssistant: ') +
-    clip(input.assistantText, 4000);
+    clip(input.assistantText, MAX_EXCHANGE_CHARS)
+  );
+}
 
+/** The reply text, or '' when the provider fails: see `extractMemories` on why nothing propagates. */
+async function collectReply(
+  provider: Provider,
+  prompt: string,
+  model: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<string> {
   let output = '';
   try {
     for await (const event of provider.run({
       prompt,
-      model: input.model,
+      model,
       // Extraction is a background chore; it must never out-think the turn.
       effort: 'low',
       permission: 'chat',
@@ -150,68 +175,74 @@ export async function extractMemories(
     })) {
       if (event.type === 'done') output = event.text || output;
       else if (event.type === 'text') output += event.delta;
-      else if (event.type === 'error' && event.fatal) return [];
+      else if (event.type === 'error' && event.fatal) return '';
     }
   } catch {
-    return [];
+    return '';
   }
-
-  return parseCandidates(output);
+  return output;
 }
 
 /** Pull the JSON array out of a reply that may be wrapped in prose or a fence. */
 export function parseCandidates(raw: string): MemoryCandidate[] {
-  const text = raw.trim();
-  if (!text) return [];
+  const entries = parseJsonArray(raw);
+  const seen = new Set<string>();
+  const out: MemoryCandidate[] = [];
 
+  for (const entry of entries) {
+    const candidate = candidateFrom(entry);
+    if (!candidate) continue;
+
+    const key = candidate.content.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push(candidate);
+    if (out.length >= MAX_CANDIDATES_PER_REPLY) break;
+  }
+
+  return out;
+}
+
+function parseJsonArray(raw: string): unknown[] {
+  const text = raw.trim();
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const body = fenced?.[1] ?? text;
   const start = body.indexOf('[');
   const end = body.lastIndexOf(']');
   if (start === -1 || end === -1 || end < start) return [];
 
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(body.slice(start, end + 1));
+    const parsed: unknown = JSON.parse(body.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
   }
-  if (!Array.isArray(parsed)) return [];
+}
 
-  const valid: MemoryKind[] = ['fact', 'preference', 'project', 'event', 'summary'];
-  const seen = new Set<string>();
-  const out: MemoryCandidate[] = [];
+/** One reply entry as a candidate, or null when it is malformed, off-size or quotes nothing. */
+function candidateFrom(entry: unknown): MemoryCandidate | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const record = entry as Record<string, unknown>;
+  const content = typeof record.content === 'string' ? record.content.trim() : '';
+  if (content.length < MIN_CANDIDATE_CHARS || content.length > MAX_CANDIDATE_CHARS) return null;
 
-  for (const entry of parsed) {
-    if (!entry || typeof entry !== 'object') continue;
-    const record = entry as Record<string, unknown>;
-    const content = typeof record.content === 'string' ? record.content.trim() : '';
-    if (content.length < 8 || content.length > 500) continue;
+  // No quote, no candidate. The gate still checks that the quote is real;
+  // this only stops a reply that never even claimed one from travelling
+  // any further.
+  const evidence = typeof record.evidence === 'string' ? record.evidence.trim() : '';
+  if (!evidence) return null;
 
-    // No quote, no candidate. The gate still checks that the quote is real;
-    // this only stops a reply that never even claimed one from travelling
-    // any further.
-    const evidence = typeof record.evidence === 'string' ? record.evidence.trim() : '';
-    if (!evidence) continue;
+  const kind = EXTRACTABLE_KINDS.includes(record.kind as MemoryKind) ? (record.kind as MemoryKind) : 'fact';
+  const importance =
+    typeof record.importance === 'number' && Number.isFinite(record.importance)
+      ? Math.min(1, Math.max(0, record.importance))
+      : DEFAULT_IMPORTANCE;
+  const tags = Array.isArray(record.tags)
+    ? record.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, MAX_CANDIDATE_TAGS)
+    : [];
 
-    const key = content.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const kind = valid.includes(record.kind as MemoryKind) ? (record.kind as MemoryKind) : 'fact';
-    const importance =
-      typeof record.importance === 'number' && Number.isFinite(record.importance)
-        ? Math.min(1, Math.max(0, record.importance))
-        : 0.5;
-    const tags = Array.isArray(record.tags)
-      ? record.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, 6)
-      : [];
-
-    out.push({ kind, content, tags, importance, evidence });
-    if (out.length >= 8) break;
-  }
-
-  return out;
+  return { kind, content, tags, importance, evidence };
 }
 
 function clip(text: string, max: number): string {

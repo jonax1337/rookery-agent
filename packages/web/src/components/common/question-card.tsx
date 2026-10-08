@@ -45,17 +45,44 @@ export interface QuestionCardProps {
   className?: string;
 }
 
+const MINUTE_MS = 60000;
+const TICK_MS = 15000;
+
+/** Whether the server set a usable deadline at all. */
+function hasDeadline(expiresAt: number): boolean {
+  return Number.isFinite(expiresAt) && expiresAt > 0;
+}
+
 /** How long is left, in words. `null` once there is nothing left. */
 export function remainingLabel(expiresAt: number, now: number): string | null {
-  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return null;
+  if (!hasDeadline(expiresAt)) return null;
   const left = expiresAt - now;
   if (left <= 0) return null;
-  const minutes = Math.round(left / 60000);
+  const minutes = Math.round(left / MINUTE_MS);
   if (minutes < 1) return 'less than a minute left';
   return minutes === 1 ? '1 minute left' : minutes + ' minutes left';
 }
 
-const TICK_MS = 15000;
+interface OptionFieldProps {
+  htmlFor: string;
+  option: QuestionEvent['options'][number];
+  /** The checkbox or radio that carries the choice. */
+  children: React.ReactNode;
+}
+
+function OptionField({ htmlFor, option, children }: OptionFieldProps) {
+  return (
+    <FieldLabel htmlFor={htmlFor}>
+      <Field orientation="horizontal">
+        <FieldContent>
+          <FieldTitle>{option.label}</FieldTitle>
+          {option.description ? <FieldDescription>{option.description}</FieldDescription> : null}
+        </FieldContent>
+        {children}
+      </Field>
+    </FieldLabel>
+  );
+}
 
 export function QuestionCard({ question, onAnswer, onExpire, className }: QuestionCardProps) {
   const [selected, setSelected] = React.useState<number[]>([]);
@@ -82,8 +109,8 @@ export function QuestionCard({ question, onAnswer, onExpire, className }: Questi
   const expireRef = React.useRef(onExpire);
   expireRef.current = onExpire;
   React.useEffect(() => {
+    if (!hasDeadline(question.expiresAt)) return undefined;
     const left = question.expiresAt - Date.now();
-    if (!Number.isFinite(question.expiresAt) || question.expiresAt <= 0) return undefined;
     if (left <= 0) {
       expireRef.current?.();
       return undefined;
@@ -149,22 +176,14 @@ export function QuestionCard({ question, onAnswer, onExpire, className }: Questi
         question.multiSelect ? (
           <div role="group" aria-labelledby={headingId} className="grid gap-2">
             {question.options.map((option, index) => (
-              <FieldLabel key={index} htmlFor={optionId(index)}>
-                <Field orientation="horizontal">
-                  <FieldContent>
-                    <FieldTitle>{option.label}</FieldTitle>
-                    {option.description ? (
-                      <FieldDescription>{option.description}</FieldDescription>
-                    ) : null}
-                  </FieldContent>
-                  <Checkbox
-                    id={optionId(index)}
-                    checked={selected.includes(index)}
-                    onCheckedChange={(checked) => choose(index, checked === true)}
-                    aria-label={option.label}
-                  />
-                </Field>
-              </FieldLabel>
+              <OptionField key={index} htmlFor={optionId(index)} option={option}>
+                <Checkbox
+                  id={optionId(index)}
+                  checked={selected.includes(index)}
+                  onCheckedChange={(checked) => choose(index, checked === true)}
+                  aria-label={option.label}
+                />
+              </OptionField>
             ))}
           </div>
         ) : (
@@ -175,21 +194,13 @@ export function QuestionCard({ question, onAnswer, onExpire, className }: Questi
             onValueChange={(value) => choose(Number(value), true)}
           >
             {question.options.map((option, index) => (
-              <FieldLabel key={index} htmlFor={optionId(index)}>
-                <Field orientation="horizontal">
-                  <FieldContent>
-                    <FieldTitle>{option.label}</FieldTitle>
-                    {option.description ? (
-                      <FieldDescription>{option.description}</FieldDescription>
-                    ) : null}
-                  </FieldContent>
-                  <RadioGroupItem
-                    value={String(index)}
-                    id={optionId(index)}
-                    aria-label={option.label}
-                  />
-                </Field>
-              </FieldLabel>
+              <OptionField key={index} htmlFor={optionId(index)} option={option}>
+                <RadioGroupItem
+                  value={String(index)}
+                  id={optionId(index)}
+                  aria-label={option.label}
+                />
+              </OptionField>
             ))}
           </RadioGroup>
         )

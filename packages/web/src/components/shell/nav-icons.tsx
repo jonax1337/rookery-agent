@@ -14,13 +14,9 @@ import {
 /**
  * The route icons, as their lucide-animated twins.
  *
- * No wrapper any more: the animated icons find their interactive host
- * themselves (`useHostHover` walks up to the sidebar link, the palette
- * option) and play when the *row* is hovered, not only the icon's own
- * pixels. The old `hoverRowIcon` bridge drove them through a controlled
- * `animate` prop the registry icons never had - the prop landed on the
- * motion component and overrode `animate={controls}`, which is why the
- * Gateway and Conversations rows never played.
+ * The animated icons find their interactive host themselves (`useHostHover`
+ * walks up to the sidebar link, the palette option) and play when the *row*
+ * is hovered, not only the icon's own pixels - so no wrapper is needed.
  */
 export const OverviewIcon = LayoutDashboard;
 export const ConversationsIcon = MessageSquare;

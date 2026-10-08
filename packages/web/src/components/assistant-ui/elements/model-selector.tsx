@@ -238,13 +238,6 @@ function ModelSelectorRoot({
   );
 }
 
-/**
- * The trigger is a plain ui `Button` under the popover, the same one every
- * other pill in the composer row uses - so it shares their look and their
- * click feedback instead of drawing its own. With `asChild` the consumer
- * supplies that button itself (e.g. a `ControlMenuButton`, the pill the
- * composer's other controls use); the selector then only wires the popover.
- */
 export type ModelSelectorTriggerVariant = "outline" | "ghost" | "muted";
 
 /** Maps the selector's variant names onto `Button`'s, one for one. */
@@ -266,6 +259,13 @@ export type ModelSelectorTriggerProps = ComponentPropsWithoutRef<
   size?: ModelSelectorTriggerSize;
 };
 
+/**
+ * The trigger is a plain ui `Button` under the popover, the same one every
+ * other pill in the composer row uses - so it shares their look and their
+ * click feedback instead of drawing its own. With `asChild` the consumer
+ * supplies that button itself (e.g. a `ControlMenuButton`, the pill the
+ * composer's other controls use); the selector then only wires the popover.
+ */
 function ModelSelectorTrigger({
   className,
   variant = "outline",
@@ -466,7 +466,7 @@ function ModelSelectorContent({
       <Command
         className="rounded-[inherit]! bg-transparent"
         shouldFilter={!unfiltered}
-        {...(value !== undefined ? { defaultValue: value } : {})}
+        defaultValue={value}
       >
         {unfiltered && <ModelSelectorFocusAnchor />}
         {children ?? (
@@ -582,7 +582,7 @@ function ModelSelectorItem({
       data-slot="model-selector-item"
       value={model.id}
       keywords={[model.name, ...(model.keywords ?? [])]}
-      {...(model.disabled ? { disabled: true } : undefined)}
+      disabled={model.disabled}
       onSelect={(selectedValue) => {
         setValue(model.id);
         setOpen(false);
@@ -686,14 +686,14 @@ function ModelSelectorEffort({
 export type ModelSelectorProps = Omit<ModelSelectorRootProps, "children"> & {
   variant?: ModelSelectorTriggerVariant;
   size?: ModelSelectorTriggerSize;
-    /** Render a search input above the model list. */
-    searchable?: boolean;
-    /** Alignment of the dropdown relative to the trigger. Use `"end"` when the
-     * trigger sits at the right edge of its container. */
-    align?: ModelSelectorContentProps["align"];
-    className?: string;
-    contentClassName?: string;
-  };
+  /** Render a search input above the model list. */
+  searchable?: boolean;
+  /** Alignment of the dropdown relative to the trigger. Use `"end"` when the
+   * trigger sits at the right edge of its container. */
+  align?: ModelSelectorContentProps["align"];
+  className?: string;
+  contentClassName?: string;
+};
 
 export {
   ModelSelectorRoot,

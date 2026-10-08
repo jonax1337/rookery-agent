@@ -41,9 +41,15 @@ export function openDatabase(path: string): Db {
   return db;
 }
 
-function hasColumn(db: Db, table: string, column: string): boolean {
-  const rows = db.prepare('PRAGMA table_info(' + table + ')').all() as { name: string }[];
-  return rows.some((row) => row.name === column);
+/**
+ * `ALTER TABLE ... ADD COLUMN` that runs at most once: SQLite has no
+ * `ADD COLUMN IF NOT EXISTS`, and a database may be at any older shape.
+ * `definition` is a literal from `migrate`, never anything a request carried.
+ */
+function addColumnIfMissing(db: Db, table: string, column: string, definition: string): void {
+  const columns = db.prepare('PRAGMA table_info(' + table + ')').all() as { name: string }[];
+  if (columns.some((row) => row.name === column)) return;
+  db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition);
 }
 
 /**
@@ -130,47 +136,25 @@ function migrate(db: Db): void {
   `);
 
   // Schema 1 -> 2: memories gain an owner, sessions gain a project.
-  if (!hasColumn(db, 'memories', 'owner')) {
-    db.exec("ALTER TABLE memories ADD COLUMN owner TEXT NOT NULL DEFAULT 'assistant'");
-  }
-  if (!hasColumn(db, 'sessions', 'project_id')) {
-    db.exec('ALTER TABLE sessions ADD COLUMN project_id TEXT');
-  }
-  if (!hasColumn(db, 'sessions', 'kind')) {
-    db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'");
-  }
-  if (!hasColumn(db, 'sessions', 'agent_id')) {
-    db.exec('ALTER TABLE sessions ADD COLUMN agent_id TEXT');
-  }
+  addColumnIfMissing(db, 'memories', 'owner', "TEXT NOT NULL DEFAULT 'assistant'");
+  addColumnIfMissing(db, 'sessions', 'project_id', 'TEXT');
+  addColumnIfMissing(db, 'sessions', 'kind', "TEXT NOT NULL DEFAULT 'chat'");
+  addColumnIfMissing(db, 'sessions', 'agent_id', 'TEXT');
 
   // Schema 4 -> 5: the memory graph. Memories learn where they came from,
   // whether they are protected, and whether they are asleep.
-  if (!hasColumn(db, 'memories', 'origin')) {
-    db.exec("ALTER TABLE memories ADD COLUMN origin TEXT NOT NULL DEFAULT 'extract'");
-  }
-  if (!hasColumn(db, 'memories', 'pinned')) {
-    db.exec('ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
-  }
-  if (!hasColumn(db, 'memories', 'dormant_at')) {
-    db.exec('ALTER TABLE memories ADD COLUMN dormant_at INTEGER');
-  }
-  if (!hasColumn(db, 'memories', 'superseded_by')) {
-    db.exec('ALTER TABLE memories ADD COLUMN superseded_by TEXT');
-  }
-  if (!hasColumn(db, 'memories', 'sleep_run_id')) {
-    db.exec('ALTER TABLE memories ADD COLUMN sleep_run_id TEXT');
-  }
-  if (!hasColumn(db, 'memories', 'usefulness')) {
-    db.exec('ALTER TABLE memories ADD COLUMN usefulness REAL NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'memories', 'origin', "TEXT NOT NULL DEFAULT 'extract'");
+  addColumnIfMissing(db, 'memories', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'memories', 'dormant_at', 'INTEGER');
+  addColumnIfMissing(db, 'memories', 'superseded_by', 'TEXT');
+  addColumnIfMissing(db, 'memories', 'sleep_run_id', 'TEXT');
+  addColumnIfMissing(db, 'memories', 'usefulness', 'REAL NOT NULL DEFAULT 0');
 
   // Schema 11 -> 12: a memory records the words it stands on. Extraction may
   // no longer write anything it cannot quote, and the quote is kept so the
   // claim stays auditable long after the conversation is gone. NULL on every
   // row that predates this, and on everything the user wrote by hand.
-  if (!hasColumn(db, 'memories', 'evidence')) {
-    db.exec('ALTER TABLE memories ADD COLUMN evidence TEXT');
-  }
+  addColumnIfMissing(db, 'memories', 'evidence', 'TEXT');
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_memories_live
@@ -256,45 +240,29 @@ function migrate(db: Db): void {
 
   // Schema 5 -> 6: the night decides contradictions instead of only counting
   // them, so a run records how many it actually settled.
-  if (!hasColumn(db, 'sleep_runs', 'resolved_count')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN resolved_count INTEGER NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'sleep_runs', 'resolved_count', 'INTEGER NOT NULL DEFAULT 0');
 
   // Schema 11 -> 12: the night also writes skills now, so a run says how many.
-  if (!hasColumn(db, 'sleep_runs', 'skill_count')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN skill_count INTEGER NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'sleep_runs', 'skill_count', 'INTEGER NOT NULL DEFAULT 0');
 
   // Schema 12 -> 13: repairing a skill is counted apart from writing one.
-  if (!hasColumn(db, 'sleep_runs', 'skill_revised_count')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN skill_revised_count INTEGER NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'sleep_runs', 'skill_revised_count', 'INTEGER NOT NULL DEFAULT 0');
 
   // Schema 13 -> 14: the night reads the day's conversations again, so a run
   // says how many it got through and what they yielded.
-  if (!hasColumn(db, 'sleep_runs', 'replayed_count')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN replayed_count INTEGER NOT NULL DEFAULT 0');
-  }
-  if (!hasColumn(db, 'sleep_runs', 'learned_count')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN learned_count INTEGER NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'sleep_runs', 'replayed_count', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'sleep_runs', 'learned_count', 'INTEGER NOT NULL DEFAULT 0');
 
   // Schema 20 -> 21: dream bookkeeping on the run - traces the nightly probe
   // looked at.
-  if (!hasColumn(db, 'sleep_runs', 'dream_traces_seen')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_traces_seen INTEGER NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'sleep_runs', 'dream_traces_seen', 'INTEGER NOT NULL DEFAULT 0');
   // Schema 20 -> 21: grid placements the nightly probe scored.
-  if (!hasColumn(db, 'sleep_runs', 'dream_frames_scored')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_frames_scored INTEGER NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'sleep_runs', 'dream_frames_scored', 'INTEGER NOT NULL DEFAULT 0');
   // Schema 20 -> 21: model-written candidates. Its writer arrives with
   // Phase 3; Stage 1 leaves it at 0 rather than borrowing the column for
   // something else in between. There is deliberately no dream_promoted -
   // nothing is promoted in Stage 1, so that counter would have no writer.
-  if (!hasColumn(db, 'sleep_runs', 'dream_candidates')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_candidates INTEGER NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'sleep_runs', 'dream_candidates', 'INTEGER NOT NULL DEFAULT 0');
 
   /* ------------------------------ corrections ------------------------------
      A correction is the strongest signal the system gets. When the user says
@@ -562,31 +530,19 @@ function migrate(db: Db): void {
 
   // Schema 23 -> 24: a correction is only turn-locatable once it carries the
   // turn it corrects (addCorrection took only session_id until now).
-  if (!hasColumn(db, 'corrections', 'turn_id')) {
-    db.exec('ALTER TABLE corrections ADD COLUMN turn_id TEXT');
-  }
+  addColumnIfMissing(db, 'corrections', 'turn_id', 'TEXT');
   // Schema 23 -> 24: label(m) needs to know whose memory it is judging and
   // which session produced it - target alone is not enough once a label can
   // come from outside the labelled owner's own turn.
-  if (!hasColumn(db, 'dream_labels', 'owner')) {
-    db.exec('ALTER TABLE dream_labels ADD COLUMN owner TEXT');
-  }
-  if (!hasColumn(db, 'dream_labels', 'session_id')) {
-    db.exec('ALTER TABLE dream_labels ADD COLUMN session_id TEXT');
-  }
+  addColumnIfMissing(db, 'dream_labels', 'owner', 'TEXT');
+  addColumnIfMissing(db, 'dream_labels', 'session_id', 'TEXT');
   // Schema 23 -> 24: locateTurn resolves a quote to the turn that carried it,
   // and that resolution has to land somewhere a correction label can join on.
-  if (!hasColumn(db, 'messages', 'turn_id')) {
-    db.exec('ALTER TABLE messages ADD COLUMN turn_id TEXT');
-  }
+  addColumnIfMissing(db, 'messages', 'turn_id', 'TEXT');
   // Schema 23 -> 24: the promotion gate and the label writers get their own
   // counters on the run, in step with the other dream counters (8.8).
-  if (!hasColumn(db, 'sleep_runs', 'dream_promoted')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_promoted INTEGER NOT NULL DEFAULT 0');
-  }
-  if (!hasColumn(db, 'sleep_runs', 'dream_labels_written')) {
-    db.exec('ALTER TABLE sleep_runs ADD COLUMN dream_labels_written INTEGER NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'sleep_runs', 'dream_promoted', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'sleep_runs', 'dream_labels_written', 'INTEGER NOT NULL DEFAULT 0');
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_dream_labels_source ON dream_labels(source, created_at);
@@ -753,25 +709,19 @@ function migrate(db: Db): void {
   // real history instead of a single overwritable pointer. `tasks.assignment_id`
   // stays as "the current run" for cheap reads; `task_assignments` is the
   // durable record that survives a rerun clobbering that pointer.
-  if (!hasColumn(db, 'tasks', 'sort_order')) {
-    db.exec('ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
-  }
+  addColumnIfMissing(db, 'tasks', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
 
   // Schema 21 -> 22: a run gets a name of its own. Nullable on purpose - a
   // row written before the name existed keeps reading, and the store names
   // it from its own first line rather than writing a guess back over it.
-  if (!hasColumn(db, 'assignments', 'title')) {
-    db.exec('ALTER TABLE assignments ADD COLUMN title TEXT');
-  }
+  addColumnIfMissing(db, 'assignments', 'title', 'TEXT');
 
   // Schema 22 -> 23: an agent's mail gets a register of its own - two to
   // four sentences on HOW this person writes, colouring the output without
   // ever steering the work (that stays `instructions`). Nullable: a row
   // hired before this column existed reads back with a null voice and stays
   // silently neutral (decision E11, F5).
-  if (!hasColumn(db, 'agents', 'voice')) {
-    db.exec('ALTER TABLE agents ADD COLUMN voice TEXT');
-  }
+  addColumnIfMissing(db, 'agents', 'voice', 'TEXT');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS task_assignments (
@@ -834,12 +784,8 @@ function migrate(db: Db): void {
       ON cron_runs(job_id, started_at DESC);
   `);
 
-  if (!hasColumn(db, 'cron_jobs', 'script_json')) {
-    db.exec('ALTER TABLE cron_jobs ADD COLUMN script_json TEXT');
-  }
-  if (!hasColumn(db, 'cron_jobs', 'remaining_runs')) {
-    db.exec('ALTER TABLE cron_jobs ADD COLUMN remaining_runs INTEGER');
-  }
+  addColumnIfMissing(db, 'cron_jobs', 'script_json', 'TEXT');
+  addColumnIfMissing(db, 'cron_jobs', 'remaining_runs', 'INTEGER');
 
   // Schema 17 -> 18: a schedule can also be fired by something that happened -
   // a webhook call or a heartbeat listener - instead of only by the clock.
@@ -848,18 +794,10 @@ function migrate(db: Db): void {
   // backstop for events that never arrived. The webhook secret is its own
   // credential per job: handing one out never hands out the server's token,
   // and revoking one never touches another job.
-  if (!hasColumn(db, 'cron_jobs', 'trigger_mode')) {
-    db.exec("ALTER TABLE cron_jobs ADD COLUMN trigger_mode TEXT NOT NULL DEFAULT 'schedule'");
-  }
-  if (!hasColumn(db, 'cron_jobs', 'webhook_token')) {
-    db.exec('ALTER TABLE cron_jobs ADD COLUMN webhook_token TEXT');
-  }
-  if (!hasColumn(db, 'cron_jobs', 'event_cooldown_ms')) {
-    db.exec('ALTER TABLE cron_jobs ADD COLUMN event_cooldown_ms INTEGER');
-  }
-  if (!hasColumn(db, 'cron_runs', 'source')) {
-    db.exec('ALTER TABLE cron_runs ADD COLUMN source TEXT');
-  }
+  addColumnIfMissing(db, 'cron_jobs', 'trigger_mode', "TEXT NOT NULL DEFAULT 'schedule'");
+  addColumnIfMissing(db, 'cron_jobs', 'webhook_token', 'TEXT');
+  addColumnIfMissing(db, 'cron_jobs', 'event_cooldown_ms', 'INTEGER');
+  addColumnIfMissing(db, 'cron_runs', 'source', 'TEXT');
   // One secret, one job. Partial, so the many jobs without a webhook do not
   // all collide on NULL.
   db.exec(`
@@ -867,24 +805,18 @@ function migrate(db: Db): void {
       ON cron_jobs(webhook_token) WHERE webhook_token IS NOT NULL;
   `);
 
-  if (!hasColumn(db, 'messages', 'tool_calls')) {
-    db.exec('ALTER TABLE messages ADD COLUMN tool_calls TEXT');
-  }
+  addColumnIfMissing(db, 'messages', 'tool_calls', 'TEXT');
 
   // Schema 15 -> 16: the ordered transcript. `tool_calls` keeps the flat
   // compatibility view, `blocks` stores text, thinking and tools interleaved
   // in the order they actually arrived (see `TurnBlocks`). NULL on every row
   // that predates this; readers fall back to `content` + `toolCalls`.
-  if (!hasColumn(db, 'messages', 'blocks')) {
-    db.exec('ALTER TABLE messages ADD COLUMN blocks TEXT');
-  }
+  addColumnIfMissing(db, 'messages', 'blocks', 'TEXT');
 
   // Schema 8 -> 9: a project remembers whether its own `.mcp.json` was approved.
   // Runs after the projects table exists (created above), so a fresh database
   // gets the column from CREATE TABLE and this is a no-op for it.
-  if (!hasColumn(db, 'projects', 'mcp_trust')) {
-    db.exec('ALTER TABLE projects ADD COLUMN mcp_trust TEXT');
-  }
+  addColumnIfMissing(db, 'projects', 'mcp_trust', 'TEXT');
 
   // Schema 10 -> 11: mail replaces agent_messages. To + Cc, a subject, a
   // thread, and per-recipient read state - things one row per message
@@ -985,9 +917,7 @@ function migrate(db: Db): void {
   // deleting it - archived rows stay auditable on the retired agent's page
   // and, once the recall path is taught to filter them, out of reach for
   // anyone else.
-  if (!hasColumn(db, 'memories', 'archived_at')) {
-    db.exec('ALTER TABLE memories ADD COLUMN archived_at INTEGER');
-  }
+  addColumnIfMissing(db, 'memories', 'archived_at', 'INTEGER');
 
   // Schema 16 -> 17: one protocol row per mail thread. `kind` is what the
   // thread *is* - a chat, a work assignment, a run's report - and every mail
@@ -1040,46 +970,7 @@ function migrate(db: Db): void {
     );
   `);
 
-  // Schema 19 -> 20: the session column loses its NOT NULL. A rebuild rather
-  // than two ALTERs, because SQLite cannot drop a constraint in place. Both
-  // tables move: a plain rename would leave `turn_events` pointing at the
-  // discarded name, so it is recreated beside its parent, rows first - the
-  // journal is the record, and none of it is dropped.
-  const turnsShape = db.prepare(
-    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'",
-  ).get() as { sql: string } | undefined;
-  if (turnsShape && !turnsShape.sql.includes('assignment_id')) {
-    db.exec('PRAGMA foreign_keys = OFF');
-    db.exec(`
-      ALTER TABLE turns RENAME TO turns_v19;
-      ALTER TABLE turn_events RENAME TO turn_events_v19;
-      DROP INDEX IF EXISTS idx_turns_session;
-      CREATE TABLE turns (
-        id         TEXT PRIMARY KEY,
-        session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-        assignment_id TEXT,
-        kind       TEXT NOT NULL DEFAULT 'chat',
-        status     TEXT NOT NULL DEFAULT 'running',
-        started_at INTEGER NOT NULL,
-        ended_at   INTEGER
-      );
-      CREATE TABLE turn_events (
-        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
-        seq     INTEGER NOT NULL,
-        json    TEXT NOT NULL,
-        PRIMARY KEY (turn_id, seq)
-      );
-      INSERT INTO turns (id, session_id, assignment_id, kind, status, started_at, ended_at)
-        SELECT id, session_id, NULL, kind, status, started_at, ended_at FROM turns_v19;
-      INSERT INTO turn_events (turn_id, seq, json)
-        SELECT turn_id, seq, json FROM turn_events_v19;
-      DROP TABLE turn_events_v19;
-      DROP TABLE turns_v19;
-      CREATE INDEX idx_turns_session ON turns(session_id, started_at);
-      CREATE INDEX idx_turns_assignment ON turns(assignment_id, started_at);
-    `);
-    db.exec('PRAGMA foreign_keys = ON');
-  }
+  rebuildTurnsWithAssignmentKey(db);
   // For fresh installs and rebuilt ones alike: the assignment key's index.
   db.exec('CREATE INDEX IF NOT EXISTS idx_turns_assignment ON turns(assignment_id, started_at);');
 
@@ -1100,18 +991,14 @@ function migrate(db: Db): void {
   // person set the schedule up, and the work is theirs. Nullable, and null
   // for every card made any other way (decision E1 of
   // docs/concepts/work-as-one-surface.md).
-  if (!hasColumn(db, 'tasks', 'schedule_id')) {
-    db.exec('ALTER TABLE tasks ADD COLUMN schedule_id TEXT');
-  }
+  addColumnIfMissing(db, 'tasks', 'schedule_id', 'TEXT');
 
   // Schema 25 -> 26: the conversation a card was handed over from. A card
   // knew its parent task but not the chat that asked for it, so work handed
   // off in the background had nowhere to report back to, and the assistant's
   // "I will let you know" was a promise the code could not keep
   // (docs/concepts/delegation-report-back-and-chat-terminal.md, R1).
-  if (!hasColumn(db, 'tasks', 'requester_session_id')) {
-    db.exec('ALTER TABLE tasks ADD COLUMN requester_session_id TEXT');
-  }
+  addColumnIfMissing(db, 'tasks', 'requester_session_id', 'TEXT');
 
   // Schema 26 -> 27: internal mail is gone
   // (docs/concepts/mail-removal-notifications-and-task-activity.md). Mail was
@@ -1169,6 +1056,84 @@ function migrate(db: Db): void {
 }
 
 /**
+ * Run a one-time backfill at most once per database, guarded by a `meta`
+ * flag. The work and the flag commit together: a crash half-way leaves
+ * neither, so the next open starts the backfill over instead of tripping on
+ * the rows the first attempt had already written.
+ */
+function runOnce(db: Db, flag: string, work: () => void): void {
+  if (db.prepare('SELECT 1 FROM meta WHERE key = ?').get(flag)) return;
+  inTransaction(db, () => {
+    work();
+    db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES (?, '1')").run(flag);
+  });
+}
+
+function inTransaction(db: Db, work: () => void): void {
+  db.exec('BEGIN');
+  try {
+    work();
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+/**
+ * Schema 19 -> 20: the session column loses its NOT NULL. A rebuild rather
+ * than two ALTERs, because SQLite cannot drop a constraint in place. Both
+ * tables move: a plain rename would leave `turn_events` pointing at the
+ * discarded name, so it is recreated beside its parent, rows first - the
+ * journal is the record, and none of it is dropped.
+ *
+ * One transaction (SQLite DDL is transactional), so a crash half-way keeps
+ * the old shape instead of stranding `turns_v19`; foreign keys are off for
+ * the rebuild and come back on whatever happens.
+ */
+function rebuildTurnsWithAssignmentKey(db: Db): void {
+  const turnsShape = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'turns'",
+  ).get() as { sql: string } | undefined;
+  if (!turnsShape || turnsShape.sql.includes('assignment_id')) return;
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    inTransaction(db, () => {
+      db.exec(`
+        ALTER TABLE turns RENAME TO turns_v19;
+        ALTER TABLE turn_events RENAME TO turn_events_v19;
+        DROP INDEX IF EXISTS idx_turns_session;
+        CREATE TABLE turns (
+          id         TEXT PRIMARY KEY,
+          session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+          assignment_id TEXT,
+          kind       TEXT NOT NULL DEFAULT 'chat',
+          status     TEXT NOT NULL DEFAULT 'running',
+          started_at INTEGER NOT NULL,
+          ended_at   INTEGER
+        );
+        CREATE TABLE turn_events (
+          turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+          seq     INTEGER NOT NULL,
+          json    TEXT NOT NULL,
+          PRIMARY KEY (turn_id, seq)
+        );
+        INSERT INTO turns (id, session_id, assignment_id, kind, status, started_at, ended_at)
+          SELECT id, session_id, NULL, kind, status, started_at, ended_at FROM turns_v19;
+        INSERT INTO turn_events (turn_id, seq, json)
+          SELECT turn_id, seq, json FROM turn_events_v19;
+        DROP TABLE turn_events_v19;
+        DROP TABLE turns_v19;
+        CREATE INDEX idx_turns_session ON turns(session_id, started_at);
+        CREATE INDEX idx_turns_assignment ON turns(assignment_id, started_at);
+      `);
+    });
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
+/**
  * One thread row for every thread that already exists as mail, guarded by a
  * `meta` flag like the other one-time backfills. Threads whose mail ever
  * carried an `assignment_id` read as reports - the run answered inside them;
@@ -1177,22 +1142,17 @@ function migrate(db: Db): void {
  * NULL everywhere.
  */
 function backfillMailThreads(db: Db): void {
-  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_threads_v1'").get() as
-    | { value: string }
-    | undefined;
-  if (done) return;
-
-  db.prepare(
-    `INSERT OR IGNORE INTO mail_threads (thread_id, org_id, kind, task_id, archived_at, created_at)
-     SELECT m.thread_id, m.org_id,
-            CASE WHEN SUM(CASE WHEN m.assignment_id IS NOT NULL THEN 1 ELSE 0 END) > 0
-                 THEN 'report' ELSE 'chat' END,
-            NULL, NULL, MIN(m.created_at)
-     FROM mail m
-     GROUP BY m.thread_id`,
-  ).run();
-
-  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_threads_v1', '1')").run();
+  runOnce(db, 'mail_threads_v1', () => {
+    db.prepare(
+      `INSERT OR IGNORE INTO mail_threads (thread_id, org_id, kind, task_id, archived_at, created_at)
+       SELECT m.thread_id, m.org_id,
+              CASE WHEN SUM(CASE WHEN m.assignment_id IS NOT NULL THEN 1 ELSE 0 END) > 0
+                   THEN 'report' ELSE 'chat' END,
+              NULL, NULL, MIN(m.created_at)
+       FROM mail m
+       GROUP BY m.thread_id`,
+    ).run();
+  });
 }
 
 /**
@@ -1209,16 +1169,11 @@ function backfillMailThreads(db: Db): void {
  * and still opens by its own id.
  */
 function backfillMailSessionKind(db: Db): void {
-  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_session_kind_v1'").get() as
-    | { value: string }
-    | undefined;
-  if (done) return;
-
-  db.prepare(
-    "UPDATE sessions SET kind = 'mail' WHERE kind = 'chat' AND agent_id IS NULL AND title LIKE 'Mail: %'",
-  ).run();
-
-  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_session_kind_v1', '1')").run();
+  runOnce(db, 'mail_session_kind_v1', () => {
+    db.prepare(
+      "UPDATE sessions SET kind = 'mail' WHERE kind = 'chat' AND agent_id IS NULL AND title LIKE 'Mail: %'",
+    ).run();
+  });
 }
 
 /**
@@ -1233,16 +1188,11 @@ function backfillMailSessionKind(db: Db): void {
  * back to.
  */
 function backfillScheduleSessionKind(db: Db): void {
-  const done = db.prepare("SELECT value FROM meta WHERE key = 'schedule_session_kind_v1'").get() as
-    | { value: string }
-    | undefined;
-  if (done) return;
-
-  db.prepare(
-    "UPDATE sessions SET kind = 'schedule' WHERE kind = 'chat' AND agent_id IS NULL AND title LIKE 'Schedule: %'",
-  ).run();
-
-  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('schedule_session_kind_v1', '1')").run();
+  runOnce(db, 'schedule_session_kind_v1', () => {
+    db.prepare(
+      "UPDATE sessions SET kind = 'schedule' WHERE kind = 'chat' AND agent_id IS NULL AND title LIKE 'Schedule: %'",
+    ).run();
+  });
 }
 
 /**
@@ -1252,37 +1202,32 @@ function backfillScheduleSessionKind(db: Db): void {
  * migration trivially idempotent to reason about even without the flag).
  */
 function migrateAgentMessagesToMail(db: Db): void {
-  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_migrated_v1'").get() as
-    | { value: string }
-    | undefined;
-  if (done) return;
-
-  const rows = db.prepare('SELECT * FROM agent_messages').all() as Record<string, unknown>[];
-  const insertMail = db.prepare(
-    `INSERT INTO mail (id, org_id, from_kind, from_agent_id, subject, body, thread_id, in_reply_to, depth, assignment_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`,
-  );
-  const insertRecipient = db.prepare(
-    `INSERT INTO mail_recipients (id, mail_id, recipient_kind, recipient_id, box, read_at)
-     VALUES (?, ?, ?, ?, 'to', ?)`,
-  );
-  for (const row of rows) {
-    const id = row.id as string;
-    const orgId = row.org_id as string;
-    const fromAgentId = (row.from_agent_id as string | null) ?? null;
-    const toAgentId = (row.to_agent_id as string | null) ?? null;
-    const assignmentId = (row.assignment_id as string | null) ?? null;
-    const createdAt = row.created_at as number;
-    const readAt = (row.read_at as number | null) ?? null;
-    const content = String(row.content ?? '');
-    const subject = content.slice(0, 60).trim() || '(no subject)';
-    const fromKind = fromAgentId ? 'agent' : 'assistant';
-    const recipientKind = toAgentId ? 'agent' : 'user';
-    insertMail.run(id, orgId, fromKind, fromAgentId, subject, content, id, assignmentId, createdAt);
-    insertRecipient.run(randomUUID(), id, recipientKind, toAgentId, readAt);
-  }
-
-  db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_migrated_v1', '1')").run();
+  runOnce(db, 'mail_migrated_v1', () => {
+    const rows = db.prepare('SELECT * FROM agent_messages').all() as Record<string, unknown>[];
+    const insertMail = db.prepare(
+      `INSERT INTO mail (id, org_id, from_kind, from_agent_id, subject, body, thread_id, in_reply_to, depth, assignment_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)`,
+    );
+    const insertRecipient = db.prepare(
+      `INSERT INTO mail_recipients (id, mail_id, recipient_kind, recipient_id, box, read_at)
+       VALUES (?, ?, ?, ?, 'to', ?)`,
+    );
+    for (const row of rows) {
+      const id = row.id as string;
+      const orgId = row.org_id as string;
+      const fromAgentId = (row.from_agent_id as string | null) ?? null;
+      const toAgentId = (row.to_agent_id as string | null) ?? null;
+      const assignmentId = (row.assignment_id as string | null) ?? null;
+      const createdAt = row.created_at as number;
+      const readAt = (row.read_at as number | null) ?? null;
+      const content = String(row.content ?? '');
+      const subject = content.slice(0, 60).trim() || '(no subject)';
+      const fromKind = fromAgentId ? 'agent' : 'assistant';
+      const recipientKind = toAgentId ? 'agent' : 'user';
+      insertMail.run(id, orgId, fromKind, fromAgentId, subject, content, id, assignmentId, createdAt);
+      insertRecipient.run(randomUUID(), id, recipientKind, toAgentId, readAt);
+    }
+  });
 }
 
 /**
@@ -1306,28 +1251,22 @@ function migrateAgentMessagesToMail(db: Db): void {
  *   whoever sent it.
  */
 function migrateMailToNotifications(db: Db): void {
-  const done = db.prepare("SELECT value FROM meta WHERE key = 'mail_to_notifications_v1'").get() as
-    | { value: string }
-    | undefined;
-  if (done) return;
+  runOnce(db, 'mail_to_notifications_v1', () => {
+    type Row = Record<string, unknown>;
+    const text = (value: unknown): string => (typeof value === 'string' ? value : '');
+    const optionalText = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
+    const optionalNumber = (value: unknown): number | null => (typeof value === 'number' ? value : null);
 
-  type Row = Record<string, unknown>;
-  const text = (value: unknown): string => (typeof value === 'string' ? value : '');
-  const optionalText = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
-  const optionalNumber = (value: unknown): number | null => (typeof value === 'number' ? value : null);
+    const insertNotification = db.prepare(
+      `INSERT OR IGNORE INTO notifications
+         (id, org_id, kind, title, body, from_kind, from_agent_id, task_id, cron_job_id, cron_run_id, session_id, read_at, archived_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
+    );
+    const insertEvent = db.prepare(
+      `INSERT OR IGNORE INTO task_events (id, task_id, at, kind, actor_kind, actor_agent_id, text, assignment_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
 
-  const insertNotification = db.prepare(
-    `INSERT OR IGNORE INTO notifications
-       (id, org_id, kind, title, body, from_kind, from_agent_id, task_id, cron_job_id, cron_run_id, session_id, read_at, archived_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
-  );
-  const insertEvent = db.prepare(
-    `INSERT OR IGNORE INTO task_events (id, task_id, at, kind, actor_kind, actor_agent_id, text, assignment_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-
-  db.exec('BEGIN');
-  try {
     const toUser = db
       .prepare(
         `SELECT m.id, m.org_id, m.from_kind, m.from_agent_id, m.subject, m.body, m.created_at,
@@ -1395,13 +1334,7 @@ function migrateMailToNotifications(db: Db): void {
         optionalText(row.assignment_id),
       );
     }
-
-    db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES ('mail_to_notifications_v1', '1')").run();
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
+  });
 }
 
 /** Rebuild the FTS index. Used by the CLI after a bulk import. */

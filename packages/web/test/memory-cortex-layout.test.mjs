@@ -15,7 +15,7 @@ import { build } from 'esbuild';
 
 async function loadLayout(file = 'layout.ts') {
   const require = createRequire(import.meta.url);
-  const three = file === 'scene.ts' ? await import('three') : null;
+  const three = file === 'brain-model.ts' ? await import('three') : null;
   const { outputFiles } = await build({
     entryPoints: [fileURLToPath(new URL('../src/components/memory-cortex/' + file, import.meta.url))],
     bundle: true,
@@ -299,7 +299,7 @@ test('camera fit contains the brain in portrait, landscape and ultrawide viewpor
 
 test('the surface atlas covers triangle interiors, both poles and the longitude seam', async () => {
   const { BoxGeometry, SphereGeometry, Vector3 } = await import('three');
-  const { surfaceFromGeometry } = await loadLayout('scene.ts');
+  const { surfaceFromGeometry } = await loadLayout('brain-model.ts');
   for (const geometry of [new BoxGeometry(2, 2, 2), new SphereGeometry(1, 64, 32)]) {
     const surface = surfaceFromGeometry(geometry);
     const directions = [new Vector3(0, 1, 0), new Vector3(0, -1, 0), new Vector3(-1, 0, 1e-8), new Vector3(-1, 0, -1e-8)];

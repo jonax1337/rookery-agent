@@ -13,7 +13,7 @@ const INTERVAL_MS = 80;
 export class Spinner {
   #timer: NodeJS.Timeout | null = null;
   #frame = 0;
-  #text: string;
+  readonly #text: string;
   #width = 0;
   readonly #enabled: boolean;
   readonly #out: NodeJS.WriteStream;
@@ -24,23 +24,12 @@ export class Spinner {
     this.#enabled = isTty && colorEnabled;
   }
 
-  get active(): boolean {
-    return this.#timer !== null;
-  }
-
-  start(text?: string): void {
-    if (text) this.#text = text;
+  start(): void {
     if (!this.#enabled || this.#timer) return;
     this.#render();
     this.#timer = setInterval(() => this.#render(), INTERVAL_MS);
     // Never let the spinner keep the process alive on its own.
     this.#timer.unref?.();
-  }
-
-  /** Change the label without restarting the animation. */
-  setText(text: string): void {
-    this.#text = text;
-    if (this.#timer) this.#render();
   }
 
   /** Erase the spinner line and leave the cursor at column 0. */

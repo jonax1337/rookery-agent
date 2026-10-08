@@ -1,12 +1,13 @@
-import { forwardRef, useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router';
 
 import { toast } from 'sonner';
 import { z } from 'zod';
 
 import { api, type CronJobInput, type CronJobPatch } from '@/lib/api';
+import { isRunBlocked } from '@/lib/cron-availability';
+import { MAX_COOLDOWN_SECONDS, MS_PER_SECOND, parseCooldownSeconds } from '@/lib/cron-cooldown';
 import { CRON_PRESETS, CRON_TRIGGER_MODE_CHOICES, DEFAULT_EVENT_COOLDOWN_MS } from '@/lib/cron';
-import { reportFailure } from '@/lib/errors';
 import {
   PERMISSION_CHOICES,
   STANDARD_CHOICE,
@@ -15,6 +16,8 @@ import {
 } from '@/lib/format';
 import type { CronJob, CronPreview, CronTriggerMode } from '@/lib/types';
 import { useCronState, useOrgState } from '@/providers/rookery-provider';
+import { useCronPreview } from '@/hooks/useCronPreview';
+import { useDeleteCronJob } from '@/hooks/useDeleteCronJob';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { PageBody } from '@/components/blocks/page-body';
 import { FormPage } from '@/components/blocks/form-page';
@@ -29,6 +32,7 @@ import {
   useDraft,
   useFormSubmit,
   type ChoiceOption,
+  type FieldErrors,
 } from '@/components/forms/form-kit';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -88,6 +92,10 @@ const PROMPT_PLACEHOLDER =
   'tasks and assignments from the past 24 hours, then summarize in five sentences what ' +
   'happened and what is coming up today.”';
 
+const FALLBACK_SCHEDULE = '0 8 * * *';
+const UPCOMING_PREVIEW_COUNT = 5;
+const PROMPT_ROWS = 10;
+
 type RunnerChoice = 'assistant' | 'agent' | 'script';
 
 interface CronDraft {
@@ -107,7 +115,7 @@ interface CronDraft {
 
 const EMPTY: CronDraft = {
   name: '',
-  schedule: CRON_PRESETS[0]?.schedule ?? '0 8 * * *',
+  schedule: CRON_PRESETS[0]?.schedule ?? FALLBACK_SCHEDULE,
   prompt: '',
   triggerMode: 'schedule',
   cooldownMs: DEFAULT_EVENT_COOLDOWN_MS,
@@ -138,7 +146,13 @@ const schema = z
         message: 'An expression is required.',
       });
     }
-    if (value.runner !== 'script' && !value.prompt) context.addIssue({ code: z.ZodIssueCode.custom, path: ['prompt'], message: 'The run needs instructions.' });
+    if (value.runner !== 'script' && !value.prompt) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['prompt'],
+        message: 'The run needs instructions.',
+      });
+    }
     if (value.runner === 'agent' && !value.agentId) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -219,72 +233,6 @@ const MenuTrash2Icon = forwardRef<SVGSVGElement>(function MenuTrash2Icon() {
   return <AnimatedTrash2Icon />;
 });
 
-/** A day; past that the rest is longer than any timetable this form can write. */
-const MAX_COOLDOWN_SECONDS = 86_400;
-
-/**
- * How long a schedule rests after an event fired it.
- *
- * Stored in milliseconds because that is what the scheduler counts in, typed
- * in seconds because that is what a person means. The typed text stays local
- * until it parses, so clearing the field to type a new number cannot put
- * `NaN` into the draft.
- */
-function CooldownField({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange(milliseconds: number): void;
-}) {
-  const [raw, setRaw] = useState<string | null>(null);
-  const shown = raw ?? String(Math.round(value / 1000));
-  const parsed = Number(shown);
-  const invalid =
-    shown.trim() === '' ||
-    !Number.isInteger(parsed) ||
-    parsed < 0 ||
-    parsed > MAX_COOLDOWN_SECONDS;
-
-  return (
-    <Field data-invalid={invalid || undefined}>
-      <FieldLabel htmlFor="cron-cooldown">Rest after an event</FieldLabel>
-      <InputGroup>
-        <InputGroupInput
-          id="cron-cooldown"
-          inputMode="numeric"
-          value={shown}
-          aria-invalid={invalid || undefined}
-          onChange={(event) => {
-            const next = event.target.value;
-            setRaw(next);
-            const seconds = Number(next);
-            if (
-              next.trim() !== '' &&
-              Number.isInteger(seconds) &&
-              seconds >= 0 &&
-              seconds <= MAX_COOLDOWN_SECONDS
-            ) {
-              onChange(seconds * 1000);
-            }
-          }}
-          onBlur={() => setRaw(null)}
-        />
-        <InputGroupAddon align="inline-end">
-          <InputGroupText>seconds</InputGroupText>
-        </InputGroupAddon>
-      </InputGroup>
-      <FieldDescription>
-        Events arriving during the rest are not lost: they collapse into one run once it is over.
-        Zero runs on every event.
-      </FieldDescription>
-      <FieldError>
-        {invalid ? 'Enter a whole number of seconds between 0 and ' + MAX_COOLDOWN_SECONDS + '.' : null}
-      </FieldError>
-    </Field>
-  );
-}
-
 export function CronFormPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -297,51 +245,13 @@ export function CronFormPage() {
 
   const formId = useId();
   const { draft, dirty, set, hydrate, markSaved } = useDraft<CronDraft>(EMPTY);
-  const [preview, setPreview] = useState<CronPreview | null>(null);
-  const [checking, setChecking] = useState(false);
+  const { preview, checking } = useCronPreview(draft.schedule, draft.triggerMode);
+  const invalidSchedule = preview !== null && !preview.ok;
 
   useEffect(() => {
     if (!job) return;
     hydrate(job.id, () => draftOf(job));
   }, [hydrate, job]);
-
-  /* -------------------------------- Preview ------------------------------ */
-
-  // Debounced, because the endpoint is cheap but one request per keystroke is
-  // not, and the answer for a half-typed expression is noise either way.
-  useEffect(() => {
-    const wanted = draft.schedule.trim();
-    // Nothing to preview without a clock, and nothing that may block the save
-    // either: an event-only schedule is allowed to carry a stale expression.
-    if (!wanted || draft.triggerMode === 'event') {
-      setPreview(null);
-      setChecking(false);
-      return;
-    }
-    setChecking(true);
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      void api
-        .cronPreview(wanted)
-        .then((next) => {
-          if (!cancelled) setPreview(next);
-        })
-        // A failed request is not an invalid expression: leave the last
-        // answer standing rather than claiming the timetable is broken.
-        .catch(() => undefined)
-        .finally(() => {
-          if (!cancelled) setChecking(false);
-        });
-    }, 250);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [draft.schedule, draft.triggerMode]);
-
-  const invalidSchedule = preview !== null && !preview.ok;
-
-  /* -------------------------------- Auswahl ------------------------------- */
 
   const agentOptions = useMemo<EntityOption[]>(
     () =>
@@ -359,8 +269,6 @@ export function CronFormPage() {
     [org.projects],
   );
 
-  /* -------------------------------- Sichern ------------------------------- */
-
   const { errors, failure, saving, submit } = useFormSubmit(schema, draft, async () => {
     const patch = buildPatch(draft);
     const saved =
@@ -373,29 +281,10 @@ export function CronFormPage() {
     void navigate('/cron/' + saved.id);
   });
 
+  const deleteJob = useDeleteCronJob(confirm, cron.refresh);
   const remove = useCallback(async (): Promise<void> => {
-    if (!id || !job) return;
-    const ok = await confirm({
-      title: 'Delete schedule?',
-      description:
-        'The schedule “' +
-        job.name +
-        '” will no longer run. Existing assignments and conversations will remain.',
-      confirmLabel: 'Delete',
-      destructive: true,
-    });
-    if (!ok) return;
-    try {
-      await api.deleteCronJob(id);
-      await cron.refresh();
-      toast('Schedule deleted', { description: job.name });
-      void navigate('/cron');
-    } catch (caught) {
-      reportFailure('Delete', caught);
-    }
-  }, [confirm, cron, id, job, navigate]);
-
-  /* --------------------------------- Kopf --------------------------------- */
+    if (job) await deleteJob(job);
+  }, [deleteJob, job]);
 
   const leaf = editing ? (job?.name ?? 'Edit schedule') : 'Create schedule';
 
@@ -426,62 +315,426 @@ export function CronFormPage() {
     [dirty, editing, formId, id, invalidSchedule, remove, saving],
   );
 
-  /* ------------------------------- Zustände ------------------------------- */
-
   if (editing && !job && !cron.loading) {
     return (
-      <PageBody width="3xl">
-        <Fade>
-          <EmptyState
-            icon={CalendarClockIcon}
-            title="This schedule no longer exists"
-            description="It was deleted or never existed."
-            actionLabel="View schedules"
-            actionTo="/cron"
-          />
-        </Fade>
-      </PageBody>
+      <Notice>
+        <EmptyState
+          icon={CalendarClockIcon}
+          title="This schedule no longer exists"
+          description="It was deleted or never existed."
+          actionLabel="View schedules"
+          actionTo="/cron"
+        />
+      </Notice>
     );
   }
 
-  // `sleep` ist die Zeile des Systems: `ensureSleepSchedule` legt sie immer
-  // wieder an, und ihre Uhrzeit gehört den Memory-Settings.
+  // `sleep` is the system's own row: `ensureSleepSchedule` recreates it
+  // every time, and its time of day belongs to the memory settings.
   if (job?.kind === 'sleep') {
     return (
-      <PageBody width="3xl">
-        <Fade>
-          <EmptyState
-            icon={CalendarClockIcon}
-            title="This schedule belongs to the system"
-            description="Configure the system sleep schedule under memory.sleep in your Rookery config.json."
-            actionLabel="Back to schedules"
-            actionTo="/cron"
-          />
-        </Fade>
-      </PageBody>
+      <Notice>
+        <EmptyState
+          icon={CalendarClockIcon}
+          title="This schedule belongs to the system"
+          description="Configure the system sleep schedule under memory.sleep in your Rookery config.json."
+          actionLabel="Back to schedules"
+          actionTo="/cron"
+        />
+      </Notice>
     );
   }
 
   if (editing && !job) {
     return (
-      <PageBody width="3xl">
-        <Fade>
-          <FormFieldsSkeleton fields={5} />
-        </Fade>
-      </PageBody>
+      <Notice>
+        <FormFieldsSkeleton fields={5} />
+      </Notice>
     );
   }
 
-  /* -------------------------------- Preview ------------------------------ */
+  return (
+    <PageBody width="3xl">
+      {dialog}
+      <FormPage
+        formId={formId}
+        showActions={false}
+        onSubmit={submit}
+        error={failure}
+        aside={
+          draft.triggerMode === 'event' ? (
+            <EventCard />
+          ) : (
+            <PreviewCard preview={preview} />
+          )
+        }
+      >
+        <Fade>
+          <ScheduleSection
+            draft={draft}
+            set={set}
+            errors={errors}
+            invalidSchedule={invalidSchedule}
+            checking={checking}
+          />
+        </Fade>
 
-  const eventCard = (
+        <FieldSeparator />
+
+        <Fade delay={50}>
+          <ExecutionSection
+            draft={draft}
+            set={set}
+            errors={errors}
+            job={job}
+            agentOptions={agentOptions}
+            projectOptions={projectOptions}
+          />
+        </Fade>
+
+        <FieldSeparator />
+
+        <Fade delay={100}>
+          <InstructionsSection draft={draft} set={set} errors={errors} />
+        </Fade>
+
+        <FieldSeparator />
+
+        <Fade delay={150}>
+          <ActiveSection draft={draft} set={set} job={job} />
+        </Fade>
+      </FormPage>
+    </PageBody>
+  );
+}
+
+function Notice({ children }: { children: ReactNode }) {
+  return (
+    <PageBody width="3xl">
+      <Fade>{children}</Fade>
+    </PageBody>
+  );
+}
+
+interface SectionProps {
+  draft: CronDraft;
+  set(patch: Partial<CronDraft>): void;
+}
+
+interface ErrorSectionProps extends SectionProps {
+  errors: FieldErrors;
+}
+
+interface ScheduleSectionProps extends ErrorSectionProps {
+  invalidSchedule: boolean;
+  checking: boolean;
+}
+
+// The legend sits here and not on the card header: without it the card
+// opened with the bare guidance sentence while the later sections carried a
+// heading, and the layout looked cut off at the top.
+function ScheduleSection({ draft, set, errors, invalidSchedule, checking }: ScheduleSectionProps) {
+  return (
+    <FieldSet>
+      <FieldLegend>Schedule</FieldLegend>
+      <FieldDescription>
+        {draft.triggerMode === 'schedule'
+          ? 'Times use the time zone of the computer running the server.'
+          : 'This schedule has no timetable. It waits for a webhook call or a listener.'}
+      </FieldDescription>
+
+      <Field>
+        <FieldLabel htmlFor="cron-trigger-schedule">What fires it</FieldLabel>
+        <ChoiceField
+          id="cron-trigger"
+          options={CRON_TRIGGER_MODE_CHOICES}
+          value={draft.triggerMode}
+          onChange={(triggerMode) => set({ triggerMode })}
+        />
+      </Field>
+
+      {draft.triggerMode === 'schedule' ? (
+        <ExpressionField
+          schedule={draft.schedule}
+          error={errors.schedule}
+          invalid={invalidSchedule}
+          checking={checking}
+          onChange={(schedule) => set({ schedule })}
+        />
+      ) : null}
+
+      <CooldownField value={draft.cooldownMs} onChange={(cooldownMs) => set({ cooldownMs })} />
+
+      <Field orientation="horizontal">
+        <FieldContent>
+          <FieldTitle>Run only once</FieldTitle>
+          <FieldDescription>The schedule disables itself after the first run.</FieldDescription>
+        </FieldContent>
+        <Switch id="cron-once" checked={draft.once} onCheckedChange={(once) => set({ once })} />
+      </Field>
+    </FieldSet>
+  );
+}
+
+function ExpressionField({
+  schedule,
+  error,
+  invalid,
+  checking,
+  onChange,
+}: {
+  schedule: string;
+  error: string | undefined;
+  invalid: boolean;
+  checking: boolean;
+  onChange(schedule: string): void;
+}) {
+  return (
+    <Field>
+      <FieldLabel htmlFor="cron-schedule">Expression</FieldLabel>
+      <InputGroup>
+        <InputGroupInput
+          id="cron-schedule"
+          className="font-mono"
+          placeholder="Minute Hour Day Month Weekday"
+          value={schedule}
+          aria-invalid={Boolean(error) || invalid}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <InputGroupAddon align="inline-end">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <InputGroupButton>
+                Templates
+                <ChevronDownIcon />
+              </InputGroupButton>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel>Common schedules</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {CRON_PRESETS.map((entry) => (
+                <DropdownMenuItem key={entry.schedule} onSelect={() => onChange(entry.schedule)}>
+                  {entry.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </InputGroupAddon>
+      </InputGroup>
+      <FieldDescription>
+        Five fields: minute, hour, day, month, weekday. “0 8 * * 1-5” runs at 8:00 AM on
+        weekdays. {checking ? 'Checking…' : ''}
+      </FieldDescription>
+      <FieldError>{error}</FieldError>
+    </Field>
+  );
+}
+
+/**
+ * How long a schedule rests after an event fired it.
+ *
+ * Stored in milliseconds because that is what the scheduler counts in, typed
+ * in seconds because that is what a person means. The typed text stays local
+ * until it parses, so clearing the field to type a new number cannot put
+ * `NaN` into the draft.
+ */
+function CooldownField({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange(milliseconds: number): void;
+}) {
+  const [raw, setRaw] = useState<string | null>(null);
+  const shown = raw ?? String(Math.round(value / MS_PER_SECOND));
+  const invalid = parseCooldownSeconds(shown) === null;
+
+  const handleChange = (text: string) => {
+    setRaw(text);
+    const seconds = parseCooldownSeconds(text);
+    if (seconds !== null) onChange(seconds * MS_PER_SECOND);
+  };
+
+  return (
+    <Field data-invalid={invalid || undefined}>
+      <FieldLabel htmlFor="cron-cooldown">Rest after an event</FieldLabel>
+      <InputGroup>
+        <InputGroupInput
+          id="cron-cooldown"
+          inputMode="numeric"
+          value={shown}
+          aria-invalid={invalid || undefined}
+          onChange={(event) => handleChange(event.target.value)}
+          onBlur={() => setRaw(null)}
+        />
+        <InputGroupAddon align="inline-end">
+          <InputGroupText>seconds</InputGroupText>
+        </InputGroupAddon>
+      </InputGroup>
+      <FieldDescription>
+        Events arriving during the rest are not lost: they collapse into one run once it is over.
+        Zero runs on every event.
+      </FieldDescription>
+      <FieldError>
+        {invalid ? 'Enter a whole number of seconds between 0 and ' + MAX_COOLDOWN_SECONDS + '.' : null}
+      </FieldError>
+    </Field>
+  );
+}
+
+interface ExecutionSectionProps extends ErrorSectionProps {
+  job: CronJob | undefined;
+  agentOptions: EntityOption[];
+  projectOptions: EntityOption[];
+}
+
+function ExecutionSection({
+  draft,
+  set,
+  errors,
+  job,
+  agentOptions,
+  projectOptions,
+}: ExecutionSectionProps) {
+  return (
+    <FieldSet>
+      <Field>
+        <FieldLabel htmlFor="cron-runner-assistant">Execution</FieldLabel>
+        {job?.script ? (
+          <FieldDescription>
+            Imported {job.script.runtime} script. Review the source and grant Full access on the
+            schedule page.
+          </FieldDescription>
+        ) : (
+          <ChoiceField
+            id="cron-runner"
+            options={RUNNER_OPTIONS}
+            value={draft.runner}
+            onChange={(runner) => set({ runner })}
+          />
+        )}
+      </Field>
+
+      {draft.runner === 'agent' ? (
+        <Field>
+          <FieldLabel htmlFor="cron-agent">Agent</FieldLabel>
+          <EntityCombobox
+            id="cron-agent"
+            options={agentOptions}
+            value={draft.agentId}
+            onChange={(agentId) => set({ agentId })}
+            placeholder="Select agent"
+            emptyLabel="No agent found"
+            invalid={Boolean(errors.agentId)}
+          />
+          <FieldError>{errors.agentId}</FieldError>
+        </Field>
+      ) : null}
+
+      <Field>
+        <FieldLabel htmlFor="cron-project">Project</FieldLabel>
+        <EntityCombobox
+          id="cron-project"
+          options={projectOptions}
+          value={draft.projectId}
+          onChange={(projectId) => set({ projectId })}
+          placeholder="No project"
+          emptyLabel="No project found"
+        />
+        <FieldDescription>
+          {job?.script
+            ? 'The script runs in its imported directory. The project applies to the assistant follow-up.'
+            : 'The project determines which directory the run uses.'}
+        </FieldDescription>
+      </Field>
+
+      <Field>
+        <FieldLabel htmlFor="cron-permission-standard">Permission</FieldLabel>
+        {job?.script ? (
+          <FieldDescription>
+            {job.permission === 'full'
+              ? 'Full access granted.'
+              : 'Review the script on its schedule page before granting Full access.'}
+          </FieldDescription>
+        ) : (
+          <ChoiceField
+            id="cron-permission"
+            options={PERMISSION_CHOICES}
+            value={draft.permission}
+            onChange={(permission) => set({ permission })}
+          />
+        )}
+      </Field>
+    </FieldSet>
+  );
+}
+
+function InstructionsSection({ draft, set, errors }: ErrorSectionProps) {
+  return (
+    <FieldSet>
+      <Field>
+        <FieldLabel htmlFor="cron-name">Name</FieldLabel>
+        <Input
+          id="cron-name"
+          placeholder="e.g. Morning briefing"
+          value={draft.name}
+          aria-invalid={Boolean(errors.name)}
+          onChange={(event) => set({ name: event.target.value })}
+        />
+        <FieldError>{errors.name}</FieldError>
+      </Field>
+
+      <Field>
+        <FieldLabel htmlFor="cron-prompt">Instructions</FieldLabel>
+        <Textarea
+          id="cron-prompt"
+          rows={PROMPT_ROWS}
+          placeholder={PROMPT_PLACEHOLDER}
+          value={draft.prompt}
+          aria-invalid={Boolean(errors.prompt)}
+          onChange={(event) => set({ prompt: event.target.value })}
+        />
+        <FieldDescription>
+          Write self-contained instructions that can run without follow-up questions.
+        </FieldDescription>
+        <FieldError>{errors.prompt}</FieldError>
+      </Field>
+    </FieldSet>
+  );
+}
+
+function ActiveSection({
+  draft,
+  set,
+  job,
+}: SectionProps & { job: CronJob | undefined }) {
+  return (
+    <FieldSet>
+      <Field orientation="horizontal">
+        <FieldContent>
+          <FieldTitle>Active</FieldTitle>
+          <FieldDescription>
+            When disabled, the schedule remains saved but does not run.
+          </FieldDescription>
+        </FieldContent>
+        <Switch
+          id="cron-enabled"
+          checked={draft.enabled}
+          disabled={job ? isRunBlocked(job) : false}
+          onCheckedChange={(enabled) => set({ enabled })}
+        />
+      </Field>
+    </FieldSet>
+  );
+}
+
+function EventCard() {
+  return (
     <Fade delay={200}>
       <Card>
         <CardHeader>
           <CardTitle>Fired by events</CardTitle>
-          <CardDescription>
-            Nothing runs until something asks for it.
-          </CardDescription>
+          <CardDescription>Nothing runs until something asks for it.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3 text-sm text-muted-foreground">
           <p>
@@ -497,261 +750,60 @@ export function CronFormPage() {
       </Card>
     </Fade>
   );
+}
 
-  const previewCard = (
+function PreviewCard({ preview }: { preview: CronPreview | null }) {
+  return (
     <Fade delay={200}>
       <Card>
-        {preview && preview.ok ? (
-          <>
-            <CardHeader>
-              <CardTitle>{preview.description}</CardTitle>
-              <CardDescription>
-                Upcoming times in the time zone of the computer running the server.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ItemGroup className="grid gap-2 @md/main:grid-cols-2">
-                {preview.next.slice(0, 5).map((at) => (
-                  <Item key={at} variant="outline" size="sm">
-                    <ItemContent>
-                      <ItemTitle className="font-normal tabular-nums">
-                        {formatDateTime(at)}
-                      </ItemTitle>
-                    </ItemContent>
-                  </Item>
-                ))}
-              </ItemGroup>
-            </CardContent>
-          </>
-        ) : preview && !preview.ok ? (
-          <CardContent>
-            <Alert variant="destructive">
-              <AlertTitle>This expression is invalid</AlertTitle>
-              <AlertDescription>
-                {preview.error ?? 'The server could not parse the expression.'}
-              </AlertDescription>
-            </Alert>
-          </CardContent>
-        ) : (
-          <CardContent className="flex flex-col gap-2">
-            <Skeleton className="h-5 w-2/3" />
-            <Skeleton className="h-4 w-1/2" />
-          </CardContent>
-        )}
+        <PreviewCardBody preview={preview} />
       </Card>
     </Fade>
   );
+}
+
+function PreviewCardBody({ preview }: { preview: CronPreview | null }) {
+  if (preview?.ok) {
+    return (
+      <>
+        <CardHeader>
+          <CardTitle>{preview.description}</CardTitle>
+          <CardDescription>
+            Upcoming times in the time zone of the computer running the server.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ItemGroup className="grid gap-2 @md/main:grid-cols-2">
+            {preview.next.slice(0, UPCOMING_PREVIEW_COUNT).map((at) => (
+              <Item key={at} variant="outline" size="sm">
+                <ItemContent>
+                  <ItemTitle className="font-normal tabular-nums">{formatDateTime(at)}</ItemTitle>
+                </ItemContent>
+              </Item>
+            ))}
+          </ItemGroup>
+        </CardContent>
+      </>
+    );
+  }
+
+  if (preview) {
+    return (
+      <CardContent>
+        <Alert variant="destructive">
+          <AlertTitle>This expression is invalid</AlertTitle>
+          <AlertDescription>
+            {preview.error ?? 'The server could not parse the expression.'}
+          </AlertDescription>
+        </Alert>
+      </CardContent>
+    );
+  }
 
   return (
-    <PageBody width="3xl">
-      {dialog}
-      <FormPage
-        formId={formId}
-        showActions={false}
-        onSubmit={submit}
-        error={failure}
-        aside={draft.triggerMode === 'event' ? eventCard : previewCard}
-      >
-        {/*
-          The Legende steht hier und nicht als Kartenkopf: ohne sie begann die
-          Karte mit dem blossen Guidancesatz, waehrend die spaeteren Abschnitte
-          eine Ueberschrift trugen - der Aufbau wirkte oben abgeschnitten.
-        */}
-        <Fade>
-          <FieldSet>
-            <FieldLegend>Schedule</FieldLegend>
-            <FieldDescription>
-              {draft.triggerMode === 'schedule'
-                ? 'Times use the time zone of the computer running the server.'
-                : 'This schedule has no timetable. It waits for a webhook call or a listener.'}
-            </FieldDescription>
-
-            <Field>
-              <FieldLabel htmlFor="cron-trigger-schedule">What fires it</FieldLabel>
-              <ChoiceField
-                id="cron-trigger"
-                options={CRON_TRIGGER_MODE_CHOICES}
-                value={draft.triggerMode}
-                onChange={(triggerMode) => set({ triggerMode })}
-              />
-            </Field>
-
-            {draft.triggerMode === 'schedule' ? (
-            <Field>
-              <FieldLabel htmlFor="cron-schedule">Expression</FieldLabel>
-              <InputGroup>
-                <InputGroupInput
-                  id="cron-schedule"
-                  className="font-mono"
-                  placeholder="Minute Hour Day Month Weekday"
-                  value={draft.schedule}
-                  aria-invalid={Boolean(errors.schedule) || invalidSchedule}
-                  onChange={(event) => set({ schedule: event.target.value })}
-                />
-                <InputGroupAddon align="inline-end">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <InputGroupButton>
-                        Templates
-                        <ChevronDownIcon />
-                      </InputGroupButton>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-64">
-                      <DropdownMenuLabel>Common schedules</DropdownMenuLabel>
-                      <DropdownMenuSeparator />
-                      {CRON_PRESETS.map((entry) => (
-                        <DropdownMenuItem
-                          key={entry.schedule}
-                          onSelect={() => set({ schedule: entry.schedule })}
-                        >
-                          {entry.label}
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </InputGroupAddon>
-              </InputGroup>
-              <FieldDescription>
-                Five fields: minute, hour, day, month, weekday. “0 8 * * 1-5” runs at 8:00 AM on
-                weekdays. {checking ? 'Checking…' : ''}
-              </FieldDescription>
-              <FieldError>{errors.schedule}</FieldError>
-            </Field>
-            ) : null}
-
-            <CooldownField
-              value={draft.cooldownMs}
-              onChange={(cooldownMs) => set({ cooldownMs })}
-            />
-
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldTitle>Run only once</FieldTitle>
-                <FieldDescription>
-                  The schedule disables itself after the first run.
-                </FieldDescription>
-              </FieldContent>
-              <Switch
-                id="cron-once"
-                checked={draft.once}
-                onCheckedChange={(once) => set({ once })}
-              />
-            </Field>
-          </FieldSet>
-        </Fade>
-
-        <FieldSeparator />
-
-        <Fade delay={50}>
-          <FieldSet>
-            <Field>
-              <FieldLabel htmlFor="cron-runner-assistant">Execution</FieldLabel>
-              {job?.script ? <FieldDescription>Imported {job.script.runtime} script. Review the source and grant Full access on the schedule page.</FieldDescription> : <ChoiceField
-                id="cron-runner"
-                options={RUNNER_OPTIONS}
-                value={draft.runner}
-                onChange={(runner) => set({ runner })}
-              />}
-            </Field>
-
-            {draft.runner === 'agent' ? (
-              <Field>
-                <FieldLabel htmlFor="cron-agent">Agent</FieldLabel>
-                <EntityCombobox
-                  id="cron-agent"
-                  options={agentOptions}
-                  value={draft.agentId}
-                  onChange={(agentId) => set({ agentId })}
-                  placeholder="Select agent"
-                  emptyLabel="No agent found"
-                  invalid={Boolean(errors.agentId)}
-                />
-                <FieldError>{errors.agentId}</FieldError>
-              </Field>
-            ) : null}
-
-            <Field>
-              <FieldLabel htmlFor="cron-project">Project</FieldLabel>
-              <EntityCombobox
-                id="cron-project"
-                options={projectOptions}
-                value={draft.projectId}
-                onChange={(projectId) => set({ projectId })}
-                placeholder="No project"
-                emptyLabel="No project gefunden"
-              />
-              <FieldDescription>
-                {job?.script ? 'The script runs in its imported directory. The project applies to the assistant follow-up.' : 'The project determines which directory the run uses.'}
-              </FieldDescription>
-            </Field>
-
-            <Field>
-              <FieldLabel htmlFor="cron-permission-standard">Permission</FieldLabel>
-              {job?.script ? <FieldDescription>{job.permission === 'full' ? 'Full access granted.' : 'Review the script on its schedule page before granting Full access.'}</FieldDescription> : <ChoiceField
-                id="cron-permission"
-                options={PERMISSION_CHOICES}
-                value={draft.permission}
-                onChange={(permission) => set({ permission })}
-              />}
-            </Field>
-          </FieldSet>
-        </Fade>
-
-        <FieldSeparator />
-
-        <Fade delay={100}>
-          <FieldSet>
-            <Field>
-              <FieldLabel htmlFor="cron-name">Name</FieldLabel>
-              <Input
-                id="cron-name"
-                placeholder="e.g. Morning briefing"
-                value={draft.name}
-                aria-invalid={Boolean(errors.name)}
-                onChange={(event) => set({ name: event.target.value })}
-              />
-              <FieldError>{errors.name}</FieldError>
-            </Field>
-
-            <Field>
-              <FieldLabel htmlFor="cron-prompt">Instructions</FieldLabel>
-              <Textarea
-                id="cron-prompt"
-                rows={10}
-                placeholder={PROMPT_PLACEHOLDER}
-                value={draft.prompt}
-                aria-invalid={Boolean(errors.prompt)}
-                onChange={(event) => set({ prompt: event.target.value })}
-              />
-              <FieldDescription>
-                Write self-contained instructions that can run without follow-up questions.
-              </FieldDescription>
-              <FieldError>{errors.prompt}</FieldError>
-            </Field>
-          </FieldSet>
-        </Fade>
-
-        <FieldSeparator />
-
-        <Fade delay={150}>
-          <FieldSet>
-            <Field orientation="horizontal">
-              <FieldContent>
-                <FieldTitle>Active</FieldTitle>
-                <FieldDescription>
-                  When disabled, the schedule remains saved but does not run.
-                </FieldDescription>
-              </FieldContent>
-              <Switch
-                id="cron-enabled"
-                checked={draft.enabled}
-                disabled={job?.kind === 'script' && job.permission !== 'full' || job?.remainingRuns === 0}
-                onCheckedChange={(enabled) => set({ enabled })}
-              />
-            </Field>
-          </FieldSet>
-        </Fade>
-      </FormPage>
-    </PageBody>
+    <CardContent className="flex flex-col gap-2">
+      <Skeleton className="h-5 w-2/3" />
+      <Skeleton className="h-4 w-1/2" />
+    </CardContent>
   );
 }

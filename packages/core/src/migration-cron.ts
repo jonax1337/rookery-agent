@@ -8,7 +8,8 @@ import { databasePath } from './config.js';
 import type { Store } from './memory/store.js';
 import type { CronScript, RookeryConfig } from './types.js';
 import type { MigrationSource } from './migration.js';
-import { inspectScriptBundle, type ScriptAsset } from './migration-scripts.js';
+import { inspectScriptBundle, type ScriptAsset, type ScriptBundle } from './migration-scripts.js';
+import { MAX_FILE_BYTES, MAX_TOTAL_BYTES } from './migration-shared.js';
 
 export interface MigrationJob {
   sourceId: string; name: string; schedule: string; prompt: string;
@@ -25,18 +26,43 @@ export interface MigrationCronPlan {
   assets: (ScriptAsset & { jobId: string })[];
 }
 type Row = Record<string, unknown>;
-const digest = (value: string) => createHash('sha256').update(value).digest('hex');
-const object = (value: unknown): Row => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Row : {};
+type PathCheck = (path: string) => void;
 
-function readText(path: string, check: (path: string) => void): string {
+interface SourceJobs { rawJobs: unknown[]; data: string; warnings: string[] }
+interface PlanContext {
+  config: RookeryConfig;
+  source: MigrationSource;
+  root: string;
+  check: PathCheck;
+  sourceTimezone: string | undefined;
+  hostTimezone: string;
+  seenIds: Set<string>;
+}
+/** Outcome of planning one source job; `job` is absent when the job was skipped. */
+interface JobPlan { job?: PlannedJob; assets: ScriptAsset[]; warnings: string[] }
+
+const MAX_JOBS = 1000;
+const MAX_ASSET_FILES = 1000;
+const MAX_ASSET_BYTES = 32 * 1024 * 1024;
+const MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024;
+const CRON_FIELD_COUNT = 5;
+const TIMEZONE_LINE = /^timezone:[^\r\n]*/m;
+const TIMEZONE_VALUE = /^timezone:\s*(?:"([^"]*)"|'([^']*)'|([^#]*?))\s*(?:#.*)?$/;
+const HOURLY_EXPRESSION = /^0\s+\*\s/;
+
+const digest = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+const asRecord = (value: unknown): Row => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Row : {};
+
+function readText(path: string, check: PathCheck): string {
   check(path);
-  if (!lstatSync(path).isFile() || lstatSync(path).size > 1024 * 1024) throw new Error(`Cron input must be a regular file of at most 1 MiB: ${path}`);
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.size > MAX_FILE_BYTES) throw new Error(`Cron input must be a regular file of at most 1 MiB: ${path}`);
   try { return new TextDecoder('utf-8', { fatal: true }).decode(readFileSync(path)); }
   catch { throw new Error(`Cron input is not readable UTF-8: ${path}`); }
 }
 
 /** Work on disposable copies so reading a live WAL database never creates files in the source. */
-function snapshotDatabase<T>(path: string, check: (path: string) => void, read: (db: DatabaseSync) => T): T {
+function snapshotDatabase<T>(path: string, check: PathCheck, read: (db: DatabaseSync) => T): T {
   const temporary = mkdtempSync(join(tmpdir(), 'rookery-cron-preview-'));
   let db: DatabaseSync | undefined;
   try {
@@ -47,7 +73,7 @@ function snapshotDatabase<T>(path: string, check: (path: string) => void, read: 
       if (!existsSync(file)) continue;
       const stat = lstatSync(file);
       total += stat.size;
-      if (!stat.isFile() || total > 256 * 1024 * 1024) throw new Error('Cron database snapshot exceeds the 256 MiB limit or is not a regular file. Export jobs.json into the selected workspace.');
+      if (!stat.isFile() || total > MAX_SNAPSHOT_BYTES) throw new Error('Cron database snapshot exceeds the 256 MiB limit or is not a regular file. Export jobs.json into the selected workspace.');
       copyFileSync(file, join(temporary, `snapshot.sqlite${suffix}`));
       const after = lstatSync(file);
       if (stat.size !== after.size || stat.mtimeMs !== after.mtimeMs) throw new Error('Cron database changed during the preview. Try again when the source scheduler is idle.');
@@ -57,8 +83,12 @@ function snapshotDatabase<T>(path: string, check: (path: string) => void, read: 
   } finally { db?.close(); rmSync(temporary, { recursive: true, force: true }); }
 }
 
+function hasCronTable(db: DatabaseSync): boolean {
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cron_jobs'").get() !== undefined;
+}
+
 function rowsForJobs(db: DatabaseSync, jobs: PlannedJob[]): Row[] {
-  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cron_jobs'").get()) return [];
+  if (!hasCronTable(db)) return [];
   const get = db.prepare('SELECT * FROM cron_jobs WHERE id = ?');
   return jobs.flatMap(job => { const row = get.get(job.id) as Row | undefined; return row ? [row] : []; });
 }
@@ -67,15 +97,34 @@ export function cronDestinationFingerprint(store: Store, plan: MigrationCronPlan
   return digest(JSON.stringify(rowsForJobs(store.db, plan.jobs)));
 }
 
-export function inspectMigrationCron(config: RookeryConfig, source: MigrationSource, root: string, check: (path: string) => void): MigrationCronPlan {
-  const warnings: string[] = [];
-  let rawJobs: unknown[] = [];
-  let sourceData = '';
-  let timezone: unknown;
+function readJobsFile(location: string, check: PathCheck): SourceJobs {
+  const data = readText(location, check);
+  const document: unknown = JSON.parse(data);
+  const jobs = Array.isArray(document) ? document : asRecord(document).jobs;
+  if (!Array.isArray(jobs)) throw new Error('Cron jobs.json must contain a jobs array.');
+  return { rawJobs: jobs, data, warnings: [] };
+}
+
+function readOpenClawDatabaseJobs(database: string, storeKey: string, check: PathCheck): SourceJobs {
+  const found = snapshotDatabase(database, check, db => {
+    if (!hasCronTable(db)) return undefined;
+    // A shared database may contain unrelated profiles and custom stores. Never infer their ownership.
+    return db.prepare(`SELECT job_json FROM cron_jobs WHERE store_key = ? ORDER BY job_id LIMIT ${MAX_JOBS + 1}`).all(storeKey) as Row[];
+  });
+  const rows = found ?? [];
+  const warnings = found?.length === 0
+    ? ['No cron jobs matched this OpenClaw workspace store. For a copied or custom profile, export its jobs.json into the selected workspace.']
+    : [];
+  return { rawJobs: rows.map(row => JSON.parse(String(row.job_json)) as unknown), data: JSON.stringify(rows), warnings };
+}
+
+/** A jobs file wins over an OpenClaw state database, which is only consulted for a bare `workspace` folder. */
+function loadSourceJobs(source: MigrationSource, root: string, check: PathCheck): SourceJobs {
   let location = join(root, 'cron', 'jobs.json');
   const exported = join(root, 'jobs.json');
   check(exported);
   check(location);
+  let loaded: SourceJobs = { rawJobs: [], data: '', warnings: [] };
   if (source === 'openclaw' && existsSync(exported)) location = exported;
   else if (source === 'openclaw' && !existsSync(location) && basename(root).toLowerCase() === 'workspace') {
     const state = dirname(root);
@@ -84,97 +133,143 @@ export function inspectMigrationCron(config: RookeryConfig, source: MigrationSou
     check(database);
     check(location);
     if (existsSync(database)) {
-      const storeKey = resolve(location);
-      const rows = snapshotDatabase(database, check, db => {
-        if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cron_jobs'").get()) return [];
-        // A shared database may contain unrelated profiles and custom stores. Never infer their ownership.
-        const rows = db.prepare('SELECT job_json FROM cron_jobs WHERE store_key = ? ORDER BY job_id LIMIT 1001').all(storeKey) as Row[];
-        if (rows.length === 0) warnings.push('No cron jobs matched this OpenClaw workspace store. For a copied or custom profile, export its jobs.json into the selected workspace.');
-        return rows;
-      });
-      sourceData = JSON.stringify(rows);
-      rawJobs = rows.map(row => JSON.parse(String(row.job_json)) as unknown);
+      loaded = readOpenClawDatabaseJobs(database, resolve(location), check);
       location = '';
     }
   }
-  if (location && existsSync(location)) {
-    sourceData = readText(location, check);
-    const document: unknown = JSON.parse(sourceData);
-    const jobs = Array.isArray(document) ? document : object(document).jobs;
-    if (!Array.isArray(jobs)) throw new Error('Cron jobs.json must contain a jobs array.');
-    rawJobs = jobs;
+  if (location && existsSync(location)) loaded = readJobsFile(location, check);
+  if (loaded.rawJobs.length > MAX_JOBS) throw new Error(`Cron migration exceeds the ${MAX_JOBS} job limit.`);
+  if (Buffer.byteLength(loaded.data) > MAX_TOTAL_BYTES) throw new Error('Cron migration exceeds the 16 MiB data limit.');
+  return loaded;
+}
+
+/** Hermes keeps one scheduler timezone in config.yaml; `data` feeds the plan fingerprint. */
+function readHermesTimezone(root: string, check: PathCheck): { timezone: string | undefined; data: string } {
+  const configPath = join(root, 'config.yaml');
+  check(configPath);
+  if (!existsSync(configPath)) return { timezone: undefined, data: '' };
+  const line = readText(configPath, check).match(TIMEZONE_LINE)?.[0];
+  const timezone = line ? parseTimezoneSetting(line) : undefined;
+  return { timezone, data: JSON.stringify({ timezone }) };
+}
+
+function parseTimezoneSetting(line: string): string | undefined {
+  const match = line.match(TIMEZONE_VALUE);
+  return match ? (match[1] ?? match[2] ?? match[3])?.trim() : 'unsupported timezone setting';
+}
+
+function cronExpression(schedule: Row): string | undefined {
+  const { kind, expr } = schedule;
+  if (kind !== 'cron' || typeof expr !== 'string') return undefined;
+  return expr.trim().split(/\s+/).length === CRON_FIELD_COUNT ? expr : undefined;
+}
+
+function timezoneReason(requested: unknown, hostTimezone: string): string | undefined {
+  if (!requested) return undefined;
+  let canonical: string | undefined;
+  try { canonical = new Intl.DateTimeFormat('en', { timeZone: String(requested) }).resolvedOptions().timeZone; } catch { /* rejected below */ }
+  return canonical === hostTimezone ? undefined : `timezone ${String(requested)} differs from Rookery's local timezone ${hostTimezone}`;
+}
+
+/** Why Rookery cannot reproduce this job's schedule, trigger or execution target; undefined when it can. */
+function unsupportedReason(context: PlanContext, job: Row, expression: string): string | undefined {
+  const { source } = context;
+  const schedule = asRecord(job.schedule);
+  const payload = asRecord(job.payload);
+  try { parseCron(expression); } catch { return 'the cron expression is not supported by Rookery'; }
+  const zoneProblem = timezoneReason(schedule.tz ?? job.timezone ?? context.sourceTimezone, context.hostTimezone);
+  if (zoneProblem) return zoneProblem;
+  if (schedule.staggerMs) return 'staggered execution is not supported';
+  if (job.trigger || job.pacing) return 'conditional triggers and pacing require manual migration';
+  if (source === 'openclaw' && schedule.staggerMs === undefined && HOURLY_EXPRESSION.test(expression.trim())) return 'OpenClaw implicitly staggers this hourly schedule; export an exact schedule with staggerMs: 0';
+  if (job.agentId && job.agentId !== 'main') return `the source agent "${String(job.agentId)}" has no Rookery agent mapping`;
+  if (job.monitor_script || job.monitor_url || job.context_from) return 'monitor gates and chained context require an execution adapter';
+  if (typeof job.state === 'string' && !['scheduled', 'paused'].includes(job.state)) return `source state is ${job.state}`;
+  if (source === 'openclaw' && (payload.kind !== 'agentTurn' || (job.sessionTarget && !['isolated', 'main'].includes(String(job.sessionTarget))))) return 'the execution target or system-event payload requires manual migration';
+  return undefined;
+}
+
+function hasValidRepeatCounts(repeat: Row): boolean {
+  const completed = repeat.completed ?? 0;
+  return Number.isSafeInteger(repeat.times) && Number(repeat.times) >= 1 && Number.isSafeInteger(completed) && Number(completed) >= 0;
+}
+
+/** A skip reason (string) or the copied script bundle. */
+function planScript(context: PlanContext, job: Row): ScriptBundle | string {
+  if (context.source !== 'hermes' || typeof job.script !== 'string') return 'this script format is not supported';
+  if (job.workdir) return 'a custom script working directory needs explicit relocation';
+  const scriptJob = { root: context.root, id: String(job.id), file: job.script, noAgent: job.no_agent === true };
+  try { return inspectScriptBundle(context.config, scriptJob, context.check); }
+  catch (error) { return `script bundle could not be prepared: ${(error as Error).message}`; }
+}
+
+function planJob(context: PlanContext, raw: unknown): JobPlan {
+  const { source, root } = context;
+  const job = asRecord(raw);
+  const payload = asRecord(job.payload);
+  const label = typeof job.name === 'string' ? job.name : String(job.id ?? 'unnamed job');
+  const warnings: string[] = [];
+  const skip = (reason: string): JobPlan => {
+    warnings.push(`Skipped schedule "${label}": ${reason}.`);
+    return { assets: [], warnings };
+  };
+  if (typeof job.id !== 'string' || !job.id || typeof job.name !== 'string' || !job.name.trim()) return skip('a stable ID and name are required');
+  if (context.seenIds.has(job.id)) throw new Error(`Duplicate source cron job ID: ${job.id}`);
+  context.seenIds.add(job.id);
+  const expression = cronExpression(asRecord(job.schedule));
+  if (expression === undefined) return skip('only recurring five-field cron expressions are supported');
+  const reason = unsupportedReason(context, job, expression);
+  if (reason) return skip(reason);
+  const scriptOnly = Boolean(job.script) && job.no_agent === true;
+  const prompt = source === 'hermes' ? (job.prompt ?? (scriptOnly ? '' : undefined)) : payload.message;
+  if (typeof prompt !== 'string' || (!prompt.trim() && !scriptOnly) || Buffer.byteLength(prompt) > MAX_FILE_BYTES) return skip('a nonempty prompt of at most 1 MiB is required');
+  let remainingRuns: number | undefined = job.deleteAfterRun ? 1 : undefined;
+  const repeat = asRecord(job.repeat);
+  if (source === 'hermes' && repeat.times != null) {
+    if (!hasValidRepeatCounts(repeat)) return skip('repeat counts must be nonnegative whole numbers with a positive limit');
+    remainingRuns = Math.max(0, Number(repeat.times) - Number(repeat.completed ?? 0));
   }
-  if (rawJobs.length > 1000) throw new Error('Cron migration exceeds the 1000 job limit.');
-  if (Buffer.byteLength(sourceData) > 16 * 1024 * 1024) throw new Error('Cron migration exceeds the 16 MiB data limit.');
-  if (source === 'hermes' && rawJobs.length > 0) {
-    const configPath = join(root, 'config.yaml');
-    check(configPath);
-    if (existsSync(configPath)) {
-      const text = readText(configPath, check);
-      const line = text.match(/^timezone:[^\r\n]*/m)?.[0];
-      if (line) {
-        const match = line.match(/^timezone:\s*(?:"([^"]*)"|'([^']*)'|([^#]*?))\s*(?:#.*)?$/);
-        timezone = match ? (match[1] ?? match[2] ?? match[3])?.trim() : 'unsupported timezone setting';
-      }
-      sourceData += JSON.stringify({ timezone });
-    }
+  const bundle = job.script ? planScript(context, job) : undefined;
+  if (typeof bundle === 'string') return skip(bundle);
+  if (bundle) warnings.push(...bundle.warnings.map(warning => `Schedule "${label}": ${warning}`));
+  const assets = bundle?.assets ?? [];
+  const planned: PlannedJob = {
+    id: `migration-${source}-${digest(JSON.stringify([root, job.id]))}`,
+    sourceId: job.id, name: job.name, schedule: expression, prompt,
+    kind: bundle ? 'script' : 'assistant', script: bundle?.script, remainingRuns,
+    assets: assets.map(({ sourcePath, targetPath, bytes }) => ({ sourcePath, targetPath, bytes })),
+  };
+  if (job.deliver || job.delivery || job.skills || job.skill || payload.model || payload.tools || job.sessionTarget === 'main') {
+    warnings.push(`Schedule "${label}": delivery, skills, model/tool settings and existing sessions are not transferred; review the paused schedule before enabling it.`);
   }
+  return { job: planned, assets, warnings };
+}
+
+function assetFootprint(assets: ScriptAsset[]): number {
+  return assets.reduce((sum, asset) => sum + asset.content.length + (asset.previous?.length ?? 0), 0);
+}
+
+function assetFingerprint(asset: ScriptAsset & { jobId: string }): unknown[] {
+  return [asset.jobId, asset.sourcePath, asset.targetPath, digest(asset.content), asset.previous === undefined ? null : digest(asset.previous)];
+}
+
+export function inspectMigrationCron(config: RookeryConfig, source: MigrationSource, root: string, check: PathCheck): MigrationCronPlan {
+  const sourceJobs = loadSourceJobs(source, root, check);
+  const warnings = [...sourceJobs.warnings];
+  const hermes = source === 'hermes' && sourceJobs.rawJobs.length > 0 ? readHermesTimezone(root, check) : { timezone: undefined, data: '' };
+  const sourceData = sourceJobs.data + hermes.data;
+  const hostTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const context: PlanContext = { config, source, root, check, sourceTimezone: hermes.timezone, hostTimezone, seenIds: new Set() };
   const jobs: PlannedJob[] = [];
   const assets: (ScriptAsset & { jobId: string })[] = [];
-  const seen = new Set<string>();
-  const hostTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  for (const raw of rawJobs) {
-    const job = object(raw);
-    const label = typeof job.name === 'string' ? job.name : String(job.id ?? 'unnamed job');
-    const skip = (reason: string) => warnings.push(`Skipped schedule "${label}": ${reason}.`);
-    if (typeof job.id !== 'string' || !job.id || typeof job.name !== 'string' || !job.name.trim()) { skip('a stable ID and name are required'); continue; }
-    if (seen.has(job.id)) throw new Error(`Duplicate source cron job ID: ${job.id}`);
-    seen.add(job.id);
-    const schedule = object(job.schedule);
-    if (schedule.kind !== 'cron' || typeof schedule.expr !== 'string' || schedule.expr.trim().split(/\s+/).length !== 5) { skip('only recurring five-field cron expressions are supported'); continue; }
-    try { parseCron(schedule.expr); } catch { skip('the cron expression is not supported by Rookery'); continue; }
-    const tz = schedule.tz ?? job.timezone ?? timezone;
-    if (tz) {
-      let canonical: string | undefined;
-      try { canonical = new Intl.DateTimeFormat('en', { timeZone: String(tz) }).resolvedOptions().timeZone; } catch { /* rejected below */ }
-      if (canonical !== hostTimezone) { skip(`timezone ${String(tz)} differs from Rookery's local timezone ${hostTimezone}`); continue; }
-    }
-    if (schedule.staggerMs) { skip('staggered execution is not supported'); continue; }
-    if (job.trigger || job.pacing) { skip('conditional triggers and pacing require manual migration'); continue; }
-    if (source === 'openclaw' && schedule.staggerMs === undefined && /^0\s+\*\s/.test(schedule.expr.trim())) { skip('OpenClaw implicitly staggers this hourly schedule; export an exact schedule with staggerMs: 0'); continue; }
-    if (job.agentId && job.agentId !== 'main') { skip(`the source agent "${String(job.agentId)}" has no Rookery agent mapping`); continue; }
-    if (job.monitor_script || job.monitor_url || job.context_from) { skip('monitor gates and chained context require an execution adapter'); continue; }
-    if (typeof job.state === 'string' && !['scheduled', 'paused'].includes(job.state)) { skip(`source state is ${job.state}`); continue; }
-    const payload = object(job.payload);
-    if (source === 'openclaw' && (payload.kind !== 'agentTurn' || (job.sessionTarget && !['isolated', 'main'].includes(String(job.sessionTarget))))) { skip('the execution target or system-event payload requires manual migration'); continue; }
-    const prompt = source === 'hermes' ? (job.prompt ?? (job.script && job.no_agent === true ? '' : undefined)) : payload.message;
-    if (typeof prompt !== 'string' || (!prompt.trim() && !(job.script && job.no_agent === true)) || Buffer.byteLength(prompt) > 1024 * 1024) { skip('a nonempty prompt of at most 1 MiB is required'); continue; }
-    let remainingRuns: number | undefined = job.deleteAfterRun ? 1 : undefined;
-    if (source === 'hermes' && object(job.repeat).times != null) {
-      const repeat = object(job.repeat);
-      const completed = repeat.completed ?? 0;
-      if (!Number.isSafeInteger(repeat.times) || Number(repeat.times) < 1 || !Number.isSafeInteger(completed) || Number(completed) < 0) { skip('repeat counts must be nonnegative whole numbers with a positive limit'); continue; }
-      remainingRuns = Math.max(0, Number(repeat.times) - Number(completed));
-    }
-    const id = `migration-${source}-${digest(JSON.stringify([root, job.id]))}`;
-    let script: CronScript | undefined;
-    let scriptAssets: ScriptAsset[] = [];
-    if (job.script) {
-      if (source !== 'hermes' || typeof job.script !== 'string') { skip('this script format is not supported'); continue; }
-      if (job.workdir) { skip('a custom script working directory needs explicit relocation'); continue; }
-      try {
-        const bundle = inspectScriptBundle(config, root, job.id, job.script, job.no_agent === true, check);
-        script = bundle.script;
-        scriptAssets = bundle.assets;
-        warnings.push(...bundle.warnings.map(warning => `Schedule "${label}": ${warning}`));
-      } catch (error) { skip(`script bundle could not be prepared: ${(error as Error).message}`); continue; }
-    }
-    assets.push(...scriptAssets.map(asset => ({ ...asset, jobId: id })));
-    if (assets.length > 1000 || assets.reduce((sum, asset) => sum + asset.content.length + (asset.previous?.length ?? 0), 0) > 32 * 1024 * 1024) throw new Error('Script migration exceeds the 1000-file or 32 MiB combined source and backup limit.');
-    jobs.push({ id, sourceId: job.id, name: job.name, schedule: schedule.expr, prompt, kind: script ? 'script' : 'assistant', script, remainingRuns, assets: scriptAssets.map(({ sourcePath, targetPath, bytes }) => ({ sourcePath, targetPath, bytes })) });
-    if (job.deliver || job.delivery || job.skills || job.skill || payload.model || payload.tools || job.sessionTarget === 'main') {
-      warnings.push(`Schedule "${label}": delivery, skills, model/tool settings and existing sessions are not transferred; review the paused schedule before enabling it.`);
-    }
+  for (const raw of sourceJobs.rawJobs) {
+    const plan = planJob(context, raw);
+    warnings.push(...plan.warnings);
+    const planned = plan.job;
+    if (!planned) continue;
+    assets.push(...plan.assets.map(asset => ({ ...asset, jobId: planned.id })));
+    if (assets.length > MAX_ASSET_FILES || assetFootprint(assets) > MAX_ASSET_BYTES) throw new Error('Script migration exceeds the 1000-file or 32 MiB combined source and backup limit.');
+    jobs.push(planned);
   }
   if (jobs.length > 0) warnings.push(`Schedules are imported paused with chat-only permission and no next run. Review prompts, tools, delivery and timezone (${hostTimezone}) before enabling them; the original scheduler remains unchanged.`);
   const destination = databasePath(config);
@@ -183,7 +278,7 @@ export function inspectMigrationCron(config: RookeryConfig, source: MigrationSou
   const destinationFingerprint = digest(JSON.stringify(rows));
   const existingIds = new Set(rows.map(row => String(row.id)));
   if (existingIds.size > 0) warnings.push(`${existingIds.size} previously imported schedule(s) will keep their current Rookery settings.`);
-  const assetHashes = assets.map(asset => [asset.jobId, asset.sourcePath, asset.targetPath, createHash('sha256').update(asset.content).digest('hex'), asset.previous === undefined ? null : createHash('sha256').update(asset.previous).digest('hex')]);
+  const assetHashes = assets.map(assetFingerprint);
   return { jobs, assets, warnings, existingIds, destinationFingerprint, fingerprint: digest(JSON.stringify({ sourceData, jobs, assetHashes, destinationFingerprint, destination })) };
 }
 

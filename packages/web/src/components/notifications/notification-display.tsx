@@ -1,11 +1,11 @@
+import type { ReactNode } from 'react';
 import { NavLink } from 'react-router';
 
 import { ArchiveIcon, BellIcon, ExternalLinkIcon, MailCheckIcon, UndoIcon } from '@/components/icons';
 
 import type { Notification, Task, TaskStatus } from '@/lib/types';
 import { formatDateTime } from '@/lib/format';
-import { isAnswerable, NOTIFICATION_KIND_LABEL, notificationSources } from '@/lib/notifications';
-import { Badge } from '@/components/ui/badge';
+import { isAnswerable, notificationSources } from '@/lib/notifications';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/common/empty-state';
 import { StatusBadge } from '@/components/common/status-badge';
@@ -14,7 +14,7 @@ import { ResultMarkdown } from '@/components/result-markdown';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { NOTIFICATION_KIND_ICON } from './notification-nav';
+import { NotificationKindBadge } from './notification-nav';
 
 /**
  * The reading pane: an action bar, the open notification rendered as
@@ -51,7 +51,6 @@ export function NotificationDisplay({
   // loaded yet; then the box shows and the server decides.
   const answerable =
     notification !== null && isAnswerable(notification) && (taskStatus === null || taskStatus === 'blocked');
-  const KindIcon = notification ? NOTIFICATION_KIND_ICON[notification.kind] : BellIcon;
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
@@ -59,24 +58,16 @@ export function NotificationDisplay({
       <TooltipProvider delayDuration={0}>
         <div className="flex h-[52px] shrink-0 items-center gap-1 px-2">
           <div className="ml-auto flex items-center gap-1">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button type="button" variant="ghost" size="icon" disabled={!notification} onClick={onToggleRead}>
-                  {read ? <UndoIcon /> : <MailCheckIcon />}
-                  <span className="sr-only">{read ? 'Mark as unread' : 'Mark as read'}</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{read ? 'Mark as unread' : 'Mark as read'}</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button type="button" variant="ghost" size="icon" disabled={!notification} onClick={onToggleArchived}>
-                  <ArchiveIcon />
-                  <span className="sr-only">{archived ? 'Move back to notifications' : 'Archive'}</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>{archived ? 'Move back to notifications' : 'Archive'}</TooltipContent>
-            </Tooltip>
+            <BarButton label={read ? 'Mark as unread' : 'Mark as read'} disabled={!notification} onClick={onToggleRead}>
+              {read ? <UndoIcon /> : <MailCheckIcon />}
+            </BarButton>
+            <BarButton
+              label={archived ? 'Move back to notifications' : 'Archive'}
+              disabled={!notification}
+              onClick={onToggleArchived}
+            >
+              <ArchiveIcon />
+            </BarButton>
           </div>
         </div>
       </TooltipProvider>
@@ -94,10 +85,7 @@ export function NotificationDisplay({
           <div className="flex min-w-0 shrink-0 flex-col gap-2 p-4">
             <h2 className="line-clamp-2 text-base font-semibold">{notification.title || '(No title)'}</h2>
             <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <Badge variant={notification.kind === 'question' ? 'default' : 'secondary'} className="font-normal">
-                <KindIcon aria-hidden="true" />
-                {NOTIFICATION_KIND_LABEL[notification.kind]}
-              </Badge>
+              <NotificationKindBadge kind={notification.kind} />
               {senderLabel && <span className="font-medium text-foreground">{senderLabel}</span>}
               <span>{formatDateTime(notification.createdAt)}</span>
             </div>
@@ -154,5 +142,27 @@ export function NotificationDisplay({
         </div>
       )}
     </div>
+  );
+}
+
+interface BarButtonProps {
+  label: string;
+  disabled: boolean;
+  onClick(): void;
+  children: ReactNode;
+}
+
+/** An icon-only action: the label is both the tooltip and the accessible name. */
+function BarButton({ label, disabled, onClick, children }: BarButtonProps) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button type="button" variant="ghost" size="icon" disabled={disabled} onClick={onClick}>
+          {children}
+          <span className="sr-only">{label}</span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }

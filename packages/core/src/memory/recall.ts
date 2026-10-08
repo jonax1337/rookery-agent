@@ -55,7 +55,7 @@ export const PROFILE_LEAD = RECALL_CEILING;
 export const byScoreThenId = (a: ScoredMemory, b: ScoredMemory): number =>
   b.score - a.score || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-/** Exponential recency decay over the half-life above, mirroring `recall`'s. */
+/** Exponential recency decay over the half-life above. */
 export function recencyOf(updatedAt: number, now: number): number {
   return Math.pow(0.5, (now - updatedAt) / RECENCY_HALF_LIFE_MS);
 }
@@ -69,6 +69,23 @@ const STOP_WORDS = new Set([
   'im', 'in', 'am', 'auf', 'fuer', 'für', 'mit', 'mein', 'meine', 'mir', 'mich', 'ich', 'du',
   'es', 'dass', 'was', 'wie', 'warum', 'wann', 'kann', 'koennte', 'bitte', 'nicht', 'den', 'dem',
 ]);
+
+const MIN_TOKEN_LENGTH = 3;
+const MAX_QUERY_TOKENS = 24;
+
+/** `describe` thresholds on the same 0..1 signals the score blends. */
+const STRONG_MATCH_RELEVANCE = 0.6;
+const TEXT_MATCH_RELEVANCE = 0.25;
+const HIGH_IMPORTANCE = 0.75;
+const RECENT_RECENCY = 0.7;
+
+const DEFAULT_MEMORY_BLOCK_BUDGET = 2000;
+const DEFAULT_PROFILE_LIMIT = 5;
+const DEFAULT_PROFILE_MIN_IMPORTANCE = 0.7;
+
+/** Profile ordering bonuses mirroring the SQL order in `coreProfile`: pinned beats any insight-plus-weights rest. */
+const PINNED_BONUS = 1;
+const INSIGHT_BONUS = 0.5;
 
 /**
  * Turn free text into a safe FTS5 MATCH expression.
@@ -87,8 +104,8 @@ export function tokenize(text: string): string[] {
     .normalize('NFKD')
     .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
     .split(/[\s-]+/)
-    .filter((token) => token.length > 2 && !STOP_WORDS.has(token))
-    .slice(0, 24);
+    .filter((token) => token.length >= MIN_TOKEN_LENGTH && !STOP_WORDS.has(token))
+    .slice(0, MAX_QUERY_TOKENS);
 }
 
 export interface RecallOptions extends MemoryQuery {
@@ -178,8 +195,8 @@ export function coreProfile(
   store: Store,
   options: { limit?: number; minImportance?: number; owner?: string } = {},
 ): ScoredMemory[] {
-  const limit = options.limit ?? 5;
-  const minImportance = options.minImportance ?? 0.7;
+  const limit = options.limit ?? DEFAULT_PROFILE_LIMIT;
+  const minImportance = options.minImportance ?? DEFAULT_PROFILE_MIN_IMPORTANCE;
   const owner = options.owner ?? ASSISTANT_MEMORY_OWNER;
   const now = Date.now();
 
@@ -208,8 +225,8 @@ export function coreProfile(
       // direct hit (R13).
       score:
         PROFILE_LEAD +
-        (record.pinned ? 1 : 0) +
-        (record.kind === 'insight' ? 0.5 : 0) +
+        (record.pinned ? PINNED_BONUS : 0) +
+        (record.kind === 'insight' ? INSIGHT_BONUS : 0) +
         WEIGHTS.importance * record.importance +
         WEIGHTS.recency * recencyOf(record.updatedAt, now),
       hop: 'direct' as const,
@@ -220,10 +237,10 @@ export function coreProfile(
 
 export function describe(relevance: number, importance: number, recency: number, taggedHit: boolean): string {
   const parts: string[] = [];
-  if (relevance > 0.6) parts.push('strong text match');
-  else if (relevance > 0.25) parts.push('text match');
-  if (importance >= 0.75) parts.push('high importance');
-  if (recency > 0.7) parts.push('recent');
+  if (relevance > STRONG_MATCH_RELEVANCE) parts.push('strong text match');
+  else if (relevance > TEXT_MATCH_RELEVANCE) parts.push('text match');
+  if (importance >= HIGH_IMPORTANCE) parts.push('high importance');
+  if (recency > RECENT_RECENCY) parts.push('recent');
   if (taggedHit) parts.push('tag hit');
   return parts.length ? parts.join(', ') : 'weak match';
 }
@@ -238,40 +255,33 @@ export function describe(relevance: number, importance: number, recency: number,
  */
 export function renderMemoryBlock(
   memories: ScoredMemory[],
-  budget = 2000,
+  budget = DEFAULT_MEMORY_BLOCK_BUDGET,
   subject = 'this user',
   store?: Store,
 ): string {
   if (!memories.length) return '';
   const lines: string[] = [];
   let used = 0;
-  const push = (line: string): boolean => {
-    if (used + line.length > budget) return false;
-    lines.push(line);
-    used += line.length + 1;
-    return true;
+  // Takes lines in order until the first one that no longer fits.
+  const addUntilFull = (candidates: string[]): void => {
+    for (const line of candidates) {
+      if (used + line.length > budget) return;
+      lines.push(line);
+      used += line.length + 1;
+    }
   };
 
   const groups = store ? groupByEntity(store, memories) : null;
   if (groups && groups.grouped.length) {
-    for (const group of groups.grouped) {
-      if (!push(group.entity.name + ':')) break;
-      let full = false;
-      for (const memory of group.memories) {
-        if (!push('  - (' + memory.kind + ') ' + memory.content)) {
-          full = true;
-          break;
-        }
-      }
-      if (full) break;
-    }
-    for (const memory of groups.loose) {
-      if (!push('- (' + memory.kind + ') ' + memory.content)) break;
-    }
+    addUntilFull(
+      groups.grouped.flatMap((group) => [
+        group.entity.name + ':',
+        ...group.memories.map((memory) => memoryLine(memory, '  ')),
+      ]),
+    );
+    addUntilFull(groups.loose.map((memory) => memoryLine(memory, '')));
   } else {
-    for (const memory of memories) {
-      if (!push('- (' + memory.kind + ') ' + memory.content)) break;
-    }
+    addUntilFull(memories.map((memory) => memoryLine(memory, '')));
   }
 
   if (!lines.length) return '';
@@ -280,6 +290,10 @@ export function renderMemoryBlock(
     lines.join('\n') +
     '\nUse this naturally. Do not announce that you are reading from memory.'
   );
+}
+
+function memoryLine(memory: ScoredMemory, indent: string): string {
+  return indent + '- (' + memory.kind + ') ' + memory.content;
 }
 
 /**

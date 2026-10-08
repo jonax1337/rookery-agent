@@ -13,6 +13,9 @@ import { loadConfig } from '@rookery/core';
 import { glyph, theme } from '../ui/theme.js';
 import { CliError } from './shared.js';
 
+/** Give the server a moment to bind before handing its URL to a browser. */
+const BROWSER_OPEN_DELAY_MS = 1200;
+
 export interface ServeOptions {
   port?: string;
   host?: string;
@@ -70,8 +73,7 @@ export async function serveCommand(options: ServeOptions = {}): Promise<number> 
   process.on('exit', () => stop('SIGTERM'));
 
   if (options.open) {
-    // Give the server a moment to bind before handing the URL to a browser.
-    const timer = setTimeout(() => openBrowser(url), 1200);
+    const timer = setTimeout(() => openBrowser(url), BROWSER_OPEN_DELAY_MS);
     timer.unref?.();
   }
 
@@ -94,19 +96,20 @@ export async function serveCommand(options: ServeOptions = {}): Promise<number> 
 }
 
 function openBrowser(url: string): void {
-  const [command, args] =
+  const reportFailure = (): void => {
+    process.stderr.write(theme.dim('Could not open a browser. Visit ' + url) + '\n');
+  };
+  const [command, args]: [string, string[]] =
     process.platform === 'win32'
       ? ['cmd', ['/c', 'start', '', url]]
       : process.platform === 'darwin'
         ? ['open', [url]]
         : ['xdg-open', [url]];
   try {
-    const child = spawn(command as string, args as string[], { stdio: 'ignore', detached: true });
-    child.on('error', () => {
-      process.stderr.write(theme.dim('Could not open a browser. Visit ' + url) + '\n');
-    });
+    const child = spawn(command, args, { stdio: 'ignore', detached: true });
+    child.on('error', reportFailure);
     child.unref();
   } catch {
-    process.stderr.write(theme.dim('Could not open a browser. Visit ' + url) + '\n');
+    reportFailure();
   }
 }

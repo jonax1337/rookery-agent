@@ -36,6 +36,60 @@ import { titleFromBrief } from '../util/queue.js';
 
 type Row = Record<string, unknown>;
 
+/** Default page sizes of the list queries. */
+const DEFAULT_LIST_LIMIT = 50;
+const DEFAULT_BOARD_LIMIT = 100;
+const DEFAULT_ALL_TASKS_LIMIT = 200;
+const DEFAULT_THREAD_LIMIT = 20;
+const MAX_NOTIFICATION_LIMIT = 1000;
+
+/** How much history the review and personnel-record reads look at. */
+const PERSONNEL_RECORD_LIMIT = 50;
+const EFFECTIVE_REVIEW_LIMIT = 30;
+/** Reviews fetched per wanted effective review: several sources may judge one assignment. */
+const REVIEW_SCAN_FACTOR = 6;
+const MIN_REVIEW_SCAN = 200;
+
+const MIN_REVIEW_SCORE = 1;
+const MAX_REVIEW_SCORE = 5;
+
+/** Performance windows (docs/concepts/agent-performance-management.md). */
+const AVERAGE_WINDOW = 10;
+const MIN_REVIEWS_FOR_AVERAGE = 3;
+const FAILURE_RATE_WINDOW = 20;
+const TREND_WINDOW = 5;
+
+/** Escalation thresholds of `stageFromReviews`. */
+const MIN_REVIEWS_FOR_STAGE = 3;
+const MIN_REVIEWS_FOR_PROBATION = 10;
+const PROBATION_WINDOW_SIZE = 5;
+const REVIEWS_BEFORE_RENOTE = 3;
+const GOOD_USER_RATING = 4;
+const WEAK_RATING = 2;
+const WEAK_AVERAGE = 3.0;
+
+/** Who outranks whom when several sources judged the same assignment; unknown sources rank last. */
+const SOURCE_RANK: Record<string, number> = { user: 0, assistant: 1, system: 2 };
+const UNRANKED_SOURCE = 9;
+
+/** Everything a review is created from; `upsertReview` replaces by (assignment, source). */
+export interface NewReviewInput {
+  orgId: string;
+  agentId: string;
+  assignmentId?: string;
+  taskId?: string;
+  source: ReviewSource;
+  overall: number;
+  quality?: number;
+  completeness?: number;
+  reliability?: number;
+  communication?: number;
+  efficiency?: number;
+  comment?: string;
+  tags?: string[];
+  failedRun?: boolean;
+}
+
 /**
  * Persistence for the organisation: companies, projects, teams, agents,
  * assignments and inter-agent messages. Pure CRUD; the rules about who may
@@ -143,8 +197,8 @@ export class OrgStore {
       name: patch.name?.trim(),
       description: patch.description,
       path: patch.path,
-      archived: patch.archived === undefined ? undefined : patch.archived ? 1 : 0,
-      mcp_trust: patch.mcpTrust === undefined ? undefined : patch.mcpTrust === null ? null : JSON.stringify(patch.mcpTrust),
+      archived: toFlag(patch.archived),
+      mcp_trust: patch.mcpTrust === undefined ? undefined : patch.mcpTrust && JSON.stringify(patch.mcpTrust),
     });
   }
 
@@ -330,7 +384,7 @@ export class OrgStore {
       provider: patch.provider,
       model: patch.model,
       permission: patch.permission,
-      archived: patch.archived === undefined ? undefined : patch.archived ? 1 : 0,
+      archived: toFlag(patch.archived),
     });
   }
 
@@ -428,10 +482,10 @@ export class OrgStore {
       values.push(options.sessionId);
     }
     if (options.status?.length) {
-      clauses.push('status IN (' + options.status.map(() => '?').join(', ') + ')');
+      clauses.push('status IN (' + placeholders(options.status.length) + ')');
       values.push(...options.status);
     }
-    values.push(options.limit ?? 50);
+    values.push(options.limit ?? DEFAULT_LIST_LIMIT);
     const rows = this.#db
       .prepare('SELECT * FROM assignments WHERE ' + clauses.join(' AND ') + ' ORDER BY created_at DESC LIMIT ?')
       .all(...(values as never[])) as Row[];
@@ -452,22 +506,17 @@ export class OrgStore {
       durationMs?: number;
     },
   ): void {
-    this.#update(
-      'assignments',
-      id,
-      {
-        status: patch.status,
-        result: patch.result,
-        error: patch.error,
-        provider: patch.provider,
-        model: patch.model,
-        chars: patch.chars,
-        started_at: patch.startedAt,
-        finished_at: patch.finishedAt,
-        duration_ms: patch.durationMs,
-      },
-      false,
-    );
+    this.#updateUntouched('assignments', id, {
+      status: patch.status,
+      result: patch.result,
+      error: patch.error,
+      provider: patch.provider,
+      model: patch.model,
+      chars: patch.chars,
+      started_at: patch.startedAt,
+      finished_at: patch.finishedAt,
+      duration_ms: patch.durationMs,
+    });
   }
 
   /**
@@ -530,27 +579,21 @@ export class OrgStore {
     toAgentId: string | null,
     options: { unreadOnly?: boolean; limit?: number } = {},
   ): AgentMessage[] {
-    const rows = (
-      toAgentId
-        ? this.#db
-            .prepare(
-              `SELECT * FROM agent_messages
-                WHERE org_id = ? AND to_agent_id = ? AND (? = 0 OR read_at IS NULL)
-                ORDER BY created_at DESC LIMIT ?`,
-            )
-            .all(orgId, toAgentId, options.unreadOnly ? 1 : 0, options.limit ?? 50)
-        : this.#db
-            .prepare(
-              `SELECT * FROM agent_messages
-                WHERE org_id = ? AND to_agent_id IS NULL AND (? = 0 OR read_at IS NULL)
-                ORDER BY created_at DESC LIMIT ?`,
-            )
-            .all(orgId, options.unreadOnly ? 1 : 0, options.limit ?? 50)
-    ) as Row[];
+    const recipientClause = toAgentId ? 'to_agent_id = ?' : 'to_agent_id IS NULL';
+    const values = toAgentId
+      ? [orgId, toAgentId, options.unreadOnly ? 1 : 0, options.limit ?? DEFAULT_LIST_LIMIT]
+      : [orgId, options.unreadOnly ? 1 : 0, options.limit ?? DEFAULT_LIST_LIMIT];
+    const rows = this.#db
+      .prepare(
+        `SELECT * FROM agent_messages
+          WHERE org_id = ? AND ${recipientClause} AND (? = 0 OR read_at IS NULL)
+          ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(...(values as never[])) as Row[];
     return rows.map(mapMessage);
   }
 
-  listMessages(orgId: string, limit = 100): AgentMessage[] {
+  listMessages(orgId: string, limit = DEFAULT_BOARD_LIMIT): AgentMessage[] {
     const rows = this.#db
       .prepare('SELECT * FROM agent_messages WHERE org_id = ? ORDER BY created_at DESC LIMIT ?')
       .all(orgId, limit) as Row[];
@@ -628,20 +671,7 @@ export class OrgStore {
       )
       .run(threadId, input.orgId, kind, now);
 
-    const insertRecipient = this.#db.prepare(
-      `INSERT INTO mail_recipients (id, mail_id, recipient_kind, recipient_id, box, read_at)
-       VALUES (?, ?, ?, ?, ?, NULL)`,
-    );
-    const targets: { who: MailWho; box: 'to' | 'cc' }[] = [
-      ...input.to.map((who) => ({ who, box: 'to' as const })),
-      ...(input.cc ?? []).map((who) => ({ who, box: 'cc' as const })),
-    ];
-    const recipients: MailRecipient[] = targets.map(({ who, box }) => {
-      const recipientId = who.kind === 'agent' ? who.id : undefined;
-      const recipient: MailRecipient = { id: randomUUID(), mailId: id, recipientKind: who.kind, recipientId, box };
-      insertRecipient.run(recipient.id, id, recipient.recipientKind, recipient.recipientId ?? null, recipient.box);
-      return recipient;
-    });
+    const recipients = this.#insertRecipients(id, input.to, input.cc ?? []);
 
     // The thread's own row, not the computed default: a reply landed in a
     // thread whose kind was decided by its first mail, and that is the truth
@@ -664,8 +694,25 @@ export class OrgStore {
       createdAt: now,
       recipients,
       threadKind: (threadRow?.kind as MailThreadKind | undefined) ?? 'chat',
-      threadArchivedAt: optionalScore(threadRow?.archived_at),
+      threadArchivedAt: optionalNumber(threadRow?.archived_at),
     };
+  }
+
+  #insertRecipients(mailId: string, to: MailWho[], cc: MailWho[]): MailRecipient[] {
+    const insertRecipient = this.#db.prepare(
+      `INSERT INTO mail_recipients (id, mail_id, recipient_kind, recipient_id, box, read_at)
+       VALUES (?, ?, ?, ?, ?, NULL)`,
+    );
+    const targets: { who: MailWho; box: 'to' | 'cc' }[] = [
+      ...to.map((who) => ({ who, box: 'to' as const })),
+      ...cc.map((who) => ({ who, box: 'cc' as const })),
+    ];
+    return targets.map(({ who, box }) => {
+      const recipientId = who.kind === 'agent' ? who.id : undefined;
+      const recipient: MailRecipient = { id: randomUUID(), mailId, recipientKind: who.kind, recipientId, box };
+      insertRecipient.run(recipient.id, mailId, recipient.recipientKind, recipient.recipientId ?? null, recipient.box);
+      return recipient;
+    });
   }
 
   /** One mail with its recipients and its thread's protocol row, or null. */
@@ -726,54 +773,42 @@ export class OrgStore {
     box: 'inbox' | 'outbox',
     opts: { unreadOnly?: boolean; limit?: number; folder?: MailFolder } = {},
   ): Mail[] {
-    const limit = opts.limit ?? 50;
-    const agentId = who.id ?? null;
-    let ids: string[];
-    if (box === 'outbox') {
-      ids = (
-        who.kind === 'agent'
-          ? this.#db
-              .prepare('SELECT id FROM mail WHERE org_id = ? AND from_kind = ? AND from_agent_id = ? ORDER BY created_at DESC LIMIT ?')
-              .all(orgId, who.kind, agentId, limit)
-          : this.#db
-              .prepare('SELECT id FROM mail WHERE org_id = ? AND from_kind = ? ORDER BY created_at DESC LIMIT ?')
-              .all(orgId, who.kind, limit)
-      ).map((row) => (row as { id: string }).id);
-    } else {
-      // Which slice of the inbox: kind is what the thread *is*, decided once
-      // when it opened and inherited by every reply.
-      const folder = opts.folder ?? 'inbox';
-      const clause =
-        folder === 'tasks'
-          ? "mt.kind = 'assignment' AND mt.archived_at IS NULL"
-          : folder === 'reports'
-            ? "mt.kind = 'report' AND mt.archived_at IS NULL"
-            : folder === 'archiv'
-              ? 'mt.archived_at IS NOT NULL'
-              : 'mt.archived_at IS NULL';
-      ids = (
-        who.kind === 'agent'
-          ? this.#db
-              .prepare(
-                `SELECT m.id FROM mail m JOIN mail_recipients r ON r.mail_id = m.id
-                  JOIN mail_threads mt ON mt.thread_id = m.thread_id
-                  WHERE m.org_id = ? AND r.recipient_kind = ? AND r.recipient_id = ? AND (? = 0 OR r.read_at IS NULL)
-                  AND ${clause}
-                  ORDER BY m.created_at DESC LIMIT ?`,
-              )
-              .all(orgId, who.kind, agentId, opts.unreadOnly ? 1 : 0, limit)
-          : this.#db
-              .prepare(
-                `SELECT m.id FROM mail m JOIN mail_recipients r ON r.mail_id = m.id
-                  JOIN mail_threads mt ON mt.thread_id = m.thread_id
-                  WHERE m.org_id = ? AND r.recipient_kind = ? AND (? = 0 OR r.read_at IS NULL)
-                  AND ${clause}
-                  ORDER BY m.created_at DESC LIMIT ?`,
-              )
-              .all(orgId, who.kind, opts.unreadOnly ? 1 : 0, limit)
-      ).map((row) => (row as { id: string }).id);
-    }
+    const limit = opts.limit ?? DEFAULT_LIST_LIMIT;
+    const ids =
+      box === 'outbox'
+        ? this.#sentMailIds(orgId, who, limit)
+        : this.#receivedMailIds(orgId, who, opts.folder ?? 'inbox', opts.unreadOnly ?? false, limit);
     return ids.map((id) => this.getMail(id)).filter((mail): mail is Mail => mail !== null);
+  }
+
+  #sentMailIds(orgId: string, who: MailWho, limit: number): string[] {
+    const isAgent = who.kind === 'agent';
+    const values = isAgent ? [orgId, who.kind, who.id ?? null, limit] : [orgId, who.kind, limit];
+    const rows = this.#db
+      .prepare(
+        'SELECT id FROM mail WHERE org_id = ? AND from_kind = ?' +
+          (isAgent ? ' AND from_agent_id = ?' : '') +
+          ' ORDER BY created_at DESC LIMIT ?',
+      )
+      .all(...(values as never[])) as { id: string }[];
+    return rows.map((row) => row.id);
+  }
+
+  #receivedMailIds(orgId: string, who: MailWho, folder: MailFolder, unreadOnly: boolean, limit: number): string[] {
+    const isAgent = who.kind === 'agent';
+    const values = isAgent
+      ? [orgId, who.kind, who.id ?? null, unreadOnly ? 1 : 0, limit]
+      : [orgId, who.kind, unreadOnly ? 1 : 0, limit];
+    const rows = this.#db
+      .prepare(
+        `SELECT m.id FROM mail m JOIN mail_recipients r ON r.mail_id = m.id
+          JOIN mail_threads mt ON mt.thread_id = m.thread_id
+          WHERE m.org_id = ? AND r.recipient_kind = ?${isAgent ? ' AND r.recipient_id = ?' : ''} AND (? = 0 OR r.read_at IS NULL)
+          AND ${folderClause(folder)}
+          ORDER BY m.created_at DESC LIMIT ?`,
+      )
+      .all(...(values as never[])) as { id: string }[];
+    return rows.map((row) => row.id);
   }
 
   /**
@@ -784,7 +819,7 @@ export class OrgStore {
   thread(orgId: string, threadId: string, opts: { who?: MailWho; limit?: number } = {}): Mail[] {
     const rows = this.#db
       .prepare('SELECT id FROM mail WHERE org_id = ? AND thread_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(orgId, threadId, opts.limit ?? 20) as Row[];
+      .all(orgId, threadId, opts.limit ?? DEFAULT_THREAD_LIMIT) as Row[];
     const mail = rows
       .map((row) => this.getMail(row.id as string))
       .filter((entry): entry is Mail => entry !== null)
@@ -793,12 +828,10 @@ export class OrgStore {
     if (!who) return mail;
     // Their own view of the conversation: what they wrote, and what they were
     // on. A thread can carry mail they were never a party to.
-    const isWho = (kind: RequesterKind, id?: string): boolean =>
-      kind === who.kind && (who.kind !== 'agent' || id === who.id);
     return mail.filter(
       (entry) =>
-        isWho(entry.fromKind, entry.fromAgentId) ||
-        entry.recipients.some((recipient) => isWho(recipient.recipientKind, recipient.recipientId)),
+        isParty(who, entry.fromKind, entry.fromAgentId) ||
+        entry.recipients.some((recipient) => isParty(who, recipient.recipientKind, recipient.recipientId)),
     );
   }
 
@@ -830,7 +863,7 @@ export class OrgStore {
   markMailReadFor(mail: Mail[], who: MailWho): void {
     const ids = mail.flatMap((entry) =>
       entry.recipients
-        .filter((recipient) => recipient.recipientKind === who.kind && (who.kind !== 'agent' || recipient.recipientId === who.id))
+        .filter((recipient) => isParty(who, recipient.recipientKind, recipient.recipientId))
         .map((recipient) => recipient.id),
     );
     this.markMailRead(ids);
@@ -921,10 +954,10 @@ export class OrgStore {
     if (opts.unread) where.push('read_at IS NULL');
     const kinds = opts.kind === undefined ? [] : Array.isArray(opts.kind) ? opts.kind : [opts.kind];
     if (kinds.length) {
-      where.push('kind IN (' + kinds.map(() => '?').join(', ') + ')');
+      where.push('kind IN (' + placeholders(kinds.length) + ')');
       params.push(...kinds);
     }
-    params.push(Math.max(1, Math.min(opts.limit ?? 100, 1000)));
+    params.push(Math.max(1, Math.min(opts.limit ?? DEFAULT_BOARD_LIMIT, MAX_NOTIFICATION_LIMIT)));
     const rows = this.#db
       .prepare('SELECT * FROM notifications WHERE ' + where.join(' AND ') + ' ORDER BY created_at DESC, rowid DESC LIMIT ?')
       .all(...params) as Row[];
@@ -938,25 +971,26 @@ export class OrgStore {
    */
   markNotificationsRead(ids: string[] | 'all', options: { read?: boolean; orgId?: string } = {}): number {
     const read = options.read ?? true;
-    const now = Date.now();
-    if (ids === 'all') {
-      const result = read
-        ? options.orgId
-          ? this.#db.prepare('UPDATE notifications SET read_at = ? WHERE read_at IS NULL AND org_id = ?').run(now, options.orgId)
-          : this.#db.prepare('UPDATE notifications SET read_at = ? WHERE read_at IS NULL').run(now)
-        : options.orgId
-          ? this.#db.prepare('UPDATE notifications SET read_at = NULL WHERE org_id = ?').run(options.orgId)
-          : this.#db.prepare('UPDATE notifications SET read_at = NULL').run();
-      return Number(result.changes);
-    }
-    let changed = 0;
+    if (ids === 'all') return this.#setAllNotificationsRead(read, options.orgId);
     const statement = read
       ? this.#db.prepare('UPDATE notifications SET read_at = ? WHERE id = ? AND read_at IS NULL')
       : this.#db.prepare('UPDATE notifications SET read_at = NULL WHERE id = ? AND read_at IS NOT NULL');
+    const now = Date.now();
+    let changed = 0;
     for (const id of ids) {
       changed += Number((read ? statement.run(now, id) : statement.run(id)).changes);
     }
     return changed;
+  }
+
+  #setAllNotificationsRead(read: boolean, orgId: string | undefined): number {
+    const orgParams = orgId ? [orgId] : [];
+    const result = read
+      ? this.#db
+          .prepare('UPDATE notifications SET read_at = ? WHERE read_at IS NULL' + (orgId ? ' AND org_id = ?' : ''))
+          .run(Date.now(), ...orgParams)
+      : this.#db.prepare('UPDATE notifications SET read_at = NULL' + (orgId ? ' WHERE org_id = ?' : '')).run(...orgParams);
+    return Number(result.changes);
   }
 
   /**
@@ -977,13 +1011,10 @@ export class OrgStore {
 
   /** Unread, unarchived notifications - the badge. */
   unreadNotificationCount(orgId?: string): number {
-    const row = (
-      orgId
-        ? this.#db
-            .prepare('SELECT COUNT(*) AS n FROM notifications WHERE read_at IS NULL AND archived_at IS NULL AND org_id = ?')
-            .get(orgId)
-        : this.#db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE read_at IS NULL AND archived_at IS NULL').get()
-    ) as { n: number } | undefined;
+    const orgFilter = orgId ? ' AND org_id = ?' : '';
+    const row = this.#db
+      .prepare('SELECT COUNT(*) AS n FROM notifications WHERE read_at IS NULL AND archived_at IS NULL' + orgFilter)
+      .get(...(orgId ? [orgId] : [])) as { n: number } | undefined;
     return Number(row?.n ?? 0);
   }
 
@@ -1037,13 +1068,11 @@ export class OrgStore {
 
   /** The newest line of a card's activity, of one kind when `kind` is given. */
   lastTaskEvent(taskId: string, kind?: TaskEventKind): TaskEvent | null {
-    const row = (
-      kind
-        ? this.#db
-            .prepare('SELECT * FROM task_events WHERE task_id = ? AND kind = ? ORDER BY at DESC, rowid DESC LIMIT 1')
-            .get(taskId, kind)
-        : this.#db.prepare('SELECT * FROM task_events WHERE task_id = ? ORDER BY at DESC, rowid DESC LIMIT 1').get(taskId)
-    ) as Row | undefined;
+    const kindClause = kind ? ' AND kind = ?' : '';
+    const params = kind ? [taskId, kind] : [taskId];
+    const row = this.#db
+      .prepare('SELECT * FROM task_events WHERE task_id = ?' + kindClause + ' ORDER BY at DESC, rowid DESC LIMIT 1')
+      .get(...(params as never[])) as Row | undefined;
     return row ? mapTaskEvent(row) : null;
   }
 
@@ -1187,14 +1216,14 @@ export class OrgStore {
       clauses.push('parent_id IS NULL');
     }
     if (options.status?.length) {
-      clauses.push('status IN (' + options.status.map(() => '?').join(', ') + ')');
+      clauses.push('status IN (' + placeholders(options.status.length) + ')');
       values.push(...options.status);
     }
     if (options.assigneeId) {
       clauses.push('assignee_id = ?');
       values.push(options.assigneeId);
     }
-    values.push(options.limit ?? 100);
+    values.push(options.limit ?? DEFAULT_BOARD_LIMIT);
     const rows = this.#db
       .prepare(
         'SELECT * FROM tasks WHERE ' + clauses.join(' AND ') +
@@ -1205,7 +1234,7 @@ export class OrgStore {
   }
 
   /** Every task in the company regardless of nesting, newest first. */
-  listAllTasks(orgId: string, limit = 200): Task[] {
+  listAllTasks(orgId: string, limit = DEFAULT_ALL_TASKS_LIMIT): Task[] {
     const rows = this.#db
       .prepare('SELECT * FROM tasks WHERE org_id = ? ORDER BY updated_at DESC LIMIT ?')
       .all(orgId, limit) as Row[];
@@ -1350,22 +1379,7 @@ export class OrgStore {
    * for this assignment and source" want {@link upsertReview} instead, which
    * is every caller today (there is no periodic review yet).
    */
-  createReview(input: {
-    orgId: string;
-    agentId: string;
-    assignmentId?: string;
-    taskId?: string;
-    source: ReviewSource;
-    overall: number;
-    quality?: number;
-    completeness?: number;
-    reliability?: number;
-    communication?: number;
-    efficiency?: number;
-    comment?: string;
-    tags?: string[];
-    failedRun?: boolean;
-  }): AgentReview {
+  createReview(input: NewReviewInput): AgentReview {
     const review: AgentReview = {
       id: randomUUID(),
       orgId: input.orgId,
@@ -1373,15 +1387,7 @@ export class OrgStore {
       assignmentId: blank(input.assignmentId),
       taskId: blank(input.taskId),
       source: input.source,
-      overall: clampReviewScore(input.overall),
-      quality: clampReviewScoreOptional(input.quality),
-      completeness: clampReviewScoreOptional(input.completeness),
-      reliability: clampReviewScoreOptional(input.reliability),
-      communication: clampReviewScoreOptional(input.communication),
-      efficiency: clampReviewScoreOptional(input.efficiency),
-      comment: blank(input.comment),
-      tags: [...new Set(input.tags ?? [])],
-      failedRun: input.failedRun ?? false,
+      ...normalizeReviewJudgment(input),
       createdAt: Date.now(),
     };
     this.#db
@@ -1418,36 +1424,13 @@ export class OrgStore {
    * `idx_agent_reviews_once`. A periodic review (`assignmentId` unset) never
    * collides with another: each is its own row.
    */
-  upsertReview(input: {
-    orgId: string;
-    agentId: string;
-    assignmentId?: string;
-    taskId?: string;
-    source: ReviewSource;
-    overall: number;
-    quality?: number;
-    completeness?: number;
-    reliability?: number;
-    communication?: number;
-    efficiency?: number;
-    comment?: string;
-    tags?: string[];
-    failedRun?: boolean;
-  }): AgentReview {
+  upsertReview(input: NewReviewInput): AgentReview {
     if (input.assignmentId) {
       const existing = this.#db
         .prepare('SELECT id FROM agent_reviews WHERE assignment_id = ? AND source = ?')
         .get(input.assignmentId, input.source) as { id: string } | undefined;
       if (existing) {
-        const overall = clampReviewScore(input.overall);
-        const quality = clampReviewScoreOptional(input.quality);
-        const completeness = clampReviewScoreOptional(input.completeness);
-        const reliability = clampReviewScoreOptional(input.reliability);
-        const communication = clampReviewScoreOptional(input.communication);
-        const efficiency = clampReviewScoreOptional(input.efficiency);
-        const comment = blank(input.comment);
-        const tags = [...new Set(input.tags ?? [])];
-        const failedRun = input.failedRun ?? false;
+        const judgment = normalizeReviewJudgment(input);
         this.#db
           .prepare(
             `UPDATE agent_reviews
@@ -1457,15 +1440,15 @@ export class OrgStore {
           )
           .run(
             blank(input.taskId) ?? null,
-            overall,
-            quality ?? null,
-            completeness ?? null,
-            reliability ?? null,
-            communication ?? null,
-            efficiency ?? null,
-            comment ?? null,
-            JSON.stringify(tags),
-            failedRun ? 1 : 0,
+            judgment.overall,
+            judgment.quality ?? null,
+            judgment.completeness ?? null,
+            judgment.reliability ?? null,
+            judgment.communication ?? null,
+            judgment.efficiency ?? null,
+            judgment.comment ?? null,
+            JSON.stringify(judgment.tags),
+            judgment.failedRun ? 1 : 0,
             Date.now(),
             existing.id,
           );
@@ -1627,7 +1610,7 @@ export class OrgStore {
   listActions(agentId: string, options: { limit?: number } = {}): AgentAction[] {
     const rows = this.#db
       .prepare('SELECT * FROM agent_actions WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(agentId, options.limit ?? 50) as Row[];
+      .all(agentId, options.limit ?? PERSONNEL_RECORD_LIMIT) as Row[];
     return rows.map(mapAction);
   }
 
@@ -1638,11 +1621,10 @@ export class OrgStore {
    * wann"). A periodic review (no `assignmentId`) never competes with
    * anything and always survives on its own. Newest first.
    */
-  effectiveReviews(agentId: string, limit = 30): AgentReview[] {
-    const rank: Record<string, number> = { user: 0, assistant: 1, system: 2 };
+  effectiveReviews(agentId: string, limit = EFFECTIVE_REVIEW_LIMIT): AgentReview[] {
     const rows = this.#db
       .prepare('SELECT * FROM agent_reviews WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(agentId, Math.max(limit * 6, 200)) as Row[];
+      .all(agentId, Math.max(limit * REVIEW_SCAN_FACTOR, MIN_REVIEW_SCAN)) as Row[];
     const byAssignment = new Map<string, Row>();
     const periodic: Row[] = [];
     for (const row of rows) {
@@ -1652,11 +1634,7 @@ export class OrgStore {
         continue;
       }
       const existing = byAssignment.get(assignmentId);
-      const rowRank = rank[row.source as string] ?? 9;
-      const existingRank = existing ? rank[existing.source as string] ?? 9 : 9;
-      if (!existing || rowRank < existingRank) {
-        byAssignment.set(assignmentId, row);
-      }
+      if (!existing || sourceRank(row) < sourceRank(existing)) byAssignment.set(assignmentId, row);
     }
     return [...byAssignment.values(), ...periodic]
       .map(mapReview)
@@ -1673,27 +1651,21 @@ export class OrgStore {
    * timeout would blame it for infrastructure.
    */
   performance(agentId: string): AgentPerformance {
-    const effective = this.effectiveReviews(agentId, 30);
+    const effective = this.effectiveReviews(agentId);
     const quality = effective.filter((review) => !review.failedRun);
-    const last20 = effective.slice(0, 20);
-    const failedInLast20 = last20.filter((review) => review.failedRun).length;
+    const failureWindow = effective.slice(0, FAILURE_RATE_WINDOW);
+    const failedInWindow = failureWindow.filter((review) => review.failedRun).length;
 
-    const average10 = quality.slice(0, 10);
-    const average = average10.length >= 3 ? mean(average10.map((review) => review.overall)) : null;
-
-    let trend: number | null = null;
-    if (quality.length >= 10) {
-      const recent5 = mean(quality.slice(0, 5).map((review) => review.overall));
-      const prior5 = mean(quality.slice(5, 10).map((review) => review.overall));
-      if (recent5 !== null && prior5 !== null) trend = recent5 - prior5;
-    }
+    const averaged = quality.slice(0, AVERAGE_WINDOW);
+    const average =
+      averaged.length >= MIN_REVIEWS_FOR_AVERAGE ? mean(averaged.map((review) => review.overall)) : null;
 
     return {
       average,
-      count: average10.length,
-      trend,
-      stage: stageFromReviews(quality, this.listActions(agentId, { limit: 50 })),
-      failureRate: last20.length ? failedInLast20 / last20.length : 0,
+      count: averaged.length,
+      trend: trendOf(quality),
+      stage: stageFromReviews(quality, this.listActions(agentId)),
+      failureRate: failureWindow.length ? failedInWindow / failureWindow.length : 0,
       lastReviewAt: effective[0]?.createdAt,
     };
   }
@@ -1734,26 +1706,45 @@ export class OrgStore {
 
   /* --------------------------------- internals -------------------------------- */
 
-  /** Generic partial update. `undefined` skips a column, `null` clears it. */
-  #update(table: string, id: string, patch: Record<string, unknown>, touch = true): void {
-    const sets: string[] = [];
-    const values: unknown[] = [];
-    for (const [column, value] of Object.entries(patch)) {
-      if (value === undefined) continue;
-      sets.push(column + ' = ?');
-      values.push(value);
-    }
-    if (!sets.length) return;
-    if (touch) {
-      sets.push('updated_at = ?');
-      values.push(Date.now());
-    }
-    values.push(id);
-    this.#db.prepare('UPDATE ' + table + ' SET ' + sets.join(', ') + ' WHERE id = ?').run(...(values as never[]));
+  /** Generic partial update that stamps `updated_at`. `undefined` skips a column, `null` clears it. */
+  #update(table: string, id: string, patch: Record<string, unknown>): void {
+    const columns = changedColumns(patch);
+    if (!columns.length) return;
+    this.#writeColumns(table, id, [...columns, ['updated_at', Date.now()]]);
+  }
+
+  /** Like `#update`, for tables without an `updated_at` column. */
+  #updateUntouched(table: string, id: string, patch: Record<string, unknown>): void {
+    this.#writeColumns(table, id, changedColumns(patch));
+  }
+
+  #writeColumns(table: string, id: string, columns: [string, unknown][]): void {
+    if (!columns.length) return;
+    const assignments = columns.map(([column]) => column + ' = ?').join(', ');
+    const values = [...columns.map(([, value]) => value), id];
+    this.#db.prepare('UPDATE ' + table + ' SET ' + assignments + ' WHERE id = ?').run(...(values as never[]));
   }
 }
 
 /* ------------------------------------ helpers ----------------------------------- */
+
+function changedColumns(patch: Record<string, unknown>): [string, unknown][] {
+  return Object.entries(patch).filter(([, value]) => value !== undefined);
+}
+
+function toFlag(value: boolean | undefined): number | undefined {
+  return value === undefined ? undefined : value ? 1 : 0;
+}
+
+/** `?, ?, ?` for an `IN (...)` list of `count` bound values. */
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => '?').join(', ');
+}
+
+/** Whether a recipient/sender of `kind` and `id` is `who`; only agents are told apart by id. */
+function isParty(who: MailWho, kind: RequesterKind, id?: string): boolean {
+  return kind === who.kind && (who.kind !== 'agent' || id === who.id);
+}
 
 export function slugify(text: string): string {
   return text
@@ -1770,9 +1761,9 @@ function blank(value: string | undefined | null): string | undefined {
   return text ? text : undefined;
 }
 
-/** 1..5, rounded to the nearest whole star. */
+/** MIN_REVIEW_SCORE..MAX_REVIEW_SCORE, rounded to the nearest whole star. */
 function clampReviewScore(value: number): number {
-  return Math.min(5, Math.max(1, Math.round(value)));
+  return Math.min(MAX_REVIEW_SCORE, Math.max(MIN_REVIEW_SCORE, Math.round(value)));
 }
 
 function clampReviewScoreOptional(value: number | undefined): number | undefined {
@@ -1788,12 +1779,53 @@ function parseStringArray(raw: unknown): string[] {
   }
 }
 
-function optionalScore(value: unknown): number | undefined {
+function optionalNumber(value: unknown): number | undefined {
   return value === null || value === undefined ? undefined : Number(value);
 }
 
 function mean(values: number[]): number | null {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+/** Difference between the newest and the preceding window of ratings, or null with too little history. */
+function trendOf(quality: AgentReview[]): number | null {
+  if (quality.length < TREND_WINDOW * 2) return null;
+  const recent = mean(quality.slice(0, TREND_WINDOW).map((review) => review.overall));
+  const prior = mean(quality.slice(TREND_WINDOW, TREND_WINDOW * 2).map((review) => review.overall));
+  return recent !== null && prior !== null ? recent - prior : null;
+}
+
+function sourceRank(reviewRow: Row): number {
+  return SOURCE_RANK[reviewRow.source as string] ?? UNRANKED_SOURCE;
+}
+
+/** The scored fields of a review, clamped and de-duplicated the same way on insert and on replace. */
+function normalizeReviewJudgment(input: NewReviewInput) {
+  return {
+    overall: clampReviewScore(input.overall),
+    quality: clampReviewScoreOptional(input.quality),
+    completeness: clampReviewScoreOptional(input.completeness),
+    reliability: clampReviewScoreOptional(input.reliability),
+    communication: clampReviewScoreOptional(input.communication),
+    efficiency: clampReviewScoreOptional(input.efficiency),
+    comment: blank(input.comment),
+    tags: [...new Set(input.tags ?? [])],
+    failedRun: input.failedRun ?? false,
+  };
+}
+
+/** Which slice of the inbox: kind is what the thread *is*, decided once when it opened and inherited by every reply. */
+function folderClause(folder: MailFolder): string {
+  switch (folder) {
+    case 'tasks':
+      return "mt.kind = 'assignment' AND mt.archived_at IS NULL";
+    case 'reports':
+      return "mt.kind = 'report' AND mt.archived_at IS NULL";
+    case 'archiv':
+      return 'mt.archived_at IS NOT NULL';
+    default:
+      return 'mt.archived_at IS NULL';
+  }
 }
 
 /**
@@ -1820,20 +1852,15 @@ function mean(values: number[]): number | null {
  *   reconfig.
  */
 function stageFromReviews(quality: AgentReview[], actions: AgentAction[]): 0 | 1 | 2 | 3 {
-  const minData = quality.length;
-  if (minData < 3) return 0;
+  const reviewCount = quality.length;
+  if (reviewCount < MIN_REVIEWS_FOR_STAGE) return 0;
 
   // A good user rating right after a weak stretch resets everything - the
   // user always wins.
   const newest = quality[0];
-  if (newest && newest.source === 'user' && newest.overall >= 4) return 0;
+  if (newest && newest.source === 'user' && newest.overall >= GOOD_USER_RATING) return 0;
 
-  const recent3 = quality.slice(0, 3);
-  const recent5 = quality.slice(0, 5);
-  const weakLast3 = recent3.filter((review) => review.overall <= 2).length >= 2;
-  const oneStarUser = recent5.some((review) => review.source === 'user' && review.overall === 1);
-  const avgLast5 = mean(recent5.map((review) => review.overall));
-  const weak = weakLast3 || oneStarUser || (avgLast5 !== null && avgLast5 < 3.0);
+  const weak = isWeakStretch(quality);
 
   // Only an applied `reconfig` opens the probation window; a pending
   // `reconfig-proposal` deliberately does not. Nothing about the agent has
@@ -1844,26 +1871,42 @@ function stageFromReviews(quality: AgentReview[], actions: AgentAction[]): 0 | 1
   const lastNote = actions.find((action) => action.kind === 'note');
 
   if (lastReconfig) {
-    if (minData < 10) return weak ? 2 : 0; // not enough fresh data yet to judge the probation window
-    const probationWindow = quality.filter((review) => review.createdAt > lastReconfig.createdAt).slice(0, 5);
-    if (probationWindow.length < 5) return weak ? 2 : 0; // window still filling
+    if (reviewCount < MIN_REVIEWS_FOR_PROBATION) return weak ? 2 : 0; // not enough fresh data yet to judge the probation window
+    const probationWindow = quality
+      .filter((review) => review.createdAt > lastReconfig.createdAt)
+      .slice(0, PROBATION_WINDOW_SIZE);
+    if (probationWindow.length < PROBATION_WINDOW_SIZE) return weak ? 2 : 0; // window still filling
     const probationAverage = mean(probationWindow.map((review) => review.overall));
-    return probationAverage !== null && probationAverage < 3.0 ? 3 : 0;
+    return probationAverage !== null && probationAverage < WEAK_AVERAGE ? 3 : 0;
   }
 
   if (!weak) return 0;
 
-  // Re-trigger a note only once three reviews have landed since the last
+  // Re-trigger a note only once enough reviews have landed since the last
   // one, so the same decline is not renoted on every single new review.
   if (lastNote) {
     const since = quality.filter((review) => review.createdAt > lastNote.createdAt);
-    return since.length >= 3 ? 2 : 1;
+    return since.length >= REVIEWS_BEFORE_RENOTE ? 2 : 1;
   }
   return 1;
 }
 
+/** Two weak ratings among the last three, a one-star user rating among the last five, or a low average over five. */
+function isWeakStretch(quality: AgentReview[]): boolean {
+  const recent5 = quality.slice(0, 5);
+  const weakLast3 = quality.slice(0, 3).filter((review) => review.overall <= WEAK_RATING).length >= 2;
+  const oneStarUser = recent5.some((review) => review.source === 'user' && review.overall === MIN_REVIEW_SCORE);
+  const avgLast5 = mean(recent5.map((review) => review.overall));
+  return weakLast3 || oneStarUser || (avgLast5 !== null && avgLast5 < WEAK_AVERAGE);
+}
+
 function optional(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined;
+}
+
+/** A stored timestamp; 0 and NULL both mean "not set yet". */
+function optionalTimestamp(value: unknown): number | undefined {
+  return value ? Number(value) : undefined;
 }
 
 function mapOrganization(row: Row): Organization {
@@ -1959,20 +2002,14 @@ function mapAssignment(row: Row): Assignment {
     chars: Number(row.chars ?? 0),
     depth: Number(row.depth ?? 0),
     createdAt: Number(row.created_at),
-    startedAt: row.started_at ? Number(row.started_at) : undefined,
-    finishedAt: row.finished_at ? Number(row.finished_at) : undefined,
-    durationMs: row.duration_ms === null || row.duration_ms === undefined ? undefined : Number(row.duration_ms),
+    startedAt: optionalTimestamp(row.started_at),
+    finishedAt: optionalTimestamp(row.finished_at),
+    durationMs: optionalNumber(row.duration_ms),
   };
 }
 
 function mapTask(row: Row): Task {
-  let dependsOn: string[] = [];
-  try {
-    const parsed: unknown = JSON.parse(String(row.depends_on ?? '[]'));
-    if (Array.isArray(parsed)) dependsOn = parsed.map(String);
-  } catch {
-    dependsOn = [];
-  }
+  const dependsOn = parseStringArray(row.depends_on);
   return {
     id: row.id as string,
     orgId: row.org_id as string,
@@ -1994,8 +2031,8 @@ function mapTask(row: Row): Task {
     error: optional(row.error),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
-    startedAt: row.started_at ? Number(row.started_at) : undefined,
-    finishedAt: row.finished_at ? Number(row.finished_at) : undefined,
+    startedAt: optionalTimestamp(row.started_at),
+    finishedAt: optionalTimestamp(row.finished_at),
     sortOrder: Number(row.sort_order ?? 0),
   };
 }
@@ -2009,7 +2046,7 @@ function mapMessage(row: Row): AgentMessage {
     assignmentId: optional(row.assignment_id),
     content: row.content as string,
     createdAt: Number(row.created_at),
-    readAt: row.read_at ? Number(row.read_at) : undefined,
+    readAt: optionalTimestamp(row.read_at),
   };
 }
 
@@ -2028,7 +2065,7 @@ function mapMail(row: Row, recipients: MailRecipient[]): Mail {
     createdAt: Number(row.created_at),
     recipients,
     threadKind: (optional(row.thread_kind) as MailThreadKind | undefined) ?? 'chat',
-    threadArchivedAt: optionalScore(row.thread_archived_at),
+    threadArchivedAt: optionalNumber(row.thread_archived_at),
     taskId: optional(row.thread_task_id),
     taskTitle: optional(row.thread_task_title),
   };
@@ -2040,7 +2077,7 @@ function mapMailThread(row: Row): MailThread {
     orgId: row.org_id as string,
     kind: (row.kind as MailThreadKind | undefined) ?? 'chat',
     taskId: optional(row.task_id),
-    archivedAt: optionalScore(row.archived_at),
+    archivedAt: optionalNumber(row.archived_at),
     createdAt: Number(row.created_at),
   };
 }
@@ -2054,11 +2091,11 @@ function mapReview(row: Row): AgentReview {
     taskId: optional(row.task_id),
     source: row.source as ReviewSource,
     overall: Number(row.overall),
-    quality: optionalScore(row.quality),
-    completeness: optionalScore(row.completeness),
-    reliability: optionalScore(row.reliability),
-    communication: optionalScore(row.communication),
-    efficiency: optionalScore(row.efficiency),
+    quality: optionalNumber(row.quality),
+    completeness: optionalNumber(row.completeness),
+    reliability: optionalNumber(row.reliability),
+    communication: optionalNumber(row.communication),
+    efficiency: optionalNumber(row.efficiency),
     comment: optional(row.comment),
     tags: parseStringArray(row.tags),
     failedRun: Number(row.failed_run) === 1,
@@ -2092,7 +2129,7 @@ function mapMailRecipient(row: Row): MailRecipient {
     recipientKind: row.recipient_kind as RequesterKind,
     recipientId: optional(row.recipient_id),
     box: row.box as 'to' | 'cc',
-    readAt: row.read_at ? Number(row.read_at) : undefined,
+    readAt: optionalTimestamp(row.read_at),
   };
 }
 
@@ -2109,8 +2146,8 @@ function mapNotification(row: Row): Notification {
     cronJobId: optional(row.cron_job_id),
     cronRunId: optional(row.cron_run_id),
     sessionId: optional(row.session_id),
-    readAt: optionalScore(row.read_at),
-    archivedAt: optionalScore(row.archived_at),
+    readAt: optionalNumber(row.read_at),
+    archivedAt: optionalNumber(row.archived_at),
     createdAt: Number(row.created_at),
   };
 }

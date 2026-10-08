@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AgentEvent, QuestionAnswer } from '@rookery/core';
 import type { ServerContext } from '../context.js';
-import { answerQuestionSchema, formatIssues } from '../schemas.js';
+import { answerQuestionSchema, BadRequestError, parseOrThrow } from '../schemas.js';
 
 /**
  * The `ask_user` question, over HTTP.
@@ -82,17 +82,9 @@ export async function registerQuestionRoutes(
   app.post(
     '/api/questions/:id/answer',
     async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-      const parsed = answerQuestionSchema.safeParse(request.body ?? {});
-      if (!parsed.success) {
-        reply.code(400);
-        return { error: 'Bad Request', message: formatIssues(parsed.error) };
-      }
-
-      const answer = buildAnswer(parsed.data, 'api');
-      if (!answer) {
-        reply.code(400);
-        return { error: 'Bad Request', message: 'An answer needs a selected option or some text.' };
-      }
+      const payload = parseOrThrow(answerQuestionSchema, request.body ?? {});
+      const answer = buildAnswer(payload, 'api');
+      if (!answer) throw new BadRequestError('An answer needs a selected option or some text.');
 
       // A question that is no longer open is the normal race, not a fault:
       // it timed out, the turn was aborted, or somebody else answered first

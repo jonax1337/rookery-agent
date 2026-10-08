@@ -1,3 +1,4 @@
+import type { ComponentType } from 'react';
 
 import {
   ChevronLeftIcon,
@@ -53,7 +54,7 @@ export interface DataTablePaginationProps {
   selectedCount?: number;
   /**
    * The loaded list hangs exactly at the server limit, so there may be more
-   * rows nobody can reach. Draws the "gedeckelt" badge.
+   * rows nobody can reach. Draws the "capped" badge.
    */
   capped?: boolean;
   rowLabel?: RowLabel;
@@ -66,8 +67,8 @@ export interface DataTablePaginationProps {
  * The table footer.
  *
  * Two departures from the block. First the wording: there is no server-side
- * paging anywhere in this API, so the sentence says "von N geladenen", never
- * "von allen" — everything past the list limit is simply unreachable and the
+ * paging anywhere in this API, so the sentence says "of N loaded", never
+ * "of all" — everything past the list limit is simply unreachable and the
  * footer admits it. Second the controls: the block had four bare chevron
  * buttons, this sits them inside the `Pagination` primitive so the page
  * controls are a real `nav`/`ul`. They stay `Button`s rather than
@@ -86,7 +87,7 @@ export function DataTablePagination({
   selectedCount = 0,
   capped = false,
   rowLabel = DEFAULT_ROW_LABEL,
-  idPrefix = 'tabelle',
+  idPrefix = 'table',
   className,
 }: DataTablePaginationProps) {
   const pages = Math.max(1, pageCount);
@@ -110,14 +111,14 @@ export function DataTablePagination({
 
       <div className="flex w-full items-center gap-6 lg:w-fit">
         <div className="hidden items-center gap-2 lg:flex">
-          <Label htmlFor={`${idPrefix}-zeilen`} className="text-sm font-medium">
+          <Label htmlFor={`${idPrefix}-rows`} className="text-sm font-medium">
             Rows per page
           </Label>
           <Select
             value={`${pageSize}`}
             onValueChange={(value) => onPageSizeChange(Number(value))}
           >
-            <SelectTrigger size="sm" className="w-20" id={`${idPrefix}-zeilen`}>
+            <SelectTrigger size="sm" className="w-20" id={`${idPrefix}-rows`}>
               <SelectValue placeholder={`${pageSize}`} />
             </SelectTrigger>
             <SelectContent side="top">
@@ -138,57 +139,61 @@ export function DataTablePagination({
 
         <Pagination className="ml-auto w-fit justify-end lg:ml-0">
           <PaginationContent>
-            <PaginationItem>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="hidden size-8 lg:flex"
-                disabled={!canPrevious}
-                onClick={() => onPageChange(0)}
-              >
-                <span className="sr-only">Go to first page</span>
-                <ChevronsLeftIcon />
-              </Button>
-            </PaginationItem>
-            <PaginationItem>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8"
-                disabled={!canPrevious}
-                onClick={() => onPageChange(pageIndex - 1)}
-              >
-                <span className="sr-only">Go to previous page</span>
-                <ChevronLeftIcon />
-              </Button>
-            </PaginationItem>
-            <PaginationItem>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8"
-                disabled={!canNext}
-                onClick={() => onPageChange(pageIndex + 1)}
-              >
-                <span className="sr-only">Go to next page</span>
-                <ChevronRightIcon />
-              </Button>
-            </PaginationItem>
-            <PaginationItem>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="hidden size-8 lg:flex"
-                disabled={!canNext}
-                onClick={() => onPageChange(pages - 1)}
-              >
-                <span className="sr-only">Go to last page</span>
-                <ChevronsRightIcon />
-              </Button>
-            </PaginationItem>
+            <PageButton
+              label="Go to first page"
+              icon={ChevronsLeftIcon}
+              disabled={!canPrevious}
+              onClick={() => onPageChange(0)}
+              desktopOnly
+            />
+            <PageButton
+              label="Go to previous page"
+              icon={ChevronLeftIcon}
+              disabled={!canPrevious}
+              onClick={() => onPageChange(pageIndex - 1)}
+            />
+            <PageButton
+              label="Go to next page"
+              icon={ChevronRightIcon}
+              disabled={!canNext}
+              onClick={() => onPageChange(pageIndex + 1)}
+            />
+            <PageButton
+              label="Go to last page"
+              icon={ChevronsRightIcon}
+              disabled={!canNext}
+              onClick={() => onPageChange(pages - 1)}
+              desktopOnly
+            />
           </PaginationContent>
         </Pagination>
       </div>
     </div>
+  );
+}
+
+interface PageButtonProps {
+  label: string;
+  icon: ComponentType;
+  disabled: boolean;
+  onClick: () => void;
+  /** First/last jumps are hidden below `lg`, where the footer has no room for them. */
+  desktopOnly?: boolean;
+}
+
+function PageButton({ label, icon: Icon, disabled, onClick, desktopOnly = false }: PageButtonProps) {
+  return (
+    <PaginationItem>
+      <Button
+        variant="ghost"
+        size="icon"
+        className={cn('size-8', desktopOnly && 'hidden lg:flex')}
+        disabled={disabled}
+        onClick={onClick}
+      >
+        <span className="sr-only">{label}</span>
+        <Icon />
+      </Button>
+    </PaginationItem>
   );
 }

@@ -46,6 +46,8 @@ export const SKILL_SOURCES: SkillSourceEntry[] = [
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_FILES = 80;
+const LISTING_TIMEOUT_MS = 20_000;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
 
 /** `owner/repo[/path]` or a github.com URL to its parts. */
 export function parseSkillSource(source: string): SkillSource {
@@ -78,7 +80,7 @@ async function listContents(source: SkillSource, path: string): Promise<Entry[]>
       'User-Agent': 'rookery-agent',
       ...(token ? { Authorization: 'Bearer ' + token } : {}),
     },
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(LISTING_TIMEOUT_MS),
   });
   if (response.status === 404) throw new Error('Not found on GitHub: ' + source.owner + '/' + source.repo + (path ? '/' + path : '') + '.');
   if (response.status === 403) throw new Error('GitHub denied access (possibly rate limited). Set GITHUB_TOKEN in the environment for a higher limit.');
@@ -89,7 +91,7 @@ async function listContents(source: SkillSource, path: string): Promise<Entry[]>
 
 async function download(entry: Entry): Promise<Buffer> {
   if (!entry.download_url) throw new Error('No download for ' + entry.path + '.');
-  const response = await fetch(entry.download_url, { signal: AbortSignal.timeout(60_000) });
+  const response = await fetch(entry.download_url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
   if (!response.ok) throw new Error('Download of ' + entry.path + ' failed (' + response.status + ').');
   return Buffer.from(await response.arrayBuffer());
 }
@@ -103,35 +105,14 @@ export type ImportResult = { skill: Skill } | { candidates: string[] };
  */
 export async function importSkillFromGitHub(store: SkillStore, sourceText: string): Promise<ImportResult> {
   const source = parseSkillSource(sourceText);
-  let entries = await listContents(source, source.path);
-
-  // A collection rather than a skill: offer what is inside, one level deep.
+  const entries = await listContents(source, source.path);
   if (!entries.some((entry) => entry.type === 'file' && entry.name === 'SKILL.md')) {
-    const dirs = entries.filter((entry) => entry.type === 'dir');
-    const nested = dirs.find((dir) => dir.name === 'skills');
-    if (nested) {
-      entries = await listContents(source, nested.path);
-      return { candidates: entries.filter((e) => e.type === 'dir').map((e) => source.owner + '/' + source.repo + '/' + e.path) };
-    }
-    if (!dirs.length) throw new Error('There is no SKILL.md under ' + (source.path || 'the repository root') + '.');
-    return { candidates: dirs.map((dir) => source.owner + '/' + source.repo + '/' + dir.path) };
+    return { candidates: await skillCandidates(source, entries) };
   }
 
-  // Walk the folder, files first, small directories after.
-  const files: Entry[] = [];
-  const queue: Entry[] = entries;
-  while (queue.length) {
-    const entry = queue.shift() as Entry;
-    if (entry.type === 'dir') {
-      if (files.length > MAX_FILES) break;
-      queue.push(...(await listContents(source, entry.path)));
-    } else if (entry.type === 'file' && (entry.size ?? 0) <= MAX_FILE_BYTES) {
-      files.push(entry);
-    }
-    if (files.length > MAX_FILES) throw new Error('The skill contains more than ' + MAX_FILES + ' files; this is not a skill folder.');
-  }
-
-  const skillFile = files.find((entry) => entry.path === (source.path ? source.path + '/' : '') + 'SKILL.md');
+  const files = await collectFiles(source, entries);
+  const prefix = source.path ? source.path + '/' : '';
+  const skillFile = files.find((entry) => entry.path === prefix + 'SKILL.md');
   if (!skillFile) throw new Error('SKILL.md is missing.');
   const skillText = (await download(skillFile)).toString('utf8');
   const declared = /^---[\s\S]*?^name:\s*(.+?)\s*$/m.exec(skillText)?.[1];
@@ -139,8 +120,50 @@ export async function importSkillFromGitHub(store: SkillStore, sourceText: strin
   if (!name) throw new Error('The skill has no usable name.');
 
   const folder = resolve(store.dirs[0] as string, name);
-  const prefix = source.path ? source.path + '/' : '';
-  const staged: { target: string; data: Buffer }[] = [{ target: join(folder, 'SKILL.md'), data: Buffer.from(skillText, 'utf8') }];
+  const staged = await stageFiles(folder, prefix, files, skillFile, skillText);
+  writeFolder(folder, staged);
+  const skill = store.get(name);
+  if (!skill) throw new Error('The skill could not be read after downloading.');
+  return { skill };
+}
+
+/** A collection rather than a skill: offer what is inside, one level deep. */
+async function skillCandidates(source: SkillSource, entries: Entry[]): Promise<string[]> {
+  const dirs = entries.filter((entry) => entry.type === 'dir');
+  const nested = dirs.find((dir) => dir.name === 'skills');
+  if (nested) {
+    const inside = await listContents(source, nested.path);
+    return inside.filter((entry) => entry.type === 'dir').map((entry) => qualified(source, entry));
+  }
+  if (!dirs.length) throw new Error('There is no SKILL.md under ' + (source.path || 'the repository root') + '.');
+  return dirs.map((dir) => qualified(source, dir));
+}
+
+function qualified(source: SkillSource, dir: Entry): string {
+  return source.owner + '/' + source.repo + '/' + dir.path;
+}
+
+/** Walk the folder breadth first and keep the files small enough to take. */
+async function collectFiles(source: SkillSource, entries: Entry[]): Promise<Entry[]> {
+  const files: Entry[] = [];
+  const queue = [...entries];
+  while (queue.length) {
+    const entry = queue.shift() as Entry;
+    if (entry.type === 'dir') queue.push(...(await listContents(source, entry.path)));
+    else if (entry.type === 'file' && (entry.size ?? 0) <= MAX_FILE_BYTES) files.push(entry);
+    if (files.length > MAX_FILES) throw new Error('The skill contains more than ' + MAX_FILES + ' files; this is not a skill folder.');
+  }
+  return files;
+}
+
+interface StagedFile {
+  target: string;
+  data: Buffer;
+}
+
+/** Download everything before anything on disk is touched; entries escaping the folder are dropped. */
+async function stageFiles(folder: string, prefix: string, files: Entry[], skillFile: Entry, skillText: string): Promise<StagedFile[]> {
+  const staged: StagedFile[] = [{ target: join(folder, 'SKILL.md'), data: Buffer.from(skillText, 'utf8') }];
   for (const entry of files) {
     if (entry === skillFile) continue;
     const relative = entry.path.startsWith(prefix) ? entry.path.slice(prefix.length) : entry.name;
@@ -148,14 +171,14 @@ export async function importSkillFromGitHub(store: SkillStore, sourceText: strin
     if (!target.startsWith(folder + sep)) continue;
     staged.push({ target, data: await download(entry) });
   }
+  return staged;
+}
 
-  // Everything is downloaded; replace the folder in one go.
+/** Replace the folder in one go. */
+function writeFolder(folder: string, staged: StagedFile[]): void {
   if (existsSync(folder)) rmSync(folder, { recursive: true, force: true });
   for (const item of staged) {
     mkdirSync(dirname(item.target), { recursive: true });
     writeFileSync(item.target, item.data);
   }
-  const skill = store.get(name);
-  if (!skill) throw new Error('The skill could not be read after downloading.');
-  return { skill };
 }

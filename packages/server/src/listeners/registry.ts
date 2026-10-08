@@ -18,6 +18,10 @@ export interface ListenerRegistry {
   statuses(): ListenerStatus[];
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function createListenerRegistry(context: ServerContext): ListenerRegistry {
   const log = context.log.child('listeners');
   const handles = new Map<string, ListenerHandle>();
@@ -65,18 +69,22 @@ export function createListenerRegistry(context: ServerContext): ListenerRegistry
     for (const [id, handle] of [...handles]) {
       if (wanted.has(id)) continue;
       handles.delete(id);
-      try {
-        await handle.stop();
-      } catch (error) {
-        log.warn('Listener did not stop cleanly', { id, error: (error as Error).message });
-      }
+      await stopQuietly(id, handle);
     }
     for (const entry of entries()) {
       try {
         await handleFor(entry.id).refresh();
       } catch (error) {
-        log.warn('Listener could not be brought up to date', { id: entry.id, error: (error as Error).message });
+        log.warn('Listener could not be brought up to date', { id: entry.id, error: errorText(error) });
       }
+    }
+  }
+
+  async function stopQuietly(id: string, handle: ListenerHandle): Promise<void> {
+    try {
+      await handle.stop();
+    } catch (error) {
+      log.warn('Listener did not stop cleanly', { id, error: errorText(error) });
     }
   }
 
@@ -92,13 +100,7 @@ export function createListenerRegistry(context: ServerContext): ListenerRegistry
 
     stop(): Promise<void> {
       return serial(async () => {
-        for (const [id, handle] of handles) {
-          try {
-            await handle.stop();
-          } catch (error) {
-            log.warn('Listener did not stop cleanly', { id, error: (error as Error).message });
-          }
-        }
+        for (const [id, handle] of handles) await stopQuietly(id, handle);
         handles.clear();
       });
     },

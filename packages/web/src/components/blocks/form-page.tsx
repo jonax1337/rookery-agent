@@ -19,10 +19,10 @@ import { LoaderCircleIcon as LoaderCircle } from '@/components/icons';
  * messages are rendered by hand into `FieldError`; this template only gives
  * them a place to stand.
  *
- * The action bar is [Abbrechen] [Speichern] on the right - two buttons with a
+ * The action bar is [Cancel] [Save] on the right - two buttons with a
  * gap, never a `ButtonGroup`: that welds its children into one control, and an
  * outlined button fused to a filled one reads as a segmented switch missing a
- * border. A destructive action (löschen, archivieren, auflösen) sits apart on
+ * border. A destructive action (delete, archive, dissolve) sits apart on
  * the left, never beside those two and never in the field flow, so a mis-aimed
  * click cannot delete what the page was about to save.
  */
@@ -40,7 +40,7 @@ export interface FormActionsProps {
   cancelLabel?: string;
   /** Runs instead of navigating; without it, `cancelTo` decides. */
   onCancel?: () => void;
-  /** Where "Abbrechen" goes. Always an explicit route, never `navigate(-1)`. */
+  /** Where "Cancel" goes. Always an explicit route, never `navigate(-1)`. */
   cancelTo?: string;
   submitting?: boolean;
   /** Usually `!dirty || submitting` - the page owns that judgement. */
@@ -89,11 +89,7 @@ export function FormActions({
           {destructive.label}
         </Button>
       ) : null}
-      {/*
-        Two separate buttons with a gap, not a `ButtonGroup`: the group welds
-        its children into one control, and an outlined "Abbrechen" fused to a
-        filled "Speichern" looks like a segmented switch that lost a border.
-      */}
+      {/* Two separate buttons - never a `ButtonGroup` (see the header note). */}
       <div className="ml-auto flex items-center gap-2">
         <Button type="button" variant="outline" onClick={cancel}>
           {cancelLabel}

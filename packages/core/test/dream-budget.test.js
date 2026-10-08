@@ -210,7 +210,7 @@ function bankSnapshot() {
  */
 async function countedRun(snapshot, dream, texts) {
   const fake = createFakeProvider();
-  const { assistant, store } = createAssistant(fake, dream ? { dream } : {});
+  const { assistant, store } = createAssistant(fake, { dream: dream ?? { enabled: false } });
   store.db.deserialize(snapshot);
   const db = store.db;
   const original = db.prepare.bind(db);
@@ -243,10 +243,12 @@ test('a wide frame on a 500-memory bank stays under dream.maxFrameBytes', async 
   assert.equal(rows.length, 2, 'both traced turns saved their frame');
   assert.equal(count(store, 'dream_traces'), rows.length, 'no frame was refused for size');
   for (const row of rows) {
-    assert.ok(row.frame.bytes >= 20000, 'the frame carries the wide frontier, not a stub: ' + row.frame.bytes);
+    const json = Buffer.byteLength(JSON.stringify(row.frame.payload), 'utf8');
+    assert.ok(json >= 20000, 'the frame carries the wide frontier, not a stub: ' + json);
+    assert.ok(row.frame.bytes < json, 'and it is stored compressed: ' + row.frame.bytes + ' of ' + json);
     assert.ok(
       row.frame.bytes < DEFAULT_CONFIG.memory.dream.maxFrameBytes,
-      'frame of ' + row.frame.bytes + ' bytes stays under the ceiling',
+      'frame of ' + row.frame.bytes + ' stored bytes stays under the ceiling',
     );
   }
 });

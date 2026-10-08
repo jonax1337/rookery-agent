@@ -98,12 +98,3 @@ export const CRON_PRESETS: { label: string; schedule: string }[] = [
   { label: 'Hourly', schedule: '0 * * * *' },
   { label: 'Every 15 minutes', schedule: '*/15 * * * *' },
 ];
-
-export const CUSTOM_SCHEDULE = '__custom__';
-
-/**
- * Moved to `lib/format.ts` (and implemented once in `lib/stats.ts`) when the
- * dashboard pages started needing it too. Re-exported here so the schedule
- * pages' existing imports keep working.
- */
-export { formatDateTime } from './format';

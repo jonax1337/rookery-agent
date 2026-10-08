@@ -13,9 +13,9 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import { PULSE_FRAMES, STREAM_CURSOR, glyph, ui } from '../theme.js';
+import { GUTTER, STREAM_CURSOR, glyph, pulseFrame, ui } from '../theme.js';
 import { formatDuration, shortId } from '../../ui/render.js';
-import { blockSegments, thinkingLines } from '../types.js';
+import { blockSegments, thinkingLines, type BlockSegment } from '../types.js';
 import { ActivityLine } from './ActivityLine.js';
 import { Markdown } from './Markdown.js';
 import { ToolGroup } from './ToolGroup.js';
@@ -43,7 +43,7 @@ export function WatchView({ assignmentId, feed, verbose }: WatchViewProps): Reac
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row">
         <Text color={state.ended ? ui.ok : ui.accent}>
-          {(state.ended ? glyph.ok : PULSE_FRAMES[frame % PULSE_FRAMES.length] ?? glyph.dot) + ' '}
+          {(state.ended ? glyph.ok : pulseFrame(frame)) + ' '}
         </Text>
         <Text color={ui.accent} bold>
           {'watching ' + shortId(assignmentId)}
@@ -52,42 +52,17 @@ export function WatchView({ assignmentId, feed, verbose }: WatchViewProps): Reac
         <Text color={ui.faint}>{'  Esc leaves'}</Text>
       </Box>
 
-      <Box paddingLeft={2} flexDirection="column">
-        {segments.map((segment, index) => {
-          if (segment.kind === 'tools') {
-            return <ToolGroup key={'g' + index} calls={segment.calls} frame={frame} now={now} />;
-          }
-          if (segment.kind === 'note') {
-            return (
-              <ActivityLine
-                key={segment.note.id}
-                icon={segment.note.icon}
-                text={segment.note.text}
-                {...(segment.note.color ? { color: segment.note.color } : {})}
-              />
-            );
-          }
-          if (segment.kind === 'thinking') {
-            if (!verbose) return null;
-            return (
-              <Box key={'y' + index} flexDirection="column">
-                {thinkingLines(segment.text).map((line, at) => (
-                  <ActivityLine key={at} icon={glyph.thinking} text={line} />
-                ))}
-              </Box>
-            );
-          }
-          return (
-            <Box key={'m' + index} flexDirection="column">
-              <Markdown trailing={segment.streaming && caret
-                ? <Text color={ui.accent}>{STREAM_CURSOR}</Text>
-                : null}
-              >
-                {segment.text}
-              </Markdown>
-            </Box>
-          );
-        })}
+      <Box paddingLeft={GUTTER} flexDirection="column">
+        {segments.map((segment, index) => (
+          <SegmentView
+            key={segmentKey(segment, index)}
+            segment={segment}
+            frame={frame}
+            now={now}
+            verbose={verbose}
+            caret={caret}
+          />
+        ))}
 
         {state.ended && !segments.length ? (
           <Text color={ui.faint} dimColor>
@@ -103,4 +78,66 @@ export function WatchView({ assignmentId, feed, verbose }: WatchViewProps): Reac
       </Box>
     </Box>
   );
+}
+
+function segmentKey(segment: BlockSegment, index: number): string {
+  switch (segment.kind) {
+    case 'tools':
+      return 'g' + index;
+    case 'note':
+      return segment.note.id;
+    case 'thinking':
+      return 'y' + index;
+    case 'text':
+      return 'm' + index;
+  }
+}
+
+function SegmentView({
+  segment,
+  frame,
+  now,
+  verbose,
+  caret,
+}: {
+  segment: BlockSegment;
+  frame: number;
+  now: number;
+  verbose: boolean;
+  caret: boolean;
+}): React.JSX.Element | null {
+  switch (segment.kind) {
+    case 'tools':
+      return <ToolGroup calls={segment.calls} frame={frame} now={now} />;
+
+    case 'note':
+      return (
+        <ActivityLine
+          icon={segment.note.icon}
+          text={segment.note.text}
+          {...(segment.note.color ? { color: segment.note.color } : {})}
+        />
+      );
+
+    case 'thinking':
+      if (!verbose) return null;
+      return (
+        <Box flexDirection="column">
+          {thinkingLines(segment.text).map((line, at) => (
+            <ActivityLine key={at} icon={glyph.thinking} text={line} />
+          ))}
+        </Box>
+      );
+
+    case 'text':
+      return (
+        <Box flexDirection="column">
+          <Markdown
+            trailing={segment.streaming && caret ? <Text color={ui.accent}>{STREAM_CURSOR}</Text> : null}
+          >
+            {segment.text}
+          </Markdown>
+        </Box>
+      );
+  }
 }

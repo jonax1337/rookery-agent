@@ -1,8 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { CronSyntaxError, applyConfig, ASSISTANT_MEMORY_OWNER, parseCron } from '@rookery/core';
-import type { RookeryConfig } from '@rookery/core';
+import type { CronJob, RookeryConfig } from '@rookery/core';
 import type { ServerContext } from '../context.js';
-import { BadRequestError } from '../schemas.js';
+import { createNightRunHandler } from './night.js';
+import { clampPositiveInt } from './query.js';
+
+const DEFAULT_RUNS_LIMIT = 30;
+const MAX_RUNS_LIMIT = 200;
 
 /**
  * The night shift, over HTTP.
@@ -13,19 +17,21 @@ import { BadRequestError } from '../schemas.js';
  * is what a script or a test wants.
  */
 export async function registerSleepRoutes(app: FastifyInstance, context: ServerContext): Promise<void> {
+  /**
+   * The nightly job's schedule row. It is Rookery's internal clockwork:
+   * `cron.list` hides it from every user-facing surface, and this is the one
+   * place that asks for it by name.
+   */
+  const findSleepJob = (orgId: string): CronJob | undefined =>
+    context.assistant.cron.list(orgId, { includeSystem: true }).find((entry) => entry.kind === 'sleep');
+
   /** What the memory is doing right now, plus the schedule behind it. */
   app.get('/api/sleep/status', async (request: FastifyRequest<{ Querystring: { owner?: string } }>) => {
     const owner = request.query.owner || ASSISTANT_MEMORY_OWNER;
     let schedule = null;
     try {
       const organization = context.assistant.org.activeOrganization();
-      // The sleep job is Rookery's internal clockwork: `cron.list` hides it
-      // from every user-facing surface, and this is the one place that asks
-      // for it by name.
-      schedule =
-        context.assistant.cron
-          .list(organization.id, { includeSystem: true })
-          .find((entry) => entry.kind === 'sleep') ?? null;
+      schedule = findSleepJob(organization.id) ?? null;
     } catch {
       // No company yet is not an error; it only means no schedule row exists.
     }
@@ -64,17 +70,15 @@ export async function registerSleepRoutes(app: FastifyInstance, context: ServerC
         try {
           expression = parseCron(scheduleInput).expression;
         } catch (error) {
-          if (error instanceof CronSyntaxError) {
-            reply.code(400);
-            return { error: (error as Error).message };
-          }
-          throw error;
+          if (!(error instanceof CronSyntaxError)) throw error;
+          reply.code(400);
+          return { error: error.message };
         }
       }
 
       const organization = context.assistant.org.activeOrganization();
       const cron = context.assistant.cron;
-      let job = cron.list(organization.id, { includeSystem: true }).find((entry) => entry.kind === 'sleep');
+      let job = findSleepJob(organization.id);
       if (!job) {
         job = cron.create({
           orgId: organization.id,
@@ -113,38 +117,15 @@ export async function registerSleepRoutes(app: FastifyInstance, context: ServerC
 
   app.get(
     '/api/sleep/runs',
-    async (request: FastifyRequest<{ Querystring: { owner?: string; limit?: string } }>) => {
-      const limit = Number(request.query.limit);
-      return context.assistant.store.listSleepRuns({
+    async (request: FastifyRequest<{ Querystring: { owner?: string; limit?: string } }>) =>
+      context.assistant.store.listSleepRuns({
         owner: request.query.owner || undefined,
-        limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 200) : 30,
-      });
-    },
+        limit: clampPositiveInt(request.query.limit, DEFAULT_RUNS_LIMIT, MAX_RUNS_LIMIT),
+      }),
   );
 
   /** Start a night by hand: the memory page's "Jetzt schlafen". */
-  app.post(
-    '/api/sleep/run',
-    async (
-      request: FastifyRequest<{ Querystring: { owner?: string; wait?: string }; Body?: { owner?: string } }>,
-      reply: FastifyReply,
-    ) => {
-      const owner = request.body?.owner || request.query.owner || ASSISTANT_MEMORY_OWNER;
-      if (context.assistant.sleep.isRunning(owner)) {
-        reply.code(409);
-        return { error: 'This memory bank is already sleeping.' };
-      }
-      const wait = request.query.wait === '1' || request.query.wait === 'true';
-      if (wait) return context.assistant.sleepNow(owner);
-
-      // Fire and forget: the client watches the `sleep` frames on the socket.
-      void context.assistant.sleepNow(owner).catch((error: Error) => {
-        context.log.warn('Sleep run failed', { owner, error: error.message });
-      });
-      reply.code(202);
-      return { started: true, owner };
-    },
-  );
+  app.post('/api/sleep/run', createNightRunHandler(context, 'Sleep run failed'));
 
   /** Take one night back, in a single transaction. */
   app.post(

@@ -27,6 +27,34 @@ const PROTOCOL_FALLBACK = '2025-06-18';
 const MAX_WIDTH = Math.min(3840, Math.max(320, Number(process.env.ROOKERY_COMPUTER_MAX_WIDTH) || 1280));
 const RUN_DIR = process.env.ROOKERY_COMPUTER_DIR ? join(process.env.ROOKERY_COMPUTER_DIR, 'run') : '';
 const BACKGROUND = process.env.ROOKERY_COMPUTER_MODE === 'background';
+/** What a fresh worker gets to let go of held buttons and keys. */
+const RELEASE_TIMEOUT_MS = 10_000;
+/** Version reported in the MCP initialize handshake. */
+const SERVER_VERSION = '0.2.0';
+const JSONRPC_METHOD_NOT_FOUND = -32601;
+const JSONRPC_SERVER_ERROR = -32000;
+/** What the worker gets for a capture, snapshot, automation action or launch. */
+const WORKER_TIMEOUT_MS = 15_000;
+/** What the worker gets to recognise or search the screen's text. */
+const OCR_TIMEOUT_MS = 20_000;
+/** What the worker gets to settle after an action. */
+const SETTLE_TIMEOUT_MS = 5_000;
+/** Default for physical input, before drawing adds its own length. */
+const PHYSICAL_TIMEOUT_MS = 30_000;
+/** The worker's timeout beyond the time the user is given in a hand-over. */
+const HAND_OVER_GRACE_MS = 15_000;
+/** How often wait_for looks at the screen again. */
+const WAIT_FOR_POLL_MS = 400;
+/** Longest stretch a pause sleeps before checking for a stop. */
+const PAUSE_STEP_MS = 50;
+/** Clipboard text returned to the model is cut at this many characters. */
+const CLIPBOARD_READ_LIMIT = 20_000;
+/** Audit entries keep only this much of a failure's first line. */
+const AUDIT_ERROR_LENGTH = 200;
+/** Shutdown: how long the cursor may fade out, and how long the worker gets to be asked. */
+const CURSOR_FADE_BUDGET_MS = 700;
+const CURSOR_DISMISS_TIMEOUT_MS = 2000;
+const RELEASE_ON_EXIT_TIMEOUT_MS = 3000;
 
 interface JsonRpc {
   jsonrpc?: string;
@@ -63,6 +91,29 @@ interface Shot {
 interface Found {
   controls: FoundControl[];
   screen: { left: number; top: number; width: number };
+}
+
+interface WindowRow {
+  handle: number;
+  title: string;
+  process: string;
+  active: boolean;
+  minimized: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Settle for an action with nothing to observe: a short look at what it left in front. */
+const QUIET_SETTLE = 'Rk-Settle 40 600 80';
+
+function textContent(text: string): Content[] {
+  return [{ type: 'text', text }];
+}
+
+function elapsedMs(started: number): number {
+  return Math.round(performance.now() - started);
 }
 
 const shell = new PowerShellSession();
@@ -120,12 +171,12 @@ let inputInFlight = 0;
  * cleanup, so a drag's button or a shortcut's modifier would stay down for the
  * user. A fresh worker lets go of whatever is still held.
  */
-async function releaseHeld(timeoutMs = 10_000): Promise<void> {
+async function releaseHeld(timeoutMs = RELEASE_TIMEOUT_MS): Promise<void> {
   await shell.run('Rk-Release', timeoutMs).catch(() => undefined);
 }
 
 /** Serialize physical input across Rookery processes; the worker's guard refuses a changed desktop. */
-async function physical(expression: string, timeoutMs = 30_000): Promise<void> {
+async function physical(expression: string, timeoutMs = PHYSICAL_TIMEOUT_MS): Promise<void> {
   inputInFlight++;
   try {
     await shell.run('$mutex = New-Object System.Threading.Mutex($false, "Local\\RookeryComputerInput"); ' +
@@ -205,7 +256,7 @@ function planDrawing(args: DrawArgs): { packed: string; strokes: number; points:
     strokes: packed[0]!,
     points,
     // Ink runs at about 3.5 px/ms; each stroke adds a hop and two short holds.
-    timeoutMs: 30_000 + ink / 2.5 + packed[0]! * 250,
+    timeoutMs: PHYSICAL_TIMEOUT_MS + ink / 2.5 + packed[0]! * 250,
   };
 }
 
@@ -218,7 +269,7 @@ function planDrawing(args: DrawArgs): { packed: string; strokes: number; points:
  * with no baseline yet (a turn's first call), the reading establishes one.
  */
 async function ocr(guarded = false): Promise<ScreenText> {
-  return shell.run<ScreenText>((guarded ? 'if ($null -ne $script:rkForeground) { Rk-Guard }; ' : '') + 'Rk-ReadScreen ' + (stopped ? '$false' : '$true'), 20_000);
+  return shell.run<ScreenText>((guarded ? 'if ($null -ne $script:rkForeground) { Rk-Guard }; ' : '') + 'Rk-ReadScreen ' + (stopped ? '$false' : '$true'), OCR_TIMEOUT_MS);
 }
 
 /**
@@ -245,7 +296,7 @@ function listMatches(matches: TextMatch[]): string {
 
 /** Controls named exactly like the phrase in one window, with refs act accepts. */
 async function findControls(window: number, name: string): Promise<Found> {
-  return shell.run<Found>('Rk-FindControls ' + window + ' ' + psQuote(name), 20_000);
+  return shell.run<Found>('Rk-FindControls ' + window + ' ' + psQuote(name), OCR_TIMEOUT_MS);
 }
 
 function listControls(found: Found, from = 0): string {
@@ -258,7 +309,7 @@ async function pause(ms: number): Promise<void> {
   const until = Date.now() + ms;
   while (Date.now() < until) {
     if (stopped) throw new Error('Computer use stopped.');
-    await delay(Math.min(50, until - Date.now()));
+    await delay(Math.min(PAUSE_STEP_MS, until - Date.now()));
   }
 }
 
@@ -271,7 +322,7 @@ async function pause(ms: number): Promise<void> {
  * tells the model when nothing visibly happened.
  */
 async function settled(observe: 'screenshot' | 'text' | 'none'): Promise<Content[]> {
-  const result = await shell.run<SettleResult>(observe === 'none' ? 'Rk-Settle 40 600 80' : 'Rk-Settle', 5_000);
+  const result = await shell.run<SettleResult>(observe === 'none' ? QUIET_SETTLE : 'Rk-Settle', SETTLE_TIMEOUT_MS);
   const note: Content = { type: 'text', text: describeSettle(result) };
   if (observe === 'none') return [note];
   const seen = await perform(validateComputerCall(observe === 'text' ? 'read_screen' : 'screenshot', {}, BACKGROUND));
@@ -296,281 +347,343 @@ async function call(command: ComputerCall): Promise<Content[]> {
 async function perform(command: ComputerCall): Promise<Content[]> {
   const { name, args } = command;
   if (stopped && !observations.has(name)) throw new Error('Computer use stopped. Start a new turn to resume.');
-  switch (name) {
-    case 'stop':
-      stopped = true;
-      view = null;
-      shell.close();
-      return [{ type: 'text', text: 'Computer use stopped. Current and queued actions cancelled.' }];
-    case 'snapshot': {
-      const result = await shell.run<Snapshot>('Rk-Snapshot ' + args.window + ' ' + args.maxNodes + ' ' + args.depth + ' ' + (stopped ? '$false' : '$true'), 15_000);
-      return [{ type: 'text', text: describeSnapshot(result, mapping(result.screen)) }];
-    }
-    case 'act': {
-      // The desktop view stays: physical input re-checks foreground and bounds before it moves.
-      const result = await shell.run<ActResult>('Rk-Act ' + psQuote(args.ref) + ' ' + psQuote(args.action) + ' ' + psQuote(args.value ?? ''), 15_000);
-      if (BACKGROUND && result.focusChanged) {
-        stopped = true;
-        shell.close();
-        throw new Error(describeAct(result) + ' Background-only mode stopped all further actions; inspect the result before retrying in a new turn.');
-      }
-      return [{ type: 'text', text: describeAct(result) }];
-    }
-    case 'batch': {
-      // Steps run blind; each still settles briefly, and the batch observes once at its end.
-      const actions = args.actions.map((step) => {
-        const action = validateComputerCall(step.tool, step.arguments, BACKGROUND);
-        if ('observe' in action.args) action.args.observe = 'none';
-        return action;
-      });
-      const done: string[] = [];
-      for (const action of actions) {
-        const started = performance.now();
-        try {
-          const content = await call(action);
-          const said = content.map((part) => (part.type === 'text' ? part.text : '')).join(' ').trim();
-          done.push((done.length + 1) + '. ' + action.name + ': ' + said + ' (' + Math.round(performance.now() - started) + ' ms)');
-        } catch (error) {
-          const step = done.length + 1;
-          const skipped = actions.length - step;
-          throw new Error('Step ' + step + ' of ' + actions.length + ' (' + action.name + ') failed: ' + (error as Error).message +
-            (done.length ? '\nCompleted before it:\n' + done.join('\n') : '') +
-            (skipped ? '\nSkipped: step' + (skipped > 1 ? 's ' + (step + 1) + '-' + actions.length : ' ' + actions.length) + '.' : '') +
-            '\nNothing was rolled back.');
-        }
-      }
-      const report: Content = { type: 'text', text: done.join('\n') };
-      const observe = args.observe ?? batchObservation(args.window, BACKGROUND);
-      if (observe === 'none') return [report];
-      const tool = observe === 'text' ? 'read_screen' : observe;
-      try {
-        return [report, ...(await call(validateComputerCall(tool, args.window && tool !== 'read_screen' ? { window: args.window } : {}, BACKGROUND)))];
-      } catch (error) {
-        throw new Error(done.join('\n') + '\nAll steps completed; the final ' + observe + ' failed: ' + (error as Error).message);
-      }
-    }
-    case 'screenshot': {
-      if (RUN_DIR) mkdirSync(RUN_DIR, { recursive: true });
-      const path = RUN_DIR ? join(RUN_DIR, 'computer-' + process.pid + '.jpg') : '';
-      let region = '$null';
-      const previous = view;
-      if (args.region) {
-        if (!previous) throw new Error('A region is measured in pixels of the last desktop screenshot; take one first.');
-        const r = args.region;
-        if (r.x + r.width > previous.width || r.y + r.height > previous.height) throw new Error('The region reaches outside the last desktop screenshot (' + previous.width + 'x' + previous.height + ').');
-        region = '@(' + [
-          Math.round(previous.left + r.x / previous.scale), Math.round(previous.top + r.y / previous.scale),
-          Math.max(1, Math.round(r.width / previous.scale)), Math.max(1, Math.round(r.height / previous.scale)),
-        ].join(',') + ')';
-      }
-      const shot = await shell.run<Shot>('Rk-Screenshot ' + MAX_WIDTH + ' ' + psQuote(path) + ' ' + (args.window ?? 0) + ' ' + (stopped ? '$false' : '$true') + ' ' + region + ' ' + (args.screen ?? 0), 15_000);
-      if (!args.window) {
-        view = { scale: shot.scale, left: shot.left, top: shot.top, width: shot.width, height: shot.height };
-        restartsSeen = shell.restarts;
-      }
-      const pointer = shot.cursorX >= 0 && shot.cursorY >= 0 && shot.cursorX < shot.width && shot.cursorY < shot.height
-        ? 'Pointer at ' + shot.cursorX + ',' + shot.cursorY + '.'
-        : 'Pointer outside this view.';
-      let what: string;
-      if (args.window) what = 'Window capture (app-dependent); virtual cursor marks the last UIA target. Observe with snapshot if blank.';
-      else if (args.region) {
-        const zoom = shot.scale / previous!.scale;
-        what = 'Zoomed ' + zoom.toFixed(1) + 'x into the region ' + args.region.x + ',' + args.region.y + ' ' + args.region.width + 'x' + args.region.height +
-          ' of the previous screenshot. Coordinates now refer to this image until the next desktop screenshot or read_screen. ' + pointer;
-      } else if (args.screen) what = 'Display ' + args.screen + ' only; coordinates now refer to this image. ' + pointer;
-      else what = pointer;
-      return [
-        { type: 'image', data: shot.jpeg, mimeType: 'image/jpeg' },
-        {
-          type: 'text',
-          text:
-            'Screenshot ' + shot.width + 'x' + shot.height + ' px' +
-            (shot.scale < 1 ? ' (screen scaled by ' + shot.scale.toFixed(3) + ')' : '') + '. ' + what +
-            (args.window ? '' : ' Active window: ' + describeWindow(shot.active) + '.') +
-            (path ? ' Saved as ' + path + '.' : ''),
-        },
-      ];
-    }
-    case 'screen_info': {
-      const info = await shell.run<ScreenInfo>('Rk-ScreenInfo');
-      const m = { scale: Math.min(1, MAX_WIDTH / info.width) };
-      return [
-        {
-          type: 'text',
-          text:
-            'Screenshot size ' + Math.round(info.width * m.scale) + 'x' + Math.round(info.height * m.scale) +
-            ' px, scale ' + m.scale.toFixed(3) + ' of ' + info.width + 'x' + info.height + ' real pixels.\n' +
-            info.screens
-              .map((s, i) => '- screen ' + (i + 1) + ': ' + s.name + (s.primary ? ' (primary)' : '') + ': ' + s.width + 'x' + s.height + ' at ' + s.x + ',' + s.y)
-              .join('\n') + '\nObserver: ' + JSON.stringify(info.observer),
-        },
-      ];
-    }
-    case 'read_screen': {
-      const { screen, scale } = await readScreen();
-      return [{ type: 'text', text: 'Screen text (OCR), centre x,y in screenshot pixels. Active window: ' + describeWindow(screen.active) + '.\n' + describeScreen(screen, scale) }];
-    }
-    case 'find_text': {
-      const lines: string[] = [];
-      let screen: ScreenText | null = null;
-      if (!BACKGROUND) {
-        ({ screen } = await readScreen());
-        const matches = findText(screen, args.text);
-        if (matches.length) lines.push(listMatches(matches));
-      }
-      // Controls by accessible name: the given window, else the active one when OCR saw nothing.
-      const window = args.window ?? (lines.length ? 0 : screen?.foreground ?? 0);
-      if (window) {
-        const found = await findControls(window, args.text);
-        if (found.controls.length) lines.push((lines.length ? 'Controls named ' : 'No visible text, but controls named ') + JSON.stringify(args.text) + ':\n' + listControls(found));
-      }
-      if (!lines.length) {
-        return [{ type: 'text', text: 'No text or control named "' + args.text + '"' + (window ? ' in window ' + window : '') + '.' + (screen ? ' Visible text:\n' + visible(screen) : '') }];
-      }
-      return [{ type: 'text', text: lines.join('\n') }];
-    }
-    case 'wait_for': {
-      const started = Date.now();
-      const what = JSON.stringify(args.text);
-      let screen: ScreenText | null = null;
-      for (;;) {
-        let where = '';
-        if (args.window) {
-          const found = await findControls(args.window, args.text);
-          if (found.controls.length) where = listControls(found);
-        } else {
-          ({ screen } = await readScreen());
-          const matches = findText(screen, args.text);
-          if (matches.length) where = listMatches(matches);
-        }
-        const seconds = Math.round((Date.now() - started) / 100) / 10;
-        if (Boolean(where) !== args.gone) {
-          return [{ type: 'text', text: what + (args.gone ? ' is gone' : ' is on screen') + ' after ' + seconds + ' s.' + (where ? '\n' + where : '') }];
-        }
-        if (Date.now() - started >= args.timeoutSec * 1000) {
-          throw new Error('Timed out after ' + args.timeoutSec + ' s: ' + what + (args.gone ? ' is still on screen.' : ' did not appear.') +
-            (screen ? '\nVisible text:\n' + visible(screen) : ''));
-        }
-        await pause(400);
-      }
-    }
-    case 'hand_over': {
-      const timeout = args.timeoutSec * 1000;
-      const result = await shell.run<{ outcome: string; waitedMs: number }>('Rk-HandOver ' + psQuote(args.reason) + ' ' + timeout, timeout + 15_000);
-      const outcome: Content = { type: 'text', text: result.outcome + ' Waited ' + Math.round(result.waitedMs / 1000) + ' s.' };
-      // Background-only mode may not capture the desktop; the model snapshots its window instead.
-      return BACKGROUND ? [outcome] : [outcome, ...(await settled('screenshot'))];
-    }
-    case 'click': {
-      const { button, count } = args;
-      const clicked = (what: string): Content[] => [{ type: 'text', text: (count === 2 ? 'Double-clicked ' : 'Clicked ') + (button === 'left' ? '' : 'with the ' + button + ' button ') + what + '.' }];
-      let sx: number, sy: number, what: string;
-      if (args.text !== undefined) {
-        // The view stays as it is: the point comes from what is on screen now, not from the model's coordinates.
-        const screen = await ocr(true);
-        const matches = findText(screen, args.text);
-        let picked = pickMatch(matches, args.text, args.index);
-        if (typeof picked === 'string' && !matches.length && args.index === undefined && screen.foreground) {
-          // Icon buttons and menu items have names without visible text.
-          const found = await findControls(screen.foreground, args.text);
-          const control = found.controls[0];
-          if (found.controls.length === 1 && control) {
-            const [x, y, width, height] = control.bounds;
-            [sx, sy] = [Math.round(x + width / 2), Math.round(y + height / 2)];
-            await physical('Rk-Click ' + sx + ' ' + sy + ' ' + psQuote(button) + ' ' + count);
-            return clicked(control.role + ' "' + control.name + '" at ' + toView(sx, sy));
-          }
-          if (found.controls.length > 1) picked = found.controls.length + ' controls are named "' + args.text + '" and none shows the text; click one of their centres:\n' + listControls(found);
-        }
-        if (typeof picked === 'string') {
-          throw new Error(picked + '\n' + (matches.length ? listMatches(matches) : 'Visible text:\n' + visible(screen)));
-        }
-        [sx, sy] = centre(picked);
-        what = '"' + picked.text + '" at ' + toView(sx, sy) + (picked.foreground ? '' : ' (outside the active window)');
-      } else {
-        [sx, sy] = toScreen(args.x!, args.y!);
-        what = args.x + ',' + args.y;
-      }
-      await physical('Rk-Click ' + sx + ' ' + sy + ' ' + psQuote(button) + ' ' + count);
-      return clicked(what);
-    }
-    case 'move_mouse': {
-      const [x, y] = toScreen(args.x, args.y);
-      await physical('Rk-Move ' + x + ' ' + y);
-      return [{ type: 'text', text: 'Pointer at ' + args.x + ',' + args.y + '.' }];
-    }
-    case 'drag': {
-      const [x1, y1] = toScreen(args.fromX, args.fromY);
-      const [x2, y2] = toScreen(args.toX, args.toY);
-      await physical('Rk-Drag ' + x1 + ' ' + y1 + ' ' + x2 + ' ' + y2);
-      return [{ type: 'text', text: 'Dragged from ' + args.fromX + ',' + args.fromY + ' to ' + args.toX + ',' + args.toY + '.' }];
-    }
-    case 'draw': {
-      const plan = planDrawing(args);
-      await physical('Rk-Draw ' + psQuote(plan.packed) + ' ' + psQuote(args.button), plan.timeoutMs);
-      return [{ type: 'text', text: 'Drew ' + plan.strokes + (plan.strokes === 1 ? ' stroke' : ' strokes') + ' through ' + plan.points + ' points.' }];
-    }
-    case 'scroll': {
-      const [x, y] = toScreen(args.x, args.y);
-      const { direction, amount } = args;
-      await physical('Rk-Scroll ' + x + ' ' + y + ' ' + psQuote(direction) + ' ' + amount);
-      return [{ type: 'text', text: 'Scrolled ' + direction + ' by ' + amount + '.' }];
-    }
-    case 'type_text': {
-      await physical('Rk-Type ' + psQuote(args.text));
-      return [{ type: 'text', text: 'Typed ' + args.text.length + ' characters.' }];
-    }
-    case 'press_keys': {
-      const combos = parseKeySequence(args.keys);
-      const literal = '@(' + combos.map((combo) => ',@(' + combo.join(',') + ')').join(';') + ')';
-      await physical('Rk-Keys ' + literal);
-      return [{ type: 'text', text: 'Pressed ' + args.keys + '.' }];
-    }
-    case 'list_windows': {
-      const rows = await shell.run<{ handle: number; title: string; process: string; active: boolean; minimized: boolean; x: number; y: number; width: number; height: number }[]>('Rk-Windows');
-      const list = Array.isArray(rows) ? rows : [rows];
-      if (!list.length) return [{ type: 'text', text: 'No windows.' }];
-      return [
-        {
-          type: 'text',
-          text: list
-            .map((w) => '- window=' + w.handle + ' ' + (w.active ? '[active] ' : '') + JSON.stringify(w.title) + ' (' + w.process + ') ' +
-              (w.minimized ? 'minimized' : w.width + 'x' + w.height + ' at ' + w.x + ',' + w.y))
-            .join('\n'),
-        },
-      ];
-    }
-    case 'focus_window': {
-      view = null;
-      const result = await shell.run<WindowInfo>('Rk-Focus ' + psQuote(args.title ?? '') + ' ' + (args.window ?? 0));
-      return [{ type: 'text', text: 'Focused ' + describeWindow(result) + '.' }];
-    }
-    case 'open': {
-      view = null;
-      const result = await shell.run<{ changed: boolean; active: WindowInfo; behind: WindowInfo | null; waitedMs: number }>('Rk-Open ' + psQuote(args.target), 15_000);
-      if (!result.changed) {
-        // Nothing to type into yet: say so as an error, so the model does not send input to whatever is in front.
-        throw new Error('Opened ' + args.target + ', but no window came to the front within 3 s' +
-          (result.behind ? ': ' + describeWindow(result.behind) + ' stayed behind ' : '; the active window is still ') + describeWindow(result.active) +
-          '. Nothing was typed. Use focus_window with the handle, or wait_for, then take a screenshot.');
-      }
-      return [{ type: 'text', text: 'Opened ' + args.target + '. Active window is now ' + describeWindow(result.active) + '.' }];
-    }
-    case 'clipboard': {
-      if (args.action === 'set') {
-        await shell.run('Rk-ClipSet ' + psQuote(args.text ?? ''));
-        return [{ type: 'text', text: 'Clipboard set (' + args.text!.length + ' characters).' }];
-      }
-      const result = await shell.run<{ text: string }>('Rk-ClipGet');
-      return [{ type: 'text', text: result.text ? result.text.slice(0, 20_000) : '(clipboard is empty)' }];
-    }
-    case 'wait': {
-      await pause(args.ms);
-      return [{ type: 'text', text: 'Waited ' + args.ms + ' ms.' }];
-    }
-    default:
-      throw new Error('Unknown tool ' + name + '.');
+  // The table pairs each name with its own argument type; the union of names cannot express that.
+  return (TOOL_HANDLERS[name] as (toolArgs: unknown) => Promise<Content[]>)(args);
+}
+
+type ToolName = ComputerCall['name'];
+type Args<Name extends ToolName> = Extract<ComputerCall, { name: Name }>['args'];
+
+const TOOL_HANDLERS: { [Name in ToolName]: (args: Args<Name>) => Promise<Content[]> } = {
+  stop: stopTool,
+  snapshot: snapshotTool,
+  act: actTool,
+  batch: batchTool,
+  screenshot: screenshotTool,
+  screen_info: screenInfoTool,
+  read_screen: readScreenTool,
+  find_text: findTextTool,
+  wait_for: waitForTool,
+  hand_over: handOverTool,
+  click: clickTool,
+  move_mouse: moveMouseTool,
+  drag: dragTool,
+  draw: drawTool,
+  scroll: scrollTool,
+  type_text: typeTextTool,
+  press_keys: pressKeysTool,
+  list_windows: listWindowsTool,
+  focus_window: focusWindowTool,
+  open: openTool,
+  clipboard: clipboardTool,
+  wait: waitTool,
+};
+
+async function stopTool(): Promise<Content[]> {
+  stopped = true;
+  view = null;
+  shell.close();
+  return textContent('Computer use stopped. Current and queued actions cancelled.');
+}
+
+async function snapshotTool(args: Args<'snapshot'>): Promise<Content[]> {
+  const result = await shell.run<Snapshot>('Rk-Snapshot ' + args.window + ' ' + args.maxNodes + ' ' + args.depth + ' ' + (stopped ? '$false' : '$true'), WORKER_TIMEOUT_MS);
+  return textContent(describeSnapshot(result, mapping(result.screen)));
+}
+
+async function actTool(args: Args<'act'>): Promise<Content[]> {
+  // The desktop view stays: physical input re-checks foreground and bounds before it moves.
+  const result = await shell.run<ActResult>('Rk-Act ' + psQuote(args.ref) + ' ' + psQuote(args.action) + ' ' + psQuote(args.value ?? ''), WORKER_TIMEOUT_MS);
+  if (BACKGROUND && result.focusChanged) {
+    stopped = true;
+    shell.close();
+    throw new Error(describeAct(result) + ' Background-only mode stopped all further actions; inspect the result before retrying in a new turn.');
   }
+  return textContent(describeAct(result));
+}
+
+async function batchTool(args: Args<'batch'>): Promise<Content[]> {
+  // Steps run blind; each still settles briefly, and the batch observes once at its end.
+  const actions = args.actions.map((step) => {
+    const action = validateComputerCall(step.tool, step.arguments, BACKGROUND);
+    if ('observe' in action.args) action.args.observe = 'none';
+    return action;
+  });
+  const done = await runBatchSteps(actions);
+  const report = textContent(done.join('\n'));
+  const observe = args.observe ?? batchObservation(args.window, BACKGROUND);
+  if (observe === 'none') return report;
+  const tool = observe === 'text' ? 'read_screen' : observe;
+  try {
+    return [...report, ...(await call(validateComputerCall(tool, args.window && tool !== 'read_screen' ? { window: args.window } : {}, BACKGROUND)))];
+  } catch (error) {
+    throw new Error(done.join('\n') + '\nAll steps completed; the final ' + observe + ' failed: ' + (error as Error).message);
+  }
+}
+
+/** Run the steps in order; the first failure stops the batch and reports what was done and what was skipped. */
+async function runBatchSteps(actions: ComputerCall[]): Promise<string[]> {
+  const done: string[] = [];
+  for (const action of actions) {
+    const started = performance.now();
+    try {
+      const content = await call(action);
+      done.push((done.length + 1) + '. ' + action.name + ': ' + spokenText(content) + ' (' + elapsedMs(started) + ' ms)');
+    } catch (error) {
+      throw new Error(describeStepFailure(action, done, actions.length, error as Error));
+    }
+  }
+  return done;
+}
+
+function describeStepFailure(action: ComputerCall, done: string[], total: number, error: Error): string {
+  const step = done.length + 1;
+  const skipped = total - step;
+  return 'Step ' + step + ' of ' + total + ' (' + action.name + ') failed: ' + error.message +
+    (done.length ? '\nCompleted before it:\n' + done.join('\n') : '') +
+    (skipped ? '\nSkipped: step' + (skipped > 1 ? 's ' + (step + 1) + '-' + total : ' ' + total) + '.' : '') +
+    '\nNothing was rolled back.';
+}
+
+/** The text parts of a result on one line. */
+function spokenText(content: Content[]): string {
+  return content.map((part) => (part.type === 'text' ? part.text : '')).join(' ').trim();
+}
+
+async function screenshotTool(args: Args<'screenshot'>): Promise<Content[]> {
+  if (RUN_DIR) mkdirSync(RUN_DIR, { recursive: true });
+  const path = RUN_DIR ? join(RUN_DIR, 'computer-' + process.pid + '.jpg') : '';
+  const previous = view;
+  const region = args.region ? regionExpression(args.region, previous) : '$null';
+  const shot = await shell.run<Shot>('Rk-Screenshot ' + MAX_WIDTH + ' ' + psQuote(path) + ' ' + (args.window ?? 0) + ' ' + (stopped ? '$false' : '$true') + ' ' + region + ' ' + (args.screen ?? 0), WORKER_TIMEOUT_MS);
+  if (!args.window) {
+    view = { scale: shot.scale, left: shot.left, top: shot.top, width: shot.width, height: shot.height };
+    restartsSeen = shell.restarts;
+  }
+  const caption =
+    'Screenshot ' + shot.width + 'x' + shot.height + ' px' +
+    (shot.scale < 1 ? ' (screen scaled by ' + shot.scale.toFixed(3) + ')' : '') + '. ' + describeCapture(args, shot, previous) +
+    (args.window ? '' : ' Active window: ' + describeWindow(shot.active) + '.') +
+    (path ? ' Saved as ' + path + '.' : '');
+  return [{ type: 'image', data: shot.jpeg, mimeType: 'image/jpeg' }, { type: 'text', text: caption }];
+}
+
+/** A region of the previous desktop screenshot as the worker's physical x, y, width, height. */
+function regionExpression(region: NonNullable<Args<'screenshot'>['region']>, previous: typeof view): string {
+  if (!previous) throw new Error('A region is measured in pixels of the last desktop screenshot; take one first.');
+  if (region.x + region.width > previous.width || region.y + region.height > previous.height) throw new Error('The region reaches outside the last desktop screenshot (' + previous.width + 'x' + previous.height + ').');
+  return '@(' + [
+    Math.round(previous.left + region.x / previous.scale), Math.round(previous.top + region.y / previous.scale),
+    Math.max(1, Math.round(region.width / previous.scale)), Math.max(1, Math.round(region.height / previous.scale)),
+  ].join(',') + ')';
+}
+
+/** What the model needs to know about how the capture relates to what it asked for. */
+function describeCapture(args: Args<'screenshot'>, shot: Shot, previous: typeof view): string {
+  if (args.window) return 'Window capture (app-dependent); virtual cursor marks the last UIA target. Observe with snapshot if blank.';
+  const pointer = shot.cursorX >= 0 && shot.cursorY >= 0 && shot.cursorX < shot.width && shot.cursorY < shot.height
+    ? 'Pointer at ' + shot.cursorX + ',' + shot.cursorY + '.'
+    : 'Pointer outside this view.';
+  if (args.region) {
+    const zoom = shot.scale / previous!.scale;
+    return 'Zoomed ' + zoom.toFixed(1) + 'x into the region ' + args.region.x + ',' + args.region.y + ' ' + args.region.width + 'x' + args.region.height +
+      ' of the previous screenshot. Coordinates now refer to this image until the next desktop screenshot or read_screen. ' + pointer;
+  }
+  if (args.screen) return 'Display ' + args.screen + ' only; coordinates now refer to this image. ' + pointer;
+  return pointer;
+}
+
+async function screenInfoTool(): Promise<Content[]> {
+  const info = await shell.run<ScreenInfo>('Rk-ScreenInfo');
+  const scale = Math.min(1, MAX_WIDTH / info.width);
+  return textContent(
+    'Screenshot size ' + Math.round(info.width * scale) + 'x' + Math.round(info.height * scale) +
+    ' px, scale ' + scale.toFixed(3) + ' of ' + info.width + 'x' + info.height + ' real pixels.\n' +
+    info.screens
+      .map((s, i) => '- screen ' + (i + 1) + ': ' + s.name + (s.primary ? ' (primary)' : '') + ': ' + s.width + 'x' + s.height + ' at ' + s.x + ',' + s.y)
+      .join('\n') + '\nObserver: ' + JSON.stringify(info.observer),
+  );
+}
+
+async function readScreenTool(): Promise<Content[]> {
+  const { screen, scale } = await readScreen();
+  return textContent('Screen text (OCR), centre x,y in screenshot pixels. Active window: ' + describeWindow(screen.active) + '.\n' + describeScreen(screen, scale));
+}
+
+async function findTextTool(args: Args<'find_text'>): Promise<Content[]> {
+  const lines: string[] = [];
+  let screen: ScreenText | null = null;
+  if (!BACKGROUND) {
+    ({ screen } = await readScreen());
+    const matches = findText(screen, args.text);
+    if (matches.length) lines.push(listMatches(matches));
+  }
+  // Controls by accessible name: the given window, else the active one when OCR saw nothing.
+  const window = args.window ?? (lines.length ? 0 : screen?.foreground ?? 0);
+  if (window) {
+    const found = await findControls(window, args.text);
+    if (found.controls.length) lines.push((lines.length ? 'Controls named ' : 'No visible text, but controls named ') + JSON.stringify(args.text) + ':\n' + listControls(found));
+  }
+  if (!lines.length) {
+    return textContent('No text or control named "' + args.text + '"' + (window ? ' in window ' + window : '') + '.' + (screen ? ' Visible text:\n' + visible(screen) : ''));
+  }
+  return textContent(lines.join('\n'));
+}
+
+async function waitForTool(args: Args<'wait_for'>): Promise<Content[]> {
+  const started = Date.now();
+  const what = JSON.stringify(args.text);
+  for (;;) {
+    const { where, screen } = await locate(args.text, args.window);
+    const seconds = Math.round((Date.now() - started) / 100) / 10;
+    if (Boolean(where) !== args.gone) {
+      return textContent(what + (args.gone ? ' is gone' : ' is on screen') + ' after ' + seconds + ' s.' + (where ? '\n' + where : ''));
+    }
+    if (Date.now() - started >= args.timeoutSec * 1000) {
+      throw new Error('Timed out after ' + args.timeoutSec + ' s: ' + what + (args.gone ? ' is still on screen.' : ' did not appear.') +
+        (screen ? '\nVisible text:\n' + visible(screen) : ''));
+    }
+    await pause(WAIT_FOR_POLL_MS);
+  }
+}
+
+/** One look for the text: among a window's controls, or on the screen (which becomes the view). Empty `where` means not found. */
+async function locate(text: string, window: number | undefined): Promise<{ where: string; screen: ScreenText | null }> {
+  if (window) {
+    const found = await findControls(window, text);
+    return { where: found.controls.length ? listControls(found) : '', screen: null };
+  }
+  const { screen } = await readScreen();
+  const matches = findText(screen, text);
+  return { where: matches.length ? listMatches(matches) : '', screen };
+}
+
+async function handOverTool(args: Args<'hand_over'>): Promise<Content[]> {
+  const timeout = args.timeoutSec * 1000;
+  const result = await shell.run<{ outcome: string; waitedMs: number }>('Rk-HandOver ' + psQuote(args.reason) + ' ' + timeout, timeout + HAND_OVER_GRACE_MS);
+  const outcome = textContent(result.outcome + ' Waited ' + Math.round(result.waitedMs / 1000) + ' s.');
+  // Background-only mode may not capture the desktop; the model snapshots its window instead.
+  return BACKGROUND ? outcome : [...outcome, ...(await settled('screenshot'))];
+}
+
+async function clickTool(args: Args<'click'>): Promise<Content[]> {
+  const { button, count } = args;
+  const target = args.text === undefined ? coordinateTarget(args.x!, args.y!) : await textTarget(args.text, args.index);
+  await physical('Rk-Click ' + target.x + ' ' + target.y + ' ' + psQuote(button) + ' ' + count);
+  return textContent((count === 2 ? 'Double-clicked ' : 'Clicked ') + (button === 'left' ? '' : 'with the ' + button + ' button ') + target.what + '.');
+}
+
+/** Where a click lands, in physical pixels, and how to say so. */
+interface ClickTarget { x: number; y: number; what: string }
+
+function coordinateTarget(viewX: number, viewY: number): ClickTarget {
+  const [x, y] = toScreen(viewX, viewY);
+  return { x, y, what: viewX + ',' + viewY };
+}
+
+/** The point comes from what is on screen now, not from the model's coordinates; the view stays as it is. */
+async function textTarget(text: string, index: number | undefined): Promise<ClickTarget> {
+  const screen = await ocr(true);
+  const matches = findText(screen, text);
+  let picked = pickMatch(matches, text, index);
+  if (typeof picked === 'string' && !matches.length && index === undefined && screen.foreground) {
+    // Icon buttons and menu items have names without visible text.
+    const found = await findControls(screen.foreground, text);
+    const control = found.controls[0];
+    if (found.controls.length === 1 && control) return controlTarget(control);
+    if (found.controls.length > 1) picked = found.controls.length + ' controls are named "' + text + '" and none shows the text; click one of their centres:\n' + listControls(found);
+  }
+  if (typeof picked === 'string') {
+    throw new Error(picked + '\n' + (matches.length ? listMatches(matches) : 'Visible text:\n' + visible(screen)));
+  }
+  const [x, y] = centre(picked);
+  return { x, y, what: '"' + picked.text + '" at ' + toView(x, y) + (picked.foreground ? '' : ' (outside the active window)') };
+}
+
+function controlTarget(control: FoundControl): ClickTarget {
+  const [left, top, width, height] = control.bounds;
+  const x = Math.round(left + width / 2), y = Math.round(top + height / 2);
+  return { x, y, what: control.role + ' "' + control.name + '" at ' + toView(x, y) };
+}
+
+async function moveMouseTool(args: Args<'move_mouse'>): Promise<Content[]> {
+  const [x, y] = toScreen(args.x, args.y);
+  await physical('Rk-Move ' + x + ' ' + y);
+  return textContent('Pointer at ' + args.x + ',' + args.y + '.');
+}
+
+async function dragTool(args: Args<'drag'>): Promise<Content[]> {
+  const [x1, y1] = toScreen(args.fromX, args.fromY);
+  const [x2, y2] = toScreen(args.toX, args.toY);
+  await physical('Rk-Drag ' + x1 + ' ' + y1 + ' ' + x2 + ' ' + y2);
+  return textContent('Dragged from ' + args.fromX + ',' + args.fromY + ' to ' + args.toX + ',' + args.toY + '.');
+}
+
+async function drawTool(args: Args<'draw'>): Promise<Content[]> {
+  const plan = planDrawing(args);
+  await physical('Rk-Draw ' + psQuote(plan.packed) + ' ' + psQuote(args.button), plan.timeoutMs);
+  return textContent('Drew ' + plan.strokes + (plan.strokes === 1 ? ' stroke' : ' strokes') + ' through ' + plan.points + ' points.');
+}
+
+async function scrollTool(args: Args<'scroll'>): Promise<Content[]> {
+  const [x, y] = toScreen(args.x, args.y);
+  const { direction, amount } = args;
+  await physical('Rk-Scroll ' + x + ' ' + y + ' ' + psQuote(direction) + ' ' + amount);
+  return textContent('Scrolled ' + direction + ' by ' + amount + '.');
+}
+
+async function typeTextTool(args: Args<'type_text'>): Promise<Content[]> {
+  await physical('Rk-Type ' + psQuote(args.text));
+  return textContent('Typed ' + args.text.length + ' characters.');
+}
+
+async function pressKeysTool(args: Args<'press_keys'>): Promise<Content[]> {
+  const combos = parseKeySequence(args.keys);
+  const literal = '@(' + combos.map((combo) => ',@(' + combo.join(',') + ')').join(';') + ')';
+  await physical('Rk-Keys ' + literal);
+  return textContent('Pressed ' + args.keys + '.');
+}
+
+async function listWindowsTool(): Promise<Content[]> {
+  const rows = await shell.run<WindowRow | WindowRow[]>('Rk-Windows');
+  const list = Array.isArray(rows) ? rows : [rows];
+  if (!list.length) return textContent('No windows.');
+  return textContent(list
+    .map((w) => '- window=' + w.handle + ' ' + (w.active ? '[active] ' : '') + JSON.stringify(w.title) + ' (' + w.process + ') ' +
+      (w.minimized ? 'minimized' : w.width + 'x' + w.height + ' at ' + w.x + ',' + w.y))
+    .join('\n'));
+}
+
+async function focusWindowTool(args: Args<'focus_window'>): Promise<Content[]> {
+  view = null;
+  const result = await shell.run<WindowInfo>('Rk-Focus ' + psQuote(args.title ?? '') + ' ' + (args.window ?? 0));
+  return textContent('Focused ' + describeWindow(result) + '.');
+}
+
+async function openTool(args: Args<'open'>): Promise<Content[]> {
+  view = null;
+  const result = await shell.run<{ changed: boolean; active: WindowInfo; behind: WindowInfo | null; waitedMs: number }>('Rk-Open ' + psQuote(args.target), WORKER_TIMEOUT_MS);
+  if (!result.changed) {
+    // Nothing to type into yet: say so as an error, so the model does not send input to whatever is in front.
+    throw new Error('Opened ' + args.target + ', but no window came to the front within 3 s' +
+      (result.behind ? ': ' + describeWindow(result.behind) + ' stayed behind ' : '; the active window is still ') + describeWindow(result.active) +
+      '. Nothing was typed. Use focus_window with the handle, or wait_for, then take a screenshot.');
+  }
+  return textContent('Opened ' + args.target + '. Active window is now ' + describeWindow(result.active) + '.');
+}
+
+async function clipboardTool(args: Args<'clipboard'>): Promise<Content[]> {
+  if (args.action === 'set') {
+    await shell.run('Rk-ClipSet ' + psQuote(args.text ?? ''));
+    return textContent('Clipboard set (' + args.text!.length + ' characters).');
+  }
+  const result = await shell.run<{ text: string }>('Rk-ClipGet');
+  return textContent(result.text ? result.text.slice(0, CLIPBOARD_READ_LIMIT) : '(clipboard is empty)');
+}
+
+async function waitTool(args: Args<'wait'>): Promise<Content[]> {
+  await pause(args.ms);
+  return textContent('Waited ' + args.ms + ' ms.');
 }
 
 /* ------------------------------- MCP server ------------------------------- */
@@ -586,69 +699,84 @@ async function handle(message: JsonRpc): Promise<void> {
     return;
   }
   if (id === undefined) return;
-
   try {
-    switch (method) {
-      case 'initialize':
-        send({
-          id,
-          result: {
-            protocolVersion: (params?.protocolVersion as string | undefined) ?? PROTOCOL_FALLBACK,
-            capabilities: { tools: {} },
-            serverInfo: { name: COMPUTER_SERVER_NAME, version: '0.2.0' },
-          },
-        });
-        return;
-      case 'ping':
-        send({ id, result: {} });
-        return;
-      case 'tools/list':
-        send({ id, result: { tools: COMPUTER_TOOLS } });
-        return;
-      case 'tools/call': {
-        const name = String(params?.name ?? '');
-        const args = (params?.arguments ?? {}) as Record<string, unknown>;
-        if (process.platform !== 'win32') {
-          send({ id, result: { content: [{ type: 'text', text: 'Computer control is available on Windows only.' }], isError: true } });
-          return;
-        }
-        pending.add(id);
-        const execute = async (): Promise<void> => {
-          const started = performance.now();
-          let failure: string | undefined;
-          try {
-            const content = await call(validateComputerCall(name, args, BACKGROUND));
-            content.push({ type: 'text', text: JSON.stringify({ durationMs: Math.round(performance.now() - started), mode: BACKGROUND ? 'background' : 'desktop' }) });
-            send({ id, result: { content, isError: false } });
-          } catch (error) {
-            failure = (error as Error).message;
-            send({ id, result: { content: [{ type: 'text', text: failure }], isError: true } });
-          } finally {
-            pending.delete(id);
-            if (RUN_DIR) {
-              // The audit says which tool, how long, and why it failed; never what was typed or seen.
-              const steps = name === 'batch' && Array.isArray(args.actions) ? args.actions.length : undefined;
-              try {
-                mkdirSync(RUN_DIR, { recursive: true });
-                appendFileSync(join(RUN_DIR, 'computer-audit.jsonl'), JSON.stringify({
-                  at: new Date().toISOString(), session: process.pid, tool: name, ...(steps === undefined ? {} : { steps }),
-                  durationMs: Math.round(performance.now() - started), isError: failure !== undefined,
-                  ...(failure === undefined ? {} : { error: failure.split('\n')[0]!.replace(/"[^"]*"/g, '"…"').slice(0, 200) }),
-                }) + '\n');
-              } catch { /* Audit storage failure must not retry an already-dispatched action. */ }
-            }
-          }
-        };
-        if (name === 'stop') await execute();
-        else { const task = queue.then(execute); queue = task.catch(() => undefined); await task; }
-        return;
-      }
-      default:
-        send({ id, error: { code: -32601, message: 'Method not found: ' + method } });
-    }
+    await respond(id, method, params);
   } catch (error) {
-    send({ id, error: { code: -32000, message: (error as Error).message } });
+    send({ id, error: { code: JSONRPC_SERVER_ERROR, message: (error as Error).message } });
   }
+}
+
+async function respond(id: number | string, method: string | undefined, params: Record<string, unknown> | undefined): Promise<void> {
+  switch (method) {
+    case 'initialize':
+      send({
+        id,
+        result: {
+          protocolVersion: (params?.protocolVersion as string | undefined) ?? PROTOCOL_FALLBACK,
+          capabilities: { tools: {} },
+          serverInfo: { name: COMPUTER_SERVER_NAME, version: SERVER_VERSION },
+        },
+      });
+      return;
+    case 'ping':
+      send({ id, result: {} });
+      return;
+    case 'tools/list':
+      send({ id, result: { tools: COMPUTER_TOOLS } });
+      return;
+    case 'tools/call':
+      await callTool(id, String(params?.name ?? ''), (params?.arguments ?? {}) as Record<string, unknown>);
+      return;
+    default:
+      send({ id, error: { code: JSONRPC_METHOD_NOT_FOUND, message: 'Method not found: ' + method } });
+  }
+}
+
+async function callTool(id: number | string, name: string, args: Record<string, unknown>): Promise<void> {
+  if (process.platform !== 'win32') {
+    send({ id, result: { content: [{ type: 'text', text: 'Computer control is available on Windows only.' }], isError: true } });
+    return;
+  }
+  pending.add(id);
+  const execute = (): Promise<void> => runTool(id, name, args);
+  // A stop must not wait behind the action it cancels.
+  if (name === 'stop') {
+    await execute();
+    return;
+  }
+  const task = queue.then(execute);
+  queue = task.catch(() => undefined);
+  await task;
+}
+
+/** Run one tool call and answer it, success or failure; the audit follows either way. */
+async function runTool(id: number | string, name: string, args: Record<string, unknown>): Promise<void> {
+  const started = performance.now();
+  let failure: string | undefined;
+  try {
+    const content = await call(validateComputerCall(name, args, BACKGROUND));
+    content.push({ type: 'text', text: JSON.stringify({ durationMs: elapsedMs(started), mode: BACKGROUND ? 'background' : 'desktop' }) });
+    send({ id, result: { content, isError: false } });
+  } catch (error) {
+    failure = (error as Error).message;
+    send({ id, result: { content: [{ type: 'text', text: failure }], isError: true } });
+  } finally {
+    pending.delete(id);
+    if (RUN_DIR) audit(name, args, started, failure);
+  }
+}
+
+/** The audit says which tool, how long, and why it failed; never what was typed or seen. */
+function audit(name: string, args: Record<string, unknown>, started: number, failure: string | undefined): void {
+  const steps = name === 'batch' && Array.isArray(args.actions) ? args.actions.length : undefined;
+  try {
+    mkdirSync(RUN_DIR, { recursive: true });
+    appendFileSync(join(RUN_DIR, 'computer-audit.jsonl'), JSON.stringify({
+      at: new Date().toISOString(), session: process.pid, tool: name, ...(steps === undefined ? {} : { steps }),
+      durationMs: elapsedMs(started), isError: failure !== undefined,
+      ...(failure === undefined ? {} : { error: failure.split('\n')[0]!.replace(/"[^"]*"/g, '"…"').slice(0, AUDIT_ERROR_LENGTH) }),
+    }) + '\n');
+  } catch { /* Audit storage failure must not retry an already-dispatched action. */ }
 }
 
 const input = createInterface({ input: process.stdin });
@@ -675,13 +803,13 @@ async function shutdown(): Promise<void> {
   closing = true;
   if (shell.running) {
     await Promise.race([
-      shell.run('Rk-CursorDismiss; @{}', 2000).catch(() => undefined),
-      delay(700),
+      shell.run('Rk-CursorDismiss; @{}', CURSOR_DISMISS_TIMEOUT_MS).catch(() => undefined),
+      delay(CURSOR_FADE_BUDGET_MS),
     ]);
   }
   const held = inputInFlight > 0;
   shell.close();
-  if (held) await releaseHeld(3000);
+  if (held) await releaseHeld(RELEASE_ON_EXIT_TIMEOUT_MS);
   shell.close();
   process.exit(0);
 }

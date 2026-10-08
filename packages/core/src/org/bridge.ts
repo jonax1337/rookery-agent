@@ -62,9 +62,13 @@ export class BridgeServer {
           ? '\\\\.\\pipe\\rookery-' + id
           : join(this.#runDir, 'bridge-' + id + '.sock');
       const server = createServer((socket) => this.#serve(socket));
-      server.on('error', reject);
+      const onStartError = (error: Error): void => {
+        this.#starting = null;
+        reject(error);
+      };
+      server.on('error', onStartError);
       server.listen(path, () => {
-        server.off('error', reject);
+        server.off('error', onStartError);
         this.#server = server;
         this.#path = path;
         resolve(path);
@@ -138,39 +142,33 @@ export class BridgeServer {
     } catch {
       return;
     }
-    const id = message.id;
-    const reply = (payload: Record<string, unknown>): void => {
-      if (socket.destroyed) return;
-      socket.write(JSON.stringify({ id, ...payload }) + '\n');
-    };
+    const payload = await this.#answer(message);
+    if (socket.destroyed) return;
+    socket.write(JSON.stringify({ id: message.id, ...payload }) + '\n');
+  }
 
+  async #answer(message: Record<string, unknown>): Promise<Record<string, unknown>> {
     const registration = this.#registrations.get(String(message.token ?? ''));
-    if (!registration) {
-      reply({ error: { message: 'Unknown or expired bridge token.' } });
-      return;
-    }
+    if (!registration) return { error: { message: 'Unknown or expired bridge token.' } };
 
     if (message.method === 'hello') {
-      reply({ result: { tools: registration.tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
-      return;
+      const tools = registration.tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+      return { result: { tools } };
     }
+    if (message.method === 'call') return { result: await callRegisteredTool(registration, message) };
+    return { error: { message: 'Unknown method.' } };
+  }
+}
 
-    if (message.method === 'call') {
-      const name = String(message.name ?? '');
-      const args = (message.args && typeof message.args === 'object' ? message.args : {}) as Record<string, unknown>;
-      if (!registration.tools.some((tool) => tool.name === name)) {
-        reply({ result: { text: 'Unknown tool: ' + name, isError: true } });
-        return;
-      }
-      try {
-        reply({ result: await registration.handler(name, args) });
-      } catch (error) {
-        reply({ result: { text: (error as Error).message, isError: true } });
-      }
-      return;
-    }
-
-    reply({ error: { message: 'Unknown method.' } });
+/** A tool failure is a result the model can read, not a protocol error. */
+async function callRegisteredTool(registration: Registration, message: Record<string, unknown>): Promise<ToolCallResult> {
+  const name = String(message.name ?? '');
+  const args = (message.args && typeof message.args === 'object' ? message.args : {}) as Record<string, unknown>;
+  if (!registration.tools.some((tool) => tool.name === name)) return { text: 'Unknown tool: ' + name, isError: true };
+  try {
+    return await registration.handler(name, args);
+  } catch (error) {
+    return { text: (error as Error).message, isError: true };
   }
 }
 

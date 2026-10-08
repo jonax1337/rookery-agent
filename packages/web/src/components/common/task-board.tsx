@@ -1,4 +1,4 @@
-import { GripVerticalIcon } from "@/components/icons";
+import { GripVerticalIcon } from '@/components/icons';
 import { useEffect, useMemo, useState } from 'react';
 import {
   DndContext,
@@ -68,6 +68,22 @@ function byColumn(tasks: Task[]): Record<TaskStatus, string[]> {
   return columns;
 }
 
+/** The gap left past the first or last card, so a later drop has room to land between. */
+const SORT_ORDER_STEP = 1000;
+
+/** The sort order that puts `id` where it sits in `ordered`: midway between its neighbours. */
+function sortOrderAmong(ordered: string[], id: string, tasksById: ReadonlyMap<string, Task>): number {
+  const index = ordered.indexOf(id);
+  const prevId = index > 0 ? ordered[index - 1] : undefined;
+  const nextId = index < ordered.length - 1 ? ordered[index + 1] : undefined;
+  const prevOrder = prevId ? (tasksById.get(prevId)?.sortOrder ?? 0) : undefined;
+  const nextOrder = nextId ? (tasksById.get(nextId)?.sortOrder ?? 0) : undefined;
+  if (prevOrder !== undefined && nextOrder !== undefined) return (prevOrder + nextOrder) / 2;
+  if (prevOrder !== undefined) return prevOrder + SORT_ORDER_STEP;
+  if (nextOrder !== undefined) return nextOrder - SORT_ORDER_STEP;
+  return Date.now();
+}
+
 export function TaskBoard({
   tasks,
   agentById,
@@ -124,20 +140,11 @@ export function TaskBoard({
     const { active, over } = event;
     setActiveId(null);
     const task = tasksById.get(String(active.id));
-    if (!task || !over) {
-      setColumns(byColumn(tasks));
-      return;
-    }
-
-    const targetColumn = findColumn(over.id) ?? findColumn(active.id);
-    if (!targetColumn) {
-      setColumns(byColumn(tasks));
-      return;
-    }
-
+    const targetColumn = over ? (findColumn(over.id) ?? findColumn(active.id)) : undefined;
     // The runner owns these three columns; a manual drop into one of them is
     // exactly the move the row menu already disables, so it snaps back.
-    if (targetColumn !== task.status && !isSettableTaskStatus(targetColumn)) {
+    const refused = task && targetColumn && targetColumn !== task.status && !isSettableTaskStatus(targetColumn);
+    if (!task || !over || !targetColumn || refused) {
       setColumns(byColumn(tasks));
       return;
     }
@@ -148,19 +155,7 @@ export function TaskBoard({
     const ordered = overIndex === -1 || activeIndex === -1 ? withinColumn : arrayMove(withinColumn, activeIndex, overIndex);
     setColumns((current) => ({ ...current, [targetColumn]: ordered }));
 
-    const index = ordered.indexOf(String(active.id));
-    const prevId = index > 0 ? ordered[index - 1] : undefined;
-    const nextId = index < ordered.length - 1 ? ordered[index + 1] : undefined;
-    const prevOrder = prevId ? (tasksById.get(prevId)?.sortOrder ?? 0) : undefined;
-    const nextOrder = nextId ? (tasksById.get(nextId)?.sortOrder ?? 0) : undefined;
-    const sortOrder =
-      prevOrder !== undefined && nextOrder !== undefined
-        ? (prevOrder + nextOrder) / 2
-        : prevOrder !== undefined
-          ? prevOrder + 1000
-          : nextOrder !== undefined
-            ? nextOrder - 1000
-            : Date.now();
+    const sortOrder = sortOrderAmong(ordered, String(active.id), tasksById);
 
     if (targetColumn !== task.status) void onStatusChange(task, targetColumn);
     void onReorder(task, sortOrder);

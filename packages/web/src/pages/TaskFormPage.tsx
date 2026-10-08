@@ -12,6 +12,7 @@ import {
   TASK_STATUS_LABEL,
   type SettableTaskStatus,
 } from '@/lib/format';
+import { ClipboardCheckIcon } from '@/components/icons';
 import type { Task, TaskPriority } from '@/lib/types';
 import { useOrgState, useTasksState } from '@/providers/rookery-provider';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
@@ -45,20 +46,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-
-import { ClipboardCheckIcon as ListTodoIcon } from "@/components/icons";
-/**
- * Create or edit a task.
- *
- * The assignee stays optional on purpose: leaving it open is the normal case,
- * because "Planen" on the detail page is what decides who does the work.
- *
- * The status select only offers what a person may set by hand. `planned`,
- * `running` and `failed` belong to the planner and the runner, so a task in
- * one of those states shows it and leaves it alone rather than offering a
- * value the server would reject.
- */
-
 
 interface TaskDraft {
   title: string;
@@ -125,6 +112,17 @@ function toInput(patch: TaskPatch): TaskInput {
   };
 }
 
+/**
+ * Create or edit a task.
+ *
+ * The assignee stays optional on purpose: leaving it open is the normal case,
+ * because "Plan" on the detail page is what decides who does the work.
+ *
+ * The status select only offers what a person may set by hand. `planned`,
+ * `running` and `failed` belong to the planner and the runner, so a task in
+ * one of those states shows it and leaves it alone rather than offering a
+ * value the server would reject.
+ */
 export function TaskFormPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -163,8 +161,7 @@ export function TaskFormPage() {
 
   const { errors, failure, saving, submit } = useFormSubmit(schema, draft, async () => {
     const patch = buildPatch(draft);
-    const saved =
-      editing && id ? await api.updateTask(id, patch) : await api.createTask(toInput(patch));
+    const saved = id ? await api.updateTask(id, patch) : await api.createTask(toInput(patch));
     markSaved();
     await tasks.refresh();
     toast(editing ? 'Task saved' : 'Task created');
@@ -179,7 +176,7 @@ export function TaskFormPage() {
       actions: (
         <FormHeaderActions
           form={formId}
-          cancelTo={editing && id ? '/tasks/' + id : '/tasks'}
+          cancelTo={id ? '/tasks/' + id : '/tasks'}
           submitting={saving}
           submitDisabled={!dirty || saving}
         />
@@ -193,7 +190,7 @@ export function TaskFormPage() {
       <PageBody width="2xl">
         <Fade>
           <EmptyState
-            icon={ListTodoIcon}
+            icon={ClipboardCheckIcon}
             title="This task no longer exists"
             description="It was deleted or never existed."
             actionLabel="View tasks"
@@ -204,8 +201,8 @@ export function TaskFormPage() {
     );
   }
 
-  // Ohne geladene Aufgabe keine Eingabefelder: ein leeres Formular würde die
-  // Aufgabe beim Speichern mit Leerwerten überschreiben.
+  // Without the loaded task there are no input fields: an empty form would
+  // overwrite the task with empty values on save.
   if (editing && !task) {
     return (
       <PageBody width="2xl">
@@ -325,7 +322,7 @@ export function TaskFormPage() {
                 </Select>
                 <FieldDescription>
                   {draft.status === null
-                    ? 'The run sets this status automatically; only Open, Done, and Cancelled can be selected manually.'
+                    ? 'The run sets this status automatically; only Open, Blocked, Done, and Cancelled can be selected manually.'
                     : 'Planned, Running, and Failed are set by the planner or the run itself.'}
                 </FieldDescription>
               </Field>

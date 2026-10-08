@@ -38,7 +38,6 @@ test('a memory.dream PATCH reaches the config instead of being silently dropped'
 
   const before = await app.inject({ method: 'GET', url: '/api/config' });
   assert.equal(before.statusCode, 200);
-  assert.equal(before.json().memory.dream.frameRate, 0.25);
 
   const patched = await app.inject({
     method: 'PATCH',
@@ -51,10 +50,10 @@ test('a memory.dream PATCH reaches the config instead of being silently dropped'
     0.5,
     'the patched value comes back on the answer',
   );
-  assert.equal(
-    patched.json().memory.dream.limitMax,
-    16,
-    'a partial patch does not wipe the rest of the block',
+  assert.deepEqual(
+    { ...patched.json().memory.dream, frameRate: before.json().memory.dream.frameRate },
+    before.json().memory.dream,
+    'a partial patch preserves every other dream setting',
   );
 
   const after = await app.inject({ method: 'GET', url: '/api/config' });
@@ -71,6 +70,7 @@ test('dream values outside their clamped range are refused, not silently written
   const app = Fastify();
   t.after(() => app.close());
   await registerConfigRoutes(app, context);
+  const before = structuredClone(context.config.memory.dream);
 
   const rejected = await app.inject({
     method: 'PATCH',
@@ -78,9 +78,5 @@ test('dream values outside their clamped range are refused, not silently written
     payload: { memory: { dream: { frameRate: 5 } } },
   });
   assert.equal(rejected.statusCode, 400, 'a share above 1 is not a share');
-  assert.equal(
-    context.config.memory.dream.frameRate,
-    0.25,
-    'and the refusal left the stored value alone',
-  );
+  assert.deepEqual(context.config.memory.dream, before, 'the refusal leaves all dream settings unchanged');
 });

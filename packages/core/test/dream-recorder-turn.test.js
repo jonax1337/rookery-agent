@@ -290,7 +290,7 @@ test('the prompt is unchanged by the recorder', async () => {
     config: {
       home: homeFor('off'),
       logLevel: 'silent',
-      memory: { enabled: true, autoExtract: false },
+      memory: { enabled: true, autoExtract: false, dream: { enabled: false } },
       org: { autoReview: false },
     },
   });

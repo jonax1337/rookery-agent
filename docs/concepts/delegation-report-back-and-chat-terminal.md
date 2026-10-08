@@ -27,8 +27,8 @@ Vorlaeufer: `work-as-one-surface.md` (die Karte ist der Vorgang) und
 - **Chat = Terminal:** `ConversationTerminal` in `providers/claude-tui.ts`
   (`submit`, Bracketed Paste falls die TUI ihn einschaltet, zweites Enter nach
   7,5 s, `/`- und `!`-Eingaben enden auf ruhigem Bildschirm), Kontext-Hook
-  `promptContextHookCommand`. In `runtime.ts`: `#answersInTerminal`,
-  `#terminalTurn`, `#chatTerminal` (Signatur = Modell, Effort, Rechte,
+  `promptContextHookCommand`. In `assistant/`: `TerminalTurn` (`terminal-turn.ts`),
+  `ConversationTerminals.canTakeTurn`/`.ensure` in `terminals.ts` (Signatur = Modell, Effort, Rechte,
   Projekt, Tool-Server). Rueckmelde-Turns uebernehmen ein laufendes Terminal
   unveraendert, statt es auf Defaults neu zu starten. Schalter
   `turns.terminal` unter Settings → Behavior → Conversations.

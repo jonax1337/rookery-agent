@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   AudioLinesIcon,
@@ -43,22 +43,23 @@ import {
 import { Kbd, KbdGroup } from '@/components/ui/kbd';
 import { Switch } from '@/components/ui/switch';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { useChat } from '@/hooks/useChat';
+import type { ChatState } from '@/hooks/useChat';
 import { useMicLevel } from '@/hooks/useMicLevel';
+import {
+  useAssignmentAnnouncements,
+  useRecentActivity,
+  useSpokenReply,
+  useStoredToggle,
+  useVoiceConversation,
+} from '@/hooks/useVoiceStage';
 import { useVoiceOutput } from '@/hooks/useVoiceOutput';
-import { useSpeechInput } from '@/hooks/useWakeWord';
 import { api } from '@/lib/api';
 import { greeting } from '@/lib/format';
-import { cleanForSpeech, SentenceSplitter } from '@/lib/speech';
-import type { TtsCatalogue, TtsVoice, VoiceConfig } from '@/lib/types';
+import { useSpeechInput, type SpeechInputState } from '@/hooks/useWakeWord';
+import type { TtsCatalogue, TtsVoice, VoiceConfig, VoiceEngine } from '@/lib/types';
 import { cn } from '@/lib/utils';
 import { VOICE_ENGINE_LABEL, VOICE_PITCH, VOICE_RATE } from '@/lib/voice';
-import {
-  useChatSession,
-  useConfig,
-  useConnection,
-  useSessionsState,
-} from '@/providers/rookery-provider';
+import { useChatSession, useConfig } from '@/providers/rookery-provider';
 
 /**
  * The hands-free screen.
@@ -83,199 +84,58 @@ import {
 
 const WAKE_PREFERENCE = 'rookery.voice.requireWake';
 const BARGE_IN_PREFERENCE = 'rookery.voice.bargeIn';
-const VOICE_SESSION = 'rookery.voice.sessionId';
 
-/** Where "Beenden" goes: the conversation list, filtered to the spoken ones. */
+/** Where leaving goes: the conversation list, filtered to the spoken ones. */
 const EXIT_TO = '/chats?art=voice';
-
-function readStored(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeStored(key: string, value: string | null): void {
-  try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {
-    // Private mode; the preference lives for this visit only.
-  }
-}
-
-/** Lowercase words only, so a recognised echo of our own voice compares cleanly. */
-function normalise(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9äöüß ]+/g, ' ').replace(/ +/g, ' ').trim();
-}
-
-/**
- * Did the microphone just hear the assistant itself? True when most of the
- * words were part of what the voice has been saying. Barge-in relies on it
- * with speakers instead of headphones.
- */
-function isEcho(heard: string, spoken: string[]): boolean {
-  const text = normalise(heard);
-  if (!text) return true;
-  const corpus = ' ' + spoken.join(' ') + ' ';
-  if (corpus.includes(' ' + text + ' ')) return true;
-  const words = text.split(' ').filter((word) => word.length > 2);
-  if (words.length < 2) return corpus.includes(' ' + text + ' ');
-  const hits = words.filter((word) => corpus.includes(' ' + word + ' ')).length;
-  return hits / words.length >= 0.6;
-}
-
-function readWakePreference(): boolean {
-  return readStored(WAKE_PREFERENCE) === '1';
-}
 
 export function VoicePage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { socket } = useConnection();
   const { config, assistantName, save } = useConfig();
   const { turn } = useChatSession();
-  const sessions = useSessionsState();
 
   const buildPayload = turn.buildVoicePayload;
   const voice = useVoiceOutput(config?.voice);
   const mic = useMicLevel();
+  const { chat, forgetSession } = useVoiceConversation(searchParams.get('session'));
+  const { answer, enqueue, beginTurn, cancelReply, greet, isOwnEcho } = useSpokenReply(
+    chat,
+    voice,
+    config?.voice.speakCleanText !== false,
+  );
 
   const [phase, setPhase] = useState<'gate' | 'live'>('gate');
   const [muted, setMuted] = useState(false);
-  const [requireWake, setRequireWake] = useState(readWakePreference);
+  const [requireWake, setRequireWake] = useStoredToggle(WAKE_PREFERENCE);
+  const [bargeIn, setBargeIn] = useStoredToggle(BARGE_IN_PREFERENCE);
   const [heard, setHeard] = useState('');
   const [micDenied, setMicDenied] = useState(false);
-  const [pointerActive, setPointerActive] = useState(true);
+  // The control bar fades out after a few seconds without activity and comes
+  // back on any. Whether the fade happens at all is decided in CSS by
+  // `@media (hover: hover)`: on a touch screen nothing moves a pointer, so a
+  // faded bar would be unrecoverable.
+  const pointerActive = useRecentActivity(phase === 'live');
   // The keyboard's own reason to keep the bar: as long as the focus sits in
   // it, it must not fade. A faded bar is `opacity: 0`, not `display: none` -
   // its six buttons stay in the tab order, so fading one out from under a
   // keyboard is a focus ring nobody can see.
   const [barFocus, setBarFocus] = useState(false);
-  const [bargeIn, setBargeIn] = useState(() => readStored(BARGE_IN_PREFERENCE) === '1');
   const [settingsOpen, setSettingsOpen] = useState(false);
-
-  /* ------------------------------ session ------------------------------- */
-
-  // Hands-free has its own conversation with the assistant, kept apart from
-  // the text chats. It survives leaving the screen; the reset button starts over.
-  // `/voice?session=<id>` re-enters an earlier voice conversation from the list.
-  const [voiceSessionId, setVoiceSessionId] = useState<string | null>(() => {
-    const requested = searchParams.get('session');
-    if (requested) writeStored(VOICE_SESSION, requested);
-    return requested ?? readStored(VOICE_SESSION);
-  });
-  // The list refreshes through the provider; read it through a ref so the
-  // callbacks below keep their identity across a refetch.
-  const refreshSessions = sessions.refresh;
-  const refreshRef = useRef(refreshSessions);
-  refreshRef.current = refreshSessions;
-  const onSession = useCallback((id: string) => {
-    setVoiceSessionId(id);
-    writeStored(VOICE_SESSION, id);
-    void api
-      .patchSession(id, { title: 'Voice conversation · ' + new Date().toLocaleDateString('en-GB') })
-      .catch(() => undefined)
-      .then(() => void refreshRef.current());
-  }, []);
-  const onSettled = useCallback(() => void refreshRef.current(), []);
-  const chat = useChat(socket, voiceSessionId, onSession, onSettled);
-
-  // A remembered conversation the server no longer has must not be reused.
-  useEffect(() => {
-    if (!voiceSessionId) return;
-    void api.session(voiceSessionId).catch(() => {
-      setVoiceSessionId(null);
-      writeStored(VOICE_SESSION, null);
-    });
-  }, [voiceSessionId]);
 
   const lang = config?.voice.lang ?? 'en-GB';
   const wakeWord = config?.voice.wakeWord ?? '';
-  const cleanText = config?.voice.speakCleanText !== false;
-
-  /* ------------------------------ speaking ------------------------------ */
-
-  const splitterRef = useRef(new SentenceSplitter());
-  /** Cleaned text of the stream so far, to know what has been handed to the voice. */
-  const streamRef = useRef('');
-  const turnStartedAtRef = useRef(0);
-  const turnOpenRef = useRef(false);
-  const cancelledRef = useRef(false);
-  /** What the voice has said lately, to recognise its own echo in the microphone. */
-  const spokenRef = useRef<string[]>([]);
-  const { enqueue: enqueueRaw, stop: stopVoice } = voice;
-  const enqueue = useCallback(
-    (sentence: string) => {
-      spokenRef.current = [...spokenRef.current.slice(-15), normalise(sentence)];
-      enqueueRaw(sentence);
-    },
-    [enqueueRaw],
-  );
-
-  const prepare = useCallback(
-    (markdown: string): string => (cleanText ? cleanForSpeech(markdown) : markdown),
-    [cleanText],
-  );
-
-  // Hand every sentence to the voice as soon as the stream completes it.
-  useEffect(() => {
-    if (!chat.busy || !chat.streaming || cancelledRef.current) return;
-    const cleaned = prepare(chat.streaming);
-    streamRef.current = cleaned;
-    for (const sentence of splitterRef.current.feed(cleaned)) enqueue(sentence);
-  }, [chat.busy, chat.streaming, enqueue, prepare]);
-
-  // The turn ended: read whatever is left, including text only the final
-  // message carried, and never an older answer.
-  useEffect(() => {
-    if (chat.busy) {
-      turnOpenRef.current = true;
-      return;
-    }
-    if (!turnOpenRef.current) return;
-    turnOpenRef.current = false;
-
-    const splitter = splitterRef.current;
-    if (!cancelledRef.current) {
-      const answer = [...chat.messages]
-        .reverse()
-        .find(
-          (message) =>
-            message.role === 'assistant' && message.createdAt >= turnStartedAtRef.current,
-        );
-      const final = answer ? prepare(answer.content) : '';
-      if (final) {
-        if (!streamRef.current) splitter.reset();
-        if (final.startsWith(streamRef.current) || !streamRef.current) {
-          for (const sentence of splitter.feed(final)) enqueue(sentence);
-        }
-      }
-      for (const sentence of splitter.flush()) enqueue(sentence);
-    }
-    splitter.reset();
-    streamRef.current = '';
-    cancelledRef.current = false;
-  }, [chat.busy, chat.messages, enqueue, prepare]);
-
-  /* ------------------------------ listening ----------------------------- */
 
   const onUtterance = useCallback(
     (text: string) => {
       const body = text.trim();
       if (!body || chat.busy) return;
       // With barge-in the microphone stays open while we talk; ignore ourselves.
-      if (voice.speaking && isEcho(body, spokenRef.current)) return;
-      stopVoice();
-      splitterRef.current.reset();
-      streamRef.current = '';
-      cancelledRef.current = false;
-      turnStartedAtRef.current = Date.now();
+      if (isOwnEcho(body)) return;
+      beginTurn();
       setHeard(body);
       chat.send(buildPayload(body));
     },
-    [buildPayload, chat, stopVoice, voice.speaking],
+    [beginTurn, buildPayload, chat, isOwnEcho],
   );
 
   const stt = useSpeechInput({
@@ -288,8 +148,6 @@ export function VoicePage() {
     paused: (voice.speaking && !bargeIn) || chat.busy,
   });
 
-  /* ------------------------------ lifecycle ----------------------------- */
-
   const start = useCallback(async () => {
     voice.unlock();
     try {
@@ -299,12 +157,10 @@ export function VoicePage() {
     }
     // Go live at once; the microphone prompt must not hold the screen hostage.
     setPhase('live');
-    const line = greeting() + ' Listening.';
-    spokenRef.current = [normalise(line)];
-    voice.speak(line);
+    greet(greeting() + ' Listening.');
     const granted = await mic.start();
     setMicDenied(!granted);
-  }, [mic, voice]);
+  }, [greet, mic, voice]);
 
   const exit = useCallback(() => {
     voice.stop();
@@ -315,15 +171,11 @@ export function VoicePage() {
 
   /** Tap on the orb or Space: shut the voice up, or abort the thinking. */
   const interrupt = useCallback(() => {
-    if (voice.speaking) {
-      cancelledRef.current = true;
-      voice.stop();
-    } else if (chat.busy) {
-      cancelledRef.current = true;
-      voice.stop();
-      chat.abort();
-    }
-  }, [chat, voice]);
+    if (!voice.speaking && !chat.busy) return;
+    cancelReply();
+    voice.stop();
+    if (!voice.speaking) chat.abort();
+  }, [cancelReply, chat, voice]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
@@ -341,71 +193,15 @@ export function VoicePage() {
     return () => window.removeEventListener('keydown', onKey);
   }, [exit, interrupt, phase]);
 
-  // The control bar fades out after a few seconds without pointer activity and
-  // comes back on any movement. Whether the fade happens at all is decided in
-  // CSS by `@media (hover: hover)`: on a touch screen nothing moves a pointer,
-  // so a faded bar would be unrecoverable.
-  //
-  // A key press wakes it too, and for the same reason: someone who reaches the
-  // bar with Tab has no pointer to move, and the bar has to be there before
-  // the focus ring lands on it.
-  useEffect(() => {
-    if (phase !== 'live') return;
-    let timer = 0;
-    const wake = (): void => {
-      setPointerActive(true);
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => setPointerActive(false), 2800);
-    };
-    wake();
-    window.addEventListener('pointermove', wake);
-    window.addEventListener('pointerdown', wake);
-    window.addEventListener('keydown', wake);
-    return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener('pointermove', wake);
-      window.removeEventListener('pointerdown', wake);
-      window.removeEventListener('keydown', wake);
-    };
-  }, [phase]);
-
-  // Agents finishing in the background get announced, so the user can keep
-  // talking while they work and still hear when a result is in.
-  useEffect(() => {
-    if (phase !== 'live') return;
-    const seen = new Map<string, string>();
-    return socket.onAssignment((assignment) => {
-      const previous = seen.get(assignment.id);
-      seen.set(assignment.id, assignment.status);
-      if (!previous || previous === assignment.status) return;
-      if (assignment.status === 'done') {
-        enqueue(assignment.agentName + ' has finished. Ask for the result.');
-      } else if (assignment.status === 'failed') {
-        enqueue(assignment.agentName + ' has failed.');
-      }
-    });
-  }, [enqueue, phase, socket]);
+  useAssignmentAnnouncements(phase === 'live', enqueue);
 
   const { reset: resetChat } = chat;
   const newConversation = useCallback(() => {
     voice.stop();
     resetChat();
     setHeard('');
-    setVoiceSessionId(null);
-    writeStored(VOICE_SESSION, null);
-  }, [resetChat, voice]);
-
-  const toggleBargeIn = useCallback((on: boolean) => {
-    setBargeIn(on);
-    writeStored(BARGE_IN_PREFERENCE, on ? '1' : '0');
-  }, []);
-
-  const toggleWake = useCallback((on: boolean) => {
-    setRequireWake(on);
-    writeStored(WAKE_PREFERENCE, on ? '1' : '0');
-  }, []);
-
-  /* -------------------------------- view -------------------------------- */
+    forgetSession();
+  }, [forgetSession, resetChat, voice]);
 
   const state: OrbState = voice.speaking
     ? 'speaking'
@@ -423,55 +219,28 @@ export function VoicePage() {
     [listening, micLevel, speaking, voiceLevel],
   );
 
-  const answer = useMemo(() => {
-    if (chat.streaming) return prepare(chat.streaming);
-    const last = [...chat.messages]
-      .reverse()
-      .find(
-        (message) => message.role === 'assistant' && message.createdAt >= turnStartedAtRef.current,
-      );
-    return last ? prepare(last.content) : '';
-  }, [chat.messages, chat.streaming, prepare]);
-
-  const status = (() => {
-    if (phase === 'gate') {
-      return stt.supported ? 'Voice mode' : 'Speech recognition requires a supported browser, such as Chrome or Edge.';
-    }
-    if (voice.speaking) return assistantName;
-    if (chat.busy) {
-      // Voice keeps tool activity out of the spoken and visual conversation.
-      const current = [...chat.activity].reverse().find((item) => !item.done && item.kind === 'assignment');
-      if (current?.kind === 'assignment') return current.label + ' is working …';
-      return 'Thinking …';
-    }
-    if (muted) return 'Microphone off';
-    if (stt.interim) return stt.interim;
-    if (!stt.supported) return 'Speech recognition is unavailable in this browser.';
-    return requireWake && wakeWord ? '“' + wakeWord + ', …”' : 'Listening.';
-  })();
+  const status = captionOf({
+    phase,
+    speech: stt,
+    speaking: voice.speaking,
+    busy: chat.busy,
+    activity: chat.activity,
+    muted,
+    requireWake,
+    wakeWord,
+    assistantName,
+  });
 
   const warning = micDenied
     ? 'Microphone level access failed. The orb stays still; speech recognition may still work.'
     : stt.error ?? (voice.error ? 'Server voice unavailable. Using the browser voice.' : null);
 
-  const voiceLabel =
-    VOICE_ENGINE_LABEL[voice.engine] +
-    (voice.engine === 'edge' && config?.voice.edgeVoice
-      ? ' · ' +
-        (config.voice.edgeVoice.match(/-(\w+?)(?:Multilingual)?Neural$/)?.[1] ??
-          config.voice.edgeVoice)
-      : '');
+  const voiceLabel = describeVoice(voice.engine, config?.voice.edgeVoice);
 
   // Muted or broken states keep the bar pinned, and so does the focus sitting
   // inside it; otherwise it follows the pointer, and only where there is one -
   // see `.voice-controls`.
-  const barIdle = !(
-    pointerActive ||
-    barFocus ||
-    muted ||
-    Boolean(warning) ||
-    settingsOpen
-  );
+  const barIdle = !(pointerActive || barFocus || muted || Boolean(warning) || settingsOpen);
 
   return (
     // `dark` is not a theme choice here but a fact: every shadcn primitive on
@@ -479,7 +248,6 @@ export function VoicePage() {
     <div className="voice-stage dark fixed inset-0 z-50 select-none overflow-hidden">
       <VoiceOrb state={state} getLevel={getLevel} dim={phase === 'gate'} className="absolute inset-0" />
 
-      {/* Top bar */}
       <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between p-4 sm:p-6">
         {/* Every white on `--voice-ground` here is held at /55 or above: below
             that the 4,5:1 minimum breaks, and the orb behind the text is not a
@@ -597,7 +365,6 @@ export function VoicePage() {
         </Fade>
       ) : null}
 
-      {/* Bottom controls */}
       {phase === 'live' ? (
         <Fade
           delay={50}
@@ -657,13 +424,13 @@ export function VoicePage() {
                     ? 'Only utterances containing “' + wakeWord + '” are accepted'
                     : 'No wake word configured'
                 }
-                onToggle={() => toggleWake(!requireWake)}
+                onToggle={() => setRequireWake(!requireWake)}
               />
               <VoiceToggle
                 label="Barge in"
                 on={bargeIn}
                 hint="Keep the microphone on while the assistant speaks"
-                onToggle={() => toggleBargeIn(!bargeIn)}
+                onToggle={() => setBargeIn(!bargeIn)}
               />
 
               <ButtonGroupSeparator />
@@ -702,15 +469,57 @@ export function VoicePage() {
         }}
         requireWake={requireWake}
         wakeWord={wakeWord}
-        onRequireWake={toggleWake}
+        onRequireWake={setRequireWake}
         bargeIn={bargeIn}
-        onBargeIn={toggleBargeIn}
+        onBargeIn={setBargeIn}
       />
     </div>
   );
 }
 
-/* ------------------------------ the controls ----------------------------- */
+/** The one line under the orb (or on the start gate) that says what the screen is doing. */
+function captionOf({
+  phase,
+  speech,
+  speaking,
+  busy,
+  activity,
+  muted,
+  requireWake,
+  wakeWord,
+  assistantName,
+}: {
+  phase: 'gate' | 'live';
+  speech: SpeechInputState;
+  speaking: boolean;
+  busy: boolean;
+  activity: ChatState['activity'];
+  muted: boolean;
+  requireWake: boolean;
+  wakeWord: string;
+  assistantName: string;
+}): string {
+  if (phase === 'gate') {
+    return speech.supported ? 'Voice mode' : 'Speech recognition requires a supported browser, such as Chrome or Edge.';
+  }
+  if (speaking) return assistantName;
+  if (busy) {
+    // Voice keeps tool activity out of the spoken and visual conversation.
+    const working = [...activity].reverse().find((item) => !item.done && item.kind === 'assignment');
+    return working ? working.label + ' is working …' : 'Thinking …';
+  }
+  if (muted) return 'Microphone off';
+  if (speech.interim) return speech.interim;
+  if (!speech.supported) return 'Speech recognition is unavailable in this browser.';
+  return requireWake && wakeWord ? '“' + wakeWord + ', …”' : 'Listening.';
+}
+
+/** The engine, and for Edge the short name of its voice (`en-GB-SoniaNeural` reads `Sonia`). */
+function describeVoice(engine: VoiceEngine, edgeVoice: string | undefined): string {
+  if (engine !== 'edge' || !edgeVoice) return VOICE_ENGINE_LABEL[engine];
+  const shortName = edgeVoice.match(/-(\w+?)(?:Multilingual)?Neural$/)?.[1] ?? edgeVoice;
+  return VOICE_ENGINE_LABEL[engine] + ' · ' + shortName;
+}
 
 /** One round icon button in the bar: a tooltip on top of the aria-label. */
 function VoiceAction({
@@ -811,10 +620,8 @@ function VoiceToggle({
   );
 }
 
-/* ------------------------------ the settings ----------------------------- */
-
 /**
- * Stimme und Aufnahme, without leaving the screen.
+ * Voice and microphone settings, without leaving the screen.
  *
  * The gear used to navigate to `/settings`, which meant dropping out of
  * fullscreen, losing the microphone and the conversation, and finding the way
@@ -865,33 +672,14 @@ function VoiceSettingsDrawer({
   const engine = voice?.engine ?? 'browser';
   const options = useMemo<EntityOption[]>(() => {
     if (!voice || !catalogue) return [];
-    const list: TtsVoice[] =
-      engine === 'edge'
-        ? catalogue.edge.filter(
-            (entry) =>
-              entry.lang.toLowerCase().startsWith((voice.lang.split('-')[0] ?? 'en').toLowerCase()) ||
-              entry.id.includes('Multilingual'),
-          )
-        : engine === 'elevenlabs'
-          ? catalogue.elevenlabs
-          : engine === 'openai'
-            ? catalogue.openai
-            : [];
-    return list.map((entry) => ({
+    return voicesFor(catalogue, voice).map((entry) => ({
       value: entry.id,
       label: entry.name,
       ...(entry.lang ? { hint: entry.lang } : {}),
     }));
-  }, [catalogue, engine, voice]);
+  }, [catalogue, voice]);
 
-  const selected =
-    engine === 'edge'
-      ? (voice?.edgeVoice ?? '')
-      : engine === 'elevenlabs'
-        ? (voice?.elevenLabsVoiceId ?? '')
-        : engine === 'openai'
-          ? (voice?.openaiVoice ?? '')
-          : '';
+  const selected = voice ? selectedVoiceOf(voice) : '';
 
   const chooseVoice = (value: string | null): void => {
     const id = value ?? '';
@@ -932,9 +720,9 @@ function VoiceSettingsDrawer({
             </Field>
           )}
 
-          {/* Derselbe Regler wie in den Einstellungen, aus `form-kit`; die
-              Grenzen stehen in `lib/voice.ts`. Auf dem Sheet ohne Hinweiszeile
-              und mit `onCommit`, damit ein Zug nicht zwanzig PATCHes schickt. */}
+          {/* The same slider as in Settings, from `form-kit`; its bounds live
+              in `lib/voice.ts`. On the sheet it has no hint line and commits
+              on release, so a drag does not send twenty PATCHes. */}
           <SliderField
             id="voice-rate"
             label="Speed"
@@ -985,4 +773,22 @@ function VoiceSettingsDrawer({
       </FieldGroup>
     </DetailDrawer>
   );
+}
+
+/** The voices the active server engine offers; the browser engine has no catalogue. */
+function voicesFor(catalogue: TtsCatalogue, voice: VoiceConfig): TtsVoice[] {
+  if (voice.engine === 'elevenlabs') return catalogue.elevenlabs;
+  if (voice.engine === 'openai') return catalogue.openai;
+  if (voice.engine !== 'edge') return [];
+  const language = (voice.lang.split('-')[0] ?? 'en').toLowerCase();
+  return catalogue.edge.filter(
+    (entry) => entry.lang.toLowerCase().startsWith(language) || entry.id.includes('Multilingual'),
+  );
+}
+
+function selectedVoiceOf(voice: VoiceConfig): string {
+  if (voice.engine === 'edge') return voice.edgeVoice;
+  if (voice.engine === 'elevenlabs') return voice.elevenLabsVoiceId;
+  if (voice.engine === 'openai') return voice.openaiVoice;
+  return '';
 }

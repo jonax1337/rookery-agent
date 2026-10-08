@@ -1,5 +1,7 @@
 import type { Provider } from '../types.js';
 import { formatDay } from '../util/time.js';
+import { clip } from '../util/queue.js';
+import { parseJsonObject } from './json-reply.js';
 
 /**
  * Model calls behind agent performance management
@@ -55,6 +57,12 @@ short lowercase-with-dashes labels for what stood out, e.g. "scope-miss", "unver
 Reply with a JSON object ONLY, no prose, no code fence:
 {"overall":4,"quality":4,"completeness":5,"reliability":4,"communication":3,"efficiency":null,"comment":"...","tags":["thorough"]}`;
 
+const ROLE_INSTRUCTIONS_CLIP = 1000;
+const CURRENT_INSTRUCTIONS_CLIP = 2000;
+const REASON_MAX = 600;
+const AGENT_NOTE_MAX = 800;
+const INSTRUCTIONS_MAX = 4000;
+
 export interface JudgeAssignmentInput {
   role: string;
   instructions: string;
@@ -72,11 +80,10 @@ export async function judgeAssignment(
   const prompt =
     JUDGMENT_PROMPT +
     '\n\nROLE: ' + input.role +
-    '\nSTANDING INSTRUCTIONS: ' + clip(input.instructions, 1000) +
+    '\nSTANDING INSTRUCTIONS: ' + clip(input.instructions, ROLE_INSTRUCTIONS_CLIP) +
     '\n\nTASK:\n' + clip(input.task, 4000) +
     '\n\nREPORT:\n' + clip(input.report, 6000);
-  const output = await runForJson(provider, prompt, input.model, input.signal);
-  return output ? parseJudgment(output) : null;
+  return parseJudgment(await runForJson(provider, prompt, input.model, input.signal));
 }
 
 export function parseJudgment(raw: string): AssignmentJudgment | null {
@@ -153,13 +160,12 @@ export async function draftNote(provider: Provider, input: DraftNoteInput): Prom
   const prompt =
     NOTE_PROMPT +
     '\n\nROLE: ' + input.roleTitle +
-    '\nSTANDING INSTRUCTIONS: ' + clip(input.instructions, 1000) +
+    '\nSTANDING INSTRUCTIONS: ' + clip(input.instructions, ROLE_INSTRUCTIONS_CLIP) +
     '\n\nRECENT REVIEWS:\n' + reviewLines(input.reviews);
-  const output = await runForJson(provider, prompt, input.model, input.signal);
-  const record = output ? parseJsonObject(output) : null;
+  const record = await askForRecord(provider, prompt, input);
   if (!record) return null;
-  const reason = text(record.reason, 600);
-  const agentNote = sanitizeAgentNote(text(record.agentNote, 800));
+  const reason = text(record.reason, REASON_MAX);
+  const agentNote = sanitizeAgentNote(text(record.agentNote, AGENT_NOTE_MAX));
   if (!reason || !agentNote) return null;
   return { reason, agentNote };
 }
@@ -198,14 +204,13 @@ export async function draftReconfig(
   const prompt =
     RECONFIG_PROMPT +
     '\n\nROLE: ' + input.roleTitle +
-    '\nCURRENT STANDING INSTRUCTIONS:\n' + clip(input.instructions, 2000) +
+    '\nCURRENT STANDING INSTRUCTIONS:\n' + clip(input.instructions, CURRENT_INSTRUCTIONS_CLIP) +
     '\n\nRECENT REVIEWS:\n' + reviewLines(input.reviews);
-  const output = await runForJson(provider, prompt, input.model, input.signal);
-  const record = output ? parseJsonObject(output) : null;
+  const record = await askForRecord(provider, prompt, input);
   if (!record) return null;
-  const reason = text(record.reason, 600);
-  const agentNote = sanitizeAgentNote(text(record.agentNote, 800));
-  const newInstructions = text(record.newInstructions, 4000);
+  const reason = text(record.reason, REASON_MAX);
+  const agentNote = sanitizeAgentNote(text(record.agentNote, AGENT_NOTE_MAX));
+  const newInstructions = text(record.newInstructions, INSTRUCTIONS_MAX);
   if (!reason || !agentNote || !newInstructions) return null;
   return { reason, agentNote, newInstructions };
 }
@@ -250,16 +255,15 @@ export async function draftReplacementProposal(
     REPLACEMENT_PROMPT +
     '\n\nOUTGOING AGENT: ' + input.currentName +
     '\nROLE: ' + input.roleTitle +
-    '\nCURRENT STANDING INSTRUCTIONS:\n' + clip(input.instructions, 2000) +
+    '\nCURRENT STANDING INSTRUCTIONS:\n' + clip(input.instructions, CURRENT_INSTRUCTIONS_CLIP) +
     '\n\nRECENT REVIEWS:\n' + reviewLines(input.reviews);
-  const output = await runForJson(provider, prompt, input.model, input.signal);
-  const record = output ? parseJsonObject(output) : null;
+  const record = await askForRecord(provider, prompt, input);
   if (!record) return null;
   const reason = text(record.reason, 1000);
   const successorName = text(record.successorName, 60);
   const successorSlug = text(record.successorSlug, 60);
   const successorTitle = text(record.successorTitle, 100);
-  const successorInstructions = text(record.successorInstructions, 4000);
+  const successorInstructions = text(record.successorInstructions, INSTRUCTIONS_MAX);
   if (!reason || !successorName || !successorTitle || !successorInstructions) return null;
   return { reason, successorName, successorSlug: successorSlug || successorName, successorTitle, successorInstructions };
 }
@@ -300,8 +304,7 @@ export async function draftHandover(provider: Provider, input: HandoverInput): P
     '\n\nOUTGOING AGENT: ' + input.predecessorName +
     '\nROLE: ' + input.roleTitle +
     '\n\nMEMORIES:\n' + clip(lines, 12000);
-  const output = await runForJson(provider, prompt, input.model, input.signal);
-  const record = output ? parseJsonObject(output) : null;
+  const record = await askForRecord(provider, prompt, input);
   const handover = record ? text(record.handover, 2400) : undefined;
   return handover || null;
 }
@@ -322,31 +325,23 @@ async function runForJson(
       else if (event.type === 'error' && event.fatal) return '';
     }
   } catch {
+    // A failed turn yields no reply; callers treat the empty string as "no result".
     return '';
   }
   return output;
 }
 
-function parseJsonObject(raw: string): Record<string, unknown> | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const body = fenced?.[1] ?? trimmed;
-  const start = body.indexOf('{');
-  const end = body.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) return null;
-  try {
-    const parsed = JSON.parse(body.slice(start, end + 1));
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+async function askForRecord(
+  provider: Provider,
+  prompt: string,
+  input: { model?: string; signal?: AbortSignal },
+): Promise<Record<string, unknown> | null> {
+  return parseJsonObject(await runForJson(provider, prompt, input.model, input.signal));
 }
 
 function score(value: unknown): number | undefined {
-  const num = typeof value === 'number' ? value : undefined;
-  if (num === undefined || !Number.isFinite(num)) return undefined;
-  return Math.min(5, Math.max(1, Math.round(num)));
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return Math.min(5, Math.max(1, Math.round(value)));
 }
 
 function text(value: unknown, max: number): string | undefined {
@@ -371,8 +366,4 @@ function sanitizeAgentNote(note: string | undefined): string | undefined {
     return undefined;
   }
   return note;
-}
-
-function clip(text: string, max: number): string {
-  return text.length <= max ? text : text.slice(0, max) + '\n[...clipped]';
 }

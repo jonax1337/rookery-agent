@@ -1,9 +1,9 @@
 import { dirname } from 'node:path';
-import type { RookeryConfig, ToolServerAudience } from '../types.js';
+import type { RookeryConfig } from '../types.js';
 import { enabledExternalSkills, externalScan, sourceEnabled } from '../external/discovery.js';
 import { loadWholeSourceIds } from '../tools/hub.js';
 import type { ExternalSkillRef, ExternalSource } from '../external/shared.js';
-import { readSkillFolder, type Skill } from './store.js';
+import { readSkillFolder, servesAudience, type Skill } from './store.js';
 
 /**
  * The second shelf: skills that belong to the Claude Code installed on
@@ -20,9 +20,6 @@ import { readSkillFolder, type Skill } from './store.js';
  * Read-only throughout: `write_skill` and the skill editor never come here.
  */
 
-const serves = (audience: ToolServerAudience, who: 'assistant' | 'agent'): boolean =>
-  audience === 'both' || (who === 'assistant' ? audience === 'assistant' : audience === 'agents');
-
 /** Every source found, with whether its skills currently count. */
 export function externalSources(config: RookeryConfig): { source: ExternalSource; enabled: boolean }[] {
   const scan = externalScan({ enabled: config.external.enabled });
@@ -37,7 +34,7 @@ export function externalSkillsFor(config: RookeryConfig, who: 'assistant' | 'age
   // does not stand in the turn twice, under two names.
   const loadedWhole = loadWholeSourceIds(config);
   return enabledExternalSkills(scan, config.external.skillSources).filter(
-    (skill) => serves(skill.audience, who) && !loadedWhole.has(skill.sourceId),
+    (skill) => servesAudience(skill.audience, who) && !loadedWhole.has(skill.sourceId),
   );
 }
 

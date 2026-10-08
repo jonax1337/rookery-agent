@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router';
 
 import { toast } from 'sonner';
@@ -15,14 +15,13 @@ import { FormPage } from '@/components/blocks/form-page';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { useConfirm } from '@/components/common/confirm-dialog';
 import { EmptyState } from '@/components/common/empty-state';
-import { EntityCombobox, type EntityOption } from '@/components/forms/entity-combobox';
+import { EntityCombobox } from '@/components/forms/entity-combobox';
 import {
   FormFieldsSkeleton,
   FormHeaderActions,
   useDraft,
   useFormSubmit,
 } from '@/components/forms/form-kit';
-import { Button } from '@/components/ui/button';
 import {
   Field,
   FieldDescription,
@@ -32,21 +31,10 @@ import {
   FieldSet,
 } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemGroup,
-  ItemTitle,
-} from '@/components/ui/item';
 import { Textarea } from '@/components/ui/textarea';
-import type { IconComponent } from "@/components/icons";
-import {
-  DeleteIcon as AnimatedTrash2Icon,
-  UserRoundCogIcon as UserMinusIcon,
-  UsersRoundIcon as AnimatedUsersRoundIcon,
-} from "@/components/icons";
+
+import { EmptyUsersRoundIcon, MenuTrash2Icon } from './teams/teamIcons';
+import { TeamMembersField, activeMembersOf, agentOption } from './teams/TeamMembersField';
 
 /**
  * A team: who is in it, what it is for, and who leads it.
@@ -66,6 +54,8 @@ interface TeamDraft {
 }
 
 const EMPTY: TeamDraft = { name: '', purpose: '', leadId: null };
+
+const TEAMS_PATH = '/org/teams';
 
 const schema = z.object({
   name: z.string().trim().min(1, 'A name is required.'),
@@ -91,20 +81,11 @@ function toInput(patch: TeamPatch): TeamInput {
   };
 }
 
-/**
- * The empty-state and menu icons as animate-ui twins: same paths and stroke
- * as the lucide originals, wiggling once when they enter the viewport (the
- * menu item, whenever the menu opens). `EmptyState` and the form header
- * menu take a `IconComponent` and render it without props, so each animated
- * icon sits in a forwardRef shell that carries its trigger along.
- */
-const EmptyUsersRoundIcon = forwardRef<SVGSVGElement>(function EmptyUsersRoundIcon() {
-  return <AnimatedUsersRoundIcon />;
-});
-
-const MenuTrash2Icon = forwardRef<SVGSVGElement>(function MenuTrash2Icon() {
-  return <AnimatedTrash2Icon />;
-});
+function disbandDescription(teamName: string, memberCount: number): string {
+  if (memberCount === 0) return 'The team “' + teamName + '” is empty and will disappear completely.';
+  const agents = memberCount === 1 ? ' agent will lose' : ' agents will lose';
+  return memberCount + agents + ' their association with “' + teamName + '”. The agents themselves will remain.';
+}
 
 export function TeamFormPage() {
   const { id } = useParams<{ id: string }>();
@@ -117,53 +98,16 @@ export function TeamFormPage() {
 
   const formId = useId();
   const { draft, dirty, set, hydrate, markSaved } = useDraft<TeamDraft>(EMPTY);
-  const [moving, setMoving] = useState<string | null>(null);
 
   useEffect(() => {
     if (!team) return;
     hydrate(team.id, () => draftOf(team));
   }, [hydrate, team]);
 
-  /* ------------------------------ Members ------------------------------ */
-
-  const members = useMemo(
-    () => org.agents.filter((agent) => agent.teamId === id && !agent.archived),
-    [id, org.agents],
-  );
-
-  const candidates = useMemo<EntityOption[]>(
-    () =>
-      org.agents
-        .filter((agent) => !agent.archived && agent.teamId !== id)
-        .map((agent) => ({ value: agent.id, label: agent.name, hint: agent.title })),
-    [id, org.agents],
-  );
-
-  const leadOptions = useMemo<EntityOption[]>(
-    () =>
-      org.agents
-        .filter((agent) => !agent.archived)
-        .map((agent) => ({ value: agent.id, label: agent.name, hint: agent.title })),
+  const leadOptions = useMemo(
+    () => org.agents.filter((agent) => !agent.archived).map(agentOption),
     [org.agents],
   );
-
-  const setTeamOf = useCallback(
-    async (agentId: string, teamId: string | null, done: string): Promise<void> => {
-      setMoving(agentId);
-      try {
-        await api.updateAgent(agentId, { teamId });
-        await org.refresh();
-        toast(done);
-      } catch (caught) {
-        reportFailure('Update', caught);
-      } finally {
-        setMoving(null);
-      }
-    },
-    [org],
-  );
-
-  /* -------------------------------- Sichern ------------------------------- */
 
   const { errors, failure, saving, submit } = useFormSubmit(schema, draft, async () => {
     const patch = buildPatch(draft);
@@ -172,21 +116,15 @@ export function TeamFormPage() {
     markSaved();
     await org.refresh();
     toast(editing ? 'Team saved' : 'Team created');
-    void navigate('/org/teams');
+    void navigate(TEAMS_PATH);
   });
 
   const dissolve = useCallback(async (): Promise<void> => {
     if (!id || !team) return;
+    const memberCount = activeMembersOf(org.agents, id).length;
     const ok = await confirm({
       title: 'Disband team?',
-      description:
-        members.length === 0
-          ? 'The team “' + team.name + '” is empty and will disappear completely.'
-          : members.length +
-            (members.length === 1 ? ' agent will lose' : ' agents will lose') +
-            ' their association with “' +
-            team.name +
-            '”. The agents themselves will remain.',
+      description: disbandDescription(team.name, memberCount),
       confirmLabel: 'Disband',
       destructive: true,
     });
@@ -195,27 +133,25 @@ export function TeamFormPage() {
       await api.deleteTeam(id);
       await org.refresh();
       toast('Team disbanded', { description: team.name });
-      void navigate('/org/teams');
+      void navigate(TEAMS_PATH);
     } catch (caught) {
       reportFailure('Disband', caught);
     }
-  }, [confirm, id, members.length, navigate, org, team]);
-
-  /* --------------------------------- Kopf --------------------------------- */
+  }, [confirm, id, navigate, org, team]);
 
   const leaf = editing ? (team?.name ?? 'Edit team') : 'Create team';
 
   usePageMeta(
     {
       breadcrumb: [
-        { label: 'Organization', to: '/org/teams' },
-        { label: 'Teams', to: '/org/teams' },
+        { label: 'Organization', to: TEAMS_PATH },
+        { label: 'Teams', to: TEAMS_PATH },
         { label: leaf },
       ],
       actions: (
         <FormHeaderActions
           form={formId}
-          cancelTo="/org/teams"
+          cancelTo={TEAMS_PATH}
           submitting={saving}
           submitDisabled={!dirty || saving}
           menu={
@@ -236,8 +172,6 @@ export function TeamFormPage() {
     [dirty, dissolve, editing, formId, saving],
   );
 
-  /* ------------------------------- Zustände ------------------------------- */
-
   if (editing && !team && !org.loading) {
     return (
       <PageBody width="2xl">
@@ -247,7 +181,7 @@ export function TeamFormPage() {
             title="This team no longer exists"
             description="It was disbanded or never existed."
             actionLabel="View teams"
-            actionTo="/org/teams"
+            actionTo={TEAMS_PATH}
           />
         </Fade>
       </PageBody>
@@ -313,70 +247,12 @@ export function TeamFormPage() {
           </FieldSet>
         </Fade>
 
-        {editing && id ? (
+        {team ? (
           <>
             <FieldSeparator />
             <Fade delay={100}>
               <FieldSet>
-                <Field>
-                  <FieldLabel htmlFor="team-add-member">Members</FieldLabel>
-                  {members.length ? (
-                    <ItemGroup className="gap-2">
-                      {members.map((agent) => (
-                        <Item key={agent.id} variant="outline" size="sm">
-                          <ItemContent>
-                            <ItemTitle className="font-normal">{agent.name}</ItemTitle>
-                            <ItemDescription className="text-xs">{agent.title}</ItemDescription>
-                          </ItemContent>
-                          <ItemActions>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              disabled={moving === agent.id}
-                              onClick={() =>
-                                void setTeamOf(agent.id, null, agent.name + ' is now without a team')
-                              }
-                            >
-                              <UserMinusIcon data-icon="inline-start" />
-                              Remove
-                            </Button>
-                          </ItemActions>
-                        </Item>
-                      ))}
-                    </ItemGroup>
-                  ) : (
-                    <Fade>
-                      <EmptyState
-                        icon={EmptyUsersRoundIcon}
-                        title="No team members yet"
-                        description="Use the selection below to add the first agent."
-                        variant="plain"
-                        size="sm"
-                      />
-                    </Fade>
-                  )}
-                  <EntityCombobox
-                    id="team-add-member"
-                    options={candidates}
-                    value={null}
-                    clearable={false}
-                    onChange={(agentId) => {
-                      if (!agentId) return;
-                      const agent = org.agents.find((entry) => entry.id === agentId);
-                      void setTeamOf(
-                        agentId,
-                        id,
-                        (agent?.name ?? 'Agent') + ' now belongs to ' + draft.name,
-                      );
-                    }}
-                    placeholder="Add agent"
-                    emptyLabel="All agents are already here"
-                  />
-                  <FieldDescription>
-                    Membership changes are saved immediately, independently of the fields above.
-                  </FieldDescription>
-                </Field>
+                <TeamMembersField teamId={team.id} teamName={team.name} />
               </FieldSet>
             </Fade>
           </>

@@ -1,6 +1,5 @@
 "use client";
 
-
 import type { ReactNode } from "react";
 
 import { BadgeAlertIcon as CircleAlertIcon, CheckIcon, ChevronRightIcon } from "@/components/icons";
@@ -14,6 +13,7 @@ import {
   collapsePanel,
   field,
   mono,
+  PanelDivider,
   ShimmerLabel,
   SwapLabel,
 } from "./surfaces";
@@ -38,6 +38,13 @@ export interface ToolCallProps {
   children?: ReactNode;
 }
 
+/** What a call is doing, as the trigger's accessible name and the empty result's placeholder say it. */
+function callPhase(running: boolean, failed: boolean) {
+  if (running) return { state: "Running", emptyResult: "In progress…" };
+  if (failed) return { state: "Not completed", emptyResult: "No result received." };
+  return { state: "Completed", emptyResult: "Completed without output." };
+}
+
 export function ToolCall({
   label,
   activeLabel,
@@ -51,6 +58,7 @@ export function ToolCall({
   className,
   children,
 }: ToolCallProps) {
+  const phase = callPhase(running, failed);
   return (
     <Collapsible
       data-slot="tool-call"
@@ -58,7 +66,7 @@ export function ToolCall({
       onOpenChange={onOpenChange}
       className={cn("w-full max-w-sm", className)}
     >
-      <CollapsibleTrigger aria-label={`${running ? 'Running' : failed ? 'Not completed' : 'Completed'}: ${label}`} className="group/trigger text-muted-foreground hover:text-foreground flex max-w-full items-center gap-1.5 rounded-md py-1 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2">
+      <CollapsibleTrigger aria-label={`${phase.state}: ${label}`} className="group/trigger text-muted-foreground hover:text-foreground flex max-w-full items-center gap-1.5 rounded-md py-1 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2">
         <ChevronRightIcon className="size-3.5 shrink-0 opacity-60 transition-transform duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] group-data-open/trigger:rotate-90 group-data-panel-open/trigger:rotate-90 motion-reduce:transition-none" />
         <SwapLabel active={running ? 0 : 1} className="min-w-0 max-w-64 text-start first-letter:uppercase">
           <ShimmerLabel
@@ -91,10 +99,10 @@ export function ToolCall({
                 <p className={cn(mono, "text-foreground/35 mb-1")}>Request</p>
                 <pre className="text-muted-foreground max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px]">{request || 'No arguments'}</pre>
               </div>
-              <div className="bg-foreground/[0.06] mx-3.5 h-px" />
+              <PanelDivider />
               <div className="px-3.5 pt-2 pb-2.5">
                 <p className={cn(mono, "text-foreground/35 mb-1")}>Result</p>
-                <pre className="text-foreground/90 max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed">{result || (running ? 'In progress…' : failed ? 'No result received.' : 'Completed without output.')}</pre>
+                <pre className="text-foreground/90 max-h-64 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed">{result || phase.emptyResult}</pre>
               </div>
             </>
           )}

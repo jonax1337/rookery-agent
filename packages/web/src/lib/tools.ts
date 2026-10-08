@@ -1,11 +1,10 @@
-
-import { BadgeAlertIcon as TriangleAlertIcon, CircleCheckIcon } from "@/components/icons";
+import { BadgeAlertIcon as TriangleAlertIcon, CircleCheckIcon } from '@/components/icons';
+import type { IconComponent } from '@/components/icons';
 
 import type { ToolServer, ToolServerAudience } from './types';
-import type { IconComponent } from "@/components/icons";
 
 /**
- * Shared vocabulary of the Werkzeuge *and* the Skills pages.
+ * Shared vocabulary of the tools *and* the Skills pages.
  *
  * Both records carry the same `audience` field, and the labels for it had
  * grown three independent copies (ToolsPage, SkillsPage, SkillFormPage) that
@@ -85,7 +84,7 @@ export function toolStatus(tool: ToolServer): ToolStatus {
 
 export interface ToolStatusLook extends ToolStatus {
   variant: 'default' | 'outline' | 'destructive';
-  /** `null` for the resting state - "Aus" needs no glyph to be understood. */
+  /** `null` for the resting state - "Off" needs no glyph to be understood. */
   icon: IconComponent | null;
   iconClassName?: string;
 }

@@ -1,3 +1,5 @@
+import type { VoiceConfig } from './types';
+
 /**
  * Turning a streamed markdown answer into speech-sized pieces.
  *
@@ -7,7 +9,7 @@
  * the model is still writing the third.
  */
 
-/** Markdown to something a voice can read. The code notice is German, like the UI. */
+/** Markdown to something a voice can read. */
 export function cleanForSpeech(markdown: string): string {
   let text = markdown;
   // An unclosed fence is still streaming: hold it back until it closes.
@@ -116,4 +118,24 @@ function findBoundary(text: string, minChars: number, maxChars: number): number 
     if (space > minChars) return space + 1;
   }
   return -1;
+}
+
+/** Exact name match wins, then an exact locale, then the language prefix. */
+export function pickBrowserVoice(
+  list: SpeechSynthesisVoice[],
+  config: Pick<VoiceConfig, 'voiceName' | 'lang'> | undefined,
+): SpeechSynthesisVoice | undefined {
+  if (!list.length) return undefined;
+  const wantedName = config?.voiceName?.trim();
+  if (wantedName) {
+    const byName = list.find((voice) => voice.name === wantedName);
+    if (byName) return byName;
+  }
+  const lang = config?.lang ?? 'en-GB';
+  return (
+    list.find((voice) => voice.lang === lang) ??
+    list.find((voice) => voice.lang.startsWith(lang.split('-')[0] ?? '')) ??
+    list.find((voice) => voice.default) ??
+    list[0]
+  );
 }

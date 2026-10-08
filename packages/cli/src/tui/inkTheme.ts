@@ -25,15 +25,22 @@ const VARIANT_COLOR: Record<string, string> = {
   info: ui.info,
 };
 
+interface VariantProps {
+  variant?: string;
+}
+
+function variantColor(variant: string | undefined, fallback: string): string {
+  return (variant && VARIANT_COLOR[variant]) || fallback;
+}
+
 /**
  * `Select` and `MultiSelect` in Rookery colours.
  *
  * The row under the cursor takes the accent, the way everything the interface
  * points at does; a picked row is the success green, which is the one meaning
- * `ok` carries
- * everywhere else. The row's own indentation is kept as the library sets it,
- * so the pointer it draws in front of the focused row lands in the gutter
- * instead of shifting the whole list sideways.
+ * `ok` carries everywhere else. The row's own indentation is kept as the
+ * library sets it, so the pointer it draws in front of the focused row lands
+ * in the gutter instead of shifting the whole list sideways.
  */
 const SELECT_THEME = {
   styles: {
@@ -60,19 +67,15 @@ export const inkUiTheme = extendTheme(defaultTheme, {
     },
     StatusMessage: {
       styles: {
-        icon: ({ variant }: { variant?: string }) => ({
-          color: (variant && VARIANT_COLOR[variant]) || ui.muted,
-        }),
+        icon: ({ variant }: VariantProps) => ({ color: variantColor(variant, ui.muted) }),
       },
     },
     Alert: {
       styles: {
-        container: ({ variant }: { variant?: string }) => ({
-          borderColor: (variant && VARIANT_COLOR[variant]) || ui.faint,
+        container: ({ variant }: VariantProps) => ({
+          borderColor: variantColor(variant, ui.faint),
         }),
-        icon: ({ variant }: { variant?: string }) => ({
-          color: (variant && VARIANT_COLOR[variant]) || ui.muted,
-        }),
+        icon: ({ variant }: VariantProps) => ({ color: variantColor(variant, ui.muted) }),
       },
     },
     Select: SELECT_THEME,

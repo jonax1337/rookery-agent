@@ -66,6 +66,23 @@ const BOTH: ToolAudience[] = ['assistant', 'agent'];
 const ASSISTANT_ONLY: ToolAudience[] = ['assistant'];
 
 const str = (description: string): Record<string, unknown> => ({ type: 'string', description });
+const bool = (description: string): Record<string, unknown> => ({ type: 'boolean', description });
+const num = (description: string): Record<string, unknown> => ({ type: 'number', description });
+const oneOf = (values: string[], description: string): Record<string, unknown> => ({
+  type: 'string',
+  enum: values,
+  description,
+});
+
+const PERMISSIONS = ['chat', 'read', 'write', 'full'];
+const TASK_PRIORITIES = ['low', 'normal', 'high'];
+
+/** A closed object schema: no properties beyond the ones listed. */
+function objectSchema(properties: Record<string, unknown>, required?: string[]): Record<string, unknown> {
+  return required
+    ? { type: 'object', properties, required, additionalProperties: false }
+    : { type: 'object', properties, additionalProperties: false };
+}
 
 /**
  * The one rule for naming work, word for word wherever a name is asked for.
@@ -94,13 +111,16 @@ export const ORG_TOOLS: ToolDefinition[] = [
   {
     name: 'read_profile',
     description: 'Read saved identity or memory notes. Names: IDENTITY.md, SOUL.md, USER.md, AGENTS.md, TOOLS.md, MEMORY.md or memory/*.md. Use offsets to read beyond context excerpts.',
-    inputSchema: { type: 'object', properties: { name: str('Workspace-relative profile file name.'), offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 24000 } }, required: ['name'], additionalProperties: false },
+    inputSchema: objectSchema(
+      { name: str('Workspace-relative profile file name.'), offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 24000 } },
+      ['name'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
     name: 'search_profile',
     description: 'Search portable Markdown profile and memory notes imported from Hermes or OpenClaw. Returns file names and excerpt offsets for read_profile. Native learned memories use search_memory.',
-    inputSchema: { type: 'object', properties: { query: str('Words to find in the portable notes.') }, required: ['query'], additionalProperties: false },
+    inputSchema: objectSchema({ query: str('Words to find in the portable notes.') }, ['query']),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -108,7 +128,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'The company you run: teams, agents (with slug, title and manager), projects, and the work ' +
       'currently running. Call this before delegating when you are unsure who does what.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: objectSchema({}),
     audience: BOTH,
   },
   {
@@ -125,32 +145,22 @@ export const ORG_TOOLS: ToolDefinition[] = [
       '(tell the user then, not before); handed off from inside a task, your task stays open and ' +
       'you are run again with the result once it is back. Nothing needs polling, but ' +
       'assignment_status shows where it stands. Handing work to yourself must use wait=false.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         agent: str('Agent slug or name.'),
         title: str(TITLE_RULE),
         task: str('The full, self-contained instruction.'),
         project: str("Project name or id. The agent works in that project's directory. Optional."),
-        wait: {
-          type: 'boolean',
-          description: 'Default true. False hands the task off and returns immediately.',
-        },
+        wait: bool('Default true. False hands the task off and returns immediately.'),
       },
-      required: ['agent', 'title', 'task'],
-      additionalProperties: false,
-    },
+      ['agent', 'title', 'task'],
+    ),
     audience: BOTH,
   },
   {
     name: 'assignment_status',
     description: 'Status, duration and result of one run by id.',
-    inputSchema: {
-      type: 'object',
-      properties: { id: str('Run id.') },
-      required: ['id'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ id: str('Run id.') }, ['id']),
     audience: BOTH,
   },
   {
@@ -159,12 +169,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'Stop a pending or running task. The agent process is killed and the run ends ' +
       'as cancelled; whatever it had written so far is lost. Use it for a stuck or runaway agent, ' +
       'or when the user changes their mind.',
-    inputSchema: {
-      type: 'object',
-      properties: { id: str('Run id or prefix.') },
-      required: ['id'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ id: str('Run id or prefix.') }, ['id']),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -172,16 +177,14 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'The history of what ran: for whom, how it ended, how long it took. Newest first. ' +
       'Filter by agent, status or project when the question is about one of them.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         agent: str('Agent slug or name. Optional.'),
         status: str('Comma-separated statuses (pending, running, done, failed, cancelled). Optional.'),
         project: str('Project name or id. Optional.'),
-        limit: { type: 'number', description: 'How many to return, 1 to 200. Default 20.' },
+        limit: num('How many to return, 1 to 200. Default 20.'),
       },
-      additionalProperties: false,
-    },
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -192,12 +195,10 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'and you are started again with the answer once it comes. After calling it, end your run with a ' +
       'short summary of where the work stands - do not keep working on a guess. Only inside a task; ' +
       'for anything you can decide, look up or state as an assumption, do that instead.',
-    inputSchema: {
-      type: 'object',
-      properties: { question: str('The question, self-contained: what you need to know and why.') },
-      required: ['question'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema(
+      { question: str('The question, self-contained: what you need to know and why.') },
+      ['question'],
+    ),
     audience: ['agent'],
   },
   {
@@ -206,15 +207,13 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'Answer the question a task is waiting on. The answer goes on the card and the task runs again ' +
       'with it, as the same task. The assistant may answer any task; an agent only the tasks it handed ' +
       'out itself. Use task_activity first when you need to see what exactly was asked.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         id: str('Task id or prefix.'),
         answer: str('The answer, self-contained.'),
       },
-      required: ['id', 'answer'],
-      additionalProperties: false,
-    },
+      ['id', 'answer'],
+    ),
     audience: BOTH,
   },
   {
@@ -224,15 +223,13 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'on their settings, on their phone. Use it sparingly, for something they genuinely need to know ' +
       'that does not belong in your result - your result already reaches whoever asked for the work. ' +
       'Never a running commentary, never a thank-you.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         title: str('One short line: what this is about.'),
         body: str('The message itself. Say the thing and stop.'),
       },
-      required: ['title', 'body'],
-      additionalProperties: false,
-    },
+      ['title', 'body'],
+    ),
     audience: BOTH,
     // The assistant has `notify` and the conversation itself; only its board
     // watcher, which has neither, is offered this one.
@@ -243,12 +240,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       "One task's activity, oldest first: its brief, every run and how it ended, questions and " +
       'answers, status changes. Call it when what you do depends on what already happened on the card.',
-    inputSchema: {
-      type: 'object',
-      properties: { id: str('Task id or prefix.') },
-      required: ['id'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ id: str('Task id or prefix.') }, ['id']),
     audience: BOTH,
   },
   // ASSISTANT_ONLY on purpose: an agent that thinks something deserves the
@@ -262,19 +254,13 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'conversation is running - a phone push, say. For something worth surfacing on its own, not ' +
       'for an ordinary answer inside a turn. urgency "high" breaks through quiet hours, so use it ' +
       'only when that is worth it.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         text: str('The message to send.'),
-        urgency: {
-          type: 'string',
-          enum: ['normal', 'high'],
-          description: 'Default normal. "high" breaks through quiet hours.',
-        },
+        urgency: oneOf(['normal', 'high'], 'Default normal. "high" breaks through quiet hours.'),
       },
-      required: ['text'],
-      additionalProperties: false,
-    },
+      ['text'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -288,9 +274,8 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'simply state and be corrected on. Offer two to four concrete options, each a choice you are ' +
       'ready to act on, and keep the labels short enough for a phone button. This call blocks; if ' +
       'nobody answers in time it comes back saying so and you carry on with your best judgement.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         header: str('Two or three words naming the decision, e.g. "Deploy target".'),
         question: str('The question itself, one or two sentences.'),
         options: {
@@ -308,14 +293,10 @@ export const ORG_TOOLS: ToolDefinition[] = [
             additionalProperties: false,
           },
         },
-        multiSelect: {
-          type: 'boolean',
-          description: 'Default false. True when several options may be picked at once.',
-        },
+        multiSelect: bool('Default false. True when several options may be picked at once.'),
       },
-      required: ['header', 'question', 'options'],
-      additionalProperties: false,
-    },
+      ['header', 'question', 'options'],
+    ),
     audience: ASSISTANT_ONLY,
     needsPerson: true,
   },
@@ -325,12 +306,10 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'Open a skill: a written procedure for a particular kind of task. Takes a name from the list ' +
       'in your instructions or one that find_skill turned up. Returns the full instructions and the ' +
       'files that come with them. Open the matching skill before starting such a task, then follow it.',
-    inputSchema: {
-      type: 'object',
-      properties: { name: str('The skill name from the list, or from a find_skill result.') },
-      required: ['name'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema(
+      { name: str('The skill name from the list, or from a find_skill result.') },
+      ['name'],
+    ),
     audience: BOTH,
   },
   // The shelf the instructions cannot carry. Hundreds of skills are installed
@@ -343,12 +322,10 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'Use it when a task sounds like a procedure somebody has already written down - a file format, ' +
       'a framework, a tool, a kind of document. Returns names with their one-line description; open ' +
       'one with use_skill. Searching costs nothing, so look before working something out from scratch.',
-    inputSchema: {
-      type: 'object',
-      properties: { query: str('What the task is about, e.g. "pdf", "scroll animation", "vercel deploy".') },
-      required: ['query'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema(
+      { query: str('What the task is about, e.g. "pdf", "scroll animation", "vercel deploy".') },
+      ['query'],
+    ),
     audience: BOTH,
   },
   // The other half of remembering. A memory records that something is true;
@@ -365,17 +342,15 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'Writing over a skill you wrote earlier is how you improve one, so revise instead of ' +
       'inventing a second name for the same subject. Skills the user wrote are theirs and cannot ' +
       'be overwritten. Not for one-off notes about a single task - that is what memory is for.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         name: str('Short name, lower case with dashes, e.g. release-checklist.'),
         description: str('One line saying when this skill should be opened. It is all the index shows.'),
         body: str('The instructions themselves, in Markdown. Steps someone can follow, not prose.'),
         audience: str('assistant, agents or both. Default both.'),
       },
-      required: ['name', 'description', 'body'],
-      additionalProperties: false,
-    },
+      ['name', 'description', 'body'],
+    ),
     audience: BOTH,
   },
   {
@@ -384,7 +359,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'The tool hub: which MCP servers exist (computer control, browser, filesystem, GitHub, ' +
       'documentation, custom ones), whether they are on, and for whom. A server you switch on ' +
       'is attached as soon as you stop talking, and the turn carries on with it.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: objectSchema({}),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -395,16 +370,14 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'server you switch on for yourself is attached the moment this answer ends, and you get ' +
       'to go on working with it in the same turn, so switch it on and continue instead of ' +
       'asking the user to try again.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         id: str('Server id from tool_servers, e.g. playwright.'),
-        enabled: { type: 'boolean', description: 'On or off.' },
+        enabled: bool('On or off.'),
         audience: str('assistant, agents or both. Optional.'),
       },
-      required: ['id', 'enabled'],
-      additionalProperties: false,
-    },
+      ['id', 'enabled'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -416,9 +389,8 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'memory, generates a handover (or uses the one you pass), hires the successor with the ' +
       'name/title/instructions given, and carries over its team, manager and reports. Only call ' +
       'that after the user has approved the replacement agent_performance proposed.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         name: str('Display name, e.g. "Mara". With replaces set, must differ from the outgoing agent\'s name.'),
         title: str('Job title, e.g. "Backend Engineer".'),
         instructions: str('Standing instructions for the role, two to six sentences.'),
@@ -434,11 +406,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
         manager: str('Manager agent slug. Omit for an agent reporting to you directly. Ignored when replaces is set.'),
         provider: str(PROVIDER_HINT + ' Optional.'),
         model: str('Model name for that provider. Optional.'),
-        permission: {
-          type: 'string',
-          enum: ['chat', 'read', 'write', 'full'],
-          description: 'What the agent may do on the machine. Optional; defaults to the company default.',
-        },
+        permission: oneOf(PERMISSIONS, 'What the agent may do on the machine. Optional; defaults to the company default.'),
         replaces: str(
           'Slug of an agent to retire and replace with this one (stage 4). Their team, manager and ' +
             'reports pass to the successor; the outgoing slug is never freed. Optional.',
@@ -447,9 +415,8 @@ export const ORG_TOOLS: ToolDefinition[] = [
           'Override the auto-generated handover document for the successor, when replaces is set. Optional.',
         ),
       },
-      required: ['name', 'title', 'instructions'],
-      additionalProperties: false,
-    },
+      ['name', 'title', 'instructions'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -461,9 +428,8 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'agent_performance) needs `reason` set to change its instructions - that reason is written ' +
       'to its personnel record as a reconfig, together with the before/after text, so the change ' +
       'stays accountable and reversible.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         agent: str('Agent slug or name.'),
         name: str('New display name. Optional.'),
         title: str('New job title. Optional.'),
@@ -472,17 +438,16 @@ export const ORG_TOOLS: ToolDefinition[] = [
         manager: str('Manager slug, or "assistant" to report to you directly. Optional.'),
         provider: str(PROVIDER_HINT + ' Optional.'),
         model: str('Optional.'),
-        permission: { type: 'string', enum: ['chat', 'read', 'write', 'full'], description: 'Optional.' },
-        archived: { type: 'boolean', description: 'true retires the agent, false brings it back. Optional.' },
+        permission: oneOf(PERMISSIONS, 'Optional.'),
+        archived: bool('true retires the agent, false brings it back. Optional.'),
         reason: str(
           'Why the instructions are changing. Required to change instructions once the agent is at ' +
             'escalation stage 1 or higher; logged to the personnel record as a reconfig either way ' +
             'when instructions change and this is set.',
         ),
       },
-      required: ['agent'],
-      additionalProperties: false,
-    },
+      ['agent'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -492,16 +457,14 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'automatically after every run, but by hand: after the user disagreed with the automatic ' +
       'one, or for a run from before this existed. Upserts: a second call for the same run ' +
       'replaces your earlier judgment rather than adding a second one.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         id: str('Run id or prefix.'),
-        overall: { type: 'number', description: '1 to 5. 5 as good as a good colleague would do it, 1 unusable or invented.' },
+        overall: num('1 to 5. 5 as good as a good colleague would do it, 1 unusable or invented.'),
         comment: str('One to three sentences on what was good or bad. Optional.'),
       },
-      required: ['id', 'overall'],
-      additionalProperties: false,
-    },
+      ['id', 'overall'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -511,28 +474,21 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'rate, and its personnel record (notes, reconfigs, probation, replacement proposals). This ' +
       'is the "development conversation" tool - open it before deciding whether a weak run is a ' +
       'pattern or a one-off, and before update_agent on a flagged agent.',
-    inputSchema: {
-      type: 'object',
-      properties: { agent: str('Agent slug or name.') },
-      required: ['agent'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ agent: str('Agent slug or name.') }, ['agent']),
     audience: ASSISTANT_ONLY,
   },
   {
     name: 'update_team',
     description: 'Rename a team, change its purpose, or name its lead.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         team: str('Team name or id.'),
         name: str('New name. Optional.'),
         purpose: str('New purpose. Optional.'),
         lead: str('Agent slug leading the team, or "none". Optional.'),
       },
-      required: ['team'],
-      additionalProperties: false,
-    },
+      ['team'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -541,32 +497,28 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'Put a task on the company board without running it yet. Use this for work the user ' +
       'wants tracked, or for anything bigger than one quick hand-off. Then plan_task decides ' +
       'who does it and whether to split it, and run_task executes it.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         title: str(TITLE_RULE),
         description: str('Everything an agent needs to do the task: goal, constraints, files, definition of done.'),
         project: str('Project name or id. Optional.'),
-        priority: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Optional, default normal.' },
+        priority: oneOf(TASK_PRIORITIES, 'Optional, default normal.'),
         assignee: str('Agent slug, when you already know who should do it. Optional.'),
       },
-      required: ['title', 'description'],
-      additionalProperties: false,
-    },
+      ['title', 'description'],
+    ),
     audience: BOTH,
   },
   {
     name: 'list_tasks',
     description: 'The board: open, planned, running and recently finished tasks with their assignees.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         status: str(
           'Comma-separated statuses to include (open, planned, running, blocked, done, failed, cancelled). Optional.',
         ),
       },
-      additionalProperties: false,
-    },
+    ),
     audience: BOTH,
   },
   {
@@ -574,24 +526,18 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'Edit a task: title, description, priority, assignee, or set its status by hand - done, ' +
       'cancelled, or blocked while it waits for an answer.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         id: str('Task id or prefix.'),
         title: str('Optional.'),
         description: str('Optional.'),
-        priority: { type: 'string', enum: ['low', 'normal', 'high'], description: 'Optional.' },
+        priority: oneOf(TASK_PRIORITIES, 'Optional.'),
         assignee: str('Agent slug, or "none". Optional.'),
-        status: {
-          type: 'string',
-          enum: ['open', 'done', 'cancelled', 'blocked'],
-          description: 'Optional. "blocked" means it waits for an answer.',
-        },
+        status: oneOf(['open', 'done', 'cancelled', 'blocked'], 'Optional. "blocked" means it waits for an answer.'),
         result: str('What was done, when closing by hand. Optional.'),
       },
-      required: ['id'],
-      additionalProperties: false,
-    },
+      ['id'],
+    ),
     audience: BOTH,
   },
   {
@@ -601,15 +547,13 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'dependencies. A planner reads the board and the org chart and proposes the plan; the ' +
       'subtasks are created on the board. Nothing runs yet. Returns the plan so you can adjust ' +
       'it with update_task before run_task.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         id: str('Task id or prefix.'),
         hint: str('Your own guidance for the planner, e.g. who should be involved or what not to split. Optional.'),
       },
-      required: ['id'],
-      additionalProperties: false,
-    },
+      ['id'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -618,27 +562,20 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'Execute a task from the board and wait for the outcome. A task without a plan is planned ' +
       'first. Subtasks run in parallel in dependency order; their reports come back ' +
       'combined. This is the right tool for anything that should be tracked on the board.',
-    inputSchema: {
-      type: 'object',
-      properties: { id: str('Task id or prefix.') },
-      required: ['id'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ id: str('Task id or prefix.') }, ['id']),
     audience: ASSISTANT_ONLY,
   },
   {
     name: 'create_team',
     description: 'Create a team. Agents can be placed in it when hired or later by the user.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         name: str('Team name.'),
         purpose: str('What the team is for. Optional.'),
         lead: str('Agent slug leading the team. Optional.'),
       },
-      required: ['name'],
-      additionalProperties: false,
-    },
+      ['name'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -646,16 +583,14 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'Create a project. With a path, work on it runs inside that directory; without one, ' +
       'agents work in the scratch workspace.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         name: str('Project name.'),
         description: str('What the project is. Optional.'),
         path: str('Absolute directory the project lives in. Optional.'),
       },
-      required: ['name'],
-      additionalProperties: false,
-    },
+      ['name'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -663,18 +598,16 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'Rename a project, change its description or directory, or archive it (archived projects ' +
       'disappear from the lists but keep their history). Only the fields given change.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         project: str('Project name or id.'),
         name: str('New name. Optional.'),
         description: str('New description. Optional.'),
         path: str('New absolute directory, or "none" to detach it. Optional.'),
-        archived: { type: 'boolean', description: 'true archives the project, false restores it. Optional.' },
+        archived: bool('true archives the project, false restores it. Optional.'),
       },
-      required: ['project'],
-      additionalProperties: false,
-    },
+      ['project'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -683,12 +616,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
       "The MCP servers listed in a project's own .mcp.json - the same file a person's own Claude " +
       'Code session in that folder would read - and whether they are trusted yet. An untrusted or ' +
       'changed file never starts its servers for a run. Call this before trust_project_mcp.',
-    inputSchema: {
-      type: 'object',
-      properties: { project: str('Project name or id.') },
-      required: ['project'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ project: str('Project name or id.') }, ['project']),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -699,15 +627,13 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'own folder, so show the user the server list and command lines from project_mcp_servers ' +
       'before approving. A later edit to .mcp.json needs approving again; revoke turns the ' +
       'servers off again without touching the file.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         project: str('Project name or id.'),
-        decision: { type: 'string', enum: ['approve', 'revoke'], description: 'approve or revoke.' },
+        decision: oneOf(['approve', 'revoke'], 'approve or revoke.'),
       },
-      required: ['project', 'decision'],
-      additionalProperties: false,
-    },
+      ['project', 'decision'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -715,7 +641,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'Your schedules (cron jobs): standing orders that fire on a timetable while the server ' +
       'runs, each with its next and last run. Call it before changing or deleting one.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: objectSchema({}),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -734,9 +660,8 @@ export const ORG_TOOLS: ToolDefinition[] = [
       '(every 30 minutes), "0 18 1 * *" (the 1st at 18:00), "30 15 11 9 *" with once=true ' +
       '(11 September 15:30, one time); aliases @hourly, @daily, @weekly, @monthly. Write the ' +
       'prompt for whoever runs it: self-contained, and say what the report should contain.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         name: str('Short name, e.g. "Morgenbriefing".'),
         schedule: str('Five-field cron expression or alias. Leave empty only when triggerMode is "event".'),
         prompt: str('What to do on each run, self-contained.'),
@@ -746,21 +671,18 @@ export const ORG_TOOLS: ToolDefinition[] = [
             'useful third case: the event is the fast path, the expression the backstop for the ' +
             'event that never arrived. Optional.',
         ),
-        cooldownSeconds: {
-          type: 'number',
-          description:
-            'How long it rests after a run before an event may start the next one, 0 to 86400. ' +
+        cooldownSeconds: num(
+          'How long it rests after a run before an event may start the next one, 0 to 86400. ' +
             'Events arriving during the rest are not lost - they collapse into one run at the end ' +
             'of it. Default 60. Optional.',
-        },
+        ),
         agent: str('Agent slug or name to run it as their task. Omit to run it yourself.'),
         project: str('Project name or id the run belongs to. Optional.'),
-        once: { type: 'boolean', description: 'Fire once, then switch the schedule off. Default false.' },
-        enabled: { type: 'boolean', description: 'Default true.' },
+        once: bool('Fire once, then switch the schedule off. Default false.'),
+        enabled: bool('Default true.'),
       },
-      required: ['name', 'prompt'],
-      additionalProperties: false,
-    },
+      ['name', 'prompt'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -768,37 +690,27 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'Change a schedule: rename it, move it to another time, rewrite the prompt, hand it to ' +
       'an agent or take it back, switch it on or off. Only the fields you pass change.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         id: str('Schedule id, prefix, or exact name.'),
         name: str('Optional.'),
         schedule: str('New cron expression. Optional.'),
         prompt: str('Optional.'),
         triggerMode: str('"schedule" to put it on the clock, "event" to take it off. Optional.'),
-        cooldownSeconds: {
-          type: 'number',
-          description: 'Rest between event runs, 0 to 86400. Optional.',
-        },
+        cooldownSeconds: num('Rest between event runs, 0 to 86400. Optional.'),
         agent: str('Agent slug or name, or "assistant" to run it yourself. Optional.'),
         project: str('Project name or id, or "none". Optional.'),
-        enabled: { type: 'boolean', description: 'Optional.' },
-        once: { type: 'boolean', description: 'Optional.' },
+        enabled: bool('Optional.'),
+        once: bool('Optional.'),
       },
-      required: ['id'],
-      additionalProperties: false,
-    },
+      ['id'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
     name: 'delete_schedule',
     description: 'Remove a schedule for good, with its run history. To pause it instead, update it with enabled=false.',
-    inputSchema: {
-      type: 'object',
-      properties: { id: str('Schedule id, prefix, or exact name.') },
-      required: ['id'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ id: str('Schedule id, prefix, or exact name.') }, ['id']),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -806,12 +718,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'Fire a schedule right now, in the background; returns at once. The result reaches the user as a ' +
       'notification and appears on the Schedules page when the run is over.',
-    inputSchema: {
-      type: 'object',
-      properties: { id: str('Schedule id, prefix, or exact name.') },
-      required: ['id'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ id: str('Schedule id, prefix, or exact name.') }, ['id']),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -834,17 +741,15 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'is the memory of the user; an agent writes into its own working memory of its work. ' +
       'One self-contained sentence per call. Use it when you are told to remember something, or ' +
       'for something clearly worth keeping that the automatic extraction might miss.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         content: str('The memory, one self-contained sentence.'),
         kind: str('fact, preference, project or event. Default fact.'),
         tags: str('Comma-separated tags. Optional.'),
-        importance: { type: 'number', description: '0 to 1, how much this should outrank others. Default 0.7.' },
+        importance: num('0 to 1, how much this should outrank others. Default 0.7.'),
       },
-      required: ['content'],
-      additionalProperties: false,
-    },
+      ['content'],
+    ),
     audience: BOTH,
   },
   {
@@ -852,12 +757,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'Retire a memory that is wrong or that the user wants gone. Find its id with search_memory ' +
       'first. The memory stops being recalled but stays auditable.',
-    inputSchema: {
-      type: 'object',
-      properties: { id: str('Memory id or prefix.') },
-      required: ['id'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ id: str('Memory id or prefix.') }, ['id']),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -866,14 +766,12 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'Search your long-term memory - for the assistant that is what it knows about the user, for ' +
       'an agent its own working memory. Without a query, the most important memories. Returns ids, ' +
       'so a wrong one can be passed to forget.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         query: str('What to look for. Optional.'),
-        limit: { type: 'number', description: 'How many to return, 1 to 100. Default 20.' },
+        limit: num('How many to return, 1 to 100. Default 20.'),
       },
-      additionalProperties: false,
-    },
+    ),
     audience: BOTH,
   },
   {
@@ -882,7 +780,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'The mailboxes Rookery watches, and the schedule each one fires. A listener holds one IMAP ' +
       'connection open and starts its schedule the moment mail arrives, which is what a schedule ' +
       'that polls every few minutes is for. Passwords are never shown, only whether one is set.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: objectSchema({}),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -893,33 +791,26 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'so the details can be checked first. Tell the user plainly that a password they type here ' +
       'stays in this conversation, and offer the Listeners settings page as the alternative - the ' +
       'password is stored either way, this is only about the transcript.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         id: str('Short name for the mailbox, e.g. "work". Runs record it as imap:<id>.'),
         schedule: str('The schedule this mailbox fires: id, prefix, or exact name.'),
         host: str('IMAP server, e.g. imap.fastmail.com.'),
-        port: { type: 'number', description: 'Default 993. Optional.' },
-        secure: { type: 'boolean', description: 'TLS from the first byte (993). Default true.' },
+        port: num('Default 993. Optional.'),
+        secure: bool('TLS from the first byte (993). Default true.'),
         user: str('Mailbox user, usually the address.'),
         password: str('Mailbox password, or an app password where the provider wants one.'),
         mailbox: str('Which mailbox to watch. Default INBOX.'),
-        enabled: { type: 'boolean', description: 'Default false when creating.' },
+        enabled: bool('Default false when creating.'),
       },
-      required: ['id'],
-      additionalProperties: false,
-    },
+      ['id'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
     name: 'remove_listener',
     description: 'Stop watching a mailbox and forget its settings, the stored password included.',
-    inputSchema: {
-      type: 'object',
-      properties: { id: str('The listener id.') },
-      required: ['id'],
-      additionalProperties: false,
-    },
+    inputSchema: objectSchema({ id: str('The listener id.') }, ['id']),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -929,15 +820,13 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'and the previous URL stops working that second. Whoever holds the URL can start that one ' +
       'schedule and nothing else. Say it out loud only when the user asked for it: once said, it ' +
       'is in this conversation for good, and rotating is the way back.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         id: str('Schedule id, prefix, or exact name.'),
         action: str('"create" to issue or rotate it, "remove" to take it away. Default create.'),
       },
-      required: ['id'],
-      additionalProperties: false,
-    },
+      ['id'],
+    ),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -946,7 +835,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
       'The current settings you may change: default provider, model and effort for turns and ' +
       'runs, and the company limits (parallel runs, delegation depth, run ' +
       'timeout).',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    inputSchema: objectSchema({}),
     audience: ASSISTANT_ONLY,
   },
   {
@@ -954,18 +843,16 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'Change settings and persist them; they apply from the next turn or run. Only the ' +
       'fields given change. Do this when the user asks for it, or say what you changed and why.',
-    inputSchema: {
-      type: 'object',
-      properties: {
+    inputSchema: objectSchema(
+      {
         defaultProvider: str(PROVIDER_HINT + ' Optional.'),
         defaultModel: str('Model id, or "default" for the provider default. Optional.'),
         defaultEffort: str('low, medium, high, or "default". Optional.'),
-        maxConcurrentAssignments: { type: 'number', description: 'Agent processes at the same time, 1 to 16. Optional.' },
-        maxDelegationDepth: { type: 'number', description: 'How deep agents may delegate below you, 1 to 6. Optional.' },
-        assignmentTimeoutMinutes: { type: 'number', description: 'Hard stop for one run, 1 to 600. Optional.' },
+        maxConcurrentAssignments: num('Agent processes at the same time, 1 to 16. Optional.'),
+        maxDelegationDepth: num('How deep agents may delegate below you, 1 to 6. Optional.'),
+        assignmentTimeoutMinutes: num('Hard stop for one run, 1 to 600. Optional.'),
       },
-      additionalProperties: false,
-    },
+    ),
     audience: ASSISTANT_ONLY,
   },
 ];

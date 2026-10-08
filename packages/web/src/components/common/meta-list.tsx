@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/item';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
-import type { IconComponent } from "@/components/icons";
+import type { IconComponent } from '@/components/icons';
 
 /**
  * Key and value, the way the detail pages should have said it all along.

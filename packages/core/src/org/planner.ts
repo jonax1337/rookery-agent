@@ -3,6 +3,7 @@ import type { ProviderRegistry } from '../providers/registry.js';
 import { smallModelFor } from '../memory/extractor.js';
 import { clip, shorten } from '../util/queue.js';
 import type { OrgSnapshot } from './prompts.js';
+import { parseJsonObject } from './json-reply.js';
 
 /**
  * Task planning: who does a task, and whether it should be split.
@@ -35,6 +36,9 @@ export interface TaskPlan {
 
 export const PLAN_MARKER = 'ROOKERY TASK PLANNER';
 const MAX_SUBTASKS = 6;
+const STAFF_INSTRUCTIONS_PREVIEW = 240;
+const HINT_MAX = 1500;
+const TASK_DESCRIPTION_MAX = 6000;
 
 const PLAN_PROMPT = `${PLAN_MARKER}
 
@@ -95,30 +99,9 @@ export async function planTask(input: PlanTaskInput): Promise<TaskPlan> {
   const providerId = await input.registry.resolveUsable(input.config.defaultProvider);
   if (!providerId) return fallback('No provider is logged in to plan with.');
 
-  const staff = input.snapshot.agents
-    .map((agent) => '- ' + agent.slug + ': ' + agent.name + ', ' + agent.title + '. ' + shorten(agent.instructions, 240))
-    .join('\n');
-  const prompt =
-    PLAN_PROMPT +
-    '\n\nSTAFF:\n' + staff +
-    (input.project ? '\n\nPROJECT: ' + input.project.name + (input.project.description ? ' — ' + input.project.description : '') : '') +
-    (preferred ? '\n\nPREFERRED ASSIGNEE: ' + preferred : '') +
-    (input.hint ? '\n\nGUIDANCE FROM THE ASSISTANT:\n' + clip(input.hint, 1500) : '') +
-    '\n\nTASK: ' + input.task.title + '\n' + clip(input.task.description, 6000);
-
-  let raw = '';
+  let raw: string;
   try {
-    for await (const event of input.registry.get(providerId).run({
-      prompt,
-      model: smallModelFor(providerId),
-      permission: 'chat',
-      cwd: input.config.workspace,
-      signal: input.signal,
-    })) {
-      if (event.type === 'text') raw += event.delta;
-      else if (event.type === 'done') raw = event.text || raw;
-      else if (event.type === 'error' && event.fatal) return fallback('The planning turn failed: ' + event.message);
-    }
+    raw = await askPlanner(input, providerId, buildPlannerPrompt(input, preferred));
   } catch (error) {
     return fallback('The planning turn failed: ' + (error as Error).message);
   }
@@ -128,24 +111,41 @@ export async function planTask(input: PlanTaskInput): Promise<TaskPlan> {
   return normaliseTaskPlan(parsed, slugs, preferred);
 }
 
+function buildPlannerPrompt(input: PlanTaskInput, preferred: string | undefined): string {
+  const staff = input.snapshot.agents
+    .map((agent) => '- ' + agent.slug + ': ' + agent.name + ', ' + agent.title + '. ' + shorten(agent.instructions, STAFF_INSTRUCTIONS_PREVIEW))
+    .join('\n');
+  return (
+    PLAN_PROMPT +
+    '\n\nSTAFF:\n' + staff +
+    (input.project ? '\n\nPROJECT: ' + input.project.name + (input.project.description ? ' — ' + input.project.description : '') : '') +
+    (preferred ? '\n\nPREFERRED ASSIGNEE: ' + preferred : '') +
+    (input.hint ? '\n\nGUIDANCE FROM THE ASSISTANT:\n' + clip(input.hint, HINT_MAX) : '') +
+    '\n\nTASK: ' + input.task.title + '\n' + clip(input.task.description, TASK_DESCRIPTION_MAX)
+  );
+}
+
+/** The planner's full reply; throws on a fatal provider error. */
+async function askPlanner(input: PlanTaskInput, providerId: string, prompt: string): Promise<string> {
+  let raw = '';
+  for await (const event of input.registry.get(providerId).run({
+    prompt,
+    model: smallModelFor(providerId),
+    permission: 'chat',
+    cwd: input.config.workspace,
+    signal: input.signal,
+  })) {
+    if (event.type === 'text') raw += event.delta;
+    else if (event.type === 'done') raw = event.text || raw;
+    else if (event.type === 'error' && event.fatal) throw new Error(event.message);
+  }
+  return raw;
+}
+
 /** Pull the plan object out of a reply that may be wrapped in prose or a fence. */
 export function parseTaskPlan(raw: string): TaskPlan | null {
-  const text = raw.trim();
-  if (!text) return null;
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const body = fenced?.[1] ?? text;
-  const start = body.indexOf('{');
-  const end = body.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) return null;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body.slice(start, end + 1));
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object') return null;
-  const record = parsed as Record<string, unknown>;
+  const record = parseJsonObject(raw);
+  if (!record) return null;
   const mode = record.mode === 'split' ? 'split' : 'single';
   const reason = typeof record.reason === 'string' ? record.reason.trim() : '';
   const assignee = typeof record.assignee === 'string' ? record.assignee.trim().toLowerCase() : undefined;

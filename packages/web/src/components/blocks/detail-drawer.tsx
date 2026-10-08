@@ -40,7 +40,7 @@ export interface DetailDrawerProps {
   /** One line under the title. Kept for screen readers when not given. */
   description?: ReactNode;
   children: ReactNode;
-  /** Actions left of the close button - save, delete, "Bericht öffnen". */
+  /** Actions left of the close button - save, delete, "Open report". */
   footer?: ReactNode;
   closeLabel?: string;
   /**
@@ -111,14 +111,13 @@ export function DetailDrawer({
 }
 
 /**
- * Hält den zuletzt gezeigten Eintrag fest, solange die Schublade zufährt.
+ * Holds on to the last subject shown while the drawer is closing.
  *
- * Eine Schublade, deren Seite beim Schliessen `if (!row) return null` sagt,
- * verschwindet im selben Bild aus dem Baum: die Ausblendung von vaul fällt
- * aus, und die Fokusrückgabe hängt am Aufräumen des Unmounts statt am
- * geordneten Schliessen. Mit diesem Haken bleibt der Inhalt stehen, bis die
- * Bewegung durch ist - der Rückgabewert wird erst `null`, wenn noch nie etwas
- * gewählt war, und dann gibt es auch nichts zu animieren.
+ * A drawer whose page says `if (!row) return null` on close vanishes from the
+ * tree in the same frame: vaul's exit animation is skipped, and focus return
+ * hangs on the unmount cleanup instead of an orderly close. With this hook the
+ * content stays until the motion is done - the return value only becomes
+ * `null` when nothing was ever selected, and then there is nothing to animate.
  */
 export function useDrawerSubject<T>(subject: T | null | undefined): T | null {
   const last = useRef<T | null>(null);

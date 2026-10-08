@@ -124,8 +124,19 @@ const HOUR_MS = 60 * 60 * 1000;
 const FEED_WINDOW_MS = 3000;
 const FEED_MAX_LINES = 10;
 const FEED_MAX_PER_HOUR = 40;
+/** How many memories one turn lists by name before the rest are only counted. */
+const MEMORIES_LISTED_PER_TURN = 3;
 /** How often the buffer gets a chance to drain once quiet hours or the rate cap let go. */
 const FLUSH_CHECK_MS = 60_000;
+
+/** The same event id inside this window is the same event told twice. */
+const DEDUPE_WINDOW_MS = 10_000;
+
+/** How many of the newest notifications of a kind are searched for "already told". */
+const RECENT_NOTIFICATIONS_CHECKED = 25;
+
+/** A failed task's own notification is written within the tick; this is how recent counts as that one. */
+const TASK_NOTIFICATION_LOOKBACK_MS = 60_000;
 
 function oneLine(text: string, max = 300): string {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -159,21 +170,31 @@ function formatDuration(ms?: number): string {
   return minutes > 0 ? minutes + ' min ' + seconds + ' sec' : seconds + ' sec';
 }
 
+/** The message of any thrown value. */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** A Telegram 403 reads differently depending on which layer surfaces it. */
 function isForbidden(error: unknown): boolean {
   const status = (error as { status?: number; statusCode?: number } | undefined)?.status
     ?? (error as { statusCode?: number } | undefined)?.statusCode;
   if (status === 403) return true;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   return /\b403\b/.test(message) || /forbidden/i.test(message);
 }
 
-/**
- * Attach push delivery to one running gateway. Returns the unsubscribe
- * function; call it once, on server shutdown or when the gateway is torn
- * down, or the assistant's emitter keeps a listener for a channel nobody
- * reads from any more.
- */
+/** Forget the timestamps that have left the hour-long window; they are stored oldest first. */
+function dropOlderThanAnHour(timestamps: number[]): void {
+  const cutoff = Date.now() - HOUR_MS;
+  for (let oldest = timestamps[0]; oldest !== undefined && oldest < cutoff; oldest = timestamps[0]) timestamps.shift();
+}
+
+/** The keyboard option for `sendNow`, present only when the item carries one. */
+function keyboardOption(item: PushItem): { keyboard?: TelegramInlineKeyboard } {
+  return item.keyboard ? { keyboard: item.keyboard } : {};
+}
+
 /** What an attachment hands back: how to stop it, and whether it could send. */
 export interface GatewayPush {
   /** Unsubscribe from every event and stop the flush ticker. */
@@ -187,6 +208,12 @@ export interface GatewayPush {
   canDeliver: () => boolean;
 }
 
+/**
+ * Attach push delivery to one running gateway. Returns the unsubscribe
+ * function; call it once, on server shutdown or when the gateway is torn
+ * down, or the assistant's emitter keeps a listener for a channel nobody
+ * reads from any more.
+ */
 export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle): GatewayPush {
   const assistant = context.assistant;
 
@@ -209,11 +236,44 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
   };
 
   const isRateLimited = (): boolean => {
-    const cutoff = Date.now() - HOUR_MS;
-    for (let oldest = sentAt[0]; oldest !== undefined && oldest < cutoff; oldest = sentAt[0]) sentAt.shift();
+    dropOlderThanAnHour(sentAt);
     const max = pushConfig().maxPerHour;
     return max > 0 && sentAt.length >= max;
   };
+
+  /** A recipient that blocked the bot is skipped from now on; any other failure is only logged. */
+  function onSendFailed(userId: number, error: unknown): void {
+    if (!isForbidden(error)) {
+      context.log.warn('Telegram push failed', { userId, error: errorMessage(error) });
+      return;
+    }
+    disabled.add(userId);
+    context.log.warn('Telegram push disabled: recipient blocked the bot (403)', { userId });
+  }
+
+  /** One call per message, in order - Telegram has no batch send. Stops at the first failure. */
+  async function sendParts(
+    userId: number,
+    parts: string[],
+    origin: Omit<MessageOrigin, 'at'>,
+    options: { silent?: boolean; keyboard?: TelegramInlineKeyboard },
+  ): Promise<void> {
+    for (const [index, part] of parts.entries()) {
+      try {
+        // The gateway files each message under this origin as it goes.
+        await gateway.send(userId, part, {
+          origin,
+          ...(options.silent ? { silent: true } : {}),
+          // The buttons go under the final part only: a notification long enough
+          // to be split would otherwise offer "read" halfway through it.
+          ...(index === parts.length - 1 && options.keyboard ? { keyboard: options.keyboard } : {}),
+        });
+      } catch (error) {
+        onSendFailed(userId, error);
+        return;
+      }
+    }
+  }
 
   async function sendNow(
     text: string,
@@ -226,32 +286,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     // decides whether a notification gets through.
     if (options.counted !== false) sentAt.push(Date.now());
     const parts = splitMessage(text);
-    for (const userId of recipients) {
-      for (const [index, part] of parts.entries()) {
-        try {
-          // One call per message, in order - Telegram has no batch send.
-          // The gateway files each message under this origin as it goes.
-          await gateway.send(userId, part, {
-            origin,
-            ...(options.silent ? { silent: true } : {}),
-            // The buttons go under the final part only: a notification long enough
-            // to be split would otherwise offer "read" halfway through it.
-            ...(index === parts.length - 1 && options.keyboard ? { keyboard: options.keyboard } : {}),
-          });
-        } catch (error) {
-          if (isForbidden(error)) {
-            disabled.add(userId);
-            context.log.warn('Telegram push disabled: recipient blocked the bot (403)', { userId });
-          } else {
-            context.log.warn('Telegram push failed', {
-              userId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-          break;
-        }
-      }
-    }
+    for (const userId of recipients) await sendParts(userId, parts, origin, options);
   }
 
   function buildDigest(items: PushItem[]): string {
@@ -274,7 +309,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     // failed") exists for.
     const single = items.length === 1 ? items[0] : undefined;
     if (single) {
-      void sendNow(single.message, single.origin, single.keyboard ? { keyboard: single.keyboard } : {});
+      void sendNow(single.message, single.origin, keyboardOption(single));
       return;
     }
     // A digest is several subjects in one message, so it has no record of
@@ -310,16 +345,13 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
 
   function dispatch(item: PushItem): void {
     if (!pushConfig().enabled || !perKindEnabled(item.kind)) return;
-
-    const last = recentIds.get(item.id);
-    if (last !== undefined && Date.now() - last < 10_000) return;
-    recentIds.set(item.id, Date.now());
+    if (!fresh(item.id)) return;
 
     // Give a backlog a chance to drain before deciding where this new item goes.
     attemptFlush();
 
     if (item.immediate) {
-      void sendNow(item.message, item.origin, { counted: false, ...(item.keyboard ? { keyboard: item.keyboard } : {}) });
+      void sendNow(item.message, item.origin, { counted: false, ...keyboardOption(item) });
       return;
     }
 
@@ -328,7 +360,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
       buffer.push(item);
       return;
     }
-    void sendNow(item.message, item.origin, item.keyboard ? { keyboard: item.keyboard } : {});
+    void sendNow(item.message, item.origin, keyboardOption(item));
   }
 
   /* ------------------------------- the feed ------------------------------- */
@@ -353,8 +385,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
   let feedMuted = false;
 
   function feedHasRoom(): boolean {
-    const cutoff = Date.now() - HOUR_MS;
-    for (let oldest = feedSentAt[0]; oldest !== undefined && oldest < cutoff; oldest = feedSentAt[0]) feedSentAt.shift();
+    dropOlderThanAnHour(feedSentAt);
     return feedSentAt.length < FEED_MAX_PER_HOUR;
   }
 
@@ -394,11 +425,20 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     }
   }
 
-  /** Seen this id a moment ago? Records get saved twice more often than you think. */
+  /**
+   * Seen this id a moment ago? Records get saved twice more often than you think.
+   * Remembers an id only for the dedupe window, so the map holds the last few
+   * seconds of events and not every event since the server started.
+   */
   function fresh(key: string): boolean {
-    const last = recentIds.get(key);
-    if (last !== undefined && Date.now() - last < 10_000) return false;
-    recentIds.set(key, Date.now());
+    const now = Date.now();
+    // Insertion order is time order, so the first recent entry ends the sweep.
+    for (const [id, at] of recentIds) {
+      if (now - at < DEDUPE_WINDOW_MS) break;
+      recentIds.delete(id);
+    }
+    if (recentIds.has(key)) return false;
+    recentIds.set(key, now);
     return true;
   }
 
@@ -420,11 +460,13 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
   const onMemoryLearned = (event: MemoryLearnedEvent): void => {
     if (!pushConfig().activity) return;
     const stored = event.stored ?? [];
-    for (const record of stored.slice(0, 3)) {
+    for (const record of stored.slice(0, MEMORIES_LISTED_PER_TURN)) {
       if (!fresh('memory:' + record.id)) continue;
       note('🧠 ' + oneLine(record.content, 120));
     }
-    if (stored.length > 3) note(`🧠 … and ${stored.length - 3} more memories`);
+    if (stored.length > MEMORIES_LISTED_PER_TURN) {
+      note(`🧠 … and ${stored.length - MEMORIES_LISTED_PER_TURN} more memories`);
+    }
   };
 
   /**
@@ -432,44 +474,41 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
    * kind is resolved to its name and anything that cannot be resolved is
    * left out rather than reported as a uuid.
    */
-  const onChanged = (change: { kind: string; id: string }): void => {
-    if (!pushConfig().activity || !change?.id) return;
+  function describeChange(change: { kind: string; id: string }): string | undefined {
     const org = assistant.store.org;
-    let line: string | undefined;
     switch (change.kind) {
       case 'skill':
         // The id *is* the name for a skill, which is why this one reads well.
-        line = '📝 Skill saved · ' + oneLine(change.id, 60);
-        break;
+        return '📝 Skill saved · ' + oneLine(change.id, 60);
       case 'memory': {
         const record = assistant.store.getMemory(change.id);
-        if (record) line = '🧠 ' + oneLine(record.content, 120);
-        break;
+        return record ? '🧠 ' + oneLine(record.content, 120) : undefined;
       }
       case 'agent': {
         const agent = org.getAgent(change.id);
-        if (agent) line = '👤 Agent saved · ' + oneLine(agent.name, 60);
-        break;
+        return agent ? '👤 Agent saved · ' + oneLine(agent.name, 60) : undefined;
       }
       case 'project': {
         const project = org.getProject(change.id);
-        if (project) line = '📁 Project saved · ' + oneLine(project.name, 60);
-        break;
+        return project ? '📁 Project saved · ' + oneLine(project.name, 60) : undefined;
       }
       case 'team': {
         const orgId = activeOrgId();
         const team = orgId ? org.listTeams(orgId).find((entry) => entry.id === change.id) : undefined;
-        if (team) line = '👥 Team saved · ' + oneLine(team.name, 60);
-        break;
+        return team ? '👥 Team saved · ' + oneLine(team.name, 60) : undefined;
       }
       case 'tools':
-        line = '🧰 Tool server changed · ' + oneLine(change.id, 60);
-        break;
+        return '🧰 Tool server changed · ' + oneLine(change.id, 60);
       default:
         // Everything else - a task, a notification, an assignment - has a proper
         // notification of its own above. This lane is for what does not.
-        break;
+        return undefined;
     }
+  }
+
+  const onChanged = (change: { kind: string; id: string }): void => {
+    if (!pushConfig().activity || !change?.id) return;
+    const line = describeChange(change);
     if (line && fresh('changed:' + change.kind + ':' + change.id)) note(line);
   };
 
@@ -529,6 +568,9 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     const message =
       '⏰ Schedule “' + event.job.name + '” ' + label + (duration ? ' (' + duration + ')' : '') + '.';
 
+    // The conversation the run happened in, or else the one its job lives in.
+    const sessionId = event.run.sessionId ?? event.job.sessionId;
+
     dispatch({
       id: 'cron:' + event.run.id,
       kind: 'cron',
@@ -543,9 +585,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
         ref: event.run.id,
         parent: event.job.id,
         title: event.job.name,
-        ...(event.run.sessionId ?? event.job.sessionId
-          ? { sessionId: (event.run.sessionId ?? event.job.sessionId) as string }
-          : {}),
+        ...(sessionId ? { sessionId } : {}),
         ...(event.run.result?.trim() ? { snippet: event.run.result } : {}),
       },
     });
@@ -590,7 +630,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
     // only for the failures nobody is told about otherwise (an agent's own
     // card, say).
     setImmediate(() => {
-      const since = Date.now() - 60_000;
+      const since = Date.now() - TASK_NOTIFICATION_LOOKBACK_MS;
       if (hasNotification('task', (entry) => entry.taskId === task.id && entry.createdAt >= since)) return;
       dispatch({
         id: 'task:' + task.id + ':failed',
@@ -606,7 +646,7 @@ export function attachGatewayPush(context: ServerContext, gateway: GatewayHandle
   /** Whether a recent notification of this kind matches - the "already told" check. */
   function hasNotification(kind: Notification['kind'], matches: (entry: Notification) => boolean): boolean {
     try {
-      return assistant.store.org.listNotifications({ kind, limit: 25 }).some(matches);
+      return assistant.store.org.listNotifications({ kind, limit: RECENT_NOTIFICATIONS_CHECKED }).some(matches);
     } catch {
       return false;
     }

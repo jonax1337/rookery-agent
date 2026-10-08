@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { api, ApiError } from '../lib/api';
+import { api } from '../lib/api';
+import { failureMessage } from '../lib/errors';
 import type { RookerySocket } from '../lib/socket';
 import type { CronJob, CronRun } from '../lib/types';
 
@@ -38,8 +39,7 @@ export function useCron(socket: RookerySocket): CronState {
       setRunning(new Set(overview.running));
       setError(null);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.offline) setError('No connection to the Rookery server.');
-      else setError((caught as Error).message);
+      setError(failureMessage(caught));
     } finally {
       setLoading(false);
     }

@@ -3,6 +3,12 @@
 import { AuiIf, useAuiState, ThreadPrimitive } from "@assistant-ui/react";
 import { useCallback, useEffect, useRef, useState, type FC } from "react";
 
+/** Width of the mask gradient that hints at suggestions hidden past an edge. */
+const FADE_WIDTH = "2rem";
+
+/** Sub-pixel rounding below this does not count as content hidden past an edge. */
+const HIDDEN_EDGE_EPSILON_PX = 1;
+
 const FollowupSuggestionsRow: FC = () => {
   const suggestions = useAuiState((s) => s.thread.suggestions);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -21,7 +27,10 @@ const FollowupSuggestionsRow: FC = () => {
       ? [maxScroll - fromStart, fromStart]
       : [fromStart, maxScroll - fromStart];
     setFades((prev) => {
-      const next = { left: left > 1, right: right > 1 };
+      const next = {
+        left: left > HIDDEN_EDGE_EPSILON_PX,
+        right: right > HIDDEN_EDGE_EPSILON_PX,
+      };
       return prev.left === next.left && prev.right === next.right ? prev : next;
     });
   }, []);
@@ -37,8 +46,8 @@ const FollowupSuggestionsRow: FC = () => {
   }, [updateFades]);
 
   const maskImage = `linear-gradient(to right, ${
-    fades.left ? "transparent, black 2rem" : "black"
-  }, ${fades.right ? "black calc(100% - 2rem), transparent" : "black"})`;
+    fades.left ? `transparent, black ${FADE_WIDTH}` : "black"
+  }, ${fades.right ? `black calc(100% - ${FADE_WIDTH}), transparent` : "black"})`;
 
   return (
     <div

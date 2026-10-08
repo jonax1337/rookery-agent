@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError } from '../lib/api';
+import { api, toApiError, type ApiError } from '../lib/api';
 import type {
   ExternalAgentRef,
   ExternalHookSet,
@@ -8,6 +8,11 @@ import type {
   ExternalSource,
   ToolServerAudience,
 } from '../lib/types';
+
+/** The rows with `patch` laid over the one `isTarget` picks; a missing shelf is an empty one. */
+function patchRows<Row>(rows: Row[] | undefined, isTarget: (row: Row) => boolean, patch: object): Row[] {
+  return (rows ?? []).map((row) => (isTarget(row) ? { ...row, ...patch } : row));
+}
 
 /** What a switch on the page decides: yes or no, and for whom. */
 export interface ExternalApprovalPatch {
@@ -52,7 +57,7 @@ export function useExternal(): {
       setOverview(await api.external());
       setError(null);
     } catch (caught) {
-      setError(caught instanceof ApiError ? caught : new ApiError(String(caught), 0));
+      setError(toApiError(caught));
     } finally {
       setLoading(false);
     }
@@ -67,75 +72,59 @@ export function useExternal(): {
     await reload();
   }, [reload]);
 
-  const setSource = useCallback(
-    async (source: ExternalSource, enabled: boolean) => {
-      // Show the switch moving before the round trip; `reload` settles it.
-      setOverview((current) =>
-        current
-          ? {
-              ...current,
-              sources: current.sources.map((entry) => (entry.id === source.id ? { ...entry, enabled } : entry)),
-            }
-          : current,
-      );
-      await api.setExternalSource(source.id, enabled);
-      await reload();
+  /**
+   * Moves the switch at once, then lets the server have the last word - also
+   * when it refuses, so a refused switch does not stay where the click put it.
+   */
+  const applyOptimistically = useCallback(
+    async (move: (overview: ExternalOverview) => ExternalOverview, send: () => Promise<unknown>) => {
+      setOverview((current) => (current ? move(current) : current));
+      try {
+        await send();
+      } finally {
+        await reload();
+      }
     },
     [reload],
+  );
+
+  const setSource = useCallback(
+    (source: ExternalSource, enabled: boolean) =>
+      applyOptimistically(
+        (current) => ({ ...current, sources: patchRows(current.sources, (entry) => entry.id === source.id, { enabled }) }),
+        () => api.setExternalSource(source.id, enabled),
+      ),
+    [applyOptimistically],
   );
 
   const setAgent = useCallback(
-    async (agent: ExternalAgentRef, patch: ExternalApprovalPatch) => {
-      setOverview((current) =>
-        current
-          ? {
-              ...current,
-              agents: (current.agents ?? []).map((entry) =>
-                entry.id === agent.id ? { ...entry, ...patch } : entry,
-              ),
-            }
-          : current,
-      );
-      await api.setExternalAgent(agent.id, patch);
-      await reload();
-    },
-    [reload],
+    (agent: ExternalAgentRef, patch: ExternalApprovalPatch) =>
+      applyOptimistically(
+        (current) => ({ ...current, agents: patchRows(current.agents, (entry) => entry.id === agent.id, patch) }),
+        () => api.setExternalAgent(agent.id, patch),
+      ),
+    [applyOptimistically],
   );
 
   const setHook = useCallback(
-    async (set: ExternalHookSet, patch: ExternalApprovalPatch) => {
-      setOverview((current) =>
-        current
-          ? {
-              ...current,
-              hooks: (current.hooks ?? []).map((entry) =>
-                entry.sourceId === set.sourceId ? { ...entry, ...patch } : entry,
-              ),
-            }
-          : current,
-      );
-      await api.setExternalHook(set.sourceId, patch);
-      await reload();
-    },
-    [reload],
+    (set: ExternalHookSet, patch: ExternalApprovalPatch) =>
+      applyOptimistically(
+        (current) => ({ ...current, hooks: patchRows(current.hooks, (entry) => entry.sourceId === set.sourceId, patch) }),
+        () => api.setExternalHook(set.sourceId, patch),
+      ),
+    [applyOptimistically],
   );
 
   const setPlugin = useCallback(
-    async (plugin: ExternalPluginState, patch: { loadWhole?: boolean; audience?: ToolServerAudience }) => {
-      setOverview((current) =>
-        current
-          ? {
-              ...current,
-              plugins: (current.plugins ?? []).map((entry) =>
-                entry.sourceId === plugin.sourceId ? { ...entry, ...patch } : entry,
-              ),
-            }
-          : current,
-      );
-      await api.setExternalPlugin(plugin.sourceId, patch);
-      await reload();
-    },
-    [reload],
+    (plugin: ExternalPluginState, patch: { loadWhole?: boolean; audience?: ToolServerAudience }) =>
+      applyOptimistically(
+        (current) => ({
+          ...current,
+          plugins: patchRows(current.plugins, (entry) => entry.sourceId === plugin.sourceId, patch),
+        }),
+        () => api.setExternalPlugin(plugin.sourceId, patch),
+      ),
+    [applyOptimistically],
   );
 
   return { overview, loading, error, reload, rescan, setSource, setAgent, setHook, setPlugin };

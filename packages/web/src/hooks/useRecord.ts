@@ -9,8 +9,8 @@ import { failureMessage } from '@/lib/errors';
  *
  * Four detail pages wrote this by hand in four versions. Three of them told a
  * 404 apart from an outage; the agent page did not, so a deleted agent ended
- * up behind `ServerOffline` with a "Erneut versuchen" button that could never
- * work, and the "Diesen Agenten gibt es nicht" state next to it was
+ * up behind `ServerOffline` with a "Try again" button that could never
+ * work, and the "This agent does not exist" state next to it was
  * unreachable code. `missing` is what brings that branch back.
  *
  * Reloading after a socket event stays the page's business - it knows which
@@ -28,14 +28,22 @@ export interface RecordHandle<T> {
   reload(): Promise<void>;
 }
 
+interface Outcome<T> {
+  id: string;
+  record: T | null;
+  missing: boolean;
+  error: string | null;
+}
+
 export function useRecord<T>(
   id: string | undefined,
   fetcher: (id: string) => Promise<T>,
 ): RecordHandle<T> {
-  const [record, setRecord] = useState<T | null>(null);
+  // What the last answer said, and for which id: an answer about another id
+  // is never shown, so navigating from one record to the next cannot flash
+  // the old record under the new URL.
+  const [outcome, setOutcome] = useState<Outcome<T> | null>(null);
   const [loading, setLoading] = useState(true);
-  const [missing, setMissing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // The fetcher is usually written inline (`(key) => api.agent(key)`), so it
   // changes identity on every render. Keeping it in a ref stops `load` from
@@ -56,21 +64,23 @@ export function useRecord<T>(
     }
     setLoading(true);
     try {
-      const next = await fetcherRef.current(id);
+      const record = await fetcherRef.current(id);
       if (seq !== loadSeq.current) return;
-      setRecord(next);
-      setMissing(false);
-      setError(null);
+      setOutcome({ id, record, missing: false, error: null });
     } catch (caught) {
       if (seq !== loadSeq.current) return;
       // A 404 is not an outage: the record was deleted, and the page has to say
       // so instead of offering a retry that will never work.
       if (caught instanceof ApiError && caught.status === 404) {
-        setRecord(null);
-        setMissing(true);
-        setError(null);
+        setOutcome({ id, record: null, missing: true, error: null });
       } else {
-        setError(failureMessage(caught));
+        // A failed reload keeps the record the page already shows.
+        setOutcome((previous) => ({
+          id,
+          record: previous?.id === id ? previous.record : null,
+          missing: false,
+          error: failureMessage(caught),
+        }));
       }
     } finally {
       if (seq === loadSeq.current) setLoading(false);
@@ -81,5 +91,13 @@ export function useRecord<T>(
     void load();
   }, [load]);
 
-  return { record, loading, missing, error, reload: load };
+  const current = outcome?.id === id ? outcome : null;
+  return {
+    record: current?.record ?? null,
+    // Between a new id and its first answer there is nothing to show yet.
+    loading: loading || (Boolean(id) && current === null),
+    missing: current?.missing ?? false,
+    error: current?.error ?? null,
+    reload: load,
+  };
 }

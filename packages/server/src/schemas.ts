@@ -215,7 +215,6 @@ export const archiveNotificationSchema = z.object({
 
 export const cronKindSchema = z.enum(['assistant', 'agent', 'script']);
 
-/** POST /api/cron */
 /** Whether the clock fires a schedule, or only an event does. */
 const cronTriggerModeSchema = z.enum(['schedule', 'event']);
 /**
@@ -224,6 +223,7 @@ const cronTriggerModeSchema = z.enum(['schedule', 'event']);
  */
 const eventCooldownSchema = z.number().int().min(0).max(24 * 60 * 60 * 1000);
 
+/** POST /api/cron */
 export const cronJobSchema = z.object({
   name: z.string().min(1, 'name must not be empty').max(120),
   // An event-only schedule has no expression, so emptiness is not decided
@@ -330,6 +330,7 @@ const dreamConfigSchema = z
     // allowing.
     userLabelWindow: z.number().int().min(0).max(365 * 24 * 60 * 60 * 1000),
     agreementFloor: z.number().min(0).max(1),
+    requireUserLabels: z.boolean(),
     calibrationTraces: z.number().int().min(0).max(100_000),
     tolerance: z.number().min(0).max(1),
     cooldownNights: z.number().int().min(0).max(365),
@@ -568,7 +569,7 @@ export const patchConfigSchema = z
   })
   .partial();
 
-const audienceSchema = z.enum(['assistant', 'agents', 'both']);
+export const audienceSchema = z.enum(['assistant', 'agents', 'both']);
 
 /** PATCH /api/tools/:id: flip, retarget, configure. */
 export const patchToolServerSchema = z
@@ -697,7 +698,7 @@ export class BadRequestError extends Error {
 }
 
 /** Parse or throw a 400 that Fastify's error handler renders as JSON. */
-export function parseOrThrow<T>(schema: z.ZodType<T>, value: unknown): T {
+export function parseOrThrow<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) throw new BadRequestError(formatIssues(result.error));
   return result.data;

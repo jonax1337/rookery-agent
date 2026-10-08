@@ -12,16 +12,17 @@ import {
 } from "@/components/icons";
 import { toast } from 'sonner';
 
-import { fetchOpenQuestions } from '@/hooks/useChat';
-import { api, ApiError } from '@/lib/api';
+import { useChatMode, useQuestionFeed, useRejoinedTurn, useRemoteSessionChanges, type ChatMode } from '@/hooks/useChatThread';
+import { api } from '@/lib/api';
 import { failureMessage, reportFailure } from '@/lib/errors';
 import { greeting, NO_PROJECT, UNTITLED_SESSION } from '@/lib/format';
 import { SESSION_TITLE_MAX, sessionTitleSchema } from '@/lib/session';
+import { FILLED_TOGGLE_ITEM_CLASS } from '@/lib/toggle-styles';
+import type { Project } from '@/lib/types';
 import {
   useAllSessionsState,
   useChatSession,
   useConfig,
-  useConnection,
   useOrgState,
   useSessionsState,
 } from '@/providers/rookery-provider';
@@ -84,10 +85,9 @@ import { Item, ItemContent, ItemDescription, ItemMedia, ItemTitle } from '@/comp
 
 export function ChatPage() {
   const navigate = useNavigate();
-  const { chat, turn, openConversation } = useChatSession();
+  const { chat, turn } = useChatSession();
   const { assistantName, config } = useConfig();
   const org = useOrgState();
-  const { socket } = useConnection();
   const sessions = useSessionsState();
   const allSessions = useAllSessionsState();
   const { confirm, dialog } = useConfirm();
@@ -104,8 +104,6 @@ export function ChatPage() {
     sessions.sessions.find((entry) => entry.id === activeId) ??
     allSessions.sessionById(activeId ?? undefined);
   const title = session?.title || (activeId ? 'Conversation' : UNTITLED_SESSION);
-
-  /* ------------------------------- actions ------------------------------- */
 
   const [renameOpen, setRenameOpen] = React.useState(false);
 
@@ -164,211 +162,10 @@ export function ChatPage() {
     }
   }, [activeId, allSessions, chat, confirm, navigate, sessions]);
 
-  /* ------------------------------ other tabs ------------------------------ */
-
-  // A rename or a deletion in another tab arrives as the session's `changed`
-  // broadcast. The shared list refetches on every `changed` by itself; the
-  // open thread does not, so it is rechecked here. A rename refreshes the
-  // hub's own slice, a deletion leaves for `/chats` the way this page's own
-  // delete does, rather than keep answering into a session the server no
-  // longer has.
-  const refreshThreads = sessions.refresh;
-  const dropActiveThread = sessions.setActiveId;
-  const resetTranscript = chat.reset;
-  React.useEffect(() => {
-    if (!activeId) return;
-    let disposed = false;
-    const unsubscribe = socket.onChanged((change) => {
-      if (change.kind !== 'session' || change.id !== activeId) return;
-      void api
-        .session(activeId)
-        .then(() => {
-          if (!disposed) void refreshThreads();
-        })
-        .catch((caught: unknown) => {
-          // Anything but a definite "gone" is no reason to leave, and once
-          // this page is gone there is nothing left to navigate.
-          if (disposed) return;
-          if (!(caught instanceof ApiError) || caught.status !== 404) return;
-          dropActiveThread(null);
-          resetTranscript();
-          // Replace, not push: in the tab that deleted, this races its own
-          // navigation to `/chats`, and a second entry for the same path
-          // would dead-end the Back button.
-          void navigate('/chats', { replace: true });
-        });
-    });
-    return () => {
-      disposed = true;
-      unsubscribe();
-    };
-  }, [activeId, dropActiveThread, navigate, refreshThreads, resetTranscript, socket]);
-
-  /* ------------------------------ questions ------------------------------- */
-
-  // A question belongs to no one conversation. The turn waiting on it may
-  // have been started in another window or on the phone, so it arrives as a
-  // broadcast beside the turn's own stream, and answering it here is what
-  // lets that turn carry on.
-  //
-  // A reload has missed every frame sent before it, which is what
-  // `GET /api/questions` is for. It runs again on each reconnect: a socket
-  // that was away may have missed the question outright, and one that was
-  // never open has nothing to have missed.
-  const openQuestion = chat.openQuestion;
-  const closeQuestion = chat.closeQuestion;
-  React.useEffect(() => {
-    let disposed = false;
-    const load = (): void => {
-      void fetchOpenQuestions()
-        .then((open) => {
-          if (disposed) return;
-          for (const question of open) openQuestion(question);
-        })
-        .catch(() => {
-          // An unreachable server says so loudly enough elsewhere, and a
-          // failed load means only that no card appears.
-        });
-    };
-    // `onStatus` reports the current status straight away, so an open socket
-    // loads at once and every later reconnect loads again.
-    const stopStatus = socket.onStatus((status) => {
-      if (status === 'open') load();
-    });
-    const stopQuestion = socket.onQuestion(openQuestion);
-    const stopClosed = socket.onQuestionClosed((event) => closeQuestion(event.id));
-    return () => {
-      disposed = true;
-      stopStatus();
-      stopQuestion();
-      stopClosed();
-    };
-  }, [closeQuestion, openQuestion, socket]);
-
-  /* ------------------------------- rejoining ------------------------------- */
-
-  // Whatever turn is already running in this conversation keeps running, and
-  // a reload - or opening it in a second tab - joins it rather than staring
-  // at an idle screen next to background work: the journal rebuilds what
-  // already happened, the socket attach continues the stream from there. The
-  // socket re-arms the attach itself on reconnect; leaving the conversation
-  // stops the following, never the turn.
-  const attach = chat.attach;
-  React.useEffect(() => {
-    if (!activeId) return;
-    void attach(activeId);
-    return () => socket.detachConversation(activeId);
-  }, [activeId, attach, socket]);
-
-  /* ------------------------------ terminal ------------------------------ */
-
-  // Chat or Claude Code's own terminal, per conversation. Both carry on the
-  // same provider session, so the switch loses nothing: the terminal resumes
-  // what the chat said, and every exchange in the terminal is stored in the
-  // conversation, where the chat finds it when it takes over again.
-  const [mode, setMode] = React.useState<ChatMode>(() => readChatMode(activeId));
-  const [opening, setOpening] = React.useState(false);
-  React.useEffect(() => setMode(readChatMode(activeId)), [activeId]);
-  // Which view is shown is the person's choice and nothing else. An open
-  // terminal used to switch the page to it - back when having one meant
-  // somebody had chosen the terminal. Now every conversation is answered in
-  // its terminal (T1), so that rule flipped every chat after its first answer.
-
-  // One conversation, one model choice: whatever `/model` picked inside the
-  // terminal is what the composer shows - and sends - when the chat takes
-  // over again. The terminal reports the model that answered with every
-  // turn; an alias and its full name (`opus`, `claude-opus-5-5`) count as
-  // the same pick, so an unchanged model does not jump in the composer.
-  const chooseModel = turn.chooseModel;
-  const composerProvider = turn.provider;
-  const composerModel = turn.model;
-  React.useEffect(() => {
-    if (!activeId || mode !== 'terminal') return;
-    return socket.onChanged((change) => {
-      if (change.kind !== 'session' || change.id !== activeId) return;
-      void api
-        .session(activeId)
-        .then(({ session: current }) => {
-          if (!current.provider) return;
-          const sameModel =
-            current.model === composerModel ||
-            (!current.model && !composerModel) ||
-            (current.provider === 'claude' && Boolean(composerModel) && Boolean(current.model?.includes(composerModel ?? '')));
-          if (current.provider === composerProvider && sameModel) return;
-          chooseModel(current.provider, current.model || undefined);
-        })
-        .catch(() => undefined);
-    });
-  }, [activeId, chooseModel, composerModel, composerProvider, mode, socket]);
-
-  const openTerminal = React.useCallback(async (): Promise<void> => {
-    setOpening(true);
-    try {
-      const opened = await socket.openTui({
-        ...(activeId ? { sessionId: activeId } : {}),
-        // Before the composer has loaded, its values are placeholders; the
-        // server's saved defaults are the right answer then.
-        ...(turn.ready
-          ? {
-              provider: turn.provider,
-              ...(turn.model ? { model: turn.model } : {}),
-              ...(turn.effort ? { effort: turn.effort } : {}),
-              permission: turn.permission,
-            }
-          : {}),
-        ...(turn.projectId ? { projectId: turn.projectId } : {}),
-      });
-      writeChatMode(opened.sessionId, 'terminal');
-      setMode('terminal');
-      // A terminal opened on the start screen made its own conversation.
-      if (opened.sessionId !== activeId) openConversation(opened.sessionId);
-      void allSessions.refresh();
-    } catch (caught) {
-      reportFailure('Open terminal', caught);
-    } finally {
-      setOpening(false);
-    }
-  }, [activeId, allSessions, openConversation, socket, turn.effort, turn.model, turn.permission, turn.projectId, turn.provider, turn.ready]);
-
-  const loadSession = sessions.load;
-  const setMessages = chat.setMessages;
-  const backToChat = React.useCallback(async (): Promise<void> => {
-    setMode('chat');
-    if (!activeId) return;
-    writeChatMode(activeId, 'chat');
-    // The terminal stays: it is the process the chat is answered in, too.
-    // Nothing to close - only the view changes.
-    // What was said in the terminal is in the conversation now; the thread on
-    // screen still shows how it looked before the switch.
-    const loaded = await loadSession(activeId);
-    if (loaded) setMessages(loaded.messages);
-  }, [activeId, loadSession, setMessages, socket]);
-
-  const modeSwitch = (
-    <ToggleGroup
-      type="single"
-      variant="outline"
-      size="sm"
-      value={mode}
-      disabled={opening}
-      onValueChange={(value) => {
-        if (value === 'terminal' && mode !== 'terminal') void openTerminal();
-        else if (value === 'chat' && mode !== 'chat') void backToChat();
-      }}
-      aria-label="Conversation mode"
-    >
-      <ToggleGroupItem value="chat" aria-label="Chat" className="data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
-        <MessagesSquareIcon />
-        Chat
-      </ToggleGroupItem>
-      <ToggleGroupItem value="terminal" aria-label="Claude Code terminal" className="data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground">
-        <TerminalIcon />
-        Terminal
-      </ToggleGroupItem>
-    </ToggleGroup>
-  );
-
-  /* -------------------------------- meta --------------------------------- */
+  useRemoteSessionChanges(activeId);
+  useQuestionFeed();
+  useRejoinedTurn(activeId);
+  const { mode, opening, openTerminal, backToChat } = useChatMode(activeId);
 
   // Without an open conversation there is nothing to rename, reset or delete,
   // so the menu is absent rather than disabled.
@@ -377,68 +174,24 @@ export function ChatPage() {
       breadcrumb: [{ label: 'Conversations', to: '/chats' }, { label: title }],
       actions: (
         <div className="flex items-center gap-2">
-        {modeSwitch}
-        {activeId ? (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <RowMenuButton tone="header" label="More actions" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuItem onSelect={() => setRenameOpen(true)}>
-              <PencilIcon />
-              Rename
-            </DropdownMenuItem>
-
-            {/* Every open conversation can be carried on hands-free; a
-                spoken one is simply going back to where it started. */}
-            <DropdownMenuItem onSelect={() => void navigate('/voice?session=' + activeId)}>
-              <AudioLinesIcon />
-              {session?.kind === 'voice' ? 'Continue voice conversation' : 'Continue in voice mode'}
-            </DropdownMenuItem>
-
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Assign project</DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-52">
-                {/* The same choice the composer's Project pill makes, through
-                    the same call - the two can never disagree. */}
-                <DropdownMenuRadioGroup
-                  value={turn.projectId ?? NO_PROJECT}
-                  onValueChange={(value) =>
-                    turn.chooseProject(value === NO_PROJECT ? null : value)
-                  }
-                >
-                  <DropdownMenuRadioItem value={NO_PROJECT}>No project</DropdownMenuRadioItem>
-                  {org.projects
-                    .filter((entry) => !entry.archived || entry.id === turn.projectId)
-                    .map((entry) => (
-                      <DropdownMenuRadioItem key={entry.id} value={entry.id}>
-                        {entry.name}
-                      </DropdownMenuRadioItem>
-                    ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-
-            <DropdownMenuItem onSelect={() => void confirmReset()}>
-              <RotateCcwIcon />
-              Reset
-            </DropdownMenuItem>
-
-            <DropdownMenuItem asChild>
-              <NavLink to="/chats">
-                <MessagesSquareIcon />
-                View conversations
-              </NavLink>
-            </DropdownMenuItem>
-
-            <DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" onSelect={() => void confirmDelete()}>
-              <Trash2Icon />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        ) : null}
+          <ChatModeSwitch
+            mode={mode}
+            disabled={opening}
+            onOpenTerminal={() => void openTerminal()}
+            onBackToChat={() => void backToChat()}
+          />
+          {activeId ? (
+            <ConversationMenu
+              isVoice={session?.kind === 'voice'}
+              projects={org.projects}
+              projectId={turn.projectId}
+              onChooseProject={turn.chooseProject}
+              onRename={() => setRenameOpen(true)}
+              onContinueInVoice={() => void navigate('/voice?session=' + activeId)}
+              onReset={() => void confirmReset()}
+              onDelete={() => void confirmDelete()}
+            />
+          ) : null}
         </div>
       ),
     },
@@ -457,8 +210,6 @@ export function ChatPage() {
       navigate,
     ],
   );
-
-  /* ------------------------------- welcome ------------------------------- */
 
   // Identity changes update the welcome; typing keeps the same component.
   const components = React.useMemo<ThreadComponents>(
@@ -491,8 +242,6 @@ export function ChatPage() {
     }),
     [assistantName, config?.honorific, config?.userName],
   );
-
-  /* -------------------------------- page --------------------------------- */
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -561,7 +310,7 @@ export function ChatPage() {
             autoFocus
             className="min-h-0 flex-1"
             fallback={
-              <EmptyStateCard
+              <ClosedTerminalCard
                 title="The terminal is closed"
                 description="It was closed or sat unused for an hour. Everything said in it is in this conversation."
                 onReopen={() => void openTerminal()}
@@ -580,45 +329,142 @@ export function ChatPage() {
         </div>
       )}
 
-      <RenameDialog
-        open={renameOpen}
-        onOpenChange={setRenameOpen}
-        title={session?.title ?? ''}
-        onRename={async (next) => {
-          await sessions.rename(activeId ?? '', next);
-          await allSessions.refresh();
-        }}
-      />
+      {activeId ? (
+        <RenameDialog
+          open={renameOpen}
+          onOpenChange={setRenameOpen}
+          title={session?.title ?? ''}
+          onRename={async (next) => {
+            await sessions.rename(activeId, next);
+            await allSessions.refresh();
+          }}
+        />
+      ) : null}
 
       <span className="sr-only">Conversation with {assistantName}</span>
     </div>
   );
 }
 
-/* ------------------------------- chat mode -------------------------------- */
-
-type ChatMode = 'chat' | 'terminal';
-
-/** Remembered per conversation in this browser - a convenience, not state the server needs. */
-function readChatMode(sessionId: string | null | undefined): ChatMode {
-  if (!sessionId) return 'chat';
-  try {
-    return localStorage.getItem('rookery.chatMode.' + sessionId) === 'terminal' ? 'terminal' : 'chat';
-  } catch {
-    return 'chat';
-  }
+function ChatModeSwitch({
+  mode,
+  disabled,
+  onOpenTerminal,
+  onBackToChat,
+}: {
+  mode: ChatMode;
+  disabled: boolean;
+  onOpenTerminal(): void;
+  onBackToChat(): void;
+}) {
+  return (
+    <ToggleGroup
+      type="single"
+      variant="outline"
+      size="sm"
+      value={mode}
+      disabled={disabled}
+      onValueChange={(value) => {
+        if (value === 'terminal' && mode !== 'terminal') onOpenTerminal();
+        else if (value === 'chat' && mode !== 'chat') onBackToChat();
+      }}
+      aria-label="Conversation mode"
+    >
+      <ToggleGroupItem value="chat" aria-label="Chat" className={FILLED_TOGGLE_ITEM_CLASS}>
+        <MessagesSquareIcon />
+        Chat
+      </ToggleGroupItem>
+      <ToggleGroupItem value="terminal" aria-label="Claude Code terminal" className={FILLED_TOGGLE_ITEM_CLASS}>
+        <TerminalIcon />
+        Terminal
+      </ToggleGroupItem>
+    </ToggleGroup>
+  );
 }
 
-function writeChatMode(sessionId: string, mode: ChatMode): void {
-  try {
-    if (mode === 'chat') localStorage.removeItem('rookery.chatMode.' + sessionId);
-    else localStorage.setItem('rookery.chatMode.' + sessionId, mode);
-  } catch {
-    // Private window or blocked storage: the mode is simply not remembered.
-  }
+interface ConversationMenuProps {
+  isVoice: boolean;
+  projects: readonly Project[];
+  projectId: string | undefined;
+  onChooseProject(projectId: string | null): void;
+  onRename(): void;
+  onContinueInVoice(): void;
+  onReset(): void;
+  onDelete(): void;
 }
 
-interface EmptyStateCardProps {
+function ConversationMenu({
+  isVoice,
+  projects,
+  projectId,
+  onChooseProject,
+  onRename,
+  onContinueInVoice,
+  onReset,
+  onDelete,
+}: ConversationMenuProps) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <RowMenuButton tone="header" label="More actions" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52">
+        <DropdownMenuItem onSelect={onRename}>
+          <PencilIcon />
+          Rename
+        </DropdownMenuItem>
+
+        {/* Every open conversation can be carried on hands-free; a
+            spoken one is simply going back to where it started. */}
+        <DropdownMenuItem onSelect={onContinueInVoice}>
+          <AudioLinesIcon />
+          {isVoice ? 'Continue voice conversation' : 'Continue in voice mode'}
+        </DropdownMenuItem>
+
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>Assign project</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-52">
+            {/* The same choice the composer's Project pill makes, through
+                the same call - the two can never disagree. */}
+            <DropdownMenuRadioGroup
+              value={projectId ?? NO_PROJECT}
+              onValueChange={(value) => onChooseProject(value === NO_PROJECT ? null : value)}
+            >
+              <DropdownMenuRadioItem value={NO_PROJECT}>No project</DropdownMenuRadioItem>
+              {projects
+                .filter((entry) => !entry.archived || entry.id === projectId)
+                .map((entry) => (
+                  <DropdownMenuRadioItem key={entry.id} value={entry.id}>
+                    {entry.name}
+                  </DropdownMenuRadioItem>
+                ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+
+        <DropdownMenuItem onSelect={onReset}>
+          <RotateCcwIcon />
+          Reset
+        </DropdownMenuItem>
+
+        <DropdownMenuItem asChild>
+          <NavLink to="/chats">
+            <MessagesSquareIcon />
+            View conversations
+          </NavLink>
+        </DropdownMenuItem>
+
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+          <Trash2Icon />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+interface ClosedTerminalCardProps {
   title: string;
   description: string;
   onReopen(): void;
@@ -627,7 +473,7 @@ interface EmptyStateCardProps {
 }
 
 /** Where the terminal was, once it is gone: open it again, or carry on in chat. */
-function EmptyStateCard({ title, description, onReopen, onChat, busy }: EmptyStateCardProps) {
+function ClosedTerminalCard({ title, description, onReopen, onChat, busy }: ClosedTerminalCardProps) {
   return (
     <div className="m-auto flex max-w-sm flex-col items-center gap-3 text-center">
       <TerminalIcon className="size-6 text-muted-foreground" />
@@ -707,10 +553,10 @@ function RenameDialog({ open, onOpenChange, title, onRename }: RenameDialogProps
             </DialogDescription>
           </DialogHeader>
 
-          {/* FormField verdrahtet Label, Eingabe und Meldung: ohne
-              `aria-describedby` hört jemand, der nach der Ablehnung zurück ins
-              Feld tabbt, nur noch dessen Namen. */}
-          <FormField id="gespraech-titel" label="Title" error={error} className="py-4">
+          {/* FormField wires label, input and message together: without
+              `aria-describedby`, someone who tabs back into the field after
+              the rejection hears only its name. */}
+          <FormField id="conversation-title" label="Title" error={error} className="py-4">
             {(control) => (
               <Input
                 {...control}

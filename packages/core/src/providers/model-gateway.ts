@@ -1,8 +1,14 @@
-import { randomUUID } from 'node:crypto';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import type { ProviderProfile } from '../types.js';
-import { BRIDGE_TOKEN_HEADER, isCodexModel, relayRequest, sharedCodexBridge } from './codex-bridge.js';
+import {
+  ANTHROPIC_URL,
+  BRIDGE_TOKEN_HEADER,
+  isCodexModel,
+  relayRequest,
+  sharedCodexBridge,
+} from './codex-bridge.js';
+import { LoopbackServer, readBody, sendError, sendFailure, type LoopbackEndpoint } from './loopback-server.js';
 
 /**
  * One Anthropic-Messages endpoint for every model Rookery knows.
@@ -43,9 +49,7 @@ export interface ModelGatewayOptions {
 }
 
 export class ModelGateway {
-  #server: Server | undefined;
-  #starting: Promise<{ baseUrl: string; token: string }> | undefined;
-  #token = '';
+  readonly #loopback = new LoopbackServer('model gateway', (request, response) => this.#handle(request, response));
   readonly #options: ModelGatewayOptions;
 
   constructor(options: ModelGatewayOptions) {
@@ -53,33 +57,12 @@ export class ModelGateway {
   }
 
   /** Start once; where to point Claude Code, and the token its header must carry. */
-  start(): Promise<{ baseUrl: string; token: string }> {
-    this.#starting ??= new Promise((resolve, reject) => {
-      this.#token = randomUUID();
-      const server = createServer((request, response) => {
-        void this.#handle(request, response);
-      });
-      server.on('error', reject);
-      server.listen(0, '127.0.0.1', () => {
-        const address = server.address();
-        if (!address || typeof address === 'string') {
-          reject(new Error('The model gateway could not determine its own port.'));
-          return;
-        }
-        this.#server = server;
-        resolve({ baseUrl: 'http://127.0.0.1:' + address.port, token: this.#token });
-      });
-    });
-    return this.#starting;
+  start(): Promise<LoopbackEndpoint> {
+    return this.#loopback.start();
   }
 
-  async close(): Promise<void> {
-    const server = this.#server;
-    this.#server = undefined;
-    this.#starting = undefined;
-    if (!server) return;
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+  close(): Promise<void> {
+    return this.#loopback.close();
   }
 
   /** Which backend a model name belongs to. Unknown names are Anthropic's. */
@@ -99,51 +82,47 @@ export class ModelGateway {
       const model = path.startsWith('/v1/messages') ? modelOf(raw) : undefined;
       const route = this.route(model);
 
-      if (route.kind !== 'anthropic' && request.headers[BRIDGE_TOKEN_HEADER] !== this.#token) {
-        response.writeHead(401, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error' } }));
+      if (route.kind !== 'anthropic' && request.headers[BRIDGE_TOKEN_HEADER] !== this.#loopback.token) {
+        sendError(response, 401, 'authentication_error');
         return;
       }
 
-      if (route.kind === 'codex') {
-        const bridge = await sharedCodexBridge.start();
-        await relayRequest(request, raw, response, bridge.baseUrl, (headers) => {
-          headers.delete('authorization');
-          headers.delete('x-api-key');
-          headers.set(BRIDGE_TOKEN_HEADER, bridge.token);
-        });
-        return;
-      }
-
-      if (route.kind === 'profile') {
-        const { profile } = route;
-        await relayRequest(request, raw, response, profile.baseUrl, (headers) => {
-          headers.delete('x-api-key');
-          headers.set('authorization', 'Bearer ' + profile.authToken);
-          // The subscription login marks itself in the beta list; a backend
-          // with its own key has no use for it and may refuse the unknown flag.
-          const beta = (headers.get('anthropic-beta') ?? '')
-            .split(',')
-            .map((flag) => flag.trim())
-            .filter((flag) => flag && !flag.startsWith('oauth'));
-          if (beta.length) headers.set('anthropic-beta', beta.join(','));
-          else headers.delete('anthropic-beta');
-        });
-        return;
-      }
-
-      await relayRequest(request, raw, response, 'https://api.anthropic.com');
+      if (route.kind === 'codex') await relayToCodex(request, raw, response);
+      else if (route.kind === 'profile') await relayToProfile(route.profile, request, raw, response);
+      else await relayRequest(request, raw, response, ANTHROPIC_URL);
     } catch (error) {
-      if (!response.headersSent) {
-        response.writeHead(502, { 'content-type': 'application/json' });
-        response.end(
-          JSON.stringify({ type: 'error', error: { type: 'api_error', message: (error as Error).message } }),
-        );
-      } else {
-        response.end();
-      }
+      sendFailure(response, 502, error);
     }
   }
+}
+
+async function relayToCodex(request: IncomingMessage, raw: string, response: ServerResponse): Promise<void> {
+  const bridge = await sharedCodexBridge.start();
+  await relayRequest(request, raw, response, bridge.baseUrl, (headers) => {
+    headers.delete('authorization');
+    headers.delete('x-api-key');
+    headers.set(BRIDGE_TOKEN_HEADER, bridge.token);
+  });
+}
+
+async function relayToProfile(
+  profile: ProviderProfile,
+  request: IncomingMessage,
+  raw: string,
+  response: ServerResponse,
+): Promise<void> {
+  await relayRequest(request, raw, response, profile.baseUrl, (headers) => {
+    headers.delete('x-api-key');
+    headers.set('authorization', 'Bearer ' + profile.authToken);
+    // The subscription login marks itself in the beta list; a backend
+    // with its own key has no use for it and may refuse the unknown flag.
+    const beta = (headers.get('anthropic-beta') ?? '')
+      .split(',')
+      .map((flag) => flag.trim())
+      .filter((flag) => flag && !flag.startsWith('oauth'));
+    if (beta.length) headers.set('anthropic-beta', beta.join(','));
+    else headers.delete('anthropic-beta');
+  });
 }
 
 function modelOf(raw: string): string | undefined {
@@ -153,10 +132,4 @@ function modelOf(raw: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-async function readBody(request: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString('utf8');
 }

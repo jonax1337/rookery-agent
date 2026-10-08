@@ -91,6 +91,10 @@ export class QuestionRegistry extends EventEmitter {
    * tool handler whose job is to say what happened and let the turn continue.
    */
   ask(request: QuestionRequest, options: AskOptions = {}): Promise<QuestionAnswer | null> {
+    // Already gone before it started: an abort that landed between the tool
+    // call and here would otherwise open a question nobody can close.
+    if (options.signal?.aborted) return Promise.resolve(null);
+
     const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : DEFAULT_TIMEOUT_MS;
     const now = Date.now();
     const pending: PendingQuestion = {
@@ -103,10 +107,6 @@ export class QuestionRegistry extends EventEmitter {
       askedAt: now,
       expiresAt: now + timeoutMs,
     };
-
-    // Already gone before it started: an abort that landed between the tool
-    // call and here would otherwise open a question nobody can close.
-    if (options.signal?.aborted) return Promise.resolve(null);
 
     return new Promise<QuestionAnswer | null>((resolve) => {
       let done = false;
@@ -147,23 +147,12 @@ export class QuestionRegistry extends EventEmitter {
   answer(id: string, answer: QuestionAnswer): boolean {
     const open = this.#open.get(id);
     if (!open) return false;
-    // Indices are cleaned here rather than in each surface: they arrive from
-    // a browser, a bot callback and a terminal, and the tool result is built
-    // by looking them up in the options - one stale index would otherwise
-    // read as a choice nobody made.
-    const count = open.pending.options.length;
-    const selected = (Array.isArray(answer.selected) ? answer.selected : [])
-      .filter((index) => Number.isInteger(index) && index >= 0 && index < count)
-      .filter((index, position, all) => all.indexOf(index) === position)
-      .slice(0, open.pending.multiSelect ? count : 1);
+    const selected = validSelection(answer.selected, open.pending);
     const text = answer.text?.trim();
     // Neither a pick nor a word: nothing came back, so the question stays
     // open for whoever answers it properly.
     if (!selected.length && !text) return false;
-    open.settle(
-      { ...answer, selected, ...(text ? { text } : { text: undefined }), at: answer.at ?? Date.now() },
-      'answered',
-    );
+    open.settle({ ...answer, selected, text: text || undefined, at: answer.at ?? Date.now() }, 'answered');
     return true;
   }
 
@@ -221,4 +210,18 @@ export function questionEvent(pending: PendingQuestion): AgentEvent {
     multiSelect: pending.multiSelect,
     expiresAt: pending.expiresAt,
   };
+}
+
+/**
+ * Indices are cleaned here rather than in each surface: they arrive from
+ * a browser, a bot callback and a terminal, and the tool result is built
+ * by looking them up in the options - one stale index would otherwise
+ * read as a choice nobody made.
+ */
+function validSelection(selected: number[] | undefined, question: PendingQuestion): number[] {
+  const count = question.options.length;
+  return (Array.isArray(selected) ? selected : [])
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < count)
+    .filter((index, position, all) => all.indexOf(index) === position)
+    .slice(0, question.multiSelect ? count : 1);
 }

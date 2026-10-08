@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, ApiError } from '../lib/api';
+import { api, ApiError, toApiError } from '../lib/api';
 import type { Nullable } from '../lib/api';
 import type { RookerySocket } from '../lib/socket';
 import type { Session } from '../lib/types';
@@ -75,7 +75,7 @@ export function useAllSessions(
       if (seq !== refreshSeq.current) return;
       // An offline server has to reach the page as such - the old list page
       // swallowed the failure and showed an empty table instead.
-      setError(caught instanceof ApiError ? caught : new ApiError(String(caught), 0));
+      setError(toApiError(caught));
     } finally {
       if (seq === refreshSeq.current) setLoading(false);
     }

@@ -53,6 +53,7 @@ import {
 } from './data-table-pagination';
 import type { RowLabel } from './data-table-pagination';
 import { DataTableToolbar } from './data-table-toolbar';
+import { ACTIONS_COLUMN_ID, SELECT_COLUMN_ID } from './table-columns';
 import {
   matchesSearch,
   rowSearchText,
@@ -114,7 +115,7 @@ export interface DataTableProps<TData extends RowData> {
   /* ------------------------------ toolbar -------------------------------- */
   filters?: React.ReactNode;
   actions?: React.ReactNode;
-  /** German column names for the visibility menu, keyed by column id. */
+  /** Column names for the visibility menu, keyed by column id. */
   columnLabels?: Record<string, string>;
   showColumnMenu?: boolean;
 
@@ -124,10 +125,10 @@ export interface DataTableProps<TData extends RowData> {
   /**
    * Bulk action bar content; `clear` empties the selection after the action ran.
    *
-   * Labelling rule, because the bar already prints "N ausgewählt" right next to
+   * Labelling rule, because the bar already prints "N selected" right next to
    * these buttons: a button that acts on the whole selection carries the bare
-   * verb ("Archivieren"), a button that acts on a *subset* of it leads with its
-   * own count ("3 abbrechen") - there the number is new information, not an
+   * verb ("Archive"), a button that acts on a *subset* of it leads with its
+   * own count ("Cancel 3") - there the number is new information, not an
    * echo, and it explains why the button greys out with rows still selected.
    */
   bulkActions?: (rows: TData[], clear: () => void) => React.ReactNode;
@@ -138,7 +139,7 @@ export interface DataTableProps<TData extends RowData> {
   initialColumnVisibility?: ColumnVisibilityState;
 
   /* ---------------------------- pagination ------------------------------- */
-  /** `false` shows every row at once — for the short "Zuletzt" tables. */
+  /** `false` shows every row at once — for the short "Recent" tables. */
   paginate?: boolean;
   pageSize?: number;
   pageSizeOptions?: readonly number[];
@@ -155,7 +156,7 @@ export interface DataTableProps<TData extends RowData> {
   rowClickIgnoreColumns?: readonly string[];
   rowClassName?: (row: TData) => string | undefined;
   /**
-   * Draws "Heute / Gestern / Diese Woche / Früher" separator rows — but only
+   * Draws "Today / Yesterday / This week / Earlier" separator rows — but only
    * while the table is sorted descending by `groupSortId`, because any other
    * order would put the runs in the wrong place.
    */
@@ -179,7 +180,8 @@ export interface DataTableProps<TData extends RowData> {
   idPrefix?: string;
 }
 
-const DEFAULT_IGNORED_COLUMNS = ['select', 'actions'] as const;
+/** The checkbox and row-menu columns: narrow, and a click in them is not a row click. */
+const UTILITY_COLUMN_IDS: readonly string[] = [SELECT_COLUMN_ID, ACTIONS_COLUMN_ID];
 
 /**
  * The generic table behind every list in Rookery, adapted from dashboard-01.
@@ -226,7 +228,7 @@ export function DataTable<TData extends RowData>({
   capped = false,
   rowLabel,
   onRowClick,
-  rowClickIgnoreColumns = DEFAULT_IGNORED_COLUMNS,
+  rowClickIgnoreColumns = UTILITY_COLUMN_IDS,
   rowClassName,
   groupTime,
   groupSortId,
@@ -237,7 +239,7 @@ export function DataTable<TData extends RowData>({
   error,
   flush = false,
   className,
-  idPrefix = 'tabelle',
+  idPrefix = 'table',
 }: DataTableProps<TData>) {
   const [sorting, setSorting] = React.useState<SortingState>(initialSorting ?? []);
   const [columnVisibility, setColumnVisibility] = React.useState<ColumnVisibilityState>(
@@ -277,7 +279,7 @@ export function DataTable<TData extends RowData>({
   }, [activeTab, searchValue]);
 
   const selectable =
-    enableRowSelection ?? columns.some((column) => column.id === 'select');
+    enableRowSelection ?? columns.some((column) => column.id === SELECT_COLUMN_ID);
 
   const resolveRowId = React.useMemo(
     () =>
@@ -375,23 +377,17 @@ export function DataTable<TData extends RowData>({
    * announcement belongs here once rather than in thirty pages.
    *
    * The sentence is the footer's, word for word, because the two are read one
-   * after the other - but always in the plural: "1 von 58 geladenen
-   * Gesprächen" is the sentence the dative asks for, whatever the count.
+   * after the other - and, like the footer, always in the plural.
    */
   const noun = rowLabel?.plural ?? DEFAULT_ROW_LABEL.plural;
-  const statusMessage = error
-    ? 'The list could not be loaded.'
-    : loading
-      ? 'Loading list…'
-      : hasRows
-        ? formatNumber(filteredCount) +
-          ' of ' +
-          formatNumber(data.length) +
-          ' loaded ' +
-          noun
-        : data.length === 0
-          ? 'Nothing here'
-          : 'No results';
+  const statusMessage = tableStatusMessage({
+    failed: Boolean(error),
+    loading,
+    hasRows,
+    filteredCount,
+    loadedCount: data.length,
+    noun,
+  });
 
   // One sentence for every clickable row, referenced rather than repeated: a
   // focusable `<tr>` announces its cells and otherwise keeps quiet about the
@@ -427,14 +423,14 @@ export function DataTable<TData extends RowData>({
 
   const tabsNode = tabs?.length ? (
     <>
-      <Label htmlFor={`${idPrefix}-auswahl`} className="sr-only">
+      <Label htmlFor={`${idPrefix}-selection`} className="sr-only">
         {tabLabel}
       </Label>
       <Select value={activeTab} onValueChange={setTab}>
         <SelectTrigger
           className="flex w-fit @4xl/main:hidden"
           size="sm"
-          id={`${idPrefix}-auswahl`}
+          id={`${idPrefix}-selection`}
         >
           <SelectValue placeholder={tabLabel} />
         </SelectTrigger>
@@ -616,7 +612,7 @@ export function DataTable<TData extends RowData>({
                     colSpan={header.colSpan}
                     scope="col"
                     className={cn(
-                      (header.column.id === 'select' || header.column.id === 'actions') && 'w-8',
+                      UTILITY_COLUMN_IDS.includes(header.column.id) && 'w-8',
                     )}
                   >
                     {header.isPlaceholder ? null : <FlexRender header={header} />}
@@ -679,6 +675,29 @@ export function DataTable<TData extends RowData>({
       {grid}
     </div>
   );
+}
+
+interface TableStatusInput {
+  failed: boolean;
+  loading: boolean;
+  hasRows: boolean;
+  filteredCount: number;
+  loadedCount: number;
+  noun: string;
+}
+
+function tableStatusMessage({
+  failed,
+  loading,
+  hasRows,
+  filteredCount,
+  loadedCount,
+  noun,
+}: TableStatusInput): string {
+  if (failed) return 'The list could not be loaded.';
+  if (loading) return 'Loading list…';
+  if (hasRows) return `${formatNumber(filteredCount)} of ${formatNumber(loadedCount)} loaded ${noun}`;
+  return loadedCount === 0 ? 'Nothing here' : 'No results';
 }
 
 /**

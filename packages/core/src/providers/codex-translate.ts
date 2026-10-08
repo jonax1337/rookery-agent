@@ -79,6 +79,10 @@ function resultOutput(content: unknown): string | ResponsesItem[] {
   return content === undefined ? '' : JSON.stringify(content);
 }
 
+/** Thinking budgets (tokens) from which a request asks for high, or only low, reasoning effort. */
+const HIGH_EFFORT_BUDGET = 16000;
+const LOW_EFFORT_BUDGET = 2000;
+
 /**
  * Reasoning effort for the backend. Anthropic expresses "think harder" as a
  * token budget, so it is mapped onto the three levels Codex accepts rather
@@ -87,8 +91,8 @@ function resultOutput(content: unknown): string | ResponsesItem[] {
 function effortFor(request: AnthropicRequest): 'low' | 'medium' | 'high' {
   const budget = request.thinking?.budget_tokens;
   if (!budget) return 'medium';
-  if (budget >= 16000) return 'high';
-  if (budget <= 2000) return 'low';
+  if (budget >= HIGH_EFFORT_BUDGET) return 'high';
+  if (budget <= LOW_EFFORT_BUDGET) return 'low';
   return 'medium';
 }
 
@@ -106,49 +110,9 @@ export function toResponsesRequest(
     if ((message.role as string) === 'system') {
       const text = blocksOf(message.content).map((block) => block.text ?? '').filter(Boolean).join('\n');
       if (text) instructions.push(text);
-      continue;
+    } else {
+      input.push(...messageItems(message));
     }
-    const role = message.role === 'assistant' ? 'assistant' : 'user';
-    const blocks = blocksOf(message.content);
-    // Text and tool traffic are separate item kinds on the Responses side, so
-    // one Anthropic message can become several items - and their order has to
-    // survive, or a tool result arrives before the call it answers.
-    let pendingText: string[] = [];
-    const flush = (): void => {
-      if (!pendingText.length) return;
-      input.push({
-        type: 'message',
-        role,
-        content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: pendingText.join('') }],
-      });
-      pendingText = [];
-    };
-
-    for (const block of blocks) {
-      if (block.type === 'text' && block.text) {
-        pendingText.push(block.text);
-      } else if (block.type === 'image') {
-        flush();
-        if (role !== 'user') throw new Error('Images in assistant messages are not supported by the ChatGPT bridge.');
-        input.push({ type: 'message', role, content: [imageContent(block)] });
-      } else if (block.type === 'tool_use') {
-        flush();
-        input.push({
-          type: 'function_call',
-          name: block.name ?? '',
-          arguments: JSON.stringify(block.input ?? {}),
-          call_id: block.id ?? '',
-        });
-      } else if (block.type === 'tool_result') {
-        flush();
-        input.push({
-          type: 'function_call_output',
-          call_id: block.tool_use_id ?? '',
-          output: resultOutput(block.content),
-        });
-      }
-    }
-    flush();
   }
 
   const tools = (request.tools ?? []).map((tool) => ({
@@ -170,6 +134,53 @@ export function toResponsesRequest(
     include: ['reasoning.encrypted_content'],
     prompt_cache_key: options.sessionId,
   };
+}
+
+/**
+ * Text and tool traffic are separate item kinds on the Responses side, so
+ * one Anthropic message can become several items - and their order has to
+ * survive, or a tool result arrives before the call it answers.
+ */
+function messageItems(message: AnthropicMessage): ResponsesItem[] {
+  const role = message.role === 'assistant' ? 'assistant' : 'user';
+  const items: ResponsesItem[] = [];
+  let pendingText: string[] = [];
+  const flush = (): void => {
+    if (!pendingText.length) return;
+    items.push({
+      type: 'message',
+      role,
+      content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text: pendingText.join('') }],
+    });
+    pendingText = [];
+  };
+
+  for (const block of blocksOf(message.content)) {
+    if (block.type === 'text' && block.text) {
+      pendingText.push(block.text);
+    } else if (block.type === 'image') {
+      flush();
+      if (role !== 'user') throw new Error('Images in assistant messages are not supported by the ChatGPT bridge.');
+      items.push({ type: 'message', role, content: [imageContent(block)] });
+    } else if (block.type === 'tool_use') {
+      flush();
+      items.push({
+        type: 'function_call',
+        name: block.name ?? '',
+        arguments: JSON.stringify(block.input ?? {}),
+        call_id: block.id ?? '',
+      });
+    } else if (block.type === 'tool_result') {
+      flush();
+      items.push({
+        type: 'function_call_output',
+        call_id: block.tool_use_id ?? '',
+        output: resultOutput(block.content),
+      });
+    }
+  }
+  flush();
+  return items;
 }
 
 /* ------------------------------ response side ----------------------------- */
@@ -204,6 +215,134 @@ export class TurnTranslator {
     this.model = model;
   }
 
+  /** Translate one backend SSE event. Returns the Anthropic events it produces. */
+  handle(event: Record<string, unknown>): AnthropicEvent[] {
+    const type = event.type as string | undefined;
+    const delta = typeof event.delta === 'string' ? event.delta : undefined;
+
+    if (type === 'response.output_text.delta' && delta !== undefined) return this.#textDelta(delta);
+    if (
+      (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') &&
+      delta !== undefined
+    ) {
+      return this.#thinkingDelta(delta);
+    }
+    if (type === 'response.output_item.done') return this.#itemDone(event.item as Record<string, unknown> | undefined);
+    if (type === 'response.completed') return this.#completed(event.response as Record<string, unknown> | undefined);
+    if (type === 'response.failed' || type === 'response.incomplete') {
+      return this.#failed(event.response as Record<string, unknown> | undefined);
+    }
+    return [];
+  }
+
+  /** The closing events. Safe to call once; the stream ends with these. */
+  finish(): AnthropicEvent[] {
+    return [
+      ...this.#start(),
+      ...this.#closeOpen(),
+      {
+        event: 'message_delta',
+        data: {
+          type: 'message_delta',
+          // Without `tool_use` here the harness treats a tool call as the end
+          // of the turn and never runs it.
+          delta: { stop_reason: this.#stopReason(), stop_sequence: null },
+          usage: this.#usage,
+        },
+      },
+      { event: 'message_stop', data: { type: 'message_stop' } },
+    ];
+  }
+
+  /** The same turn as one non-streaming Messages response. */
+  toMessage(text: string): Record<string, unknown> {
+    const content: Record<string, unknown>[] = [];
+    if (text) content.push({ type: 'text', text });
+    for (const call of this.#toolCalls) {
+      content.push({ type: 'tool_use', id: call.id, name: call.name, input: parseToolInput(call.argumentsJson) });
+    }
+    return {
+      id: newMessageId(),
+      type: 'message',
+      role: 'assistant',
+      model: this.model,
+      content,
+      stop_reason: this.#stopReason(),
+      stop_sequence: null,
+      usage: { input_tokens: this.#usage.input_tokens ?? 0, output_tokens: this.#usage.output_tokens ?? 0 },
+    };
+  }
+
+  #stopReason(): 'tool_use' | 'end_turn' {
+    return this.#toolCalls.length ? 'tool_use' : 'end_turn';
+  }
+
+  #textDelta(text: string): AnthropicEvent[] {
+    return [
+      ...this.#start(),
+      ...this.#openBlock('text'),
+      blockDelta(this.#index, { type: 'text_delta', text }),
+    ];
+  }
+
+  #thinkingDelta(thinking: string): AnthropicEvent[] {
+    return [
+      ...this.#start(),
+      ...this.#openBlock('thinking'),
+      blockDelta(this.#index, { type: 'thinking_delta', thinking }),
+    ];
+  }
+
+  // Function calls arrive whole rather than as argument deltas: the CLI
+  // ignores `response.function_call_arguments.delta` and reads the finished
+  // item, so we do the same and emit one complete tool_use block.
+  #itemDone(item: Record<string, unknown> | undefined): AnthropicEvent[] {
+    if (item?.type !== 'function_call') return [];
+    const call: ToolCall = {
+      id: String(item.call_id ?? item.id ?? ''),
+      name: String(item.name ?? ''),
+      argumentsJson: typeof item.arguments === 'string' ? item.arguments : '{}',
+    };
+    this.#toolCalls.push(call);
+    const events = [...this.#start(), ...this.#closeOpen()];
+    this.#index += 1;
+    events.push(
+      blockStart(this.#index, { type: 'tool_use', id: call.id, name: call.name, input: {} }),
+      blockDelta(this.#index, { type: 'input_json_delta', partial_json: call.argumentsJson }),
+      blockStop(this.#index),
+    );
+    return events;
+  }
+
+  #completed(response: Record<string, unknown> | undefined): AnthropicEvent[] {
+    const usage = (response?.usage ?? {}) as Record<string, unknown>;
+    this.#usage = {
+      input_tokens: Number(usage.input_tokens ?? 0),
+      output_tokens: Number(usage.output_tokens ?? 0),
+    };
+    const cached = (usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens;
+    if (typeof cached === 'number') this.#usage.cache_read_input_tokens = cached;
+    return this.finish();
+  }
+
+  #failed(response: Record<string, unknown> | undefined): AnthropicEvent[] {
+    const error = response?.error as Record<string, unknown> | undefined;
+    return [
+      ...this.#start(),
+      ...this.#closeOpen(),
+      {
+        event: 'error',
+        data: {
+          type: 'error',
+          error: {
+            type: 'api_error',
+            message: String(error?.message ?? 'The ChatGPT backend ended the turn early.'),
+          },
+        },
+      },
+    ];
+  }
+
   #start(): AnthropicEvent[] {
     if (this.#started) return [];
     this.#started = true;
@@ -213,7 +352,7 @@ export class TurnTranslator {
         data: {
           type: 'message_start',
           message: {
-            id: 'msg_' + Math.random().toString(36).slice(2, 14),
+            id: newMessageId(),
             type: 'message',
             role: 'assistant',
             model: this.model,
@@ -230,7 +369,7 @@ export class TurnTranslator {
   #closeOpen(): AnthropicEvent[] {
     if (!this.#open) return [];
     this.#open = null;
-    return [{ event: 'content_block_stop', data: { type: 'content_block_stop', index: this.#index } }];
+    return [blockStop(this.#index)];
   }
 
   #openBlock(kind: 'text' | 'thinking'): AnthropicEvent[] {
@@ -238,169 +377,41 @@ export class TurnTranslator {
     const events = this.#closeOpen();
     this.#index += 1;
     this.#open = kind;
-    events.push({
-      event: 'content_block_start',
-      data: {
-        type: 'content_block_start',
-        index: this.#index,
-        content_block:
-          kind === 'text' ? { type: 'text', text: '' } : { type: 'thinking', thinking: '', signature: '' },
-      },
-    });
+    events.push(
+      blockStart(
+        this.#index,
+        kind === 'text' ? { type: 'text', text: '' } : { type: 'thinking', thinking: '', signature: '' },
+      ),
+    );
     return events;
   }
+}
 
-  /** Translate one backend SSE event. Returns the Anthropic events it produces. */
-  handle(event: Record<string, unknown>): AnthropicEvent[] {
-    const type = event.type as string | undefined;
-    if (!type) return [];
+function newMessageId(): string {
+  return 'msg_' + Math.random().toString(36).slice(2, 14);
+}
 
-    if (type === 'response.output_text.delta' && typeof event.delta === 'string') {
-      return [
-        ...this.#start(),
-        ...this.#openBlock('text'),
-        {
-          event: 'content_block_delta',
-          data: {
-            type: 'content_block_delta',
-            index: this.#index,
-            delta: { type: 'text_delta', text: event.delta },
-          },
-        },
-      ];
-    }
+function blockStart(index: number, contentBlock: Record<string, unknown>): AnthropicEvent {
+  return {
+    event: 'content_block_start',
+    data: { type: 'content_block_start', index, content_block: contentBlock },
+  };
+}
 
-    if (
-      (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') &&
-      typeof event.delta === 'string'
-    ) {
-      return [
-        ...this.#start(),
-        ...this.#openBlock('thinking'),
-        {
-          event: 'content_block_delta',
-          data: {
-            type: 'content_block_delta',
-            index: this.#index,
-            delta: { type: 'thinking_delta', thinking: event.delta },
-          },
-        },
-      ];
-    }
+function blockDelta(index: number, delta: Record<string, unknown>): AnthropicEvent {
+  return { event: 'content_block_delta', data: { type: 'content_block_delta', index, delta } };
+}
 
-    // Function calls arrive whole rather than as argument deltas: the CLI
-    // ignores `response.function_call_arguments.delta` and reads the finished
-    // item, so we do the same and emit one complete tool_use block.
-    if (type === 'response.output_item.done') {
-      const item = event.item as Record<string, unknown> | undefined;
-      if (item?.type !== 'function_call') return [];
-      const call: ToolCall = {
-        id: String(item.call_id ?? item.id ?? ''),
-        name: String(item.name ?? ''),
-        argumentsJson: typeof item.arguments === 'string' ? item.arguments : '{}',
-      };
-      this.#toolCalls.push(call);
-      const events = [...this.#start(), ...this.#closeOpen()];
-      this.#index += 1;
-      events.push({
-        event: 'content_block_start',
-        data: {
-          type: 'content_block_start',
-          index: this.#index,
-          content_block: { type: 'tool_use', id: call.id, name: call.name, input: {} },
-        },
-      });
-      events.push({
-        event: 'content_block_delta',
-        data: {
-          type: 'content_block_delta',
-          index: this.#index,
-          delta: { type: 'input_json_delta', partial_json: call.argumentsJson },
-        },
-      });
-      events.push({
-        event: 'content_block_stop',
-        data: { type: 'content_block_stop', index: this.#index },
-      });
-      return events;
-    }
+function blockStop(index: number): AnthropicEvent {
+  return { event: 'content_block_stop', data: { type: 'content_block_stop', index } };
+}
 
-    if (type === 'response.completed') {
-      const response = event.response as Record<string, unknown> | undefined;
-      const usage = (response?.usage ?? {}) as Record<string, unknown>;
-      this.#usage = {
-        input_tokens: Number(usage.input_tokens ?? 0),
-        output_tokens: Number(usage.output_tokens ?? 0),
-      };
-      const cached = (usage.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens;
-      if (typeof cached === 'number') this.#usage.cache_read_input_tokens = cached;
-      return this.finish();
-    }
-
-    if (type === 'response.failed' || type === 'response.incomplete') {
-      const response = event.response as Record<string, unknown> | undefined;
-      const error = response?.error as Record<string, unknown> | undefined;
-      return [
-        ...this.#start(),
-        ...this.#closeOpen(),
-        {
-          event: 'error',
-          data: {
-            type: 'error',
-            error: {
-              type: 'api_error',
-              message: String(error?.message ?? 'The ChatGPT backend ended the turn early.'),
-            },
-          },
-        },
-      ];
-    }
-
-    return [];
-  }
-
-  /** The closing events. Safe to call once; the stream ends with these. */
-  finish(): AnthropicEvent[] {
-    return [
-      ...this.#start(),
-      ...this.#closeOpen(),
-      {
-        event: 'message_delta',
-        data: {
-          type: 'message_delta',
-          // Without `tool_use` here the harness treats a tool call as the end
-          // of the turn and never runs it.
-          delta: { stop_reason: this.#toolCalls.length ? 'tool_use' : 'end_turn', stop_sequence: null },
-          usage: this.#usage,
-        },
-      },
-      { event: 'message_stop', data: { type: 'message_stop' } },
-    ];
-  }
-
-  /** The same turn as one non-streaming Messages response. */
-  toMessage(text: string): Record<string, unknown> {
-    const content: Record<string, unknown>[] = [];
-    if (text) content.push({ type: 'text', text });
-    for (const call of this.#toolCalls) {
-      let input: unknown = {};
-      try {
-        input = JSON.parse(call.argumentsJson) as unknown;
-      } catch {
-        input = {};
-      }
-      content.push({ type: 'tool_use', id: call.id, name: call.name, input });
-    }
-    return {
-      id: 'msg_' + Math.random().toString(36).slice(2, 14),
-      type: 'message',
-      role: 'assistant',
-      model: this.model,
-      content,
-      stop_reason: this.#toolCalls.length ? 'tool_use' : 'end_turn',
-      stop_sequence: null,
-      usage: { input_tokens: this.#usage.input_tokens ?? 0, output_tokens: this.#usage.output_tokens ?? 0 },
-    };
+/** Arguments the backend sent malformed become an empty input rather than failing the whole message. */
+function parseToolInput(argumentsJson: string): unknown {
+  try {
+    return JSON.parse(argumentsJson) as unknown;
+  } catch {
+    return {};
   }
 }
 

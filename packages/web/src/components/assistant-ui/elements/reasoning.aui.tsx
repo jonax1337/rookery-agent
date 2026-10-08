@@ -9,7 +9,6 @@ import {
 } from "@assistant-ui/react";
 import { MarkdownText } from "@/components/markdown-text";
 import {
-  ANIMATION_DURATION,
   ReasoningRoot as ReasoningRootBase,
   ReasoningTrigger,
   ReasoningContent,
@@ -18,6 +17,7 @@ import {
   reasoningVariants,
   type ReasoningRootProps,
 } from "./reasoning";
+import { DISCLOSURE_ANIMATION_MS } from "./surfaces";
 
 export type { ReasoningRootProps } from "./reasoning";
 
@@ -28,7 +28,7 @@ function ReasoningRoot({
   ...props
 }: ReasoningRootProps) {
   const collapsibleRef = useRef<HTMLDivElement | null>(null);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useScrollLock(collapsibleRef, DISCLOSURE_ANIMATION_MS);
 
   const handleAnimationStart = useCallback(() => {
     lockScroll();

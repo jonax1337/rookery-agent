@@ -39,11 +39,15 @@ export interface ModelCatalogue {
 
 export const EMPTY_MODEL_CATALOGUE: ModelCatalogue = { byProvider: {}, defaults: {} };
 
+interface CachedModel {
+  id: string;
+  name: string;
+  isDefault?: boolean;
+}
+
 interface CacheFile {
   fetchedAt: number;
-  providers: Partial<
-    Record<ProviderId, { id: string; name: string; isDefault?: boolean }[]>
-  >;
+  providers: Partial<Record<ProviderId, CachedModel[]>>;
 }
 
 function cachePath(home: string): string {
@@ -52,7 +56,7 @@ function cachePath(home: string): string {
 
 function fromCache(file: CacheFile): ModelCatalogue {
   const catalogue: ModelCatalogue = { byProvider: {}, defaults: {} };
-  for (const [provider, models] of Object.entries(file.providers)) {
+  for (const [provider, models] of Object.entries(file.providers ?? {})) {
     if (!Array.isArray(models)) continue;
     const names: Record<string, string> = {};
     for (const model of models) {
@@ -75,13 +79,18 @@ function readCacheFile(home: string): CacheFile | null {
   }
 }
 
+/** A cache entry without a usable timestamp counts as stale. */
+function isFresh(file: CacheFile): boolean {
+  return Date.now() - file.fetchedAt <= TTL_MS;
+}
+
 /**
  * The catalogue from disk, but only while it is fresh. For code that must not
  * spawn anything - a piped REPL, a `/model` echo - this is the whole story.
  */
 export function cachedModelCatalogue(home: string): ModelCatalogue {
   const file = readCacheFile(home);
-  if (!file || Date.now() - file.fetchedAt > TTL_MS) return EMPTY_MODEL_CATALOGUE;
+  if (!file || !isFresh(file)) return EMPTY_MODEL_CATALOGUE;
   return fromCache(file);
 }
 
@@ -97,54 +106,61 @@ export async function loadModelCatalogue(
   home: string,
 ): Promise<ModelCatalogue> {
   const cached = readCacheFile(home);
-  if (cached && Date.now() - cached.fetchedAt <= TTL_MS) return fromCache(cached);
+  if (cached && isFresh(cached)) return fromCache(cached);
 
   const statuses = await registry.statuses();
   const providers: CacheFile['providers'] = {};
 
   await Promise.all(
-    statuses.map(async (status) => {
-      if (!status.available || !status.authenticated) return;
-      try {
-        const models = await Promise.race([
-          registry.get(status.id).models(),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('model catalogue timed out')), FETCH_TIMEOUT_MS).unref?.(),
-          ),
-        ]);
-        // A provider may answer with bare ids; those gain nothing over the
-        // prettified fallback, so only shaped entries are worth caching.
-        const list = (Array.isArray(models) ? models : []).filter(
-          (model): model is { id: string; name: string; isDefault?: boolean } =>
-            typeof model === 'object' &&
-            model !== null &&
-            typeof model.id === 'string' &&
-            typeof model.name === 'string',
-        );
-        providers[status.id] = list.map((model) => ({
-          id: model.id,
-          name: model.name,
-          isDefault: model.isDefault,
-        }));
-      } catch {
+    statuses
+      .filter((status) => status.available && status.authenticated)
+      .map(async (status) => {
         // Keep whatever the stale cache knew about this provider, if anything.
-        const stale = cached?.providers?.[status.id];
-        if (stale) providers[status.id] = stale;
-      }
-    }),
+        const models = await fetchModels(registry, status.id).catch(() => cached?.providers?.[status.id]);
+        if (models) providers[status.id] = models;
+      }),
   );
 
   if (Object.keys(providers).length) {
-    try {
-      mkdirSync(join(home, 'cache'), { recursive: true });
-      writeFileSync(cachePath(home), JSON.stringify({ fetchedAt: Date.now(), providers }));
-    } catch {
-      // A read-only home must not take the interface down with it.
-    }
-    return fromCache({ fetchedAt: Date.now(), providers });
+    const fresh: CacheFile = { fetchedAt: Date.now(), providers };
+    writeCacheFile(home, fresh);
+    return fromCache(fresh);
   }
 
   return cached ? fromCache(cached) : EMPTY_MODEL_CATALOGUE;
+}
+
+async function fetchModels(registry: ProviderRegistry, id: ProviderId): Promise<CachedModel[]> {
+  const models: unknown = await withTimeout(Promise.resolve(registry.get(id).models()), FETCH_TIMEOUT_MS);
+  // A provider may answer with bare ids; those gain nothing over the
+  // prettified fallback, so only shaped entries are worth caching.
+  return (Array.isArray(models) ? models : [])
+    .filter(
+      (model): model is CachedModel =>
+        typeof model === 'object' &&
+        model !== null &&
+        typeof model.id === 'string' &&
+        typeof model.name === 'string',
+    )
+    .map((model) => ({ id: model.id, name: model.name, isDefault: model.isDefault }));
+}
+
+function withTimeout<Value>(work: Promise<Value>, timeoutMs: number): Promise<Value> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('model catalogue timed out')), timeoutMs);
+    timer.unref?.();
+  });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
+function writeCacheFile(home: string, file: CacheFile): void {
+  try {
+    mkdirSync(join(home, 'cache'), { recursive: true });
+    writeFileSync(cachePath(home), JSON.stringify(file));
+  } catch {
+    // A read-only home must not take the interface down with it.
+  }
 }
 
 /**

@@ -19,8 +19,10 @@ export interface Token {
   kind: TokenKind;
 }
 
+type Family = 'c' | 'shell' | 'data';
+
 /** Language families, keyed by the aliases people actually write after a fence. */
-const FAMILY: Record<string, 'c' | 'shell' | 'data'> = {
+const FAMILY: Record<string, Family> = {
   js: 'c',
   jsx: 'c',
   ts: 'c',
@@ -91,6 +93,14 @@ const SHELL =
 const DATA =
   /(#[^\n]*|\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\b(?:true|false|null|yes|no)\b)|(-?\b\d[\d._eE+-]*\b)|([{}[\],:])/gu;
 
+const PATTERN: Record<Family, RegExp> = { c: C_LIKE, shell: SHELL, data: DATA };
+
+/** Own keys only: a fence tagged `constructor` must not resolve to `Object.prototype`. */
+function familyOf(language: string | undefined): Family | undefined {
+  const key = language?.toLowerCase();
+  return key !== undefined && Object.hasOwn(FAMILY, key) ? FAMILY[key] : undefined;
+}
+
 /**
  * Split one line into styled tokens.
  *
@@ -99,10 +109,10 @@ const DATA =
  * cheap approximation and never wrong enough to mislead.
  */
 export function highlightLine(line: string, language: string | undefined): Token[] {
-  const family = language ? FAMILY[language.toLowerCase()] : undefined;
+  const family = familyOf(language);
   if (!family || !line) return [{ text: line, kind: 'plain' }];
 
-  const pattern = family === 'shell' ? SHELL : family === 'data' ? DATA : C_LIKE;
+  const pattern = PATTERN[family];
   const tokens: Token[] = [];
   let cursor = 0;
 
@@ -122,7 +132,7 @@ export function highlightLine(line: string, language: string | undefined): Token
 }
 
 /** Which capture group fired decides the kind; words are looked up by family. */
-function classify(match: RegExpExecArray, family: 'c' | 'shell' | 'data'): TokenKind {
+function classify(match: RegExpExecArray, family: Family): TokenKind {
   if (match[1] !== undefined) return 'comment';
   if (match[2] !== undefined) return 'string';
 
@@ -143,9 +153,4 @@ function classify(match: RegExpExecArray, family: 'c' | 'shell' | 'data'): Token
   if (match[3] !== undefined) return 'keyword';
   if (match[4] !== undefined) return 'number';
   return 'punctuation';
-}
-
-/** True when the fence language is one the highlighter actually knows. */
-export function isHighlightable(language: string | undefined): boolean {
-  return Boolean(language && FAMILY[language.toLowerCase()]);
 }

@@ -17,9 +17,9 @@ export function useSessions(onOffline?: (offline: boolean) => void) {
 
   const refresh = useCallback(async (): Promise<Session[]> => {
     try {
-      // Nur die Sitzungen. Die Sprachgespräche wurden hier einmal zusätzlich
-      // geholt; seit /chats sie über die geteilte Gesamtliste zeigt, hatte
-      // dieser zweite Abruf keinen Leser mehr.
+      // Only the conversations. The voice conversations used to be fetched
+      // here as well; since /chats shows them through the shared full list,
+      // that second request had no reader left.
       const list = await api.sessions(50, 'assistant', 'chat');
       setSessions(list);
       onOffline?.(false);

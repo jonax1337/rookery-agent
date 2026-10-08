@@ -1,6 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { existsSync } from 'node:fs';
-import { open, readdir, readFile, writeFile } from 'node:fs/promises';
+import { access, open, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -63,15 +62,29 @@ interface PtyModule {
   ): PtyProcess;
 }
 
+const MINUTE_MS = 60_000;
+
 /** How much screen output a late viewer gets replayed, in characters. */
 const REPLAY_LIMIT = 1_000_000;
 
 /** How long a finished agent's terminal stays open before it is killed. */
-export const TUI_LINGER_MS = 10 * 60 * 1000;
+export const TUI_LINGER_MS = 10 * MINUTE_MS;
 
 /** A size that fits the run page; the browser resizes to its own right away. */
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 34;
+
+/** What a browser may resize the terminal to. */
+const MIN_COLS = 20;
+const MAX_COLS = 400;
+const MIN_ROWS = 5;
+const MAX_ROWS = 200;
+
+/** Lines of history the screen mirror keeps above the visible screen. */
+const MIRROR_SCROLLBACK_LINES = 5000;
+
+/** The terminal type the child is told it runs in. */
+const TERM = 'xterm-256color';
 
 /** Longer prompts go to a file: argv on Windows ends at 32 767 characters. */
 const INLINE_PROMPT_LIMIT = 12_000;
@@ -82,12 +95,28 @@ const INLINE_PROMPT_LIMIT = 12_000;
  * was interrupted with Esc and never told what to do next. Until then a
  * person can still answer it from the run page.
  */
-const IDLE_LIMIT_MS = 15 * 60 * 1000;
+const IDLE_LIMIT_MS = 15 * MINUTE_MS;
 
 /** How long the transcript may trail the Stop hook before it is read as is. */
 const SETTLE_LIMIT_MS = 3000;
 
 const POLL_MS = 250;
+
+/** How long after a Stop the transcript is watched for work a blocking hook set going again. */
+const HOOK_BLOCK_GRACE_MS = 4 * POLL_MS;
+
+/** The slower pace at which a lingering terminal's transcript is followed. */
+const LATE_POLL_MS = 4 * POLL_MS;
+
+const ESC = String.fromCharCode(27);
+
+/** The TUI switches bracketed paste on and off with these; see `PASTE_START`. */
+const PASTE_ON = ESC + '[?2004h';
+const PASTE_OFF = ESC + '[?2004l';
+
+/** Bracketed paste: the TUI takes the text between these as one paste, newlines and all. */
+const PASTE_START = ESC + '[200~';
+const PASTE_END = ESC + '[201~';
 
 let ptyModule: Promise<PtyModule | null> | undefined;
 
@@ -112,7 +141,59 @@ interface ScreenMirror {
   dispose(): void;
 }
 
-let mirrorModule: Promise<((cols: number, rows: number) => ScreenMirror) | null> | undefined;
+/** The subset of an `@xterm/headless` terminal the mirror drives. */
+interface HeadlessTerminal {
+  write(data: string, done?: () => void): void;
+  resize(cols: number, rows: number): void;
+  loadAddon(addon: unknown): void;
+  dispose(): void;
+  rows: number;
+  buffer: {
+    active: {
+      viewportY: number;
+      getLine(y: number): { translateToString(trimRight?: boolean): string } | undefined;
+    };
+  };
+}
+
+type HeadlessTerminalClass = new (options: Record<string, unknown>) => HeadlessTerminal;
+type SerializeAddonClass = new () => { serialize(): string };
+type MirrorFactory = (cols: number, rows: number) => ScreenMirror;
+
+let mirrorModule: Promise<MirrorFactory | null> | undefined;
+
+/** A package export by name; some loaders only expose it under `default`. */
+function exportOf<T>(loaded: unknown, name: string): T {
+  // A dynamically imported package, whose shape is only known by name.
+  const members = loaded as Record<string, unknown>;
+  const fallback = members.default as Record<string, unknown>;
+  return (members[name] ?? fallback[name]) as T;
+}
+
+function mirrorFactory(Terminal: HeadlessTerminalClass, SerializeAddon: SerializeAddonClass): MirrorFactory {
+  return (cols, rows) => {
+    const term = new Terminal({ cols, rows, scrollback: MIRROR_SCROLLBACK_LINES, allowProposedApi: true });
+    const addon = new SerializeAddon();
+    term.loadAddon(addon);
+    return {
+      write: (data, done) => term.write(data, done),
+      // Queued behind what is still waiting to be parsed: a write is
+      // processed later, a resize at once, and bytes painted for the old
+      // width then landed on the new one - overlapping, skewed lines.
+      resize: (c, r) => term.write('', () => term.resize(c, r)),
+      serialize: () => addon.serialize(),
+      text: () => {
+        const buffer = term.buffer.active;
+        const lines: string[] = [];
+        for (let y = buffer.viewportY; y < buffer.viewportY + term.rows; y += 1) {
+          lines.push(buffer.getLine(y)?.translateToString(true) ?? '');
+        }
+        return lines.join('\n');
+      },
+      dispose: () => term.dispose(),
+    };
+  };
+}
 
 /**
  * A terminal emulator with no screen, fed the same bytes as the browser.
@@ -125,50 +206,14 @@ let mirrorModule: Promise<((cols: number, rows: number) => ScreenMirror) | null>
  * mirror keeps the screen as it actually is, and a late viewer gets that,
  * serialized - colours and all - at the size the process has now.
  */
-function loadMirror(): Promise<((cols: number, rows: number) => ScreenMirror) | null> {
+function loadMirror(): Promise<MirrorFactory | null> {
   mirrorModule ??= Promise.all([import('@xterm/headless'), import('@xterm/addon-serialize')])
-    .then(([headless, serialize]) => {
-      const Terminal = (headless as { Terminal?: unknown; default?: { Terminal: unknown } }).Terminal ??
-        (headless as { default: { Terminal: unknown } }).default.Terminal;
-      const SerializeAddon = (serialize as { SerializeAddon?: unknown; default?: { SerializeAddon: unknown } }).SerializeAddon ??
-        (serialize as { default: { SerializeAddon: unknown } }).default.SerializeAddon;
-      return (cols: number, rows: number): ScreenMirror => {
-        const TerminalClass = Terminal as new (options: Record<string, unknown>) => {
-          write(data: string, done?: () => void): void;
-          resize(cols: number, rows: number): void;
-          loadAddon(addon: unknown): void;
-          dispose(): void;
-          rows: number;
-          buffer: {
-            active: {
-              viewportY: number;
-              getLine(y: number): { translateToString(trimRight?: boolean): string } | undefined;
-            };
-          };
-        };
-        const SerializeClass = SerializeAddon as new () => { serialize(): string };
-        const term = new TerminalClass({ cols, rows, scrollback: 5000, allowProposedApi: true });
-        const addon = new SerializeClass();
-        term.loadAddon(addon);
-        return {
-          write: (data, done) => term.write(data, done),
-          // Queued behind what is still waiting to be parsed: a write is
-          // processed later, a resize at once, and bytes painted for the old
-          // width then landed on the new one - overlapping, skewed lines.
-          resize: (c, r) => term.write('', () => term.resize(c, r)),
-          serialize: () => addon.serialize(),
-          text: () => {
-            const buffer = term.buffer.active;
-            const lines: string[] = [];
-            for (let y = buffer.viewportY; y < buffer.viewportY + term.rows; y += 1) {
-              lines.push(buffer.getLine(y)?.translateToString(true) ?? '');
-            }
-            return lines.join('\n');
-          },
-          dispose: () => term.dispose(),
-        };
-      };
-    })
+    .then(([headless, serialize]) =>
+      mirrorFactory(
+        exportOf<HeadlessTerminalClass>(headless, 'Terminal'),
+        exportOf<SerializeAddonClass>(serialize, 'SerializeAddon'),
+      ),
+    )
     .catch(() => null);
   return mirrorModule;
 }
@@ -179,23 +224,60 @@ function loadMirror(): Promise<((cols: number, rows: number) => ScreenMirror) | 
 // and the early bytes were then replayed at the wrong width.
 void loadMirror();
 
-const PASTE_ON = String.fromCharCode(27) + '[?2004h';
-const PASTE_OFF = String.fromCharCode(27) + '[?2004l';
+/** The raw output so far, or the screen serialized, with the session it belongs to. */
+interface ScreenSnapshot {
+  info: TuiSessionInfo;
+  data: string;
+}
+
+const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, Math.floor(value)));
 
 class TuiSession {
   buffer = '';
-  lingerTimer: ReturnType<typeof setTimeout> | undefined;
   /** The screen as it is, for late viewers; unset where the emulator cannot load. */
   mirror: ScreenMirror | undefined;
   /** Whether the TUI has bracketed paste switched on right now. */
   pasteMode = false;
+  #lingerTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     readonly info: TuiSessionInfo,
     readonly pty: PtyProcess,
-    readonly cleanup: () => void,
-    readonly lingerMs: number,
+    private readonly cleanup: () => void,
+    private readonly lingerMs: number,
   ) {}
+
+  infoCopy(): TuiSessionInfo {
+    return { ...this.info };
+  }
+
+  /** What the process painted: kept for late viewers, fed to the mirror, scanned for paste mode. */
+  receive(data: string): void {
+    this.buffer = (this.buffer + data).slice(-REPLAY_LIMIT);
+    this.mirror?.write(data);
+    const on = data.lastIndexOf(PASTE_ON);
+    const off = data.lastIndexOf(PASTE_OFF);
+    if (on !== off) this.pasteMode = on > off;
+  }
+
+  /** (Re)starts the countdown after which `expire` runs; it never keeps the process alive. */
+  startLinger(expire: () => void): void {
+    clearTimeout(this.#lingerTimer);
+    this.#lingerTimer = setTimeout(expire, this.lingerMs);
+    this.#lingerTimer.unref?.();
+  }
+
+  stopLinger(): void {
+    clearTimeout(this.#lingerTimer);
+  }
+
+  /** The process is gone: no countdown, no screen mirror, and the owner's cleanup runs. */
+  end(): void {
+    this.stopLinger();
+    this.mirror?.dispose();
+    this.mirror = undefined;
+    this.cleanup();
+  }
 }
 
 /**
@@ -224,35 +306,10 @@ export class TuiSessionRegistry extends EventEmitter {
       lingerMs,
     );
     this.#sessions.set(key, session);
-    // Everything painted before the emulator was ready is still in the raw
-    // buffer; it goes in first, and every later chunk after it.
-    void loadMirror().then((create) => {
-      if (!create || this.#sessions.get(key) !== session) return;
-      const mirror = create(session.info.cols, session.info.rows);
-      mirror.write(session.buffer);
-      session.mirror = mirror;
-    });
-    pty.onData((data) => {
-      if (this.#sessions.get(key) !== session) return;
-      session.buffer = (session.buffer + data).slice(-REPLAY_LIMIT);
-      session.mirror?.write(data);
-      const on = data.lastIndexOf(PASTE_ON);
-      const off = data.lastIndexOf(PASTE_OFF);
-      if (on !== off) session.pasteMode = on > off;
-      this.emit('data', key, data);
-    });
-    pty.onExit(() => {
-      clearTimeout(session.lingerTimer);
-      session.mirror?.dispose();
-      session.mirror = undefined;
-      session.cleanup();
-      if (this.#sessions.get(key) !== session) return;
-      this.#sessions.delete(key);
-      session.info.state = 'exited';
-      this.emit('state', { ...session.info });
-      this.emit('exit', key);
-    });
-    this.emit('state', { ...session.info });
+    this.#startMirror(key, session);
+    pty.onData((data) => this.#received(key, session, data));
+    pty.onExit(() => this.#exited(key, session));
+    this.#announce(session);
   }
 
   /** Terminals currently attached, whether their run is working or waiting. */
@@ -261,18 +318,17 @@ export class TuiSessionRegistry extends EventEmitter {
   }
 
   info(key: string): TuiSessionInfo | null {
-    const session = this.#sessions.get(key);
-    return session ? { ...session.info } : null;
+    return this.#sessions.get(key)?.infoCopy() ?? null;
   }
 
   list(): TuiSessionInfo[] {
-    return [...this.#sessions.values()].map((session) => ({ ...session.info }));
+    return [...this.#sessions.values()].map((session) => session.infoCopy());
   }
 
   /** The raw output so far - what the process wrote, not what the screen shows. */
-  snapshot(key: string): { info: TuiSessionInfo; data: string } | null {
+  snapshot(key: string): ScreenSnapshot | null {
     const session = this.#sessions.get(key);
-    return session ? { info: { ...session.info }, data: session.buffer } : null;
+    return session ? { info: session.infoCopy(), data: session.buffer } : null;
   }
 
   /**
@@ -280,15 +336,15 @@ export class TuiSessionRegistry extends EventEmitter {
    * scrollback and visible screen serialized at the process's current size.
    * Falls back to the raw output where there is no emulator.
    */
-  async screen(key: string): Promise<{ info: TuiSessionInfo; data: string } | null> {
+  async screen(key: string): Promise<ScreenSnapshot | null> {
     const session = this.#sessions.get(key);
     if (!session) return null;
     const mirror = session.mirror;
-    if (!mirror) return { info: { ...session.info }, data: session.buffer };
+    if (!mirror) return this.snapshot(key);
     // Parsing is asynchronous; wait until what has arrived is on the screen.
     await new Promise<void>((resolve) => mirror.write('', resolve));
     if (session.mirror !== mirror) return this.snapshot(key);
-    return { info: { ...session.info }, data: mirror.serialize() };
+    return { info: session.infoCopy(), data: mirror.serialize() };
   }
 
   /** What the screen shows right now as plain text, or null without an emulator. */
@@ -313,8 +369,8 @@ export class TuiSessionRegistry extends EventEmitter {
   resize(key: string, cols: number, rows: number): void {
     const session = this.#sessions.get(key);
     if (!session) return;
-    const c = Math.max(20, Math.min(400, Math.floor(cols)));
-    const r = Math.max(5, Math.min(200, Math.floor(rows)));
+    const c = clamp(cols, MIN_COLS, MAX_COLS);
+    const r = clamp(rows, MIN_ROWS, MAX_ROWS);
     if (c === session.info.cols && r === session.info.rows) return;
     try {
       session.pty.resize(c, r);
@@ -323,7 +379,7 @@ export class TuiSessionRegistry extends EventEmitter {
       session.info.rows = r;
       // Every other viewer of this terminal follows the new size instead of
       // fighting it with its own (run-terminal.tsx).
-      this.emit('state', { ...session.info });
+      this.#announce(session);
     } catch {
       // A pty that is exiting refuses a resize; nothing to keep.
     }
@@ -336,30 +392,22 @@ export class TuiSessionRegistry extends EventEmitter {
   markRunning(key: string): void {
     const session = this.#sessions.get(key);
     if (!session) return;
-    clearTimeout(session.lingerTimer);
-    if (session.info.state === 'running') return;
-    session.info.state = 'running';
-    this.emit('state', { ...session.info });
+    session.stopLinger();
+    this.#setState(session, 'running');
   }
 
   /** The work is over: the terminal stays open, then goes. */
   linger(key: string): void {
     const session = this.#sessions.get(key);
     if (!session) return;
-    const ms = session.lingerMs;
-    clearTimeout(session.lingerTimer);
-    if (session.info.state !== 'idle') {
-      session.info.state = 'idle';
-      this.emit('state', { ...session.info });
-    }
-    session.lingerTimer = setTimeout(() => this.kill(key), ms);
-    session.lingerTimer.unref?.();
+    this.#setState(session, 'idle');
+    session.startLinger(() => this.kill(key));
   }
 
   kill(key: string): boolean {
     const session = this.#sessions.get(key);
     if (!session) return false;
-    clearTimeout(session.lingerTimer);
+    session.stopLinger();
     try {
       session.pty.kill();
     } catch {
@@ -371,6 +419,48 @@ export class TuiSessionRegistry extends EventEmitter {
   /** Server shutdown: no terminal outlives the process that owns it. */
   killAll(): void {
     for (const key of [...this.#sessions.keys()]) this.kill(key);
+  }
+
+  /**
+   * Everything painted before the emulator was ready is still in the raw
+   * buffer; it goes in first, and every later chunk after it.
+   */
+  #startMirror(key: string, session: TuiSession): void {
+    void loadMirror().then((create) => {
+      if (!create || this.#sessions.get(key) !== session) return;
+      const mirror = create(session.info.cols, session.info.rows);
+      mirror.write(session.buffer);
+      session.mirror = mirror;
+    });
+  }
+
+  #received(key: string, session: TuiSession, data: string): void {
+    if (this.#sessions.get(key) !== session) return;
+    session.receive(data);
+    this.emit('data', key, data);
+  }
+
+  #exited(key: string, session: TuiSession): void {
+    try {
+      session.end();
+    } finally {
+      // A session replaced under its key (see `attach`) is not the registry's to announce.
+      if (this.#sessions.get(key) === session) {
+        this.#sessions.delete(key);
+        this.#setState(session, 'exited');
+        this.emit('exit', key);
+      }
+    }
+  }
+
+  #setState(session: TuiSession, state: TuiState): void {
+    if (session.info.state === state) return;
+    session.info.state = state;
+    this.#announce(session);
+  }
+
+  #announce(session: TuiSession): void {
+    this.emit('state', session.infoCopy());
   }
 }
 
@@ -414,10 +504,15 @@ export interface TuiRunSpec extends TuiSpawnSpec {
   onLateEvent?: (event: AgentEvent) => void;
 }
 
+const forwardSlashes = (path: string): string => path.replace(/\\/g, '/');
+
+/** A file path as it sits inside a single-quoted string of a hook command. */
+const quotedInScript = (file: string): string => forwardSlashes(file).replace(/'/g, "\\'");
+
 /** The Stop hook's command: the payload on stdin, verbatim into the marker file. */
 export function stopHookCommand(markerFile: string): string {
-  const node = process.execPath.replace(/\\/g, '/');
-  const target = markerFile.replace(/\\/g, '/').replace(/'/g, "\\'");
+  const node = forwardSlashes(process.execPath);
+  const target = quotedInScript(markerFile);
   return `"${node}" -e "require('fs').writeFileSync('${target}', require('fs').readFileSync(0))"`;
 }
 
@@ -437,12 +532,10 @@ function childEnv(extra: NodeJS.ProcessEnv): Record<string, string> {
   for (const [name, value] of Object.entries(extra)) {
     if (value !== undefined) env[name] = value;
   }
-  env.TERM = 'xterm-256color';
+  env.TERM = TERM;
   env.COLORTERM = 'truecolor';
   return env;
 }
-
-const ESC = String.fromCharCode(27);
 
 /** Screen text without escape sequences and whitespace, for spotting a dialog. */
 function flatten(screen: string): string {
@@ -453,15 +546,23 @@ function flatten(screen: string): string {
     .replace(/\s+/g, '');
 }
 
+const ARROW_DOWN = ESC + '[B';
+
 /**
  * First-run dialogs a print run never shows, and the answer a person would
  * give. The folder is one Rookery already works in; the bypass warning only
  * appears for a `full` agent, which is a setting somebody chose.
  */
 const STARTUP_DIALOGS: { marker: string; keys: string }[] = [
-  { marker: 'Yes,Itrustthisfolder', keys: ESC + '[B' },
-  { marker: 'Yes,Iaccept', keys: ESC + '[B' },
+  { marker: 'Yes,Itrustthisfolder', keys: ARROW_DOWN },
+  { marker: 'Yes,Iaccept', keys: ARROW_DOWN },
 ];
+
+/** How much recent screen output is searched for a dialog, in characters. */
+const DIALOG_SCREEN_TAIL = 20_000;
+
+/** A beat before each key of a dialog answer, as a person would take it. */
+const DIALOG_KEY_DELAY_MS = 150;
 
 function configDir(env: NodeJS.ProcessEnv): string {
   return env.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
@@ -478,15 +579,23 @@ async function findTranscript(root: string, sessionId: string): Promise<string |
   }
   for (const folder of folders) {
     const candidate = join(projects, folder, sessionId + '.jsonl');
-    if (existsSync(candidate)) return candidate;
+    const found = await access(candidate).then(
+      () => true,
+      () => false,
+    );
+    if (found) return candidate;
   }
   return null;
 }
 
+const LINE_FEED = 0x0a;
+const NO_BYTES = Buffer.alloc(0);
+
 /** Reads a growing JSONL file from where the last call stopped. */
 class TranscriptTail {
   #offset = 0;
-  #partial = '';
+  /** Bytes after the last newline: a line still being written. */
+  #partial: Buffer = NO_BYTES;
   readonly #seen = new Set<string>();
 
   constructor(readonly path: string) {}
@@ -494,52 +603,62 @@ class TranscriptTail {
   /** Starts at the current end: a resumed session's history is not news. */
   async skipToEnd(): Promise<void> {
     try {
-      const handle = await open(this.path, 'r');
-      try {
-        this.#offset = (await handle.stat()).size;
-      } finally {
-        await handle.close();
-      }
+      this.#offset = (await stat(this.path)).size;
     } catch {
       // Not there yet: then everything in it will be new.
     }
   }
 
   async read(): Promise<Record<string, unknown>[]> {
-    let handle;
-    try {
-      handle = await open(this.path, 'r');
-    } catch {
-      return [];
+    const appended = await this.#readAppended();
+    if (appended.length === 0) return [];
+    const bytes = Buffer.concat([this.#partial, appended]);
+    const lastLineEnd = bytes.lastIndexOf(LINE_FEED);
+    // Split on bytes, not on decoded text: a torn line is completed by the
+    // next read, and so is a multi-byte character cut in half.
+    this.#partial = bytes.subarray(lastLineEnd + 1);
+    if (lastLineEnd === -1) return [];
+    const entries: Record<string, unknown>[] = [];
+    for (const line of bytes.toString('utf8', 0, lastLineEnd).split('\n')) {
+      const entry = this.#parse(line);
+      if (entry) entries.push(entry);
     }
+    return entries;
+  }
+
+  /** What the file grew by since the last call; nothing where there is none or no file yet. */
+  async #readAppended(): Promise<Buffer> {
+    const handle = await open(this.path, 'r').catch(() => null);
+    if (!handle) return NO_BYTES;
     try {
       const { size } = await handle.stat();
-      if (size <= this.#offset) return [];
+      if (size <= this.#offset) return NO_BYTES;
       const buffer = Buffer.alloc(size - this.#offset);
-      await handle.read(buffer, 0, buffer.length, this.#offset);
-      this.#offset = size;
-      const text = this.#partial + buffer.toString('utf8');
-      const lines = text.split('\n');
-      this.#partial = lines.pop() ?? '';
-      const entries: Record<string, unknown>[] = [];
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line) as Record<string, unknown>;
-          const id = typeof entry.uuid === 'string' ? entry.uuid : undefined;
-          if (id) {
-            if (this.#seen.has(id)) continue;
-            this.#seen.add(id);
-          }
-          entries.push(entry);
-        } catch {
-          // A torn line is completed by the next read; a broken one is skipped.
-        }
-      }
-      return entries;
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, this.#offset);
+      this.#offset += bytesRead;
+      return buffer.subarray(0, bytesRead);
     } finally {
       await handle.close();
     }
+  }
+
+  /** The entry on one line, or null for a blank line, a broken one, or an entry seen before. */
+  #parse(line: string): Record<string, unknown> | null {
+    if (!line.trim()) return null;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      // A torn line never gets here (see `read`); a broken one is skipped.
+      return null;
+    }
+    if (typeof entry !== 'object' || entry === null) return null;
+    const record = entry as Record<string, unknown>;
+    if (typeof record.uuid === 'string') {
+      if (this.#seen.has(record.uuid)) return null;
+      this.#seen.add(record.uuid);
+    }
+    return record;
   }
 }
 
@@ -564,6 +683,44 @@ function typedPrompt(entry: Record<string, unknown>): string | null {
   return text;
 }
 
+/** What the model's prompt tokens add up to for one assistant entry, or undefined where it reports none. */
+function contextTokensOf(usage: Record<string, unknown>): number | undefined {
+  const parts = [usage.input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens].filter(
+    (value): value is number => typeof value === 'number',
+  );
+  return parts.length ? parts.reduce((sum, value) => sum + value, 0) : undefined;
+}
+
+const API_ERROR_FALLBACK = 'The API returned an error.';
+
+/** The text of an assistant entry Claude Code wrote for an API error. */
+function apiErrorText(message: Record<string, unknown> | undefined): string {
+  const content = Array.isArray(message?.content) ? (message.content as Record<string, unknown>[]) : [];
+  return (
+    content
+      .map((block) => (typeof block.text === 'string' ? block.text : ''))
+      .join(' ')
+      .trim() || API_ERROR_FALLBACK
+  );
+}
+
+/** A text block as the result of a turn: without the blank lines Claude Code leads it with. */
+const withoutLeadingBreak = (text: string): string => text.replace(/^\n\n/, '');
+
+/** The text a turn ended with - what a print run reports as its result. */
+function lastTextBlock(events: AgentEvent[]): string {
+  let last = '';
+  for (const event of events) if (event.type === 'text') last = withoutLeadingBreak(event.delta);
+  return last;
+}
+
+/** What the Stop hook reported the agent said last, or an empty string. */
+function reportedMessage(payload: Record<string, unknown>): string {
+  return typeof payload.last_assistant_message === 'string' ? payload.last_assistant_message.trim() : '';
+}
+
+const fatalError = (message: string): AgentEvent => ({ type: 'error', message, fatal: true });
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A spawned terminal, and what its transcript has said so far. */
@@ -581,6 +738,8 @@ class TerminalWatch {
   /** The model of the newest assistant entry - `/model` can change it mid-session. */
   model: string | undefined;
   #tail: TranscriptTail | null = null;
+  /** The read in flight, if any; the next one starts when it is over. */
+  #reading: Promise<unknown> = Promise.resolve();
   readonly #root: string;
 
   constructor(
@@ -591,20 +750,37 @@ class TerminalWatch {
     this.#root = configDir(spec.env);
   }
 
+  /** The process painted something. */
+  screenPainted(): void {
+    this.lastActivity = Date.now();
+    this.lastScreen = this.lastActivity;
+  }
+
+  /** How long the work has gone on, and how much context it holds. */
+  usage(startedAt: number): TuiTurn['usage'] {
+    return {
+      durationMs: Date.now() - startedAt,
+      ...(this.contextTokens !== undefined ? { contextTokens: this.contextTokens } : {}),
+    };
+  }
+
   /**
    * New transcript entries, as the events a print run would have streamed.
    * What a person typed comes out as a `status` event labelled `input`, in
-   * its place between the answers.
+   * its place between the answers. Reads never overlap - two at once would
+   * both take the same bytes - so a caller waits for the one before it.
    */
-  async read(): Promise<AgentEvent[]> {
-    if (!this.#tail) {
-      const path = await findTranscript(this.#root, this.spec.sessionId);
-      if (!path) return [];
-      this.#tail = new TranscriptTail(path);
-      if (this.resumed) await this.#tail.skipToEnd();
-    }
+  read(): Promise<AgentEvent[]> {
+    const result = this.#reading.then(() => this.#readNow());
+    this.#reading = result.catch(() => undefined);
+    return result;
+  }
+
+  async #readNow(): Promise<AgentEvent[]> {
+    const tail = await this.#transcript();
+    if (!tail) return [];
     const events: AgentEvent[] = [];
-    for (const entry of await this.#tail.read()) {
+    for (const entry of await tail.read()) {
       this.lastActivity = Date.now();
       if (entry.isSidechain === true) continue;
       const typed = typedPrompt(entry);
@@ -613,33 +789,37 @@ class TerminalWatch {
         continue;
       }
       if (entry.type === 'assistant') {
-        this.assistantEntries += 1;
-        const message = entry.message as Record<string, unknown> | undefined;
-        if (typeof message?.model === 'string' && message.model !== '<synthetic>') this.model = message.model;
-        const usage = message?.usage as Record<string, unknown> | undefined;
-        if (usage) {
-          const parts = [usage.input_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens].filter(
-            (value): value is number => typeof value === 'number',
-          );
-          if (parts.length) this.contextTokens = parts.reduce((sum, value) => sum + value, 0);
-        }
+        this.#recordAssistant(entry);
         if (entry.isApiErrorMessage === true) {
-          const content = Array.isArray(message?.content) ? (message.content as Record<string, unknown>[]) : [];
-          this.apiError =
-            content
-              .map((block) => (typeof block.text === 'string' ? block.text : ''))
-              .join(' ')
-              .trim() || 'The API returned an error.';
+          this.apiError = apiErrorText(entry.message as Record<string, unknown> | undefined);
           continue;
         }
         this.apiError = null;
       }
       for (const event of this.spec.mapEntry(entry)) {
-        if (event.type === 'text') this.lastBlock = event.delta.replace(/^\n\n/, '');
+        if (event.type === 'text') this.lastBlock = withoutLeadingBreak(event.delta);
         events.push(event);
       }
     }
     return events;
+  }
+
+  async #transcript(): Promise<TranscriptTail | null> {
+    if (this.#tail) return this.#tail;
+    const path = await findTranscript(this.#root, this.spec.sessionId);
+    if (!path) return null;
+    this.#tail = new TranscriptTail(path);
+    if (this.resumed) await this.#tail.skipToEnd();
+    return this.#tail;
+  }
+
+  #recordAssistant(entry: Record<string, unknown>): void {
+    this.assistantEntries += 1;
+    const message = entry.message as Record<string, unknown> | undefined;
+    if (typeof message?.model === 'string' && message.model !== '<synthetic>') this.model = message.model;
+    const usage = message?.usage as Record<string, unknown> | undefined;
+    const tokens = usage ? contextTokensOf(usage) : undefined;
+    if (tokens !== undefined) this.contextTokens = tokens;
   }
 
   /** The Stop hook's payload, once it has written one. */
@@ -648,11 +828,13 @@ class TerminalWatch {
       const raw = await readFile(this.spec.markerFile, 'utf8');
       return raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : null;
     } catch {
+      // Not written yet, or caught halfway through the write: asked again next poll.
       return null;
     }
   }
 
   async clearMarker(): Promise<void> {
+    // The folder goes with the process; without it there is nothing left to clear.
     await writeFile(this.spec.markerFile, '').catch(() => undefined);
   }
 
@@ -670,10 +852,71 @@ class TerminalWatch {
       await sleep(POLL_MS);
     }
     const before = this.assistantEntries;
-    await sleep(4 * POLL_MS);
+    await sleep(HOOK_BLOCK_GRACE_MS);
     events.push(...(await this.read()));
     return { events, holds: this.assistantEntries === before };
   }
+}
+
+/**
+ * The prompt as it goes on the command line. Through a `.cmd` shim the whole
+ * command line is cmd.exe's to parse, and a task is outside text - a mail can
+ * carry quotes, `&` or `%VAR%`. It never goes on that line: the file holds
+ * it, the line only points there. Long prompts take the same way out.
+ */
+async function promptArgument(spec: TuiSpawnSpec): Promise<string | undefined> {
+  const { prompt } = spec;
+  if (prompt === undefined) return undefined;
+  if (prompt.length <= INLINE_PROMPT_LIMIT && !spec.binary.isShim) return prompt;
+  const file = join(spec.workDir, 'task.md');
+  await writeFile(file, prompt);
+  return (
+    'Your task is written down in the file ' +
+    forwardSlashes(file) +
+    ' - read all of it first, then do exactly what it says.'
+  );
+}
+
+function spawnPty(pty: PtyModule, spec: TuiSpawnSpec, argv: string[]): PtyProcess {
+  const env = childEnv(spec.env);
+  const options = {
+    name: TERM,
+    cols: DEFAULT_COLS,
+    rows: DEFAULT_ROWS,
+    ...(spec.cwd ? { cwd: spec.cwd } : {}),
+    env,
+  };
+  return spec.binary.isShim
+    ? pty.spawn(env.COMSPEC ?? 'cmd.exe', '/d /s /c ' + quoteForCmd([spec.binary.path, ...argv]), options)
+    : pty.spawn(spec.binary.path, argv, options);
+}
+
+/** Down to "Yes", then Enter - the same two keys a person presses. */
+function answerDialog(child: PtyProcess, watch: TerminalWatch, keys: string): void {
+  // The process may be gone by the time a key is due; a write to it would throw.
+  const press = (data: string): void => {
+    if (watch.exitCode === null) child.write(data);
+  };
+  setTimeout(() => {
+    press(keys);
+    setTimeout(() => press('\r'), DIALOG_KEY_DELAY_MS);
+  }, DIALOG_KEY_DELAY_MS);
+}
+
+/** A listener for the child's output that answers each first-run dialog once, when it shows up. */
+function startupDialogAnswerer(child: PtyProcess, watch: TerminalWatch): (data: string) => void {
+  let screen = '';
+  const answered = new Set<string>();
+  return (data) => {
+    if (answered.size === STARTUP_DIALOGS.length) return;
+    screen = (screen + data).slice(-DIALOG_SCREEN_TAIL);
+    const flat = flatten(screen);
+    for (const dialog of STARTUP_DIALOGS) {
+      if (answered.has(dialog.marker) || !flat.includes(dialog.marker)) continue;
+      answered.add(dialog.marker);
+      answerDialog(child, watch, dialog.keys);
+    }
+  };
 }
 
 /** Starts Claude Code in a pty and registers it. Throws only before the process exists. */
@@ -681,62 +924,27 @@ async function spawnTerminal(spec: TuiSpawnSpec, resumed: boolean): Promise<Term
   const pty = await loadPty();
   if (!pty) throw new Error('Terminal support is not available on this system.');
 
-  // Through a `.cmd` shim the whole command line is cmd.exe's to parse, and
-  // a task is outside text - a mail can carry quotes, `&` or `%VAR%`. It
-  // never goes on that line: the file holds it, the line only points there.
-  let prompt = spec.prompt;
-  if (prompt !== undefined && (prompt.length > INLINE_PROMPT_LIMIT || spec.binary.isShim)) {
-    const file = join(spec.workDir, 'task.md');
-    await writeFile(file, prompt);
-    prompt =
-      'Your task is written down in the file ' +
-      file.replace(/\\/g, '/') +
-      ' - read all of it first, then do exactly what it says.';
-  }
-
-  const env = childEnv(spec.env);
+  const prompt = await promptArgument(spec);
   const argv = prompt !== undefined ? [...spec.args, prompt] : spec.args;
-  const options = {
-    name: 'xterm-256color',
-    cols: DEFAULT_COLS,
-    rows: DEFAULT_ROWS,
-    ...(spec.cwd ? { cwd: spec.cwd } : {}),
-    env,
-  };
   // This is Rookery's terminal, not the person's own `claude`: a model picked
   // here with Enter must not become their global default.
   const release = userSettingsGuard.acquire(configDir(spec.env));
   let child: PtyProcess;
   try {
-    child = spec.binary.isShim
-      ? pty.spawn(env.COMSPEC ?? 'cmd.exe', '/d /s /c ' + quoteForCmd([spec.binary.path, ...argv]), options)
-      : pty.spawn(spec.binary.path, argv, options);
+    child = spawnPty(pty, spec, argv);
   } catch (error) {
     release();
     throw error;
   }
 
   const watch = new TerminalWatch(spec, resumed);
-  let screen = '';
-  const answered = new Set<string>();
+  const answerDialogs = startupDialogAnswerer(child, watch);
   child.onExit((event) => {
     watch.exitCode = event.exitCode;
   });
   child.onData((data) => {
-    watch.lastActivity = Date.now();
-    watch.lastScreen = watch.lastActivity;
-    if (answered.size === STARTUP_DIALOGS.length) return;
-    screen = (screen + data).slice(-20_000);
-    const flat = flatten(screen);
-    for (const dialog of STARTUP_DIALOGS) {
-      if (answered.has(dialog.marker) || !flat.includes(dialog.marker)) continue;
-      answered.add(dialog.marker);
-      // Down to "Yes", then Enter - the same two keys a person presses.
-      setTimeout(() => {
-        child.write(dialog.keys);
-        setTimeout(() => child.write('\r'), 150);
-      }, 150);
-    }
+    watch.screenPainted();
+    answerDialogs(data);
   });
   tuiSessions.attach(
     spec.key,
@@ -770,12 +978,17 @@ async function followLate(watch: TerminalWatch, onEvent: (event: AgentEvent) => 
     }
   };
   while (stillOpen(watch)) {
-    await sleep(4 * POLL_MS);
+    await sleep(LATE_POLL_MS);
     await deliver();
   }
-  await sleep(4 * POLL_MS);
+  await sleep(LATE_POLL_MS);
   await deliver();
 }
+
+const IDLE_MESSAGE =
+  'The terminal showed no activity for ' +
+  IDLE_LIMIT_MS / MINUTE_MS +
+  ' minutes - it was most likely waiting for an answer nobody gave.';
 
 /**
  * Runs Claude Code in a pty and yields what a print run would have yielded.
@@ -796,8 +1009,7 @@ export async function* runTui(spec: TuiRunSpec): AsyncGenerator<AgentEvent, void
 
       const payload = await watch.marker();
       if (payload) {
-        const reported =
-          typeof payload.last_assistant_message === 'string' ? payload.last_assistant_message.trim() : '';
+        const reported = reportedMessage(payload);
         const { events, holds } = await watch.settle(reported);
         yield* events;
         if (!holds) {
@@ -805,7 +1017,7 @@ export async function* runTui(spec: TuiRunSpec): AsyncGenerator<AgentEvent, void
           continue;
         }
         if (watch.apiError) {
-          yield { type: 'error', message: watch.apiError, fatal: true };
+          yield fatalError(watch.apiError);
           return;
         }
         finished = true;
@@ -813,31 +1025,21 @@ export async function* runTui(spec: TuiRunSpec): AsyncGenerator<AgentEvent, void
           type: 'done',
           text: reported || watch.lastBlock,
           providerSessionId: spec.sessionId,
-          usage: {
-            durationMs: Date.now() - started,
-            ...(watch.contextTokens !== undefined ? { contextTokens: watch.contextTokens } : {}),
-          },
+          usage: watch.usage(started),
         };
         return;
       }
 
       if (Date.now() - watch.lastActivity > IDLE_LIMIT_MS) {
-        yield {
-          type: 'error',
-          message:
-            'The terminal showed no activity for 15 minutes - it was most likely waiting for an answer nobody gave.',
-          fatal: true,
-        };
+        yield fatalError(IDLE_MESSAGE);
         return;
       }
 
       if (watch.exitCode !== null) {
         yield* await watch.read();
-        yield {
-          type: 'error',
-          message: watch.apiError ?? 'Claude Code closed its terminal (exit code ' + watch.exitCode + ') before finishing.',
-          fatal: true,
-        };
+        yield fatalError(
+          watch.apiError ?? 'Claude Code closed its terminal (exit code ' + watch.exitCode + ') before finishing.',
+        );
         return;
       }
     }
@@ -888,24 +1090,50 @@ export interface TuiConversationHandlers {
 }
 
 /** A conversation terminal nobody has used for this long is closed. */
-const CONVERSATION_IDLE_MS = 60 * 60 * 1000;
+const CONVERSATION_IDLE_MS = 60 * MINUTE_MS;
+
+/** How long `whenIdle` waits for the work to end before it gives up waiting. */
+const WHEN_IDLE_LIMIT_MS = 10 * MINUTE_MS;
 
 /** Screen silence that means the TUI sits at its prompt, ready for keys. */
 const READY_QUIET_MS = 800;
+/** A terminal younger than this is still setting up, however quiet it looks. */
+const SETUP_MS = 1500;
 /** A fresh terminal paints, answers its dialogs and settles within this. */
 const READY_LIMIT_MS = 30_000;
-/** How long a typed message may take to show up in the transcript. */
+/** How many times a panel left open is closed with Esc before the wait goes on regardless. */
+const MAX_PANEL_CLOSES = 3;
+
+/** How long a slash command may stay out of the transcript before it counts as the terminal's own business. */
 const ACCEPT_LIMIT_MS = 15_000;
+/** How long a typed message may take to show up in the transcript before it is an error. */
+const ACCEPT_DEADLINE_MS = 2 * ACCEPT_LIMIT_MS;
 /** How often an unconfirmed message is looked after: Enter again, or typed again. */
 const ACCEPT_RETRY_MS = 3000;
+/** How much of a message identifies it on the screen. */
+const SNIPPET_LENGTH = 24;
+
+/** A command that ran this long, with the screen quiet for the next, has said all it will say. */
+const COMMAND_MIN_RUN_MS = 2500;
+const COMMAND_QUIET_MS = 1500;
+const COMMAND_POLL_MS = 2 * POLL_MS;
+
+/** How long an interrupted turn gets to write what it had before it is read as is. */
+const INTERRUPT_SETTLE_MS = 1500;
+
+/** Enter comes on its own write, this long after the message. */
+const ENTER_DELAY_MS = 200;
+
+const FIRST_RUN_DIALOG_HINT = /trust this folder|yes, i accept/i;
+const PANEL_HINT = /esc to (cancel|close|exit)/i;
+
 /**
  * A panel or menu is open and waiting for Esc. Not the first-run dialogs:
  * Esc there declines the folder and Claude Code quits.
  */
 function hasOpenPanel(screen: string): boolean {
-  const lower = screen.toLowerCase();
-  if (lower.includes('trust this folder') || lower.includes('yes, i accept')) return false;
-  return lower.includes('esc to cancel') || lower.includes('esc to close') || lower.includes('esc to exit');
+  if (FIRST_RUN_DIALOG_HINT.test(screen)) return false;
+  return PANEL_HINT.test(screen);
 }
 
 /** The screen a command left, as text for the chat: without the hint lines and the empty tail. */
@@ -915,20 +1143,14 @@ function commandOutput(screen: string, command: string): string {
   const at = lines.map((line) => line.includes(command)).lastIndexOf(true);
   return lines
     .slice(at + 1)
-    .filter((line) => !/esc to (cancel|close|exit)/i.test(line))
+    .filter((line) => !PANEL_HINT.test(line))
     .join('\n')
     .replace(/\s+$/, '')
     .replace(/^\s*\n/, '');
 }
 
 /** Lines Claude Code draws under its input box, and only there. */
-const INPUT_FOOTERS = ['shift+tab to cycle', '? for shortcuts', 'for shortcuts'];
-/** How long an interrupted turn gets to write what it had before it is read as is. */
-const INTERRUPT_SETTLE_MS = 1500;
-
-/** Bracketed paste: the TUI takes the text as one paste, newlines and all. */
-const PASTE_START = ESC + '[200~';
-const PASTE_END = ESC + '[201~';
+const INPUT_FOOTERS = ['shift+tab to cycle', 'for shortcuts'];
 
 /**
  * The `UserPromptSubmit` hook of a conversation terminal: whatever Rookery
@@ -938,8 +1160,8 @@ const PASTE_END = ESC + '[201~';
  * the command runs through whichever shell Claude Code picks.
  */
 export function promptContextHookCommand(contextFile: string): string {
-  const node = process.execPath.replace(/\\/g, '/');
-  const target = contextFile.replace(/\\/g, '/').replace(/'/g, "\\'");
+  const node = forwardSlashes(process.execPath);
+  const target = quotedInScript(contextFile);
   const script =
     "const fs=require('fs');const f='" + target + "';let t='';" +
     "try{t=fs.readFileSync(f,'utf8');fs.writeFileSync(f,'')}catch(e){}" +
@@ -1016,11 +1238,10 @@ export class ConversationTerminal {
   }
 
   /** Nothing being answered right now, neither a submitted message nor a typed one. */
-  async whenIdle(limitMs = 10 * 60 * 1000): Promise<void> {
+  async whenIdle(limitMs = WHEN_IDLE_LIMIT_MS): Promise<void> {
     const deadline = Date.now() + limitMs;
     while (Date.now() < deadline && this.alive()) {
-      const working = this.#pending !== null || this.#typed.length > 0 || tuiSessions.info(this.key)?.state === 'running';
-      if (!working) return;
+      if (this.#pending === null && !this.#working()) return;
       await sleep(POLL_MS);
     }
   }
@@ -1038,25 +1259,49 @@ export class ConversationTerminal {
   }
 
   async #submit(input: SubmitInput): Promise<SubmittedTurn> {
-    const failed = (error: string): SubmittedTurn => ({
-      prompt: input.prompt,
-      answer: '',
-      events: [],
-      providerSessionId: this.providerSessionId,
-      usage: { durationMs: 0 },
-      error,
-    });
-    if (!this.alive()) return failed('The terminal is closed.');
+    if (!this.alive()) return this.#refused(input, 'The terminal is closed.');
     await this.#ready(input.signal);
-    if (input.signal?.aborted) return failed('Cancelled before it was sent.');
-    if (!this.alive()) return failed('The terminal closed before the message could be sent.');
+    if (input.signal?.aborted) return this.#refused(input, 'Cancelled before it was sent.');
+    if (!this.alive()) return this.#refused(input, 'The terminal closed before the message could be sent.');
 
     await writeFile(contextFileFor(this.watch.spec.workDir), input.context ?? '').catch(() => undefined);
     // A turn started while the Stop marker still holds the last answer would
     // end the moment it began.
     await this.watch.clearMarker();
 
-    let pending: PendingTurn | undefined;
+    const { pending, ended } = this.#begin(input);
+    tuiSessions.markRunning(this.key);
+    this.#type(input.prompt);
+    const stopListening = this.#interruptOnAbort(pending, input.signal);
+
+    // A slash command or a `!` shell line is the terminal's own business: it
+    // may never reach the model, so no Stop hook comes. Once the screen has
+    // settled without a model turn starting, it is done - whatever it showed
+    // is on the terminal, which is where a command's output lives anyway.
+    if (/^[/!]/.test(input.prompt.trim())) void this.#settleCommand(pending);
+    else void this.#ensureAccepted(pending);
+
+    try {
+      return await ended;
+    } finally {
+      stopListening();
+    }
+  }
+
+  #refused(input: SubmitInput, error: string): SubmittedTurn {
+    return {
+      prompt: input.prompt,
+      answer: '',
+      events: [],
+      providerSessionId: this.providerSessionId,
+      usage: { durationMs: 0 },
+      error,
+    };
+  }
+
+  /** Makes the turn the one being answered; `ended` resolves when it is settled. */
+  #begin(input: SubmitInput): { pending: PendingTurn; ended: Promise<SubmittedTurn> } {
+    let pending!: PendingTurn;
     const ended = new Promise<SubmittedTurn>((resolve) => {
       pending = {
         prompt: input.prompt,
@@ -1067,77 +1312,73 @@ export class ConversationTerminal {
         done: resolve,
       };
     });
-    if (!pending) return failed('The terminal could not take the message.');
-    const mine = pending;
-    this.#pending = mine;
+    this.#pending = pending;
+    return { pending, ended };
+  }
 
-    tuiSessions.markRunning(this.key);
-    this.#type(input.prompt);
-
+  /** Aborting presses Esc for the turn; the returned function stops listening. */
+  #interruptOnAbort(pending: PendingTurn, signal?: AbortSignal): () => void {
     const onAbort = (): void => {
       // Esc is what a person presses: Claude Code stops, keeps what it had,
       // and writes no Stop payload - so the turn is closed here instead.
       tuiSessions.write(this.key, ESC);
-      setTimeout(() => void this.#interrupted(mine), INTERRUPT_SETTLE_MS);
+      setTimeout(() => void this.#interrupted(pending), INTERRUPT_SETTLE_MS);
     };
-    if (input.signal?.aborted) onAbort();
-    else input.signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+    return () => signal?.removeEventListener('abort', onAbort);
+  }
 
-    // A slash command or a `!` shell line is the terminal's own business: it
-    // may never reach the model, so no Stop hook comes. Once the screen has
-    // settled without a model turn starting, it is done - whatever it showed
-    // is on the terminal, which is where a command's output lives anyway.
-    const command = /^[/!]/.test(input.prompt.trim());
-    if (command) {
-      void (async (): Promise<void> => {
-        const typedAt = Date.now();
-        while (this.#pending === mine && !mine.accepted && Date.now() - typedAt < ACCEPT_LIMIT_MS) {
-          await sleep(POLL_MS * 2);
-          if (Date.now() - typedAt > 2500 && Date.now() - this.watch.lastScreen > 1500 && !mine.accepted) {
-            // What the command put on the screen is its answer - the chat
-            // cannot see the terminal, so `/cost` there shows the costs. A
-            // panel it opened is closed again, or the next message would be
-            // typed into it.
-            const screen = tuiSessions.screenText(this.key) ?? '';
-            const output = commandOutput(screen, input.prompt.trim());
-            // Fenced: a panel is laid out in columns, and markdown would reflow it.
-            this.#settle(mine, { answer: output ? '```\n' + output + '\n```' : '' });
-            if (hasOpenPanel(screen)) tuiSessions.write(this.key, ESC);
-            return;
-          }
-        }
-        // Still running past the limit (a command that started real work
-        // settles through the Stop hook instead): never leave it hanging.
-        if (this.#pending === mine && !mine.accepted) this.#settle(mine, { answer: '' });
-      })();
+  /** Ends a slash command's turn once its screen has gone quiet, or when it has run too long to be one. */
+  async #settleCommand(pending: PendingTurn): Promise<void> {
+    const command = pending.prompt.trim();
+    const typedAt = Date.now();
+    while (this.#pending === pending && !pending.accepted && Date.now() - typedAt < ACCEPT_LIMIT_MS) {
+      await sleep(COMMAND_POLL_MS);
+      const ranFor = Date.now() - typedAt;
+      const quietFor = Date.now() - this.watch.lastScreen;
+      if (ranFor <= COMMAND_MIN_RUN_MS || quietFor <= COMMAND_QUIET_MS || pending.accepted) continue;
+      // What the command put on the screen is its answer - the chat
+      // cannot see the terminal, so `/cost` there shows the costs. A
+      // panel it opened is closed again, or the next message would be
+      // typed into it.
+      const screen = tuiSessions.screenText(this.key) ?? '';
+      const output = commandOutput(screen, command);
+      // Fenced: a panel is laid out in columns, and markdown would reflow it.
+      this.#settle(pending, { answer: output ? '```\n' + output + '\n```' : '' });
+      if (hasOpenPanel(screen)) tuiSessions.write(this.key, ESC);
+      return;
     }
+    // Still running past the limit (a command that started real work
+    // settles through the Stop hook instead): never leave it hanging.
+    if (this.#pending === pending && !pending.accepted) this.#settle(pending, { answer: '' });
+  }
 
-    // The message has to arrive. Every few seconds without it in the
-    // transcript, the screen says why: the text sits in the input box (a
-    // paste the TUI held on to) and gets another Enter, or it is not there at
-    // all (keys swallowed while the TUI was still setting up) and is typed
-    // again. Past the limit it is an error, not a turn waiting for ever.
-    void (async (): Promise<void> => {
-      if (command) return;
-      const typedAt = Date.now();
-      const snippet = input.prompt.replace(/\s+/g, ' ').trim().slice(0, 24);
-      while (Date.now() - typedAt < ACCEPT_LIMIT_MS * 2) {
-        await sleep(ACCEPT_RETRY_MS);
-        if (this.#pending !== mine || mine.accepted) return;
-        const screen = tuiSessions.screenText(this.key);
-        const waiting = screen === null || screen.includes('[Pasted text') || screen.replace(/\s+/g, ' ').includes(snippet);
-        if (waiting) tuiSessions.write(this.key, '\r');
-        else this.#type(input.prompt);
-      }
-      if (this.#pending !== mine || mine.accepted) return;
-      this.#settle(mine, { error: 'The terminal did not take the message.' });
-    })();
-
-    try {
-      return await ended;
-    } finally {
-      input.signal?.removeEventListener('abort', onAbort);
+  /**
+   * The message has to arrive. Every few seconds without it in the
+   * transcript, the screen says why: the text sits in the input box (a
+   * paste the TUI held on to) and gets another Enter, or it is not there at
+   * all (keys swallowed while the TUI was still setting up) and is typed
+   * again. Past the limit it is an error, not a turn waiting for ever.
+   */
+  async #ensureAccepted(pending: PendingTurn): Promise<void> {
+    const typedAt = Date.now();
+    const snippet = pending.prompt.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_LENGTH);
+    while (Date.now() - typedAt < ACCEPT_DEADLINE_MS) {
+      await sleep(ACCEPT_RETRY_MS);
+      if (this.#pending !== pending || pending.accepted) return;
+      const screen = tuiSessions.screenText(this.key);
+      const waiting = screen === null || screen.includes('[Pasted text') || screen.replace(/\s+/g, ' ').includes(snippet);
+      if (waiting) tuiSessions.write(this.key, '\r');
+      else this.#type(pending.prompt);
     }
+    if (this.#pending !== pending || pending.accepted) return;
+    this.#settle(pending, { error: 'The terminal did not take the message.' });
+  }
+
+  /** Claude Code is working: its terminal says so, or a person's message awaits its answer. */
+  #working(): boolean {
+    return tuiSessions.info(this.key)?.state === 'running' || this.#typed.length > 0;
   }
 
   /**
@@ -1151,14 +1392,16 @@ export class ConversationTerminal {
     const deadline = Date.now() + READY_LIMIT_MS;
     let closed = 0;
     while (Date.now() < deadline && !signal?.aborted && this.alive()) {
-      const working = tuiSessions.info(this.key)?.state === 'running' || this.#typed.length > 0;
-      const quiet = Date.now() - this.#spawned > 1500 && Date.now() - this.watch.lastScreen > READY_QUIET_MS;
+      const resting =
+        !this.#working() &&
+        Date.now() - this.#spawned > SETUP_MS &&
+        Date.now() - this.watch.lastScreen > READY_QUIET_MS;
       const screen = tuiSessions.screenText(this.key);
-      const prompt = screen === null || INPUT_FOOTERS.some((footer) => screen.includes(footer));
-      if (!working && quiet && prompt) return;
+      const atPrompt = screen === null || INPUT_FOOTERS.some((footer) => screen.includes(footer));
+      if (resting && atPrompt) return;
       // A panel left open - by a command typed in the terminal, say - sits
       // where the input box would be. Esc closes it, as a person would.
-      if (!working && quiet && screen !== null && hasOpenPanel(screen) && closed < 3) {
+      if (resting && screen !== null && hasOpenPanel(screen) && closed < MAX_PANEL_CLOSES) {
         closed += 1;
         tuiSessions.write(this.key, ESC);
         await sleep(READY_QUIET_MS);
@@ -1173,7 +1416,7 @@ export class ConversationTerminal {
     tuiSessions.write(this.key, body);
     // Enter on its own write, a beat later: in the same chunk the TUI can read
     // it as part of the paste rather than as the key that sends it.
-    setTimeout(() => tuiSessions.write(this.key, '\r'), 200);
+    setTimeout(() => tuiSessions.write(this.key, '\r'), ENTER_DELAY_MS);
   }
 
   async #interrupted(pending: PendingTurn): Promise<void> {
@@ -1185,48 +1428,52 @@ export class ConversationTerminal {
   #settle(pending: PendingTurn, extra: { answer?: string; interrupted?: boolean; error?: string }): void {
     if (this.#pending !== pending) return;
     this.#pending = null;
-    let lastText = '';
-    for (const event of pending.events) if (event.type === 'text') lastText = event.delta.replace(/^\n\n/, '');
     pending.done({
-      prompt: pending.prompt,
-      answer: extra.answer ?? lastText,
-      events: pending.events,
-      ...(this.watch.model ? { model: this.watch.model } : {}),
-      providerSessionId: this.providerSessionId,
-      usage: {
-        durationMs: Date.now() - pending.started,
-        ...(this.watch.contextTokens !== undefined ? { contextTokens: this.watch.contextTokens } : {}),
-      },
+      ...this.#turn(pending.prompt, extra.answer ?? lastTextBlock(pending.events), pending.events, pending.started),
       ...(extra.interrupted ? { interrupted: true } : {}),
       ...(extra.error ? { error: extra.error } : {}),
     });
     tuiSessions.linger(this.key);
   }
 
+  #turn(prompt: string, answer: string, events: AgentEvent[], startedAt: number): TuiTurn {
+    return {
+      prompt,
+      answer,
+      events,
+      ...(this.watch.model ? { model: this.watch.model } : {}),
+      providerSessionId: this.providerSessionId,
+      usage: this.watch.usage(startedAt),
+    };
+  }
+
   /** From the read loop: one transcript event, for the submitted turn if there is one. */
   take(event: AgentEvent): void {
-    const pending = this.#pending;
     if (event.type === 'status' && event.label === 'input' && event.detail) {
-      // The first message after a submission is the one Rookery typed.
-      if (pending && !pending.accepted) {
-        pending.accepted = true;
-        return;
-      }
-      if (!pending) {
-        if (this.#typed.length === 0 && this.#typedEvents.length === 0) this.#typedStarted = Date.now();
-        this.#typed.push(event.detail);
-        tuiSessions.markRunning(this.key);
-      }
+      this.#takeInput(event.detail);
       return;
     }
     if (event.type !== 'text' && event.type !== 'thinking' && event.type !== 'tool') return;
-    if (pending) {
-      pending.accepted = true;
-      pending.events.push(event);
-      pending.onEvent(event);
-    } else {
+    const pending = this.#pending;
+    if (!pending) {
       this.#typedEvents.push(event);
+      return;
     }
+    pending.accepted = true;
+    pending.events.push(event);
+    pending.onEvent(event);
+  }
+
+  #takeInput(text: string): void {
+    const pending = this.#pending;
+    if (pending) {
+      // The first message after a submission is the one Rookery typed.
+      pending.accepted = true;
+      return;
+    }
+    if (this.#typed.length === 0 && this.#typedEvents.length === 0) this.#typedStarted = Date.now();
+    this.#typed.push(text);
+    tuiSessions.markRunning(this.key);
   }
 
   /** From the read loop: the Stop hook fired and the transcript caught up. */
@@ -1239,17 +1486,7 @@ export class ConversationTerminal {
     }
     const answer = reported || this.watch.lastBlock;
     if (this.#typed.length || answer) {
-      this.handlers.onTurn({
-        prompt: this.#typed.join('\n\n'),
-        answer,
-        events: this.#typedEvents,
-        ...(this.watch.model ? { model: this.watch.model } : {}),
-        providerSessionId: this.providerSessionId,
-        usage: {
-          durationMs: Date.now() - this.#typedStarted,
-          ...(this.watch.contextTokens !== undefined ? { contextTokens: this.watch.contextTokens } : {}),
-        },
-      });
+      this.handlers.onTurn(this.#turn(this.#typed.join('\n\n'), answer, this.#typedEvents, this.#typedStarted));
     }
     this.#typed = [];
     this.#typedEvents = [];
@@ -1261,6 +1498,41 @@ export class ConversationTerminal {
   exited(): void {
     const pending = this.#pending;
     if (pending) this.#settle(pending, { error: this.watch.apiError ?? 'Claude Code closed its terminal before answering.' });
+  }
+}
+
+/**
+ * Reads a conversation terminal's transcript and Stop marker until the
+ * process is gone, handing everything to `terminal`.
+ */
+async function followConversation(
+  watch: TerminalWatch,
+  terminal: ConversationTerminal,
+  handlers: TuiConversationHandlers,
+): Promise<void> {
+  try {
+    while (stillOpen(watch)) {
+      await sleep(POLL_MS);
+      for (const event of await watch.read()) terminal.take(event);
+      const payload = await watch.marker();
+      if (payload) {
+        const reported = reportedMessage(payload);
+        const settled = await watch.settle(reported);
+        for (const event of settled.events) terminal.take(event);
+        await watch.clearMarker();
+        if (!settled.holds) continue;
+        terminal.stopped(reported);
+      }
+      if (Date.now() - watch.lastActivity > CONVERSATION_IDLE_MS) tuiSessions.kill(watch.spec.key);
+    }
+  } catch {
+    // A read that throws past its own guards ends the watch, not the server.
+  } finally {
+    // With no watch nobody reads the answers: the process goes with it, so
+    // `onExit` below tells the truth.
+    if (stillOpen(watch)) tuiSessions.kill(watch.spec.key);
+    terminal.exited();
+    handlers.onExit();
   }
 }
 
@@ -1280,29 +1552,6 @@ export async function startConversationTerminal(
   // A conversation terminal waits for its person first - idle, not working,
   // and closed by itself after an hour of nobody typing.
   tuiSessions.linger(spec.key);
-  void (async () => {
-    try {
-      while (stillOpen(watch)) {
-        await sleep(POLL_MS);
-        for (const event of await watch.read()) terminal.take(event);
-        const payload = await watch.marker();
-        if (payload) {
-          const reported =
-            typeof payload.last_assistant_message === 'string' ? payload.last_assistant_message.trim() : '';
-          const settled = await watch.settle(reported);
-          for (const event of settled.events) terminal.take(event);
-          await watch.clearMarker();
-          if (!settled.holds) continue;
-          terminal.stopped(reported);
-        }
-        if (Date.now() - watch.lastActivity > CONVERSATION_IDLE_MS) tuiSessions.kill(spec.key);
-      }
-    } catch {
-      // A read that throws past its own guards ends the watch, not the server.
-    } finally {
-      terminal.exited();
-      handlers.onExit();
-    }
-  })();
+  void followConversation(watch, terminal, handlers);
   return terminal;
 }

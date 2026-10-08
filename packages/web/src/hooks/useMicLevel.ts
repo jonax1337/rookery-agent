@@ -24,8 +24,12 @@ export function useMicLevel(): MicLevel {
   const streamRef = useRef<MediaStream | null>(null);
   const dataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const smoothRef = useRef(0);
+  // Counts `stop` calls, so a `start` still waiting on the browser's
+  // permission prompt can tell it was cancelled meanwhile.
+  const generationRef = useRef(0);
 
   const stop = useCallback(() => {
+    generationRef.current += 1;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     analyserRef.current = null;
@@ -38,10 +42,17 @@ export function useMicLevel(): MicLevel {
   const start = useCallback(async (): Promise<boolean> => {
     if (streamRef.current) return true;
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return false;
+    const generation = generationRef.current;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
+      // The answer can arrive after `stop` (or the unmount) or after a second
+      // `start` won the race; this stream would then run with nobody to end it.
+      if (generation !== generationRef.current || streamRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return streamRef.current !== null;
+      }
       const context = new AudioContext();
       const analyser = context.createAnalyser();
       analyser.fftSize = 1024;

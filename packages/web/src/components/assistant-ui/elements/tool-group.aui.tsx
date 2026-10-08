@@ -18,8 +18,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-
-const ANIMATION_DURATION = 200;
+import { DISCLOSURE_ANIMATION_MS } from "./surfaces";
 
 const toolGroupVariants = cva("aui-tool-group-root group/tool-group w-full", {
   variants: {
@@ -53,7 +52,7 @@ function ToolGroupRoot({
 }: ToolGroupRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useScrollLock(collapsibleRef, DISCLOSURE_ANIMATION_MS);
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
@@ -83,7 +82,7 @@ function ToolGroupRoot({
       )}
       style={
         {
-          "--animation-duration": `${ANIMATION_DURATION}ms`,
+          "--animation-duration": `${DISCLOSURE_ANIMATION_MS}ms`,
         } as React.CSSProperties
       }
       {...props}

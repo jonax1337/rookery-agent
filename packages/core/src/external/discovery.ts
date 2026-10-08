@@ -50,9 +50,9 @@ function signature(home: string): string {
 
 let cached: { home: string; signature: string; at: number; scan: ExternalScan } | null = null;
 
-/** Settle the duplicates a single scan can still produce, then sort. */
-function normalise(scan: ExternalScan): ExternalScan {
-  foldServers(scan);
+/** Settle the duplicates a single scan can still produce, then sort. Never touches the scan it is given: that may be the shared EMPTY_SCAN. */
+function normalise(raw: ExternalScan): ExternalScan {
+  const scan = { ...raw, servers: foldServers(raw.servers) };
   disambiguate(scan);
   scan.sources.sort((a, b) => a.label.localeCompare(b.label));
   scan.skills.sort((a, b) => a.name.localeCompare(b.name));
@@ -70,16 +70,14 @@ function normalise(scan: ExternalScan): ExternalScan {
  * `projectatlas` executables from different runtimes, say - they stay two
  * rows, because they really are two.
  */
-function foldServers(scan: ExternalScan): void {
+function foldServers(servers: ExternalMcpServer[]): ExternalMcpServer[] {
   const kept = new Set<string>();
-  const order: ExternalMcpServer[] = [];
-  for (const server of scan.servers) {
+  return servers.filter((server) => {
     const key = server.name + ' ' + server.fingerprint + ' ' + (server.projectPath ?? '');
-    if (kept.has(key)) continue;
+    if (kept.has(key)) return false;
     kept.add(key);
-    order.push(server);
-  }
-  scan.servers = order;
+    return true;
+  });
 }
 
 /**
@@ -151,7 +149,11 @@ export function enabledExternalSkills(scan: ExternalScan, switches: Record<strin
   return scan.skills
     .filter((skill) => on.has(skill.sourceId))
     .sort((a, b) => rank(a.sourceId) - rank(b.sourceId) || a.sourceId.localeCompare(b.sourceId))
-    .filter((skill) => (seen.has(skill.name) ? false : (seen.add(skill.name), true)))
+    .filter((skill) => {
+      if (seen.has(skill.name)) return false;
+      seen.add(skill.name);
+      return true;
+    })
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 

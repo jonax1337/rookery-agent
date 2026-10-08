@@ -62,26 +62,16 @@ export interface SpawnHandle {
   done: Promise<{ code: number | null; stderr: string }>;
 }
 
+/** Provider CLIs can be chatty about MCP warnings; only the tail of stderr is kept. */
+const STDERR_TAIL_CHARS = 8000;
+
 /**
  * Spawn a resolved CLI, wiring stdin and collecting stderr.
  * The caller consumes `child.stdout` (usually via `readJsonLines`).
  */
 export function spawnCli(binary: ResolvedBinary, options: SpawnOptions): SpawnHandle {
   const { args, cwd, env, stdin, signal } = options;
-
-  let command: string;
-  let spawnArgs: string[];
-  let verbatim = false;
-
-  if (binary.isShim) {
-    // cmd.exe needs the whole command line quoted by us, verbatim.
-    command = process.env.COMSPEC ?? 'cmd.exe';
-    spawnArgs = ['/d', '/s', '/c', quoteForCmd([binary.path, ...args])];
-    verbatim = true;
-  } else {
-    command = binary.path;
-    spawnArgs = args;
-  }
+  const { command, spawnArgs, verbatim } = commandLineFor(binary, args);
 
   const child = spawn(command, spawnArgs, {
     cwd,
@@ -94,14 +84,10 @@ export function spawnCli(binary: ResolvedBinary, options: SpawnOptions): SpawnHa
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk: string) => {
-    // Keep the tail only; provider CLIs can be chatty about MCP warnings.
-    stderr = (stderr + chunk).slice(-8000);
+    stderr = (stderr + chunk).slice(-STDERR_TAIL_CHARS);
   });
 
-  if (signal) {
-    if (signal.aborted) child.kill();
-    else signal.addEventListener('abort', () => child.kill(), { once: true });
-  }
+  if (signal) killOnAbort(child, signal);
 
   if (stdin !== undefined) {
     child.stdin.on('error', () => {
@@ -118,6 +104,32 @@ export function spawnCli(binary: ResolvedBinary, options: SpawnOptions): SpawnHa
   });
 
   return { child, done };
+}
+
+function commandLineFor(
+  binary: ResolvedBinary,
+  args: string[],
+): { command: string; spawnArgs: string[]; verbatim: boolean } {
+  if (!binary.isShim) return { command: binary.path, spawnArgs: args, verbatim: false };
+  // cmd.exe needs the whole command line quoted by us, verbatim.
+  return {
+    command: process.env.COMSPEC ?? 'cmd.exe',
+    spawnArgs: ['/d', '/s', '/c', quoteForCmd([binary.path, ...args])],
+    verbatim: true,
+  };
+}
+
+/** The listener goes with the child, so a long-lived signal does not keep every finished process reachable. */
+function killOnAbort(child: ChildProcessWithoutNullStreams, signal: AbortSignal): void {
+  if (signal.aborted) {
+    child.kill();
+    return;
+  }
+  const kill = (): void => {
+    child.kill();
+  };
+  signal.addEventListener('abort', kill, { once: true });
+  child.once('close', () => signal.removeEventListener('abort', kill));
 }
 
 /** Quote an argv for cmd.exe verbatim mode. */
@@ -174,11 +186,14 @@ function tryParse(line: string): Record<string, unknown> | null {
   }
 }
 
+const CAPTURE_TIMEOUT_MS = 15000;
+const STDOUT_TAIL_CHARS = 16000;
+
 /** Run a short-lived command and capture stdout. Used for version/auth probes. */
 export async function runCapture(
   binary: ResolvedBinary,
   args: string[],
-  timeoutMs = 15000,
+  timeoutMs = CAPTURE_TIMEOUT_MS,
   env?: NodeJS.ProcessEnv,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const controller = new AbortController();
@@ -188,7 +203,7 @@ export async function runCapture(
   let stdout = '';
   handle.child.stdout.setEncoding('utf8');
   handle.child.stdout.on('data', (chunk: string) => {
-    stdout = (stdout + chunk).slice(-16000);
+    stdout = (stdout + chunk).slice(-STDOUT_TAIL_CHARS);
   });
 
   try {

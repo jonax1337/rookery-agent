@@ -25,10 +25,10 @@ import type { IconComponent } from "@/components/icons";
 /**
  * The one place that knows what a route is called.
  *
- * Breadcrumbs, the sidebar and the command palette's "Seiten" group all read
+ * Breadcrumbs, the sidebar and the command palette's "Pages" group all read
  * this table, which is the point: the labels used to live in an if-chain in
  * `App.tsx` *and* in an array in the sidebar, and the two had already drifted
- * apart. Routes stay English, labels stay German.
+ * apart. Routes and labels are English.
  *
  * The table and the route table in `App.tsx` are congruent: every pattern
  * below is a route, and every route is a pattern below. The one exception is
@@ -62,7 +62,7 @@ export interface RouteMeta {
   /**
    * What to call it when it stands as a breadcrumb ancestor or a sidebar
    * section head, where the page's own name would read wrong - `/memory` is
-   * the "Erinnerungen" page but the "Gedächtnis" section.
+   * the "Overview" page but the "Memory" section.
    */
   navLabel?: string;
   /** The route one level up, as a pattern. Drives the breadcrumb chain. */
@@ -73,7 +73,7 @@ export interface RouteMeta {
   /** Where a section head navigates to when the route itself only redirects. */
   redirect?: string;
   /**
-   * Kept out of the command palette's "Seiten" list. True for everything that
+   * Kept out of the command palette's "Pages" list. True for everything that
    * needs a parameter (`/tasks/:id`) and for the create forms, which are
    * reached by the button on the list they belong to rather than by name.
    */
@@ -85,12 +85,12 @@ export const ROUTE_META: RouteMeta[] = [
   /* ------------------------------- arbeiten ------------------------------- */
   { path: '/dashboard', label: 'Overview', icon: OverviewIcon, group: 'work' },
   { path: '/chats', label: 'Conversations', icon: ConversationsIcon, group: 'work' },
-  // The chat hub itself. It sits under Gespräche in the breadcrumb but is not
-  // a sidebar entry - "Neues Gespräch" is a button, not a destination.
+  // The chat hub itself. It sits under Conversations in the breadcrumb but is not
+  // a sidebar entry - "New conversation" is a button, not a destination.
   { path: '/', label: 'Chat', parent: '/chats', icon: ConversationsIcon, hidden: true },
   { path: '/c/:sessionId', label: 'Conversation', parent: '/chats', icon: ConversationsIcon, hidden: true },
   // No `group`, so no sidebar row: the primary action already carries a voice
-  // button beside "Neues Gespräch", and one destination does not need two
+  // button beside "New conversation", and one destination does not need two
   // permanent doors. It keeps its label and icon, so the breadcrumb still names
   // it and the command palette still finds it.
   { path: '/voice', label: 'Voice', icon: VoiceIcon },
@@ -102,7 +102,7 @@ export const ROUTE_META: RouteMeta[] = [
   // tabs or side by side.
   { path: '/workspace', label: 'Workspace', icon: TerminalIcon, group: 'work' },
 
-  /* -------------------------------- betrieb ------------------------------- */
+  /* ------------------------------ operations ------------------------------ */
   { path: '/tasks', label: 'Tasks', icon: TasksIcon, group: 'operations' },
   { path: '/tasks/new', label: 'Create task', parent: '/tasks', hidden: true },
   { path: '/tasks/:id', label: 'Task', parent: '/tasks', hidden: true },
@@ -125,7 +125,7 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/gateways', label: 'Gateways', icon: GatewaysIcon, group: 'operations' },
   { path: '/gateways/:id', label: 'Gateway', parent: '/gateways', hidden: true },
 
-  /* --------------------------- firma & wissen ----------------------------- */
+  /* ------------------------- company & knowledge -------------------------- */
   // Section links open their overview. The tabs live on the page itself
   // (`OrgLayout`), not in the sidebar: one door per section is enough.
   {
@@ -170,7 +170,7 @@ export const ROUTE_META: RouteMeta[] = [
   { path: '/skills/:name', label: 'Skill', parent: '/skills', hidden: true },
   { path: '/skills/:name/edit', label: 'Edit skill', parent: '/skills', hidden: true },
 
-  /* ------------------------------- unten ---------------------------------- */
+  /* -------------------------------- bottom -------------------------------- */
   {
     path: '/settings',
     label: 'Settings',
@@ -188,7 +188,7 @@ export function navItems(group: NavGroup): RouteMeta[] {
   return ROUTE_META.filter((meta) => meta.group === group);
 }
 
-/** Everything a person could sensibly jump to - the palette's "Seiten" list. */
+/** Everything a person could sensibly jump to - the palette's "Pages" list. */
 export function navigableRoutes(): RouteMeta[] {
   return ROUTE_META.filter((meta) => !meta.hidden && !meta.path.includes(':'));
 }
@@ -219,7 +219,7 @@ export function matchRoute(pathname: string): RouteMatch | null {
     for (let i = 0; i < pattern.length; i += 1) {
       const expected = pattern[i] as string;
       const actual = parts[i] as string;
-      if (expected.startsWith(':')) params[expected.slice(1)] = decodeURIComponent(actual);
+      if (expected.startsWith(':')) params[expected.slice(1)] = decodeSegment(actual);
       else if (expected === actual) score += 1;
       else {
         ok = false;
@@ -290,4 +290,13 @@ function resolvePath(pattern: string, params: Record<string, string>): string | 
 
 function segments(path: string): string[] {
   return path.split('/').filter(Boolean);
+}
+
+/** A path segment as the person typed it; a malformed escape (`%E0%A4`) stays as it is instead of throwing in a render. */
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
 }

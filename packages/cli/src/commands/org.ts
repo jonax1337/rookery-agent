@@ -11,15 +11,31 @@
 import { existsSync } from 'node:fs';
 import { describeAssignment, renderOrgOverview } from '@rookery/core';
 import type { Agent, Assignment, Assistant, Organization } from '@rookery/core';
-import { EventRenderer, formatDuration, heading, shorten, shortId } from '../ui/render.js';
+import {
+  EventRenderer,
+  formatDuration,
+  listHeader,
+  shorten,
+  shortId,
+  statusPaint,
+} from '../ui/render.js';
 import { Spinner } from '../ui/spinner.js';
 import { glyph, theme } from '../ui/theme.js';
 import {
   CliError,
+  EXIT_INTERRUPTED,
+  agentIndex,
+  agentSlugOf,
   parseLimit,
   parsePermission,
   parseProvider,
+  pickByIdPrefix,
+  printInterrupted,
+  printJson,
+  resolveAgent,
+  resolveProject,
   withAssistant,
+  withInterruptSignal,
 } from './shared.js';
 
 const out = process.stdout;
@@ -37,7 +53,7 @@ export async function orgOverviewCommand(options: OrgViewOptions = {}): Promise<
     const snapshot = assistant.org.snapshot(organization.id);
 
     if (options.json) {
-      out.write(JSON.stringify(snapshot, null, 2) + '\n');
+      printJson(snapshot);
       return 0;
     }
 
@@ -59,7 +75,7 @@ export async function orgAgentsCommand(options: OrgViewOptions = {}): Promise<nu
     const agents = assistant.store.org.listAgents(organization.id);
 
     if (options.json) {
-      out.write(JSON.stringify(agents, null, 2) + '\n');
+      printJson(agents);
       return 0;
     }
 
@@ -71,7 +87,7 @@ export async function orgAgentsCommand(options: OrgViewOptions = {}): Promise<nu
     const teams = new Map(assistant.store.org.listTeams(organization.id).map((team) => [team.id, team.name]));
     const byId = new Map(agents.map((agent) => [agent.id, agent]));
 
-    out.write('\n' + heading('Agents') + theme.dim('  (' + agents.length + ')') + '\n\n');
+    out.write(listHeader('Agents', agents.length));
     for (const agent of agents) {
       const manager = agent.managerId ? byId.get(agent.managerId) : undefined;
       out.write(
@@ -137,7 +153,7 @@ export async function orgHireCommand(options: HireOptions): Promise<number> {
     });
 
     if (options.json) {
-      out.write(JSON.stringify(agent, null, 2) + '\n');
+      printJson(agent);
       return 0;
     }
 
@@ -157,7 +173,7 @@ export async function orgTeamsCommand(options: OrgViewOptions = {}): Promise<num
     const teams = assistant.store.org.listTeams(organization.id);
 
     if (options.json) {
-      out.write(JSON.stringify(teams, null, 2) + '\n');
+      printJson(teams);
       return 0;
     }
 
@@ -170,7 +186,7 @@ export async function orgTeamsCommand(options: OrgViewOptions = {}): Promise<num
       assistant.store.org.listAgents(organization.id).map((agent) => [agent.id, agent]),
     );
 
-    out.write('\n' + heading('Teams') + theme.dim('  (' + teams.length + ')') + '\n\n');
+    out.write(listHeader('Teams', teams.length));
     for (const team of teams) {
       const lead = team.leadId ? agents.get(team.leadId) : undefined;
       const members = [...agents.values()].filter((agent) => agent.teamId === team.id).length;
@@ -227,7 +243,7 @@ export async function orgProjectsCommand(options: OrgViewOptions = {}): Promise<
     const projects = assistant.store.org.listProjects(organization.id);
 
     if (options.json) {
-      out.write(JSON.stringify(projects, null, 2) + '\n');
+      printJson(projects);
       return 0;
     }
 
@@ -236,7 +252,7 @@ export async function orgProjectsCommand(options: OrgViewOptions = {}): Promise<
       return 0;
     }
 
-    out.write('\n' + heading('Projects') + theme.dim('  (' + projects.length + ')') + '\n\n');
+    out.write(listHeader('Projects', projects.length));
     for (const project of projects) {
       out.write(
         theme.accent(shorten(project.name, 21).padEnd(22)) +
@@ -300,7 +316,7 @@ export async function orgAssignmentsCommand(options: AssignmentsOptions = {}): P
     const assignments = assistant.store.org.listAssignments(organization.id, { limit });
 
     if (options.json) {
-      out.write(JSON.stringify(assignments, null, 2) + '\n');
+      printJson(assignments);
       return 0;
     }
 
@@ -311,7 +327,7 @@ export async function orgAssignmentsCommand(options: AssignmentsOptions = {}): P
 
     const agents = agentIndex(assistant, organization);
 
-    out.write('\n' + heading('Runs') + theme.dim('  (' + assignments.length + ')') + '\n\n');
+    out.write(listHeader('Runs', assignments.length));
     for (const assignment of assignments) {
       out.write(assignmentLine(assignment, agents.get(assignment.agentId)) + '\n');
     }
@@ -353,7 +369,7 @@ export async function orgMessagesCommand(options: MessagesOptions = {}): Promise
     const messages = assistant.store.org.listMessages(organization.id, limit);
 
     if (options.json) {
-      out.write(JSON.stringify(messages, null, 2) + '\n');
+      printJson(messages);
       return 0;
     }
 
@@ -362,11 +378,10 @@ export async function orgMessagesCommand(options: MessagesOptions = {}): Promise
       return 0;
     }
 
-    const agents = agentIndex(assistant, organization);
-    const who = (id: string | undefined): string =>
-      id ? (agents.get(id)?.slug ?? shortId(id)) : 'assistant';
+    const agentSlug = agentSlugOf(assistant);
+    const who = (id: string | undefined): string => (id ? agentSlug(id) : 'assistant');
 
-    out.write('\n' + heading('Messages') + theme.dim('  (' + messages.length + ')') + '\n\n');
+    out.write(listHeader('Messages', messages.length));
     for (const message of messages) {
       out.write(
         theme.dim(new Date(message.createdAt).toISOString().slice(0, 16).replace('T', ' ') + '  ') +
@@ -418,33 +433,14 @@ export async function runAssignment(
   options: { json?: boolean; verbose?: boolean; label?: string } = {},
 ): Promise<AssignmentRunResult> {
   const json = options.json ?? false;
-  const spinner = json ? null : new Spinner(options.label ?? 'working');
   const renderer = new EventRenderer({
     json,
     verbose: options.verbose ?? false,
-    spinner,
-    agentSlug: (id) => assistant.store.org.getAgent(id)?.slug ?? shortId(id),
+    spinner: json ? null : new Spinner(options.label ?? 'working'),
+    agentSlug: agentSlugOf(assistant),
   });
 
-  let failed = false;
-
-  spinner?.start();
-  try {
-    for await (const event of assistant.assign(input)) {
-      if (event.type === 'error') {
-        if (input.signal?.aborted) continue;
-        if (event.fatal) failed = true;
-      }
-      renderer.handle(event);
-    }
-  } catch (error) {
-    if (!input.signal?.aborted) {
-      failed = true;
-      renderer.handle({ type: 'error', message: (error as Error).message, fatal: true });
-    }
-  } finally {
-    spinner?.stop();
-  }
+  const { failed } = await renderer.consume(assistant.assign(input), input.signal);
 
   const aborted = Boolean(input.signal?.aborted);
   // `assign` ends with a `done` carrying the report; the renderer only
@@ -461,76 +457,36 @@ export async function assignCommand(
   const task = taskParts.join(' ').trim();
   if (!task) throw new CliError('Nothing to assign. Pass a task, e.g. `rookery assign backend-dev "..."`.');
 
-  const controller = new AbortController();
-  const onInterrupt = (): void => {
-    controller.abort();
-  };
-  process.on('SIGINT', onInterrupt);
-
-  try {
-    return await withAssistant(async (assistant) => {
-      const organization = assistant.org.activeOrganization();
-      const agent = assistant.store.org.findAgent(organization.id, agentRef);
-      if (!agent) {
-        throw new CliError('No agent "' + agentRef + '". Run `rookery org agents` to see who works here.');
-      }
-
-      let projectId: string | undefined;
-      if (options.project) {
-        const project = assistant.store.org.findProject(organization.id, options.project);
-        if (!project) throw new CliError('No project "' + options.project + '".');
-        projectId = project.id;
-      }
+  return withInterruptSignal((signal) =>
+    withAssistant(async (assistant) => {
+      const agent = resolveAgent(assistant, agentRef);
+      const project = resolveProject(assistant, options.project);
 
       const json = options.json ?? false;
       const result = await runAssignment(
         assistant,
-        {
-          agent: agent.id,
-          task,
-          projectId,
-          sessionId: options.session,
-          signal: controller.signal,
-        },
+        { agent: agent.id, task, projectId: project?.id, sessionId: options.session, signal },
         { json, verbose: options.verbose ?? false, label: agent.slug + ' working' },
       );
 
       if (!json && result.report) out.write('\n' + result.report + '\n');
 
       if (result.aborted) {
-        if (!json) process.stderr.write(theme.dim(glyph.warn + ' interrupted') + '\n');
-        return 130;
+        if (!json) printInterrupted();
+        return EXIT_INTERRUPTED;
       }
       return result.failed ? 1 : 0;
-    });
-  } finally {
-    process.off('SIGINT', onInterrupt);
-  }
+    }),
+  );
 }
 
 /* -------------------------------- helpers ------------------------------- */
 
-function agentIndex(assistant: Assistant, organization: Organization): Map<string, Agent> {
-  return new Map(
-    assistant.store.org
-      .listAgents(organization.id, { includeArchived: true })
-      .map((agent) => [agent.id, agent]),
-  );
-}
-
 function assignmentLine(assignment: Assignment, agent: Agent | undefined): string {
-  const paint =
-    assignment.status === 'done'
-      ? theme.green
-      : assignment.status === 'failed'
-        ? theme.red
-        : assignment.status === 'running'
-          ? theme.yellow
-          : theme.dim;
   return (
     theme.accent(shortId(assignment.id).padEnd(9)) +
     theme.cyan(shorten(agent?.slug ?? assignment.agentId, 15).padEnd(16)) +
-    paint(assignment.status.padEnd(10)) +
+    statusPaint(assignment.status)(assignment.status.padEnd(10)) +
     theme.dim((assignment.durationMs === undefined ? '' : formatDuration(assignment.durationMs)).padStart(7) + '  ') +
     theme.frost(shorten(assignment.title, 48))
   );
@@ -545,14 +501,6 @@ function resolveAssignment(
   const exact = assistant.store.org.getAssignment(idOrPrefix);
   if (exact && exact.orgId === organization.id) return exact;
 
-  const needle = idOrPrefix.trim().toLowerCase();
-  const matches = assistant.store.org
-    .listAssignments(organization.id, { limit: 1000 })
-    .filter((assignment) => assignment.id.toLowerCase().startsWith(needle));
-
-  if (matches.length === 1) return matches[0] as Assignment;
-  if (matches.length === 0) throw new CliError('No run matches "' + idOrPrefix + '".');
-  throw new CliError(
-    'Ambiguous run id "' + idOrPrefix + '": ' + matches.map((a) => shortId(a.id)).join(', '),
-  );
+  const recent = assistant.store.org.listAssignments(organization.id, { limit: 1000 });
+  return pickByIdPrefix(recent, idOrPrefix, 'run');
 }

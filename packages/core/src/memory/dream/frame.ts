@@ -6,6 +6,7 @@ import {
   type FrameEdgeRef,
   type FrameEntityRef,
   type FrameHop1Row,
+  type MemoryEntity,
   type MemoryRecordSnapshot,
   type RecallBox,
   type RecallFrame,
@@ -31,6 +32,46 @@ import { WEIGHTS, coreProfile, recencyOf, toMatchQuery, tokenize, type RecallOpt
 
 /** The per-entity limit the live second hop uses (`expand` in recall.ts). */
 const HOP2_ENTITY_LIMIT = 8;
+
+/** Defaults of an unspecified recall call; mirror recall.ts. */
+export const DEFAULT_LIMIT = 8;
+const DEFAULT_THRESHOLD = 0.12;
+const DEFAULT_HOP_ENTITY = 0.45;
+const DEFAULT_HOP_EDGE = 0.6;
+/** Defaults of what a frame is rendered with when the caller names none. */
+const DEFAULT_BUDGET_CHARS = 2000;
+const DEFAULT_SUBJECT = 'this user';
+
+/** The live frontier reads this many rows per delivered row. */
+const FRONTIER_FACTOR = 4;
+
+/** The profile is recorded at least this wide, whatever the box says. */
+const PROFILE_MIN_LIMIT = 3;
+
+/** The best this many first-hop rows pull in neighbours (second-hop seeds). */
+const SEED_RANKS = 3;
+
+/** Entity damping is `min(1, ENTITY_DAMPING_MENTIONS / mentions)`. */
+const ENTITY_DAMPING_MENTIONS = 3;
+
+/** An entity's inherited score must reach this share of the lowest threshold. */
+const ENTITY_THRESHOLD_SHARE = 0.5;
+
+/** Weight of the flat tag bonus one row can earn (`scoreFrame`). */
+const TAG_BONUS = 0.1;
+
+/** The usage term's saturation: `log2(accessCount + 1) / 5`, capped at 1. */
+const USAGE_SATURATION = 5;
+
+/** The usage term of one row, on exactly the scale `scoreFrame` computes it. */
+export function usageOf(accessCount: number): number {
+  return Math.min(1, Math.log2(accessCount + 1) / USAGE_SATURATION);
+}
+
+/** The flat tag bonus when any of the row's tags is a query token, else 0. */
+export function tagHitOf(tags: readonly string[], queryTokens: ReadonlySet<string>): number {
+  return tags.some((tag) => queryTokens.has(tag.toLowerCase())) ? TAG_BONUS : 0;
+}
 
 /**
  * Hard cap on `|possibleSeeds|`. The list grows with the width of the box:
@@ -76,21 +117,18 @@ export interface FetchFrameOptions extends RecallOptions {
  * no turn pays for the dream just by happening.
  */
 export function boxFromOptions(options: RecallOptions): RecallBox {
-  const threshold = options.threshold ?? 0.12;
-  const hopEntity = options.hopEntity ?? 0.45;
-  const hopEdge = options.hopEdge ?? 0.6;
   const point = <T,>(value: T): [T, T] => [value, value];
   return {
-    limitMax: options.limit ?? 8,
+    limitMax: options.limit ?? DEFAULT_LIMIT,
     w: {
       relevance: point(WEIGHTS.relevance),
       importance: point(WEIGHTS.importance),
       recency: point(WEIGHTS.recency),
       usage: point(WEIGHTS.usage),
     },
-    threshold: point(threshold),
-    hopEntity: point(hopEntity),
-    hopEdge: point(hopEdge),
+    threshold: point(options.threshold ?? DEFAULT_THRESHOLD),
+    hopEntity: point(options.hopEntity ?? DEFAULT_HOP_ENTITY),
+    hopEdge: point(options.hopEdge ?? DEFAULT_HOP_EDGE),
     kinds: options.kinds ?? [],
     minImportance: options.minImportance ?? 0,
   };
@@ -141,24 +179,24 @@ function scoreBounds(
   };
 }
 
+interface FrontierRows {
+  rows: Record<string, unknown>[];
+  degraded: DreamDegraded | null;
+}
+
 /**
- * Record everything any policy inside the declared box could need to replay
- * this one recall decision. Reads only; the caller owns the clock the frame
- * freezes (`now` is read here, after the frontier query, exactly where the
- * old live path read it).
+ * The first-hop frontier: the live FTS query, `frontier` rows wide. A query
+ * without tokens or a malformed MATCH degrades to "no memories" and says why.
  */
-export function fetchFrame(store: Store, options: FetchFrameOptions): RecallFrame {
-  const owner = options.owner ?? ASSISTANT_MEMORY_OWNER;
-  const limit = options.limit ?? 8;
-  const kinds = options.kinds ?? [];
-  const minImportance = options.minImportance ?? 0;
-  const matchQuery = toMatchQuery(options.text);
-  const queryTokens = tokenize(options.text);
-  const box = options.box ?? boxFromOptions(options);
-  // Only an open trace widens the frontier: with the point box above,
-  // max(limit, limitMax) collapses to limit and the SQL sees the limit * 4
-  // rows it has always seen.
-  const frontier = Math.max(limit, box.limitMax) * 4;
+function queryFrontier(
+  store: Store,
+  owner: string,
+  matchQuery: string,
+  minImportance: number,
+  kinds: readonly string[],
+  frontier: number,
+): FrontierRows {
+  if (!matchQuery) return { rows: [], degraded: 'no-tokens' };
 
   const kindFilter = kinds.length ? ' AND m.kind IN (' + kinds.map(() => '?').join(', ') + ')' : '';
   // bm25() returns a negative number where lower is better; negate it so the
@@ -177,22 +215,122 @@ export function fetchFrame(store: Store, options: FetchFrameOptions): RecallFram
         AND m.importance >= ?` +
     kindFilter +
     ` ORDER BY relevance DESC, m.id LIMIT ?`;
+  try {
+    const rows = store.db
+      .prepare(sql)
+      .all(matchQuery, owner, minImportance, ...kinds, frontier) as Record<string, unknown>[];
+    return { rows, degraded: null };
+  } catch {
+    // A malformed MATCH must degrade to "no memories", never break the
+    // turn - and never turn into an error at replay time either.
+    return { rows: [], degraded: 'fts-threw' };
+  }
+}
 
-  let rows: Record<string, unknown>[] = [];
-  let degraded: DreamDegraded | null = null;
-  if (!matchQuery) {
-    degraded = 'no-tokens';
-  } else {
-    try {
-      rows = store.db
-        .prepare(sql)
-        .all(matchQuery, owner, minImportance, ...kinds, frontier) as Record<string, unknown>[];
-    } catch {
-      // A malformed MATCH must degrade to "no memories", never break the
-      // turn - and never turn into an error at replay time either.
-      degraded = 'fts-threw';
+interface FrontierBound {
+  id: string;
+  lo: number;
+  hi: number;
+}
+
+/** Score interval of every first-hop row over the box (interval arithmetic). */
+function frontierBounds(
+  hop1: readonly FrameHop1Row[],
+  records: Readonly<Record<string, MemoryRecordSnapshot>>,
+  maxRelevanceClamped: number,
+  queryTokens: readonly string[],
+  now: number,
+  box: RecallBox,
+): FrontierBound[] {
+  const queryTokenSet = new Set(queryTokens);
+  return hop1.map((row) => {
+    const record = records[row.id];
+    const relevance = row.relevance / maxRelevanceClamped;
+    const recency = record ? recencyOf(record.updatedAt, now) : 0;
+    const usage = record ? usageOf(record.accessCount) : 0;
+    const tagHit = record ? tagHitOf(record.tags, queryTokenSet) : 0;
+    return {
+      id: row.id,
+      ...scoreBounds(relevance, record ? record.importance : 0, recency, usage, tagHit, box),
+    };
+  });
+}
+
+/**
+ * Possible seeds by interval arithmetic over the box: a row can become a
+ * second-hop seed exactly when its best score can still reach the
+ * third-largest worst score, and clear the lowest threshold in the box.
+ * This is a superset of the true seeds; an error in the bound degrades to
+ * an abstention, never to a plausible wrong number.
+ */
+function possibleSeedsOf(bounds: readonly FrontierBound[], box: RecallBox): string[] {
+  const worstScores = bounds.map((bound) => bound.lo).sort((a, b) => b - a);
+  const thirdLargestWorst =
+    worstScores.length >= SEED_RANKS
+      ? (worstScores[SEED_RANKS - 1] ?? Number.NEGATIVE_INFINITY)
+      : Number.NEGATIVE_INFINITY;
+  const seedFloor = Math.max(box.threshold[0], thirdLargestWorst);
+  // Seed-first order before any truncation: the most likely seeds lead, so a
+  // cut at the cap costs the least. Deterministic - hi desc, then id asc.
+  return bounds
+    .filter((bound) => bound.hi >= seedFloor)
+    .sort((a, b) => b.hi - a.hi || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .slice(0, SEEDS_CAP)
+    .map((bound) => bound.id);
+}
+
+/**
+ * Which entities can still hand out neighbours is decided at the box's most
+ * permissive corner (hopEntity at its upper bound, threshold at its lower
+ * bound), never at the realised point: a candidate may sit anywhere inside.
+ */
+function visitedEntitiesOf(
+  possibleSeeds: readonly string[],
+  seedEntities: ReadonlyMap<string, readonly MemoryEntity[]>,
+  hiById: ReadonlyMap<string, number>,
+  box: RecallBox,
+): FrameEntityRef[] {
+  const visited: FrameEntityRef[] = [];
+  const seen = new Set<string>();
+  for (const seedId of possibleSeeds) {
+    for (const entity of seedEntities.get(seedId) ?? []) {
+      if (entity.mentions <= 1) continue;
+      const damping = Math.min(1, ENTITY_DAMPING_MENTIONS / Math.max(1, entity.mentions));
+      const inheritedMax = box.hopEntity[1] * (hiById.get(seedId) ?? 0) * damping;
+      if (inheritedMax < box.threshold[0] * ENTITY_THRESHOLD_SHARE) continue;
+      if (seen.has(entity.id)) continue;
+      seen.add(entity.id);
+      visited.push({ entityId: entity.id, name: entity.name, mentions: entity.mentions });
     }
   }
+  return visited;
+}
+
+/**
+ * Record everything any policy inside the declared box could need to replay
+ * this one recall decision. Reads only; the caller owns the clock the frame
+ * freezes (`now` is read here, after the frontier query, exactly where the
+ * old live path read it).
+ */
+export function fetchFrame(store: Store, options: FetchFrameOptions): RecallFrame {
+  const owner = options.owner ?? ASSISTANT_MEMORY_OWNER;
+  const limit = options.limit ?? DEFAULT_LIMIT;
+  const matchQuery = toMatchQuery(options.text);
+  const queryTokens = tokenize(options.text);
+  const box = options.box ?? boxFromOptions(options);
+  // Only an open trace widens the frontier: with the point box above,
+  // max(limit, limitMax) collapses to limit and the SQL sees the limit * 4
+  // rows it has always seen.
+  const frontier = Math.max(limit, box.limitMax) * FRONTIER_FACTOR;
+
+  const { rows, degraded } = queryFrontier(
+    store,
+    owner,
+    matchQuery,
+    options.minImportance ?? 0,
+    options.kinds ?? [],
+    frontier,
+  );
 
   const now = Date.now();
   // AFTER the Math.max(..., 1) clamp, on purpose: renormalising without the
@@ -212,7 +350,10 @@ export function fetchFrame(store: Store, options: FetchFrameOptions): RecallFram
   // (R12). mergeProfile slices per candidate instead.
   const profile: { id: string; reason: string }[] = [];
   if (!degraded) {
-    const profileRows = coreProfile(store, { owner, limit: Math.max(3, Math.floor(box.limitMax / 2)) });
+    const profileRows = coreProfile(store, {
+      owner,
+      limit: Math.max(PROFILE_MIN_LIMIT, Math.floor(box.limitMax / 2)),
+    });
     for (const row of profileRows) {
       const { score: _score, hop: _hop, reason, ...record } = row;
       records[record.id] = record;
@@ -220,55 +361,17 @@ export function fetchFrame(store: Store, options: FetchFrameOptions): RecallFram
     }
   }
 
-  // Possible seeds by interval arithmetic over the box: a row can become a
-  // second-hop seed exactly when its best score can still reach the
-  // third-largest worst score, and clear the lowest threshold in the box.
-  // This is a superset of the true seeds; an error in the bound degrades to
-  // an abstention, never to a plausible wrong number.
-  const queryTokenSet = new Set(queryTokens);
-  const bounds = hop1.map((row) => {
-    const record = records[row.id];
-    const relevance = row.relevance / maxRelevanceClamped;
-    const recency = record ? recencyOf(record.updatedAt, now) : 0;
-    const usage = record ? Math.min(1, Math.log2(record.accessCount + 1) / 5) : 0;
-    const tagHit =
-      record && record.tags.some((tag) => queryTokenSet.has(tag.toLowerCase())) ? 0.1 : 0;
-    return {
-      id: row.id,
-      ...scoreBounds(relevance, record ? record.importance : 0, recency, usage, tagHit, box),
-    };
-  });
-  const worstScores = bounds.map((bound) => bound.lo).sort((a, b) => b - a);
-  const thirdLargestWorst =
-    worstScores.length >= 3 ? (worstScores[2] ?? Number.NEGATIVE_INFINITY) : Number.NEGATIVE_INFINITY;
-  const seedFloor = Math.max(box.threshold[0], thirdLargestWorst);
-  // Seed-first order before any truncation: the most likely seeds lead, so a
-  // cut at the cap costs the least. Deterministic - hi desc, then id asc.
-  const possibleSeeds = bounds
-    .filter((bound) => bound.hi >= seedFloor)
-    .sort((a, b) => b.hi - a.hi || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    .slice(0, SEEDS_CAP)
-    .map((bound) => bound.id);
+  const bounds = frontierBounds(hop1, records, maxRelevanceClamped, queryTokens, now, box);
+  const possibleSeeds = possibleSeedsOf(bounds, box);
 
-  // Which entities can still hand out neighbours is decided at the box's most
-  // permissive corner (hopEntity at its upper bound, threshold at its lower
-  // bound), never at the realised point: a candidate may sit anywhere inside.
   const hiById = new Map(bounds.map((bound) => [bound.id, bound.hi] as const));
   const seedSide = [...new Set([...hop1.map((row) => row.id), ...profile.map((row) => row.id)])];
-  const seedEntities = store.entitiesForMany(seedSide);
-  const visitedEntities: FrameEntityRef[] = [];
-  const seenEntities = new Set<string>();
-  for (const seedId of possibleSeeds) {
-    for (const entity of seedEntities.get(seedId) ?? []) {
-      if (entity.mentions <= 1) continue;
-      const damping = Math.min(1, 3 / Math.max(1, entity.mentions));
-      const inheritedMax = box.hopEntity[1] * (hiById.get(seedId) ?? 0) * damping;
-      if (inheritedMax < box.threshold[0] * 0.5) continue;
-      if (seenEntities.has(entity.id)) continue;
-      seenEntities.add(entity.id);
-      visitedEntities.push({ entityId: entity.id, name: entity.name, mentions: entity.mentions });
-    }
-  }
+  const visitedEntities = visitedEntitiesOf(
+    possibleSeeds,
+    store.entitiesForMany(seedSide),
+    hiById,
+    box,
+  );
 
   // Neighbours WITHOUT the seed exclusion, 8 + |possibleSeeds| rows per
   // entity: removing at most |seeds| ids from a prefix of 8 + |seeds| leaves
@@ -325,10 +428,9 @@ export function fetchFrame(store: Store, options: FetchFrameOptions): RecallFram
   }
 
   // Contradiction pairs over R, for the store-free dropContradicted twin.
-  const contradicts: { srcId: string; dstId: string }[] = [];
-  for (const edge of store.edgesFrom(reachable, ['contradicts'])) {
-    contradicts.push({ srcId: edge.srcId, dstId: edge.dstId });
-  }
+  const contradicts = store
+    .edgesFrom(reachable, ['contradicts'])
+    .map((edge) => ({ srcId: edge.srcId, dstId: edge.dstId }));
 
   return {
     v: 1,
@@ -336,12 +438,12 @@ export function fetchFrame(store: Store, options: FetchFrameOptions): RecallFram
     pipeline: options.pipeline ?? 'assistant',
     owner,
     box,
-    query: { text: options.text, matchQuery: matchQuery, tokens: queryTokens },
+    query: { text: options.text, matchQuery, tokens: queryTokens },
     now,
     corpusStampId: options.corpusStampId ?? '',
     maxRelevanceClamped,
-    budgetChars: options.budgetChars ?? 2000,
-    subject: options.subject ?? 'this user',
+    budgetChars: options.budgetChars ?? DEFAULT_BUDGET_CHARS,
+    subject: options.subject ?? DEFAULT_SUBJECT,
     records,
     hop1,
     possibleSeeds,

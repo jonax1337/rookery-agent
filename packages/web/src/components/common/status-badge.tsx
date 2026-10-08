@@ -7,7 +7,7 @@ import {
   CircleDashedIcon as CircleDotIcon,
   CircleHelpIcon,
   LoaderIcon,
-} from "@/components/icons";
+} from '@/components/icons';
 import { AnimatePresence, motion } from 'motion/react';
 import type { ReactNode } from 'react';
 import { Badge } from '@/components/ui/badge';
@@ -31,7 +31,7 @@ import type {
   TaskStatus,
 } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import type { IconComponent } from "@/components/icons";
+import type { IconComponent } from '@/components/icons';
 
 /**
  * One badge for every state this app knows.

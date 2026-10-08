@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderId, ProviderProfile, ProviderQuota, QuotaWindow } from '../types.js';
+import { codexAuthPath } from './codex-auth.js';
 
 /**
  * Subscription usage, read the way the CLIs' own `/usage` panels read it:
@@ -94,12 +95,12 @@ async function fetchClaude(): Promise<ProviderQuota> {
   if (typeof token !== 'string' || !token) {
     return unavailable('claude', 'Claude Code is not signed in.');
   }
-  const response = await fetch(CLAUDE_USAGE_URL, {
-    headers: { Authorization: 'Bearer ' + token, 'anthropic-beta': 'oauth-2025-04-20' },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) throw new HttpError(response.status);
-  const windows = parseClaudeWindows(await response.json());
+  const windows = parseClaudeWindows(
+    await fetchUsageJson(CLAUDE_USAGE_URL, {
+      Authorization: 'Bearer ' + token,
+      'anthropic-beta': 'oauth-2025-04-20',
+    }),
+  );
   const plan = claudePlanLabel(oauth?.rateLimitTier);
   return { provider: 'claude', ...(plan ? { plan } : {}), windows, fetchedAt: Date.now() };
 }
@@ -154,23 +155,18 @@ export function parseCodexWindows(payload: unknown): QuotaWindow[] {
 }
 
 async function fetchCodex(): Promise<ProviderQuota> {
-  const auth = readJson(join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json'));
+  const auth = readJson(codexAuthPath());
   const tokens = asRecord(auth?.tokens);
   const token = tokens?.access_token;
   if (typeof token !== 'string' || !token) {
     return unavailable('codex', 'Codex is not signed in.');
   }
   const accountId = tokens?.account_id;
-  const response = await fetch(CODEX_USAGE_URL, {
-    headers: {
-      Authorization: 'Bearer ' + token,
-      'User-Agent': 'codex-cli',
-      ...(typeof accountId === 'string' ? { 'ChatGPT-Account-Id': accountId } : {}),
-    },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) throw new HttpError(response.status);
-  const payload = (await response.json()) as Record<string, unknown>;
+  const payload = (await fetchUsageJson(CODEX_USAGE_URL, {
+    Authorization: 'Bearer ' + token,
+    'User-Agent': 'codex-cli',
+    ...(typeof accountId === 'string' ? { 'ChatGPT-Account-Id': accountId } : {}),
+  })) as Record<string, unknown>;
   const plan = codexPlanLabel(payload.plan_type);
   return { provider: 'codex', ...(plan ? { plan } : {}), windows: parseCodexWindows(payload), fetchedAt: Date.now() };
 }
@@ -255,12 +251,10 @@ export function parseGlmWindows(payload: unknown): QuotaWindow[] {
 }
 
 async function fetchGlm(provider: ProviderId, token: string): Promise<ProviderQuota> {
-  const response = await fetch(GLM_USAGE_URL, {
-    headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) throw new HttpError(response.status);
-  const payload = (await response.json()) as Record<string, unknown>;
+  const payload = (await fetchUsageJson(GLM_USAGE_URL, {
+    Authorization: 'Bearer ' + token,
+    Accept: 'application/json',
+  })) as Record<string, unknown>;
   // z.ai answers 200 and carries its verdict in the body, so a key that works
   // for turns but is on no Coding Plan arrives here rather than as an error.
   if (payload.success === false) {
@@ -321,6 +315,12 @@ class HttpError extends Error {
   }
 }
 
+async function fetchUsageJson(url: string, headers: Record<string, string>): Promise<unknown> {
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  if (!response.ok) throw new HttpError(response.status);
+  return response.json();
+}
+
 /**
  * A window's length, as the key and the label a UI shows for it: "5 hours",
  * "30 minutes", "Week", "30 days". Null when the length is unknown, so a
@@ -361,12 +361,7 @@ export async function providerQuota(provider: ProviderId, force = false): Promis
   let quota: ProviderQuota;
   let ttl = CACHE_MS;
   try {
-    quota =
-      provider === 'claude'
-        ? await fetchClaude()
-        : provider === 'codex'
-          ? await fetchCodex()
-          : await fetchProfile(provider);
+    quota = await fetchQuota(provider);
     // A successful read that shows headroom clears a recorded failure; the
     // catch path below carries stale windows forward and must not.
     recoverIfHealthy(quota);
@@ -374,14 +369,7 @@ export async function providerQuota(provider: ProviderId, force = false): Promis
     const status = error instanceof HttpError ? error.status : 0;
     ttl = status === 429 ? COOLDOWN_429_MS : COOLDOWN_ERROR_MS;
     quota = {
-      ...unavailable(
-        provider,
-        status === 429
-          ? 'Usage limits are temporarily unavailable (too many requests).'
-          : status === 401
-            ? 'Sign-in expired; the next chat will refresh it.'
-            : 'Usage limits are temporarily unavailable.',
-      ),
+      ...unavailable(provider, unavailableMessage(status)),
       // Keep the previous windows visible through a hiccup.
       windows: cached?.quota.windows ?? [],
       ...(cached?.quota.plan ? { plan: cached.quota.plan } : {}),
@@ -389,6 +377,18 @@ export async function providerQuota(provider: ProviderId, force = false): Promis
   }
   cache.set(provider, { quota, until: Date.now() + ttl });
   return quota;
+}
+
+function fetchQuota(provider: ProviderId): Promise<ProviderQuota> {
+  if (provider === 'claude') return fetchClaude();
+  if (provider === 'codex') return fetchCodex();
+  return fetchProfile(provider);
+}
+
+function unavailableMessage(httpStatus: number): string {
+  if (httpStatus === 429) return 'Usage limits are temporarily unavailable (too many requests).';
+  if (httpStatus === 401) return 'Sign-in expired; the next chat will refresh it.';
+  return 'Usage limits are temporarily unavailable.';
 }
 
 /** Feed a quota the provider stream reported, so the next read is fresh. */

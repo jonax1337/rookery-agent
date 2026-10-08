@@ -109,6 +109,21 @@ const AttachmentThumb: FC = () => {
   );
 };
 
+const AttachmentTileOverlay: FC<PropsWithChildren<{ className: string }>> = ({
+  className,
+  children,
+}) => (
+  <div
+    aria-hidden="true"
+    className={cn(
+      "animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none",
+      className,
+    )}
+  >
+    {children}
+  </div>
+);
+
 const AttachmentUI: FC = () => {
   const aui = useAui();
   const isComposer = aui.attachment.source !== "message";
@@ -128,23 +143,14 @@ const AttachmentUI: FC = () => {
     }
   });
 
-  const uploadState = useAuiState((s) =>
-    s.attachment.status.type === "running"
-      ? "uploading"
-      : s.attachment.status.type === "incomplete" &&
-          s.attachment.status.reason === "error"
-        ? "error"
-        : undefined,
-  );
-  const isUploading = uploadState === "uploading";
-  const isError = uploadState === "error";
-
-  const errorMessage = useAuiState((s) =>
-    s.attachment.status.type === "incomplete" &&
-    s.attachment.status.reason === "error"
-      ? (s.attachment.status.message ?? "Upload failed")
-      : undefined,
-  );
+  const status = useAuiState((s) => s.attachment.status);
+  const isUploading = status.type === "running";
+  const failure =
+    status.type === "incomplete" && status.reason === "error"
+      ? status
+      : undefined;
+  const isError = failure !== undefined;
+  const errorMessage = failure && (failure.message ?? "Upload failed");
 
   return (
     <TooltipProvider>
@@ -180,26 +186,20 @@ const AttachmentUI: FC = () => {
                 onKeyUp={(e) => {
                   if (e.key === " ") e.currentTarget.click();
                 }}
-                aria-label={`${typeLabel} attachment${
-                  isError ? ", upload failed" : isUploading ? ", uploading" : ""
+                aria-label={`${typeLabel} attachment${isUploading ? ", uploading" : ""}${
+                  isError ? ", upload failed" : ""
                 }`}
               >
                 <AttachmentThumb />
                 {isUploading && (
-                  <div
-                    aria-hidden="true"
-                    className="aui-attachment-tile-uploading bg-background/60 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
-                  >
+                  <AttachmentTileOverlay className="aui-attachment-tile-uploading bg-background/60">
                     <Loader2Icon className="text-muted-foreground size-4 animate-spin" />
-                  </div>
+                  </AttachmentTileOverlay>
                 )}
                 {isError && (
-                  <div
-                    aria-hidden="true"
-                    className="aui-attachment-tile-error bg-background/70 animate-in fade-in-0 absolute inset-0 flex items-center justify-center backdrop-blur-[2px] motion-reduce:animate-none"
-                  >
+                  <AttachmentTileOverlay className="aui-attachment-tile-error bg-background/70">
                     <AlertCircleIcon className="text-destructive size-4" />
-                  </div>
+                  </AttachmentTileOverlay>
                 )}
               </div>
             </TooltipTrigger>

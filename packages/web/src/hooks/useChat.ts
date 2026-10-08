@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from 'react';
+import { api, type RunningTurn } from '../lib/api';
 import { TurnBlocks } from '../lib/blocks';
-import type { QuestionEvent, RookerySocket } from '../lib/socket';
+import { upsertById } from '../lib/collections';
+import type { QuestionEvent, RookerySocket, TurnHandlers } from '../lib/socket';
 import type {
   ActivityItem,
   AgentEvent,
@@ -50,11 +52,7 @@ export interface QuestionReply {
  * a later `expiresAt` moves the deadline instead of adding a row.
  */
 export function mergeQuestion(current: QuestionEvent[], event: QuestionEvent): QuestionEvent[] {
-  const index = current.findIndex((entry) => entry.id === event.id);
-  if (index === -1) return [...current, event];
-  const next = [...current];
-  next[index] = event;
-  return next;
+  return upsertById(current, event);
 }
 
 /** A row from `GET /api/questions` is only usable if it has what a card needs. */
@@ -62,6 +60,15 @@ function isQuestion(value: unknown): value is QuestionEvent {
   if (typeof value !== 'object' || value === null) return false;
   const row = value as Partial<QuestionEvent>;
   return typeof row.id === 'string' && typeof row.question === 'string' && Array.isArray(row.options);
+}
+
+/** The route answers a bare array or `{ questions }`. */
+function questionRows(body: unknown): unknown[] {
+  if (Array.isArray(body)) return body;
+  if (typeof body === 'object' && body !== null && 'questions' in body && Array.isArray(body.questions)) {
+    return body.questions;
+  }
+  return [];
 }
 
 /**
@@ -74,14 +81,7 @@ function isQuestion(value: unknown): value is QuestionEvent {
  * stored question is a request, not an event.
  */
 export async function fetchOpenQuestions(): Promise<QuestionEvent[]> {
-  const response = await fetch('/api/questions');
-  if (!response.ok) throw new Error('Open questions could not be loaded.');
-  const body: unknown = await response.json();
-  const rows: unknown[] = Array.isArray(body)
-    ? body
-    : Array.isArray((body as { questions?: unknown }).questions)
-      ? ((body as { questions: unknown[] }).questions)
-      : [];
+  const rows = questionRows(await api.openQuestions());
   return rows.filter(isQuestion).map((row) => ({ ...row, type: 'question' as const }));
 }
 
@@ -178,6 +178,12 @@ export function useChat(
   const [questions, setQuestions] = useState<QuestionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Read when a turn settles, which may be long after the `send` that started
+  // it: a new chat is named by the server mid-turn, and the settle must see
+  // that name, not the `null` the turn began with.
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
+  // Id of the turn the socket is running for this conversation, for `abort`.
   const turnRef = useRef<string | null>(null);
   // Identity of the only turn allowed to write state right now. `reset()` and
   // every new turn replace it, so the callbacks of an abandoned turn - whose
@@ -249,6 +255,21 @@ export function useChat(
     cancelPaint();
     paint();
   }, [paint]);
+
+  /** The streamed half of a turn - text, thinking, tool calls, transcript - back to empty. */
+  const clearStream = useCallback(() => {
+    // A frame still owed to the turn being settled or replaced would paint
+    // its leftovers over whatever comes next.
+    cancelPaint();
+    bufferRef.current = '';
+    thinkingRef.current = '';
+    toolCallsRef.current = [];
+    setToolCalls([]);
+    partsRef.current.clear();
+    setParts([]);
+    setStreaming('');
+    setThinking('');
+  }, [cancelPaint]);
 
   const pushActivity = useCallback((item: Omit<ActivityItem, 'at'>) => {
     setActivity((current) => {
@@ -343,13 +364,7 @@ export function useChat(
         case 'task':
           // Same merge rule as assignments: a task reports itself repeatedly
           // as it is planned and run, so the row updates instead of repeating.
-          setTasks((current) => {
-            const index = current.findIndex((entry) => entry.id === event.task.id);
-            if (index === -1) return [...current, event.task];
-            const next = [...current];
-            next[index] = event.task;
-            return next;
-          });
+          setTasks((current) => upsertById(current, event.task));
           break;
 
         case 'message':
@@ -364,21 +379,17 @@ export function useChat(
           setQuota(event.quota);
           break;
 
-        case 'question': {
+        case 'question':
           // `busy` stays true on purpose: the turn has not finished, it is
           // standing still in front of the question until someone answers.
-          const asked = event;
-          setQuestions((current) => mergeQuestion(current, asked));
+          setQuestions((current) => mergeQuestion(current, event));
           break;
-        }
 
-        case 'question-closed': {
+        case 'question-closed':
           // Answered here, on the phone, or run out of time - either way the
           // turn moved on and the card has nothing left to collect.
-          const closed = event;
-          setQuestions((current) => current.filter((entry) => entry.id !== closed.id));
+          setQuestions((current) => current.filter((entry) => entry.id !== event.id));
           break;
-        }
 
         case 'memory':
           if (event.action === 'recalled' && event.items) {
@@ -431,7 +442,7 @@ export function useChat(
           ...current,
           {
             id: nextId(),
-            sessionId: sessionId ?? '',
+            sessionId: sessionIdRef.current ?? '',
             role: 'assistant',
             content: answer,
             toolCalls: completedTools,
@@ -444,25 +455,45 @@ export function useChat(
       }
       // The turn is over, so a frame still owed to it would paint the state
       // this settle is about to clear - and paint it after the clearing.
-      cancelPaint();
-      bufferRef.current = '';
-      thinkingRef.current = '';
-      toolCallsRef.current = [];
-      setToolCalls([]);
-      partsRef.current.clear();
-      setParts([]);
+      clearStream();
       turnRef.current = null;
-      setStreaming('');
-      setThinking('');
       setBusy(false);
       inFlight.current = false;
       onSettledRef.current?.();
       // Something may have queued up behind this turn - a report-back waits
       // for the conversation's current answer before it starts. Asking again
       // is how this screen joins it now rather than on the next reload.
-      if (sessionId) socket.attachConversation(sessionId);
+      if (sessionIdRef.current) socket.attachConversation(sessionIdRef.current);
     },
-    [sessionId, socket],
+    [clearStream, socket],
+  );
+
+  /**
+   * The three callbacks of one turn. Frames of a turn that is no longer the
+   * active one belong to a conversation that was reset away; they write
+   * nothing here.
+   */
+  const turnHandlers = useCallback(
+    (
+      token: object,
+      options: { onSpoken?: ((text: string) => void) | undefined; afterDone?: () => void } = {},
+    ): TurnHandlers => ({
+      onEvent: (event) => {
+        if (turnToken.current !== token) return;
+        handleEvent(event);
+      },
+      onDone: (answer, usage) => {
+        if (turnToken.current !== token) return;
+        finish(answer, options.onSpoken, usage);
+        options.afterDone?.();
+      },
+      onError: (message) => {
+        if (turnToken.current !== token) return;
+        setError(message);
+        finish('');
+      },
+    }),
+    [finish, handleEvent],
   );
 
   /** Everything a fresh turn resets, whether it is a chat or an assignment. */
@@ -474,24 +505,14 @@ export function useChat(
     setAssignments([]);
     setAgentMessages([]);
     setTasks([]);
-    // Same reason as in `finish`: a frame owed to the turn being replaced
-    // would paint its leftovers over the one starting here.
-    cancelPaint();
-    bufferRef.current = '';
-    thinkingRef.current = '';
-    toolCallsRef.current = [];
-    setToolCalls([]);
-    partsRef.current.clear();
-    setParts([]);
-    setStreaming('');
-    setThinking('');
+    clearStream();
     finishedRef.current = false;
     inFlight.current = true;
     setBusy(true);
-    const token = {};
+    const token: object = {};
     turnToken.current = token;
     return token;
-  }, []);
+  }, [clearStream]);
 
   const beginTurn = useCallback(
     (prompt: string) => {
@@ -521,27 +542,21 @@ export function useChat(
 
       turnRef.current = socket.send(
         { ...payload, text, sessionId: sessionId ?? undefined },
-        {
-          // Frames of a turn that is no longer the active one belong to a
-          // conversation that was reset away; they write nothing here.
-          onEvent: (event) => {
-            if (turnToken.current !== token) return;
-            handleEvent(event);
-          },
-          onDone: (answer, usage) => {
-            if (turnToken.current !== token) return;
-            finish(answer, options?.onSpoken, usage);
-          },
-          onError: (message) => {
-            if (turnToken.current !== token) return;
-            setError(message);
-            finish('');
-          },
-        },
+        turnHandlers(token, { onSpoken: options?.onSpoken }),
       );
     },
-    [beginTurn, finish, handleEvent, sessionId, socket],
+    [beginTurn, sessionId, socket, turnHandlers],
   );
+
+  /** The conversation as stored, replacing what is on screen. */
+  const reloadMessages = useCallback(async (id: string): Promise<void> => {
+    try {
+      const { messages: stored } = await api.session(id);
+      if (Array.isArray(stored)) setMessages(stored);
+    } catch {
+      // The screen keeps what it has; the next load brings the rest.
+    }
+  }, []);
 
   /**
    * Rejoin whatever turn is running in this conversation.
@@ -554,18 +569,6 @@ export function useChat(
    * after the fetch - on another screen, say - is joined the same way when
    * its `attached` reply arrives.
    */
-  /** The conversation as stored, replacing what is on screen. */
-  const reloadMessages = useCallback(async (id: string): Promise<void> => {
-    try {
-      const response = await fetch('/api/sessions/' + encodeURIComponent(id));
-      if (!response.ok) return;
-      const body = (await response.json()) as { messages?: Message[] };
-      if (Array.isArray(body.messages)) setMessages(body.messages);
-    } catch {
-      // The screen keeps what it has; the next load brings the rest.
-    }
-  }, []);
-
   const attach = useCallback<ChatState['attach']>(
     async (id) => {
       // Arming comes before the busy guard, deliberately: the effect that
@@ -583,23 +586,16 @@ export function useChat(
       // Declarations, not arrow constants: the handler armed above can fire
       // after this call returned early on the busy guard, and a `const` below
       // that guard would then still be uninitialised when it is called.
-      async function readRunning(): Promise<{
-        turn: { id: string; status: string } | null;
-        events: { seq: number; event: AgentEvent }[];
-      } | null> {
+      async function readRunning(): Promise<RunningTurn | null> {
         try {
-          const response = await fetch('/api/sessions/' + encodeURIComponent(id) + '/running');
-          if (!response.ok) return null;
-          return (await response.json()) as {
-            turn: { id: string; status: string } | null;
-            events: { seq: number; event: AgentEvent }[];
-          };
+          return await api.runningTurn(id);
         } catch {
+          // No rebuild without the journal; the live frames still arrive.
           return null;
         }
       }
 
-      async function rejoin(prefetched?: Awaited<ReturnType<typeof readRunning>>): Promise<void> {
+      async function rejoin(prefetched?: RunningTurn | null): Promise<void> {
         if (inFlight.current) return;
         const body = prefetched ?? (await readRunning());
         if (!body?.turn) return;
@@ -619,34 +615,15 @@ export function useChat(
 
         const cursor = body.events.at(-1)?.seq ?? 0;
         turnRef.current = body.turn.id;
-        socket.adopt(
-          body.turn.id,
-          {
-            onEvent: (event) => {
-              if (turnToken.current !== token) return;
-              handleEvent(event);
-            },
-            onDone: (answer, usage) => {
-              if (turnToken.current !== token) return;
-              finish(answer, undefined, usage);
-              // A joined turn may have been one nobody typed here - its
-              // opening line is in the store, not on this screen.
-              void reloadMessages(id);
-            },
-            onError: (message) => {
-              if (turnToken.current !== token) return;
-              setError(message);
-              finish('');
-            },
-          },
-          cursor,
-        );
+        // A joined turn may have been one nobody typed here - its opening
+        // line is in the store, not on this screen.
+        socket.adopt(body.turn.id, turnHandlers(token, { afterDone: () => void reloadMessages(id) }), cursor);
       }
 
       const body = await readRunning();
       if (body?.turn) await rejoin(body);
     },
-    [finish, handleEvent, reloadMessages, resetTurnState, socket],
+    [finish, handleEvent, reloadMessages, resetTurnState, socket, turnHandlers],
   );
 
   const sendAssign = useCallback<ChatState['sendAssign']>(
@@ -659,24 +636,10 @@ export function useChat(
 
       turnRef.current = socket.sendAssign(
         { ...payload, task, sessionId: payload.sessionId ?? sessionId ?? undefined },
-        {
-          onEvent: (event) => {
-            if (turnToken.current !== token) return;
-            handleEvent(event);
-          },
-          onDone: (answer, usage) => {
-            if (turnToken.current !== token) return;
-            finish(answer, undefined, usage);
-          },
-          onError: (message) => {
-            if (turnToken.current !== token) return;
-            setError(message);
-            finish('');
-          },
-        },
+        turnHandlers(token),
       );
     },
-    [beginTurn, finish, handleEvent, sessionId, socket],
+    [beginTurn, sessionId, socket, turnHandlers],
   );
 
   const openQuestion = useCallback((event: QuestionEvent) => {
@@ -695,14 +658,7 @@ export function useChat(
       // call open on the other end of it. A closed socket is no reason to
       // lose a typed answer, so the REST route carries it instead - it is the
       // same door the phone and any SSE client use.
-      if (!socket.answer(id, body)) {
-        const response = await fetch('/api/questions/' + encodeURIComponent(id) + '/answer', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!response.ok) throw new Error('The answer could not be delivered.');
-      }
+      if (!socket.answer(id, body)) await api.answerQuestion(id, body);
       // Sent is enough to take the card away; `question-closed` follows and
       // removes it everywhere else too.
       setQuestions((current) => current.filter((entry) => entry.id !== id));
@@ -721,13 +677,7 @@ export function useChat(
     // socket entry, so its frames cannot follow the user into whichever
     // conversation replaces this one.
     if (turnRef.current) socket.abort(turnRef.current);
-    cancelPaint();
-    bufferRef.current = '';
-    thinkingRef.current = '';
-    toolCallsRef.current = [];
-    setToolCalls([]);
-    partsRef.current.clear();
-    setParts([]);
+    clearStream();
     turnRef.current = null;
     turnToken.current = null;
     // Abandoning the conversation settles its turn too, so neither a stray
@@ -735,8 +685,6 @@ export function useChat(
     finishedRef.current = true;
     inFlight.current = false;
     setMessages([]);
-    setStreaming('');
-    setThinking('');
     setActivity([]);
     setRecalled([]);
     setRecalledTurnId(null);
@@ -745,7 +693,7 @@ export function useChat(
     setTasks([]);
     setError(null);
     setBusy(false);
-  }, [socket]);
+  }, [clearStream, socket]);
 
   return {
     messages,

@@ -9,7 +9,7 @@ import {
   SearchIcon,
   SendIcon,
   UsersIcon,
-} from "@/components/icons";
+} from '@/components/icons';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import {
   Command,
@@ -32,7 +32,7 @@ import type {
   Task,
   Team,
 } from '@/lib/types';
-import type { IconComponent } from "@/components/icons";
+import type { IconComponent } from '@/components/icons';
 
 /**
  * Strg/Cmd+K, and everything in the company is one keystroke away.

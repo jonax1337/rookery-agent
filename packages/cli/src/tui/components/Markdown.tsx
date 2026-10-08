@@ -25,8 +25,6 @@ import { Box, Text } from 'ink';
 import { glyph, ui } from '../theme.js';
 import { CodeBlock } from './CodeBlock.js';
 
-/* ------------------------------- blocks ------------------------------- */
-
 /** One item of a list, with its nesting depth and optional checkbox state. */
 export interface ListItem {
   marker: string;
@@ -45,14 +43,24 @@ type Block =
   | { type: 'table'; header: string[]; rows: string[][] }
   | { type: 'rule' };
 
+/** A block read from the source, and the index of the first line after it. */
+interface Parsed {
+  block: Block;
+  next: number;
+}
+
 const FENCE = /^(\s*)(```+|~~~+)\s*([\w+#.-]*)\s*$/u;
 const HEADING = /^(#{1,6})\s+(.*)$/u;
 const RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/u;
 const QUOTE = /^\s*>\s?(.*)$/u;
 const LIST_ITEM = /^(\s*)(?:([-*+])|(\d+)[.)])\s+(.*)$/u;
+const LIST_CONTINUATION = /^\s{2,}\S/u;
 const TASK_MARK = /^\[([ xX])\]\s+(.*)$/u;
 const TABLE_ROW = /^\s*\|(.+)\|\s*$/u;
 const TABLE_DIVIDER = /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/u;
+
+/** Source spaces that make one list nesting level. */
+const SPACES_PER_LIST_LEVEL = 2;
 
 /** Split markdown source into the block shapes this renderer knows. */
 export function parseBlocks(source: string): Block[] {
@@ -61,130 +69,133 @@ export function parseBlocks(source: string): Block[] {
   let index = 0;
 
   while (index < lines.length) {
-    const line = lines[index] ?? '';
-
-    const fence = FENCE.exec(line);
-    if (fence) {
-      const marker = (fence[2] ?? '```').slice(0, 3);
-      const language = fence[3] ?? '';
-      const body: string[] = [];
-      index += 1;
-      // An unterminated fence runs to the end: that is what a streaming
-      // reply looks like a few hundred milliseconds before it closes.
-      while (index < lines.length) {
-        const current = lines[index] ?? '';
-        if (current.trimStart().startsWith(marker)) {
-          index += 1;
-          break;
-        }
-        body.push(current);
-        index += 1;
-      }
-      blocks.push(
-        language
-          ? { type: 'code', code: body.join('\n'), language }
-          : { type: 'code', code: body.join('\n') },
-      );
-      continue;
-    }
-
-    if (!line.trim()) {
+    if (!(lines[index] ?? '').trim()) {
       index += 1;
       continue;
     }
-
-    if (RULE.test(line)) {
-      blocks.push({ type: 'rule' });
-      index += 1;
-      continue;
-    }
-
-    const heading = HEADING.exec(line);
-    if (heading) {
-      blocks.push({
-        type: 'heading',
-        level: (heading[1] ?? '#').length,
-        text: heading[2] ?? '',
-      });
-      index += 1;
-      continue;
-    }
-
-    // A table is a pipe row whose *next* line is the `|---|` divider. Testing
-    // the divider is what keeps a lone pipe-heavy sentence out of a table.
-    if (TABLE_ROW.test(line) && TABLE_DIVIDER.test(lines[index + 1] ?? '')) {
-      const header = splitRow(line);
-      const rows: string[][] = [];
-      index += 2;
-      while (index < lines.length && TABLE_ROW.test(lines[index] ?? '')) {
-        rows.push(splitRow(lines[index] ?? ''));
-        index += 1;
-      }
-      blocks.push({ type: 'table', header, rows });
-      continue;
-    }
-
-    if (QUOTE.test(line)) {
-      const quoted: string[] = [];
-      while (index < lines.length) {
-        const match = QUOTE.exec(lines[index] ?? '');
-        if (!match) break;
-        quoted.push(match[1] ?? '');
-        index += 1;
-      }
-      blocks.push({ type: 'quote', text: quoted.join('\n').trim() });
-      continue;
-    }
-
-    if (LIST_ITEM.test(line)) {
-      const items: ListItem[] = [];
-      while (index < lines.length) {
-        const raw = lines[index] ?? '';
-        const match = LIST_ITEM.exec(raw);
-        if (match) {
-          items.push(listItem(match));
-          index += 1;
-          continue;
-        }
-        // A wrapped continuation line belongs to the item above it.
-        const last = items[items.length - 1];
-        if (last && raw.trim() && /^\s{2,}\S/u.test(raw)) {
-          last.text += ' ' + raw.trim();
-          index += 1;
-          continue;
-        }
-        break;
-      }
-      blocks.push({ type: 'list', items });
-      continue;
-    }
-
-    const paragraph: string[] = [];
-    while (index < lines.length) {
-      const raw = lines[index] ?? '';
-      if (
-        !raw.trim() ||
-        FENCE.test(raw) ||
-        HEADING.test(raw) ||
-        RULE.test(raw) ||
-        QUOTE.test(raw) ||
-        LIST_ITEM.test(raw) ||
-        (TABLE_ROW.test(raw) && TABLE_DIVIDER.test(lines[index + 1] ?? ''))
-      ) {
-        break;
-      }
-      paragraph.push(raw.trim());
-      index += 1;
-    }
-    blocks.push({ type: 'paragraph', text: paragraph.join('\n') });
+    const { block, next } = readBlock(lines, index);
+    blocks.push(block);
+    index = next;
   }
 
   return blocks;
 }
 
+/** Block readers in precedence order; the paragraph is what is left over. */
+const BLOCK_READERS: ReadonlyArray<(lines: string[], start: number) => Parsed | undefined> = [
+  readFence,
+  readRule,
+  readHeading,
+  readTable,
+  readQuote,
+  readList,
+];
+
+function readBlock(lines: string[], start: number): Parsed {
+  for (const read of BLOCK_READERS) {
+    const parsed = read(lines, start);
+    if (parsed) return parsed;
+  }
+  return readParagraph(lines, start);
+}
+
+function readFence(lines: string[], start: number): Parsed | undefined {
+  const fence = FENCE.exec(lines[start] ?? '');
+  if (!fence) return undefined;
+
+  const marker = (fence[2] ?? '```').slice(0, 3);
+  const language = fence[3] ?? '';
+  const body: string[] = [];
+  let index = start + 1;
+  // An unterminated fence runs to the end: that is what a streaming
+  // reply looks like a few hundred milliseconds before it closes.
+  while (index < lines.length) {
+    const current = lines[index] ?? '';
+    index += 1;
+    if (current.trimStart().startsWith(marker)) break;
+    body.push(current);
+  }
+
+  const code = body.join('\n');
+  return { block: language ? { type: 'code', code, language } : { type: 'code', code }, next: index };
+}
+
+function readRule(lines: string[], start: number): Parsed | undefined {
+  return RULE.test(lines[start] ?? '') ? { block: { type: 'rule' }, next: start + 1 } : undefined;
+}
+
+function readHeading(lines: string[], start: number): Parsed | undefined {
+  const heading = HEADING.exec(lines[start] ?? '');
+  if (!heading) return undefined;
+  const level = (heading[1] ?? '#').length;
+  return { block: { type: 'heading', level, text: heading[2] ?? '' }, next: start + 1 };
+}
+
+/**
+ * A table is a pipe row whose *next* line is the `|---|` divider. Testing the
+ * divider is what keeps a lone pipe-heavy sentence out of a table.
+ */
+function isTableStart(lines: string[], index: number): boolean {
+  return TABLE_ROW.test(lines[index] ?? '') && TABLE_DIVIDER.test(lines[index + 1] ?? '');
+}
+
+function readTable(lines: string[], start: number): Parsed | undefined {
+  if (!isTableStart(lines, start)) return undefined;
+
+  const header = splitRow(lines[start] ?? '');
+  const rows: string[][] = [];
+  let index = start + 2;
+  while (index < lines.length && TABLE_ROW.test(lines[index] ?? '')) {
+    rows.push(splitRow(lines[index] ?? ''));
+    index += 1;
+  }
+  return { block: { type: 'table', header, rows }, next: index };
+}
+
+/** Cells of one pipe-table row, without the outer pipes. */
+function splitRow(line: string): string[] {
+  const inner = TABLE_ROW.exec(line)?.[1] ?? line;
+  return inner.split('|').map((cell) => cell.trim());
+}
+
+function readQuote(lines: string[], start: number): Parsed | undefined {
+  if (!QUOTE.test(lines[start] ?? '')) return undefined;
+
+  const quoted: string[] = [];
+  let index = start;
+  while (index < lines.length) {
+    const match = QUOTE.exec(lines[index] ?? '');
+    if (!match) break;
+    quoted.push(match[1] ?? '');
+    index += 1;
+  }
+  return { block: { type: 'quote', text: quoted.join('\n').trim() }, next: index };
+}
+
+function readList(lines: string[], start: number): Parsed | undefined {
+  if (!LIST_ITEM.test(lines[start] ?? '')) return undefined;
+
+  const items: ListItem[] = [];
+  let index = start;
+  while (index < lines.length) {
+    const raw = lines[index] ?? '';
+    const match = LIST_ITEM.exec(raw);
+    if (match) {
+      items.push(listItem(match));
+    } else {
+      // A wrapped continuation line belongs to the item above it.
+      const last = items[items.length - 1];
+      if (!last || !LIST_CONTINUATION.test(raw)) break;
+      last.text += ' ' + raw.trim();
+    }
+    index += 1;
+  }
+  return { block: { type: 'list', items }, next: index };
+}
+
 /** Build one list item, pulling a `[ ]` / `[x]` checkbox out of its text. */
 function listItem(match: RegExpExecArray): ListItem {
-  const indent = Math.floor((match[1] ?? '').length / 2);
+  const indent = Math.floor((match[1] ?? '').length / SPACES_PER_LIST_LEVEL);
   const bullet = match[2] ? glyph.bullet : (match[3] ?? '1') + '.';
   const body = match[4] ?? '';
 
@@ -200,13 +211,29 @@ function listItem(match: RegExpExecArray): ListItem {
   return { indent, marker: bullet, text: body };
 }
 
-/** Cells of one pipe-table row, without the outer pipes. */
-function splitRow(line: string): string[] {
-  const inner = TABLE_ROW.exec(line)?.[1] ?? line;
-  return inner.split('|').map((cell) => cell.trim());
+/** Consecutive lines up to the next thing that starts a block of its own. */
+function readParagraph(lines: string[], start: number): Parsed {
+  const paragraph: string[] = [];
+  let index = start;
+  while (index < lines.length && !endsParagraph(lines, index)) {
+    paragraph.push((lines[index] ?? '').trim());
+    index += 1;
+  }
+  return { block: { type: 'paragraph', text: paragraph.join('\n') }, next: index };
 }
 
-/* ------------------------------- inline ------------------------------- */
+function endsParagraph(lines: string[], index: number): boolean {
+  const raw = lines[index] ?? '';
+  return (
+    !raw.trim() ||
+    FENCE.test(raw) ||
+    HEADING.test(raw) ||
+    RULE.test(raw) ||
+    QUOTE.test(raw) ||
+    LIST_ITEM.test(raw) ||
+    isTableStart(lines, index)
+  );
+}
 
 interface Span {
   text: string;
@@ -220,6 +247,21 @@ interface Span {
 const INLINE =
   /(`+)([\s\S]*?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|~~([\s\S]+?)~~|\*([^*\n]+?)\*|(?<![A-Za-z0-9])_([^_\n]+?)_(?![A-Za-z0-9])|\[([^\]\n]+)\]\(([^)\s]+)\)/gu;
 
+/** Which capture group of `INLINE` carries the text of which mark. */
+const INLINE_MARKS: ReadonlyArray<readonly [group: number, mark: Omit<Span, 'text'>]> = [
+  [2, { code: true }],
+  [3, { bold: true }],
+  [4, { bold: true }],
+  [5, { strike: true }],
+  [6, { italic: true }],
+  [7, { italic: true }],
+  [8, { link: true }],
+];
+
+function markOf(match: RegExpExecArray) {
+  return INLINE_MARKS.find(([group]) => match[group] !== undefined);
+}
+
 /** Split one line of markdown into styled spans. Never throws on odd syntax. */
 export function parseInline(source: string): Span[] {
   const spans: Span[] = [];
@@ -230,13 +272,8 @@ export function parseInline(source: string): Span[] {
   while (match) {
     if (match.index > cursor) spans.push({ text: source.slice(cursor, match.index) });
 
-    if (match[2] !== undefined) spans.push({ text: match[2], code: true });
-    else if (match[3] !== undefined) spans.push({ text: match[3], bold: true });
-    else if (match[4] !== undefined) spans.push({ text: match[4], bold: true });
-    else if (match[5] !== undefined) spans.push({ text: match[5], strike: true });
-    else if (match[6] !== undefined) spans.push({ text: match[6], italic: true });
-    else if (match[7] !== undefined) spans.push({ text: match[7], italic: true });
-    else if (match[8] !== undefined) spans.push({ text: match[8], link: true });
+    const marked = markOf(match);
+    if (marked) spans.push({ text: match[marked[0]] ?? '', ...marked[1] });
 
     cursor = match.index + match[0].length;
     match = INLINE.exec(source);
@@ -278,8 +315,6 @@ function Inline({
   );
 }
 
-/* ------------------------------ component ----------------------------- */
-
 export interface MarkdownProps {
   children: string;
   /** Appended to the very last line - used for the streaming cursor. */
@@ -298,101 +333,142 @@ export function Markdown({ children, trailing }: MarkdownProps): React.JSX.Eleme
 
   return (
     <Box flexDirection="column">
-      {blocks.map((block, index) => {
-        const tail = index === lastIndex ? trailing : null;
-        // Blocks are separated by a blank line, the way markdown reads on a
-        // page. Only the first block hugs whatever is above it.
-        const gap = index === 0 ? 0 : 1;
-
-        switch (block.type) {
-          case 'heading':
-            return (
-              <HeadingBlock
-                key={index}
-                level={block.level}
-                text={block.text}
-                gap={gap}
-                tail={tail}
-              />
-            );
-
-          case 'rule':
-            return (
-              <Box
-                key={index}
-                marginTop={gap}
-                borderStyle="single"
-                borderColor={ui.faint}
-                borderDimColor
-                borderBottom={false}
-                borderLeft={false}
-                borderRight={false}
-              />
-            );
-
-          case 'code':
-            return (
-              <Box key={index} flexDirection="column" marginTop={gap}>
-                <CodeBlock
-                  code={block.code}
-                  {...(block.language ? { language: block.language } : {})}
-                />
-                {tail}
-              </Box>
-            );
-
-          case 'quote':
-            return (
-              <Box key={index} flexDirection="column" marginTop={gap}>
-                {block.text.split('\n').map((line, lineIndex, all) => (
-                  <Box key={lineIndex} flexDirection="row">
-                    <Text color={ui.accent} dimColor>
-                      {glyph.bar + ' '}
-                    </Text>
-                    <Box flexGrow={1}>
-                      <Inline text={line} color={ui.muted} />
-                    </Box>
-                    {lineIndex === all.length - 1 ? tail : null}
-                  </Box>
-                ))}
-              </Box>
-            );
-
-          case 'list':
-            return (
-              <Box key={index} flexDirection="column" marginTop={gap}>
-                {block.items.map((item, itemIndex) => (
-                  <ListRow key={itemIndex} item={item} />
-                ))}
-                {tail}
-              </Box>
-            );
-
-          case 'table':
-            return (
-              <Box key={index} flexDirection="column" marginTop={gap}>
-                <TableBlock header={block.header} rows={block.rows} />
-                {tail}
-              </Box>
-            );
-
-          case 'paragraph':
-          default:
-            return (
-              <Box key={index} flexDirection="column" marginTop={gap}>
-                {block.text.split('\n').map((line, lineIndex, all) => (
-                  <Box key={lineIndex} flexDirection="row">
-                    <Box flexGrow={1}>
-                      <Inline text={line} />
-                    </Box>
-                    {lineIndex === all.length - 1 ? tail : null}
-                  </Box>
-                ))}
-              </Box>
-            );
-        }
-      })}
+      {blocks.map((block, index) => (
+        <BlockView
+          key={index}
+          block={block}
+          // Blocks are separated by a blank line, the way markdown reads on a
+          // page. Only the first block hugs whatever is above it.
+          gap={index === 0 ? 0 : 1}
+          tail={index === lastIndex ? trailing : null}
+        />
+      ))}
     </Box>
+  );
+}
+
+function BlockView({
+  block,
+  gap,
+  tail,
+}: {
+  block: Block;
+  gap: number;
+  tail: React.ReactNode;
+}): React.JSX.Element {
+  switch (block.type) {
+    case 'heading':
+      return <HeadingBlock level={block.level} text={block.text} gap={gap} tail={tail} />;
+
+    case 'rule':
+      return <Rule marginTop={gap} />;
+
+    case 'code':
+      return (
+        <Section gap={gap} tail={tail}>
+          <CodeBlock code={block.code} language={block.language} />
+        </Section>
+      );
+
+    case 'quote':
+      return (
+        <Section gap={gap}>
+          <ProseLines
+            text={block.text}
+            tail={tail}
+            color={ui.muted}
+            gutter={
+              <Text color={ui.accent} dimColor>
+                {glyph.bar + ' '}
+              </Text>
+            }
+          />
+        </Section>
+      );
+
+    case 'list':
+      return (
+        <Section gap={gap} tail={tail}>
+          {block.items.map((item, itemIndex) => (
+            <ListRow key={itemIndex} item={item} />
+          ))}
+        </Section>
+      );
+
+    case 'table':
+      return (
+        <Section gap={gap} tail={tail}>
+          <TableBlock header={block.header} rows={block.rows} />
+        </Section>
+      );
+
+    case 'paragraph':
+      return (
+        <Section gap={gap}>
+          <ProseLines text={block.text} tail={tail} />
+        </Section>
+      );
+  }
+}
+
+/** A block's own column, set off from the block above by `gap` blank lines. */
+function Section({
+  gap,
+  tail,
+  children,
+}: {
+  gap: number;
+  tail?: React.ReactNode;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <Box flexDirection="column" marginTop={gap}>
+      {children}
+      {tail}
+    </Box>
+  );
+}
+
+/** A faint horizontal rule: just a top border on an empty box. */
+function Rule({ marginTop = 0 }: { marginTop?: number }): React.JSX.Element {
+  return (
+    <Box
+      marginTop={marginTop}
+      borderStyle="single"
+      borderColor={ui.faint}
+      borderDimColor
+      borderBottom={false}
+      borderLeft={false}
+      borderRight={false}
+    />
+  );
+}
+
+/** Prose one source line per row, with the streaming cursor on the last. */
+function ProseLines({
+  text,
+  tail,
+  color,
+  gutter,
+}: {
+  text: string;
+  tail: React.ReactNode;
+  color?: string;
+  gutter?: React.ReactNode;
+}): React.JSX.Element {
+  const lines = text.split('\n');
+  return (
+    <>
+      {lines.map((line, index) => (
+        <Box key={index} flexDirection="row">
+          {gutter}
+          <Box flexGrow={1}>
+            <Inline text={line} color={color} />
+          </Box>
+          {index === lines.length - 1 ? tail : null}
+        </Box>
+      ))}
+    </>
   );
 }
 
@@ -427,14 +503,7 @@ function HeadingBlock({
           </Box>
           {tail}
         </Box>
-        <Box
-          borderStyle="single"
-          borderColor={ui.faint}
-          borderDimColor
-          borderBottom={false}
-          borderLeft={false}
-          borderRight={false}
-        />
+        <Rule />
       </Box>
     );
   }
@@ -449,6 +518,9 @@ function HeadingBlock({
   );
 }
 
+/** Columns a nested list item moves in per nesting level. */
+const LIST_INDENT_COLUMNS = 2;
+
 /** One list row: marker in the gutter, wrapped body next to it. */
 function ListRow({ item }: { item: ListItem }): React.JSX.Element {
   const marker =
@@ -456,14 +528,20 @@ function ListRow({ item }: { item: ListItem }): React.JSX.Element {
   const color = item.checked ? ui.ok : item.checked === false ? ui.muted : ui.accent;
 
   return (
-    <Box flexDirection="row" paddingLeft={item.indent * 2}>
+    <Box flexDirection="row" paddingLeft={item.indent * LIST_INDENT_COLUMNS}>
       <Text color={color}>{marker + ' '}</Text>
       <Box flexGrow={1}>
-        <Inline text={item.text} {...(item.checked ? { dim: true } : {})} />
+        <Inline text={item.text} dim={item.checked} />
       </Box>
     </Box>
   );
 }
+
+/** Widest a table column may grow, in characters. */
+const MAX_TABLE_COLUMN = 40;
+
+/** Blank columns between two table columns. */
+const TABLE_COLUMN_GAP = 2;
 
 /**
  * A pipe table.
@@ -474,39 +552,59 @@ function ListRow({ item }: { item: ListItem }): React.JSX.Element {
  * wrapped: a table whose rows are different heights stops being a table.
  */
 function TableBlock({ header, rows }: { header: string[]; rows: string[][] }): React.JSX.Element {
+  const widths = columnWidths(header, rows);
+
+  const textRow = (cells: string[], color: string, bold: boolean): React.JSX.Element => (
+    <TableRow
+      widths={widths}
+      cell={(width, column) => (
+        <Text color={color} bold={bold}>
+          {pad(cells[column] ?? '', width)}
+        </Text>
+      )}
+    />
+  );
+
+  return (
+    <Box flexDirection="column">
+      {textRow(header, ui.accent, true)}
+      <TableRow
+        widths={widths}
+        cell={(width) => <Text color={ui.faint}>{glyph.rule.repeat(width)}</Text>}
+      />
+      {rows.map((cells, rowIndex) => (
+        <React.Fragment key={rowIndex}>{textRow(cells, ui.frost, false)}</React.Fragment>
+      ))}
+    </Box>
+  );
+}
+
+function columnWidths(header: string[], rows: string[][]): number[] {
   const count = Math.max(header.length, ...rows.map((row) => row.length), 1);
   const widths: number[] = [];
 
   for (let column = 0; column < count; column += 1) {
     const cells = [header[column] ?? '', ...rows.map((row) => row[column] ?? '')];
     const longest = Math.max(...cells.map((cell) => plain(cell).length), 1);
-    widths.push(Math.min(longest, 40));
+    widths.push(Math.min(longest, MAX_TABLE_COLUMN));
   }
+  return widths;
+}
 
-  const row = (cells: string[], color: string, bold: boolean): React.JSX.Element => (
+/** One table row: a gap-separated box per column, filled in by `cell`. */
+function TableRow({
+  widths,
+  cell,
+}: {
+  widths: number[];
+  cell: (width: number, column: number) => React.ReactNode;
+}): React.JSX.Element {
+  return (
     <Box flexDirection="row">
       {widths.map((width, column) => (
-        <Box key={column} marginRight={column === widths.length - 1 ? 0 : 2}>
-          <Text color={color} bold={bold}>
-            {pad(cells[column] ?? '', width)}
-          </Text>
+        <Box key={column} marginRight={column === widths.length - 1 ? 0 : TABLE_COLUMN_GAP}>
+          {cell(width, column)}
         </Box>
-      ))}
-    </Box>
-  );
-
-  return (
-    <Box flexDirection="column">
-      {row(header, ui.accent, true)}
-      <Box flexDirection="row">
-        {widths.map((width, column) => (
-          <Box key={column} marginRight={column === widths.length - 1 ? 0 : 2}>
-            <Text color={ui.faint}>{glyph.rule.repeat(width)}</Text>
-          </Box>
-        ))}
-      </Box>
-      {rows.map((cells, rowIndex) => (
-        <React.Fragment key={rowIndex}>{row(cells, ui.frost, false)}</React.Fragment>
       ))}
     </Box>
   );

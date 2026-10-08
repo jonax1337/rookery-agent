@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { useBreadcrumbs } from '@/lib/nav';
 import { useConfig, useConnection } from '@/providers/rookery-provider';
+import { CONNECTION_LABEL, connectionStatus } from '@/components/shell/connection-status';
 import { usePageMetaValue } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -72,16 +73,13 @@ export function SiteHeader({ onSearch }: SiteHeaderProps) {
     setRouteMessage(leaf ? leaf + ' opened' : '');
   }, [leaf, pathname]);
 
-  const status = connected ? 'online' : offline ? 'offline' : 'connecting';
+  const status = connectionStatus(connected, offline);
   const [connectionMessage, setConnectionMessage] = useState('');
   const lastStatus = useRef(status);
   useEffect(() => {
     if (lastStatus.current === status) return;
     lastStatus.current = status;
-    // The same three words the sidebar's foot uses, so both places agree.
-    setConnectionMessage(
-      status === 'online' ? 'Connected' : status === 'offline' ? 'Disconnected' : 'Connecting …',
-    );
+    setConnectionMessage(CONNECTION_LABEL[status]);
   }, [status]);
 
   return (

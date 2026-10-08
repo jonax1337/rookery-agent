@@ -440,6 +440,27 @@ test('cron: start() skips runs missed long ago and fails runs left behind', asyn
   assistant.close();
 });
 
+test('cron: start() keeps a missed night of memory sleep due instead of skipping it', async () => {
+  const { assistant, store } = createAssistant(createFakeProvider());
+  const org = assistant.org.activeOrganization();
+  const night = assistant.cron.create({
+    orgId: org.id,
+    name: 'Nacht',
+    schedule: '30 3 * * *',
+    kind: 'sleep',
+    prompt: 'assistant',
+    createdBy: 'user',
+  });
+  const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
+  store.cron.updateJob(night.id, { nextRunAt: threeDaysAgo }, false);
+
+  assistant.cron.start();
+
+  assert.equal(assistant.cron.get(night.id).nextRunAt, threeDaysAgo, 'it stays due, one run covers every slot missed');
+  assistant.cron.stop();
+  assistant.close();
+});
+
 test('cron: a self-run schedule answering [SILENT] stays out of the notifications', async () => {
   const fake = createFakeProvider();
   const { assistant, store } = createAssistant(fake);

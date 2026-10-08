@@ -9,28 +9,19 @@
  * that has real lowercase with an ascender on the k and a descender on the y -
  * which is what the brand's lowercase `rookery` needs.
  *
- * The mark is sampled with each half-block covering slightly more image height
- * than width (see `ASPECT`), because a terminal cell is taller than two cells
- * are wide. Rastered as a perfect square the mark comes out visibly too tall.
+ * The mark is sampled with each half-block covering about 1.15 times more image
+ * height than width, because a terminal cell is taller than two cells are
+ * wide. Rastered as a perfect square the mark comes out visibly too tall.
  *
  * Wordmark: ANSI Compact by Loic Cressot, MIT licensed.
  */
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import { ui } from '../theme.js';
-
-const ASCII = process.env.ROOKERY_ASCII === '1';
-
-/**
- * Image pixels per half-row divided by pixels per column, used when the mark
- * was rasterised. Kept here as documentation of how the art was made: redraw
- * it with a different value and the mark changes proportion.
- */
-export const ASPECT = 1.15;
+import { ASCII, ui } from '../theme.js';
 
 /** The Atrium mark: two offset corners opening a room. */
-export const MARK: readonly string[] = [
+const MARK: readonly string[] = [
   " ▄▄███████████",
   "███▀▀▀▀▀▀▀▀▀▀▀",
   "███        ▄▄▄",
@@ -40,7 +31,7 @@ export const MARK: readonly string[] = [
 ];
 
 /** `rookery`, lowercase, in the same weight as the mark. */
-export const WORDMARK: readonly string[] = [
+const WORDMARK: readonly string[] = [
   "▄▄▄▄   ▄▄▄   ▄▄▄  ▄▄ ▄▄ ▄▄▄▄▄ ▄▄▄▄  ▄▄ ▄▄",
   "██▄█▄ ██▀██ ██▀██ ██▄█▀ ██▄▄  ██▄█▄ ▀███▀",
   "██ ██ ▀███▀ ▀███▀ ██ ██ ██▄▄▄ ██ ██   █",
@@ -51,11 +42,20 @@ export const WORDMARK: readonly string[] = [
  * mark. Three rows inside six leave half a row over; of the two whole-row
  * positions this is the one that clears the mark's upper band.
  */
-export const WORDMARK_OFFSET = 2;
+const WORDMARK_OFFSET = 2;
+
+/** Columns between the mark and what stands beside it: the wordmark, or the caption alone. */
+const LOCKUP_GAP = 3;
+const MARK_ONLY_GAP = 2;
+
+/** Rows the caption is pushed down when it stands beside the mark alone. */
+const MARK_ONLY_OFFSET = 1;
 
 /** Columns the full lockup needs, mark plus gap plus wordmark. */
 export const LOCKUP_COLUMNS =
-  Math.max(...MARK.map((row) => row.length)) + 3 + Math.max(...WORDMARK.map((row) => row.length));
+  Math.max(...MARK.map((row) => row.length)) +
+  LOCKUP_GAP +
+  Math.max(...WORDMARK.map((row) => row.length));
 
 function Art({ rows, color }: { rows: readonly string[]; color: string }): React.JSX.Element {
   return (
@@ -106,8 +106,8 @@ export function Logo({ markOnly = false, children }: LogoProps): React.JSX.Eleme
       <Art rows={MARK} color={ui.accent} />
       <Box
         flexDirection="column"
-        marginLeft={markOnly ? 2 : 3}
-        marginTop={markOnly ? 1 : WORDMARK_OFFSET}
+        marginLeft={markOnly ? MARK_ONLY_GAP : LOCKUP_GAP}
+        marginTop={markOnly ? MARK_ONLY_OFFSET : WORDMARK_OFFSET}
       >
         {markOnly ? null : <Art rows={WORDMARK} color={ui.accent} />}
         {children}

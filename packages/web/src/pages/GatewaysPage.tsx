@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { NavLink, useNavigate } from 'react-router';
 
-
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { DataTable } from '@/components/blocks/data-table/data-table';
 import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
@@ -22,21 +21,8 @@ import { useGateways } from '@/hooks/useGateways';
 import { gatewayStateLook } from '@/lib/gateways';
 import { formatNumber } from '@/lib/stats';
 import type { GatewayStatus } from '@/lib/types';
-import type { IconComponent } from "@/components/icons";
-import {
-  ExternalLinkIcon as SquareArrowOutUpRightIcon,
-  RadioTowerIcon as RadioTower,
-} from "@/components/icons";
-
-/**
- * Every chat gateway, as one table.
- *
- * There is exactly one row today - Telegram - but the page never says so in
- * code: it draws whatever `GET /api/gateways` hands back, the same way
- * `ToolsPage` draws whatever the MCP catalogue contains. A second gateway
- * needs a new entry on the server and a detail page of its own; this table
- * needs nothing.
- */
+import type { IconComponent } from '@/components/icons';
+import { ExternalLinkIcon as SquareArrowOutUpRightIcon, RadioTowerIcon as RadioTower } from '@/components/icons';
 
 const column = createRookeryColumnHelper<GatewayStatus>();
 
@@ -55,6 +41,15 @@ const COLUMN_LABELS: Record<string, string> = {
  */
 const RadioTowerAnimated = (() => <RadioTower size={24} />) as unknown as IconComponent;
 
+/**
+ * Every chat gateway, as one table.
+ *
+ * There is exactly one row today - Telegram - but the page never says so in
+ * code: it draws whatever `GET /api/gateways` hands back, the same way
+ * `ToolsPage` draws whatever the MCP catalogue contains. A second gateway
+ * needs a new entry on the server and a detail page of its own; this table
+ * needs nothing.
+ */
 export function GatewaysPage() {
   const navigate = useNavigate();
   const { gateways, loading, error, refresh } = useGateways();

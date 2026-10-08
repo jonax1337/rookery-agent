@@ -1,5 +1,5 @@
 import type { MemoryKind, RecallBox, RecallPolicy } from '../../types.js';
-import { isScalarMultiple } from './measure.js';
+import { approximatelyEqual, isScalarMultiple } from './measure.js';
 
 /**
  * The admission check (dream stage 2, AP5; concept 10.1, E15).
@@ -156,25 +156,20 @@ export function revivalRateHolds(candidateRate: number, incumbentRate: number): 
 }
 
 /**
- * H9 (concept 10.1): a weight vector that is a positive scalar multiple of
- * the incumbent's changes nothing about the ranking it produces and is
- * rejected outright, via stage 1's `isScalarMultiple`.
- */
-/**
  * Whether two vectors that are already known to be scalar multiples differ by
  * the factor one, i.e. are the same vector. Compared entry by entry with the
  * same relative tolerance `isScalarMultiple` uses, so a rounding artefact does
  * not read as a rescale.
  */
-function scaleIsOne(a: Record<string, number>, b: Record<string, number>, eps = 1e-9): boolean {
-  for (const key of Object.keys(b)) {
-    const left = a[key] ?? 0;
-    const right = b[key] ?? 0;
-    if (Math.abs(left - right) > eps * Math.max(1, Math.abs(left), Math.abs(right))) return false;
-  }
-  return true;
+function scaleIsOne(a: Record<string, number>, b: Record<string, number>): boolean {
+  return Object.keys(b).every((key) => approximatelyEqual(a[key] ?? 0, b[key] ?? 0));
 }
 
+/**
+ * H9 (concept 10.1): a weight vector that is a positive scalar multiple of
+ * the incumbent's changes nothing about the ranking it produces and is
+ * rejected outright, via stage 1's `isScalarMultiple`.
+ */
 export function isWeightScalarMultiple(
   candidateWeights: RecallPolicy['w'],
   incumbentWeights: RecallPolicy['w'],

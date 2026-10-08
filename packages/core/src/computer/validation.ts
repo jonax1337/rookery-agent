@@ -1,12 +1,12 @@
 import { z } from 'zod';
-import { UI_ACTIONS } from './tools.js';
+import { BATCH_STEP_TOOLS, UI_ACTIONS } from './tools.js';
 import { parseKeySequence } from './keys.js';
 
 const window = z.number().int().positive().safe();
 const coordinate = z.number().finite().nonnegative();
 const point = { x: coordinate, y: coordinate };
 const text = z.string().max(20_000);
-const steps = ['act', 'click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'wait'] as const;
+const steps = BATCH_STEP_TOOLS;
 const DRAW_LIMITS = { strokes: 100, points: 4000 } as const;
 /** What a physical action returns once the screen has settled. */
 const observe = z.enum(['screenshot', 'text', 'none']).default('screenshot');
@@ -73,6 +73,8 @@ export type ComputerCall = {
 }[ToolName];
 
 const foregroundTools = new Set(['click', 'move_mouse', 'drag', 'draw', 'scroll', 'type_text', 'press_keys', 'focus_window', 'open']);
+const MAX_BATCH_WAIT_MS = 2000;
+type BatchArgs = Extract<ComputerCall, { name: 'batch' }>['args'];
 
 /**
  * What a batch returns when it names no observation: the window it worked on,
@@ -89,22 +91,29 @@ export function validateComputerCall(name: string, args: unknown, background = f
   const result = schema.safeParse(args);
   if (!result.success) throw new Error('Invalid ' + name + ' arguments: ' + result.error.issues.map((issue) => issue.path.join('.') + ': ' + issue.message).join('; '));
   const command = { name, args: result.data } as ComputerCall;
-  if (background && (foregroundTools.has(name) || command.name === 'clipboard' && command.args.action === 'set')) {
+  if (background) applyBackgroundRules(command);
+  if (command.name === 'press_keys' && !parseKeySequence(command.args.keys).length) throw new Error('Which keys?');
+  if (command.name === 'batch') validateBatch(command.args, background);
+  return command;
+}
+
+/** Background-only mode: refuse what needs the foreground, and wait_for never takes a desktop screenshot. */
+function applyBackgroundRules(command: ComputerCall): void {
+  if (foregroundTools.has(command.name) || (command.name === 'clipboard' && command.args.action === 'set')) {
     throw new Error('Background-only mode refuses physical input, focus changes, launching and clipboard writes. Use snapshot and act, or Playwright.');
   }
-  if (background && command.name === 'screenshot' && !command.args.window) throw new Error('Background screenshots require a window handle.');
-  if (background && command.name === 'read_screen') throw new Error('Background-only mode reads windows through snapshot and find_text with a window, not the desktop.');
-  if (background && (command.name === 'find_text' || command.name === 'wait_for') && !command.args.window) throw new Error('Background-only mode searches controls by name in a window; pass window.');
-  if (background && command.name === 'wait_for') command.args.observe = 'none';
-  if (command.name === 'press_keys' && !parseKeySequence(command.args.keys).length) throw new Error('Which keys?');
-  if (command.name === 'batch') {
-    const { actions, observe, window } = command.args;
-    for (const step of actions) {
-      const action = validateComputerCall(step.tool, step.arguments, background);
-      if (action.name === 'wait' && action.args.ms > 2000) throw new Error('Batch waits are limited to 2000 ms.');
-    }
-    const observation = observe ?? batchObservation(window, background);
-    if (observation !== 'none') validateComputerCall(observation === 'text' ? 'read_screen' : observation, window && observation === 'snapshot' ? { window } : {}, background);
+  if (command.name === 'screenshot' && !command.args.window) throw new Error('Background screenshots require a window handle.');
+  if (command.name === 'read_screen') throw new Error('Background-only mode reads windows through snapshot and find_text with a window, not the desktop.');
+  if ((command.name === 'find_text' || command.name === 'wait_for') && !command.args.window) throw new Error('Background-only mode searches controls by name in a window; pass window.');
+  if (command.name === 'wait_for') command.args.observe = 'none';
+}
+
+/** Every step and the closing observation are checked before the first one runs. */
+function validateBatch({ actions, observe, window }: BatchArgs, background: boolean): void {
+  for (const step of actions) {
+    const action = validateComputerCall(step.tool, step.arguments, background);
+    if (action.name === 'wait' && action.args.ms > MAX_BATCH_WAIT_MS) throw new Error('Batch waits are limited to ' + MAX_BATCH_WAIT_MS + ' ms.');
   }
-  return command;
+  const observation = observe ?? batchObservation(window, background);
+  if (observation !== 'none') validateComputerCall(observation === 'text' ? 'read_screen' : observation, window && observation === 'snapshot' ? { window } : {}, background);
 }

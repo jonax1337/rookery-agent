@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { McpServerSpec } from '../types.js';
 
@@ -23,28 +23,28 @@ export interface ProjectMcpFile {
   servers: McpServerSpec[];
 }
 
+interface RawMcpServer {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
 export function projectMcpPath(projectPath: string): string {
   return join(projectPath, '.mcp.json');
 }
 
 /** Reads and parses a project's `.mcp.json`; null when there is none or it does not parse. */
 export function readProjectMcpFile(projectPath: string): ProjectMcpFile | null {
-  const file = projectMcpPath(projectPath);
-  if (!existsSync(file)) return null;
   let raw: string;
   try {
-    raw = readFileSync(file, 'utf8');
+    raw = readFileSync(projectMcpPath(projectPath), 'utf8');
   } catch {
     return null;
   }
   try {
-    const doc = JSON.parse(raw) as {
-      mcpServers?: Record<string, { command?: string; args?: string[]; env?: Record<string, string> }>;
-    };
+    const doc = JSON.parse(raw) as { mcpServers?: Record<string, RawMcpServer> };
     const servers: McpServerSpec[] = Object.entries(doc.mcpServers ?? {})
-      .filter((entry): entry is [string, { command: string; args?: string[]; env?: Record<string, string> }] =>
-        typeof entry[1]?.command === 'string',
-      )
+      .filter((entry): entry is [string, RawMcpServer & { command: string }] => typeof entry[1]?.command === 'string')
       .map(([name, server]) => ({
         name,
         command: server.command,

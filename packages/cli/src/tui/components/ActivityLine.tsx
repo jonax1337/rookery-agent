@@ -17,12 +17,16 @@ export interface ActivityLineProps {
   color?: string;
 }
 
-export function ActivityLine({ icon, text, color }: ActivityLineProps): React.JSX.Element {
+export function ActivityLine({
+  icon,
+  text,
+  color = ui.faint,
+}: ActivityLineProps): React.JSX.Element {
   return (
     <Box flexDirection="row">
-      <Text color={color ?? ui.faint}>{icon + ' '}</Text>
+      <Text color={color}>{icon + ' '}</Text>
       <Box flexGrow={1}>
-        <Text color={color ?? ui.faint} wrap="wrap">
+        <Text color={color} wrap="wrap">
           {text}
         </Text>
       </Box>

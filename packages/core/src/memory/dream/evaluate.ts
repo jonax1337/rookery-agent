@@ -23,8 +23,17 @@ import {
   pairwiseAgreement,
 } from './label.js';
 import { measure, type DeltaPosition, type GainFunction } from './measure.js';
-import { bootstrapCi, corpusDrifted, freshnessCheck } from './probe.js';
+import { bootstrapCi, freshnessCheck, precheckReason, signsAgree, type PrecheckContext } from './probe.js';
 import { pipelineAgent, pipelineAssistant, type FrameScoringPolicy, type PipelineResult } from './score.js';
+import {
+  ABSTAIN_REASONS,
+  NO_GAIN,
+  clampNumber,
+  emptyReasons,
+  expectedBudgetChars,
+  frameDeadline,
+  mean,
+} from './util.js';
 
 /**
  * The evaluation machinery (dream stage 2, AP8; concept 5.3, 5.4, 5.5, 4.4).
@@ -105,33 +114,15 @@ export const DEFAULT_SPLIT_RATES: SplitRates = {
   auditRate: DEFAULT_AUDIT_RATE,
 };
 
-/** Mirrors the writer in store.ts; read-only here (see the module doc). */
-const CORPUS_STAMP_PREFIX = 'dream.corpus_stamp.';
-
 /** SQLite takes at most 999 bound parameters; labels are read in batches. */
 const TURN_BATCH = 200;
 
-/** No single frame may eat the shared wall clock on its own (like probe.ts). */
-const FRAME_TIME_LIMIT_MS = 2000;
-
-/** Decimals the evidence digest prints a share or a delta with. */
+/** Decimals the evidence digest prints a delta with, and a share with. */
 const DIGEST_DIGITS = 4;
+const SHARE_DIGITS = 3;
 
-/** Every reason a frame can go unscored, zeroed - counted, never swallowed. */
-const ABSTAIN_REASONS: readonly AbstainReason[] = [
-  'limit-out-of-box',
-  'seeds-capped',
-  'degraded-turn',
-  'frame-missing',
-  'corpus-drifted',
-  'corpus-invalidated',
-  'budget-changed',
-  'no-reachable-label',
-  'no-labelled-move',
-  'pipeline-mismatch',
-  'no-label-source',
-  'unfinished',
-];
+/** How many abstention reasons the evidence digest names. */
+const WORST_REASONS_SHOWN = 3;
 
 const LABEL_SOURCES: readonly DreamLabelSource[] = ['correction', 'review', 'merge', 'user'];
 
@@ -155,11 +146,6 @@ export type DreamSplit = 'train' | 'holdout' | 'audit';
 export interface SplitRates {
   holdoutRate: number;
   auditRate: number;
-}
-
-function clampRate(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(1, Math.max(0, value));
 }
 
 /**
@@ -198,8 +184,8 @@ function splitDraw(sessionId: string): number {
  * gets a stable answer either way.
  */
 export function splitOf(sessionId: string, rates: SplitRates): DreamSplit {
-  const audit = clampRate(rates.auditRate);
-  const holdout = clampRate(rates.holdoutRate);
+  const audit = clampNumber(rates.auditRate, 0, 1);
+  const holdout = clampNumber(rates.holdoutRate, 0, 1);
   const draw = splitDraw(sessionId);
   // Audit first: where the two bands would overlap, the frozen set wins -
   // it is the floor the other two stand on, not a leftover.
@@ -450,21 +436,19 @@ export interface EvaluateInput {
 
 /* ------------------------------- internals ------------------------------- */
 
-function emptyReasons(): Record<AbstainReason, number> {
-  const reasons = {} as Record<AbstainReason, number>;
-  for (const reason of ABSTAIN_REASONS) reasons[reason] = 0;
-  return reasons;
+/** What one scoring pass needs besides the entries and the gain: both arms and the clocks. */
+interface ScoringPass {
+  config: RookeryConfig;
+  baseline: FrameScoringPolicy;
+  candidate: FrameScoringPolicy;
+  costWeight: number;
+  deadline?: number;
+  signal?: AbortSignal;
 }
 
-/** Clamp to a range, for dream keys read outside the patch schema (E21/S23). */
-function clampNumber(value: number, lo: number, hi: number): number {
-  const safe = Number.isFinite(value) ? value : lo;
-  return Math.min(hi, Math.max(lo, safe));
-}
-
-function mean(values: readonly number[]): number | null {
-  if (!values.length) return null;
-  return values.reduce((total, value) => total + value, 0) / values.length;
+/** The caller aborted or the shared wall clock ran out: stop starting new work. */
+function mustStop(pass: Pick<ScoringPass, 'deadline' | 'signal'>): boolean {
+  return pass.signal?.aborted === true || (pass.deadline !== undefined && Date.now() > pass.deadline);
 }
 
 /** The chain the frame belongs to - never the other one (R15). */
@@ -472,25 +456,49 @@ function replay(frame: RecallFrame, policy: FrameScoringPolicy): PipelineResult 
   return frame.pipeline === 'agent' ? pipelineAgent(frame, policy) : pipelineAssistant(frame, policy);
 }
 
-/**
- * The corpus stamp a frame was recorded under. Read-only twin of probe.ts's
- * private helper: a stamp that cannot be read certifies nothing, and the
- * drift check is waived rather than guessed.
- */
-function stampById(store: Store, id: string): FrameCorpus | null {
-  if (!id) return null;
-  const raw = store.getMeta(CORPUS_STAMP_PREFIX + id);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as FrameCorpus;
-  } catch {
-    return null;
+/** Labels grouped by their source; the keys come in first-seen order. */
+function groupBySource(labels: readonly DreamLabel[]): Map<DreamLabelSource, DreamLabel[]> {
+  const bySource = new Map<DreamLabelSource, DreamLabel[]>();
+  for (const label of labels) {
+    const bucket = bySource.get(label.source);
+    if (bucket) bucket.push(label);
+    else bySource.set(label.source, [label]);
   }
+  return bySource;
 }
 
-/** The budget the assistant turn renders with; mirrors runtime.ts. */
-function expectedBudgetChars(config: RookeryConfig): number {
-  return Math.floor(config.memory.contextBudget * 0.4);
+function countBySource(labels: readonly DreamLabel[]): Partial<Record<DreamLabelSource, number>> {
+  const counts: Partial<Record<DreamLabelSource, number>> = {};
+  for (const [source, bucket] of groupBySource(labels)) counts[source] = bucket.length;
+  return counts;
+}
+
+/** What the pre-checks left of the offered pool. */
+interface PoolScreening {
+  eligible: FrameEntry[];
+  /** Abstentions the pre-checks counted, per reason. */
+  reasons: Record<AbstainReason, number>;
+  /** Frames of another bank that reached the pool through a join (concept 10.5). */
+  foreignOwner: number;
+}
+
+/**
+ * The owner filter comes first and is not an abstention: a frame of another
+ * bank is not a frame this evaluation may read at all. The pre-checks then
+ * fire in the order `precheckReason` fixes.
+ */
+function screenPool(store: Store, input: EvaluateInput, context: PrecheckContext): PoolScreening {
+  const screening: PoolScreening = { eligible: [], reasons: emptyReasons(), foreignOwner: 0 };
+  for (const entry of input.entries) {
+    if (entry.frame.owner !== input.owner || entry.trace.owner !== input.owner) {
+      screening.foreignOwner += 1;
+      continue;
+    }
+    const reason = precheckReason(store, entry, context);
+    if (reason) screening.reasons[reason] += 1;
+    else screening.eligible.push(entry);
+  }
+  return screening;
 }
 
 /**
@@ -505,13 +513,10 @@ function labelsOfPool(store: Store, owner: string, entries: readonly FrameEntry[
   const sessionIds = [
     ...new Set(entries.map((entry) => entry.trace.sessionId).filter((id): id is string => !!id)),
   ];
-  const labels: DreamLabel[] = [];
-  for (let index = 0; index < turnIds.length; index += TURN_BATCH) {
-    labels.push(...store.labelsForTurns(turnIds.slice(index, index + TURN_BATCH), owner));
-  }
-  for (let index = 0; index < sessionIds.length; index += TURN_BATCH) {
-    labels.push(...store.labelsForSessions(sessionIds.slice(index, index + TURN_BATCH), owner));
-  }
+  const labels = [
+    ...readInBatches(turnIds, (batch) => store.labelsForTurns(batch, owner)),
+    ...readInBatches(sessionIds, (batch) => store.labelsForSessions(batch, owner)),
+  ];
   // `labelsForSessions` selects on `turn_id`, so a session id that is also a
   // turn id would come back twice; the key is what makes a label one label.
   const seen = new Set<string>();
@@ -523,6 +528,14 @@ function labelsOfPool(store: Store, owner: string, entries: readonly FrameEntry[
   });
 }
 
+function readInBatches(ids: readonly string[], read: (batch: string[]) => DreamLabel[]): DreamLabel[] {
+  const labels: DreamLabel[] = [];
+  for (let from = 0; from < ids.length; from += TURN_BATCH) {
+    labels.push(...read(ids.slice(from, from + TURN_BATCH)));
+  }
+  return labels;
+}
+
 /** One gain function per turn, plus the contradictions folding them found. */
 interface GainIndex {
   gainFor: (turnId: string) => GainFunction;
@@ -530,8 +543,6 @@ interface GainIndex {
   universe: ReadonlySet<string>;
   conflicts: number;
 }
-
-const NO_GAIN: GainFunction = () => 0;
 
 /**
  * Fold a pool's labels into one gain function per turn (concept 4.1). The
@@ -599,10 +610,7 @@ interface PairedRun {
 function pairedRun(
   entries: readonly FrameEntry[],
   index: GainIndex,
-  baseline: FrameScoringPolicy,
-  candidate: FrameScoringPolicy,
-  costWeight: number,
-  options: { deadline?: number; signal?: AbortSignal },
+  pass: ScoringPass,
 ): PairedRun {
   const reasons = emptyReasons();
   const clusters = new Map<string, number[]>();
@@ -621,21 +629,18 @@ function pairedRun(
   let deadlineHit = false;
 
   for (const entry of entries) {
-    if (options.signal?.aborted) break;
+    if (pass.signal?.aborted) break;
     const now = Date.now();
-    if (options.deadline !== undefined && now > options.deadline) {
+    if (pass.deadline !== undefined && now > pass.deadline) {
       deadlineHit = true;
       break;
     }
-    const frameDeadline =
-      options.deadline !== undefined
-        ? Math.min(options.deadline, now + FRAME_TIME_LIMIT_MS)
-        : now + FRAME_TIME_LIMIT_MS;
+    const cutoff = frameDeadline(now, pass.deadline);
 
     const payload = entry.frame.payload;
     const gain = index.gainFor(entry.trace.turnId);
-    const baseResult = measure(payload, baseline, gain, costWeight);
-    const candResult = measure(payload, candidate, gain, costWeight);
+    const baseResult = measure(payload, pass.baseline, gain, pass.costWeight);
+    const candResult = measure(payload, pass.candidate, gain, pass.costWeight);
     if (!baseResult.ok) reasons[baseResult.abstain] += 1;
     else closedBaseline += 1;
     if (!candResult.ok) reasons[candResult.abstain] += 1;
@@ -647,7 +652,7 @@ function pairedRun(
 
     // A frame past its sub-cap leaves the paired set rather than eating the
     // shared wall clock; it still counted towards both arms' closures.
-    if (Date.now() > frameDeadline) {
+    if (Date.now() > cutoff) {
       frameTimeouts += 1;
       continue;
     }
@@ -655,20 +660,12 @@ function pairedRun(
     // What the model read on each arm. `measure` returns the number, not the
     // list, so the rendered lines are replayed once more here - the price of
     // keeping `measure` a pure score with no by-products to keep in step.
-    const baseLines = replay(payload, baseline);
-    const candLines = replay(payload, candidate);
-    if (!baseLines.ok || !candLines.ok) continue;
-    const baseIds = new Set(baseLines.lines.map((memory) => memory.id));
-    const candIds = new Set(candLines.lines.map((memory) => memory.id));
+    const baseIds = renderedIds(payload, pass.baseline);
+    const candIds = renderedIds(payload, pass.candidate);
+    if (!baseIds || !candIds) continue;
     for (const id of new Set([...baseIds, ...candIds])) positions.push(id);
 
-    const moved: DeltaPosition[] = [];
-    for (const id of baseIds) {
-      if (!candIds.has(id)) moved.push({ id, labelPossible: index.universe.has(id) });
-    }
-    for (const id of candIds) {
-      if (!baseIds.has(id)) moved.push({ id, labelPossible: index.universe.has(id) });
-    }
+    const moved = movedPositions(baseIds, candIds, index.universe);
     deltaPositions.push(moved);
 
     if (!moved.some((position) => position.labelPossible)) {
@@ -713,6 +710,28 @@ function pairedRun(
   };
 }
 
+/** The ids of the memories one arm rendered for a frame; `null` when the replay did not close. */
+function renderedIds(frame: RecallFrame, policy: FrameScoringPolicy): Set<string> | null {
+  const replayed = replay(frame, policy);
+  return replayed.ok ? new Set(replayed.lines.map((memory) => memory.id)) : null;
+}
+
+/** The positions exactly one of the two arms rendered, each marked with whether a label could exist for it. */
+function movedPositions(
+  baseIds: ReadonlySet<string>,
+  candIds: ReadonlySet<string>,
+  universe: ReadonlySet<string>,
+): DeltaPosition[] {
+  const moved: DeltaPosition[] = [];
+  for (const id of baseIds) {
+    if (!candIds.has(id)) moved.push({ id, labelPossible: universe.has(id) });
+  }
+  for (const id of candIds) {
+    if (!baseIds.has(id)) moved.push({ id, labelPossible: universe.has(id) });
+  }
+  return moved;
+}
+
 /** sha256 over the sorted trace ids - order in, one hash out (concept 5.3). */
 export function traceSetHash(traceIds: readonly string[]): string {
   return createHash('sha256').update([...traceIds].sort().join('\n')).digest('hex');
@@ -726,7 +745,7 @@ function signed(value: number | null | undefined): string {
 }
 
 function share(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(3) : '0.000';
+  return (Number.isFinite(value) ? value : 0).toFixed(SHARE_DIGITS);
 }
 
 /**
@@ -743,17 +762,8 @@ function share(value: number): string {
  * whose contents are distinctive words.
  */
 export function renderEvidenceDigest(result: DreamEvalResult): string {
-  const detail = result.detail;
-  const worst = ABSTAIN_REASONS.filter((reason) => (result.abstainReasons[reason] ?? 0) > 0)
-    .sort((a, b) => (result.abstainReasons[b] ?? 0) - (result.abstainReasons[a] ?? 0))
-    .slice(0, 3)
-    .map((reason) => reason + ':' + result.abstainReasons[reason])
-    .join(',');
-  const sources = LABEL_SOURCES.filter(
-    (source) => detail?.deltaBySource[source] !== undefined,
-  )
-    .map((source) => source + ':' + signed(detail?.deltaBySource[source]))
-    .join('|');
+  const worst = worstAbstainReasons(result);
+  const sources = deltaBySourceSummary(result.detail);
 
   const parts = [
     'slot=' + result.slot,
@@ -782,6 +792,22 @@ export function renderEvidenceDigest(result: DreamEvalResult): string {
   return parts.join(' ');
 }
 
+/** The three most frequent abstention reasons, `reason:count`, most frequent first. */
+function worstAbstainReasons(result: DreamEvalResult): string {
+  return ABSTAIN_REASONS.filter((reason) => (result.abstainReasons[reason] ?? 0) > 0)
+    .sort((a, b) => (result.abstainReasons[b] ?? 0) - (result.abstainReasons[a] ?? 0))
+    .slice(0, WORST_REASONS_SHOWN)
+    .map((reason) => reason + ':' + result.abstainReasons[reason])
+    .join(',');
+}
+
+/** `source:delta` for every source whose delta was measured, in `LABEL_SOURCES` order. */
+function deltaBySourceSummary(detail: DreamEvalDetail | undefined): string {
+  return LABEL_SOURCES.filter((source) => detail?.deltaBySource[source] !== undefined)
+    .map((source) => source + ':' + signed(detail?.deltaBySource[source]))
+    .join('|');
+}
+
 /* --------------------------- the freshness sensor --------------------------- */
 
 /**
@@ -804,9 +830,7 @@ function runFreshness(
   store: Store,
   entries: readonly FrameEntry[],
   index: GainIndex,
-  input: EvaluateInput,
-  costWeight: number,
-  margin: number,
+  pass: ScoringPass,
 ): FreshnessSummary {
   const summary: FreshnessSummary = {
     frames: 0,
@@ -822,16 +846,15 @@ function runFreshness(
   let differ = 0;
 
   for (const entry of entries) {
-    if (input.signal?.aborted) break;
-    if (input.deadline !== undefined && Date.now() > input.deadline) break;
+    if (mustStop(pass)) break;
     const report = freshnessCheck(store, [entry], {
-      config: input.config,
-      baseline: input.baseline,
-      candidate: input.candidate,
+      config: pass.config,
+      baseline: pass.baseline,
+      candidate: pass.candidate,
       gain: index.gainFor(entry.trace.turnId),
-      costWeight,
-      deadline: input.deadline,
-      signal: input.signal,
+      costWeight: pass.costWeight,
+      deadline: pass.deadline,
+      signal: pass.signal,
     });
     summary.frames += 1;
     const one = report.entries[0];
@@ -851,10 +874,8 @@ function runFreshness(
   summary.deltaLive = mean(live);
   summary.rowsDifferShare = compared ? differ / compared : 0;
   if (summary.deltaFrozen !== null && summary.deltaLive !== null) {
-    // Inside the margin the sign comparison is moot, and `null` says
-    // undetermined - not "they disagree" (concept 5.5a).
-    if (Math.abs(summary.deltaFrozen) <= margin) summary.signAgree = null;
-    else summary.signAgree = Math.sign(summary.deltaFrozen) === Math.sign(summary.deltaLive);
+    const margin = clampNumber(pass.config.memory.dream.margin, 0, 1);
+    summary.signAgree = signsAgree(summary.deltaFrozen, summary.deltaLive, margin);
   }
   return summary;
 }
@@ -889,6 +910,89 @@ function emptyResult(slot: DreamSlot): DreamEvalResult {
     freshness: null,
     error: null,
   };
+}
+
+/** The numbers of one paired pass, as the finished result carries them. */
+function measuredFields(
+  run: PairedRun,
+  preReasons: Record<AbstainReason, number>,
+  traces: number,
+): Pick<
+  DreamEvalResult,
+  | 'abstainReasons'
+  | 'closed'
+  | 'closedBaseline'
+  | 'closedCandidate'
+  | 'abstained'
+  | 'abstainRateBaseline'
+  | 'abstainRateCandidate'
+  | 'reachableRate'
+  | 'labelCoverage'
+  | 'costOnlyShare'
+  | 'score'
+  | 'baseline'
+  | 'delta'
+  | 'sessions'
+  | 'traceSetHash'
+  | 'ciLow'
+  | 'ciHigh'
+> {
+  const abstainReasons = emptyReasons();
+  for (const reason of ABSTAIN_REASONS) {
+    abstainReasons[reason] = preReasons[reason] + run.reasons[reason];
+  }
+  // The interval: B = 2000 draws of SESSIONS with replacement, percentile
+  // 2.5/97.5, and it is reported as approximate - at the ten to twenty-five
+  // clusters this pool produces, the coverage of a percentile interval on a
+  // skewed paired mean sits noticeably under its nominal value (S11).
+  const interval = bootstrapCi(run.clusters);
+  const abstainRate = (closed: number): number => (traces ? (traces - closed) / traces : 0);
+  return {
+    abstainReasons,
+    closed: run.closed,
+    closedBaseline: run.closedBaseline,
+    closedCandidate: run.closedCandidate,
+    abstained: Math.max(0, traces - run.closed),
+    abstainRateBaseline: abstainRate(run.closedBaseline),
+    abstainRateCandidate: abstainRate(run.closedCandidate),
+    reachableRate: run.reachableRate ?? 0,
+    labelCoverage: run.labelCoverage,
+    costOnlyShare: run.costOnlyShare,
+    score: run.scoreCandidate ?? 0,
+    baseline: run.scoreBaseline ?? 0,
+    delta: run.delta ?? 0,
+    sessions: run.sessions,
+    traceSetHash: traceSetHash(run.traceIds),
+    ciLow: interval?.low ?? 0,
+    ciHigh: interval?.high ?? 0,
+  };
+}
+
+/**
+ * Per-source deltas (concept 5.5b): the same paired pass, with each source
+ * alone supplying the gain. One source in the pool means the combined gain
+ * already IS that source's, and the second pass is skipped rather than paid
+ * for.
+ */
+function deltasBySource(
+  eligible: readonly FrameEntry[],
+  labels: readonly DreamLabel[],
+  pass: ScoringPass,
+  combinedDelta: number,
+): Partial<Record<DreamLabelSource, number>> {
+  const present = LABEL_SOURCES.filter((source) => labels.some((label) => label.source === source));
+  const deltas: Partial<Record<DreamLabelSource, number>> = {};
+  if (present.length === 1) {
+    deltas[present[0]!] = combinedDelta;
+    return deltas;
+  }
+  for (const source of present) {
+    if (mustStop(pass)) break;
+    const only = indexLabels(labels.filter((label) => label.source === source));
+    const sourceRun = pairedRun(eligible, only, pass);
+    if (sourceRun.delta !== null) deltas[source] = sourceRun.delta;
+  }
+  return deltas;
 }
 
 /** The limits of concept 5.4, clamped as they are read (S23). */
@@ -968,126 +1072,45 @@ export function evaluateCandidate(store: Store, input: EvaluateInput): DreamEval
 
   try {
     const dream = input.config.memory.dream;
-    const costWeight = clampNumber(dream.costWeight, 0, 1);
-    const tolerance = clampNumber(dream.corpusTolerance, 0, 10);
-    const margin = clampNumber(dream.margin, 0, 1);
-    const budget = expectedBudgetChars(input.config);
-
-    // Pre-checks. The owner filter is first and is not an abstention: a
-    // frame of another bank is not a frame this evaluation may read at all.
-    const reasons = emptyReasons();
-    const eligible: FrameEntry[] = [];
-    let foreignOwner = 0;
-    for (const entry of input.entries) {
-      if (entry.frame.owner !== input.owner || entry.trace.owner !== input.owner) {
-        foreignOwner += 1;
-        continue;
-      }
-      const payload = entry.frame.payload;
-      let reason: AbstainReason | null = null;
-      if (!entry.trace.finishedAt) reason = 'unfinished';
-      else if (
-        input.corpus &&
-        corpusDrifted(payload, input.corpus, tolerance, stampById(store, payload.corpusStampId))
-      ) {
-        reason = 'corpus-drifted';
-      } else if (payload.pipeline === 'assistant' && payload.budgetChars !== budget) {
-        reason = 'budget-changed';
-      }
-      if (reason) {
-        reasons[reason] += 1;
-        continue;
-      }
-      eligible.push(entry);
-    }
-    result.traces = input.entries.length - foreignOwner;
-
-    const labels = labelsOfPool(store, input.owner, eligible);
-    const index = indexLabels(labels);
-    const run = pairedRun(eligible, index, input.baseline, input.candidate, costWeight, {
+    const pass: ScoringPass = {
+      config: input.config,
+      baseline: input.baseline,
+      candidate: input.candidate,
+      costWeight: clampNumber(dream.costWeight, 0, 1),
       deadline: input.deadline,
       signal: input.signal,
+    };
+
+    const screening = screenPool(store, input, {
+      corpus: input.corpus,
+      tolerance: clampNumber(dream.corpusTolerance, 0, 10),
+      budget: expectedBudgetChars(input.config),
     });
+    result.traces = input.entries.length - screening.foreignOwner;
 
-    for (const reason of ABSTAIN_REASONS) {
-      result.abstainReasons[reason] = reasons[reason] + run.reasons[reason];
-    }
-    result.closed = run.closed;
-    result.closedBaseline = run.closedBaseline;
-    result.closedCandidate = run.closedCandidate;
-    result.abstained = Math.max(0, result.traces - run.closed);
-    result.abstainRateBaseline = result.traces
-      ? (result.traces - run.closedBaseline) / result.traces
-      : 0;
-    result.abstainRateCandidate = result.traces
-      ? (result.traces - run.closedCandidate) / result.traces
-      : 0;
-    result.reachableRate = run.reachableRate ?? 0;
-    result.labelCoverage = run.labelCoverage;
-    result.costOnlyShare = run.costOnlyShare;
-    result.score = run.scoreCandidate ?? 0;
-    result.baseline = run.scoreBaseline ?? 0;
-    result.delta = run.delta ?? 0;
-    result.sessions = run.sessions;
-    result.traceSetHash = traceSetHash(run.traceIds);
+    const labels = labelsOfPool(store, input.owner, screening.eligible);
+    const index = indexLabels(labels);
+    const run = pairedRun(screening.eligible, index, pass);
+    Object.assign(result, measuredFields(run, screening.reasons, result.traces));
 
-    // The interval: B = 2000 draws of SESSIONS with replacement, percentile
-    // 2.5/97.5, and it is reported as approximate - at the ten to twenty-five
-    // clusters this pool produces, the coverage of a percentile interval on a
-    // skewed paired mean sits noticeably under its nominal value (S11).
-    const ci = run.clusters.length ? bootstrapCi(run.clusters) : null;
-    result.ciLow = ci?.low ?? 0;
-    result.ciHigh = ci?.high ?? 0;
-
-    // Per-source deltas (concept 5.5b): the same paired pass, with each
-    // source alone supplying the gain. One source in the pool means the
-    // combined gain already IS that source's, and the second pass is skipped
-    // rather than paid for.
-    const labelsBySource: Partial<Record<DreamLabelSource, number>> = {};
-    for (const label of labels) {
-      labelsBySource[label.source] = (labelsBySource[label.source] ?? 0) + 1;
-    }
-    const present = LABEL_SOURCES.filter((source) => (labelsBySource[source] ?? 0) > 0);
-    const deltaBySource: Partial<Record<DreamLabelSource, number>> = {};
-    if (input.sourceDeltas !== false && present.length === 1) {
-      deltaBySource[present[0]!] = result.delta;
-    } else if (input.sourceDeltas !== false) {
-      for (const source of present) {
-        if (input.signal?.aborted) break;
-        if (input.deadline !== undefined && Date.now() > input.deadline) break;
-        const only = indexLabels(labels.filter((label) => label.source === source));
-        const sourceRun = pairedRun(
-          eligible,
-          only,
-          input.baseline,
-          input.candidate,
-          costWeight,
-          { deadline: input.deadline, signal: input.signal },
-        );
-        if (sourceRun.delta !== null) deltaBySource[source] = sourceRun.delta;
-      }
-    }
+    const deltaBySource =
+      input.sourceDeltas === false
+        ? {}
+        : deltasBySource(screening.eligible, labels, pass, result.delta);
 
     // The freshness sensor, over the traces that actually paired - the only
     // ones whose sign there is anything to compare.
     if (input.freshness !== false && run.pairedEntries.length) {
-      result.freshness = runFreshness(
-        store,
-        run.pairedEntries,
-        index,
-        input,
-        costWeight,
-        margin,
-      );
+      result.freshness = runFreshness(store, run.pairedEntries, index, pass);
       if (result.freshness.deltaLive !== null) result.deltaLive = result.freshness.deltaLive;
       result.signAgree = result.freshness.signAgree;
     }
 
     result.detail = {
       deltaBySource,
-      labelsBySource,
+      labelsBySource: countBySource(labels),
       conflicts: index.conflicts,
-      foreignOwner,
+      foreignOwner: screening.foreignOwner,
       intersection: run.intersection,
       costOnly: run.costOnly,
       frameTimeouts: run.frameTimeouts,
@@ -1177,11 +1200,7 @@ export interface SelectionInput {
  * a frozen set - it is just another holdout with a longer name.
  */
 export function selectOnTraining(store: Store, input: SelectionInput): SelectionReport {
-  const rates = input.rates ?? {
-    holdoutRate: DEFAULT_HOLDOUT_RATE,
-    auditRate: DEFAULT_AUDIT_RATE,
-  };
-  const pool = splitPool(input.entries, rates);
+  const pool = splitPool(input.entries, input.rates ?? DEFAULT_SPLIT_RATES);
   const report: SelectionReport = {
     split: { train: pool.train.length, holdout: pool.holdout.length, audit: pool.audit.length },
     ranked: [],
@@ -1192,41 +1211,31 @@ export function selectOnTraining(store: Store, input: SelectionInput): Selection
     findings: [],
   };
 
-  const common = {
-    owner: input.owner,
-    slot: input.slot,
-    config: input.config,
-    corpus: input.corpus,
-    sourceDeltas: input.sourceDeltas,
-    deadline: input.deadline,
-    signal: input.signal,
-  };
-
-  for (let index = 0; index < input.candidates.length; index += 1) {
-    if (input.signal?.aborted) break;
-    const policy = input.candidates[index]!;
-    report.ranked.push({
-      index,
-      policy,
-      training: evaluateCandidate(store, {
-        ...common,
-        entries: pool.train,
-        baseline: input.incumbent,
-        candidate: policy,
-        // The training half ranks; the freshness sensor is a promotion
-        // sensor and costs a live fetch per frame, so it runs once, on the
-        // one evaluation that can lead anywhere.
-        freshness: false,
-      }),
+  const evaluateOn = (
+    arms: Pick<EvaluateInput, 'entries' | 'baseline' | 'candidate' | 'freshness'>,
+  ): DreamEvalResult =>
+    evaluateCandidate(store, {
+      owner: input.owner,
+      slot: input.slot,
+      config: input.config,
+      corpus: input.corpus,
+      sourceDeltas: input.sourceDeltas,
+      deadline: input.deadline,
+      signal: input.signal,
+      ...arms,
     });
-  }
 
-  report.ranked.sort((a, b) => {
-    if (a.training.valid !== b.training.valid) return a.training.valid ? -1 : 1;
-    if (b.training.delta !== a.training.delta) return b.training.delta - a.training.delta;
-    if (b.training.ciLow !== a.training.ciLow) return b.training.ciLow - a.training.ciLow;
-    return a.index - b.index;
-  });
+  report.ranked = rankOnTraining(input.candidates, input.signal, (policy) =>
+    evaluateOn({
+      entries: pool.train,
+      baseline: input.incumbent,
+      candidate: policy,
+      // The training half ranks; the freshness sensor is a promotion
+      // sensor and costs a live fetch per frame, so it runs once, on the
+      // one evaluation that can lead anywhere.
+      freshness: false,
+    }),
+  );
 
   const best = report.ranked.find((entry) => entry.training.valid && entry.training.delta > 0);
   if (!best) {
@@ -1239,8 +1248,7 @@ export function selectOnTraining(store: Store, input: SelectionInput): Selection
     report.findings.push('holdout-empty');
     return report;
   }
-  report.holdout = evaluateCandidate(store, {
-    ...common,
+  report.holdout = evaluateOn({
     entries: pool.holdout,
     baseline: input.incumbent,
     candidate: best.policy,
@@ -1262,8 +1270,7 @@ export function selectOnTraining(store: Store, input: SelectionInput): Selection
   }
 
   report.auditTouched = 1;
-  report.audit = evaluateCandidate(store, {
-    ...common,
+  report.audit = evaluateOn({
     entries: pool.audit,
     // Cumulative, against the FACTORY default rather than the incumbent
     // (condition 2b): a chain of individually significant steps, each only
@@ -1276,6 +1283,26 @@ export function selectOnTraining(store: Store, input: SelectionInput): Selection
   report.holdout.auditCiLow = report.audit.ciLow;
   report.holdout.evidenceDigest = renderEvidenceDigest(report.holdout);
   return report;
+}
+
+/** Every candidate's training evaluation: valid ones first, best delta first, then widest lower bound. */
+function rankOnTraining(
+  candidates: readonly FrameScoringPolicy[],
+  signal: AbortSignal | undefined,
+  evaluate: (policy: FrameScoringPolicy) => DreamEvalResult,
+): RankedCandidate[] {
+  const ranked: RankedCandidate[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (signal?.aborted) break;
+    const policy = candidates[index]!;
+    ranked.push({ index, policy, training: evaluate(policy) });
+  }
+  return ranked.sort((a, b) => {
+    if (a.training.valid !== b.training.valid) return a.training.valid ? -1 : 1;
+    if (b.training.delta !== a.training.delta) return b.training.delta - a.training.delta;
+    if (b.training.ciLow !== a.training.ciLow) return b.training.ciLow - a.training.ciLow;
+    return a.index - b.index;
+  });
 }
 
 /* --------------------------- the agreement sensor --------------------------- */
@@ -1300,6 +1327,11 @@ export interface AgreementOptions {
   minUserPairs?: number;
   /** Per-source paired deltas, as `evaluateCandidate` reports them. */
   deltaBySource?: Partial<Record<DreamLabelSource, number>>;
+  /**
+   * `dream.requireUserLabels`. Whether too few `user` labels is itself a
+   * finding. Off, only user evidence that exists can veto.
+   */
+  requireUserLabels?: boolean;
 }
 
 /** What the label agreement sensor answers (concept 5.5b). */
@@ -1335,10 +1367,14 @@ export interface AgreementReport {
  * positive on the influenceable sources and flat or negative on `user` is
  * flagged, not averaged away.
  *
- * And when `user` has too few common targets for an agreement at all, that
- * IS the answer. The report says `validated: false` and names it, rather
- * than falling back on the sources that agree with each other because they
- * were written by the same process.
+ * And when `user` has too few common targets for an agreement at all, the
+ * report says `validated: false` and never falls back on the sources that
+ * agree with each other because they were written by the same process.
+ * Whether that absence is also a finding (`user-labels-thin`) is
+ * `dream.requireUserLabels`: a bank whose owner never hand-edits a memory
+ * can only ever promote with it off, and the checks that need user
+ * evidence to exist - the floor and the influenceable-only delta - still
+ * veto the moment it does.
  */
 export function agreementReport(
   labels: readonly DreamLabel[],
@@ -1351,16 +1387,53 @@ export function agreementReport(
   );
   const margin = clampNumber(options.margin ?? DEFAULT_CONFIG.memory.dream.margin, 0, 1);
   const minUserPairs = Math.max(1, Math.floor(options.minUserPairs ?? MIN_USER_PAIRS));
+  const requireUserLabels =
+    options.requireUserLabels ?? DEFAULT_CONFIG.memory.dream.requireUserLabels;
 
-  const bySource = new Map<DreamLabelSource, DreamLabel[]>();
-  const labelsBySource: Partial<Record<DreamLabelSource, number>> = {};
-  for (const label of labels) {
-    const bucket = bySource.get(label.source);
-    if (bucket) bucket.push(label);
-    else bySource.set(label.source, [label]);
-    labelsBySource[label.source] = (labelsBySource[label.source] ?? 0) + 1;
-  }
+  const pairs = agreementPairs(groupBySource(labels));
 
+  // The privileged comparison: the best-supported pair `user` takes part in.
+  const bestUser = pairs
+    .filter((pair) => pair.a === 'user' || pair.b === 'user')
+    .reduce<SourceAgreement | null>(
+      (best, pair) => (!best || pair.pairs > best.pairs ? pair : best),
+      null,
+    );
+  const userPairs = bestUser?.pairs ?? 0;
+  // Kappa where it is defined, the plain rate where it is not: `merge`
+  // writes nothing but zeroes, so a kappa against it is degenerate by
+  // construction and a fabricated number would be worse than the fallback.
+  const userScore = bestUser ? (bestUser.kappa ?? bestUser.agreement) : null;
+  const validated = userPairs >= minUserPairs && userScore !== null;
+  const floorHolds = validated && (userScore ?? 0) >= floor;
+
+  const deltas = options.deltaBySource ?? {};
+  const influenceableUp = INFLUENCEABLE.some((source) => (deltas[source] ?? 0) > margin);
+  const userDelta = deltas.user;
+  const influenceableOnly = influenceableUp && userDelta !== undefined && userDelta <= margin;
+
+  const findings: string[] = [];
+  if (!validated) {
+    if (requireUserLabels) findings.push('user-labels-thin');
+  } else if (!floorHolds) findings.push('agreement-below-floor');
+  if (influenceableOnly) findings.push('influenceable-only-delta');
+
+  return {
+    labelsBySource: countBySource(labels),
+    pairs,
+    userPairs,
+    userKappa: bestUser?.kappa ?? null,
+    userAgreement: bestUser?.agreement ?? null,
+    validated,
+    floorHolds,
+    influenceableOnly,
+    findings,
+    ok: findings.length === 0,
+  };
+}
+
+/** Cohen's kappa and the plain rate for every source pair that judged a common target. */
+function agreementPairs(bySource: ReadonlyMap<DreamLabelSource, DreamLabel[]>): SourceAgreement[] {
   const pairs: SourceAgreement[] = [];
   for (let i = 0; i < LABEL_SOURCES.length; i += 1) {
     for (let j = i + 1; j < LABEL_SOURCES.length; j += 1) {
@@ -1380,44 +1453,7 @@ export function agreementReport(
       });
     }
   }
-
-  // The privileged comparison: the best-supported pair `user` takes part in.
-  const userPairsList = pairs.filter((pair) => pair.a === 'user' || pair.b === 'user');
-  const bestUser = userPairsList.reduce<SourceAgreement | null>(
-    (best, pair) => (!best || pair.pairs > best.pairs ? pair : best),
-    null,
-  );
-  const userPairs = bestUser?.pairs ?? 0;
-  // Kappa where it is defined, the plain rate where it is not: `merge`
-  // writes nothing but zeroes, so a kappa against it is degenerate by
-  // construction and a fabricated number would be worse than the fallback.
-  const userScore = bestUser ? (bestUser.kappa ?? bestUser.agreement) : null;
-  const validated = userPairs >= minUserPairs && userScore !== null;
-  const floorHolds = validated && (userScore ?? 0) >= floor;
-
-  const deltas = options.deltaBySource ?? {};
-  const influenceableUp = INFLUENCEABLE.some((source) => (deltas[source] ?? 0) > margin);
-  const userDelta = deltas.user;
-  const influenceableOnly =
-    influenceableUp && userDelta !== undefined && userDelta <= margin;
-
-  const findings: string[] = [];
-  if (!validated) findings.push('user-labels-thin');
-  else if (!floorHolds) findings.push('agreement-below-floor');
-  if (influenceableOnly) findings.push('influenceable-only-delta');
-
-  return {
-    labelsBySource,
-    pairs,
-    userPairs,
-    userKappa: bestUser?.kappa ?? null,
-    userAgreement: bestUser?.agreement ?? null,
-    validated,
-    floorHolds,
-    influenceableOnly,
-    findings,
-    ok: findings.length === 0,
-  };
+  return pairs;
 }
 
 /* ------------------------------ the structural contract ------------------------------ */

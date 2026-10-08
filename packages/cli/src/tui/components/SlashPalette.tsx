@@ -21,20 +21,24 @@ export interface SlashPaletteProps {
   limit?: number;
 }
 
+/** Rows shown before the palette scrolls. */
+const DEFAULT_ROW_LIMIT = 8;
+
+/** Blank columns between the longest command label and its description. */
+const LABEL_GAP = 2;
+
 export function SlashPalette({
   matches,
   selected,
-  limit = 8,
+  limit = DEFAULT_ROW_LIMIT,
 }: SlashPaletteProps): React.JSX.Element | null {
   if (!matches.length) return null;
 
   // Keep the highlighted row inside the window as the user arrows past it.
   const start = Math.max(0, Math.min(selected - limit + 1, matches.length - limit));
-  const visible = matches.slice(Math.max(0, start), Math.max(0, start) + limit);
+  const visible = matches.slice(start, start + limit);
   const hidden = matches.length - visible.length;
-  const width = Math.max(
-    ...matches.map((command) => command.name.length + (command.args ? command.args.length + 1 : 0)),
-  );
+  const labelWidth = Math.max(...matches.map((command) => labelOf(command).length)) + LABEL_GAP;
 
   return (
     <Box
@@ -45,30 +49,46 @@ export function SlashPalette({
       borderDimColor
       paddingX={1}
     >
-      {visible.map((command, index) => {
-        const absolute = Math.max(0, start) + index;
-        const active = absolute === selected;
-        const label = command.name + (command.args ? ' ' + command.args : '');
-        return (
-          <Box key={command.name} flexDirection="row">
-            <Text color={active ? ui.accent : ui.faint}>
-              {(active ? glyph.prompt : ' ') + ' '}
-            </Text>
-            <Text color={active ? ui.accent : ui.muted} bold={active}>
-              {label.padEnd(width + 2)}
-            </Text>
-            <Box flexGrow={1}>
-              <Text color={ui.faint} wrap="truncate-end">
-                {command.description}
-              </Text>
-            </Box>
-          </Box>
-        );
-      })}
+      {visible.map((command, index) => (
+        <PaletteRow
+          key={command.name}
+          command={command}
+          active={start + index === selected}
+          labelWidth={labelWidth}
+        />
+      ))}
       {hidden > 0 ? <Text color={ui.faint}>{'  +' + hidden + ' more'}</Text> : null}
       <Text color={ui.faint}>
         {'  ↑↓ select ' + glyph.dot + ' Tab complete ' + glyph.dot + ' Esc close'}
       </Text>
     </Box>
   );
+}
+
+function PaletteRow({
+  command,
+  active,
+  labelWidth,
+}: {
+  command: SlashCommand;
+  active: boolean;
+  labelWidth: number;
+}): React.JSX.Element {
+  return (
+    <Box flexDirection="row">
+      <Text color={active ? ui.accent : ui.faint}>{(active ? glyph.prompt : ' ') + ' '}</Text>
+      <Text color={active ? ui.accent : ui.muted} bold={active}>
+        {labelOf(command).padEnd(labelWidth)}
+      </Text>
+      <Box flexGrow={1}>
+        <Text color={ui.faint} wrap="truncate-end">
+          {command.description}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+function labelOf(command: SlashCommand): string {
+  return command.name + (command.args ? ' ' + command.args : '');
 }

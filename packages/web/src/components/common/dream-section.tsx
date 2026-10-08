@@ -45,6 +45,7 @@ import type {
   DreamSlot,
   DreamSlotFreezeReason,
   DreamSlotView,
+  MemoryDreamConfig,
   PolicyVersion,
 } from '@/lib/types';
 import { useConfig } from '@/providers/rookery-provider';
@@ -258,10 +259,241 @@ export interface DreamSectionProps {
   owner?: string;
 }
 
+/** A frozen slot is a decision waiting for a person, so it is said first. */
+function FrozenSlotAlerts({ views }: { views: DreamSlotView[] }) {
+  return (
+    <Fade asChild>
+      <div className="flex flex-col gap-2 px-4 lg:px-6">
+        {views.map((view) => {
+          const reason = view.state.frozenReason;
+          const said = reason ? FREEZE_REASON[reason] : null;
+          return (
+            <Alert key={view.slot} variant="destructive">
+              <BadgeAlertIcon aria-hidden="true" />
+              <AlertTitle>
+                {SLOT_LABEL[view.slot]} is frozen
+                {said ? ' — ' + said.label : ''}
+              </AlertTitle>
+              <AlertDescription>
+                <span>{said ? said.detail : 'No cause was recorded for this freeze.'}</span>
+                {/* The one sentence a frozen slot must say out loud. */}
+                <span>
+                  {' '}
+                  It keeps measuring; it no longer promotes. Frozen{' '}
+                  {formatDateTime(view.state.frozenAt)}.
+                </span>
+              </AlertDescription>
+            </Alert>
+          );
+        })}
+      </div>
+    </Fade>
+  );
+}
+
+interface DreamSwitchesCardProps {
+  dream: MemoryDreamConfig;
+  disabled: boolean;
+  onFlip: (key: DreamSwitch, next: boolean) => Promise<void>;
+}
+
+/** Every number on this surface rests on the same served config - and so do these switches, which write it back. */
+function DreamSwitchesCard({ dream, disabled, onFlip }: DreamSwitchesCardProps) {
+  return (
+    <div className="px-4 lg:px-6">
+      <Card>
+        <CardContent className="grid gap-4 @[720px]/card:grid-cols-3">
+          {SWITCHES.map((entry) => (
+            <div key={entry.key} className="flex items-start gap-3">
+              <Switch
+                id={'dream-' + entry.key}
+                checked={Boolean(dream[entry.key])}
+                onCheckedChange={(checked) => void onFlip(entry.key, checked)}
+                disabled={disabled}
+              />
+              <div className="grid gap-1">
+                <Label htmlFor={'dream-' + entry.key} className="text-sm font-medium">
+                  {entry.label}
+                </Label>
+                <p className="text-xs text-muted-foreground">{entry.detail}</p>
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+interface PromotionSheetProps {
+  promotion: PolicyVersion | null;
+  history: Record<DreamSlot, PolicyVersion[]> | null;
+  evals: DreamEval[] | null;
+  reverting: string | null;
+  onClose: () => void;
+  onRevert: (version: PolicyVersion) => void;
+}
+
+function PromotionSheet({
+  promotion,
+  history,
+  evals,
+  reverting,
+  onClose,
+  onRevert,
+}: PromotionSheetProps) {
+  const sheet = useDrawerSubject(promotion);
+  const sheetHistory = sheet && history ? history[sheet.slot] : [];
+  const previous = sheet?.prevActiveId
+    ? (sheetHistory.find((version) => version.id === sheet.prevActiveId) ?? null)
+    : null;
+  const sheetEval = evals?.find((entry) => entry.policyId === sheet?.id) ?? null;
+  const diff = sheet ? diffParams(previous?.params, sheet.params) : [];
+
+  return (
+    <DetailDrawer
+      open={promotion !== null}
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+      title="Diff sheet"
+      description={
+        sheet
+          ? SLOT_LABEL[sheet.slot] +
+            ' · v' +
+            sheet.version +
+            ' · promoted ' +
+            formatDateTime(sheet.promotedAt)
+          : undefined
+      }
+      footer={
+        sheet && !sheet.retiredAt ? (
+          <Button
+            variant="outline"
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            disabled={reverting === sheet.id}
+            onClick={() => onRevert(sheet)}
+          >
+            {reverting === sheet.id ? (
+              <Spinner data-icon="inline-start" aria-hidden="true" />
+            ) : (
+              <RotateCcwIcon data-icon="inline-start" />
+            )}
+            Revert this promotion
+          </Button>
+        ) : undefined
+      }
+    >
+      {sheet ? (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="outline">{sheet.origin}</Badge>
+            {sheet.retiredAt ? (
+              <Badge variant="outline">retired {formatDateTime(sheet.retiredAt)}</Badge>
+            ) : (
+              <Badge variant="secondary">in force</Badge>
+            )}
+          </div>
+
+          <SectionHeading
+            title="What it was measured at"
+            size="sm"
+            level="h3"
+            flush
+            hint={
+              sheetEval
+                ? 'From the evaluation of ' + formatDateTime(sheetEval.createdAt) + '.'
+                : evals === null
+                  ? 'Loading the evaluation behind these numbers…'
+                  : 'No evaluation is recorded for this version; only what the version itself stores is shown.'
+            }
+          >
+            <MetaList
+              columns={2}
+              items={[
+                { label: 'Holdout score', value: score(sheet.replayScore) },
+                { label: 'Baseline', value: score(sheet.baselineScore) },
+                {
+                  label: 'Delta (paired)',
+                  value: sheetEval ? signed(sheetEval.delta) : EMPTY_CELL,
+                },
+                { label: 'ci_low', value: sheetEval ? signed(sheetEval.ciLow) : EMPTY_CELL },
+                {
+                  label: 'audit_ci_low',
+                  value: signed(sheet.auditCiLow ?? sheetEval?.auditCiLow),
+                },
+                { label: 'audit_delta', value: signed(sheet.auditDelta ?? sheetEval?.auditDelta) },
+                {
+                  label: 'Traces closed',
+                  value: sheetEval ? formatNumber(sheetEval.closed) : EMPTY_CELL,
+                },
+                {
+                  label: 'Label coverage',
+                  value: sheetEval ? score(sheetEval.labelCoverage) : EMPTY_CELL,
+                },
+              ]}
+            />
+          </SectionHeading>
+
+          <SectionHeading
+            title="What changed"
+            size="sm"
+            level="h3"
+            flush
+            hint={
+              previous
+                ? 'Against v' + previous.version + ', which was in force until this promotion.'
+                : 'Nothing was in force before this promotion, so the left column is the configured default and is not stored with the version.'
+            }
+          >
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Field</TableHead>
+                    <TableHead>Before</TableHead>
+                    <TableHead>After</TableHead>
+                    <TableHead className="text-right">Delta</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {diff.map((row) => (
+                    <TableRow key={row.field} className={row.changed ? undefined : 'opacity-60'}>
+                      <TableCell className="numeric text-xs">{row.field}</TableCell>
+                      <TableCell className="numeric">
+                        {previous ? paramText(row.before) : EMPTY_CELL}
+                      </TableCell>
+                      <TableCell className="numeric">{paramText(row.after)}</TableCell>
+                      <TableCell className="numeric text-right">
+                        {previous && row.delta !== undefined && row.changed
+                          ? signed(row.delta)
+                          : EMPTY_CELL}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </SectionHeading>
+
+          {sheet.rationale ? (
+            <SectionHeading title="Reason" size="sm" level="h3" flush>
+              <p className="whitespace-pre-wrap break-words text-muted-foreground">
+                {sheet.rationale}
+              </p>
+            </SectionHeading>
+          ) : null}
+        </>
+      ) : null}
+    </DetailDrawer>
+  );
+}
+
 export function DreamSection({ owner }: DreamSectionProps) {
   const { config, save } = useConfig();
   const { confirm, dialog } = useConfirm();
   const [switching, setSwitching] = useState<DreamSwitch | null>(null);
+  const [reloads, setReloads] = useState(0);
   const dream = config?.memory?.dream;
 
   /*
@@ -308,8 +540,6 @@ export function DreamSection({ owner }: DreamSectionProps) {
   const [slots, setSlots] = useState<DreamSlotView[] | null>(null);
   const [history, setHistory] = useState<Record<DreamSlot, PolicyVersion[]> | null>(null);
   const [failed, setFailed] = useState(false);
-  const [reloads, setReloads] = useState(0);
-
   const [promotion, setPromotion] = useState<PolicyVersion | null>(null);
   const [evals, setEvals] = useState<DreamEval[] | null>(null);
   const [reverting, setReverting] = useState<string | null>(null);
@@ -362,25 +592,25 @@ export function DreamSection({ owner }: DreamSectionProps) {
     };
   }, [owner, promotion]);
 
-  const promotions = useMemo(() => {
-    if (!history) return [];
-    return SLOTS.flatMap((slot) => history[slot].filter((version) => version.promotedAt))
-      .slice()
-      .sort((left, right) => (right.promotedAt ?? 0) - (left.promotedAt ?? 0));
-  }, [history]);
-
-  const measured = useMemo(() => {
-    if (!history) return 0;
-    return SLOTS.reduce(
-      (total, slot) => total + history[slot].filter((v) => v.replayScore !== undefined).length,
-      0,
-    );
-  }, [history]);
-
-  const versionCount = useMemo(
-    () => (history ? SLOTS.reduce((total, slot) => total + history[slot].length, 0) : 0),
+  const allVersions = useMemo(
+    () => (history ? SLOTS.flatMap((slot) => history[slot]) : []),
     [history],
   );
+
+  const promotions = useMemo(
+    () =>
+      allVersions
+        .filter((version) => version.promotedAt)
+        .sort((left, right) => (right.promotedAt ?? 0) - (left.promotedAt ?? 0)),
+    [allVersions],
+  );
+
+  const measured = useMemo(
+    () => allVersions.filter((version) => version.replayScore !== undefined).length,
+    [allVersions],
+  );
+
+  const versionCount = allVersions.length;
 
   const historyCapped = useMemo(
     () => (history ? SLOTS.some((slot) => history[slot].length >= HISTORY_LIMIT) : false),
@@ -546,14 +776,6 @@ export function DreamSection({ owner }: DreamSectionProps) {
   const loading = slots === null && !failed;
   const nothingEverWritten = !loading && !failed && versionCount === 0;
 
-  const sheet = useDrawerSubject(promotion);
-  const sheetHistory = sheet && history ? history[sheet.slot] : [];
-  const previous = sheet?.prevActiveId
-    ? (sheetHistory.find((version) => version.id === sheet.prevActiveId) ?? null)
-    : null;
-  const sheetEval = evals?.find((entry) => entry.policyId === sheet?.id) ?? null;
-  const diff = sheet ? diffParams(previous?.params, sheet.params) : [];
-
   return (
     <>
       {dialog}
@@ -565,36 +787,7 @@ export function DreamSection({ owner }: DreamSectionProps) {
         >
           <div className="flex flex-col gap-4">
             {/* The action items first: a frozen slot is a decision waiting for a person. */}
-            {frozen.length > 0 ? (
-              <Fade asChild>
-                <div className="flex flex-col gap-2 px-4 lg:px-6">
-                  {frozen.map((view) => {
-                    const reason = view.state.frozenReason;
-                    const said = reason ? FREEZE_REASON[reason] : null;
-                    return (
-                      <Alert key={view.slot} variant="destructive">
-                        <BadgeAlertIcon aria-hidden="true" />
-                        <AlertTitle>
-                          {SLOT_LABEL[view.slot]} is frozen
-                          {said ? ' — ' + said.label : ''}
-                        </AlertTitle>
-                        <AlertDescription>
-                          <span>
-                            {said ? said.detail : 'No cause was recorded for this freeze.'}
-                          </span>
-                          {/* The one sentence a frozen slot must say out loud. */}
-                          <span>
-                            {' '}
-                            It keeps measuring; it no longer promotes. Frozen{' '}
-                            {formatDateTime(view.state.frozenAt)}.
-                          </span>
-                        </AlertDescription>
-                      </Alert>
-                    );
-                  })}
-                </div>
-              </Fade>
-            ) : null}
+            {frozen.length > 0 ? <FrozenSlotAlerts views={frozen} /> : null}
 
             {failed ? (
               <div className="px-4 lg:px-6">
@@ -639,28 +832,7 @@ export function DreamSection({ owner }: DreamSectionProps) {
             {/* Every number on this surface rests on the same served config -
                 and so do these three switches, which write it back. */}
             {dream ? (
-              <div className="px-4 lg:px-6">
-                <Card>
-                  <CardContent className="grid gap-4 @[720px]/card:grid-cols-3">
-                    {SWITCHES.map((entry) => (
-                      <div key={entry.key} className="flex items-start gap-3">
-                        <Switch
-                          id={'dream-' + entry.key}
-                          checked={Boolean(dream[entry.key])}
-                          onCheckedChange={(checked) => void flip(entry.key, checked)}
-                          disabled={switching !== null}
-                        />
-                        <div className="grid gap-1">
-                          <Label htmlFor={'dream-' + entry.key} className="text-sm font-medium">
-                            {entry.label}
-                          </Label>
-                          <p className="text-xs text-muted-foreground">{entry.detail}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
-              </div>
+              <DreamSwitchesCard dream={dream} disabled={switching !== null} onFlip={flip} />
             ) : null}
 
             {/* The gate is open but the stage is not: an honest contradiction,
@@ -812,141 +984,14 @@ export function DreamSection({ owner }: DreamSectionProps) {
         report drawer: a mounted vaul instance per row would bring its own
         portal and focus trap along.
       */}
-      <DetailDrawer
-        open={promotion !== null}
-        onOpenChange={(open) => {
-          if (!open) setPromotion(null);
-        }}
-        title="Diff sheet"
-        description={
-          sheet
-            ? SLOT_LABEL[sheet.slot] +
-              ' · v' +
-              sheet.version +
-              ' · promoted ' +
-              formatDateTime(sheet.promotedAt)
-            : undefined
-        }
-        footer={
-          sheet && !sheet.retiredAt ? (
-            <Button
-              variant="outline"
-              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-              disabled={reverting === sheet.id}
-              onClick={() => void revert(sheet)}
-            >
-              {reverting === sheet.id ? (
-                <Spinner data-icon="inline-start" aria-hidden="true" />
-              ) : (
-                <RotateCcwIcon data-icon="inline-start" />
-              )}
-              Revert this promotion
-            </Button>
-          ) : undefined
-        }
-      >
-        {sheet ? (
-          <>
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{sheet.origin}</Badge>
-              {sheet.retiredAt ? (
-                <Badge variant="outline">retired {formatDateTime(sheet.retiredAt)}</Badge>
-              ) : (
-                <Badge variant="secondary">in force</Badge>
-              )}
-            </div>
-
-            <SectionHeading
-              title="What it was measured at"
-              size="sm"
-              level="h3"
-              flush
-              hint={
-                sheetEval
-                  ? 'From the evaluation of ' + formatDateTime(sheetEval.createdAt) + '.'
-                  : evals === null
-                    ? 'Loading the evaluation behind these numbers…'
-                    : 'No evaluation is recorded for this version; only what the version itself stores is shown.'
-              }
-            >
-              <MetaList
-                columns={2}
-                items={[
-                  { label: 'Holdout score', value: score(sheet.replayScore) },
-                  { label: 'Baseline', value: score(sheet.baselineScore) },
-                  {
-                    label: 'Delta (paired)',
-                    value: sheetEval ? signed(sheetEval.delta) : EMPTY_CELL,
-                  },
-                  { label: 'ci_low', value: sheetEval ? signed(sheetEval.ciLow) : EMPTY_CELL },
-                  {
-                    label: 'audit_ci_low',
-                    value: signed(sheet.auditCiLow ?? sheetEval?.auditCiLow),
-                  },
-                  { label: 'audit_delta', value: signed(sheet.auditDelta ?? sheetEval?.auditDelta) },
-                  {
-                    label: 'Traces closed',
-                    value: sheetEval ? formatNumber(sheetEval.closed) : EMPTY_CELL,
-                  },
-                  {
-                    label: 'Label coverage',
-                    value: sheetEval ? score(sheetEval.labelCoverage) : EMPTY_CELL,
-                  },
-                ]}
-              />
-            </SectionHeading>
-
-            <SectionHeading
-              title="What changed"
-              size="sm"
-              level="h3"
-              flush
-              hint={
-                previous
-                  ? 'Against v' + previous.version + ', which was in force until this promotion.'
-                  : 'Nothing was in force before this promotion, so the left column is the configured default and is not stored with the version.'
-              }
-            >
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Field</TableHead>
-                      <TableHead>Before</TableHead>
-                      <TableHead>After</TableHead>
-                      <TableHead className="text-right">Delta</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {diff.map((row) => (
-                      <TableRow key={row.field} className={row.changed ? undefined : 'opacity-60'}>
-                        <TableCell className="numeric text-xs">{row.field}</TableCell>
-                        <TableCell className="numeric">
-                          {previous ? paramText(row.before) : EMPTY_CELL}
-                        </TableCell>
-                        <TableCell className="numeric">{paramText(row.after)}</TableCell>
-                        <TableCell className="numeric text-right">
-                          {previous && row.delta !== undefined && row.changed
-                            ? signed(row.delta)
-                            : EMPTY_CELL}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </SectionHeading>
-
-            {sheet.rationale ? (
-              <SectionHeading title="Reason" size="sm" level="h3" flush>
-                <p className="whitespace-pre-wrap break-words text-muted-foreground">
-                  {sheet.rationale}
-                </p>
-              </SectionHeading>
-            ) : null}
-          </>
-        ) : null}
-      </DetailDrawer>
+      <PromotionSheet
+        promotion={promotion}
+        history={history}
+        evals={evals}
+        reverting={reverting}
+        onClose={() => setPromotion(null)}
+        onRevert={(version) => void revert(version)}
+      />
     </>
   );
 }

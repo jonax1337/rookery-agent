@@ -53,6 +53,9 @@ export function multiply(m: Matrix, n: Matrix): Matrix {
 }
 
 const NUMBER = /[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g;
+/** Characters of path data quoted in a bad-number error. */
+const BAD_NUMBER_CONTEXT = 12;
+const STICKY_NUMBER = new RegExp(NUMBER.source, 'y');
 
 function numbers(text: string): number[] {
   return (text.match(NUMBER) ?? []).map(Number);
@@ -128,10 +131,10 @@ class Scanner {
 
   number(): number {
     this.#skip();
-    const pattern = /[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/y;
+    const pattern = STICKY_NUMBER;
     pattern.lastIndex = this.#at;
     const match = pattern.exec(this.text);
-    if (!match) throw new Error('Bad number in path data near "' + this.text.slice(this.#at, this.#at + 12) + '".');
+    if (!match) throw new Error('Bad number in path data near "' + this.text.slice(this.#at, this.#at + BAD_NUMBER_CONTEXT) + '".');
     this.#at = pattern.lastIndex;
     return Number(match[0]);
   }
@@ -198,102 +201,144 @@ function arcToCubics(x0: number, y0: number, rx: number, ry: number, rotation: n
   return segments;
 }
 
-export function parsePath(d: string): Subpath[] {
-  const scan = new Scanner(d);
-  const paths: Subpath[] = [];
-  let current: Subpath | null = null;
-  let x = 0, y = 0, startX = 0, startY = 0;
-  // The last cubic's second / the last quadratic's control point, for S and T reflection.
-  let lastC: [number, number] | null = null;
-  let lastQ: [number, number] | null = null;
-  let command: string | null = null;
-  const begin = (): Subpath => {
-    if (!current) {
-      current = { start: [x, y], segments: [], closed: false };
-      paths.push(current);
+/** Path data parser state: the pen position, the open subpath and the control points S and T reflect. */
+class PathParser {
+  readonly #scan: Scanner;
+  readonly #paths: Subpath[] = [];
+  #current: Subpath | null = null;
+  #x = 0;
+  #y = 0;
+  #startX = 0;
+  #startY = 0;
+  /** The last cubic's second / the last quadratic's control point, for S and T reflection. */
+  #lastC: [number, number] | null = null;
+  #lastQ: [number, number] | null = null;
+  #nextC: [number, number] | null = null;
+  #nextQ: [number, number] | null = null;
+
+  constructor(d: string) {
+    this.#scan = new Scanner(d);
+  }
+
+  parse(): Subpath[] {
+    let command: string | null = null;
+    while (!this.#scan.done) {
+      const next = this.#scan.command();
+      if (next) command = next;
+      else if (!command || !this.#scan.hasNumber()) throw new Error('Path data must start with a command.');
+      command = this.#execute(command);
+      this.#lastC = this.#nextC;
+      this.#lastQ = this.#nextQ;
+      this.#nextC = null;
+      this.#nextQ = null;
     }
-    return current;
-  };
-  while (!scan.done) {
-    const next = scan.command();
-    if (next) command = next;
-    else if (!command || !scan.hasNumber()) throw new Error('Path data must start with a command.');
-    const relative: boolean = command === command.toLowerCase();
-    const ox = relative ? x : 0, oy = relative ? y : 0;
-    const upper: string = command.toUpperCase();
-    let c: [number, number] | null = null;
-    let q: [number, number] | null = null;
+    return this.#paths.filter((path) => path.segments.length > 0);
+  }
+
+  /** Run one command's arguments; returns the command that repeated arguments continue with. */
+  #execute(command: string): string {
+    const relative = command === command.toLowerCase();
+    const ox = relative ? this.#x : 0, oy = relative ? this.#y : 0;
+    const upper = command.toUpperCase();
     switch (upper) {
       case 'M':
-        x = ox + scan.number();
-        y = oy + scan.number();
-        startX = x;
-        startY = y;
-        current = null;
-        begin();
+        this.#moveTo(ox, oy);
         // Further pairs after a moveto are implicit linetos.
-        command = relative ? 'l' : 'L';
-        break;
+        return relative ? 'l' : 'L';
       case 'L':
-        x = ox + scan.number();
-        y = oy + scan.number();
-        begin().segments.push([x, y]);
+        this.#x = ox + this.#scan.number();
+        this.#y = oy + this.#scan.number();
+        this.#begin().segments.push([this.#x, this.#y]);
         break;
       case 'H':
-        x = ox + scan.number();
-        begin().segments.push([x, y]);
+        this.#x = ox + this.#scan.number();
+        this.#begin().segments.push([this.#x, this.#y]);
         break;
       case 'V':
-        y = oy + scan.number();
-        begin().segments.push([x, y]);
+        this.#y = oy + this.#scan.number();
+        this.#begin().segments.push([this.#x, this.#y]);
         break;
       case 'C':
-      case 'S': {
-        const x1: number = upper === 'C' ? ox + scan.number() : lastC ? 2 * x - lastC[0] : x;
-        const y1: number = upper === 'C' ? oy + scan.number() : lastC ? 2 * y - lastC[1] : y;
-        const x2 = ox + scan.number(), y2 = oy + scan.number();
-        const ex = ox + scan.number(), ey = oy + scan.number();
-        begin().segments.push([x1, y1, x2, y2, ex, ey]);
-        c = [x2, y2];
-        x = ex;
-        y = ey;
+      case 'S':
+        this.#cubicTo(upper === 'S', ox, oy);
         break;
-      }
       case 'Q':
-      case 'T': {
-        const qx: number = upper === 'Q' ? ox + scan.number() : lastQ ? 2 * x - lastQ[0] : x;
-        const qy: number = upper === 'Q' ? oy + scan.number() : lastQ ? 2 * y - lastQ[1] : y;
-        const ex = ox + scan.number(), ey = oy + scan.number();
-        // A quadratic is the cubic with controls two thirds of the way to its one control point.
-        begin().segments.push([x + (2 / 3) * (qx - x), y + (2 / 3) * (qy - y), ex + (2 / 3) * (qx - ex), ey + (2 / 3) * (qy - ey), ex, ey]);
-        q = [qx, qy];
-        x = ex;
-        y = ey;
+      case 'T':
+        this.#quadraticTo(upper === 'T', ox, oy);
         break;
-      }
-      case 'A': {
-        const rx = scan.number(), ry = scan.number(), rotation = scan.number();
-        const large = scan.flag(), sweep = scan.flag();
-        const ex = ox + scan.number(), ey = oy + scan.number();
-        begin().segments.push(...arcToCubics(x, y, rx, ry, rotation, large, sweep, ex, ey));
-        x = ex;
-        y = ey;
+      case 'A':
+        this.#arcTo(ox, oy);
         break;
-      }
-      case 'Z': {
-        // begin() assigns current through a closure, which narrowing cannot see.
-        const open = current as Subpath | null;
-        if (open) open.closed = true;
-        x = startX;
-        y = startY;
-        current = null;
+      case 'Z':
+        this.#close();
         break;
-      }
     }
-    lastC = c;
-    lastQ = q;
+    return command;
   }
-  return paths.filter((path) => path.segments.length > 0);
+
+  #begin(): Subpath {
+    if (!this.#current) {
+      this.#current = { start: [this.#x, this.#y], segments: [], closed: false };
+      this.#paths.push(this.#current);
+    }
+    return this.#current;
+  }
+
+  #moveTo(ox: number, oy: number): void {
+    this.#x = ox + this.#scan.number();
+    this.#y = oy + this.#scan.number();
+    this.#startX = this.#x;
+    this.#startY = this.#y;
+    this.#current = null;
+    this.#begin();
+  }
+
+  /** C, or S whose first control point reflects the previous cubic's second. */
+  #cubicTo(smooth: boolean, ox: number, oy: number): void {
+    const reflected = this.#lastC;
+    const x1 = smooth ? (reflected ? 2 * this.#x - reflected[0] : this.#x) : ox + this.#scan.number();
+    const y1 = smooth ? (reflected ? 2 * this.#y - reflected[1] : this.#y) : oy + this.#scan.number();
+    const x2 = ox + this.#scan.number(), y2 = oy + this.#scan.number();
+    const ex = ox + this.#scan.number(), ey = oy + this.#scan.number();
+    this.#begin().segments.push([x1, y1, x2, y2, ex, ey]);
+    this.#nextC = [x2, y2];
+    this.#x = ex;
+    this.#y = ey;
+  }
+
+  /** Q, or T whose control point reflects the previous quadratic's. */
+  #quadraticTo(smooth: boolean, ox: number, oy: number): void {
+    const reflected = this.#lastQ;
+    const qx = smooth ? (reflected ? 2 * this.#x - reflected[0] : this.#x) : ox + this.#scan.number();
+    const qy = smooth ? (reflected ? 2 * this.#y - reflected[1] : this.#y) : oy + this.#scan.number();
+    const ex = ox + this.#scan.number(), ey = oy + this.#scan.number();
+    const x = this.#x, y = this.#y;
+    // A quadratic is the cubic with controls two thirds of the way to its one control point.
+    this.#begin().segments.push([x + (2 / 3) * (qx - x), y + (2 / 3) * (qy - y), ex + (2 / 3) * (qx - ex), ey + (2 / 3) * (qy - ey), ex, ey]);
+    this.#nextQ = [qx, qy];
+    this.#x = ex;
+    this.#y = ey;
+  }
+
+  #arcTo(ox: number, oy: number): void {
+    const rx = this.#scan.number(), ry = this.#scan.number(), rotation = this.#scan.number();
+    const large = this.#scan.flag(), sweep = this.#scan.flag();
+    const ex = ox + this.#scan.number(), ey = oy + this.#scan.number();
+    this.#begin().segments.push(...arcToCubics(this.#x, this.#y, rx, ry, rotation, large, sweep, ex, ey));
+    this.#x = ex;
+    this.#y = ey;
+  }
+
+  #close(): void {
+    if (this.#current) this.#current.closed = true;
+    this.#x = this.#startX;
+    this.#y = this.#startY;
+    this.#current = null;
+  }
+}
+
+export function parsePath(d: string): Subpath[] {
+  return new PathParser(d).parse();
 }
 
 /* ------------------------------ basic shapes ------------------------------ */
@@ -348,14 +393,18 @@ function apply(m: Matrix, x: number, y: number): [number, number] {
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 }
 
+/** Chords shorter than this count as a point; subdivision stops at this depth whatever the tolerance. */
+const DEGENERATE_CHORD = 1e-9;
+const MAX_SUBDIVISION_DEPTH = 16;
+
 /** Subdivide until both controls lie within tolerance of the chord. */
 function flattenCubic(out: Stroke, p: number[], tolerance: number, depth: number): void {
   const [x0, y0, x1, y1, x2, y2, x3, y3] = p as [number, number, number, number, number, number, number, number];
   const dx = x3 - x0, dy = y3 - y0;
   const length = Math.hypot(dx, dy);
-  const d1 = length > 1e-9 ? Math.abs((x1 - x3) * dy - (y1 - y3) * dx) / length : Math.hypot(x1 - x0, y1 - y0);
-  const d2 = length > 1e-9 ? Math.abs((x2 - x3) * dy - (y2 - y3) * dx) / length : Math.hypot(x2 - x0, y2 - y0);
-  if (depth >= 16 || Math.max(d1, d2) <= tolerance) {
+  const d1 = length > DEGENERATE_CHORD ? Math.abs((x1 - x3) * dy - (y1 - y3) * dx) / length : Math.hypot(x1 - x0, y1 - y0);
+  const d2 = length > DEGENERATE_CHORD ? Math.abs((x2 - x3) * dy - (y2 - y3) * dx) / length : Math.hypot(x2 - x0, y2 - y0);
+  if (depth >= MAX_SUBDIVISION_DEPTH || Math.max(d1, d2) <= tolerance) {
     out.push(x3, y3);
     return;
   }
@@ -387,6 +436,30 @@ function flatten(path: Subpath, m: Matrix, tolerance: number): Stroke {
 
 /* -------------------------------- hatching -------------------------------- */
 
+/** Hatch line spacings a zigzag may span, and the floor of that length, in output units. */
+const HATCH_MAX_SPACINGS = 50;
+const HATCH_MIN_BUDGET = 300;
+/** How far a zigzag connector may jump sideways, in spacings. */
+const HATCH_JOIN_SPACINGS = 3;
+const CROSS_HATCH_DEGREES = 90;
+/** A polygon needs three points, i.e. six coordinates, to enclose anything. */
+const MIN_POLYGON_COORDINATES = 6;
+
+/** Sorted x positions where the horizontal line at v crosses the polygons' edges. */
+function scanlineCrossings(polygons: number[][], v: number): number[] {
+  const xs: number[] = [];
+  for (const p of polygons) {
+    const n = p.length / 2;
+    for (let i = 0; i < n; i++) {
+      const ax = p[2 * i]!, ay = p[2 * i + 1]!;
+      const bx = p[(2 * i + 2) % p.length]!, by = p[(2 * i + 3) % p.length]!;
+      // Half-open rule: a vertex on the line counts once.
+      if ((ay <= v && by > v) || (by <= v && ay > v)) xs.push(ax + ((v - ay) / (by - ay)) * (bx - ax));
+    }
+  }
+  return xs.sort((m, n) => m - n);
+}
+
 /**
  * Even-odd scanline hatching of closed polylines. Consecutive lines that each
  * cross the shape once are joined into a zigzag, so shading costs few pen
@@ -395,7 +468,7 @@ function flatten(path: Subpath, m: Matrix, tolerance: number): Stroke {
  * very long stroke) render them whole.
  */
 export function hatchPolygons(polygons: Stroke[], spacing: number, degrees: number): Stroke[] {
-  const budget = Math.max(300, 50 * spacing);
+  const budget = Math.max(HATCH_MIN_BUDGET, HATCH_MAX_SPACINGS * spacing);
   const a = (degrees * Math.PI) / 180, cos = Math.cos(a), sin = Math.sin(a);
   // Rotate into a frame where hatch lines are horizontal.
   const rotated = polygons.map((p) => {
@@ -413,21 +486,11 @@ export function hatchPolygons(polygons: Stroke[], spacing: number, degrees: numb
   let flip = false;
   let length = 0;
   for (let v = minV + spacing / 2; v < maxV; v += spacing) {
-    const xs: number[] = [];
-    for (const p of rotated) {
-      const n = p.length / 2;
-      for (let i = 0; i < n; i++) {
-        const ax = p[2 * i]!, ay = p[2 * i + 1]!;
-        const bx = p[(2 * i + 2) % p.length]!, by = p[(2 * i + 3) % p.length]!;
-        // Half-open rule: a vertex on the line counts once.
-        if ((ay <= v && by > v) || (by <= v && ay > v)) xs.push(ax + ((v - ay) / (by - ay)) * (bx - ax));
-      }
-    }
-    xs.sort((m, n) => m - n);
+    const xs = scanlineCrossings(rotated, v);
     if (xs.length === 2 && zigzag) {
       const [from, to] = flip ? [xs[1]!, xs[0]!] : [xs[0]!, xs[1]!];
       // Only join when the connector hugs the edge; a far jump would cross open space.
-      if (Math.abs(lastU - from) <= spacing * 3 && length + Math.abs(to - from) <= budget) {
+      if (Math.abs(lastU - from) <= spacing * HATCH_JOIN_SPACINGS && length + Math.abs(to - from) <= budget) {
         zigzag.push(...back(from, v), ...back(to, v));
         length += Math.abs(to - from) + spacing;
         lastU = to;
@@ -449,41 +512,46 @@ export function hatchPolygons(polygons: Stroke[], spacing: number, degrees: numb
 
 /* -------------------------------- clipping -------------------------------- */
 
+/** The parameter range [t0, t1] of segment a-b inside the rectangle (Liang-Barsky), or null when it misses. */
+function clipSegment(ax: number, ay: number, bx: number, by: number, x0: number, y0: number, x1: number, y1: number): [number, number] | null {
+  const dx = bx - ax, dy = by - ay;
+  let t0 = 0, t1 = 1;
+  for (const [p, q] of [[-dx, ax - x0], [dx, x1 - ax], [-dy, ay - y0], [dy, y1 - ay]] as [number, number][]) {
+    if (p === 0) {
+      if (q < 0) return null;
+    } else {
+      const r = q / p;
+      if (p < 0) t0 = Math.max(t0, r);
+      else t1 = Math.min(t1, r);
+    }
+  }
+  return t0 > t1 ? null : [t0, t1];
+}
+
 /** Cut polylines at the rectangle's edge (Liang-Barsky per segment); dots inside survive. */
 export function clipStrokes(strokes: Stroke[], clip: Rect): Stroke[] {
   const x0 = clip.x, y0 = clip.y, x1 = clip.x + clip.width, y1 = clip.y + clip.height;
-  const inside = (x: number, y: number): boolean => x >= x0 && x <= x1 && y >= y0 && y <= y1;
   const out: Stroke[] = [];
   for (const stroke of strokes) {
     if (stroke.length === 2) {
-      if (inside(stroke[0]!, stroke[1]!)) out.push(stroke);
+      const [x, y] = stroke as [number, number];
+      if (x >= x0 && x <= x1 && y >= y0 && y <= y1) out.push(stroke);
       continue;
     }
     let current: Stroke | null = null;
     for (let i = 0; i + 3 < stroke.length; i += 2) {
-      const ax = stroke[i]!, ay = stroke[i + 1]!, bx = stroke[i + 2]!, by = stroke[i + 3]!;
-      const dx = bx - ax, dy = by - ay;
-      let t0 = 0, t1 = 1;
-      let visible = true;
-      for (const [p, q] of [[-dx, ax - x0], [dx, x1 - ax], [-dy, ay - y0], [dy, y1 - ay]] as [number, number][]) {
-        if (p === 0) {
-          if (q < 0) visible = false;
-        } else {
-          const r = q / p;
-          if (p < 0) t0 = Math.max(t0, r);
-          else t1 = Math.min(t1, r);
-        }
-      }
-      if (!visible || t0 > t1) {
+      const ax = stroke[i]!, ay = stroke[i + 1]!, dx = stroke[i + 2]! - ax, dy = stroke[i + 3]! - ay;
+      const span = clipSegment(ax, ay, stroke[i + 2]!, stroke[i + 3]!, x0, y0, x1, y1);
+      if (!span) {
         current = null;
         continue;
       }
-      const sx = ax + t0 * dx, sy = ay + t0 * dy, ex = ax + t1 * dx, ey = ay + t1 * dy;
+      const [t0, t1] = span;
       if (!current || t0 > 0) {
-        current = [sx, sy];
+        current = [ax + t0 * dx, ay + t0 * dy];
         out.push(current);
       }
-      current.push(ex, ey);
+      current.push(ax + t1 * dx, ay + t1 * dy);
       if (t1 < 1) current = null;
     }
   }
@@ -524,6 +592,13 @@ export function svgViewBox(svg: string): [number, number, number, number] {
   throw new Error('The <svg> element needs a viewBox (or width and height).');
 }
 
+function hatchStrokes(paths: Stroke[], hatch: Hatch): Stroke[] {
+  const polygons = paths.filter((p) => p.length >= MIN_POLYGON_COORDINATES);
+  const strokes = hatchPolygons(polygons, hatch.spacing, hatch.angle);
+  if (hatch.cross) strokes.push(...hatchPolygons(polygons, hatch.spacing, hatch.angle + CROSS_HATCH_DEGREES));
+  return strokes;
+}
+
 /** The strokes an SVG document draws, in output space, in document order (hatching before outline). */
 export function svgStrokes(svg: string, options: SketchOptions): Stroke[] {
   const text = svg.replace(/<!--[\s\S]*?-->/g, '').replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '');
@@ -552,13 +627,9 @@ export function svgStrokes(svg: string, options: SketchOptions): Stroke[] {
     if (next.skip) continue;
     const d = shapePath(tag, attrs);
     if (!d) continue;
-    // A line or polyline has no interior to shade.
     const paths = parsePath(d).map((path) => flatten(path, matrix, options.tolerance));
-    if (options.hatch && next.fill !== 'none' && tag !== 'line' && tag !== 'polyline') {
-      const polygons = paths.filter((p) => p.length >= 6);
-      strokes.push(...hatchPolygons(polygons, options.hatch.spacing, options.hatch.angle));
-      if (options.hatch.cross) strokes.push(...hatchPolygons(polygons, options.hatch.spacing, options.hatch.angle + 90));
-    }
+    // A line or polyline has no interior to shade.
+    if (options.hatch && next.fill !== 'none' && tag !== 'line' && tag !== 'polyline') strokes.push(...hatchStrokes(paths, options.hatch));
     if (next.stroke !== 'none') strokes.push(...paths);
   }
   return strokes;

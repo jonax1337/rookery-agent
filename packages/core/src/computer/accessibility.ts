@@ -45,8 +45,10 @@ export interface ActResult {
   focusChanged: boolean;
 }
 
-const clip = (text: string, max: number): string => (text.length > max ? text.slice(0, max) + '…' : text);
-const quote = (text: string, max: number): string => JSON.stringify(clip(text, max));
+const truncate = (text: string, max: number): string => (text.length > max ? text.slice(0, max) + '…' : text);
+const quote = (text: string, max: number): string => JSON.stringify(truncate(text, max));
+/** How much of each field one line of a snapshot keeps; the model pays for every character. */
+const QUOTE_LIMITS = { title: 200, name: 150, value: 300, text: 600, controlName: 80 } as const;
 /** Console buffers and documents pad with spaces and blank lines; none of it is content. */
 const tidy = (text: string): string => text.replace(/\r/g, '').replace(/[ \t]+$/gm, '').replace(/ {2,}/g, ' ').replace(/\n{2,}/g, '\n').trim();
 
@@ -63,32 +65,35 @@ export function describeSnapshot(snapshot: Snapshot, view: View): string {
     else children.set(element.parent, [element]);
   }
   const lines = [
-    'window=' + snapshot.window + ' ' + quote(snapshot.title, 200) + (snapshot.foreground === snapshot.window ? ' [active]' : ' (background)'),
+    'window=' + snapshot.window + ' ' + quote(snapshot.title, QUOTE_LIMITS.title) + (snapshot.foreground === snapshot.window ? ' [active]' : ' (background)'),
   ];
   const visit = (element: SnapshotElement, level: number): void => {
     const text = element.text === undefined ? '' : tidy(element.text);
-    const shown = element.parent === 0 || element.name || element.value !== undefined || text || element.actions.length;
-    if (shown) {
-      let line = '  '.repeat(level) + element.ref + ' ' + element.role;
-      if (element.name) line += ' ' + quote(element.name, 150);
-      else if (element.automationId) line += ' #' + element.automationId;
-      if (element.value !== undefined && element.value !== element.name) line += ' value=' + quote(element.value, 300);
-      if (text) line += ' text=' + quote(text, 600);
-      if (element.actions.length) line += ' [' + element.actions.join(' ') + ']';
-      if (element.password) line += ' password';
-      if (!element.enabled) line += ' disabled';
-      if (element.offscreen) line += ' offscreen';
-      else if (element.bounds) {
-        const [x, y, width, height] = element.bounds;
-        line += ' ' + at(x + width / 2, y + height / 2, view);
-      }
-      lines.push(line);
-    }
+    const shown = carriesInformation(element, text);
+    if (shown) lines.push('  '.repeat(level) + describeElement(element, text, view));
     for (const child of children.get(element.id) ?? []) visit(child, shown ? level + 1 : level);
   };
   for (const root of children.get(0) ?? []) visit(root, 0);
   if (snapshot.truncated) lines.push('(truncated: raise maxNodes or depth, or snapshot a smaller window)');
   return lines.join('\n');
+}
+
+function carriesInformation(element: SnapshotElement, text: string): boolean {
+  return element.parent === 0 || Boolean(element.name) || element.value !== undefined || Boolean(text) || element.actions.length > 0;
+}
+
+function describeElement(element: SnapshotElement, text: string, view: View): string {
+  let line = element.ref + ' ' + element.role;
+  if (element.name) line += ' ' + quote(element.name, QUOTE_LIMITS.name);
+  else if (element.automationId) line += ' #' + element.automationId;
+  if (element.value !== undefined && element.value !== element.name) line += ' value=' + quote(element.value, QUOTE_LIMITS.value);
+  if (text) line += ' text=' + quote(text, QUOTE_LIMITS.text);
+  if (element.actions.length) line += ' [' + element.actions.join(' ') + ']';
+  if (element.password) line += ' password';
+  if (!element.enabled) line += ' disabled';
+  if (element.offscreen) line += ' offscreen';
+  else if (element.bounds) line += ' ' + centreMark(element.bounds, view);
+  return line;
 }
 
 /** A control found by name: ref, role, actions and centre, in physical pixels until described. */
@@ -104,10 +109,9 @@ export interface FoundControl {
 
 /** One line per found control, its centre in screenshot pixels of the given view. */
 export function describeControl(control: FoundControl, view: View): string {
-  const [x, y, width, height] = control.bounds;
-  return control.role + ' ' + quote(control.name, 80) + ' (' + control.ref + ')' +
+  return control.role + ' ' + quote(control.name, QUOTE_LIMITS.controlName) + ' (' + control.ref + ')' +
     (control.actions.length ? ' [' + control.actions.join(' ') + ']' : '') + (control.enabled ? '' : ' disabled') +
-    ' ' + at(x + width / 2, y + height / 2, view);
+    ' ' + centreMark(control.bounds, view);
 }
 
 /** The view a centre is printed in: the desktop, or a zoomed region of it with a size. */
@@ -119,9 +123,10 @@ export interface View {
   height?: number;
 }
 
-/** A physical point as "@x,y" in the view, or "@off-view" when a zoomed view does not contain it. */
-function at(px: number, py: number, view: View): string {
-  const x = Math.round((px - view.left) * view.scale), y = Math.round((py - view.top) * view.scale);
+/** The centre of a physical rectangle as "@x,y" in the view, or "@off-view" when a zoomed view does not contain it. */
+function centreMark([left, top, width, height]: [number, number, number, number], view: View): string {
+  const x = Math.round((left + width / 2 - view.left) * view.scale);
+  const y = Math.round((top + height / 2 - view.top) * view.scale);
   if (x < 0 || y < 0 || (view.width !== undefined && x >= view.width) || (view.height !== undefined && y >= view.height)) return '@off-view';
   return '@' + x + ',' + y;
 }
@@ -133,7 +138,7 @@ const DONE: Record<string, string> = {
 
 /** What an act did, in one line. */
 export function describeAct(result: ActResult): string {
-  const target = result.role + (result.name ? ' ' + quote(result.name, 80) : '') + ' (' + result.ref + ')';
+  const target = result.role + (result.name ? ' ' + quote(result.name, QUOTE_LIMITS.controlName) : '') + ' (' + result.ref + ')';
   return (DONE[result.action] ?? result.action) + ' ' + target + (result.input === 'win32' ? ' through its edit control' : '') + '.' +
     (result.focusChanged ? ' The app moved the foreground.' : '');
 }

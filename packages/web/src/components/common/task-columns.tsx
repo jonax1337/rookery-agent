@@ -116,32 +116,26 @@ export function buildTaskColumns(options: TaskColumnsOptions): RookeryColumnDef<
             <div className="text-xs text-muted-foreground">Subtask</div>
           ) : null;
 
-        if (onOpenDetail) {
-          return (
-            <div className="min-w-0">
-              <DetailDrawerTrigger
-                className="max-w-[28ch] font-medium"
-                onClick={() => onOpenDetail(task)}
-              >
-                {/* The clamp belongs on the text, not on the button: the
-                    trigger is a flex box, so a `truncate` on it centres the
-                    overflow and cuts the title at BOTH ends instead of
-                    ellipsising it. Same span the memory and session columns
-                    already use. */}
-                <span className="truncate">{task.title}</span>
-              </DetailDrawerTrigger>
-              {hint}
-            </div>
-          );
-        }
+        const title = onOpenDetail ? (
+          <DetailDrawerTrigger className="max-w-[28ch] font-medium" onClick={() => onOpenDetail(task)}>
+            {/* The clamp belongs on the text, not on the button: the
+                trigger is a flex box, so a `truncate` on it centres the
+                overflow and cuts the title at BOTH ends instead of
+                ellipsising it. Same span the memory and session columns
+                already use. */}
+            <span className="truncate">{task.title}</span>
+          </DetailDrawerTrigger>
+        ) : (
+          <NavLink
+            to={'/tasks/' + task.id}
+            className="block max-w-[28ch] truncate font-medium hover:underline"
+          >
+            {task.title}
+          </NavLink>
+        );
         return (
           <div className="min-w-0">
-            <NavLink
-              to={'/tasks/' + task.id}
-              className="block max-w-[28ch] truncate font-medium hover:underline"
-            >
-              {task.title}
-            </NavLink>
+            {title}
             {hint}
           </div>
         );

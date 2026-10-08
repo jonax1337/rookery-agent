@@ -19,12 +19,12 @@ import { cn } from '@/lib/utils';
  * Compact stock cards keep the headline row above the page's actual work.
  * Column counts follow the page container, including narrow detail pages.
  *
- * What is NOT here is the trend badge. The original's "+12.5% gegenüber
- * Vormonat" needs a previous-period value, and the server has none: nothing
+ * What is NOT here is the trend badge. The original's "+12.5% vs. last
+ * month" needs a previous-period value, and the server has none: nothing
  * in the API returns a comparison window (see serverGaps). A percentage
  * invented on the client would be the most convincing lie on the page, so
  * `CardAction` takes only badges the calling page can actually prove - "3
- * laufen", "gedeckelt", "+4 in 7 Tagen" - and a card whose number rests on a
+ * running", "capped", "+4 in 7 days" - and a card whose number rests on a
  * capped list says so in its footnote.
  */
 
@@ -33,7 +33,7 @@ export interface StatCardProps {
   label: string;
   /** The number itself, already formatted (`formatNumber` from `@/lib/stats`). */
   value: ReactNode;
-  /** Provable badge only - a count, a state, "gedeckelt". Never a trend. */
+  /** Provable badge only - a count, a state, "capped". Never a trend. */
   badge?: ReactNode;
   /** First footer line: the sentence the number tells. */
   headline?: ReactNode;
@@ -109,10 +109,8 @@ export function StatCards({ items, children, className }: StatCardsProps) {
 /**
  * The badge a number wears when it is not the whole truth.
  *
- * Six cards typed `<Badge variant="outline">gedeckelt</Badge>` out by hand, in
- * two spellings - four as a conditional spread, two as `badge={… : undefined}`.
  * This is the one place the app admits that a count rests on a list that hit
- * the server limit, so it belongs in one place.
+ * the server limit.
  *
  * Returns a spreadable object, which covers both call shapes:
  * `<StatCard … {...cappedBadge(loaded >= LIMIT)} />`.

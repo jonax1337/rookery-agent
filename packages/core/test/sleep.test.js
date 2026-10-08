@@ -461,6 +461,140 @@ test('an insight needs at least two pieces of evidence', async () => {
   store.close();
 });
 
+/** An insight the night wrote on an earlier day, so that everything since is news. */
+function insightFromEarlier(store, content, daysAgo) {
+  const record = store.upsertMemory({ kind: 'insight', content, importance: 0.8, origin: 'sleep' });
+  store.db
+    .prepare('UPDATE memories SET created_at = ? WHERE id = ?')
+    .run(Date.now() - daysAgo * DAY, record.id);
+  return record;
+}
+
+test('an insight that rewords one on record is not written again, a new one is', async () => {
+  const store = makeStore();
+  insightFromEarlier(store, 'Der Nutzer entwickelt Rookery abends und arbeitet vor allem am Gedaechtnis.', 3);
+  for (const content of [
+    'Der Nutzer arbeitet abends an Rookery.',
+    'Der Nutzer nutzt Windows als Arbeitsrechner.',
+    'Der Nutzer hat gestern am Gedaechtnis gearbeitet.',
+    'Der Nutzer bevorzugt Tests vor jeder Aenderung am Code.',
+  ]) {
+    store.upsertMemory({ kind: 'event', content, importance: 0.6 });
+  }
+
+  const { runner, scripted } = makeRunner(store, {
+    insight: JSON.stringify({
+      insights: [
+        {
+          content: 'Der Nutzer entwickelt Rookery abends und arbeitet vor allem am Gedaechtnis des Assistenten.',
+          importance: 0.8,
+          evidence: [1, 3],
+          tags: [],
+        },
+        {
+          content: 'Der Nutzer legt Wert auf Tests, bevor er Code aendert, und nutzt Windows dafuer.',
+          importance: 0.8,
+          evidence: [2, 4],
+          tags: [],
+        },
+      ],
+    }),
+  });
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.insightCount, 1, 'the reworded one is a restatement, the other is not');
+  const written = store.listMemories({ kinds: ['insight'], limit: 10 }).map((memory) => memory.content);
+  assert.equal(written.length, 2);
+  assert.ok(written.some((content) => /Tests/.test(content)));
+  assert.ok(!written.some((content) => /des Assistenten/.test(content)));
+  assert.ok(
+    scripted.prompts.some((prompt) => prompt.includes('ALREADY ON RECORD') && prompt.includes('abends')),
+    'the prompt shows the model what is on record',
+  );
+  store.close();
+});
+
+test('an insight has to stand on something the last insight pass had not read', async () => {
+  const store = makeStore();
+  // The newest memory is also the most important one, which puts it first in
+  // the window whatever the clock does between the writes.
+  const memories = [
+    ['Der Nutzer arbeitet abends an Rookery.', 0.6],
+    ['Der Nutzer nutzt Windows als Arbeitsrechner.', 0.6],
+    ['Der Nutzer hat gestern am Gedaechtnis gearbeitet.', 0.6],
+    ['Der Nutzer bevorzugt Tests vor jeder Aenderung am Code.', 0.6],
+    ['Der Nutzer liest morgens zuerst die Mails.', 0.9],
+  ].map(([content, importance]) => store.upsertMemory({ kind: 'event', content, importance }));
+  // The pass last ran over the first four; only the fifth is news.
+  memories.slice(0, 4).forEach((memory) =>
+    store.db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(Date.now() - 5 * DAY, memory.id),
+  );
+  insightFromEarlier(store, 'Der Nutzer arbeitet strukturiert und testet zuerst.', 2);
+
+  const { runner } = makeRunner(store, {
+    insight: JSON.stringify({
+      insights: [
+        { content: 'Der Nutzer arbeitet abends am Gedaechtnis von Rookery unter Windows.', importance: 0.8, evidence: [2, 3], tags: [] },
+        { content: 'Der Nutzer beginnt den Tag mit Mails und endet ihn bei Rookery.', importance: 0.8, evidence: [1, 4], tags: [] },
+      ],
+    }),
+  });
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.insightCount, 1, 'only the insight that stands on the new memory is written');
+  const written = store.listMemories({ kinds: ['insight'], limit: 10 }).map((memory) => memory.content);
+  assert.ok(written.some((content) => /Mails/.test(content)));
+  assert.ok(!written.some((content) => /unter Windows/.test(content)));
+  store.close();
+});
+
+test('the insight pass costs no model call on a night with nothing new in its window', async () => {
+  const store = makeStore();
+  for (const content of [
+    'Der Nutzer arbeitet abends an Rookery.',
+    'Der Nutzer nutzt Windows als Arbeitsrechner.',
+    'Der Nutzer hat gestern am Gedaechtnis gearbeitet.',
+    'Der Nutzer bevorzugt Tests vor jeder Aenderung am Code.',
+  ]) {
+    const memory = store.upsertMemory({ kind: 'event', content, importance: 0.6 });
+    store.db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(Date.now() - 5 * DAY, memory.id);
+  }
+  insightFromEarlier(store, 'Der Nutzer arbeitet strukturiert und testet zuerst.', 1);
+
+  const { runner, scripted } = makeRunner(store, {});
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.equal(run.insightCount, 0);
+  assert.ok(!scripted.prompts.some((prompt) => prompt.includes('You are reflecting')), 'no reflection was paid for');
+  store.close();
+});
+
+test('insights that restate one another are condensed into one', async () => {
+  const store = makeStore();
+  const wordings = [
+    'Jonas legt bei seiner technischen Ausstattung Wert auf hohe Leistung und sichtbare Darstellungsqualitaet.',
+    'Jonas legt bei seiner technischen Ausstattung Wert auf sichtbar hochwertige und fluessige Darstellung.',
+    'Jonas legt bei seiner technischen Ausstattung Wert auf Leistung und eine hochwertige Darstellungsqualitaet.',
+  ];
+  const insights = wordings.map((content, index) => insightFromEarlier(store, content, 3 - index));
+
+  const { runner } = makeRunner(store, {
+    condense:
+      '{"merge":true,"content":"Jonas will bei seiner Ausstattung hohe Leistung und flüssige, hochwertige Darstellung.",' +
+      '"supersedes":[1,2,3],"kind":"insight","importance":0.85,"tags":[]}',
+  });
+
+  const run = await runner.run({ owner: 'assistant' });
+
+  assert.ok(run.mergedCount >= 1, 'the night folded the three wordings');
+  for (const insight of insights) {
+    assert.ok(store.getMemory(insight.id).supersededBy, 'each wording was filed away under the merged one');
+  }
+  store.close();
+});
+
 test('the night stays inside its model budget', async () => {
   const store = makeStore();
   // Twenty pairs: far more clusters than the budget allows.

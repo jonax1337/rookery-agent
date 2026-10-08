@@ -67,6 +67,8 @@ interface RookeryThreadMessage {
 }
 
 type Part = Exclude<ThreadMessageLike['content'], string>[number];
+type ToolCallPart = Extract<Part, { type: 'tool-call' }>;
+type ToolEvent = NonNullable<Message['toolCalls']>[number];
 
 /**
  * The one line a report-back shows as: its first sentence, without the
@@ -75,6 +77,92 @@ type Part = Exclude<ThreadMessageLike['content'], string>[number];
 function systemSummary(content: string): string {
   const first = content.split('\n')[0] ?? '';
   return first.replace(/^\[Rookery\]\s*/, '').trim() || 'Rookery';
+}
+
+/**
+ * Folds one tool event into the calls seen so far, by id, and returns the
+ * part it produced: an `end` completes its `start`, keeping the name and
+ * detail the start carried. An `end` without an id closes the oldest open
+ * call of the same name.
+ */
+function foldToolCall(calls: Map<string, ToolCallPart>, event: ToolEvent): ToolCallPart {
+  const open =
+    event.status === 'end' && !event.id
+      ? [...calls.entries()].find(
+          ([, part]) => part.result === undefined && part.toolName === prettyToolName(event.name),
+        )?.[0]
+      : undefined;
+  const id = event.id ?? open ?? `${event.name}:${calls.size}`;
+  const prior = calls.get(id);
+  const part: ToolCallPart = {
+    type: 'tool-call',
+    toolCallId: id,
+    toolName: prior?.toolName ?? prettyToolName(event.name),
+    args: {},
+    argsText: event.detail ?? prior?.argsText ?? '',
+    ...(event.status === 'end' ? { result: event.result ?? 'Completed', isError: event.isError } : {}),
+  };
+  calls.set(id, part);
+  return part;
+}
+
+/**
+ * The answer text as parts: the text itself - always when nothing else is
+ * shown - with the trailing sources list split off into source parts. A
+ * running answer is still being written, so nothing is split yet.
+ */
+function pushAnswer(content: Part[], text: string, running: boolean | undefined): void {
+  const answer = running ? { text, sources: [] } : splitMessageSources(text);
+  if (answer.text || content.length === 0) content.push({ type: 'text', text: answer.text });
+  content.push(...answer.sources);
+}
+
+/**
+ * The ordered transcript: text, thinking and tool calls interleaved the way
+ * they actually arrived, instead of every tool clumped in front of the
+ * text. Same part vocabulary as the flat fallback; only the order differs,
+ * and only the last text block carries sources, because earlier ones are
+ * mid-turn prose the tools already answered to.
+ */
+function partsFromBlocks(message: RookeryThreadMessage, blocks: MessageBlock[]): Part[] {
+  const lastText = blocks.findLastIndex((block) => block.type === 'text');
+  const content: Part[] = [];
+  const calls = new Map<string, ToolCallPart>();
+  blocks.forEach((block, index) => {
+    if (block.type === 'thinking') {
+      if (block.text) content.push({ type: 'reasoning', text: block.text });
+    } else if (block.type === 'memory') {
+      // The recall reaches the thread as a tool call under a reserved name,
+      // because a part with a component of its own is what assistant-ui
+      // renders; `memory-call.tsx` registers what draws it. An old row has
+      // no such block and so shows nothing at all.
+      content.push({
+        type: 'tool-call',
+        toolCallId: message.id + ':memory:' + index,
+        toolName: MEMORY_RECALL_TOOL,
+        args: { memories: block.memories, ...(block.turnId ? { turnId: block.turnId } : {}) },
+        argsText: '',
+        result: block.memories.length,
+      });
+    } else if (block.type === 'text') {
+      if (index === lastText) pushAnswer(content, block.text, message.running);
+      else if (block.text) content.push({ type: 'text', text: block.text });
+    } else {
+      content.push(foldToolCall(calls, block.call));
+    }
+  });
+  return content;
+}
+
+/** Rows without blocks: thinking, then every tool call, then the answer. */
+function partsFromFlat(message: RookeryThreadMessage): Part[] {
+  const content: Part[] = [];
+  if (message.thinking) content.push({ type: 'reasoning', text: message.thinking });
+  const calls = new Map<string, ToolCallPart>();
+  for (const event of message.toolCalls ?? []) foldToolCall(calls, event);
+  content.push(...calls.values());
+  pushAnswer(content, message.content, message.running);
+  return content;
 }
 
 function convertMessage(message: RookeryThreadMessage): ThreadMessageLike {
@@ -93,111 +181,10 @@ function convertMessage(message: RookeryThreadMessage): ThreadMessageLike {
     };
   }
 
-  // The ordered transcript: text, thinking and tool calls interleaved the way
-  // they actually arrived, instead of every tool clumped in front of the
-  // text. Same part vocabulary as the fallback below; only the order differs,
-  // and only the last text block carries sources, because earlier ones are
-  // mid-turn prose the tools already answered to.
-  if (message.blocks?.length) {
-    const blocks = message.blocks;
-    let lastText = -1;
-    for (let i = blocks.length - 1; i >= 0; i -= 1) {
-      if (blocks[i]?.type === 'text') {
-        lastText = i;
-        break;
-      }
-    }
-
-    const content: Part[] = [];
-    const calls = new Map<string, Part>();
-    blocks.forEach((block, index) => {
-      if (block.type === 'thinking') {
-        if (block.text) content.push({ type: 'reasoning', text: block.text });
-        return;
-      }
-      if (block.type === 'memory') {
-        // The recall reaches the thread as a tool call under a reserved name,
-        // because a part with a component of its own is what assistant-ui
-        // renders; `memory-call.tsx` registers what draws it. An old row has
-        // no such block and so shows nothing at all.
-        content.push({
-          type: 'tool-call',
-          toolCallId: message.id + ':memory:' + index,
-          toolName: MEMORY_RECALL_TOOL,
-          args: { memories: block.memories, ...(block.turnId ? { turnId: block.turnId } : {}) },
-          argsText: '',
-          result: block.memories.length,
-        });
-        return;
-      }
-      if (block.type === 'text') {
-        if (index !== lastText) {
-          if (block.text) content.push({ type: 'text', text: block.text });
-          return;
-        }
-        const answer = message.running
-          ? { text: block.text, sources: [] }
-          : splitMessageSources(block.text);
-        if (answer.text || content.length === 0) {
-          content.push({ type: 'text', text: answer.text });
-        }
-        content.push(...answer.sources);
-        return;
-      }
-      const event = block.call;
-      const pending = event.status === 'end' && !event.id
-        ? [...calls.entries()].find(([, part]) => part.type === 'tool-call' && part.result === undefined && part.toolName === prettyToolName(event.name))?.[0]
-        : undefined;
-      const id = event.id ?? pending ?? `${event.name}:${calls.size}`;
-      const previous = calls.get(id);
-      const prior = previous?.type === 'tool-call' ? previous : undefined;
-      const part: Part = {
-        type: 'tool-call', toolCallId: id,
-        toolName: prior?.toolName ?? prettyToolName(event.name),
-        args: {}, argsText: event.detail ?? prior?.argsText ?? '',
-        ...(event.status === 'end' ? { result: event.result ?? 'Completed', isError: event.isError } : {}),
-      };
-      calls.set(id, part);
-      content.push(part);
-    });
-
-    return {
-      id: message.id,
-      role: 'assistant',
-      content,
-      metadata: { custom: { originalMarkdown: message.content } },
-      status: message.running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
-    };
-  }
-
-  const content: Part[] = [];
-  if (message.thinking) content.push({ type: 'reasoning', text: message.thinking });
-  const calls = new Map<string, Part>();
-  for (const event of message.toolCalls ?? []) {
-    const pending = event.status === 'end' && !event.id
-      ? [...calls.entries()].find(([, part]) => part.type === 'tool-call' && part.result === undefined && part.toolName === prettyToolName(event.name))?.[0]
-      : undefined;
-    const id = event.id ?? pending ?? `${event.name}:${calls.size}`;
-    const previous = calls.get(id);
-    const prior = previous?.type === 'tool-call' ? previous : undefined;
-    calls.set(id, {
-      type: 'tool-call', toolCallId: id,
-      toolName: prior?.toolName ?? prettyToolName(event.name),
-      args: {}, argsText: event.detail ?? prior?.argsText ?? '',
-      ...(event.status === 'end' ? { result: event.result ?? 'Completed', isError: event.isError } : {}),
-    });
-  }
-  content.push(...calls.values());
-  const answer = message.running ? { text: message.content, sources: [] } : splitMessageSources(message.content);
-  if (answer.text || content.length === 0) {
-    content.push({ type: 'text', text: answer.text });
-  }
-  content.push(...answer.sources);
-
   return {
     id: message.id,
     role: 'assistant',
-    content,
+    content: message.blocks?.length ? partsFromBlocks(message, message.blocks) : partsFromFlat(message),
     metadata: { custom: { originalMarkdown: message.content } },
     status: message.running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
   };

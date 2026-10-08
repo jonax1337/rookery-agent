@@ -38,10 +38,15 @@ const DEFAULT_ATTACHMENT_MB = 20;
 /** What `getFile` will hand a bot, no matter what the config asks for. */
 const TELEGRAM_DOWNLOAD_MB = 20;
 
+const BYTES_PER_MB = 1024 * 1024;
+
 const FENCE = '```';
 
 /** What is appended to a piece whose code block continues in the next one. */
 const CLOSING_FENCE = '\n```';
+
+/** Longest info word kept from an opening fence; see `scanFences`. */
+const MAX_FENCE_INFO_LENGTH = 24;
 
 export type GatewayRejection =
   | 'not_a_message'
@@ -368,7 +373,7 @@ export function classifyUpdate(update: unknown, config: TelegramGatewayConfig): 
     // larger ceiling in the config is a promise the API would break; the
     // smaller of the two wins.
     const configured = typeof config?.maxAttachmentMb === 'number' ? config.maxAttachmentMb : DEFAULT_ATTACHMENT_MB;
-    const limit = Math.min(Math.max(1, configured), TELEGRAM_DOWNLOAD_MB) * 1024 * 1024;
+    const limit = Math.min(Math.max(1, configured), TELEGRAM_DOWNLOAD_MB) * BYTES_PER_MB;
     if (attachments.some((file) => (file.size ?? 0) > limit)) return reject('too_large');
     known.attachments = attachments;
   }
@@ -582,7 +587,7 @@ function scanFences(piece: string, open: string | undefined): string | undefined
     if (!marker.startsWith(FENCE)) continue;
     // A language tag is a word. Anything longer is not one, and it must not
     // eat into the budget of every following piece.
-    state = state === undefined ? marker.slice(FENCE.length).trim().slice(0, 24) : undefined;
+    state = state === undefined ? marker.slice(FENCE.length).trim().slice(0, MAX_FENCE_INFO_LENGTH) : undefined;
   }
   return state;
 }

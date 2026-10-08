@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ServerContext } from '../context.js';
+import { clampPositiveInt } from './query.js';
 
 /**
  * The one aggregate call in the API.
@@ -19,7 +20,7 @@ export async function registerStatsRoutes(app: FastifyInstance, context: ServerC
     '/api/stats',
     async (request: FastifyRequest<{ Querystring: { since?: string; days?: string; owner?: string } }>) => {
       const until = Date.now();
-      const since = parseSince(request.query.since) ?? startOfDaysAgo(until, clampDays(request.query.days, 90, 366));
+      const since = parseSince(request.query.since) ?? startOfDaysAgo(until, clampPositiveInt(request.query.days, 90, 366));
       return context.assistant.store.stats({
         orgId: context.assistant.org.activeOrganization().id,
         since,
@@ -41,12 +42,6 @@ function parseSince(raw: string | undefined): number | undefined {
   const numeric = Number(raw);
   const ms = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(raw);
   return Number.isFinite(ms) && ms > 0 ? ms : undefined;
-}
-
-function clampDays(raw: string | undefined, fallback: number, max: number): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.min(Math.floor(parsed), max);
 }
 
 /**

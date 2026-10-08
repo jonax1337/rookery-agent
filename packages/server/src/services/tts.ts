@@ -80,6 +80,21 @@ const OPENAI_STYLE =
 const EDGE_FORMAT = OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3;
 const VOICES_TTL_MS = 6 * 60 * 60 * 1000;
 const SYNTH_TIMEOUT_MS = 25_000;
+/** How much of a provider's error body is worth showing a person. */
+const ERROR_DETAIL_CHARS = 200;
+const MP3_MIME = 'audio/mpeg';
+/** Azure prosody takes -50%..+50%. */
+const PROSODY_MAX_PERCENT = 50;
+
+const ELEVENLABS_VOICES_URL = 'https://api.elevenlabs.io/v1/voices?show_legacy=false';
+const ELEVENLABS_SPEECH_URL = 'https://api.elevenlabs.io/v1/text-to-speech/';
+const ELEVENLABS_OUTPUT_FORMAT = 'mp3_44100_128';
+const DEFAULT_ELEVENLABS_MODEL = 'eleven_multilingual_v2';
+/** Everything but `speed`, which each request takes from the rate slider. */
+const ELEVENLABS_VOICE_SETTINGS = { stability: 0.45, similarity_boost: 0.8, style: 0.2, use_speaker_boost: true };
+
+const OPENAI_SPEECH_URL = 'https://api.openai.com/v1/audio/speech';
+const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini-tts';
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
 
@@ -105,11 +120,7 @@ export async function edgeVoices(): Promise<TtsVoice[]> {
     const voices = list
       .map((voice) => ({
         id: voice.ShortName,
-        // "Microsoft FlorianMultilingual Online (Natural) - German" -> "Florian (multilingual)"
-        name:
-          voice.FriendlyName.replace(/^Microsoft\s+/, '')
-            .replace(/\s+Online.*$/, '')
-            .replace(/Multilingual$/, ' (multilingual)') || voice.ShortName,
+        name: edgeVoiceName(voice.FriendlyName) || voice.ShortName,
         lang: voice.Locale,
         gender: voice.Gender.toLowerCase(),
       }))
@@ -119,6 +130,14 @@ export async function edgeVoices(): Promise<TtsVoice[]> {
   } finally {
     tts.close();
   }
+}
+
+/** "Microsoft FlorianMultilingual Online (Natural) - German" -> "Florian (multilingual)" */
+function edgeVoiceName(friendlyName: string): string {
+  return friendlyName
+    .replace(/^Microsoft\s+/, '')
+    .replace(/\s+Online.*$/, '')
+    .replace(/Multilingual$/, ' (multilingual)');
 }
 
 let elevenCache: { at: number; key: string; voices: TtsVoice[] } | null = null;
@@ -133,37 +152,39 @@ export async function elevenLabsVoices(keys: VoiceKeys = voiceKeys()): Promise<T
   if (elevenCache && elevenCache.key === key && Date.now() - elevenCache.at < VOICES_TTL_MS) {
     return elevenCache.voices;
   }
-  const response = await fetch('https://api.elevenlabs.io/v1/voices?show_legacy=false', {
+  const response = await fetch(ELEVENLABS_VOICES_URL, {
     headers: key ? { 'xi-api-key': key } : {},
     signal: AbortSignal.timeout(SYNTH_TIMEOUT_MS),
+  }).catch((error: Error) => {
+    throw new TtsError('ElevenLabs unreachable: ' + error.message);
   });
   if (!response.ok) throw new TtsError('ElevenLabs voice list ' + response.status);
-  const body = (await response.json()) as {
-    voices?: Array<{
-      voice_id: string;
-      name: string;
-      category?: string;
-      labels?: Record<string, string | undefined>;
-    }>;
-  };
-  const voices = (body.voices ?? [])
-    .map((voice) => {
-      const labels = voice.labels ?? {};
-      const traits = [labels.accent, labels.description ?? labels.descriptive, labels.age]
-        .filter((part): part is string => Boolean(part))
-        .join(', ');
-      return {
-        id: voice.voice_id,
-        name: voice.name + (traits ? ' (' + traits + ')' : '') + (voice.category === 'premade' ? '' : ' · custom'),
-        lang: 'multi',
-        gender: labels.gender ?? '',
-      };
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const body = (await response.json()) as { voices?: ElevenLabsVoice[] };
+  const voices = (body.voices ?? []).map(toTtsVoice).sort((a, b) => a.name.localeCompare(b.name));
   // A key without the voices_read permission yields an empty list; do not
   // pin that for hours, so fixing the key shows up on the next page load.
   if (voices.length) elevenCache = { at: Date.now(), key, voices };
   return voices;
+}
+
+interface ElevenLabsVoice {
+  voice_id: string;
+  name: string;
+  category?: string;
+  labels?: Record<string, string | undefined>;
+}
+
+function toTtsVoice(voice: ElevenLabsVoice): TtsVoice {
+  const labels = voice.labels ?? {};
+  const traits = [labels.accent, labels.description ?? labels.descriptive, labels.age]
+    .filter((part): part is string => Boolean(part))
+    .join(', ');
+  return {
+    id: voice.voice_id,
+    name: voice.name + (traits ? ' (' + traits + ')' : '') + (voice.category === 'premade' ? '' : ' · custom'),
+    lang: 'multi',
+    gender: labels.gender ?? '',
+  };
 }
 
 export async function ttsCatalogue(keys: VoiceKeys = voiceKeys()): Promise<TtsCatalogue> {
@@ -196,7 +217,7 @@ export async function synthesize(voice: VoiceConfig, text: string, keys: VoiceKe
 
 /** Azure prosody wants percentages; the sliders are centred on 1.0. */
 function prosodyPercent(value: number): string {
-  const percent = Math.round(clamp((value - 1) * 100, -50, 50));
+  const percent = Math.round(clamp((value - 1) * 100, -PROSODY_MAX_PERCENT, PROSODY_MAX_PERCENT));
   return (percent >= 0 ? '+' : '') + percent + '%';
 }
 
@@ -226,7 +247,7 @@ async function synthesizeEdge(voice: VoiceConfig, text: string): Promise<TtsAudi
     }
     const audio = Buffer.concat(chunks);
     if (!audio.length) throw new TtsError('Edge returned no audio');
-    return { audio, mime: 'audio/mpeg' };
+    return { audio, mime: MP3_MIME };
   } catch (error) {
     if (error instanceof TtsError) throw error;
     throw new TtsError('Edge TTS failed: ' + (error as Error).message);
@@ -246,16 +267,23 @@ const ELEVENLABS_MAX_INFLIGHT = Number(process.env.ELEVENLABS_MAX_CONCURRENCY) |
 let elevenLabsInflight = 0;
 const elevenLabsWaiting: (() => void)[] = [];
 
+/**
+ * A finishing request hands its slot straight to the next in line instead of
+ * freeing it first, so a request arriving in between cannot slip past the
+ * queue and push the count over the limit.
+ */
 async function withElevenLabsSlot<T>(work: () => Promise<T>): Promise<T> {
   if (elevenLabsInflight >= ELEVENLABS_MAX_INFLIGHT) {
     await new Promise<void>((resolve) => elevenLabsWaiting.push(resolve));
+  } else {
+    elevenLabsInflight += 1;
   }
-  elevenLabsInflight += 1;
   try {
     return await work();
   } finally {
-    elevenLabsInflight -= 1;
-    elevenLabsWaiting.shift()?.();
+    const next = elevenLabsWaiting.shift();
+    if (next) next();
+    else elevenLabsInflight -= 1;
   }
 }
 
@@ -267,56 +295,60 @@ async function requestElevenLabs(voice: VoiceConfig, text: string, keys: VoiceKe
   const key = keys.elevenlabs;
   if (!key) throw new TtsError('Add an ElevenLabs key in Settings > Voice', 503);
   const voiceId = voice.elevenLabsVoiceId || DEFAULT_ELEVENLABS_VOICE;
-  const model = process.env.ELEVENLABS_MODEL || voice.elevenLabsModel || 'eleven_multilingual_v2';
-  const response = await fetch(
-    'https://api.elevenlabs.io/v1/text-to-speech/' + encodeURIComponent(voiceId) + '?output_format=mp3_44100_128',
-    {
-      method: 'POST',
-      headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
-      body: JSON.stringify({
-        text,
-        model_id: model,
-        voice_settings: {
-          stability: 0.45,
-          similarity_boost: 0.8,
-          style: 0.2,
-          use_speaker_boost: true,
-          speed: clamp(voice.rate, 0.7, 1.2),
-        },
-      }),
-      signal: AbortSignal.timeout(SYNTH_TIMEOUT_MS),
+  const model = process.env.ELEVENLABS_MODEL || voice.elevenLabsModel || DEFAULT_ELEVENLABS_MODEL;
+  return requestSpeech({
+    provider: 'ElevenLabs',
+    url: ELEVENLABS_SPEECH_URL + encodeURIComponent(voiceId) + '?output_format=' + ELEVENLABS_OUTPUT_FORMAT,
+    key,
+    headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: MP3_MIME },
+    body: {
+      text,
+      model_id: model,
+      voice_settings: { ...ELEVENLABS_VOICE_SETTINGS, speed: clamp(voice.rate, 0.7, 1.2) },
     },
-  ).catch((error: Error) => {
-    throw new TtsError('ElevenLabs unreachable: ' + error.message);
   });
-  if (!response.ok) {
-    throw new TtsError('ElevenLabs ' + response.status + ': ' + (await errorText(response)).replaceAll(key, "[redacted]"));
-  }
-  return { audio: Buffer.from(await response.arrayBuffer()), mime: 'audio/mpeg' };
 }
 
 async function synthesizeOpenAi(voice: VoiceConfig, text: string, keys: VoiceKeys): Promise<TtsAudio> {
   const key = keys.openai;
   if (!key) throw new TtsError('Add an OpenAI key in Settings > Voice', 503);
-  const response = await fetch('https://api.openai.com/v1/audio/speech', {
-    method: 'POST',
+  return requestSpeech({
+    provider: 'OpenAI',
+    url: OPENAI_SPEECH_URL,
+    key,
     headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: process.env.OPENAI_TTS_MODEL || 'gpt-4o-mini-tts',
+    body: {
+      model: process.env.OPENAI_TTS_MODEL || DEFAULT_OPENAI_MODEL,
       voice: voice.openaiVoice || DEFAULT_OPENAI_VOICE,
       input: text,
       response_format: 'mp3',
       speed: clamp(voice.rate, 0.25, 4),
       instructions: OPENAI_STYLE,
-    }),
+    },
+  });
+}
+
+/** One paid-engine call. Failures name the provider and never carry the key. */
+async function requestSpeech(call: {
+  provider: string;
+  url: string;
+  key: string;
+  headers: Record<string, string>;
+  body: Record<string, unknown>;
+}): Promise<TtsAudio> {
+  const response = await fetch(call.url, {
+    method: 'POST',
+    headers: call.headers,
+    body: JSON.stringify(call.body),
     signal: AbortSignal.timeout(SYNTH_TIMEOUT_MS),
   }).catch((error: Error) => {
-    throw new TtsError('OpenAI unreachable: ' + error.message);
+    throw new TtsError(call.provider + ' unreachable: ' + error.message);
   });
   if (!response.ok) {
-    throw new TtsError('OpenAI ' + response.status + ': ' + (await errorText(response)).replaceAll(key, "[redacted]"));
+    const detail = (await errorText(response)).replaceAll(call.key, '[redacted]');
+    throw new TtsError(call.provider + ' ' + response.status + ': ' + detail);
   }
-  return { audio: Buffer.from(await response.arrayBuffer()), mime: 'audio/mpeg' };
+  return { audio: Buffer.from(await response.arrayBuffer()), mime: MP3_MIME };
 }
 
 /* --------------------------------- helpers -------------------------------- */
@@ -326,9 +358,9 @@ async function errorText(response: Response): Promise<string> {
   try {
     const parsed = JSON.parse(body) as { error?: { message?: string } | string; detail?: { message?: string } };
     if (typeof parsed.error === 'string') return parsed.error;
-    return parsed.error?.message ?? parsed.detail?.message ?? body.slice(0, 200);
+    return parsed.error?.message ?? parsed.detail?.message ?? body.slice(0, ERROR_DETAIL_CHARS);
   } catch {
-    return body.slice(0, 200) || response.statusText;
+    return body.slice(0, ERROR_DETAIL_CHARS) || response.statusText;
   }
 }
 

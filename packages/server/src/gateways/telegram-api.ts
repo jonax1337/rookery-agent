@@ -28,6 +28,12 @@ const MAX_RETRIES = 2;
 /** A download gets longer than a call: 20 MB over a phone line is not instant. */
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
+/** Telegram takes at most this many message ids in one `deleteMessages`. */
+const DELETE_BATCH_SIZE = 100;
+
+/** Telegram cuts an answerCallbackQuery toast at this many characters. */
+const CALLBACK_TOAST_MAX_CHARS = 200;
+
 /** Telegram's own ceiling for what a bot may fetch, and so ours. */
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -195,19 +201,46 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>;
 }
 
-/** A sleep that never keeps the process alive on its own. */
+/** A per-call deadline plus whatever the caller uses to stop the channel. */
+function withDeadline(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([deadline, signal]) : deadline;
+}
+
+function downloadTooLarge(): TelegramApiError {
+  return new TelegramApiError('The file is larger than the configured limit.', {
+    method: 'downloadFile',
+    status: 413,
+  });
+}
+
+/**
+ * The whole body, streamed rather than `arrayBuffer()`: a body that ignores
+ * its own content-length would otherwise be in memory before anyone objects.
+ */
+async function readBounded(body: Response['body'], maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of body ?? []) {
+    const buffer = Buffer.from(chunk as Uint8Array);
+    total += buffer.length;
+    if (total > maxBytes) throw downloadTooLarge();
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+/** A sleep that never keeps the process alive on its own, and ends when `signal` aborts. */
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
     timer.unref?.();
-    signal?.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
+    signal?.addEventListener('abort', finish, { once: true });
   });
 }
 
@@ -220,6 +253,12 @@ export function createTelegramApi(token: string): TelegramApi {
   const mask = (text: string): string =>
     secret.length > 0 ? text.split(secret).join('<token>') : text;
 
+  /** A request that never got an answer, with the token taken out of why. */
+  function transportError(method: string, error: unknown): TelegramApiError {
+    const reason = error instanceof Error ? error.message : String(error);
+    return new TelegramApiError(mask(reason), { method, status: 0 });
+  }
+
   async function call<T>(
     method: string,
     payload: Record<string, unknown>,
@@ -229,21 +268,16 @@ export function createTelegramApi(token: string): TelegramApi {
     let attempt = 0;
 
     for (;;) {
-      // A per-call deadline plus whatever the caller uses to stop the channel.
-      const deadline = AbortSignal.timeout(timeoutMs);
-      const signal = options.signal ? AbortSignal.any([deadline, options.signal]) : deadline;
-
       let response: Response;
       try {
         response = await fetch(`${BASE_URL}/bot${secret}/${method}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(payload),
-          signal,
+          signal: withDeadline(timeoutMs, options.signal),
         });
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new TelegramApiError(mask(reason), { method, status: 0 });
+        throw transportError(method, error);
       }
 
       const body = asRecord(await response.json().catch(() => undefined));
@@ -337,11 +371,9 @@ export function createTelegramApi(token: string): TelegramApi {
     },
 
     async deleteMessages(chatId, messageIds, signal) {
-      // Telegram takes at most a hundred at a time, and rejects an empty
-      // list outright, so the batching is not optional.
-      for (let index = 0; index < messageIds.length; index += 100) {
-        const batch = messageIds.slice(index, index + 100);
-        if (batch.length === 0) continue;
+      // Telegram rejects an empty list outright, so there is no empty batch.
+      for (let index = 0; index < messageIds.length; index += DELETE_BATCH_SIZE) {
+        const batch = messageIds.slice(index, index + DELETE_BATCH_SIZE);
         await call<boolean>('deleteMessages', { chat_id: chatId, message_ids: batch }, { signal });
       }
     },
@@ -355,9 +387,9 @@ export function createTelegramApi(token: string): TelegramApi {
 
     async answerCallbackQuery(callbackId, text, signal) {
       const payload: Record<string, unknown> = { callback_query_id: callbackId };
-      // Telegram cuts the toast at 200 characters and refuses a longer one,
-      // so it is cut here instead of losing the acknowledgement over it.
-      if (text) payload.text = text.slice(0, 200);
+      // Telegram refuses a longer toast, so it is cut here instead of losing
+      // the acknowledgement over it.
+      if (text) payload.text = text.slice(0, CALLBACK_TOAST_MAX_CHARS);
       await call<boolean>('answerCallbackQuery', payload, { signal });
     },
 
@@ -410,8 +442,7 @@ export function createTelegramApi(token: string): TelegramApi {
         });
       }
       const maxBytes = options.maxBytes ?? MAX_DOWNLOAD_BYTES;
-      const deadline = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS);
-      const signal = options.signal ? AbortSignal.any([deadline, options.signal]) : deadline;
+      const signal = withDeadline(DOWNLOAD_TIMEOUT_MS, options.signal);
 
       let response: Response;
       try {
@@ -420,8 +451,7 @@ export function createTelegramApi(token: string): TelegramApi {
           { signal },
         );
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        throw new TelegramApiError(mask(reason), { method: 'downloadFile', status: 0 });
+        throw transportError('downloadFile', error);
       }
 
       if (!response.ok) {
@@ -432,29 +462,15 @@ export function createTelegramApi(token: string): TelegramApi {
       }
 
       const announced = Number(response.headers.get('content-length'));
-      if (Number.isFinite(announced) && announced > maxBytes) {
-        throw new TelegramApiError('The file is larger than the configured limit.', {
-          method: 'downloadFile',
-          status: 413,
-        });
-      }
+      if (Number.isFinite(announced) && announced > maxBytes) throw downloadTooLarge();
 
-      const chunks: Buffer[] = [];
-      let total = 0;
-      // Streamed rather than `arrayBuffer()`: a body that ignores its own
-      // content-length would otherwise be in memory before anyone objects.
-      for await (const chunk of response.body ?? []) {
-        const buffer = Buffer.from(chunk as Uint8Array);
-        total += buffer.length;
-        if (total > maxBytes) {
-          throw new TelegramApiError('The file is larger than the configured limit.', {
-            method: 'downloadFile',
-            status: 413,
-          });
-        }
-        chunks.push(buffer);
+      try {
+        return await readBounded(response.body, maxBytes);
+      } catch (error) {
+        // The body can still fail mid-stream (deadline, dropped connection),
+        // and that error is as foreign as the one from `fetch`.
+        throw error instanceof TelegramApiError ? error : transportError('downloadFile', error);
       }
-      return Buffer.concat(chunks);
     },
   };
 }

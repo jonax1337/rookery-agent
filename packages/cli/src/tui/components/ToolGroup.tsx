@@ -15,7 +15,7 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import { PULSE_FRAMES, glyph, ui } from '../theme.js';
+import { glyph, pulseFrame, ui } from '../theme.js';
 import { formatDuration } from '../../ui/render.js';
 import type { ToolCall } from '../types.js';
 
@@ -24,6 +24,12 @@ const NAME_COLUMN = 12;
 
 /** Detail lines shown under a call before the rest is summarised away. */
 const MAX_DETAIL_LINES = 4;
+
+/** Columns the branch glyph of a detail line is indented by. */
+const DETAIL_INDENT = 2;
+
+/** A running call shows its clock only once it has run this long. */
+const MIN_LIVE_CLOCK_MS = 1000;
 
 export interface ToolGroupProps {
   calls: ToolCall[];
@@ -47,7 +53,7 @@ export function ToolGroup({ calls, frame = 0, now }: ToolGroupProps): React.JSX.
           call={call}
           width={width}
           frame={frame}
-          {...(now !== undefined ? { now } : {})}
+          now={now}
         />
       ))}
     </Box>
@@ -64,8 +70,9 @@ export interface ToolCallRowProps {
 
 export function ToolCallRow({ call, width, frame = 0, now }: ToolCallRowProps): React.JSX.Element {
   const [head = '', ...rest] = (call.detail ?? '').split('\n');
-  const extra = rest.filter((line) => line.trim()).slice(0, MAX_DETAIL_LINES - 1);
-  const hidden = rest.filter((line) => line.trim()).length - extra.length;
+  const detail = rest.filter((line) => line.trim());
+  const extra = detail.slice(0, MAX_DETAIL_LINES - 1);
+  const hidden = detail.length - extra.length;
 
   return (
     <Box flexDirection="column">
@@ -86,7 +93,7 @@ export function ToolCallRow({ call, width, frame = 0, now }: ToolCallRowProps): 
 
       {extra.map((line, index) => (
         // Continuation lines have no identity beyond their position.
-        <Box key={index} flexDirection="row" paddingLeft={2}>
+        <Box key={index} flexDirection="row" paddingLeft={DETAIL_INDENT}>
           <Text color={ui.faint}>{glyph.branch + ' '}</Text>
           <Box flexGrow={1}>
             <Text color={ui.faint} wrap="wrap">
@@ -97,7 +104,7 @@ export function ToolCallRow({ call, width, frame = 0, now }: ToolCallRowProps): 
       ))}
 
       {hidden > 0 ? (
-        <Box paddingLeft={2}>
+        <Box paddingLeft={DETAIL_INDENT}>
           <Text color={ui.faint} dimColor>
             {glyph.branch + ' +' + hidden + ' more lines'}
           </Text>
@@ -109,7 +116,7 @@ export function ToolCallRow({ call, width, frame = 0, now }: ToolCallRowProps): 
 
 /** Running pulses, finished is a filled dot, failed is a cross. */
 function mark(call: ToolCall, frame: number): string {
-  if (call.status === 'running') return PULSE_FRAMES[frame % PULSE_FRAMES.length] ?? glyph.dot;
+  if (call.status === 'running') return pulseFrame(frame);
   return call.status === 'failed' ? glyph.fail : glyph.tool;
 }
 
@@ -128,7 +135,7 @@ function clock(call: ToolCall, now: number | undefined): string {
   if (call.durationMs !== undefined) return formatDuration(call.durationMs);
   if (now === undefined) return '';
   const elapsed = now - call.startedAt;
-  return elapsed >= 1000 ? formatDuration(elapsed) : '';
+  return elapsed >= MIN_LIVE_CLOCK_MS ? formatDuration(elapsed) : '';
 }
 
 function cut(text: string, width: number): string {

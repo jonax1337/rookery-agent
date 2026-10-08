@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ServerContext } from '../context.js';
-import { chatInputSchema, formatIssues } from '../schemas.js';
+import { chatInputSchema, parseOrThrow } from '../schemas.js';
 import { openSse, pipeToSse } from '../services/stream.js';
 
 /**
@@ -18,17 +18,14 @@ export async function registerChatRoutes(
   context: ServerContext,
 ): Promise<void> {
   app.post('/api/chat', async (request: FastifyRequest, reply: FastifyReply) => {
-    const parsed = chatInputSchema.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      reply.code(400);
-      return { error: 'Bad Request', message: formatIssues(parsed.error) };
-    }
+    // Validated before the response is hijacked: a bad body still gets a plain JSON 400.
+    const input = parseOrThrow(chatInputSchema, request.body ?? {});
 
     const sse = openSse(request, reply);
 
-    context.log.debug('SSE turn started', { sessionId: parsed.data.sessionId });
+    context.log.debug('SSE turn started', { sessionId: input.sessionId });
 
-    await pipeToSse(context.assistant.chat(parsed.data), sse);
+    await pipeToSse(context.assistant.chat(input), sse);
 
     // The response was hijacked; nothing for Fastify left to serialise.
     return reply;

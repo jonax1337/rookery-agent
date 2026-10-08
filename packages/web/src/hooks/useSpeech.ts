@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { pickBrowserVoice } from '../lib/speech';
 import type { VoiceConfig } from '../lib/types';
 
 /**
@@ -34,26 +35,6 @@ export function useSpeech(config: VoiceConfig | undefined): SpeechState {
     return () => window.speechSynthesis.removeEventListener('voiceschanged', load);
   }, [supported]);
 
-  /** Exact name match wins, then an exact locale, then the language prefix. */
-  const pickVoice = useCallback(
-    (list: SpeechSynthesisVoice[]): SpeechSynthesisVoice | undefined => {
-      if (!list.length) return undefined;
-      const wantedName = config?.voiceName?.trim();
-      if (wantedName) {
-        const byName = list.find((voice) => voice.name === wantedName);
-        if (byName) return byName;
-      }
-      const lang = config?.lang ?? 'en-GB';
-      return (
-        list.find((voice) => voice.lang === lang) ??
-        list.find((voice) => voice.lang.startsWith(lang.split('-')[0] ?? '')) ??
-        list.find((voice) => voice.default) ??
-        list[0]
-      );
-    },
-    [config?.lang, config?.voiceName],
-  );
-
   const stop = useCallback(() => {
     if (!supported) return;
     window.speechSynthesis.cancel();
@@ -71,35 +52,39 @@ export function useSpeech(config: VoiceConfig | undefined): SpeechState {
       window.speechSynthesis.cancel();
 
       const utterance = new SpeechSynthesisUtterance(body);
-      const voice = pickVoice(window.speechSynthesis.getVoices());
+      const voice = pickBrowserVoice(window.speechSynthesis.getVoices(), config);
       if (voice) utterance.voice = voice;
       utterance.lang = voice?.lang ?? config?.lang ?? 'en-GB';
       utterance.rate = config?.rate ?? 1;
       utterance.pitch = config?.pitch ?? 1;
 
-      utterance.onstart = () => {
-        progressRef.current = 0;
-        setSpeaking(true);
-      };
-      utterance.onboundary = (event) => {
-        // charIndex lets the orb pulse in time with the words being spoken.
-        progressRef.current = Math.min(1, event.charIndex / Math.max(1, body.length));
-      };
-      utterance.onend = () => {
-        progressRef.current = 0;
-        utteranceRef.current = null;
-        setSpeaking(false);
-      };
-      utterance.onerror = () => {
+      // `cancel()` ends the old utterance asynchronously; its late `end`/`error`
+      // must not switch off the speaking state of the one that replaced it.
+      const isCurrent = (): boolean => utteranceRef.current === utterance;
+      const finish = (): void => {
+        if (!isCurrent()) return;
         progressRef.current = 0;
         utteranceRef.current = null;
         setSpeaking(false);
       };
 
+      utterance.onstart = () => {
+        if (!isCurrent()) return;
+        progressRef.current = 0;
+        setSpeaking(true);
+      };
+      utterance.onboundary = (event) => {
+        if (!isCurrent()) return;
+        // charIndex lets the orb pulse in time with the words being spoken.
+        progressRef.current = Math.min(1, event.charIndex / Math.max(1, body.length));
+      };
+      utterance.onend = finish;
+      utterance.onerror = finish;
+
       utteranceRef.current = utterance;
       window.speechSynthesis.speak(utterance);
     },
-    [config?.lang, config?.pitch, config?.rate, pickVoice, supported],
+    [config, supported],
   );
 
   // Never leave the page still talking.

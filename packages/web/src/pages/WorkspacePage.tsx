@@ -17,11 +17,14 @@ import { usePageMeta } from '@/components/shell/page-meta';
 import { Button } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { useOpenTerminal } from '@/hooks/useOpenTerminal';
 import { api } from '@/lib/api';
 import { reportFailure } from '@/lib/errors';
+import { readStored, writeStored } from '@/lib/storage';
+import { FILLED_TOGGLE_ITEM_CLASS } from '@/lib/toggle-styles';
 import type { TerminalView } from '@/lib/types';
 import { cn } from '@/lib/utils';
-import { useChatSession, useConnection } from '@/providers/rookery-provider';
+import { useConnection } from '@/providers/rookery-provider';
 
 /**
  * Every open Claude Code terminal in one place - conversations switched to
@@ -36,30 +39,17 @@ import { useChatSession, useConnection } from '@/providers/rookery-provider';
 
 type Layout = 'tabs' | 'grid';
 
-function readStored(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeStored(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // Private window or blocked storage: the choice is simply not remembered.
-  }
-}
+const ACTIVE_TERMINAL_KEY = 'rookery.workspace.active';
+const LAYOUT_KEY = 'rookery.workspace.layout';
 
 export function WorkspacePage() {
   const { socket } = useConnection();
-  const { turn } = useChatSession();
+  const openTerminal = useOpenTerminal();
   const { confirm, dialog } = useConfirm();
   const [terminals, setTerminals] = React.useState<TerminalView[] | null>(null);
-  const [active, setActive] = React.useState<string | null>(() => readStored('rookery.workspace.active'));
+  const [active, setActive] = React.useState<string | null>(() => readStored(ACTIVE_TERMINAL_KEY));
   const [layout, setLayout] = React.useState<Layout>(() =>
-    readStored('rookery.workspace.layout') === 'grid' ? 'grid' : 'tabs',
+    readStored(LAYOUT_KEY) === 'grid' ? 'grid' : 'tabs',
   );
   const [opening, setOpening] = React.useState(false);
   /** The terminal the keyboard should go to: the one just picked or opened. */
@@ -85,38 +75,24 @@ export function WorkspacePage() {
   // The remembered tab, if it is still open; the first one otherwise.
   const current = terminals?.find((entry) => entry.key === active) ?? terminals?.[0] ?? null;
 
-  const select = (key: string): void => {
+  const select = React.useCallback((key: string): void => {
     setActive(key);
     setFocusKey(key);
-    writeStored('rookery.workspace.active', key);
-  };
+    writeStored(ACTIVE_TERMINAL_KEY, key);
+  }, []);
 
   const openNew = React.useCallback(async () => {
     setOpening(true);
     try {
-      const opened = await socket.openTui({
-        // Before the composer has loaded, its values are placeholders; the
-        // server's saved defaults are the right answer then.
-        ...(turn.ready
-          ? {
-              provider: turn.provider,
-              ...(turn.model ? { model: turn.model } : {}),
-              ...(turn.effort ? { effort: turn.effort } : {}),
-              permission: turn.permission,
-            }
-          : {}),
-        ...(turn.projectId ? { projectId: turn.projectId } : {}),
-      });
-      setActive(opened.key);
-      setFocusKey(opened.key);
-      writeStored('rookery.workspace.active', opened.key);
+      const opened = await openTerminal();
+      select(opened.key);
       await load();
     } catch (caught) {
       reportFailure('Open terminal', caught);
     } finally {
       setOpening(false);
     }
-  }, [load, socket, turn.effort, turn.model, turn.permission, turn.projectId, turn.provider, turn.ready]);
+  }, [load, openTerminal, select]);
 
   const close = React.useCallback(
     async (terminal: TerminalView) => {
@@ -148,14 +124,14 @@ export function WorkspacePage() {
             onValueChange={(value) => {
               if (value !== 'tabs' && value !== 'grid') return;
               setLayout(value);
-              writeStored('rookery.workspace.layout', value);
+              writeStored(LAYOUT_KEY, value);
             }}
             aria-label="Layout"
           >
             <ToggleGroupItem
               value="tabs"
               aria-label="Tabs"
-              className="data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+              className={FILLED_TOGGLE_ITEM_CLASS}
             >
               <TerminalIcon />
               Tabs
@@ -163,7 +139,7 @@ export function WorkspacePage() {
             <ToggleGroupItem
               value="grid"
               aria-label="Side by side"
-              className="data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground"
+              className={FILLED_TOGGLE_ITEM_CLASS}
             >
               <LayoutGridIcon />
               Grid

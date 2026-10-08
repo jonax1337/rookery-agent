@@ -1,7 +1,7 @@
-import { ArrowRightIcon, TrendingDownIcon, TrendingUpIcon } from "@/components/icons";
+import { ArrowRightIcon, TrendingDownIcon, TrendingUpIcon } from '@/components/icons';
 
 import { cn } from '@/lib/utils';
-import type { IconComponent } from "@/components/icons";
+import type { IconComponent } from '@/components/icons';
 
 /**
  * The rolling trend of an agent's reviews: one arrow, one signed number.

@@ -35,6 +35,9 @@ import { WEIGHTS } from '../recall.js';
 
 const FACTORY = DEFAULT_CONFIG.memory;
 
+/** The server patch schema's upper bound for `recallLimit`. */
+const MAX_RECALL_LIMIT = 50;
+
 /** Clamp to the same range the server's patch schema enforces, and no wider. */
 function clamp(value: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, value));
@@ -104,7 +107,7 @@ function resolveDreamOnly(
  */
 export function factoryPolicy(): RecallPolicy {
   return {
-    limit: clamp(Math.round(FACTORY.recallLimit), 0, 50),
+    limit: clamp(Math.round(FACTORY.recallLimit), 0, MAX_RECALL_LIMIT),
     threshold: clamp(FACTORY.recallThreshold, 0, 1),
     w: {
       relevance: clamp(WEIGHTS.relevance, 0, 1),
@@ -156,7 +159,7 @@ export function resolvePolicy(
     FACTORY.recallLimit,
     numberAt(params, 'limit'),
     0,
-    50,
+    MAX_RECALL_LIMIT,
   );
   const threshold = resolveConfigBacked(
     config.memory.recallThreshold,

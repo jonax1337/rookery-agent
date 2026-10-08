@@ -36,7 +36,7 @@ export function startOfDay(value: number | Date = Date.now()): number {
   return date.getTime();
 }
 
-/** Epoch milliseconds `days` whole days back, for "in den letzten 7 Tagen". */
+/** Epoch milliseconds `days` whole days back, for "in the last 7 days". */
 export function daysAgo(days: number, now: number = Date.now()): number {
   return now - days * DAY_IN_MS;
 }
@@ -202,7 +202,7 @@ function walkDays<T>(since: number, until: number, make: (day: string, at: numbe
 
 /**
  * How many items happened at or after `since`. The basis of every
- * "+N in 7 Tagen" badge, which is the only growth figure the API can prove.
+ * "+N in 7 days" badge, which is the only growth figure the API can prove.
  */
 export function countSince<T>(
   items: readonly T[],
@@ -248,15 +248,15 @@ function numberFormat(options?: Intl.NumberFormatOptions): Intl.NumberFormat {
   return format;
 }
 
-/** A plain count with German thousands separators: `12.345`. */
+/** A plain count with the locale's thousands separators: `12,345`. */
 export function formatNumber(value: number, options?: Intl.NumberFormatOptions): string {
   if (!Number.isFinite(value)) return '–';
   return numberFormat(options).format(value);
 }
 
 /**
- * A share, given as 0..100 the way `ratePercent` returns it. German puts a
- * non-breaking space before the sign, which `Intl` does for us.
+ * A share, given as 0..100 the way `ratePercent` returns it, formatted by
+ * `Intl` for the locale.
  */
 export function formatPercent(percent: number, fractionDigits = 0): string {
   if (!Number.isFinite(percent)) return '–';
@@ -267,25 +267,24 @@ export function formatPercent(percent: number, fractionDigits = 0): string {
   }).format(percent / 100);
 }
 
-/** `11. Sep. 2026`. Takes epoch ms, an ISO string or a `YYYY-MM-DD` day key. */
+/** `11 Sept 2026`. Takes epoch ms, an ISO string or a `YYYY-MM-DD` day key. */
 export function formatDate(value: number | string | Date | undefined): string {
   if (!value) return '–';
   return toDate(value).toLocaleDateString('en-GB', { dateStyle: 'medium' });
 }
 
 /**
- * `11. Sep. 2026, 14:03`.
+ * `11 Sept 2026, 14:03`.
  *
- * The one implementation in the app: `lib/format.ts` and `lib/cron.ts`
- * re-export this so the existing imports keep working and no second copy
- * drifts away from it.
+ * The one implementation in the app: `lib/format.ts` re-exports this so the
+ * existing imports keep working and no second copy drifts away from it.
  */
 export function formatDateTime(value: number | string | Date | undefined): string {
   if (!value) return '–';
   return toDate(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-/** Short enough for a chart axis: `11. Sep`. */
+/** Short enough for a chart axis: `11 Sept`. */
 export function formatDayAxis(value: number | string | Date): string {
   return toDate(value).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }

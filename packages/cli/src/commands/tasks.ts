@@ -12,21 +12,41 @@
  */
 
 import { describePlan, renderBoard } from '@rookery/core';
-import type { Task, TaskStatus } from '@rookery/core';
-import { EventRenderer, heading, keyValue, relativeTime, shorten, shortId, taskLine } from '../ui/render.js';
+import type { Assistant, Task, TaskStatus } from '@rookery/core';
+import {
+  EventRenderer,
+  heading,
+  keyValue,
+  listHeader,
+  relativeTime,
+  shorten,
+  shortId,
+  taskLine,
+} from '../ui/render.js';
 import { Spinner } from '../ui/spinner.js';
 import { glyph, theme } from '../ui/theme.js';
 import {
   ACTIVE_TASK_STATUSES,
   CliError,
+  EXIT_INTERRUPTED,
+  agentSlugOf,
   parseTaskPriority,
   parseTaskStatuses,
+  printInterrupted,
+  printJson,
+  resolveAgent,
   resolveProject,
   resolveTask,
   withAssistant,
+  withInterruptSignal,
 } from './shared.js';
 
 const out = process.stdout;
+
+/** How much of a task title the run spinner shows. */
+const SPINNER_TITLE_WIDTH = 40;
+/** How much of a task title a done/cancelled confirmation shows. */
+const CONFIRMATION_TITLE_WIDTH = 56;
 
 /* --------------------------------- board -------------------------------- */
 
@@ -48,15 +68,11 @@ export async function tasksBoardCommand(options: TasksBoardOptions = {}): Promis
     const tasks = assistant.store.org.listTasks(organization.id, status ? { status } : {});
 
     if (options.json) {
-      out.write(
-        JSON.stringify(
-          tasks.map((task) => ({
-            ...task,
-            children: assistant.store.org.listTasks(organization.id, { parentId: task.id }),
-          })),
-          null,
-          2,
-        ) + '\n',
+      printJson(
+        tasks.map((task) => ({
+          ...task,
+          children: assistant.store.org.listTasks(organization.id, { parentId: task.id }),
+        })),
       );
       return 0;
     }
@@ -72,7 +88,7 @@ export async function tasksBoardCommand(options: TasksBoardOptions = {}): Promis
       return 0;
     }
 
-    out.write('\n' + heading('Board') + theme.dim('  (' + tasks.length + ')') + '\n\n');
+    out.write(listHeader('Board', tasks.length));
     out.write(renderBoard(tasks, assistant.org.snapshot(organization.id), assistant.store.org) + '\n');
     out.write(
       '\n' + theme.dim('rookery tasks show <id>  ' + glyph.dot + '  plan <id>  ' + glyph.dot + '  run <id>') + '\n\n',
@@ -105,12 +121,7 @@ export async function taskAddCommand(
     const organization = assistant.org.activeOrganization();
     const project = resolveProject(assistant, options.project);
 
-    const assignee = options.assignee
-      ? assistant.store.org.findAgent(organization.id, options.assignee)
-      : null;
-    if (options.assignee && !assignee) {
-      throw new CliError('No agent "' + options.assignee + '". Run `rookery org agents` to see who works here.');
-    }
+    const assignee = options.assignee ? resolveAgent(assistant, options.assignee) : null;
 
     const task = assistant.store.org.createTask({
       orgId: organization.id,
@@ -124,7 +135,7 @@ export async function taskAddCommand(
     });
 
     if (options.json) {
-      out.write(JSON.stringify(task, null, 2) + '\n');
+      printJson(task);
       return 0;
     }
 
@@ -147,6 +158,18 @@ export interface TaskShowOptions {
   json?: boolean;
 }
 
+const STATUS_PAINT: Partial<Record<TaskStatus, (text: string) => string>> = {
+  done: theme.green,
+  failed: theme.red,
+  running: theme.yellow,
+  blocked: theme.cyan,
+  cancelled: theme.dim,
+};
+
+function paintStatus(status: TaskStatus): string {
+  return (STATUS_PAINT[status] ?? theme.frost)(status);
+}
+
 /** `rookery tasks show <id>` - one task in full, subtasks and result included. */
 export async function taskShowCommand(ref: string, options: TaskShowOptions = {}): Promise<number> {
   return withAssistant((assistant) => {
@@ -155,12 +178,12 @@ export async function taskShowCommand(ref: string, options: TaskShowOptions = {}
     const children = assistant.store.org.listTasks(organization.id, { parentId: task.id });
 
     if (options.json) {
-      out.write(JSON.stringify({ ...task, children }, null, 2) + '\n');
+      printJson({ ...task, children });
       return 0;
     }
 
-    const slug = (id: string | undefined): string =>
-      id ? (assistant.store.org.getAgent(id)?.slug ?? shortId(id)) : 'unassigned';
+    const agentSlug = agentSlugOf(assistant);
+    const slug = (id: string | undefined): string => (id ? agentSlug(id) : 'unassigned');
     const project = task.projectId ? assistant.store.org.getProject(task.projectId) : null;
 
     out.write('\n' + heading(task.title) + '\n');
@@ -182,7 +205,7 @@ export async function taskShowCommand(ref: string, options: TaskShowOptions = {}
     if (task.planNote) out.write('\n' + theme.dim(glyph.status + ' ' + task.planNote) + '\n');
 
     if (children.length) {
-      out.write('\n' + heading('Subtasks') + theme.dim('  (' + children.length + ')') + '\n\n');
+      out.write(listHeader('Subtasks', children.length));
       for (const child of children) out.write(taskLine(child, slug(child.assigneeId)) + '\n');
     }
 
@@ -222,7 +245,7 @@ export async function taskPlanCommand(ref: string, options: TaskPlanOptions = {}
     const children = assistant.store.org.listTasks(organization.id, { parentId: task.id });
 
     if (options.json) {
-      out.write(JSON.stringify({ plan, children }, null, 2) + '\n');
+      printJson({ plan, children });
       return 0;
     }
 
@@ -244,61 +267,33 @@ export interface TaskRunOptions {
  * Ctrl+C aborts the run and signals the provider children with it.
  */
 export async function taskRunCommand(ref: string, options: TaskRunOptions = {}): Promise<number> {
-  const controller = new AbortController();
-  const onInterrupt = (): void => {
-    controller.abort();
-  };
-  process.on('SIGINT', onInterrupt);
-
-  try {
-    return await withAssistant(async (assistant) => {
+  return withInterruptSignal((signal) =>
+    withAssistant(async (assistant) => {
       const task = resolveTask(assistant, ref);
       if (task.status === 'running') throw new CliError('That task is already running.');
 
       const json = options.json ?? false;
-      const spinner = json ? null : new Spinner(shorten(task.title, 40));
       const renderer = new EventRenderer({
         json,
         verbose: options.verbose ?? false,
-        spinner,
-        agentSlug: (id) => assistant.store.org.getAgent(id)?.slug ?? shortId(id),
+        spinner: json ? null : new Spinner(shorten(task.title, SPINNER_TITLE_WIDTH)),
+        agentSlug: agentSlugOf(assistant),
       });
 
-      let failed = false;
-      spinner?.start();
-      try {
-        for await (const event of assistant.runTask({ taskId: task.id, signal: controller.signal })) {
-          if (event.type === 'error') {
-            // A killed provider reports its own death; the user pressed Ctrl+C
-            // and does not need to be told about it twice.
-            if (controller.signal.aborted) continue;
-            if (event.fatal) failed = true;
-          }
-          renderer.handle(event);
-        }
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          failed = true;
-          renderer.handle({ type: 'error', message: (error as Error).message, fatal: true });
-        }
-      } finally {
-        spinner?.stop();
-      }
+      const { failed } = await renderer.consume(assistant.runTask({ taskId: task.id, signal }), signal);
 
       // `runTask` ends with a `done` carrying the combined result; the renderer
       // only collected it, because a task's result is not streamed prose.
       const report = renderer.finish().trim();
       if (!json && report) out.write('\n' + report + '\n');
 
-      if (controller.signal.aborted) {
-        if (!json) process.stderr.write(theme.dim(glyph.warn + ' interrupted') + '\n');
-        return 130;
+      if (signal.aborted) {
+        if (!json) printInterrupted();
+        return EXIT_INTERRUPTED;
       }
       return failed ? 1 : 0;
-    });
-  } finally {
-    process.off('SIGINT', onInterrupt);
-  }
+    }),
+  );
 }
 
 /* ------------------------------ done / cancel ---------------------------- */
@@ -310,50 +305,52 @@ export interface TaskDoneOptions {
 
 /** `rookery tasks done <id>` - close a task by hand. */
 export async function taskDoneCommand(ref: string, options: TaskDoneOptions = {}): Promise<number> {
-  return withAssistant((assistant) => {
+  return withAssistant(async (assistant) => {
     const task = resolveTask(assistant, ref);
-    refuseWhileRunning(task);
-
     const result = options.result?.trim();
-    // Through the one writer, so closing a task from the terminal reaches
-    // its activity, whoever is owed the news and any open browser. This used to write the column
-    // straight and tell nobody at all.
-    return assistant.org
-      .setTaskStatus({ task, to: 'done', by: 'user', ...(result ? { result } : {}) })
-      .then((moved) => {
-        if (!moved.ok) {
-          out.write(theme.red(glyph.fail + ' ' + moved.reason) + '\n');
-          return 1;
-        }
-        out.write(
-          theme.green(glyph.ok + ' Task ' + shortId(task.id) + ' done  ') + theme.dim(shorten(task.title, 56)) + '\n',
-        );
-        return 0;
-      });
+
+    if (!(await moveByHand(assistant, task, { to: 'done', ...(result ? { result } : {}) }))) return 1;
+    out.write(
+      theme.green(glyph.ok + ' Task ' + shortId(task.id) + ' done  ') +
+        theme.dim(shorten(task.title, CONFIRMATION_TITLE_WIDTH)) + '\n',
+    );
+    return 0;
   });
 }
 
 /** `rookery tasks cancel <id>` - take a task off the board without doing it. */
 export async function taskCancelCommand(ref: string): Promise<number> {
-  return withAssistant((assistant) => {
+  return withAssistant(async (assistant) => {
     const task = resolveTask(assistant, ref);
-    refuseWhileRunning(task);
 
-    return assistant.org.setTaskStatus({ task, to: 'cancelled', by: 'user' }).then((moved) => {
-      if (!moved.ok) {
-        out.write(theme.red(glyph.fail + ' ' + moved.reason) + '\n');
-        return 1;
-      }
-      out.write(
-        theme.yellow(glyph.warn + ' Task ' + shortId(task.id) + ' cancelled  ') +
-          theme.dim(shorten(task.title, 56)) + '\n',
-      );
-      return 0;
-    });
+    if (!(await moveByHand(assistant, task, { to: 'cancelled' }))) return 1;
+    out.write(
+      theme.yellow(glyph.warn + ' Task ' + shortId(task.id) + ' cancelled  ') +
+        theme.dim(shorten(task.title, CONFIRMATION_TITLE_WIDTH)) + '\n',
+    );
+    return 0;
   });
 }
 
 /* -------------------------------- helpers -------------------------------- */
+
+/**
+ * Move a task to a new status from the terminal; false (after saying why)
+ * when the move was refused. It goes through the one status writer, so
+ * closing a task here reaches its activity, whoever is owed the news and any
+ * open browser.
+ */
+async function moveByHand(
+  assistant: Assistant,
+  task: Task,
+  move: { to: 'done' | 'cancelled'; result?: string },
+): Promise<boolean> {
+  refuseWhileRunning(task);
+
+  const moved = await assistant.org.setTaskStatus({ task, by: 'user', ...move });
+  if (!moved.ok) out.write(theme.red(glyph.fail + ' ' + moved.reason) + '\n');
+  return moved.ok;
+}
 
 /**
  * A running task has an assignment behind it and a provider process behind
@@ -363,22 +360,5 @@ export async function taskCancelCommand(ref: string): Promise<number> {
 function refuseWhileRunning(task: Task): void {
   if (task.status === 'running') {
     throw new CliError('Task ' + shortId(task.id) + ' is running; interrupt the run before changing it.');
-  }
-}
-
-function paintStatus(status: TaskStatus): string {
-  switch (status) {
-    case 'done':
-      return theme.green(status);
-    case 'failed':
-      return theme.red(status);
-    case 'running':
-      return theme.yellow(status);
-    case 'blocked':
-      return theme.cyan(status);
-    case 'cancelled':
-      return theme.dim(status);
-    default:
-      return theme.frost(status);
   }
 }

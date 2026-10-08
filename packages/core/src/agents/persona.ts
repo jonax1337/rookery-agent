@@ -50,41 +50,48 @@ export interface ContextInput {
   store?: Store;
 }
 
+/** Shares of the context budget the memory block and the conversation digest may use. */
+const MEMORY_BUDGET_SHARE = 0.4;
+const HISTORY_BUDGET_SHARE = 0.5;
+
+/** One turn in the digest is clipped to this many characters, ellipsis included. */
+const MAX_HISTORY_LINE_CHARS = 400;
+
+/** A spoken reply is only cut at a sentence end that leaves at least this share of the text. */
+const MIN_SENTENCE_CUT_SHARE = 0.5;
+
 /** Spoken delivery changes format, while the saved persona still owns the voice. */
 function spokenStyle(config: RookeryConfig): string {
-  const lines: string[] = [];
   const address = config.honorific || config.userName || 'by their preferred form of address';
-  {
+  const lines = [
+    'This turn will be READ ALOUD. Keep it under about 60 spoken words.',
+    'Write flowing prose with no markdown, no bullet points, no code blocks and no URLs.',
+    'Spell out numbers and units the way a person would say them.',
+    'If the full answer needs a list or code, give the spoken gist and say the detail is on screen.',
+    'Delegating in a spoken turn: call assign with wait=false, say in one sentence whom you handed',
+    'it to, and stop. Do not wait for agents while the user is talking to you; the result can be',
+    'asked for later with assignment_status.',
+    // The user hears the turn as it streams, so working in silence reads as
+    // a dead line. This overrides any "do not narrate" rule in the tool
+    // paragraphs below for spoken turns.
+    'THINK ALOUD while you work with tools in a spoken turn: before each group of actions one',
+    'short sentence saying what you are about to do, after each look at the screen or a page one',
+    'short sentence saying what you see, then the next action. At most twelve words each, written',
+    'as plain prose between the tool calls, never a sentence per click. This is the one exception',
+    'to answering in two words. When the work is done, one closing sentence with the outcome.',
+  ];
+  if (config.voice.style === 'jarvis') {
     lines.push(
-      'This turn will be READ ALOUD. Keep it under about 60 spoken words.',
-      'Write flowing prose with no markdown, no bullet points, no code blocks and no URLs.',
-      'Spell out numbers and units the way a person would say them.',
-      'If the full answer needs a list or code, give the spoken gist and say the detail is on screen.',
-      'Delegating in a spoken turn: call assign with wait=false, say in one sentence whom you handed',
-      'it to, and stop. Do not wait for agents while the user is talking to you; the result can be',
-      'asked for later with assignment_status.',
-      // The user hears the turn as it streams, so working in silence reads as
-      // a dead line. This overrides any "do not narrate" rule in the tool
-      // paragraphs below for spoken turns.
-      'THINK ALOUD while you work with tools in a spoken turn: before each group of actions one',
-      'short sentence saying what you are about to do, after each look at the screen or a page one',
-      'short sentence saying what you see, then the next action. At most twelve words each, written',
-      'as plain prose between the tool calls, never a sentence per click. This is the one exception',
-      'to answering in two words. When the work is done, one closing sentence with the outcome.',
+      'SPOKEN REGISTER, this turn only: the bearing above, distilled. A bone-dry British',
+      'butler-AI, deadpan, unhurried, faintly amused at most. Short declarative sentences.',
+      'No exclamation marks, no emojis, no enthusiasm, no pleasantries, no "certainly",',
+      '"great", "of course", "happy to". Confirmations are one or two words:',
+      '"Done." "Understood." "On it." At most one dry aside per answer, delivered flat,',
+      'never explained. Address the user ' + address + ' occasionally, not every sentence.',
+      'Prefer forty spoken words over sixty. The register, not a script: a butler who has seen',
+      'everything and is impressed by nothing. Never reuse a stock phrase from one answer in the',
+      'next; the dryness comes from restraint and precision, not from catchphrases.',
     );
-    if (config.voice.style === 'jarvis') {
-      lines.push(
-        'SPOKEN REGISTER, this turn only: the bearing above, distilled. A bone-dry British',
-        'butler-AI, deadpan, unhurried, faintly amused at most. Short declarative sentences.',
-        'No exclamation marks, no emojis, no enthusiasm, no pleasantries, no "certainly",',
-        '"great", "of course", "happy to". Confirmations are one or two words:',
-        '"Done." "Understood." "On it." At most one dry aside per answer, delivered flat,',
-        'never explained. Address the user ' + address + ' occasionally, not every sentence.',
-        'Prefer forty spoken words over sixty. The register, not a script: a butler who has seen',
-        'everything and is impressed by nothing. Never reuse a stock phrase from one answer in the',
-        'next; the dryness comes from restraint and precision, not from catchphrases.',
-      );
-    }
   }
 
   return lines.join(' ');
@@ -158,7 +165,7 @@ function renderHistory(history: Message[], budget: number): string {
     if (!message) continue;
     const speaker = message.role === 'user' ? 'User' : message.role === 'system' ? 'Rookery (system)' : 'You';
     const body = message.content.replace(/\s+/g, ' ').trim();
-    const line = speaker + ': ' + (body.length > 400 ? body.slice(0, 397) + '...' : body);
+    const line = speaker + ': ' + (body.length > MAX_HISTORY_LINE_CHARS ? body.slice(0, MAX_HISTORY_LINE_CHARS - 3) + '...' : body);
     if (used + line.length > budget) break;
     lines.unshift(line);
     used += line.length + 1;
@@ -176,11 +183,11 @@ export function buildSystemPrompt(input: ContextInput): string {
   const sections: string[] = [renderProfile(config, input.query), resourcefulness()];
   if (voice) sections.push(spokenStyle(config));
 
-  const memoryBlock = renderMemoryBlock(memories, Math.floor(budget * 0.4), 'this user', input.store);
+  const memoryBlock = renderMemoryBlock(memories, Math.floor(budget * MEMORY_BUDGET_SHARE), 'this user', input.store);
   if (memoryBlock) sections.push(memoryBlock);
 
   if (!resumed && input.history?.length) {
-    const historyBlock = renderHistory(input.history, Math.floor(budget * 0.5));
+    const historyBlock = renderHistory(input.history, Math.floor(budget * HISTORY_BUDGET_SHARE));
     if (historyBlock) sections.push(historyBlock);
   }
 
@@ -219,7 +226,7 @@ export function toSpeakableText(markdown: string, maxChars = 700): string {
     // Cut at a sentence boundary so the voice does not stop mid-thought.
     const cut = text.slice(0, maxChars);
     const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
-    text = (end > maxChars * 0.5 ? cut.slice(0, end + 1) : cut).trim();
+    text = (end > maxChars * MIN_SENTENCE_CUT_SHARE ? cut.slice(0, end + 1) : cut).trim();
   }
   return text;
 }

@@ -1,3 +1,4 @@
+import { api } from './api';
 import type { RecalledMemory } from './types';
 
 /**
@@ -63,10 +64,5 @@ export async function postMemoryFeedback(
   turnId: string,
   verdict: MemoryFeedbackVerdict,
 ): Promise<void> {
-  const response = await fetch('/api/memories/' + encodeURIComponent(id) + '/feedback', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ turnId, verdict }),
-  });
-  if (!response.ok) throw new Error('The feedback could not be saved.');
+  await api.memoryFeedback(id, turnId, verdict);
 }

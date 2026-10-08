@@ -73,22 +73,40 @@ interface OriginBook {
 const BOOK_SIZE = 400;
 
 /** How much of a sent message is kept as the fallback quote. */
-const SNIPPET = 400;
+const SNIPPET_MAX_CHARS = 400;
+
+/** How many of a schedule's newest runs are searched for the one a reply names. */
+const CRON_RUNS_SEARCHED = 50;
+
+/** Longest thread title the sidebar gets. */
+const THREAD_TITLE_MAX_CHARS = 80;
 
 const bookKey = (chatId: number): string => `telegram:origins:${chatId}`;
 const threadKey = (kind: OriginKind, ref: string): string => `telegram:thread:${kind}:${ref}`;
 
+/** Message ids out of a list in which a send that returned none left a hole. */
+function definedIds(ids: Array<number | undefined>): number[] {
+  return ids.filter((id): id is number => typeof id === 'number');
+}
+
+/** `undefined` for text that is not JSON: a registry is convenience, not truth, and gets rebuilt. */
+function parseStoredJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function warnNotStored(context: ServerContext, what: string, chatId: number, error: unknown): void {
+  context.log.warn(what, { chatId, error: error instanceof Error ? error.message : String(error) });
+}
+
 function readBook(context: ServerContext, chatId: number): OriginBook {
   const raw = context.assistant.store.getMeta(bookKey(chatId));
-  if (!raw) return { v: 1, items: [] };
-  try {
-    const parsed = JSON.parse(raw) as OriginBook;
-    return Array.isArray(parsed?.items) ? { v: 1, items: parsed.items } : { v: 1, items: [] };
-  } catch {
-    // A registry that cannot be read is a registry that gets rebuilt. It
-    // holds convenience, not truth.
-    return { v: 1, items: [] };
-  }
+  const parsed = raw ? (parseStoredJson(raw) as OriginBook | undefined) : undefined;
+  const items = parsed?.items;
+  return { v: 1, items: Array.isArray(items) ? items : [] };
 }
 
 /**
@@ -103,10 +121,10 @@ export function rememberOrigin(
   messageIds: Array<number | undefined>,
   origin: Omit<MessageOrigin, 'at'>,
 ): void {
-  const ids = messageIds.filter((id): id is number => typeof id === 'number');
+  const ids = definedIds(messageIds);
   if (ids.length === 0) return;
   const entry: MessageOrigin = { ...origin, at: Date.now() };
-  if (entry.snippet) entry.snippet = entry.snippet.slice(0, SNIPPET);
+  if (entry.snippet) entry.snippet = entry.snippet.slice(0, SNIPPET_MAX_CHARS);
 
   const book = readBook(context, chatId);
   for (const id of ids) book.items.push({ id, ...entry });
@@ -114,10 +132,7 @@ export function rememberOrigin(
   try {
     context.assistant.store.setMeta(bookKey(chatId), JSON.stringify(book));
   } catch (error) {
-    context.log.warn('Telegram origin could not be stored', {
-      chatId,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    warnNotStored(context, 'Telegram origin could not be stored', chatId, error);
   }
 }
 
@@ -135,8 +150,6 @@ export function findOrigin(context: ServerContext, chatId: number, messageId: nu
   }
   return undefined;
 }
-
-/* ------------------------------- the ledger ------------------------------- */
 
 /**
  * Which messages are standing in one Telegram chat.
@@ -158,7 +171,7 @@ const ledgerKey = (chatId: number): string => `telegram:messages:${chatId}`;
 
 /** Note messages that are now standing in the chat, in either direction. */
 export function noteMessages(context: ServerContext, chatId: number, ids: Array<number | undefined>): void {
-  const fresh = ids.filter((id): id is number => typeof id === 'number');
+  const fresh = definedIds(ids);
   if (fresh.length === 0) return;
   const known = readLedger(context, chatId);
   for (const id of fresh) if (!known.includes(id)) known.push(id);
@@ -175,27 +188,17 @@ export function takeMessages(context: ServerContext, chatId: number): number[] {
 
 function readLedger(context: ServerContext, chatId: number): number[] {
   const raw = context.assistant.store.getMeta(ledgerKey(chatId));
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((id): id is number => typeof id === 'number') : [];
-  } catch {
-    return [];
-  }
+  const parsed = raw ? parseStoredJson(raw) : undefined;
+  return Array.isArray(parsed) ? parsed.filter((id): id is number => typeof id === 'number') : [];
 }
 
 function writeLedger(context: ServerContext, chatId: number, ids: number[]): void {
   try {
     context.assistant.store.setMeta(ledgerKey(chatId), JSON.stringify(ids));
   } catch (error) {
-    context.log.warn('Telegram message ledger could not be stored', {
-      chatId,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    warnNotStored(context, 'Telegram message ledger could not be stored', chatId, error);
   }
 }
-
-/* ------------------------------ the original ------------------------------ */
 
 function agentName(context: ServerContext, agentId?: string): string | undefined {
   if (!agentId) return undefined;
@@ -215,94 +218,106 @@ function stamp(at?: number): string {
  * the record was deleted - and the turn then runs on the snippet alone.
  */
 export function originContext(context: ServerContext, origin: MessageOrigin): string | undefined {
-  const store = context.assistant.store;
+  // Nothing in the store, or a kind that never had a record: the message as
+  // it was sent is all there is, and it is better than nothing.
+  return recordContext(context, origin) ?? (origin.snippet?.trim() || undefined);
+}
 
+function recordContext(context: ServerContext, origin: MessageOrigin): string | undefined {
   switch (origin.kind) {
     // An old `mail` entry points at the notification its mail became: the
     // migration kept the mail's id.
     case 'notification':
-    case 'mail': {
-      const notification = origin.ref ? store.org.getNotification(origin.ref) : null;
-      if (!notification) break;
-      const sender =
-        notification.fromKind === 'assistant'
-          ? context.config.assistantName
-          : notification.fromKind === 'agent'
-            ? (agentName(context, notification.fromAgentId) ?? 'an agent')
-            : 'Rookery';
-      const lines = [
-        `Notification (${notification.kind}) from ${sender}, ${stamp(notification.createdAt)}`,
-        `Title: ${notification.title}`,
-      ];
-      if (notification.body.trim()) lines.push('', notification.body.trim());
-      const task = notification.taskId ? store.org.getTask(notification.taskId) : null;
-      if (task) lines.push('', `It is about the task “${task.title}” (${task.id}), now ${task.status}.`);
-      return lines.join('\n');
-    }
-
-    case 'cron': {
-      const job = origin.parent ? context.assistant.cron.get(origin.parent) : null;
-      const run =
-        origin.parent && origin.ref
-          ? context.assistant.cron.runs(origin.parent, 50).find((entry) => entry.id === origin.ref)
-          : undefined;
-      if (!job && !run) break;
-      const lines = [`Schedule “${job?.name ?? 'unknown'}” (${job?.schedule ?? 'schedule removed'})`];
-      if (job?.prompt) lines.push('', 'Its standing instruction:', job.prompt.trim());
-      if (run) {
-        lines.push('', `Run ${run.status} at ${stamp(run.startedAt)}.`);
-        if (run.result?.trim()) lines.push('', 'What it reported:', run.result.trim());
-        if (run.error?.trim()) lines.push('', 'How it failed:', run.error.trim());
-      }
-      return lines.join('\n');
-    }
-
-    case 'sleep': {
-      const run = origin.ref ? store.getSleepRun(origin.ref) : null;
-      if (!run) break;
-      const lines = [`Sleep run ${run.status}, started ${stamp(run.startedAt)}.`];
-      lines.push(
-        `Read ${run.readCount}, replayed ${run.replayedCount}, learned ${run.learnedCount}, ` +
-          `merged ${run.mergedCount}, put to sleep ${run.dormantCount}.`,
-      );
-      if (run.report?.trim()) lines.push('', 'Its report:', run.report.trim());
-      if (run.error?.trim()) lines.push('', 'How it failed:', run.error.trim());
-      return lines.join('\n');
-    }
-
-    case 'assignment': {
-      const assignment = origin.ref ? store.org.getAssignment(origin.ref) : null;
-      if (!assignment) break;
-      const who = agentName(context, assignment.agentId) ?? 'an agent';
-      const lines = [
-        `Assignment to ${who}, ${assignment.status}, ${stamp(assignment.finishedAt ?? assignment.createdAt)}.`,
-      ];
-      lines.push('', 'The task as it was given:', assignment.task.trim());
-      if (assignment.result?.trim()) lines.push('', 'What came back:', assignment.result.trim());
-      if (assignment.error?.trim()) lines.push('', 'How it failed:', assignment.error.trim());
-      return lines.join('\n');
-    }
-
-    case 'task': {
-      const task = origin.ref ? store.org.getTask(origin.ref) : null;
-      if (!task) break;
-      const lines = [`Task “${task.title}”, ${task.status}, ${task.priority} priority.`];
-      if (task.description.trim()) lines.push('', task.description.trim());
-      if (task.error?.trim()) lines.push('', 'How it failed:', task.error.trim());
-      if (task.result?.trim()) lines.push('', 'Result so far:', task.result.trim());
-      return lines.join('\n');
-    }
-
+    case 'mail':
+      return notificationContext(context, origin);
+    case 'cron':
+      return cronContext(context, origin);
+    case 'sleep':
+      return sleepContext(context, origin);
+    case 'assignment':
+      return assignmentContext(context, origin);
+    case 'task':
+      return taskContext(context, origin);
     default:
-      break;
+      return undefined;
   }
-
-  // Nothing in the store, or a kind that never had a record: the message as
-  // it was sent is all there is, and it is better than nothing.
-  return origin.snippet?.trim() || undefined;
 }
 
-/* -------------------------------- threads -------------------------------- */
+function notificationContext(context: ServerContext, origin: MessageOrigin): string | undefined {
+  const store = context.assistant.store;
+  const notification = origin.ref ? store.org.getNotification(origin.ref) : null;
+  if (!notification) return undefined;
+  const sender =
+    notification.fromKind === 'assistant'
+      ? context.config.assistantName
+      : notification.fromKind === 'agent'
+        ? (agentName(context, notification.fromAgentId) ?? 'an agent')
+        : 'Rookery';
+  const lines = [
+    `Notification (${notification.kind}) from ${sender}, ${stamp(notification.createdAt)}`,
+    `Title: ${notification.title}`,
+  ];
+  if (notification.body.trim()) lines.push('', notification.body.trim());
+  const task = notification.taskId ? store.org.getTask(notification.taskId) : null;
+  if (task) lines.push('', `It is about the task “${task.title}” (${task.id}), now ${task.status}.`);
+  return lines.join('\n');
+}
+
+function cronContext(context: ServerContext, origin: MessageOrigin): string | undefined {
+  const cron = context.assistant.cron;
+  const job = origin.parent ? cron.get(origin.parent) : null;
+  const run =
+    origin.parent && origin.ref
+      ? cron.runs(origin.parent, CRON_RUNS_SEARCHED).find((entry) => entry.id === origin.ref)
+      : undefined;
+  if (!job && !run) return undefined;
+  const lines = [`Schedule “${job?.name ?? 'unknown'}” (${job?.schedule ?? 'schedule removed'})`];
+  if (job?.prompt) lines.push('', 'Its standing instruction:', job.prompt.trim());
+  if (run) {
+    lines.push('', `Run ${run.status} at ${stamp(run.startedAt)}.`);
+    if (run.result?.trim()) lines.push('', 'What it reported:', run.result.trim());
+    if (run.error?.trim()) lines.push('', 'How it failed:', run.error.trim());
+  }
+  return lines.join('\n');
+}
+
+function sleepContext(context: ServerContext, origin: MessageOrigin): string | undefined {
+  const run = origin.ref ? context.assistant.store.getSleepRun(origin.ref) : null;
+  if (!run) return undefined;
+  const lines = [
+    `Sleep run ${run.status}, started ${stamp(run.startedAt)}.`,
+    `Read ${run.readCount}, replayed ${run.replayedCount}, learned ${run.learnedCount}, ` +
+      `merged ${run.mergedCount}, put to sleep ${run.dormantCount}.`,
+  ];
+  if (run.report?.trim()) lines.push('', 'Its report:', run.report.trim());
+  if (run.error?.trim()) lines.push('', 'How it failed:', run.error.trim());
+  return lines.join('\n');
+}
+
+function assignmentContext(context: ServerContext, origin: MessageOrigin): string | undefined {
+  const assignment = origin.ref ? context.assistant.store.org.getAssignment(origin.ref) : null;
+  if (!assignment) return undefined;
+  const who = agentName(context, assignment.agentId) ?? 'an agent';
+  const lines = [
+    `Assignment to ${who}, ${assignment.status}, ${stamp(assignment.finishedAt ?? assignment.createdAt)}.`,
+    '',
+    'The task as it was given:',
+    assignment.task.trim(),
+  ];
+  if (assignment.result?.trim()) lines.push('', 'What came back:', assignment.result.trim());
+  if (assignment.error?.trim()) lines.push('', 'How it failed:', assignment.error.trim());
+  return lines.join('\n');
+}
+
+function taskContext(context: ServerContext, origin: MessageOrigin): string | undefined {
+  const task = origin.ref ? context.assistant.store.org.getTask(origin.ref) : null;
+  if (!task) return undefined;
+  const lines = [`Task “${task.title}”, ${task.status}, ${task.priority} priority.`];
+  if (task.description.trim()) lines.push('', task.description.trim());
+  if (task.error?.trim()) lines.push('', 'How it failed:', task.error.trim());
+  if (task.result?.trim()) lines.push('', 'Result so far:', task.result.trim());
+  return lines.join('\n');
+}
 
 export interface Thread {
   session: Session;
@@ -310,22 +325,23 @@ export interface Thread {
   fresh: boolean;
 }
 
+const THREAD_TITLE_PREFIX: Record<OriginKind, string> = {
+  notification: 'Notification',
+  mail: 'Notification',
+  cron: 'Schedule',
+  sleep: 'Sleep',
+  assignment: 'Assignment',
+  task: 'Task',
+  notify: 'Notice',
+  digest: 'Summary',
+  answer: 'Telegram',
+};
+
 /** A title a person can find in the sidebar three days later. */
 function threadTitle(origin: MessageOrigin): string {
-  const prefix: Record<OriginKind, string> = {
-    notification: 'Notification',
-    mail: 'Notification',
-    cron: 'Schedule',
-    sleep: 'Sleep',
-    assignment: 'Assignment',
-    task: 'Task',
-    notify: 'Notice',
-    digest: 'Summary',
-    answer: 'Telegram',
-  };
-  const head = prefix[origin.kind] ?? 'Telegram';
+  const head = THREAD_TITLE_PREFIX[origin.kind] ?? 'Telegram';
   const label = origin.title?.replace(/\s+/g, ' ').trim();
-  return label ? `${head}: ${label}`.slice(0, 80) : head;
+  return label ? `${head}: ${label}`.slice(0, THREAD_TITLE_MAX_CHARS) : head;
 }
 
 /**

@@ -64,6 +64,10 @@ import {
   type PropsWithChildren,
 } from "react";
 
+/** Messages scrolled out of view skip layout and paint; the placeholder height keeps the scrollbar steady. */
+const SKIP_OFFSCREEN_RENDERING =
+  "[contain-intrinsic-size:auto_200px] [content-visibility:auto]";
+
 export type ThreadGroupPart = MessagePrimitive.GroupedParts.GroupPart;
 
 /**
@@ -298,70 +302,80 @@ const ComposerAction: FC = () => {
         {slots.right}
       </div>
       <div className="ml-auto flex items-center gap-1.5 @xl:ml-0">
-        <AuiIf condition={(s) => s.thread.capabilities.dictation}>
-          <AuiIf condition={(s) => s.composer.dictation == null}>
-            <ComposerPrimitive.Dictate asChild>
-              <TooltipIconButton
-                tooltip="Dictate"
-                side="bottom"
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="aui-composer-dictate text-muted-foreground hover:text-foreground size-8"
-                aria-label="Start dictation"
-              >
-                <MicIcon className="aui-composer-dictate-icon size-4" />
-              </TooltipIconButton>
-            </ComposerPrimitive.Dictate>
-          </AuiIf>
-          <AuiIf condition={(s) => s.composer.dictation != null}>
-            <ComposerPrimitive.StopDictation asChild>
-              <TooltipIconButton
-                tooltip="Stop dictation"
-                side="bottom"
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="aui-composer-stop-dictation text-destructive size-8"
-                aria-label="Stop dictation"
-              >
-                <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
-              </TooltipIconButton>
-            </ComposerPrimitive.StopDictation>
-          </AuiIf>
-        </AuiIf>
-        <AuiIf condition={(s) => !s.thread.isRunning}>
-          <ComposerPrimitive.Send asChild>
-            <TooltipIconButton
-              tooltip="Send"
-              side="bottom"
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-send size-8"
-              aria-label="Send"
-            >
-              <ArrowUpIcon className="aui-composer-send-icon size-4" />
-            </TooltipIconButton>
-          </ComposerPrimitive.Send>
-        </AuiIf>
-        <AuiIf condition={(s) => s.thread.isRunning}>
-          <ComposerPrimitive.Cancel asChild>
-            <Button
-              type="button"
-              variant="default"
-              size="icon"
-              className="aui-composer-cancel size-8"
-              aria-label="Cancel"
-            >
-              <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
-            </Button>
-          </ComposerPrimitive.Cancel>
-        </AuiIf>
+        <DictationButtons />
+        <SendOrCancelButtons />
       </div>
     </div>
   );
 };
+
+const DictationButtons: FC = () => (
+  <AuiIf condition={(s) => s.thread.capabilities.dictation}>
+    <AuiIf condition={(s) => s.composer.dictation == null}>
+      <ComposerPrimitive.Dictate asChild>
+        <TooltipIconButton
+          tooltip="Dictate"
+          side="bottom"
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="aui-composer-dictate text-muted-foreground hover:text-foreground size-8"
+          aria-label="Start dictation"
+        >
+          <MicIcon className="aui-composer-dictate-icon size-4" />
+        </TooltipIconButton>
+      </ComposerPrimitive.Dictate>
+    </AuiIf>
+    <AuiIf condition={(s) => s.composer.dictation != null}>
+      <ComposerPrimitive.StopDictation asChild>
+        <TooltipIconButton
+          tooltip="Stop dictation"
+          side="bottom"
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="aui-composer-stop-dictation text-destructive size-8"
+          aria-label="Stop dictation"
+        >
+          <SquareIcon className="aui-composer-stop-dictation-icon size-3.5 animate-pulse fill-current" />
+        </TooltipIconButton>
+      </ComposerPrimitive.StopDictation>
+    </AuiIf>
+  </AuiIf>
+);
+
+const SendOrCancelButtons: FC = () => (
+  <>
+    <AuiIf condition={(s) => !s.thread.isRunning}>
+      <ComposerPrimitive.Send asChild>
+        <TooltipIconButton
+          tooltip="Send"
+          side="bottom"
+          type="button"
+          variant="default"
+          size="icon"
+          className="aui-composer-send size-8"
+          aria-label="Send"
+        >
+          <ArrowUpIcon className="aui-composer-send-icon size-4" />
+        </TooltipIconButton>
+      </ComposerPrimitive.Send>
+    </AuiIf>
+    <AuiIf condition={(s) => s.thread.isRunning}>
+      <ComposerPrimitive.Cancel asChild>
+        <Button
+          type="button"
+          variant="default"
+          size="icon"
+          className="aui-composer-cancel size-8"
+          aria-label="Cancel"
+        >
+          <SquareIcon className="aui-composer-cancel-icon size-3.5 fill-current" />
+        </Button>
+      </ComposerPrimitive.Cancel>
+    </AuiIf>
+  </>
+);
 
 const MessageError: FC = () => {
   return (
@@ -373,22 +387,66 @@ const MessageError: FC = () => {
   );
 };
 
-const AssistantMessage: FC = () => {
-  const {
-    ToolFallback: ToolFallbackComponent = CompactToolCall,
-    ToolGroup,
-    ReasoningGroup,
-  } = useContext(ThreadComponentsContext);
+// Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
+const ASSISTANT_FOOTER_HEIGHT = "min-h-7.5 pt-1.5";
 
-  const ACTION_BAR_PT = "pt-1.5";
-  // Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
-  const ACTION_BAR_HEIGHT = `min-h-7.5 ${ACTION_BAR_PT}`;
+type GroupSectionProps = PropsWithChildren<{ group: ThreadGroupPart }>;
+
+const ToolGroupSection: FC<GroupSectionProps> = ({ group, children }) => {
+  const { ToolGroup } = useContext(ThreadComponentsContext);
+
+  if (ToolGroup) return <ToolGroup group={group}>{children}</ToolGroup>;
+  return (
+    <ToolGroupRoot variant="ghost" className="my-2">
+      <ToolGroupTrigger
+        count={group.indices.length}
+        active={group.status.type === "running"}
+      />
+      <ToolGroupContent>{children}</ToolGroupContent>
+    </ToolGroupRoot>
+  );
+};
+
+const ReasoningGroupSection: FC<GroupSectionProps> = ({ group, children }) => {
+  const { ReasoningGroup } = useContext(ThreadComponentsContext);
+
+  if (ReasoningGroup) {
+    return <ReasoningGroup group={group}>{children}</ReasoningGroup>;
+  }
+  const running = group.status.type === "running";
+  return (
+    <ReasoningRoot streaming={running}>
+      <ReasoningTrigger active={running} />
+      <ReasoningContent aria-busy={running}>
+        <ReasoningText>{children}</ReasoningText>
+      </ReasoningContent>
+    </ReasoningRoot>
+  );
+};
+
+/** Wrapper that gives a file or image part its vertical breathing room. */
+const MessagePartFrame: FC<PropsWithChildren<{ slot: string }>> = ({
+  slot,
+  children,
+}) => (
+  <div data-slot={slot} className="py-1">
+    {children}
+  </div>
+);
+
+const AssistantMessage: FC = () => {
+  const { ToolFallback: ToolFallbackComponent = CompactToolCall } = useContext(
+    ThreadComponentsContext,
+  );
 
   return (
     <MessagePrimitive.Root
       data-slot="aui_assistant-message-root"
       data-role="assistant"
-      className="fade-in slide-in-from-bottom-1 animate-in relative -mb-7.5 pb-7.5 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
+      className={cn(
+        "fade-in slide-in-from-bottom-1 animate-in relative -mb-7.5 pb-7.5 duration-150",
+        SKIP_OFFSCREEN_RENDERING,
+      )}
     >
       <div
         data-slot="aui_assistant-message-content"
@@ -416,31 +474,13 @@ const AssistantMessage: FC = () => {
               case "group-chainOfThought":
                 return <div data-slot="aui_chain-of-thought">{children}</div>;
               case "group-tool":
-                if (ToolGroup) {
-                  return <ToolGroup group={part}>{children}</ToolGroup>;
-                }
+                return <ToolGroupSection group={part}>{children}</ToolGroupSection>;
+              case "group-reasoning":
                 return (
-                  <ToolGroupRoot variant="ghost" className="my-2">
-                    <ToolGroupTrigger count={part.indices.length} active={part.status.type === "running"} />
-                    <ToolGroupContent>{children}</ToolGroupContent>
-                  </ToolGroupRoot>
+                  <ReasoningGroupSection group={part}>
+                    {children}
+                  </ReasoningGroupSection>
                 );
-              case "group-reasoning": {
-                if (ReasoningGroup) {
-                  return (
-                    <ReasoningGroup group={part}>{children}</ReasoningGroup>
-                  );
-                }
-                const running = part.status.type === "running";
-                return (
-                  <ReasoningRoot streaming={running}>
-                    <ReasoningTrigger active={running} />
-                    <ReasoningContent aria-busy={running}>
-                      <ReasoningText>{children}</ReasoningText>
-                    </ReasoningContent>
-                  </ReasoningRoot>
-                );
-              }
               case "text":
                 return <MarkdownText />;
               case "reasoning":
@@ -451,15 +491,15 @@ const AssistantMessage: FC = () => {
                 return part.dataRendererUI;
               case "file":
                 return (
-                  <div data-slot="aui_assistant-message-file" className="py-1">
+                  <MessagePartFrame slot="aui_assistant-message-file">
                     <File {...part} />
-                  </div>
+                  </MessagePartFrame>
                 );
               case "image":
                 return (
-                  <div data-slot="aui_assistant-message-image" className="py-1">
+                  <MessagePartFrame slot="aui_assistant-message-image">
                     <Image {...part} />
-                  </div>
+                  </MessagePartFrame>
                 );
               case "indicator":
                 return (
@@ -481,7 +521,7 @@ const AssistantMessage: FC = () => {
 
       <div
         data-slot="aui_assistant-message-footer"
-        className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
+        className={cn("ms-2 flex items-center", ASSISTANT_FOOTER_HEIGHT)}
       >
         <BranchPicker />
         <AssistantActionBar />
@@ -490,12 +530,17 @@ const AssistantMessage: FC = () => {
   );
 };
 
+const selectCopyText = (s: AssistantState) => {
+  const original = s.message.metadata.custom.originalMarkdown;
+  if (typeof original === "string") return original;
+  return s.message.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+};
+
 const AssistantActionBar: FC = () => {
-  const copyText = useAuiState((s) => {
-    const original = s.message.metadata.custom.originalMarkdown;
-    return typeof original === "string" ? original : s.message.content
-      .filter((part) => part.type === "text").map((part) => part.text).join("\n\n");
-  });
+  const copyText = useAuiState(selectCopyText);
   const { isCopied, copyToClipboard } = useCopyToClipboard();
   return (
     <ActionBarPrimitive.Root
@@ -511,11 +556,11 @@ const AssistantActionBar: FC = () => {
         )}
       </TooltipIconButton>
       <AuiIf condition={(s) => s.thread.capabilities.reload}>
-      <ActionBarPrimitive.Reload asChild>
-        <TooltipIconButton tooltip="Regenerate">
-          <RefreshCwIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Reload>
+        <ActionBarPrimitive.Reload asChild>
+          <TooltipIconButton tooltip="Regenerate">
+            <RefreshCwIcon />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Reload>
       </AuiIf>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger asChild>
@@ -545,22 +590,25 @@ const AssistantActionBar: FC = () => {
 };
 
 const UserFilePart: FileMessagePartComponent = (part) => (
-  <div data-slot="aui_user-message-file" className="py-1">
+  <MessagePartFrame slot="aui_user-message-file">
     <File {...part} />
-  </div>
+  </MessagePartFrame>
 );
 
 const UserImagePart: ImageMessagePartComponent = (part) => (
-  <div data-slot="aui_user-message-image" className="py-1">
+  <MessagePartFrame slot="aui_user-message-image">
     <Image {...part} />
-  </div>
+  </MessagePartFrame>
 );
 
 const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
-      className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 duration-150 [contain-intrinsic-size:auto_200px] [content-visibility:auto] [&:where(>*)]:col-start-2"
+      className={cn(
+        "fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 duration-150 [&:where(>*)]:col-start-2",
+        SKIP_OFFSCREEN_RENDERING,
+      )}
       data-role="user"
     >
       <UserMessageAttachments />
@@ -592,11 +640,11 @@ const UserActionBar: FC = () => {
       className="aui-user-action-bar-root flex flex-col items-end"
     >
       <AuiIf condition={(s) => s.thread.capabilities.edit}>
-      <ActionBarPrimitive.Edit asChild>
-        <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
-          <PencilIcon />
-        </TooltipIconButton>
-      </ActionBarPrimitive.Edit>
+        <ActionBarPrimitive.Edit asChild>
+          <TooltipIconButton tooltip="Edit" className="aui-user-action-edit">
+            <PencilIcon />
+          </TooltipIconButton>
+        </ActionBarPrimitive.Edit>
       </AuiIf>
     </ActionBarPrimitive.Root>
   );
@@ -606,7 +654,7 @@ const EditComposer: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="aui_edit-composer-wrapper"
-      className="flex flex-col px-2 [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
+      className={cn("flex flex-col px-2", SKIP_OFFSCREEN_RENDERING)}
     >
       <ComposerPrimitive.Root className="aui-edit-composer-root border-border/60 dark:border-muted-foreground/15 ms-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg)">
         <ComposerPrimitive.Input

@@ -1,4 +1,4 @@
-import { BanIcon, RotateCcwIcon } from "@/components/icons";
+import { BanIcon, RotateCcwIcon } from '@/components/icons';
 import { useCallback } from 'react';
 
 import { toast } from 'sonner';

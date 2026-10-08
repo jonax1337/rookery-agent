@@ -5,7 +5,7 @@ import { prettyToolName } from '@/hooks/useChat';
 import { useAssignmentLog } from '@/hooks/useAssignmentLog';
 import { useConnection, useOrgState } from '@/providers/rookery-provider';
 import { TurnBlocks } from '@/lib/blocks';
-import type { AgentEvent, AssignmentStatus } from '@/lib/types';
+import type { AgentEvent, AssignmentLogEntry, AssignmentStatus } from '@/lib/types';
 import { cn } from '@/lib/utils';
 
 /**
@@ -42,6 +42,41 @@ export interface AssignmentTerminalProps {
   className?: string;
 }
 
+/** How close to the bottom still counts as following the run. */
+const FOLLOW_THRESHOLD_PX = 48;
+
+/**
+ * Entries become rows: foldable events run through the same TurnBlocks
+ * state machine the transcript uses, status and errors interleave as their
+ * own one-liners. A block's position is its identity between renders - new
+ * blocks only ever appear at the end, a start/end merge lands in place.
+ */
+function foldLog(entries: AssignmentLogEntry[]): { rows: FoldedRow[]; blocks: TurnBlocks['blocks'] } {
+  const folder = new TurnBlocks();
+  const rows: FoldedRow[] = [];
+  let blockRows = 0;
+  for (const { seq, event } of entries) {
+    if (event.type === 'text' || event.type === 'thinking' || event.type === 'tool') {
+      folder.apply(event);
+      while (blockRows < folder.blocks.length) {
+        rows.push({ key: 'b' + blockRows, row: { kind: 'block', index: blockRows } });
+        blockRows += 1;
+      }
+    } else if (event.type === 'status') {
+      // The one status a log carries is the provider switch, and the
+      // controller resets its buffer for it: the attempt the watcher just
+      // saw fail is over. Ending it here keeps the retry's first delta
+      // from gluing onto its trailing text - what a watcher attaching
+      // after the switch sees is only the retry anyway.
+      folder.reconcile('');
+      rows.push({ key: 's' + seq, row: { kind: 'status', label: event.label, detail: event.detail } });
+    } else if (event.type === 'error') {
+      rows.push({ key: 'e' + seq, row: { kind: 'error', message: event.message } });
+    }
+  }
+  return { rows, blocks: folder.blocks };
+}
+
 export function AssignmentTerminal({ assignmentId, status: statusProp, className }: AssignmentTerminalProps) {
   const { socket } = useConnection();
   const org = useOrgState();
@@ -54,31 +89,7 @@ export function AssignmentTerminal({ assignmentId, status: statusProp, className
   // state machine the transcript uses, status and errors interleave as their
   // own one-liners. A block's position is its identity between renders - new
   // blocks only ever appear at the end, a start/end merge lands in place.
-  const folded = useMemo(() => {
-    const folder = new TurnBlocks();
-    const rows: FoldedRow[] = [];
-    let blockRows = 0;
-    for (const { seq, event } of log.entries) {
-      if (event.type === 'text' || event.type === 'thinking' || event.type === 'tool') {
-        folder.apply(event);
-        while (blockRows < folder.blocks.length) {
-          rows.push({ key: 'b' + blockRows, row: { kind: 'block', index: blockRows } });
-          blockRows += 1;
-        }
-      } else if (event.type === 'status') {
-        // The one status a log carries is the provider switch, and the
-        // controller resets its buffer for it: the attempt the watcher just
-        // saw fail is over. Ending it here keeps the retry's first delta
-        // from gluing onto its trailing text - what a watcher attaching
-        // after the switch sees is only the retry anyway.
-        folder.reconcile('');
-        rows.push({ key: 's' + seq, row: { kind: 'status', label: event.label, detail: event.detail } });
-      } else if (event.type === 'error') {
-        rows.push({ key: 'e' + seq, row: { kind: 'error', message: event.message } });
-      }
-    }
-    return { rows, blocks: folder.blocks };
-  }, [log.entries]);
+  const folded = useMemo(() => foldLog(log.entries), [log.entries]);
 
   const visible = useMemo(
     () =>
@@ -106,7 +117,7 @@ export function AssignmentTerminal({ assignmentId, status: statusProp, className
   const handleScroll = (): void => {
     const node = scrollRef.current;
     if (!node) return;
-    const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+    const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight < FOLLOW_THRESHOLD_PX;
     if (atBottom !== followingRef.current) setFollowing(atBottom);
   };
 

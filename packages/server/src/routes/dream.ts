@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ASSISTANT_MEMORY_OWNER, revertPolicy } from '@rookery/core';
 import type { DreamSlot } from '@rookery/core';
 import type { ServerContext } from '../context.js';
+import { createNightRunHandler } from './night.js';
+import { clampPositiveInt, isTruthy } from './query.js';
 
 /**
  * The dream's own surface, over HTTP (concept 9.6, AP13).
@@ -16,7 +18,7 @@ import type { ServerContext } from '../context.js';
  * Registered in server.ts BEFORE `registerStatic`, or the SPA fallback would
  * answer every one of these with `index.html` instead of JSON - the same
  * trap `routes/memories.ts` already avoids. Literal paths are declared
- * before their parameterised siblings for the same reason `memories.ts:22-27`
+ * before their parameterised siblings for the same reason `routes/memories.ts`
  * puts `/api/memories/stats` ahead of `/api/memories/:id`. Query strings are
  * not schema-validated anywhere in this server, so they are clamped by hand
  * here too.
@@ -49,7 +51,7 @@ export async function registerDreamRoutes(app: FastifyInstance, context: ServerC
         return { error: 'Unknown dream slot ' + slot + '.' };
       }
       const owner = request.query.owner || ASSISTANT_MEMORY_OWNER;
-      return context.assistant.store.policyHistory(owner, slot, clampLimit(request.query.limit, 50, 200));
+      return context.assistant.store.policyHistory(owner, slot, clampPositiveInt(request.query.limit, 50, 200));
     },
   );
 
@@ -133,7 +135,7 @@ export async function registerDreamRoutes(app: FastifyInstance, context: ServerC
         sleepRunId: sleepRunId || undefined,
         policyId: policyId || undefined,
         promoted: promoted === undefined ? undefined : isTruthy(promoted),
-        limit: clampLimit(request.query.limit, 100, 500),
+        limit: clampPositiveInt(request.query.limit, 100, 500),
       });
     },
   );
@@ -151,59 +153,33 @@ export async function registerDreamRoutes(app: FastifyInstance, context: ServerC
       }>,
     ) => {
       const owner = request.query.owner || ASSISTANT_MEMORY_OWNER;
+      const { slot } = request.query;
+      const limit = clampPositiveInt(request.query.limit, DEFAULT_TRACE_LIMIT, MAX_TRACE_LIMIT);
+      // The store has no slot filter, so asking it for `limit` rows first and
+      // filtering afterwards would hand back fewer than exist: read the whole
+      // window, narrow it, then cut.
       const episodes = context.assistant.store.dreamEpisodes(owner, {
         holdout: request.query.holdout === undefined ? undefined : isTruthy(request.query.holdout),
         audit: request.query.audit === undefined ? undefined : isTruthy(request.query.audit),
-        limit: clampLimit(request.query.limit, 100, 500),
+        limit: slot ? MAX_TRACE_LIMIT : limit,
       });
-      const { slot } = request.query;
-      return slot ? episodes.filter((episode) => episode.slot === slot) : episodes;
+      return slot ? episodes.filter((episode) => episode.slot === slot).slice(0, limit) : episodes;
     },
   );
 
   /**
    * Start a night by hand from the dream section. Same start/wait/409 shape
-   * as `POST /api/sleep/run` (`routes/sleep.ts`) - the dream stage is a
-   * section of the same night, not a run of its own, so triggering it is
-   * triggering the night.
+   * as `POST /api/sleep/run` (`routes/sleep.ts`).
    */
-  app.post(
-    '/api/dream/run',
-    async (
-      request: FastifyRequest<{ Querystring: { owner?: string; wait?: string }; Body?: { owner?: string } }>,
-      reply: FastifyReply,
-    ) => {
-      const owner = request.body?.owner || request.query.owner || ASSISTANT_MEMORY_OWNER;
-      if (context.assistant.sleep.isRunning(owner)) {
-        reply.code(409);
-        return { error: 'This memory bank is already sleeping.' };
-      }
-      const wait = request.query.wait === '1' || request.query.wait === 'true';
-      if (wait) return context.assistant.sleepNow(owner);
-
-      // Fire and forget: the client watches the `sleep` frames on the socket.
-      void context.assistant.sleepNow(owner).catch((error: Error) => {
-        context.log.warn('Dream run failed', { owner, error: error.message });
-      });
-      reply.code(202);
-      return { started: true, owner };
-    },
-  );
+  app.post('/api/dream/run', createNightRunHandler(context, 'Dream run failed'));
 }
+
+const DEFAULT_TRACE_LIMIT = 100;
+const MAX_TRACE_LIMIT = 500;
 
 /** The three recall-family slots stage 2 carries a policy for (concept 7.1). */
 const DREAM_SLOTS: DreamSlot[] = ['recall', 'budget', 'retry'];
 
 function isDreamSlot(value: string): value is DreamSlot {
   return (DREAM_SLOTS as string[]).includes(value);
-}
-
-function clampLimit(raw: string | undefined, fallback: number, max: number): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.min(Math.floor(parsed), max);
-}
-
-function isTruthy(value: string | undefined): boolean {
-  return value === '1' || value === 'true' || value === 'yes';
 }

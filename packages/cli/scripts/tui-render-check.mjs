@@ -23,7 +23,7 @@ import { Scrollback } from '../dist/tui/components/Scrollback.js';
 import { AssignmentsView } from '../dist/tui/components/AssignmentsView.js';
 import { QuestionView } from '../dist/tui/components/QuestionView.js';
 import { WatchView } from '../dist/tui/components/WatchView.js';
-import { parseAnswer } from '../dist/repl.js';
+import { parseAnswer } from '../dist/replQuestions.js';
 import { SLASH_COMMANDS, commandWord } from '../dist/tui/hooks/useSlash.js';
 import { applyEvent, LiveBlocks, toEntries } from '../dist/tui/hooks/useTurn.js';
 import { foldWatchEvent } from '../dist/tui/hooks/useWatch.js';
@@ -240,7 +240,6 @@ const draft = {
   current: {
     busy: true,
     text: '',
-    activities: [],
     blocks: new LiveBlocks(),
     assignments: null,
     label: 'thinking',
@@ -282,7 +281,7 @@ const pending = renderToString(
   { columns: COLUMNS },
 );
 show('AssignmentsView - both just handed out', pending);
-expect(pending, '2 assignments', 'headline count');
+expect(pending, '2 runs', 'headline count');
 expect(pending, 'backend-dev', 'first agent slug');
 expect(pending, 'ink-researcher', 'second agent slug');
 expect(pending, 'Survey the existing REPL', 'first task');
@@ -349,7 +348,7 @@ expect(live, 'readline owns the prompt', 'dim preview line under the running ass
 expect(live, 'provider exited with code 1', 'failure reason');
 expect(live, '2 running', 'headline running count');
 expect(live, '1 failed', 'headline failure count');
-expect(live, '3 assignments', 'headline total');
+expect(live, '3 runs', 'headline total');
 
 checks += 1;
 if (draft.current.label === 'delegating') {
@@ -492,7 +491,7 @@ expect(scrollback, '↑12.8k ↓840', 'what the turn spent');
 expect(scrollback, '12.3s', 'turn duration');
 expect(scrollback, 'PLAN', 'assistant markdown heading');
 expect(scrollback, '1. add', 'ordered list');
-expect(scrollback, '3 assignments  ·  2 done  ·  1 failed  ·  31.8s', 'collapsed assignment summary');
+expect(scrollback, '3 runs  ·  2 done  ·  1 failed  ·  31.8s', 'collapsed assignment summary');
 expect(scrollback, 'doc-writer', 'the summary names each agent');
 
 /* ------------------------ interleaved turn transcript -------------------- */
@@ -501,7 +500,6 @@ const interleave = {
   current: {
     busy: true,
     text: '',
-    activities: [],
     blocks: new LiveBlocks(),
     assignments: null,
     label: 'thinking',
@@ -509,13 +507,12 @@ const interleave = {
   },
 };
 
-// The hook pushes side-channel notes into both the activities and the
-// transcript; this mirrors it so the walk sees what the app would see.
+// The hook pushes side-channel notes into the transcript; this mirrors it so
+// the walk sees what the app would see.
 let interleaveNotes = 0;
 const interleaveNote = (icon, text, color) => {
   interleaveNotes += 1;
   const note = { kind: 'note', id: 'a' + interleaveNotes, icon, text, ...(color ? { color } : {}) };
-  interleave.current.activities.push(note);
   interleave.current.blocks.pushNote(note);
 };
 
@@ -707,7 +704,6 @@ const asking = {
   current: {
     busy: true,
     text: '',
-    activities: [],
     blocks: new LiveBlocks(),
     assignments: null,
     question: null,

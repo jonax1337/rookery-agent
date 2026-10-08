@@ -86,10 +86,67 @@ function distance(a: string, b: string, limit: number): number {
   return previous[b.length]!;
 }
 
-function box(words: Word[]): Pick<TextMatch, 'x' | 'y' | 'width' | 'height'> {
+function box(words: Word[]): Rectangle {
   const left = Math.min(...words.map((w) => w[1])), top = Math.min(...words.map((w) => w[2]));
   const right = Math.max(...words.map((w) => w[1] + w[3])), bottom = Math.max(...words.map((w) => w[2] + w[4]));
   return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** One wrong letter allowed per this many ("rn" read as "m" is two); short words allow none, since a near-miss there is a different word. */
+const NEAR_MISS_LETTERS = 4;
+const MAX_LENGTH_WITHOUT_TYPOS = 3;
+
+type Rectangle = Pick<TextMatch, 'x' | 'y' | 'width' | 'height'>;
+
+function typoLimit(needle: string): number {
+  return needle.length <= MAX_LENGTH_WITHOUT_TYPOS ? 0 : Math.max(1, Math.round(needle.length / NEAR_MISS_LETTERS));
+}
+
+function isInside(m: Rectangle, [left, top, right, bottom]: ScreenText['window']): boolean {
+  const cx = m.x + m.width / 2, cy = m.y + m.height / 2;
+  return cx >= left && cx <= right && cy >= top && cy <= bottom;
+}
+
+function matchOf(words: Word[], text: string, approximate: boolean, whole: boolean, window: ScreenText['window']): TextMatch {
+  const found = { text, ...box(words), approximate, whole, foreground: false };
+  return { ...found, foreground: isInside(found, window) };
+}
+
+/** Exact occurrences of needle in one line, which may span several words. */
+function exactMatches(line: Word[], needle: string, window: ScreenText['window']): TextMatch[] {
+  // The line as one string, remembering where each word starts, so a phrase can span words.
+  let joined = '';
+  const starts: number[] = [];
+  for (const word of line) {
+    if (joined) joined += ' ';
+    starts.push(joined.length);
+    joined += normal(word[0]);
+  }
+  const matches: TextMatch[] = [];
+  for (let at = joined.indexOf(needle); at >= 0; at = joined.indexOf(needle, at + 1)) {
+    const end = at + needle.length;
+    const words = line.filter((word, i) => starts[i]! < end && starts[i]! + normal(word[0]).length > at);
+    const whole = starts.includes(at) && line.some((word, i) => starts[i]! + normal(word[0]).length === end);
+    matches.push(matchOf(words, words.map((w) => w[0]).join(' '), false, whole, window));
+  }
+  return matches;
+}
+
+/** Runs of as many words as the needle has whose text is within limit edits of it. */
+function nearMatches(line: Word[], needle: string, limit: number, window: ScreenText['window']): TextMatch[] {
+  const needleWords = needle.split(' ').length;
+  const matches: TextMatch[] = [];
+  for (let i = 0; i + needleWords <= line.length; i++) {
+    const words = line.slice(i, i + needleWords);
+    const text = words.map((w) => w[0]).join(' ');
+    if (distance(normal(text), needle, limit) <= limit) matches.push(matchOf(words, text, true, true, window));
+  }
+  return matches;
+}
+
+/** Whole-word matches first, then those inside the foreground window, then top to bottom. */
+function byRank(a: TextMatch, b: TextMatch): number {
+  return Number(b.whole) - Number(a.whole) || Number(b.foreground) - Number(a.foreground) || a.y - b.y || a.x - b.x;
 }
 
 /**
@@ -100,45 +157,15 @@ function box(words: Word[]): Pick<TextMatch, 'x' | 'y' | 'width' | 'height'> {
  */
 export function findText(screen: ScreenText, phrase: string): TextMatch[] {
   const needle = normal(phrase);
-  const needleWords = needle.split(' ').length;
-  const [wl, wt, wr, wb] = screen.window;
-  const inForeground = (m: { x: number; y: number; width: number; height: number }): boolean => {
-    const cx = m.x + m.width / 2, cy = m.y + m.height / 2;
-    return cx >= wl && cx <= wr && cy >= wt && cy <= wb;
-  };
+  const limit = typoLimit(needle);
   const exact: TextMatch[] = [];
   const near: TextMatch[] = [];
-  // About one wrong letter in four ("rn" read as "m" is two), none for short words, where a near-miss is a different word.
-  const limit = needle.length <= 3 ? 0 : Math.max(1, Math.round(needle.length / 4));
   for (const line of screen.lines) {
-    // The line as one string, remembering where each word starts, so a phrase can span words.
-    let joined = '';
-    const starts: number[] = [];
-    for (const word of line) {
-      if (joined) joined += ' ';
-      starts.push(joined.length);
-      joined += normal(word[0]);
-    }
-    for (let at = joined.indexOf(needle); at >= 0; at = joined.indexOf(needle, at + 1)) {
-      const words = line.filter((word, i) => starts[i]! < at + needle.length && starts[i]! + normal(word[0]).length > at);
-      const end = at + needle.length;
-      const whole = starts.includes(at) && line.some((word, i) => starts[i]! + normal(word[0]).length === end);
-      const found = { text: words.map((w) => w[0]).join(' '), ...box(words), approximate: false, whole, foreground: false };
-      exact.push({ ...found, foreground: inForeground(found) });
-    }
+    exact.push(...exactMatches(line, needle, screen.window));
     if (exact.length) continue;
-    for (let i = 0; i + needleWords <= line.length; i++) {
-      const words = line.slice(i, i + needleWords);
-      const text = normal(words.map((w) => w[0]).join(' '));
-      if (distance(text, needle, limit) <= limit) {
-        const found = { text: words.map((w) => w[0]).join(' '), ...box(words), approximate: true, whole: true, foreground: false };
-        near.push({ ...found, foreground: inForeground(found) });
-      }
-    }
+    near.push(...nearMatches(line, needle, limit, screen.window));
   }
-  const order = (a: TextMatch, b: TextMatch): number =>
-    Number(b.whole) - Number(a.whole) || Number(b.foreground) - Number(a.foreground) || a.y - b.y || a.x - b.x;
-  return (exact.length ? exact : near).sort(order);
+  return (exact.length ? exact : near).sort(byRank);
 }
 
 /**

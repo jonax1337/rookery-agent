@@ -1,24 +1,32 @@
 import { useState } from 'react';
 import type { ToolCallMessagePartComponent } from '@assistant-ui/react';
 import { ToolCall } from './tool-call';
-import { ToolFallback } from './tool-fallback.aui';
+import { ToolFallback, humanizeToolName } from './tool-fallback.aui';
+
+/** Tool output is usually JSON text; anything that is not stays the plain text it is. */
+function parseJsonText(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+const isTextBlocks = (value: unknown): value is { type: 'text'; text: string }[] =>
+  Array.isArray(value) && value.length > 0 && value.every((part) => part?.type === 'text' && typeof part.text === 'string');
 
 /** CLI results can contain JSON-encoded MCP text blocks. Show their readable content. */
 export function formatToolValue(value: unknown): string {
   if (value === undefined || value === null) return '';
-  if (typeof value === 'string') {
-    try { value = JSON.parse(value); } catch { return value as string; }
-  }
-  if (Array.isArray(value) && value.length && value.every((part) => part?.type === 'text' && typeof part.text === 'string')) {
-    return value.map((part) => part.text).join('\n\n');
-  }
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  const parsed = typeof value === 'string' ? parseJsonText(value) : value;
+  if (isTextBlocks(parsed)) return parsed.map((part) => part.text).join('\n\n');
+  return typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2);
 }
 
 export const CompactToolCall: ToolCallMessagePartComponent = (props) => {
   const [open, setOpen] = useState(false);
   if (props.status.type === 'requires-action') return <ToolFallback {...props} />;
-  const name = props.toolName.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ');
+  const name = humanizeToolName(props.toolName);
   const failed = props.isError || props.status.type === 'incomplete';
   return <ToolCall label={name} activeLabel={name} query=""
     request={formatToolValue(props.argsText)} result={formatToolValue(props.result)}

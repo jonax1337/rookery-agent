@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchSpeech } from '../lib/api';
+import { pickBrowserVoice } from '../lib/speech';
 import type { VoiceConfig, VoiceEngine } from '../lib/types';
 
 /**
@@ -179,7 +180,7 @@ export function useVoiceOutput(config: VoiceConfig | undefined): VoiceOutput {
     });
   }, [synthesise, wanted]);
 
-  const pump = useCallback(async (): Promise<void> => {
+  const pump = useCallback(async function run(): Promise<void> {
     if (pumpingRef.current) return;
     pumpingRef.current = true;
     const generation = generationRef.current;
@@ -218,7 +219,11 @@ export function useVoiceOutput(config: VoiceConfig | undefined): VoiceOutput {
       }
     } finally {
       pumpingRef.current = false;
-      if (!queueRef.current.length && generation === generationRef.current) {
+      if (generation !== generationRef.current) {
+        // `stop()` ran while this pump was waiting, so what was queued since
+        // found `pumpingRef` set and got no pump of its own: it starts here.
+        if (queueRef.current.length) void run();
+      } else if (!queueRef.current.length) {
         markSpeaking(false);
         // The answer is over; give the server voice another chance next time.
         fallbackRef.current = false;
@@ -382,24 +387,4 @@ function buildChain(context: AudioContext, jarvis: boolean): { input: GainNode; 
   }
 
   return { input, analyser };
-}
-
-/** Exact name match wins, then an exact locale, then the language prefix. */
-function pickBrowserVoice(
-  list: SpeechSynthesisVoice[],
-  config: VoiceConfig | undefined,
-): SpeechSynthesisVoice | undefined {
-  if (!list.length) return undefined;
-  const wantedName = config?.voiceName?.trim();
-  if (wantedName) {
-    const byName = list.find((voice) => voice.name === wantedName);
-    if (byName) return byName;
-  }
-  const lang = config?.lang ?? 'en-GB';
-  return (
-    list.find((voice) => voice.lang === lang) ??
-    list.find((voice) => voice.lang.startsWith(lang.split('-')[0] ?? '')) ??
-    list.find((voice) => voice.default) ??
-    list[0]
-  );
 }

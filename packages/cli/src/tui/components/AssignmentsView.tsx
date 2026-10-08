@@ -24,14 +24,21 @@ import type { AssignmentsState, AssignmentsSummary } from '../types.js';
 /** Width of the agent column, shared by the live and the collapsed view. */
 const SLUG_COLUMN = 16;
 
-/** How core names a status, and how it is shown. */
-const STATUS_LABEL: Record<AssignmentStatus, string> = {
-  pending: 'pending',
-  running: 'running',
-  done: 'done',
-  failed: 'failed',
-  cancelled: 'cancelled',
-};
+/** Narrowest the agent name gets, however deep the row is nested. */
+const MIN_SLUG_WIDTH = 6;
+
+/** Right-hand columns of a live row. */
+const STATUS_COLUMN = 11;
+const CHARS_COLUMN = 6;
+const ELAPSED_COLUMN = 6;
+
+/** What one level of delegation depth indents a row by. */
+const DEPTH_INDENT = '  ';
+
+/** Columns a detail line hangs in from the row's own indent. */
+const DETAIL_INDENT = 2;
+
+const BULLET_SEPARATOR = '  ' + glyph.dot + '  ';
 
 export interface AssignmentsViewProps {
   state: AssignmentsState;
@@ -66,8 +73,6 @@ export function AssignmentsView({
   );
 }
 
-/* --------------------------------- rows -------------------------------- */
-
 function AssignmentRow({
   view,
   frame,
@@ -82,7 +87,7 @@ function AssignmentRow({
     ? (SPINNER_FRAMES[frame % SPINNER_FRAMES.length] ?? '-')
     : ASSIGNMENT_MARK[view.status];
   const color = ASSIGNMENT_COLOR[view.status];
-  const indent = '  '.repeat(Math.max(0, view.depth));
+  const indent = indentFor(view.depth);
 
   return (
     <Box flexDirection="column">
@@ -97,40 +102,52 @@ function AssignmentRow({
             {view.task}
           </Text>
         </Box>
-        <Text color={color}>{' ' + STATUS_LABEL[view.status].padEnd(11)}</Text>
+        <Text color={color}>{' ' + view.status.padEnd(STATUS_COLUMN)}</Text>
         <Text color={ui.faint}>
-          {formatChars(view.chars).padStart(6) +
+          {formatChars(view.chars).padStart(CHARS_COLUMN) +
             ' ' +
-            (elapsedMs === undefined ? '' : formatDuration(elapsedMs)).padStart(6)}
+            (elapsedMs === undefined ? '' : formatDuration(elapsedMs)).padStart(ELAPSED_COLUMN)}
         </Text>
       </Box>
 
       {running && view.preview ? (
-        <Box flexDirection="row" paddingLeft={2}>
-          <Text color={ui.faint}>{indent + glyph.branch + ' '}</Text>
-          <Box flexGrow={1}>
-            <Text color={ui.faint} wrap="truncate-end">
-              {view.preview}
-            </Text>
-          </Box>
-        </Box>
+        <DetailLine indent={indent} color={ui.faint} wrap="truncate-end">
+          {view.preview}
+        </DetailLine>
       ) : null}
 
       {view.status === 'failed' && view.error ? (
-        <Box flexDirection="row" paddingLeft={2}>
-          <Text color={ui.danger}>{indent + glyph.branch + ' '}</Text>
-          <Box flexGrow={1}>
-            <Text color={ui.danger} wrap="wrap">
-              {view.error}
-            </Text>
-          </Box>
-        </Box>
+        <DetailLine indent={indent} color={ui.danger} wrap="wrap">
+          {view.error}
+        </DetailLine>
       ) : null}
     </Box>
   );
 }
 
-/* ------------------------------- headline ------------------------------ */
+/** A line hung under its row with the result branch, in the row's own indent. */
+function DetailLine({
+  indent,
+  color,
+  wrap,
+  children,
+}: {
+  indent: string;
+  color: string;
+  wrap: 'wrap' | 'truncate-end';
+  children: string;
+}): React.JSX.Element {
+  return (
+    <Box flexDirection="row" paddingLeft={DETAIL_INDENT}>
+      <Text color={color}>{indent + glyph.branch + ' '}</Text>
+      <Box flexGrow={1}>
+        <Text color={color} wrap={wrap}>
+          {children}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
 
 function Headline({
   rows,
@@ -141,9 +158,9 @@ function Headline({
   now: number;
   since: number;
 }): React.JSX.Element {
-  const done = rows.filter((view) => view.status === 'done').length;
-  const failed = rows.filter((view) => view.status === 'failed').length;
-  const running = rows.filter((view) => view.status === 'running').length;
+  const running = countWithStatus(rows, 'running');
+  const done = countWithStatus(rows, 'done');
+  const failed = countWithStatus(rows, 'failed');
 
   const bits = [count(rows.length)];
   if (running) bits.push(running + ' running');
@@ -156,12 +173,10 @@ function Headline({
       <Text color={ui.accent} bold>
         {glyph.agent + ' delegating '}
       </Text>
-      <Text color={ui.muted}>{bits.join('  ' + glyph.dot + '  ')}</Text>
+      <Text color={ui.muted}>{bits.join(BULLET_SEPARATOR)}</Text>
     </Box>
   );
 }
-
-/* ------------------------------- collapsed ----------------------------- */
 
 export interface AssignmentsSummaryViewProps {
   summary: AssignmentsSummary;
@@ -184,26 +199,37 @@ export function AssignmentsSummaryView({
         <Text color={ui.accent} bold>
           {'delegating '}
         </Text>
-        <Text color={ui.muted}>{bits.join('  ' + glyph.dot + '  ')}</Text>
+        <Text color={ui.muted}>{bits.join(BULLET_SEPARATOR)}</Text>
       </Box>
       {summary.assignments.map((view) => (
-        <Box key={view.id} flexDirection="row">
-          <Text color={ui.agent}>
-            {'  ' + '  '.repeat(Math.max(0, view.depth)) + slug(view.agentSlug, view.depth * 2)}
-          </Text>
-          <Box flexGrow={1}>
-            <Text color={ui.frost} wrap="truncate-end">
-              {view.task}
-            </Text>
-          </Box>
-          <Text color={ASSIGNMENT_COLOR[view.status]}>{' ' + STATUS_LABEL[view.status]}</Text>
-        </Box>
+        <SummaryRow key={view.id} view={view} />
       ))}
     </Box>
   );
 }
 
-/* -------------------------------- helpers ------------------------------ */
+function SummaryRow({ view }: { view: AssignmentView }): React.JSX.Element {
+  const indent = indentFor(view.depth);
+  return (
+    <Box flexDirection="row">
+      <Text color={ui.agent}>{'  ' + indent + slug(view.agentSlug, indent.length)}</Text>
+      <Box flexGrow={1}>
+        <Text color={ui.frost} wrap="truncate-end">
+          {view.task}
+        </Text>
+      </Box>
+      <Text color={ASSIGNMENT_COLOR[view.status]}>{' ' + view.status}</Text>
+    </Box>
+  );
+}
+
+function indentFor(depth: number): string {
+  return DEPTH_INDENT.repeat(Math.max(0, depth));
+}
+
+function countWithStatus(rows: AssignmentView[], status: AssignmentStatus): number {
+  return rows.filter((view) => view.status === status).length;
+}
 
 function count(total: number): string {
   return total + (total === 1 ? ' run' : ' runs');
@@ -215,7 +241,7 @@ function count(total: number): string {
  * than a wide row.
  */
 function slug(agentSlug: string, indent: number): string {
-  const width = Math.max(6, SLUG_COLUMN - indent);
+  const width = Math.max(MIN_SLUG_WIDTH, SLUG_COLUMN - indent);
   return shorten(agentSlug, width - 1).padEnd(width);
 }
 

@@ -20,7 +20,10 @@ import {
 import type { RecalledMemory } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ToolCall } from "./tool-call";
-import { mono } from "./surfaces";
+import { mono, PanelDivider } from "./surfaces";
+
+/** Longest stretch of a memory's text quoted in a verdict's accessible name. */
+const VERDICT_NAME_MAX_LENGTH = 40;
 
 /**
  * What the assistant read before it answered.
@@ -41,7 +44,7 @@ const MemoryRecallCall: ToolCallMessagePartComponent<MemoryRecallArgs, unknown> 
   const turnId = args?.turnId;
   const [open, setOpen] = useState(false);
   const [judged, setJudged] = useState<Record<string, MemoryFeedbackVerdict>>({});
-  const [pending, setPending] = useState<Set<string>>(new Set());
+  const [pending, setPending] = useState<Set<string>>(() => new Set());
 
   const judge = useCallback(
     async (memory: RecalledMemory, verdict: MemoryFeedbackVerdict): Promise<void> => {
@@ -89,7 +92,7 @@ const MemoryRecallCall: ToolCallMessagePartComponent<MemoryRecallArgs, unknown> 
       </div>
       {memories.map((memory) => (
         <div key={memory.id}>
-          <div className="bg-foreground/[0.06] mx-3.5 h-px" />
+          <PanelDivider />
           <div className="flex items-start gap-3 px-3.5 py-2.5">
             <p className="text-foreground/90 min-w-0 flex-1 font-sans text-xs leading-relaxed">
               {memory.content}
@@ -127,22 +130,21 @@ interface MemoryVerdictProps {
  * reaching straight into lucide for a rating control.
  */
 function MemoryVerdict({ memory, verdict, busy, onJudge }: MemoryVerdictProps) {
-  const name = shorten(memory.content, 40);
+  const name = shorten(memory.content, VERDICT_NAME_MAX_LENGTH);
   if (verdict) {
     const up = verdict === 'point';
     const Icon = up ? ThumbsUpIcon : ThumbsDownIcon;
+    const said = up ? 'helped' : 'did not belong';
     return (
       <span
         className={cn(
           'flex size-6 shrink-0 items-center justify-center',
           up ? 'text-foreground' : 'text-muted-foreground',
         )}
-        title={up ? 'You said this one helped' : "You said this one did not belong"}
+        title={'You said this one ' + said}
       >
         <Icon className="size-4 fill-current" aria-hidden="true" />
-        <span className="sr-only">
-          {(up ? 'You said “' : 'You said “') + name + (up ? '” helped' : '” did not belong')}
-        </span>
+        <span className="sr-only">{'You said “' + name + '” ' + said}</span>
       </span>
     );
   }

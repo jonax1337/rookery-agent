@@ -48,19 +48,18 @@ export class TurnBlocks {
 
   /** Fold one streaming event in. Text, thinking, tool and memory events. */
   apply(event: AgentEvent): void {
-    if (event.type === 'text') {
-      this.#appendDelta('text', event.delta);
-      return;
+    switch (event.type) {
+      case 'text':
+      case 'thinking':
+        this.#appendDelta(event.type, event.delta);
+        return;
+      case 'tool':
+        this.#applyTool(event);
+        return;
+      case 'memory':
+        this.#applyMemory(event);
+        return;
     }
-    if (event.type === 'thinking') {
-      this.#appendDelta('thinking', event.delta);
-      return;
-    }
-    if (event.type === 'tool') {
-      this.#applyTool(event);
-      return;
-    }
-    if (event.type === 'memory') this.#applyMemory(event);
   }
 
   /**
@@ -80,14 +79,9 @@ export class TurnBlocks {
   reconcile(doneText: string): void {
     this.#sealed = true;
     if (!doneText) return;
-    let textIndex = -1;
-    let textCount = 0;
-    for (let i = 0; i < this.#blocks.length; i += 1) {
-      if (this.#blocks[i]?.type !== 'text') continue;
-      textCount += 1;
-      textIndex = i;
-    }
-    if (textCount !== 1 || textIndex < 0) return;
+    const textIndexes = this.#blocks.flatMap((block, index) => (block.type === 'text' ? [index] : []));
+    if (textIndexes.length !== 1) return;
+    const textIndex = textIndexes[0] as number;
     if (this.#blocks.slice(textIndex + 1).some((block) => block.type === 'tool')) return;
     this.#blocks[textIndex] = { type: 'text', text: doneText };
   }

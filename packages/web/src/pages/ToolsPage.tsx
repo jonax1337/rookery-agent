@@ -1,89 +1,63 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router';
 
-import {
-  DeleteIcon as Trash2Icon,
-  DownloadIcon,
-  ExternalLinkIcon,
-  ExternalLinkIcon as SquareArrowOutUpRightIcon,
-  PlusIcon,
-  RotateCcwIcon,
-  WrenchIcon,
-} from "@/components/icons";
-import { toast } from 'sonner';
+import { PlusIcon, WrenchIcon } from '@/components/icons';
 
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { CountingNumber } from '@/components/animate-ui/primitives/texts/counting-number';
 
 import { DataTable } from '@/components/blocks/data-table/data-table';
-import { DataTableColumnHeader } from '@/components/blocks/data-table/column-header';
-import {
-  actionsColumn,
-  selectionColumn,
-} from '@/components/blocks/data-table/table-columns';
-import { createRookeryColumnHelper } from '@/components/blocks/data-table/table-features';
-import { DetailDrawer } from '@/components/blocks/detail-drawer';
 import { PageBody } from '@/components/blocks/page-body';
-import { StatCards } from '@/components/blocks/stat-cards';
-import type { StatCardProps } from '@/components/blocks/stat-cards';
+import { StatCards, type StatCardProps } from '@/components/blocks/stat-cards';
 import { EmptyState, NoResults, ServerOffline } from '@/components/common/empty-state';
 import { useRemoveTool } from '@/components/common/entity-actions';
-import { RowMenuButton } from '@/components/common/row-menu-button';
 import { usePageMeta } from '@/components/shell/page-meta';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Switch } from '@/components/ui/switch';
 import { useTools } from '@/hooks/useTools';
-import { failureMessage, reportFailure } from '@/lib/errors';
-import { AUDIENCE_LABEL, INSTALL_LABEL, toolStatus, toolStatusLook } from '@/lib/tools';
 import { formatNumber } from '@/lib/stats';
 import type { ToolServer } from '@/lib/types';
+
+import { PrepareOutputDrawer, usePrepareTool, useToggleTool } from './tools/tool-actions';
+import { TOOL_COLUMN_LABELS, toolColumns } from './tools/tool-columns';
 
 /**
  * The MCP hub as one table.
  *
- * The page used to be two Cards - "Katalog" and "Custom servers" - with no
- * shared filter, no search and a bare coloured dot for the state. It is the
- * longest list in the project, so it gets the block's facet tabs, one search
- * over name and description, and a state that is spelled out.
+ * It is the longest list in the project, so it gets the block's facet tabs,
+ * one search over name and description, and a state that is spelled out.
  */
 
-const column = createRookeryColumnHelper<ToolServer>();
+/** Each facet of the table, as the question it asks of a server. */
+const TAB_FILTERS = {
+  all: () => true,
+  active: (tool: ToolServer) => tool.active,
+  keys: (tool: ToolServer) => tool.missingEnv.length > 0,
+  custom: (tool: ToolServer) => tool.install === 'custom',
+  found: (tool: ToolServer) => tool.install === 'external',
+} as const;
 
-const COLUMN_LABELS: Record<string, string> = {
-  name: 'Name',
-  status: 'Status',
-  audience: 'Audience',
-  install: 'Source',
-  enabled: 'Active',
-  actions: 'Actions',
+type Tab = keyof typeof TAB_FILTERS;
+
+const TAB_LABELS: Record<Tab, string> = {
+  all: 'All',
+  active: 'Active',
+  keys: 'Requires keys',
+  custom: 'Custom',
+  found: 'Found here',
 };
 
-type Tab = 'alle' | 'aktiv' | 'schluessel' | 'eigene' | 'gefunden';
-
-/** What a finished preparation had to say, held for the drawer. */
-interface PrepareResult {
-  tool: ToolServer;
-  ok: boolean;
-  output: string;
-}
+const TABS = Object.keys(TAB_FILTERS) as Tab[];
 
 export function ToolsPage() {
   const navigate = useNavigate();
   const { tools, loading, error, refresh, setEnabled, remove, prepare } = useTools();
   const { dialog, removeTool } = useRemoveTool(remove, refresh);
+  const toggle = useToggleTool(setEnabled);
+  const preparation = usePrepareTool(prepare);
 
-  const [tab, setTab] = useState<Tab>('alle');
+  const [tab, setTab] = useState<Tab>('all');
   const [search, setSearch] = useState('');
-  const [preparingId, setPreparingId] = useState<string | null>(null);
-  const [result, setResult] = useState<PrepareResult | null>(null);
 
   usePageMeta({
     breadcrumb: [{ label: 'MCP Tools' }],
@@ -97,221 +71,34 @@ export function ToolsPage() {
     ),
   });
 
-  const toggle = useCallback(
-    async (tool: ToolServer, on: boolean): Promise<void> => {
-      try {
-        await setEnabled(tool.id, on);
-        toast(tool.name + (on ? ' enabled' : ' disabled'));
-      } catch (caught) {
-        reportFailure('Update', caught);
-      }
-    },
-    [setEnabled],
-  );
-
-  const runPrepare = useCallback(
-    async (tool: ToolServer): Promise<void> => {
-      setPreparingId(tool.id);
-      try {
-        const outcome = await prepare(tool.id);
-        setResult({ tool, ok: outcome.ok, output: outcome.output });
-      } catch (caught) {
-        // The panel prints this verbatim, so a stopped server has to reach it
-        // as a sentence rather than as the browser's "Failed to fetch".
-        setResult({ tool, ok: false, output: failureMessage(caught) });
-      } finally {
-        setPreparingId(null);
-      }
-    },
-    [prepare],
-  );
-
   const columns = useMemo(
     () =>
-      column.columns([
-        selectionColumn<ToolServer>({ rowLabel: (tool) => tool.name + ' selected' }),
-
-        column.accessor('name', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Name" />,
-          cell: ({ row }) => (
-            <div className="min-w-0 max-w-[24rem]">
-              <NavLink
-                to={'/tools/' + row.original.id}
-                className="font-medium hover:underline"
-              >
-                {row.original.name}
-              </NavLink>
-              <p className="line-clamp-1 text-xs text-muted-foreground">
-                {row.original.description}
-              </p>
-            </div>
-          ),
-          enableHiding: false,
-        }),
-
-        // Sorted by the caption, so "Keys missing" and "Bereit" group up.
-        column.accessor((tool) => toolStatus(tool).label, {
-          id: 'status',
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Status" />,
-          cell: ({ row }) => {
-            const look = toolStatusLook(row.original);
-            return (
-              <Badge variant={look.variant} className="gap-1">
-                {look.icon ? <look.icon className={look.iconClassName} aria-hidden="true" /> : null}
-                {look.label}
-              </Badge>
-            );
-          },
-        }),
-
-        column.accessor('audience', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Audience" />,
-          cell: ({ row }) => (
-            <Badge variant="outline" className="font-normal text-muted-foreground">
-              {AUDIENCE_LABEL[row.original.audience]}
-            </Badge>
-          ),
-        }),
-
-        column.accessor('install', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Source" />,
-          // A discovered server names the installation it came from: "Claude
-          // Code - vercel" says more than "already installed here" does.
-          cell: ({ row }) => (
-            <Badge variant="outline" className="font-normal text-muted-foreground">
-              {row.original.source || INSTALL_LABEL[row.original.install]}
-            </Badge>
-          ),
-        }),
-
-        column.accessor('enabled', {
-          header: ({ column: col }) => <DataTableColumnHeader column={col} title="Active" />,
-          cell: ({ row }) => (
-            <Switch
-              checked={row.original.enabled}
-              disabled={!row.original.installed}
-              aria-label={row.original.name + ' enable'}
-              onCheckedChange={(on) => void toggle(row.original, on)}
-            />
-          ),
-        }),
-
-        actionsColumn<ToolServer>((tool) => {
-          const busy = preparingId === tool.id;
-          return (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <RowMenuButton label={'Actions for ' + tool.name} busy={busy} />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem onSelect={() => void navigate('/tools/' + tool.id)}>
-                  <SquareArrowOutUpRightIcon />
-                  Open
-                </DropdownMenuItem>
-                {tool.prepare ? (
-                  <DropdownMenuItem
-                    disabled={busy}
-                    onSelect={(event) => {
-                      event.preventDefault();
-                      void runPrepare(tool);
-                    }}
-                  >
-                    <DownloadIcon />
-                    {tool.prepare.label}
-                  </DropdownMenuItem>
-                ) : null}
-                {tool.homepage ? (
-                  <DropdownMenuItem asChild>
-                    <a href={tool.homepage} target="_blank" rel="noreferrer">
-                      <ExternalLinkIcon />
-                      Open project page
-                    </a>
-                  </DropdownMenuItem>
-                ) : null}
-                <DropdownMenuSeparator />
-                {tool.install === 'custom' ? (
-                  <DropdownMenuItem variant="destructive" onSelect={() => void removeTool(tool)}>
-                    <Trash2Icon />
-                    Remove
-                  </DropdownMenuItem>
-                ) : (
-                  <DropdownMenuItem onSelect={() => void removeTool(tool)}>
-                    <RotateCcwIcon />
-                    Restore default
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          );
-        }),
-      ]),
-    [navigate, preparingId, removeTool, runPrepare, toggle],
+      toolColumns({
+        preparingId: preparation.preparingId,
+        onToggle: (tool, on) => void toggle(tool, on),
+        onOpen: (tool) => void navigate('/tools/' + tool.id),
+        onPrepare: (tool) => void preparation.run(tool),
+        onRemove: (tool) => void removeTool(tool),
+      }),
+    [navigate, preparation.preparingId, preparation.run, removeTool, toggle],
   );
 
   const counts = useMemo(
-    () => ({
-      alle: tools.length,
-      aktiv: tools.filter((tool) => tool.active).length,
-      schluessel: tools.filter((tool) => tool.missingEnv.length > 0).length,
-      eigene: tools.filter((tool) => tool.install === 'custom').length,
-      nichtInstalled: tools.filter((tool) => !tool.installed).length,
-      gefunden: tools.filter((tool) => tool.install === 'external').length,
-    }),
+    () =>
+      Object.fromEntries(
+        TABS.map((name) => [name, tools.filter(TAB_FILTERS[name]).length]),
+      ) as Record<Tab, number>,
     [tools],
   );
 
-  const rows = useMemo(() => {
-    switch (tab) {
-      case 'aktiv':
-        return tools.filter((tool) => tool.active);
-      case 'schluessel':
-        return tools.filter((tool) => tool.missingEnv.length > 0);
-      case 'eigene':
-        return tools.filter((tool) => tool.install === 'custom');
-      case 'gefunden':
-        return tools.filter((tool) => tool.install === 'external');
-      default:
-        return tools;
-    }
-  }, [tab, tools]);
-
-  // Every number rests on `GET /api/tools`, which returns the whole catalogue
-  // - there is no list limit here, so none of these cards needs a footnote
-  // about its base the way the paged lists do.
-  const cards: StatCardProps[] = [
-    {
-      label: 'Active',
-      value: <CountingNumber number={counts.aktiv} />,
-      headline: 'Of ' + formatNumber(counts.alle) + ' in the catalog',
-      footnote: 'Enabled, installed, and configured with all required keys',
-    },
-    {
-      label: 'Requires keys',
-      value: <CountingNumber number={counts.schluessel} />,
-      badge:
-        counts.schluessel > 0 ? <Badge variant="destructive">remains disabled</Badge> : undefined,
-      headline: counts.schluessel > 0 ? 'Waiting for credentials' : 'Nothing pending',
-    },
-    {
-      label: 'Found here',
-      value: <CountingNumber number={counts.gefunden} />,
-      headline: 'Installed in Claude Code',
-      footnote: 'Read from ~/.claude; each one runs only once you switch it on',
-    },
-    {
-      label: 'Custom servers',
-      value: <CountingNumber number={counts.eigene} />,
-      headline: 'Added manually',
-      to: '/tools',
-    },
-  ];
+  const rows = useMemo(() => tools.filter(TAB_FILTERS[tab]), [tab, tools]);
 
   return (
     <PageBody>
       {dialog}
 
       <Fade>
-        <StatCards items={cards} />
+        <StatCards items={buildToolCards(counts)} />
       </Fade>
 
       <Fade delay={50}>
@@ -319,25 +106,19 @@ export function ToolsPage() {
           data={rows}
           columns={columns}
           getRowId={(tool) => tool.id}
-          idPrefix="werkzeuge"
+          idPrefix="tools"
           onRowClick={(tool) => void navigate('/tools/' + tool.id)}
           rowClickIgnoreColumns={['select', 'name', 'enabled', 'actions']}
-          tabs={[
-            { value: 'alle', label: 'All', count: counts.alle },
-            { value: 'aktiv', label: 'Active', count: counts.aktiv },
-            { value: 'schluessel', label: 'Requires keys', count: counts.schluessel },
-            { value: 'eigene', label: 'Custom', count: counts.eigene },
-            { value: 'gefunden', label: 'Found here', count: counts.gefunden },
-          ]}
+          tabs={TABS.map((name) => ({ value: name, label: TAB_LABELS[name], count: counts[name] }))}
           tab={tab}
           onTabChange={(value) => setTab(value as Tab)}
           tabLabel="Tool selection"
           searchable
           search={search}
           onSearchChange={setSearch}
-          searchPlaceholder="Tools durchsuchen"
+          searchPlaceholder="Search tools"
           searchText={(tool) => tool.name + ' ' + tool.description + ' ' + tool.id}
-          columnLabels={COLUMN_LABELS}
+          columnLabels={TOOL_COLUMN_LABELS}
           initialSorting={[{ id: 'name', desc: false }]}
           rowLabel={{ singular: 'Tool', plural: 'tools' }}
           loading={loading}
@@ -378,7 +159,7 @@ export function ToolsPage() {
                 description="There is nothing in this tab right now. The complete catalog is available under “All”."
                 actionLabel="Show all"
                 onAction={() => {
-                  setTab('alle');
+                  setTab('all');
                   setSearch('');
                 }}
                 variant="plain"
@@ -388,30 +169,45 @@ export function ToolsPage() {
           }
           filteredEmpty={
             <Fade>
-              <NoResults
-                {...(search.trim() ? { query: search.trim() } : {})}
-                onReset={() => setSearch('')}
-              />
+              <NoResults query={search.trim() || undefined} onReset={() => setSearch('')} />
             </Fade>
           }
         />
       </Fade>
 
-      {/* The preparation can print a whole npm log; a toast would swallow it. */}
-      <DetailDrawer
-        open={result !== null}
-        onOpenChange={(open) => {
-          if (!open) setResult(null);
-        }}
-        title={result ? result.tool.name + ' set up' : 'Setup'}
-        description={
-          result ? (result.ok ? 'Completed.' : 'Failed.') : undefined
-        }
-      >
-        <pre className="rounded-lg bg-muted/60 p-3 font-mono text-xs whitespace-pre-wrap">
-          {result?.output.trim() || 'No output.'}
-        </pre>
-      </DetailDrawer>
+      <PrepareOutputDrawer result={preparation.result} onDismiss={preparation.dismiss} />
     </PageBody>
   );
+}
+
+// Every number rests on `GET /api/tools`, which returns the whole catalogue
+// - there is no list limit here, so none of these cards needs a footnote
+// about its base the way the paged lists do.
+function buildToolCards(counts: Record<Tab, number>): StatCardProps[] {
+  return [
+    {
+      label: 'Active',
+      value: <CountingNumber number={counts.active} />,
+      headline: 'Of ' + formatNumber(counts.all) + ' in the catalog',
+      footnote: 'Enabled, installed, and configured with all required keys',
+    },
+    {
+      label: 'Requires keys',
+      value: <CountingNumber number={counts.keys} />,
+      badge: counts.keys > 0 ? <Badge variant="destructive">remains disabled</Badge> : undefined,
+      headline: counts.keys > 0 ? 'Waiting for credentials' : 'Nothing pending',
+    },
+    {
+      label: 'Found here',
+      value: <CountingNumber number={counts.found} />,
+      headline: 'Installed in Claude Code',
+      footnote: 'Read from ~/.claude; each one runs only once you switch it on',
+    },
+    {
+      label: 'Custom servers',
+      value: <CountingNumber number={counts.custom} />,
+      headline: 'Added manually',
+      to: '/tools',
+    },
+  ];
 }

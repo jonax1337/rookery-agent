@@ -16,9 +16,10 @@ import {
   type IconComponent,
 } from '@/components/icons';
 
-import { NOTIFICATION_FILTERS, type NotificationFilter } from '@/lib/notifications';
+import { NOTIFICATION_FILTERS, NOTIFICATION_KIND_LABEL, type NotificationFilter } from '@/lib/notifications';
 import type { NotificationKind } from '@/lib/types';
 import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -37,8 +38,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
  * the list and the reading pane.
  */
 
-/** The icon per kind, shared with the list and the reading pane. */
-export const NOTIFICATION_KIND_ICON: Record<NotificationKind, IconComponent> = {
+/** The icon per kind, shared with the list and the reading pane through `NotificationKindBadge`. */
+const NOTIFICATION_KIND_ICON: Record<NotificationKind, IconComponent> = {
   question: CircleHelpIcon,
   schedule: ClockIcon,
   task: ClipboardCheckIcon,
@@ -50,6 +51,17 @@ export const NOTIFICATION_KIND_ICON: Record<NotificationKind, IconComponent> = {
 
 export function filterIcon(filter: NotificationFilter): IconComponent {
   return filter === 'all' ? InboxIcon : NOTIFICATION_KIND_ICON[filter];
+}
+
+/** The kind of a notification as an icon and a label - the same badge in the list and the reading pane. */
+export function NotificationKindBadge({ kind, className }: { kind: NotificationKind; className?: string }) {
+  const KindIcon = NOTIFICATION_KIND_ICON[kind];
+  return (
+    <Badge variant={kind === 'question' ? 'default' : 'secondary'} className={cn('font-normal', className)}>
+      <KindIcon aria-hidden="true" />
+      {NOTIFICATION_KIND_LABEL[kind]}
+    </Badge>
+  );
 }
 
 interface NavRowProps {

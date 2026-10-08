@@ -1,22 +1,19 @@
 import { randomUUID } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
+import type { StatementSync } from 'node:sqlite';
 import {
   ASSISTANT_MEMORY_OWNER,
-  type AbstainReason,
   type CronTrigger,
-  type DreamDegraded,
   type DreamEpisode,
   type DreamEval,
   type DreamFrame,
   type DreamLabel,
   type DreamLabelSource,
-  type DreamPipeline,
-  type DreamSite,
   type DreamSlot,
   type DreamSlotFreezeReason,
   type DreamSlotState,
   type DreamTrace,
   type DreamTraceInput,
-  type DreamTraceKind,
   type DreamTracePatch,
   type EntityKind,
   type FrameCorpus,
@@ -33,14 +30,11 @@ import {
   type PolicyOrigin,
   type PolicyVersion,
   type ProviderId,
-  type RecallBox,
   type RecallFrame,
-  type RecallPolicy,
   type Role,
   type Session,
   type SessionKind,
   type SleepRun,
-  type SleepStatus,
   type StatsDay,
   type StatsSnapshot,
   type StatsTotals,
@@ -50,8 +44,35 @@ import { openDatabase, type Db } from './db.js';
 import { OrgStore } from '../org/store.js';
 import { CronStore } from '../cron/store.js';
 import { TurnJournal } from '../turns/journal.js';
+import {
+  frameQuotes,
+  mapDreamEpisode,
+  mapDreamEval,
+  mapDreamFrame,
+  mapDreamLabel,
+  mapDreamSlotState,
+  mapDreamTrace,
+  mapEdge,
+  mapEntity,
+  mapMemory,
+  mapMessage,
+  mapPolicyVersion,
+  mapSession,
+  mapSleepRun,
+  parseJsonColumn,
+  parseTags,
+  type Row,
+} from './store-rows.js';
 
-type Row = Record<string, unknown>;
+export { mapEdge, mapEntity, mapMemory, mapSleepRun };
+
+/** A partial UPDATE: `column = ?` terms and the values that fill them, in order. */
+type Assignments = { sets: string[]; values: unknown[] };
+/** The span a statistics query covers, in epoch milliseconds. */
+type StatsWindow = { since: number; until: number };
+/** An extra `WHERE` term of a per-day count, with its bound values. */
+type DayScope = { sql: string; values: unknown[] };
+type CountedDayField = 'sessions' | 'messages' | 'assignments' | 'tasks' | 'cronRuns' | 'memories';
 
 /** meta key prefix under which one corpus fingerprint per night is stored. */
 const CORPUS_STAMP_PREFIX = 'dream.corpus_stamp.';
@@ -66,6 +87,67 @@ const CORPUS_CURRENT_PREFIX = 'dream.corpus_current.';
 const DEFAULT_MAX_FRAME_BYTES = 120_000;
 /** How many rows one sweep batch deletes before it commits and continues. */
 const SWEEP_BATCH = 500;
+
+const DEFAULT_MEMORY_IMPORTANCE = 0.5;
+const DEFAULT_EDGE_WEIGHT = 0.5;
+/**
+ * Reinforcing a known sentence is damped and stops entirely near the top:
+ * below the ceiling it adds one step, from the ceiling up it adds nothing.
+ */
+const REINFORCE_STEP = 0.02;
+const REINFORCE_CEILING = 0.8;
+/** One actual use raises `usefulness` by this much, up to 1. */
+const TOUCH_USEFULNESS_STEP = 0.03;
+/** The memory graph's node cap: asked-for limits are clamped into this range. */
+const GRAPH_MIN_NODES = 10;
+const GRAPH_DEFAULT_NODES = 300;
+const GRAPH_MAX_NODES = 1000;
+
+/** Patchable fields of each table, as patch key -> column. */
+const SESSION_PATCH_COLUMNS: Readonly<Record<string, string>> = {
+  title: 'title',
+  provider: 'provider',
+  model: 'model',
+  cwd: 'cwd',
+  projectId: 'project_id',
+  providerSessionId: 'provider_session_id',
+  archived: 'archived',
+};
+const MEMORY_PATCH_COLUMNS: Readonly<Record<string, string>> = {
+  content: 'content',
+  kind: 'kind',
+  importance: 'importance',
+  pinned: 'pinned',
+  dormantAt: 'dormant_at',
+  supersededBy: 'superseded_by',
+  forgotten: 'forgotten',
+  sleepRunId: 'sleep_run_id',
+};
+const SLEEP_RUN_PATCH_COLUMNS: Readonly<Record<string, string>> = {
+  status: 'status',
+  finishedAt: 'finished_at',
+  durationMs: 'duration_ms',
+  readCount: 'read_count',
+  replayedCount: 'replayed_count',
+  learnedCount: 'learned_count',
+  mergedCount: 'merged_count',
+  dormantCount: 'dormant_count',
+  edgeCount: 'edge_count',
+  insightCount: 'insight_count',
+  skillCount: 'skill_count',
+  skillRevisedCount: 'skill_revised_count',
+  conflictCount: 'conflict_count',
+  resolvedCount: 'resolved_count',
+  dreamTracesSeen: 'dream_traces_seen',
+  dreamFramesScored: 'dream_frames_scored',
+  dreamCandidates: 'dream_candidates',
+  dreamPromoted: 'dream_promoted',
+  dreamLabelsWritten: 'dream_labels_written',
+  modelCalls: 'model_calls',
+  report: 'report',
+  error: 'error',
+  undoneAt: 'undone_at',
+};
 
 /** All persistence for sessions, transcripts, long-term memories, the organisation and schedules. */
 export class Store {
@@ -165,7 +247,7 @@ export class Store {
       // default", not "never".
       (options.kind ? ' AND s.kind = ?' : " AND s.kind NOT IN ('mail', 'schedule')");
     const values: unknown[] = [options.includeArchived ? 1 : 0];
-    if (options.agentId) values.push(options.agentId);
+    if (typeof options.agentId === 'string') values.push(options.agentId);
     if (options.kind) values.push(options.kind);
     values.push(limit);
     const rows = this.db
@@ -186,27 +268,11 @@ export class Store {
       Pick<Session, 'title' | 'provider' | 'model' | 'cwd' | 'projectId' | 'providerSessionId' | 'archived'>
     >,
   ): void {
-    const columns: Record<string, string> = {
-      title: 'title',
-      provider: 'provider',
-      model: 'model',
-      cwd: 'cwd',
-      projectId: 'project_id',
-      providerSessionId: 'provider_session_id',
-      archived: 'archived',
-    };
-    const sets: string[] = [];
-    const values: unknown[] = [];
-    for (const [key, column] of Object.entries(columns)) {
-      const value = (patch as Record<string, unknown>)[key];
-      if (value === undefined) continue;
-      sets.push(column + ' = ?');
-      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value);
-    }
-    if (!sets.length) return;
-    sets.push('updated_at = ?');
-    values.push(Date.now(), id);
-    this.db.prepare('UPDATE sessions SET ' + sets.join(', ') + ' WHERE id = ?').run(...(values as never[]));
+    const assignments = assignmentsFor(SESSION_PATCH_COLUMNS, patch);
+    if (!assignments.sets.length) return;
+    assignments.sets.push('updated_at = ?');
+    assignments.values.push(Date.now());
+    this.#updateById('sessions', assignments, id);
   }
 
   deleteSession(id: string): void {
@@ -220,8 +286,10 @@ export class Store {
     // working record had just been thrown away. Cutting the link first
     // keeps the transcript and loses only what it was - a pointer back to a
     // conversation that no longer exists.
-    this.db.prepare("UPDATE turns SET session_id = NULL WHERE session_id = ? AND kind = 'assign'").run(id);
-    this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    this.#atomically(() => {
+      this.db.prepare("UPDATE turns SET session_id = NULL WHERE session_id = ? AND kind = 'assign'").run(id);
+      this.db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    });
   }
 
   /* ---------------------------- messages ---------------------------- */
@@ -258,29 +326,30 @@ export class Store {
       createdAt: Date.now(),
     };
 
-    this.db
-      .prepare(
-        `INSERT INTO messages (id, session_id, role, content, provider, model, agent, usage, created_at, tool_calls, blocks, turn_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        message.id,
-        message.sessionId,
-        message.role,
-        message.content,
-        message.provider ?? null,
-        message.model ?? null,
-        message.agent ?? null,
-        message.usage ? JSON.stringify(message.usage) : null,
-        message.createdAt,
-        message.toolCalls?.length ? JSON.stringify(message.toolCalls) : null,
-        message.blocks?.length ? JSON.stringify(message.blocks) : null,
-        message.turnId ?? null,
-      );
-
-    this.db
-      .prepare('UPDATE sessions SET updated_at = ? WHERE id = ?')
-      .run(message.createdAt, message.sessionId);
+    this.#atomically(() => {
+      this.db
+        .prepare(
+          `INSERT INTO messages (id, session_id, role, content, provider, model, agent, usage, created_at, tool_calls, blocks, turn_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          message.id,
+          message.sessionId,
+          message.role,
+          message.content,
+          message.provider ?? null,
+          message.model ?? null,
+          message.agent ?? null,
+          message.usage ? JSON.stringify(message.usage) : null,
+          message.createdAt,
+          message.toolCalls?.length ? JSON.stringify(message.toolCalls) : null,
+          message.blocks?.length ? JSON.stringify(message.blocks) : null,
+          message.turnId ?? null,
+        );
+      this.db
+        .prepare('UPDATE sessions SET updated_at = ? WHERE id = ?')
+        .run(message.createdAt, message.sessionId);
+    });
 
     return message;
   }
@@ -302,10 +371,7 @@ export class Store {
   }
 
   countMessages(sessionId: string): number {
-    const row = this.db
-      .prepare('SELECT COUNT(*) AS n FROM messages WHERE session_id = ?')
-      .get(sessionId) as { n: number };
-    return row.n;
+    return this.#countRows('SELECT COUNT(*) AS n FROM messages WHERE session_id = ?', sessionId);
   }
 
   /* ---------------------------- memories ---------------------------- */
@@ -344,8 +410,8 @@ export class Store {
       // same sentence again says the extractor likes saying it, not that the
       // memory earned its rank - that is what `usefulness` is for, and this
       // path deliberately never touches it.
-      const base = Math.max(Number(existing.importance), input.importance ?? 0.5);
-      const importance = base >= 0.8 ? Math.min(1, base) : Math.min(1, base + 0.02);
+      const base = Math.max(Number(existing.importance), input.importance ?? DEFAULT_MEMORY_IMPORTANCE);
+      const importance = base >= REINFORCE_CEILING ? Math.min(1, base) : Math.min(1, base + REINFORCE_STEP);
       const tags = mergeTags(parseTags(existing.tags), input.tags ?? []);
       // The quote is only ever filled in, never replaced: the first words
       // that confirmed a fact are the ones worth keeping, and a row written
@@ -374,7 +440,7 @@ export class Store {
       kind: input.kind,
       content,
       tags: input.tags ?? [],
-      importance: clamp01(input.importance ?? 0.5),
+      importance: clamp01(input.importance ?? DEFAULT_MEMORY_IMPORTANCE),
       owner,
       evidence: input.evidence?.trim() || undefined,
       sourceSessionId: input.sourceSessionId,
@@ -440,38 +506,23 @@ export class Store {
     },
     actor: MemoryActor = 'model',
   ): MemoryRecord | null {
-    const columns: Record<string, string> = {
-      content: 'content',
-      kind: 'kind',
-      importance: 'importance',
-      pinned: 'pinned',
-      dormantAt: 'dormant_at',
-      supersededBy: 'superseded_by',
-      forgotten: 'forgotten',
-      sleepRunId: 'sleep_run_id',
-    };
-    const sets: string[] = [];
-    const values: unknown[] = [];
-    for (const [key, column] of Object.entries(columns)) {
-      const value = (patch as Record<string, unknown>)[key];
-      if (value === undefined) continue;
-      sets.push(column + ' = ?');
-      values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value);
-    }
+    const assignments = assignmentsFor(MEMORY_PATCH_COLUMNS, patch);
     if (patch.tags) {
-      sets.push('tags = ?');
-      values.push(JSON.stringify([...new Set(patch.tags)]));
+      assignments.sets.push('tags = ?');
+      assignments.values.push(JSON.stringify([...new Set(patch.tags)]));
     }
-    if (!sets.length) return this.getMemory(id);
-    sets.push('updated_at = ?');
-    values.push(Date.now(), id);
-    this.db.prepare('UPDATE memories SET ' + sets.join(', ') + ' WHERE id = ?').run(...(values as never[]));
-    // Two patch fields carry a verdict, and only those two: pinning says the
-    // row belonged in the prompt, forgetting says it did not. Everything else
-    // the inspector can change (wording, weight, tags) says nothing about any
-    // turn and writes no label.
-    if (actor === 'user' && patch.pinned === true) this.#writeUserLabel(id, 1, 'updateMemory:user');
-    if (actor === 'user' && patch.forgotten === true) this.#writeUserLabel(id, 0, 'updateMemory:user');
+    if (!assignments.sets.length) return this.getMemory(id);
+    assignments.sets.push('updated_at = ?');
+    assignments.values.push(Date.now());
+    this.#atomically(() => {
+      this.#updateById('memories', assignments, id);
+      // Two patch fields carry a verdict, and only those two: pinning says the
+      // row belonged in the prompt, forgetting says it did not. Everything else
+      // the inspector can change (wording, weight, tags) says nothing about any
+      // turn and writes no label.
+      if (actor === 'user' && patch.pinned === true) this.#writeUserLabel(id, 1, 'updateMemory:user');
+      if (actor === 'user' && patch.forgotten === true) this.#writeUserLabel(id, 0, 'updateMemory:user');
+    });
     return this.getMemory(id);
   }
 
@@ -527,12 +578,11 @@ export class Store {
     const limit = options.limit ?? 200;
     const kinds = options.kinds ?? [];
     const owner = options.owner ?? ASSISTANT_MEMORY_OWNER;
-    const placeholders = kinds.map(() => '?').join(', ');
     const sql =
       'SELECT * FROM memories WHERE owner = ? AND (? = 1 OR forgotten = 0)' +
       (options.includeDormant === false ? ' AND dormant_at IS NULL' : '') +
       (options.since ? ' AND created_at >= ?' : '') +
-      (kinds.length ? ' AND kind IN (' + placeholders + ')' : '') +
+      (kinds.length ? ' AND kind IN (' + placeholders(kinds) + ')' : '') +
       ' ORDER BY importance DESC, updated_at DESC LIMIT ?';
     const values: unknown[] = [owner, options.includeForgotten ? 1 : 0];
     if (options.since) values.push(options.since);
@@ -603,17 +653,19 @@ export class Store {
    * otherwise, and only `'user'` leaves a label (S5).
    */
   forgetMemory(id: string, actor: MemoryActor = 'model'): void {
-    const row = this.db.prepare('SELECT owner FROM memories WHERE id = ?').get(id) as Row | undefined;
-    this.db
-      .prepare('UPDATE memories SET forgotten = 1, updated_at = ? WHERE id = ?')
-      .run(Date.now(), id);
-    // The old labels die with the target, the new one is born alive (S9):
-    // what a label about a forgotten memory claims is still true of the
-    // turns it was written about, and `dead_at` is what keeps that history
-    // readable instead of deleting it.
-    this.markLabelsDead(id);
-    if (actor === 'user') this.#writeUserLabel(id, 0, 'forgetMemory:user');
-    if (row) this.dropDreamFramesForOwner(row.owner as string);
+    // The owner is read first so the frame drop below still knows whose
+    // bank the memory belonged to (R17).
+    const owner = this.#ownerOf(id);
+    this.#atomically(() => {
+      this.db.prepare('UPDATE memories SET forgotten = 1, updated_at = ? WHERE id = ?').run(Date.now(), id);
+      // The old labels die with the target, the new one is born alive (S9):
+      // what a label about a forgotten memory claims is still true of the
+      // turns it was written about, and `dead_at` is what keeps that history
+      // readable instead of deleting it.
+      this.markLabelsDead(id);
+      if (actor === 'user') this.#writeUserLabel(id, 0, 'forgetMemory:user');
+      if (owner) this.dropDreamFramesQuoting(owner, [id]);
+    });
   }
 
   /**
@@ -623,30 +675,36 @@ export class Store {
    * Returns how many rows it touched, for the report.
    */
   archiveMemories(owner: string): number {
-    const result = this.db
-      .prepare('UPDATE memories SET archived_at = ? WHERE owner = ? AND archived_at IS NULL')
-      .run(Date.now(), owner) as { changes: number };
-    // The whole bank leaves recall, so its frames are verbatim text without
-    // a corpus left to replay against (R17).
-    this.dropDreamFramesForOwner(owner);
-    // Every target of this owner is gone from recall at once, so the labels
-    // go dead in one statement rather than one per memory (S9).
-    this.markOwnerLabelsDead(owner);
-    return Number(result.changes ?? 0);
+    return this.#atomically(() => {
+      const archived = changesOf(
+        this.db
+          .prepare('UPDATE memories SET archived_at = ? WHERE owner = ? AND archived_at IS NULL')
+          .run(Date.now(), owner),
+      );
+      // The whole bank leaves recall, so its frames are verbatim text without
+      // a corpus left to replay against (R17).
+      this.dropDreamFramesForOwner(owner);
+      // Every target of this owner is gone from recall at once, so the labels
+      // go dead in one statement rather than one per memory (S9).
+      this.markOwnerLabelsDead(owner);
+      return archived;
+    });
   }
 
   /** See `forgetMemory` for `actor`; this path is the hard one (`?hard`). */
   deleteMemory(id: string, actor: MemoryActor = 'model'): void {
     // The owner is read before the row goes, so the frame drop afterwards
     // still knows whose bank the deleted memory belonged to (R17).
-    const row = this.db.prepare('SELECT owner FROM memories WHERE id = ?').get(id) as Row | undefined;
-    // Both label steps run while the row is still there: the user label
-    // reads the memory's owner and source session off it, and neither is
-    // recoverable once the DELETE has run.
-    this.markLabelsDead(id);
-    if (actor === 'user') this.#writeUserLabel(id, 0, 'deleteMemory:user');
-    this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
-    if (row) this.dropDreamFramesForOwner(row.owner as string);
+    const owner = this.#ownerOf(id);
+    this.#atomically(() => {
+      // Both label steps run while the row is still there: the user label
+      // reads the memory's owner and source session off it, and neither is
+      // recoverable once the DELETE has run.
+      this.markLabelsDead(id);
+      if (actor === 'user') this.#writeUserLabel(id, 0, 'deleteMemory:user');
+      this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+      if (owner) this.dropDreamFramesQuoting(owner, [id]);
+    });
   }
 
   /**
@@ -669,7 +727,7 @@ export class Store {
       .prepare('SELECT owner, source_session_id FROM memories WHERE id = ?')
       .get(memoryId) as Row | undefined;
     if (!row) return;
-    const sessionId = (row.source_session_id as string | null) ?? null;
+    const sessionId = row.source_session_id as string | null;
     if (!sessionId) return;
     this.putLabel({
       turnId: sessionId,
@@ -702,11 +760,13 @@ export class Store {
       `UPDATE memories
           SET last_accessed_at = ?,
               access_count = access_count + 1,
-              usefulness = MIN(1.0, usefulness + 0.03)
+              usefulness = MIN(1.0, usefulness + ${TOUCH_USEFULNESS_STEP})
         WHERE id = ?`,
     );
-    for (const id of ids) statement.run(now, id);
-    if (ctx) this.recordTouches(ctx.traceId, ctx.owner, ids, ctx.policyId);
+    this.#atomically(() => {
+      for (const id of ids) statement.run(now, id);
+      if (ctx) this.recordTouches(ctx.traceId, ctx.owner, ids, ctx.policyId);
+    });
   }
 
   memoryStats(owner = ASSISTANT_MEMORY_OWNER): {
@@ -718,8 +778,7 @@ export class Store {
     entities: number;
     edges: number;
   } {
-    const count = (sql: string): number =>
-      (this.db.prepare(sql).get(owner) as { n: number } | undefined)?.n ?? 0;
+    const count = (sql: string): number => this.#countRows(sql, owner);
     const total = count('SELECT COUNT(*) AS n FROM memories WHERE owner = ? AND forgotten = 0 AND dormant_at IS NULL');
     const forgotten = count('SELECT COUNT(*) AS n FROM memories WHERE owner = ? AND forgotten = 1');
     const dormant = count('SELECT COUNT(*) AS n FROM memories WHERE owner = ? AND forgotten = 0 AND dormant_at IS NOT NULL');
@@ -756,96 +815,126 @@ export class Store {
   stats(options: { orgId: string; since: number; until?: number; owner?: string }): StatsSnapshot {
     const owner = options.owner || ASSISTANT_MEMORY_OWNER;
     const until = options.until ?? Date.now();
-    const since = Math.min(options.since, until);
-
-    const count = (sql: string, ...values: unknown[]): number =>
-      (this.db.prepare(sql).get(...(values as never[])) as { n: number } | undefined)?.n ?? 0;
+    const window: StatsWindow = { since: Math.min(options.since, until), until };
 
     // Reused rather than recounted, so the dashboard and the memory page can
     // never disagree about how many memories there are.
-    const memory = this.memoryStats(owner);
+    const totals = this.#statsTotals(options.orgId, this.memoryStats(owner).total);
+    const tokenRows = this.#tokensPerDay(window);
+    const series = this.#dailySeries({ orgId: options.orgId, owner }, window, tokenRows);
+    return {
+      since: window.since,
+      until,
+      orgId: options.orgId,
+      owner,
+      totals,
+      series,
+      tokensAvailable: tokenRows.length > 0,
+    };
+  }
 
-    const totals: StatsTotals = {
+  /** The cross-table counts of the dashboard's totals row. */
+  #statsTotals(orgId: string, memories: number): StatsTotals {
+    return {
       // Mail and cron transcripts are left out here for the same reason
       // `listSessions` hides them: they are not conversations. Counting them
       // would put a number on the conversations card that its own list
       // cannot produce.
-      sessions: count("SELECT COUNT(*) AS n FROM sessions WHERE archived = 0 AND kind NOT IN ('mail', 'schedule')"),
-      archivedSessions: count("SELECT COUNT(*) AS n FROM sessions WHERE archived = 1 AND kind NOT IN ('mail', 'schedule')"),
-      messages: count(
+      sessions: this.#countRows("SELECT COUNT(*) AS n FROM sessions WHERE archived = 0 AND kind NOT IN ('mail', 'schedule')"),
+      archivedSessions: this.#countRows("SELECT COUNT(*) AS n FROM sessions WHERE archived = 1 AND kind NOT IN ('mail', 'schedule')"),
+      messages: this.#countRows(
         "SELECT COUNT(*) AS n FROM messages m WHERE NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = m.session_id AND s.kind IN ('mail', 'schedule'))",
       ),
-      assignments: count('SELECT COUNT(*) AS n FROM assignments WHERE org_id = ?', options.orgId),
-      runningAssignments: count(
+      assignments: this.#countRows('SELECT COUNT(*) AS n FROM assignments WHERE org_id = ?', orgId),
+      runningAssignments: this.#countRows(
         "SELECT COUNT(*) AS n FROM assignments WHERE org_id = ? AND status IN ('pending', 'running')",
-        options.orgId,
+        orgId,
       ),
-      tasks: count('SELECT COUNT(*) AS n FROM tasks WHERE org_id = ?', options.orgId),
-      openTasks: count(
+      tasks: this.#countRows('SELECT COUNT(*) AS n FROM tasks WHERE org_id = ?', orgId),
+      openTasks: this.#countRows(
         "SELECT COUNT(*) AS n FROM tasks WHERE org_id = ? AND status IN ('open', 'planned', 'running')",
-        options.orgId,
+        orgId,
       ),
-      cronJobs: count('SELECT COUNT(*) AS n FROM cron_jobs WHERE org_id = ?', options.orgId),
-      cronRuns: count('SELECT COUNT(*) AS n FROM cron_runs WHERE org_id = ?', options.orgId),
-      memories: memory.total,
-      agents: count('SELECT COUNT(*) AS n FROM agents WHERE org_id = ? AND archived = 0', options.orgId),
+      cronJobs: this.#countRows('SELECT COUNT(*) AS n FROM cron_jobs WHERE org_id = ?', orgId),
+      cronRuns: this.#countRows('SELECT COUNT(*) AS n FROM cron_runs WHERE org_id = ?', orgId),
+      memories,
+      agents: this.#countRows('SELECT COUNT(*) AS n FROM agents WHERE org_id = ? AND archived = 0', orgId),
     };
+  }
 
+  /** The day-by-day series, oldest day first; a day with nothing to report is not emitted. */
+  #dailySeries(scope: { orgId: string; owner: string }, window: StatsWindow, tokenRows: Row[]): StatsDay[] {
     const buckets = new Map<string, StatsDay>();
     const bucket = (day: string): StatsDay => {
-      const existing = buckets.get(day);
-      if (existing) return existing;
-      const created: StatsDay = {
-        day,
-        sessions: 0,
-        messages: 0,
-        assignments: 0,
-        tasks: 0,
-        cronRuns: 0,
-        memories: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-      };
-      buckets.set(day, created);
-      return created;
+      let entry = buckets.get(day);
+      if (!entry) {
+        entry = {
+          day,
+          sessions: 0,
+          messages: 0,
+          assignments: 0,
+          tasks: 0,
+          cronRuns: 0,
+          memories: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+        };
+        buckets.set(day, entry);
+      }
+      return entry;
     };
 
-    /**
-     * One GROUP BY per table. Timestamps are milliseconds and SQLite's date
-     * functions want seconds, hence the division; `localtime` is what turns
-     * an instant into the day the user had. Table and column are literals
-     * from the calls right below, never anything a request carried.
-     */
-    const perDay = (table: string, column: string, filter: string, values: unknown[]): Map<string, number> => {
-      const rows = this.db
-        .prepare(
-          `SELECT strftime('%Y-%m-%d', ${column} / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
-             FROM ${table}
-            WHERE ${column} >= ? AND ${column} <= ?` +
-            (filter ? ' AND ' + filter : '') +
-            ' GROUP BY day',
-        )
-        .all(...([since, until, ...values] as never[])) as Row[];
-      return new Map(rows.map((row) => [String(row.day), Number(row.n ?? 0)]));
-    };
+    const org: DayScope = { sql: 'org_id = ?', values: [scope.orgId] };
+    const bank: DayScope = { sql: 'owner = ?', values: [scope.owner] };
+    const counted: { field: CountedDayField; table: string; column: string; scope?: DayScope }[] = [
+      { field: 'sessions', table: 'sessions', column: 'created_at' },
+      { field: 'messages', table: 'messages', column: 'created_at' },
+      { field: 'assignments', table: 'assignments', column: 'created_at', scope: org },
+      { field: 'tasks', table: 'tasks', column: 'created_at', scope: org },
+      // A run is dated by when it started; `finished_at` is null while it runs.
+      { field: 'cronRuns', table: 'cron_runs', column: 'started_at', scope: org },
+      { field: 'memories', table: 'memories', column: 'created_at', scope: bank },
+    ];
+    for (const { field, table, column, scope: filter } of counted) {
+      for (const [day, n] of this.#countPerDay(table, column, window, filter)) bucket(day)[field] = n;
+    }
+    for (const row of tokenRows) {
+      const entry = bucket(String(row.day));
+      entry.inputTokens = Number(row.input_tokens ?? 0);
+      entry.outputTokens = Number(row.output_tokens ?? 0);
+    }
+    return [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day));
+  }
 
-    for (const [day, n] of perDay('sessions', 'created_at', '', [])) bucket(day).sessions = n;
-    for (const [day, n] of perDay('messages', 'created_at', '', [])) bucket(day).messages = n;
-    for (const [day, n] of perDay('assignments', 'created_at', 'org_id = ?', [options.orgId]))
-      bucket(day).assignments = n;
-    for (const [day, n] of perDay('tasks', 'created_at', 'org_id = ?', [options.orgId])) bucket(day).tasks = n;
-    // A run is dated by when it started; `finished_at` is null while it runs.
-    for (const [day, n] of perDay('cron_runs', 'started_at', 'org_id = ?', [options.orgId])) bucket(day).cronRuns = n;
-    for (const [day, n] of perDay('memories', 'created_at', 'owner = ?', [owner])) bucket(day).memories = n;
+  /**
+   * One GROUP BY per table. Timestamps are milliseconds and SQLite's date
+   * functions want seconds, hence the division; `localtime` is what turns
+   * an instant into the day the user had. Table and column are literals
+   * from `#dailySeries`, never anything a request carried.
+   */
+  #countPerDay(table: string, column: string, window: StatsWindow, scope?: DayScope): Map<string, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT strftime('%Y-%m-%d', ${column} / 1000, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
+           FROM ${table}
+          WHERE ${column} >= ? AND ${column} <= ?` +
+          (scope ? ' AND ' + scope.sql : '') +
+          ' GROUP BY day',
+      )
+      .all(...([window.since, window.until, ...(scope?.values ?? [])] as never[])) as Row[];
+    return new Map(rows.map((row) => [String(row.day), Number(row.n ?? 0)]));
+  }
 
-    // `messages.usage` is a JSON blob rather than columns, so the tokens can
-    // only be summed with json_extract. That is the difference between one
-    // query and one request per conversation, and worth the guard: json_valid
-    // skips anything an older build may have written, and if the function is
-    // missing altogether the two figures simply stay unknown.
-    let tokensAvailable = false;
+  /**
+   * `messages.usage` is a JSON blob rather than columns, so the tokens can
+   * only be summed with json_extract. That is the difference between one
+   * query and one request per conversation, and worth the guard: json_valid
+   * skips anything an older build may have written, and if the function is
+   * missing altogether the two figures simply stay unknown (no rows).
+   */
+  #tokensPerDay(window: StatsWindow): Row[] {
     try {
-      const rows = this.db
+      return this.db
         .prepare(
           `SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS day,
                   SUM(COALESCE(json_extract(usage, '$.inputTokens'), 0))  AS input_tokens,
@@ -854,19 +943,10 @@ export class Store {
             WHERE created_at >= ? AND created_at <= ? AND usage IS NOT NULL AND json_valid(usage)
             GROUP BY day`,
         )
-        .all(...([since, until] as never[])) as Row[];
-      tokensAvailable = rows.length > 0;
-      for (const row of rows) {
-        const entry = bucket(String(row.day));
-        entry.inputTokens = Number(row.input_tokens ?? 0);
-        entry.outputTokens = Number(row.output_tokens ?? 0);
-      }
+        .all(window.since, window.until) as Row[];
     } catch {
-      tokensAvailable = false;
+      return [];
     }
-
-    const series = [...buckets.values()].sort((a, b) => a.day.localeCompare(b.day));
-    return { since, until, orgId: options.orgId, owner, totals, series, tokensAvailable };
   }
 
   /* ---------------------------- entities ---------------------------- */
@@ -940,30 +1020,33 @@ export class Store {
 
   /** Attach a memory to an entity. Idempotent; the mention count follows. */
   linkEntity(memoryId: string, entityId: string, weight = 1): void {
-    this.db
-      .prepare('INSERT OR REPLACE INTO memory_entity_links (memory_id, entity_id, weight) VALUES (?, ?, ?)')
-      .run(memoryId, entityId, weight);
-    this.recountEntity(entityId);
+    this.#atomically(() => {
+      this.db
+        .prepare('INSERT OR REPLACE INTO memory_entity_links (memory_id, entity_id, weight) VALUES (?, ?, ?)')
+        .run(memoryId, entityId, weight);
+      this.recountEntity(entityId);
+    });
   }
 
   unlinkEntity(memoryId: string, entityId: string): void {
-    this.db
-      .prepare('DELETE FROM memory_entity_links WHERE memory_id = ? AND entity_id = ?')
-      .run(memoryId, entityId);
-    this.recountEntity(entityId);
+    this.#atomically(() => {
+      this.db
+        .prepare('DELETE FROM memory_entity_links WHERE memory_id = ? AND entity_id = ?')
+        .run(memoryId, entityId);
+      this.recountEntity(entityId);
+    });
   }
 
-  /** Recount live mentions of one entity, and drop it when nothing is left. */
+  /** Recount live mentions of one entity. One left with none stays at zero; `listEntities` hides it. */
   recountEntity(entityId: string): void {
-    const row = this.db
-      .prepare(
-        `SELECT COUNT(*) AS n
-           FROM memory_entity_links l
-           JOIN memories m ON m.id = l.memory_id
-          WHERE l.entity_id = ? AND m.forgotten = 0 AND m.dormant_at IS NULL`,
-      )
-      .get(entityId) as { n: number };
-    this.db.prepare('UPDATE memory_entities SET mentions = ? WHERE id = ?').run(row.n, entityId);
+    const mentions = this.#countRows(
+      `SELECT COUNT(*) AS n
+         FROM memory_entity_links l
+         JOIN memories m ON m.id = l.memory_id
+        WHERE l.entity_id = ? AND m.forgotten = 0 AND m.dormant_at IS NULL`,
+      entityId,
+    );
+    this.db.prepare('UPDATE memory_entities SET mentions = ? WHERE id = ?').run(mentions, entityId);
   }
 
   /** Recount every entity of one owner. Cheap enough to run after a night. */
@@ -999,8 +1082,7 @@ export class Store {
     const from = this.findEntity(owner, fromName);
     const into = from ? this.findEntity(owner, intoName) : null;
     if (!from || !into || from.id === into.id) return false;
-    this.db.exec('BEGIN');
-    try {
+    this.#atomically(() => {
       this.db
         .prepare(
           `DELETE FROM memory_entity_links
@@ -1010,11 +1092,7 @@ export class Store {
         .run(from.id, into.id);
       this.db.prepare('UPDATE memory_entity_links SET entity_id = ? WHERE entity_id = ?').run(into.id, from.id);
       this.db.prepare('DELETE FROM memory_entities WHERE id = ?').run(from.id);
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
-    this.db.exec('COMMIT');
+    });
     this.recountEntities(owner);
     return true;
   }
@@ -1053,7 +1131,7 @@ export class Store {
       .prepare(
         `SELECT l.memory_id, e.* FROM memory_entities e
            JOIN memory_entity_links l ON l.entity_id = e.id
-          WHERE l.memory_id IN (` + ids.map(() => '?').join(', ') + `)
+          WHERE l.memory_id IN (` + placeholders(ids) + `)
           ORDER BY l.memory_id, e.mentions DESC, e.id`,
       )
       .all(...(ids as never[])) as Row[];
@@ -1087,10 +1165,10 @@ export class Store {
     if (!entityIds.length) return [];
     const exclude = options.exclude ?? [];
     const where =
-      ' WHERE l.entity_id IN (' + entityIds.map(() => '?').join(', ') + ')' +
+      ' WHERE l.entity_id IN (' + placeholders(entityIds) + ')' +
       ' AND m.forgotten = 0 AND m.dormant_at IS NULL AND m.archived_at IS NULL' +
       (options.owner ? ' AND m.owner = ?' : '') +
-      (exclude.length ? ' AND m.id NOT IN (' + exclude.map(() => '?').join(', ') + ')' : '');
+      (exclude.length ? ' AND m.id NOT IN (' + placeholders(exclude) + ')' : '');
     const values: unknown[] = [
       ...entityIds,
       ...(options.owner ? [options.owner] : []),
@@ -1158,7 +1236,7 @@ export class Store {
       )
       .get(input.srcId, input.dstId, input.relation, input.owner) as Row | undefined;
     if (existing) {
-      const weight = Math.min(1, Math.max(Number(existing.weight), input.weight ?? 0.5));
+      const weight = Math.min(1, Math.max(Number(existing.weight), input.weight ?? DEFAULT_EDGE_WEIGHT));
       this.db.prepare('UPDATE memory_edges SET weight = ? WHERE id = ?').run(weight, existing.id as string);
       return mapEdge({ ...existing, weight });
     }
@@ -1168,7 +1246,7 @@ export class Store {
       srcId: input.srcId,
       dstId: input.dstId,
       relation: input.relation,
-      weight: clamp01(input.weight ?? 0.5),
+      weight: clamp01(input.weight ?? DEFAULT_EDGE_WEIGHT),
       origin: input.origin ?? 'sleep',
       runId: input.runId,
       createdAt: now,
@@ -1196,8 +1274,8 @@ export class Store {
   edgesFrom(ids: string[], relations?: MemoryRelation[]): MemoryEdge[] {
     if (!ids.length) return [];
     const sql =
-      'SELECT * FROM memory_edges WHERE src_id IN (' + ids.map(() => '?').join(', ') + ')' +
-      (relations?.length ? ' AND relation IN (' + relations.map(() => '?').join(', ') + ')' : '');
+      'SELECT * FROM memory_edges WHERE src_id IN (' + placeholders(ids) + ')' +
+      (relations?.length ? ' AND relation IN (' + placeholders(relations) + ')' : '');
     const rows = this.db.prepare(sql).all(...([...ids, ...(relations ?? [])] as never[])) as Row[];
     return rows.map(mapEdge);
   }
@@ -1217,21 +1295,33 @@ export class Store {
   neighbourhood(id: string): MemoryNeighbourhood | null {
     const memory = this.getMemory(id);
     if (!memory) return null;
-    const outgoing = (this.db
+    return {
+      memory,
+      entities: this.entitiesFor(id),
+      outgoing: this.#edgesWithFarMemory(id, memory.owner, 'src_id', 'dst_id'),
+      incoming: this.#edgesWithFarMemory(id, memory.owner, 'dst_id', 'src_id'),
+    };
+  }
+
+  /**
+   * The edges of one owner that hang off `nearEnd` of a memory, each with the
+   * memory at its `farEnd`. Both ends are column names from the two callers
+   * above, never anything a request carried.
+   */
+  #edgesWithFarMemory(
+    id: string,
+    owner: string,
+    nearEnd: 'src_id' | 'dst_id',
+    farEnd: 'src_id' | 'dst_id',
+  ): MemoryNeighbourhood['outgoing'] {
+    const rows = this.db
       .prepare(
-        `SELECT e.*, m.id AS o_id FROM memory_edges e JOIN memories m ON m.id = e.dst_id WHERE e.src_id = ? AND e.owner = ?`,
+        `SELECT e.* FROM memory_edges e JOIN memories m ON m.id = e.${farEnd}
+          WHERE e.${nearEnd} = ? AND e.owner = ?`,
       )
-      .all(id, memory.owner) as Row[])
-      .map((row) => ({ ...mapEdge(row), other: this.getMemory(row.o_id as string)! }))
-      .filter((edge) => Boolean(edge.other));
-    const incoming = (this.db
-      .prepare(
-        `SELECT e.*, m.id AS o_id FROM memory_edges e JOIN memories m ON m.id = e.src_id WHERE e.dst_id = ? AND e.owner = ?`,
-      )
-      .all(id, memory.owner) as Row[])
-      .map((row) => ({ ...mapEdge(row), other: this.getMemory(row.o_id as string)! }))
-      .filter((edge) => Boolean(edge.other));
-    return { memory, entities: this.entitiesFor(id), outgoing, incoming };
+      .all(id, owner) as Row[];
+    const farMemories = this.#memoriesById(rows.map((row) => row[farEnd] as string));
+    return rows.map((row) => ({ ...mapEdge(row), other: farMemories.get(row[farEnd] as string)! }));
   }
 
   /**
@@ -1247,14 +1337,14 @@ export class Store {
     limit?: number;
   } = {}): MemoryGraph {
     const owner = options.owner ?? ASSISTANT_MEMORY_OWNER;
-    const limit = Math.max(10, Math.min(options.limit ?? 300, 1000));
+    const limit = Math.max(GRAPH_MIN_NODES, Math.min(options.limit ?? GRAPH_DEFAULT_NODES, GRAPH_MAX_NODES));
     const kinds = options.kinds ?? [];
 
     const filters =
       ' AND m.forgotten = 0' +
       (options.includeDormant ? '' : ' AND m.dormant_at IS NULL') +
       (options.since ? ' AND m.created_at >= ?' : '') +
-      (kinds.length ? ' AND m.kind IN (' + kinds.map(() => '?').join(', ') + ')' : '');
+      (kinds.length ? ' AND m.kind IN (' + placeholders(kinds) + ')' : '');
     const values: unknown[] = [owner];
     if (options.entityId) values.push(options.entityId);
     if (options.since) values.push(options.since);
@@ -1274,11 +1364,9 @@ export class Store {
     const ids = memories.map((memory) => memory.id);
     if (!ids.length) return { entities: [], memories: [], edges: [], links: [], truncated: false };
 
-    const placeholders = ids.map(() => '?').join(', ');
+    const inIds = placeholders(ids);
     const linkRows = this.db
-      .prepare(
-        'SELECT memory_id, entity_id FROM memory_entity_links WHERE memory_id IN (' + placeholders + ')',
-      )
+      .prepare('SELECT memory_id, entity_id FROM memory_entity_links WHERE memory_id IN (' + inIds + ')')
       .all(...(ids as never[])) as Row[];
     const links = linkRows.map((row) => ({
       memoryId: row.memory_id as string,
@@ -1288,17 +1376,13 @@ export class Store {
     const entityIds = [...new Set(links.map((link) => link.entityId))];
     const entities = entityIds.length
       ? (this.db
-          .prepare(
-            'SELECT * FROM memory_entities WHERE id IN (' + entityIds.map(() => '?').join(', ') + ')',
-          )
+          .prepare('SELECT * FROM memory_entities WHERE id IN (' + placeholders(entityIds) + ')')
           .all(...(entityIds as never[])) as Row[]).map(mapEntity)
       : [];
 
     // Only edges with both ends inside the picture; a dangling line is noise.
     const edges = (this.db
-      .prepare(
-        'SELECT * FROM memory_edges WHERE src_id IN (' + placeholders + ') AND dst_id IN (' + placeholders + ')',
-      )
+      .prepare('SELECT * FROM memory_edges WHERE src_id IN (' + inIds + ') AND dst_id IN (' + inIds + ')')
       .all(...([...ids, ...ids] as never[])) as Row[]).map(mapEdge);
 
     return { entities, memories, edges, links, truncated };
@@ -1392,7 +1476,9 @@ export class Store {
     if (!ids.length) return;
     const mark = this.db.prepare('UPDATE corrections SET consumed_at = ? WHERE id = ?');
     const now = Date.now();
-    for (const id of ids) mark.run(now, id);
+    this.#atomically(() => {
+      for (const id of ids) mark.run(now, id);
+    });
   }
 
   /**
@@ -1460,12 +1546,14 @@ export class Store {
   /** The memories a distilled skill stands on. Replaces whatever was there. */
   setSkillSources(skill: string, owner: string, memoryIds: string[]): void {
     const now = Date.now();
-    this.db.prepare('DELETE FROM skill_sources WHERE skill = ?').run(skill);
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO skill_sources (skill, memory_id, owner, created_at)
        VALUES (?, ?, ?, ?)`,
     );
-    for (const id of memoryIds) insert.run(skill, id, owner, now);
+    this.#atomically(() => {
+      this.db.prepare('DELETE FROM skill_sources WHERE skill = ?').run(skill);
+      for (const id of memoryIds) insert.run(skill, id, owner, now);
+    });
   }
 
   /** The memory ids a skill currently stands on. */
@@ -1618,42 +1706,8 @@ export class Store {
     id: string,
     patch: Partial<Omit<SleepRun, 'id' | 'owner' | 'trigger' | 'startedAt'>>,
   ): SleepRun | null {
-    const columns: Record<string, string> = {
-      status: 'status',
-      finishedAt: 'finished_at',
-      durationMs: 'duration_ms',
-      readCount: 'read_count',
-      replayedCount: 'replayed_count',
-      learnedCount: 'learned_count',
-      mergedCount: 'merged_count',
-      dormantCount: 'dormant_count',
-      edgeCount: 'edge_count',
-      insightCount: 'insight_count',
-      skillCount: 'skill_count',
-      skillRevisedCount: 'skill_revised_count',
-      conflictCount: 'conflict_count',
-      resolvedCount: 'resolved_count',
-      dreamTracesSeen: 'dream_traces_seen',
-      dreamFramesScored: 'dream_frames_scored',
-      dreamCandidates: 'dream_candidates',
-      dreamPromoted: 'dream_promoted',
-      dreamLabelsWritten: 'dream_labels_written',
-      modelCalls: 'model_calls',
-      report: 'report',
-      error: 'error',
-      undoneAt: 'undone_at',
-    };
-    const sets: string[] = [];
-    const values: unknown[] = [];
-    for (const [key, column] of Object.entries(columns)) {
-      const value = (patch as Record<string, unknown>)[key];
-      if (value === undefined) continue;
-      sets.push(column + ' = ?');
-      values.push(value);
-    }
-    if (!sets.length) return this.getSleepRun(id);
-    values.push(id);
-    this.db.prepare('UPDATE sleep_runs SET ' + sets.join(', ') + ' WHERE id = ?').run(...(values as never[]));
+    const assignments = assignmentsFor(SLEEP_RUN_PATCH_COLUMNS, patch);
+    if (assignments.sets.length) this.#updateById('sleep_runs', assignments, id);
     return this.getSleepRun(id);
   }
 
@@ -1680,13 +1734,15 @@ export class Store {
    * the rows it changed so the caller can announce them.
    */
   failStaleSleepRuns(reason: string): SleepRun[] {
-    const now = Date.now();
-    const rows = this.db.prepare("SELECT * FROM sleep_runs WHERE status = 'running'").all() as Row[];
-    if (!rows.length) return [];
-    this.db
-      .prepare("UPDATE sleep_runs SET status = 'failed', error = ?, finished_at = ? WHERE status = 'running'")
-      .run(reason, now);
-    return rows.map((row) => mapSleepRun({ ...row, status: 'failed', error: reason, finished_at: now }));
+    return this.#atomically(() => {
+      const rows = this.db.prepare("SELECT * FROM sleep_runs WHERE status = 'running'").all() as Row[];
+      if (!rows.length) return [];
+      const now = Date.now();
+      this.db
+        .prepare("UPDATE sleep_runs SET status = 'failed', error = ?, finished_at = ? WHERE status = 'running'")
+        .run(reason, now);
+      return rows.map((row) => mapSleepRun({ ...row, status: 'failed', error: reason, finished_at: now }));
+    });
   }
 
   /** When this owner last finished a night. Drives "what is new since then". */
@@ -1715,99 +1771,97 @@ export class Store {
     const run = this.getSleepRun(id);
     if (!run || run.undoneAt) return null;
 
-    const counts = { woken: 0, removed: 0, edges: 0, policies: 0 };
     // Counted up front: deleting a memory cascades its edges away, so a
     // count taken afterwards would report a fraction of what actually went.
-    const edgesBefore = (this.db
-      .prepare('SELECT COUNT(*) AS n FROM memory_edges WHERE run_id = ?')
-      .get(id) as { n: number }).n;
-    this.db.exec('BEGIN');
-    try {
-      // The two sets are kept disjoint: a memory this run wrote and a memory
-      // it put to sleep are handled by different branches, never both.
-      const written = this.db
-        // `extract` belongs here as well as `sleep`: the replay phase harvests
-        // memories out of the day's conversations, and those are as much a
-        // product of the night as an insight is. Still disjoint from the
-        // branch below, which takes the memories the run put to SLEEP - a row
-        // the run wrote is never also a row the run retired. Nor can a run
-        // have written a memory older than itself: a row that carries this
-        // run's id but predates it is one the run revived (see `upsertMemory`)
-        // or one somebody woke again, never one it created, so undo must not
-        // delete it. `sleepRunStart` is what keeps that comparison honest at
-        // millisecond resolution.
-        .prepare(
-          `SELECT id FROM memories
-            WHERE sleep_run_id = ? AND origin IN ('sleep', 'extract') AND dormant_at IS NULL
-              AND created_at >= ?`,
-        )
-        .all(id, run.startedAt) as Row[];
-      // Anything that pointed at a memory this run created must let go first.
-      for (const row of written) {
-        this.db
-          .prepare('UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?')
-          .run(row.id as string);
-      }
-      const asleep = this.db
-        .prepare('SELECT id FROM memories WHERE sleep_run_id = ? AND dormant_at IS NOT NULL')
-        .all(id) as Row[];
-      for (const row of asleep) {
-        this.db
-          .prepare(
-            'UPDATE memories SET dormant_at = NULL, superseded_by = NULL, sleep_run_id = NULL WHERE id = ?',
-          )
-          .run(row.id as string);
-        counts.woken += 1;
-      }
-      // Frames quote the rows this run wrote verbatim, and undo deletes those
-      // rows outright, so they must fall inside the same transaction, before
-      // the rows they freeze go - the owner-level drop the four wired delete
-      // paths use, never a piecemeal payload edit (R17).
-      this.dropDreamFramesForOwner(run.owner);
-      for (const row of written) {
-        this.db.prepare('DELETE FROM memories WHERE id = ?').run(row.id as string);
-        counts.removed += 1;
-      }
+    const edges = this.#countRows('SELECT COUNT(*) AS n FROM memory_edges WHERE run_id = ?', id);
+    const counts = this.#atomically(() => {
+      const { woken, removed } = this.#undoMemoryChanges(run);
       this.db.prepare('DELETE FROM memory_edges WHERE run_id = ?').run(id);
-      counts.edges = edgesBefore;
-      // The promotions of this night, in the same transaction and with the
-      // same "written by" against "touched by" distinction the memory
-      // branch above makes: a version carrying this run's id that predates
-      // the run was promoted by an earlier night and merely re-read here.
-      const promoted = this.db
-        .prepare(
-          `SELECT id, prev_active_id FROM policy_versions
-            WHERE sleep_run_id = ? AND created_at >= ?`,
-        )
-        .all(id, run.startedAt) as Row[];
-      const retire = this.db.prepare('UPDATE policy_versions SET retired_at = ? WHERE id = ?');
-      const reactivate = this.db.prepare('UPDATE policy_versions SET retired_at = NULL WHERE id = ?');
-      const retiredAt = Date.now();
-      for (const row of promoted) {
-        retire.run(retiredAt, row.id as string);
-        // NULL means "nothing was active when this was promoted", the same
-        // way `snapshotSkill` records a skill that did not exist yet - there
-        // is then nothing to bring back, and the slot falls to the defaults.
-        const previous = (row.prev_active_id as string | null) ?? null;
-        if (previous) reactivate.run(previous);
-        counts.policies += 1;
-      }
+      const policies = this.#undoPolicyPromotions(run);
       // The evaluations of an undone night certify nothing: their traces are
       // partly gone with the memories above, and `trace_set_hash` disjointness
       // must not be blocked by a measurement that no longer stands.
       this.db
         .prepare('DELETE FROM dream_evals WHERE sleep_run_id = ? AND created_at >= ?')
         .run(id, run.startedAt);
-      this.db
-        .prepare('UPDATE sleep_runs SET undone_at = ? WHERE id = ?')
-        .run(Date.now(), id);
-      this.db.exec('COMMIT');
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+      this.db.prepare('UPDATE sleep_runs SET undone_at = ? WHERE id = ?').run(Date.now(), id);
+      return { woken, removed, edges, policies };
+    });
     this.recountEntities(run.owner);
     return counts;
+  }
+
+  /**
+   * The memory half of an undo: the rows the run wrote go, the rows it put
+   * to sleep wake. Frames quote the rows this run wrote verbatim, and undo
+   * deletes those rows outright, so the frames holding them fall first,
+   * inside the same transaction (R17). Only those frames: every other frame
+   * still describes a bank that exists.
+   */
+  #undoMemoryChanges(run: SleepRun): { woken: number; removed: number } {
+    // The two sets are kept disjoint: a memory this run wrote and a memory
+    // it put to sleep are handled by different branches, never both - so
+    // the rows are picked before anything wakes.
+    const written = this.db
+      // `extract` belongs here as well as `sleep`: the replay phase harvests
+      // memories out of the day's conversations, and those are as much a
+      // product of the night as an insight is. Still disjoint from the
+      // branch below, which takes the memories the run put to SLEEP - a row
+      // the run wrote is never also a row the run retired. Nor can a run
+      // have written a memory older than itself: a row that carries this
+      // run's id but predates it is one the run revived (see `upsertMemory`)
+      // or one somebody woke again, never one it created, so undo must not
+      // delete it. `sleepRunStart` is what keeps that comparison honest at
+      // millisecond resolution.
+      .prepare(
+        `SELECT id FROM memories
+          WHERE sleep_run_id = ? AND origin IN ('sleep', 'extract') AND dormant_at IS NULL
+            AND created_at >= ?`,
+      )
+      .all(run.id, run.startedAt)
+      .map((row) => row.id as string);
+    // Anything that pointed at a memory this run created must let go first.
+    const letGo = this.db.prepare('UPDATE memories SET superseded_by = NULL WHERE superseded_by = ?');
+    for (const memoryId of written) letGo.run(memoryId);
+    const woken = changesOf(
+      this.db
+        .prepare(
+          `UPDATE memories SET dormant_at = NULL, superseded_by = NULL, sleep_run_id = NULL
+            WHERE sleep_run_id = ? AND dormant_at IS NOT NULL`,
+        )
+        .run(run.id),
+    );
+    this.dropDreamFramesQuoting(run.owner, written);
+    const remove = this.db.prepare('DELETE FROM memories WHERE id = ?');
+    for (const memoryId of written) remove.run(memoryId);
+    return { woken, removed: written.length };
+  }
+
+  /**
+   * The promotions of the night, in the same transaction and with the same
+   * "written by" against "touched by" distinction the memory half makes: a
+   * version carrying this run's id that predates the run was promoted by an
+   * earlier night and merely re-read here. Returns how many it took back.
+   */
+  #undoPolicyPromotions(run: SleepRun): number {
+    const promoted = this.db
+      .prepare(
+        `SELECT id, prev_active_id FROM policy_versions
+          WHERE sleep_run_id = ? AND created_at >= ?`,
+      )
+      .all(run.id, run.startedAt) as Row[];
+    const retire = this.db.prepare('UPDATE policy_versions SET retired_at = ? WHERE id = ?');
+    const reactivate = this.db.prepare('UPDATE policy_versions SET retired_at = NULL WHERE id = ?');
+    const retiredAt = Date.now();
+    for (const row of promoted) {
+      retire.run(retiredAt, row.id as string);
+      // NULL means "nothing was active when this was promoted", the same
+      // way `snapshotSkill` records a skill that did not exist yet - there
+      // is then nothing to bring back, and the slot falls to the defaults.
+      const previous = row.prev_active_id as string | null;
+      if (previous) reactivate.run(previous);
+    }
+    return promoted.length;
   }
 
   /* ------------------------------ dream ------------------------------ */
@@ -1825,15 +1879,7 @@ export class Store {
    * turn back and propagates, so the caller still sees the recorder error.
    */
   recordDreamTurn(write: () => void): void {
-    this.db.exec('SAVEPOINT dream_rec');
-    try {
-      write();
-      this.db.exec('RELEASE dream_rec');
-    } catch (error) {
-      this.db.exec('ROLLBACK TO dream_rec');
-      this.db.exec('RELEASE dream_rec');
-      throw error;
-    }
+    this.#atomically(write);
   }
 
   /** Open one trace per recall call; the turn groups them under `turnId` (R19). */
@@ -1911,10 +1957,9 @@ export class Store {
   failStaleTraces(reason: string): number {
     // Kept for signature parity with the sibling stale-failers; see above.
     void reason;
-    const result = this.db
-      .prepare('UPDATE dream_traces SET finished_at = ? WHERE finished_at IS NULL')
-      .run(Date.now()) as { changes: number };
-    return Number(result.changes ?? 0);
+    return changesOf(
+      this.db.prepare('UPDATE dream_traces SET finished_at = ? WHERE finished_at IS NULL').run(Date.now()),
+    );
   }
 
   /** Traces without `finished_at`: what a restart owes its closing pass to. */
@@ -1926,11 +1971,14 @@ export class Store {
   }
 
   /**
-   * Persist one frame for one slot of a trace. Serialise first, measure
-   * second: the cap guards stored bytes, so it is the serialised payload
-   * that is measured, and a frame over the cap is refused with `false`
-   * rather than thrown at the turn - the trace is closed without a frame
-   * and the night simply never scores that turn.
+   * Persist one frame for one slot of a trace. The payload is stored gzipped:
+   * a frame freezes up to four times the recall limit in rows plus their
+   * entities and edges, which is 150-240 KB of JSON on a bank of a few
+   * hundred memories and compresses roughly tenfold. Serialise and compress
+   * first, measure second: the cap guards STORED bytes, and a frame still
+   * over it is refused with `false` rather than thrown at the turn - the
+   * trace is closed without a frame and the night simply never scores that
+   * turn.
    *
    * The Store holds no config, so the caller reads `dream.maxFrameBytes`
    * (key table, E21: clamped where it is read) and passes it; the default
@@ -1939,8 +1987,8 @@ export class Store {
    * takes care of the half-written state.
    */
   saveFrame(traceId: string, slot: string, frame: RecallFrame, options: { maxFrameBytes?: number } = {}): boolean {
-    const payload = JSON.stringify(frame);
-    const bytes = Buffer.byteLength(payload, 'utf8');
+    const payload = gzipSync(JSON.stringify(frame));
+    const bytes = payload.byteLength;
     if (bytes > (options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES)) return false;
     // The session is read from the trace: the frame itself does not carry
     // it, and the delete paths need it as a column (R17). A missing trace
@@ -1985,9 +2033,11 @@ export class Store {
       `INSERT INTO memory_touches (id, owner, memory_id, turn_id, trace_id, policy_id, at)
        VALUES (?, ?, ?, (SELECT turn_id FROM dream_traces WHERE id = ?), ?, ?, ?)`,
     );
-    for (const memoryId of ids) {
-      insert.run(randomUUID(), owner, memoryId, traceId, traceId, policyId ?? null, now);
-    }
+    this.#atomically(() => {
+      for (const memoryId of ids) {
+        insert.run(randomUUID(), owner, memoryId, traceId, traceId, policyId ?? null, now);
+      }
+    });
   }
 
   /**
@@ -2040,46 +2090,37 @@ export class Store {
    * one, not pass silently.
    */
   dreamFrameCount(owner: string): number {
-    const row = this.db
-      .prepare('SELECT COUNT(*) AS n FROM dream_frames WHERE owner = ?')
-      .get(owner) as { n: number };
-    return Number(row.n ?? 0);
+    return this.#countRows('SELECT COUNT(*) AS n FROM dream_frames WHERE owner = ?', owner);
+  }
+
+  /**
+   * Traces opened as framed since `since` that hold no frame: turns the
+   * recorder refused for size, or whose frame a delete took. The night
+   * reports it, because a recorder that fails quietly leaves the pool empty
+   * without anything looking wrong.
+   */
+  countFramelessTraces(owner: string, since: number): number {
+    return this.#countRows(
+      `SELECT COUNT(*) AS n FROM dream_traces t
+        WHERE t.owner = ? AND t.framed = 1 AND t.started_at >= ?
+          AND NOT EXISTS (SELECT 1 FROM dream_frames f WHERE f.trace_id = t.id)`,
+      owner,
+      since,
+    );
   }
 
   /**
    * Delete frames older than `before`, in batches that each own their
    * transaction. With foreign keys on, deleting a trace cascades its
    * frames and touches inside the same statement, and an unbounded sweep
-   * would be one long exclusive write lock on the only connection. The
-   * WAL is truncated afterwards so a nightly sweep actually returns space
-   * to the filesystem instead of growing the file forever. Night-side by
-   * design: the per-batch BEGIN must never run inside another
-   * transaction.
+   * would be one long exclusive write lock on the only connection. See
+   * `#sweepOlderThan`; night-side by design.
    */
   sweepDreamFrames(before: number): number {
     // Row values pick the exact (trace, slot) pairs: the table's key is a
     // pair, and deleting by trace_id alone would be wrong the day a second
     // slot arrives.
-    const statement = this.db.prepare(
-      `DELETE FROM dream_frames WHERE (trace_id, slot) IN
-         (SELECT trace_id, slot FROM dream_frames WHERE created_at < ? LIMIT ${SWEEP_BATCH})`,
-    );
-    let swept = 0;
-    for (;;) {
-      this.db.exec('BEGIN');
-      let changes: number;
-      try {
-        changes = Number((statement.run(before) as { changes: number }).changes ?? 0);
-      } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
-      }
-      this.db.exec('COMMIT');
-      swept += changes;
-      if (changes < SWEEP_BATCH) break;
-    }
-    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    return swept;
+    return this.#sweepOlderThan('dream_frames', ['trace_id', 'slot'], before);
   }
 
   /**
@@ -2087,48 +2128,51 @@ export class Store {
    * batched like `sweepDreamFrames` and for the same reasons.
    */
   sweepDreamTraces(before: number): number {
-    const statement = this.db.prepare(
-      `DELETE FROM dream_traces WHERE id IN
-         (SELECT id FROM dream_traces WHERE created_at < ? LIMIT ${SWEEP_BATCH})`,
-    );
-    let swept = 0;
-    for (;;) {
-      this.db.exec('BEGIN');
-      let changes: number;
-      try {
-        changes = Number((statement.run(before) as { changes: number }).changes ?? 0);
-      } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
-      }
-      this.db.exec('COMMIT');
-      swept += changes;
-      if (changes < SWEEP_BATCH) break;
-    }
-    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    return swept;
+    return this.#sweepOlderThan('dream_traces', ['id'], before);
   }
 
   /**
    * The delete paths of R17: a frame is a verbatim store, so it may never
    * outlive the memories or the session it came from. Owner and session
-   * sit on the frame as their own columns precisely so these paths never
-   * have to read the payload. `Assistant.deleteSession` calls the session
-   * variant; the three memory-retiring methods call the owner one.
+   * sit on the frame as their own columns so the whole-bank and the
+   * per-session drops never have to read a payload. `Assistant.deleteSession`
+   * calls the session variant; `archiveMemories` retires a whole bank and
+   * calls the owner one.
    */
   dropDreamFramesForOwner(owner: string): number {
-    const result = this.db
-      .prepare('DELETE FROM dream_frames WHERE owner = ?')
-      .run(owner) as { changes: number };
-    return Number(result.changes ?? 0);
+    return changesOf(this.db.prepare('DELETE FROM dream_frames WHERE owner = ?').run(owner));
+  }
+
+  /**
+   * Drop the frames of one bank that quote any of these memories. A frame
+   * cannot be edited piecemeal - replaying it needs every row it froze - so
+   * it goes whole, but only when it actually holds one of the ids. Dropping
+   * the owner's frames instead made every single `forget` wipe the evidence
+   * pool the night measures on, which is how the dream sat at a handful of
+   * frames for weeks. A frame that cannot be read cannot be checked either,
+   * so it goes with them: the safe direction for a verbatim store.
+   */
+  dropDreamFramesQuoting(owner: string, memoryIds: readonly string[]): number {
+    if (!memoryIds.length) return 0;
+    const frames = this.db
+      .prepare('SELECT trace_id, slot, payload FROM dream_frames WHERE owner = ?')
+      .all(owner) as Row[];
+    const drop = this.db.prepare('DELETE FROM dream_frames WHERE trace_id = ? AND slot = ?');
+    return this.#atomically(() => {
+      let dropped = 0;
+      for (const frame of frames) {
+        if (frameQuotes(frame.payload, memoryIds)) {
+          drop.run(frame.trace_id as string, frame.slot as string);
+          dropped += 1;
+        }
+      }
+      return dropped;
+    });
   }
 
   /** See `dropDreamFramesForOwner`. */
   dropDreamFramesForSession(sessionId: string): number {
-    const result = this.db
-      .prepare('DELETE FROM dream_frames WHERE session_id = ?')
-      .run(sessionId) as { changes: number };
-    return Number(result.changes ?? 0);
+    return changesOf(this.db.prepare('DELETE FROM dream_frames WHERE session_id = ?').run(sessionId));
   }
 
   /**
@@ -2145,7 +2189,7 @@ export class Store {
     const df: Record<string, number> = {};
     if (distinct.length) {
       const rows = this.db
-        .prepare('SELECT term, doc FROM memories_fts_v WHERE term IN (' + distinct.map(() => '?').join(', ') + ')')
+        .prepare('SELECT term, doc FROM memories_fts_v WHERE term IN (' + placeholders(distinct) + ')')
         .all(...(distinct as never[])) as { term: string; doc: number }[];
       for (const row of rows) df[row.term] = Number(row.doc);
     }
@@ -2154,9 +2198,11 @@ export class Store {
     for (const term of distinct) if (df[term] === undefined) df[term] = 0;
 
     const corpus: FrameCorpus = { id: randomUUID(), owner, at: Date.now(), df };
-    this.setMeta(CORPUS_STAMP_PREFIX + corpus.id, JSON.stringify(corpus));
-    this.setMeta(CORPUS_CURRENT_PREFIX + owner, corpus.id);
-    this.pruneCorpusStamps(owner, corpus.id);
+    this.#atomically(() => {
+      this.setMeta(CORPUS_STAMP_PREFIX + corpus.id, JSON.stringify(corpus));
+      this.setMeta(CORPUS_CURRENT_PREFIX + owner, corpus.id);
+      this.pruneCorpusStamps(owner, corpus.id);
+    });
     return corpus;
   }
 
@@ -2170,9 +2216,10 @@ export class Store {
    * and this method never throws into the night.
    */
   pruneCorpusStamps(owner: string, keepId: string): void {
+    // `substr`, not LIKE: the `_` in the prefix is a LIKE wildcard.
     const rows = this.db
-      .prepare('SELECT key, value FROM meta WHERE key LIKE ?')
-      .all(CORPUS_STAMP_PREFIX + '%') as Row[];
+      .prepare('SELECT key, value FROM meta WHERE substr(key, 1, ?) = ?')
+      .all(CORPUS_STAMP_PREFIX.length, CORPUS_STAMP_PREFIX) as Row[];
     if (rows.length <= 1) return;
     const cited = new Set(
       (this.db
@@ -2180,16 +2227,14 @@ export class Store {
         .all() as { id: string }[]).map((row) => row.id),
     );
     const drop = this.db.prepare('DELETE FROM meta WHERE key = ?');
-    for (const row of rows) {
-      const id = (row.key as string).slice(CORPUS_STAMP_PREFIX.length);
-      if (id === keepId || cited.has(id)) continue;
-      try {
-        if ((JSON.parse(row.value as string) as FrameCorpus).owner !== owner) continue;
-      } catch {
-        continue;
+    this.#atomically(() => {
+      for (const row of rows) {
+        const id = (row.key as string).slice(CORPUS_STAMP_PREFIX.length);
+        if (id === keepId || cited.has(id)) continue;
+        if (parseJsonColumn<FrameCorpus>(row.value)?.owner !== owner) continue;
+        drop.run(row.key as string);
       }
-      drop.run(row.key as string);
-    }
+    });
   }
 
   /**
@@ -2204,11 +2249,7 @@ export class Store {
     if (!id) return null;
     const stored = this.getMeta(CORPUS_STAMP_PREFIX + id);
     if (!stored) return null;
-    try {
-      return JSON.parse(stored) as FrameCorpus;
-    } catch {
-      return null;
-    }
+    return parseJsonColumn<FrameCorpus>(stored) ?? null;
   }
 
   /* --------------------------- dream, stage 2+ --------------------------- */
@@ -2254,20 +2295,22 @@ export class Store {
          (turn_id, target, source, relevance, scope, evidence, dead_at, created_at, owner, session_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
-    for (const label of labels) {
-      insert.run(
-        label.turnId,
-        label.target,
-        label.source,
-        label.relevance,
-        label.scope,
-        label.evidence ?? null,
-        label.deadAt ?? null,
-        label.createdAt,
-        label.owner,
-        label.sessionId ?? null,
-      );
-    }
+    this.#atomically(() => {
+      for (const label of labels) {
+        insert.run(
+          label.turnId,
+          label.target,
+          label.source,
+          label.relevance,
+          label.scope,
+          label.evidence ?? null,
+          label.deadAt ?? null,
+          label.createdAt,
+          label.owner,
+          label.sessionId ?? null,
+        );
+      }
+    });
     return labels.length;
   }
 
@@ -2277,17 +2320,7 @@ export class Store {
    * pass it, so the filter is in the SQL where 10.5 wants it.
    */
   labelsForTurns(turnIds: string[], owner?: string): DreamLabel[] {
-    if (!turnIds.length) return [];
-    const sql =
-      'SELECT * FROM dream_labels WHERE turn_id IN (' +
-      turnIds.map(() => '?').join(', ') +
-      ')' +
-      (owner ? ' AND owner = ?' : '') +
-      ' ORDER BY created_at ASC, target, source';
-    const values: unknown[] = [...turnIds];
-    if (owner) values.push(owner);
-    const rows = this.db.prepare(sql).all(...(values as never[])) as Row[];
-    return rows.map(mapDreamLabel);
+    return this.#selectLabels('', turnIds, owner);
   }
 
   /**
@@ -2298,14 +2331,17 @@ export class Store {
    * filled.
    */
   labelsForSessions(sessionIds: string[], owner?: string): DreamLabel[] {
-    if (!sessionIds.length) return [];
+    return this.#selectLabels("scope = 'session' AND ", sessionIds, owner);
+  }
+
+  /** `scopeFilter` is a SQL fragment from the two callers, ending in `AND ` or empty. */
+  #selectLabels(scopeFilter: string, turnColumnValues: string[], owner?: string): DreamLabel[] {
+    if (!turnColumnValues.length) return [];
     const sql =
-      "SELECT * FROM dream_labels WHERE scope = 'session' AND turn_id IN (" +
-      sessionIds.map(() => '?').join(', ') +
-      ')' +
+      'SELECT * FROM dream_labels WHERE ' + scopeFilter + 'turn_id IN (' + placeholders(turnColumnValues) + ')' +
       (owner ? ' AND owner = ?' : '') +
       ' ORDER BY created_at ASC, target, source';
-    const values: unknown[] = [...sessionIds];
+    const values: unknown[] = [...turnColumnValues];
     if (owner) values.push(owner);
     const rows = this.db.prepare(sql).all(...(values as never[])) as Row[];
     return rows.map(mapDreamLabel);
@@ -2319,18 +2355,18 @@ export class Store {
    * labelling and invalidate the evaluation from the wrong end (8.3).
    */
   markLabelsDead(memoryId: string, at = Date.now()): number {
-    const result = this.db
-      .prepare('UPDATE dream_labels SET dead_at = ? WHERE target = ? AND dead_at IS NULL')
-      .run(at, memoryId) as { changes: number };
-    return Number(result.changes ?? 0);
+    return changesOf(
+      this.db
+        .prepare('UPDATE dream_labels SET dead_at = ? WHERE target = ? AND dead_at IS NULL')
+        .run(at, memoryId),
+    );
   }
 
   /** `markLabelsDead` for a whole bank at once - the archive path (S9). */
   markOwnerLabelsDead(owner: string, at = Date.now()): number {
-    const result = this.db
-      .prepare('UPDATE dream_labels SET dead_at = ? WHERE owner = ? AND dead_at IS NULL')
-      .run(at, owner) as { changes: number };
-    return Number(result.changes ?? 0);
+    return changesOf(
+      this.db.prepare('UPDATE dream_labels SET dead_at = ? WHERE owner = ? AND dead_at IS NULL').run(at, owner),
+    );
   }
 
   /**
@@ -2357,15 +2393,9 @@ export class Store {
 
   /** Retention for the label table (`dream.retainDays`), batched like the frames. */
   sweepDreamLabels(before: number): number {
-    // Row values pick the exact key triples, the way `sweepDreamFrames`
-    // picks (trace, slot): the table has no single-column primary key.
-    return this.#sweepInBatches(
-      this.db.prepare(
-        `DELETE FROM dream_labels WHERE (turn_id, target, source) IN
-           (SELECT turn_id, target, source FROM dream_labels WHERE created_at < ? LIMIT ${SWEEP_BATCH})`,
-      ),
-      before,
-    );
+    // The table has no single-column primary key, so the sweep picks the
+    // exact key triples, the way `sweepDreamFrames` picks (trace, slot).
+    return this.#sweepOlderThan('dream_labels', ['turn_id', 'target', 'source'], before);
   }
 
   /**
@@ -2482,25 +2512,22 @@ export class Store {
     options: { prevActiveId?: string; sleepRunId?: string; at?: number } = {},
   ): PolicyVersion | null {
     const at = options.at ?? Date.now();
-    this.db
-      .prepare(
-        `UPDATE policy_versions
-            SET promoted_at = ?, retired_at = NULL, prev_active_id = ?,
-                sleep_run_id = COALESCE(?, sleep_run_id)
-          WHERE id = ?`,
-      )
-      .run(at, options.prevActiveId ?? null, options.sleepRunId ?? null, id);
-    if (options.prevActiveId) this.retirePolicyVersion(options.prevActiveId, at);
-    const version = this.policyVersion(id);
-    // The slot's own clock moves with the promotion, so "when did this slot
-    // last change" never has to be derived from the version table.
-    if (version) {
-      this.#ensureSlotState(version.owner, version.slot);
+    return this.#atomically(() => {
       this.db
-        .prepare('UPDATE dream_slot_state SET last_promoted = ? WHERE owner = ? AND slot = ?')
-        .run(at, version.owner, version.slot);
-    }
-    return version;
+        .prepare(
+          `UPDATE policy_versions
+              SET promoted_at = ?, retired_at = NULL, prev_active_id = ?,
+                  sleep_run_id = COALESCE(?, sleep_run_id)
+            WHERE id = ?`,
+        )
+        .run(at, options.prevActiveId ?? null, options.sleepRunId ?? null, id);
+      if (options.prevActiveId) this.retirePolicyVersion(options.prevActiveId, at);
+      const version = this.policyVersion(id);
+      // The slot's own clock moves with the promotion, so "when did this slot
+      // last change" never has to be derived from the version table.
+      if (version) this.#updateSlotState(version.owner, version.slot, 'last_promoted = ?', [at]);
+      return version;
+    });
   }
 
   retirePolicyVersion(id: string, at = Date.now()): void {
@@ -2545,41 +2572,34 @@ export class Store {
 
   /** One of the four causes of 10.3. A frozen slot keeps measuring, never promotes. */
   freezeSlot(owner: string, slot: DreamSlot, reason: DreamSlotFreezeReason, at = Date.now()): void {
-    this.#ensureSlotState(owner, slot);
-    this.db
-      .prepare(
-        'UPDATE dream_slot_state SET frozen_at = ?, frozen_reason = ? WHERE owner = ? AND slot = ?',
-      )
-      .run(at, reason, owner, slot);
+    this.#updateSlotState(owner, slot, 'frozen_at = ?, frozen_reason = ?', [at, reason]);
   }
 
   /** Thawing is a person's decision; nothing in the night calls this. */
   thawSlot(owner: string, slot: DreamSlot): void {
-    this.#ensureSlotState(owner, slot);
-    this.db
-      .prepare(
-        'UPDATE dream_slot_state SET frozen_at = NULL, frozen_reason = NULL WHERE owner = ? AND slot = ?',
-      )
-      .run(owner, slot);
+    this.#updateSlotState(owner, slot, 'frozen_at = NULL, frozen_reason = NULL', []);
   }
 
   setSlotCooldown(owner: string, slot: DreamSlot, until: number): void {
-    this.#ensureSlotState(owner, slot);
-    this.db
-      .prepare('UPDATE dream_slot_state SET cooldown_until = ? WHERE owner = ? AND slot = ?')
-      .run(until, owner, slot);
+    this.#updateSlotState(owner, slot, 'cooldown_until = ?', [until]);
   }
 
   /**
-   * The row exists or it does not; the three setters above each change one
-   * column and would otherwise have to repeat the whole upsert. Kept as
+   * The row exists or it does not; every slot-state writer changes some of
+   * its columns and would otherwise have to repeat the whole upsert. Kept as
    * INSERT OR IGNORE plus UPDATE rather than an upsert clause, which is what
-   * the rest of the store does.
+   * the rest of the store does. `assignments` is a SQL fragment from the
+   * callers above, never anything a request carried.
    */
-  #ensureSlotState(owner: string, slot: DreamSlot): void {
-    this.db
-      .prepare('INSERT OR IGNORE INTO dream_slot_state (owner, slot) VALUES (?, ?)')
-      .run(owner, slot);
+  #updateSlotState(owner: string, slot: DreamSlot, assignments: string, values: unknown[]): void {
+    this.#atomically(() => {
+      this.db
+        .prepare('INSERT OR IGNORE INTO dream_slot_state (owner, slot) VALUES (?, ?)')
+        .run(owner, slot);
+      this.db
+        .prepare(`UPDATE dream_slot_state SET ${assignments} WHERE owner = ? AND slot = ?`)
+        .run(...([...values, owner, slot] as never[]));
+    });
   }
 
   /**
@@ -2706,13 +2726,7 @@ export class Store {
 
   /** Retention for the evaluation table (`dream.retainDays`). */
   sweepDreamEvals(before: number): number {
-    return this.#sweepInBatches(
-      this.db.prepare(
-        `DELETE FROM dream_evals WHERE id IN
-           (SELECT id FROM dream_evals WHERE created_at < ? LIMIT ${SWEEP_BATCH})`,
-      ),
-      before,
-    );
+    return this.#sweepOlderThan('dream_evals', ['id'], before);
   }
 
   /**
@@ -2771,40 +2785,85 @@ export class Store {
    * verbatim text, and no wording outlives the memory it came from (S21).
    */
   sweepDreamEpisodes(before: number): number {
-    return this.#sweepInBatches(
-      this.db.prepare(
-        `DELETE FROM dream_episodes WHERE id IN
-           (SELECT id FROM dream_episodes WHERE created_at < ? LIMIT ${SWEEP_BATCH})`,
-      ),
-      before,
-    );
+    return this.#sweepOlderThan('dream_episodes', ['id'], before);
   }
 
   /**
-   * The batched sweep `sweepDreamFrames` and `sweepDreamTraces` spell out
-   * by hand, for the three small stage-2 tables: one transaction per batch,
-   * so a nightly sweep is never one long exclusive write lock on the only
-   * connection, and a truncating checkpoint at the end so the WAL actually
-   * gives its space back. Night-side by design - the per-batch BEGIN must
-   * never run inside another transaction.
+   * The batched sweep behind every `sweepDream*` retention method: one
+   * transaction per batch, so a nightly sweep is never one long exclusive
+   * write lock on the only connection, and a truncating checkpoint at the
+   * end so the WAL actually gives its space back. `table` and `keyColumns`
+   * are literals from the callers, never anything a request carried.
+   * Night-side by design - the per-batch BEGIN must never run inside
+   * another transaction.
    */
-  #sweepInBatches(statement: ReturnType<Db['prepare']>, before: number): number {
+  #sweepOlderThan(table: string, keyColumns: readonly string[], before: number): number {
+    const statement = this.db.prepare(batchedAgeDelete(table, keyColumns));
     let swept = 0;
-    for (;;) {
-      this.db.exec('BEGIN');
-      let changes: number;
-      try {
-        changes = Number((statement.run(before) as { changes: number }).changes ?? 0);
-      } catch (error) {
-        this.db.exec('ROLLBACK');
-        throw error;
-      }
-      this.db.exec('COMMIT');
-      swept += changes;
-      if (changes < SWEEP_BATCH) break;
-    }
+    let batch: number;
+    do {
+      batch = this.#deleteBatch(statement, before);
+      swept += batch;
+    } while (batch >= SWEEP_BATCH);
     this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     return swept;
+  }
+
+  #deleteBatch(statement: StatementSync, before: number): number {
+    this.db.exec('BEGIN');
+    try {
+      const changes = changesOf(statement.run(before));
+      this.db.exec('COMMIT');
+      return changes;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Run `work` as one all-or-nothing unit. A SAVEPOINT rather than a
+   * hand-rolled BEGIN, for the reason `recordDreamTurn` gives: it nests, so
+   * a multi-statement write may call another one without asking whether a
+   * transaction is already open.
+   */
+  #atomically<T>(work: () => T): T {
+    this.db.exec('SAVEPOINT store_atomic');
+    try {
+      const result = work();
+      this.db.exec('RELEASE store_atomic');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK TO store_atomic');
+      this.db.exec('RELEASE store_atomic');
+      throw error;
+    }
+  }
+
+  #countRows(sql: string, ...values: unknown[]): number {
+    const row = this.db.prepare(sql).get(...(values as never[])) as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  }
+
+  #updateById(table: string, { sets, values }: Assignments, id: string): void {
+    this.db
+      .prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id = ?`)
+      .run(...([...values, id] as never[]));
+  }
+
+  #ownerOf(memoryId: string): string | undefined {
+    const row = this.db.prepare('SELECT owner FROM memories WHERE id = ?').get(memoryId) as Row | undefined;
+    return row?.owner as string | undefined;
+  }
+
+  #memoriesById(ids: string[]): Map<string, MemoryRecord> {
+    const unique = [...new Set(ids)];
+    if (!unique.length) return new Map();
+    const rows = this.db
+      .prepare('SELECT * FROM memories WHERE id IN (' + placeholders(unique) + ')')
+      .all(...(unique as never[])) as Row[];
+    const memories = rows.map(mapMemory);
+    return new Map(memories.map((memory) => [memory.id, memory]));
   }
 
   /* ------------------------------- meta ------------------------------- */
@@ -2826,287 +2885,6 @@ export class Store {
   }
 }
 
-/* ------------------------------ mappers ------------------------------ */
-
-function mapSession(row: Row): Session {
-  return {
-    id: row.id as string,
-    title: row.title as string,
-    // Anything the column does not know is a chat - that is what the default
-    // was before `kind` existed, and what a stray value should degrade to.
-    kind: (['voice', 'mail', 'schedule'].includes(row.kind as string) ? row.kind : 'chat') as SessionKind,
-    provider: row.provider as ProviderId,
-    model: (row.model as string) ?? undefined,
-    cwd: row.cwd as string,
-    projectId: (row.project_id as string) ?? undefined,
-    agentId: (row.agent_id as string) ?? undefined,
-    providerSessionId: (row.provider_session_id as string) ?? undefined,
-    createdAt: Number(row.created_at),
-    updatedAt: Number(row.updated_at),
-    archived: Number(row.archived) === 1,
-    messageCount: Number(row.message_count ?? 0),
-  };
-}
-
-function mapMessage(row: Row): Message {
-  return {
-    id: row.id as string,
-    sessionId: row.session_id as string,
-    role: row.role as Role,
-    content: row.content as string,
-    provider: (row.provider as ProviderId) ?? undefined,
-    model: (row.model as string) ?? undefined,
-    agent: (row.agent as string) ?? undefined,
-    toolCalls: parseJsonColumn<Message['toolCalls']>(row.tool_calls),
-    blocks: parseJsonColumn<Message['blocks']>(row.blocks),
-    usage: parseJsonColumn<TurnUsage>(row.usage),
-    turnId: (row.turn_id as string) ?? undefined,
-    createdAt: Number(row.created_at),
-  };
-}
-
-export function mapMemory(row: Row): MemoryRecord {
-  return {
-    id: row.id as string,
-    kind: row.kind as MemoryKind,
-    content: row.content as string,
-    tags: parseTags(row.tags),
-    importance: Number(row.importance),
-    owner: (row.owner as string) ?? ASSISTANT_MEMORY_OWNER,
-    evidence: (row.evidence as string) ?? undefined,
-    sourceSessionId: (row.source_session_id as string) ?? undefined,
-    createdAt: Number(row.created_at),
-    updatedAt: Number(row.updated_at),
-    lastAccessedAt: row.last_accessed_at ? Number(row.last_accessed_at) : undefined,
-    accessCount: Number(row.access_count ?? 0),
-    forgotten: Number(row.forgotten) === 1,
-    origin: ((row.origin as string) ?? 'extract') as MemoryOrigin,
-    pinned: Number(row.pinned ?? 0) === 1,
-    dormantAt: row.dormant_at ? Number(row.dormant_at) : undefined,
-    supersededBy: (row.superseded_by as string) ?? undefined,
-    sleepRunId: (row.sleep_run_id as string) ?? undefined,
-    usefulness: Number(row.usefulness ?? 0),
-    archivedAt: row.archived_at ? Number(row.archived_at) : undefined,
-  };
-}
-
-export function mapEntity(row: Row): MemoryEntity {
-  return {
-    id: row.id as string,
-    owner: row.owner as string,
-    name: row.name as string,
-    slug: row.slug as string,
-    kind: ((row.kind as string) ?? 'topic') as EntityKind,
-    mentions: Number(row.mentions ?? 0),
-    firstSeenAt: Number(row.first_seen_at),
-    lastSeenAt: Number(row.last_seen_at),
-  };
-}
-
-export function mapEdge(row: Row): MemoryEdge {
-  return {
-    id: row.id as string,
-    owner: row.owner as string,
-    srcId: row.src_id as string,
-    dstId: row.dst_id as string,
-    relation: row.relation as MemoryRelation,
-    weight: Number(row.weight ?? 0.5),
-    origin: ((row.origin as string) ?? 'sleep') as MemoryEdge['origin'],
-    runId: (row.run_id as string) ?? undefined,
-    createdAt: Number(row.created_at),
-  };
-}
-
-export function mapSleepRun(row: Row): SleepRun {
-  return {
-    id: row.id as string,
-    owner: row.owner as string,
-    trigger: row.trigger as CronTrigger,
-    status: row.status as SleepStatus,
-    startedAt: Number(row.started_at),
-    finishedAt: row.finished_at ? Number(row.finished_at) : undefined,
-    durationMs: row.duration_ms ? Number(row.duration_ms) : undefined,
-    readCount: Number(row.read_count ?? 0),
-    replayedCount: Number(row.replayed_count ?? 0),
-    learnedCount: Number(row.learned_count ?? 0),
-    mergedCount: Number(row.merged_count ?? 0),
-    dormantCount: Number(row.dormant_count ?? 0),
-    edgeCount: Number(row.edge_count ?? 0),
-    insightCount: Number(row.insight_count ?? 0),
-    skillCount: Number(row.skill_count ?? 0),
-    skillRevisedCount: Number(row.skill_revised_count ?? 0),
-    conflictCount: Number(row.conflict_count ?? 0),
-    resolvedCount: Number(row.resolved_count ?? 0),
-    dreamTracesSeen: Number(row.dream_traces_seen ?? 0),
-    dreamFramesScored: Number(row.dream_frames_scored ?? 0),
-    dreamCandidates: Number(row.dream_candidates ?? 0),
-    dreamPromoted: Number(row.dream_promoted ?? 0),
-    dreamLabelsWritten: Number(row.dream_labels_written ?? 0),
-    modelCalls: Number(row.model_calls ?? 0),
-    report: (row.report as string) ?? undefined,
-    error: (row.error as string) ?? undefined,
-    undoneAt: row.undone_at ? Number(row.undone_at) : undefined,
-  };
-}
-
-function mapDreamTrace(row: Row): DreamTrace {
-  return {
-    id: row.id as string,
-    turnId: row.turn_id as string,
-    owner: row.owner as string,
-    kind: row.kind as DreamTraceKind,
-    site: row.site as DreamSite,
-    pipeline: row.pipeline as DreamPipeline,
-    sessionId: (row.session_id as string) ?? undefined,
-    sessionKind: (row.session_kind as SessionKind | null) ?? undefined,
-    assignmentId: (row.assignment_id as string) ?? undefined,
-    sleepRunId: (row.sleep_run_id as string) ?? undefined,
-    turnIndex: Number(row.turn_index ?? 0),
-    policySet: parseJsonColumn<Record<string, RecallPolicy>>(row.policy_set) ?? {},
-    framed: Number(row.framed ?? 0) === 1,
-    holdout: Number(row.holdout ?? 0) === 1,
-    audit: Number(row.audit ?? 0) === 1,
-    degraded: (row.degraded as DreamDegraded | null) ?? null,
-    startedAt: Number(row.started_at),
-    finishedAt: row.finished_at ? Number(row.finished_at) : undefined,
-    createdAt: Number(row.created_at),
-  };
-}
-
-/**
- * Reads the `f_`-prefixed columns of the `framesFor` join. `box` and
- * `payload` are parsed directly rather than through `parseJsonColumn`:
- * both are NOT NULL columns only this store's own writer fills, so a row
- * that does not parse is corruption the night should hear about, not a
- * field that silently reads as absent.
- */
-function mapDreamFrame(row: Row): DreamFrame {
-  return {
-    traceId: row.f_trace_id as string,
-    slot: row.f_slot as string,
-    frameV: Number(row.f_frame_v),
-    owner: row.f_owner as string,
-    sessionId: (row.f_session_id as string | null) ?? undefined,
-    box: JSON.parse(row.f_box as string) as RecallBox,
-    corpusStampId: row.f_corpus_stamp_id as string,
-    payload: JSON.parse(row.f_payload as string) as RecallFrame,
-    bytes: Number(row.f_bytes),
-    createdAt: Number(row.f_created_at),
-  };
-}
-
-function mapDreamLabel(row: Row): DreamLabel {
-  return {
-    turnId: row.turn_id as string,
-    target: row.target as string,
-    source: row.source as DreamLabelSource,
-    relevance: Number(row.relevance),
-    scope: row.scope as DreamLabel['scope'],
-    evidence: (row.evidence as string) ?? undefined,
-    deadAt: row.dead_at ? Number(row.dead_at) : undefined,
-    createdAt: Number(row.created_at),
-    // The column arrived with schema 24, so rows an older build wrote carry
-    // NULL here; they belong to the assistant, which is the only owner that
-    // could have written a label before agents had one.
-    owner: (row.owner as string) ?? ASSISTANT_MEMORY_OWNER,
-    sessionId: (row.session_id as string) ?? undefined,
-  };
-}
-
-/**
- * `params` and `box` are parsed directly rather than through
- * `parseJsonColumn`, for the reason `mapDreamFrame` gives: both are NOT NULL
- * columns only this store's own writer fills, so a row that does not parse
- * is corruption the night should hear about, not a field that silently
- * reads as absent.
- */
-function mapPolicyVersion(row: Row): PolicyVersion {
-  return {
-    id: row.id as string,
-    owner: row.owner as string,
-    slot: row.slot as DreamSlot,
-    version: Number(row.version),
-    params: JSON.parse(row.params as string) as Record<string, unknown>,
-    box: JSON.parse(row.box as string) as Record<string, unknown>,
-    origin: row.origin as PolicyOrigin,
-    parentId: (row.parent_id as string) ?? undefined,
-    prevActiveId: (row.prev_active_id as string) ?? undefined,
-    sleepRunId: (row.sleep_run_id as string) ?? undefined,
-    rationale: (row.rationale as string) ?? undefined,
-    replayScore: row.replay_score === null ? undefined : Number(row.replay_score),
-    replayN: row.replay_n === null ? undefined : Number(row.replay_n),
-    baselineScore: row.baseline_score === null ? undefined : Number(row.baseline_score),
-    auditDelta: row.audit_delta === null ? undefined : Number(row.audit_delta),
-    auditCiLow: row.audit_ci_low === null ? undefined : Number(row.audit_ci_low),
-    onlineScore: row.online_score === null ? undefined : Number(row.online_score),
-    promotedAt: row.promoted_at ? Number(row.promoted_at) : undefined,
-    retiredAt: row.retired_at ? Number(row.retired_at) : undefined,
-    createdAt: Number(row.created_at),
-  };
-}
-
-function mapDreamSlotState(row: Row): DreamSlotState {
-  return {
-    owner: row.owner as string,
-    slot: row.slot as DreamSlot,
-    frozenAt: row.frozen_at ? Number(row.frozen_at) : undefined,
-    frozenReason: (row.frozen_reason as DreamSlotFreezeReason) ?? undefined,
-    cooldownUntil: row.cooldown_until ? Number(row.cooldown_until) : undefined,
-    lastPromoted: row.last_promoted ? Number(row.last_promoted) : undefined,
-  };
-}
-
-function mapDreamEval(row: Row): DreamEval {
-  return {
-    id: row.id as string,
-    sleepRunId: row.sleep_run_id as string,
-    policyId: row.policy_id as string,
-    slot: row.slot as DreamSlot,
-    traces: Number(row.traces),
-    closed: Number(row.closed),
-    abstained: Number(row.abstained),
-    abstainReasons: JSON.parse(row.abstain_reasons as string) as Partial<Record<AbstainReason, number>>,
-    reachableRate: Number(row.reachable_rate),
-    labelCoverage: Number(row.label_coverage),
-    costOnlyShare: Number(row.cost_only_share),
-    score: Number(row.score),
-    baseline: Number(row.baseline),
-    delta: Number(row.delta),
-    ciLow: Number(row.ci_low),
-    ciHigh: Number(row.ci_high),
-    auditDelta: row.audit_delta === null ? undefined : Number(row.audit_delta),
-    auditCiLow: row.audit_ci_low === null ? undefined : Number(row.audit_ci_low),
-    deltaLive: row.delta_live === null ? undefined : Number(row.delta_live),
-    // Three worlds, not two: NULL means the freshness check was undetermined,
-    // the way `DreamTrace.degraded` distinguishes "did not degrade" from
-    // "not recorded".
-    signAgree: row.sign_agree === null || row.sign_agree === undefined ? null : Number(row.sign_agree) === 1,
-    evalMs: Number(row.eval_ms),
-    traceSetHash: row.trace_set_hash as string,
-    evidenceDigest: (row.evidence_digest as string) ?? undefined,
-    promoted: Number(row.promoted ?? 0) === 1,
-    detail: parseJsonColumn<Record<string, unknown>>(row.detail),
-    createdAt: Number(row.created_at),
-  };
-}
-
-function mapDreamEpisode(row: Row): DreamEpisode {
-  return {
-    id: row.id as string,
-    owner: row.owner as string,
-    kind: row.kind as DreamEpisode['kind'],
-    sessionId: (row.session_id as string) ?? undefined,
-    slot: row.slot as string,
-    steps: Number(row.steps),
-    outcome: row.outcome as DreamEpisode['outcome'],
-    holdout: Number(row.holdout ?? 0) === 1,
-    audit: Number(row.audit ?? 0) === 1,
-    startedAt: Number(row.started_at),
-    finishedAt: row.finished_at ? Number(row.finished_at) : undefined,
-    createdAt: Number(row.created_at),
-  };
-}
-
 /**
  * Normalise a name to the key entities are deduplicated by, so "Rookery",
  * "rookery" and "Rookery-Agent " all land on the same node.
@@ -3119,30 +2897,6 @@ export function entitySlug(name: string): string {
     .replace(/[^\p{L}\p{N}]+/gu, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 60);
-}
-
-/**
- * A JSON column an older build may have written differently, or not at all.
- * One malformed row must never cost the whole transcript: the field simply
- * reads as absent, the way `parseTags` already degrades.
- */
-function parseJsonColumn<T>(value: unknown): T | undefined {
-  if (typeof value !== 'string') return undefined;
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return undefined;
-  }
-}
-
-function parseTags(value: unknown): string[] {
-  if (typeof value !== 'string') return [];
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    return [];
-  }
 }
 
 function mergeTags(a: string[], b: string[]): string[] {
@@ -3186,4 +2940,43 @@ function sleepRunStart(db: Db): number {
     )
     .get() as { at: number | null } | undefined;
   return Math.max(Date.now(), Number(row?.at ?? 0) + 1);
+}
+
+/** `?, ?, ?` - one placeholder per value, for an `IN (...)` list. */
+function placeholders(values: readonly unknown[]): string {
+  return values.map(() => '?').join(', ');
+}
+
+/** How many rows a write changed. */
+function changesOf(result: { changes: number | bigint }): number {
+  return Number(result.changes ?? 0);
+}
+
+/**
+ * The `column = ?` terms and their values for every key of `patch` that is
+ * set. Booleans are stored as 0/1; `undefined` means "leave alone", while
+ * `null` is a value and clears the column.
+ */
+function assignmentsFor(columns: Readonly<Record<string, string>>, patch: object): Assignments {
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  for (const [key, column] of Object.entries(columns)) {
+    const value = (patch as Record<string, unknown>)[key];
+    if (value === undefined) continue;
+    sets.push(column + ' = ?');
+    values.push(typeof value === 'boolean' ? (value ? 1 : 0) : value);
+  }
+  return { sets, values };
+}
+
+/**
+ * One batch of an age sweep: delete at most `SWEEP_BATCH` rows older than the
+ * `?` cutoff. A composite key is matched as a row value, so the batch deletes
+ * exactly the rows its sub-select picked.
+ */
+function batchedAgeDelete(table: string, keyColumns: readonly string[]): string {
+  const key = keyColumns.join(', ');
+  const rowKey = keyColumns.length > 1 ? '(' + key + ')' : key;
+  return `DELETE FROM ${table} WHERE ${rowKey} IN
+    (SELECT ${key} FROM ${table} WHERE created_at < ? LIMIT ${SWEEP_BATCH})`;
 }

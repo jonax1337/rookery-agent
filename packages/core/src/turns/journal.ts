@@ -37,6 +37,27 @@ export interface JournalTurn {
   endedAt?: number;
 }
 
+/** A `turns` row as the database hands it out; an assignment run may have no conversation. */
+interface TurnRow {
+  id: string;
+  session_id: string | null;
+  kind: string;
+  status: string;
+  started_at: number;
+  ended_at: number | null;
+}
+
+function toJournalTurn(row: TurnRow): JournalTurn {
+  return {
+    id: row.id,
+    sessionId: row.session_id ?? '',
+    kind: row.kind,
+    status: row.status as JournalTurn['status'],
+    startedAt: row.started_at,
+    ...(row.ended_at !== null ? { endedAt: row.ended_at } : {}),
+  };
+}
+
 export class TurnJournal {
   readonly #db: Db;
 
@@ -69,18 +90,8 @@ export class TurnJournal {
   ofAssignment(assignmentId: string): JournalTurn | null {
     const row = this.#db
       .prepare('SELECT * FROM turns WHERE assignment_id = ? ORDER BY started_at DESC LIMIT 1')
-      .get(assignmentId) as
-      | { id: string; session_id: string | null; kind: string; status: string; started_at: number; ended_at: number | null }
-      | undefined;
-    if (!row) return null;
-    return {
-      id: row.id,
-      sessionId: row.session_id ?? '',
-      kind: row.kind,
-      status: row.status as JournalTurn['status'],
-      startedAt: row.started_at,
-      ...(row.ended_at !== null ? { endedAt: row.ended_at } : {}),
-    };
+      .get(assignmentId) as TurnRow | undefined;
+    return row ? toJournalTurn(row) : null;
   }
 
   /**
@@ -139,18 +150,9 @@ export class TurnJournal {
          )
          ORDER BY t.started_at DESC LIMIT 1`,
       )
-      .get(sessionId, sessionId) as
-      | { id: string; session_id: string; kind: string; status: string; started_at: number; ended_at: number | null }
-      | undefined;
+      .get(sessionId, sessionId) as TurnRow | undefined;
     if (!row) return null;
-    const turn: JournalTurn = {
-      id: row.id,
-      sessionId: row.session_id,
-      kind: row.kind,
-      status: row.status as JournalTurn['status'],
-      startedAt: row.started_at,
-      ...(row.ended_at !== null ? { endedAt: row.ended_at } : {}),
-    };
+    const turn = toJournalTurn(row);
     return { turn, events: this.events(turn.id) };
   }
 }

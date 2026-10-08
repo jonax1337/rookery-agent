@@ -78,7 +78,7 @@ const RANGE_LABEL: Record<TrendRange, string> = {
 
 /**
  * The same window as a suffix, for the badges a page hangs next to the range
- * switch: "12.345 Tokens in 30 Tagen" only means something with the window
+ * switch: "12,345 tokens in 30 days" only means something with the window
  * in it, and the switch that changed it sits right there.
  */
 export const TREND_RANGE_SUFFIX: Record<TrendRange, string> = {
@@ -102,9 +102,9 @@ const RANGES_ASCENDING: TrendRange[] = ['7d', '30d', '90d'];
  */
 const AUTO_MIN_RANGE: TrendRange = '30d';
 
-/** One stacked band: the field to read, its German label, its colour. */
+/** One stacked band: the field to read, its label, its colour. */
 export interface TrendSeries {
-  /** Key on each row, e.g. `'Gespräche'` - also the `--color-*` variable name. */
+  /** Key on each row, e.g. `'conversations'` - also the `--color-*` variable name. */
   key: string;
   label: string;
   /** A CSS colour, usually `var(--chart-1)`. */
@@ -121,7 +121,7 @@ export interface TrendPoint {
 
 export interface TrendChartCardProps<T extends TrendPoint> {
   title: React.ReactNode;
-  /** Says what the numbers rest on ("Basis: die letzten 500 Gespräche"). */
+  /** Says what the numbers rest on ("Based on the last 500 conversations"). */
   description?: React.ReactNode;
   /** Shown instead of `description` on a narrow card, like the block does. */
   descriptionShort?: React.ReactNode;
@@ -138,7 +138,7 @@ export interface TrendChartCardProps<T extends TrendPoint> {
   defaultRange?: TrendRange;
   /** Rendered when the window holds no rows at all - an `EmptyState`, usually. */
   empty?: React.ReactNode;
-  /** Extra header content left of the range switch, e.g. a "gedeckelt" badge. */
+  /** Extra header content left of the range switch, e.g. a "capped" badge. */
   badge?: React.ReactNode;
   className?: string;
 }
@@ -155,10 +155,10 @@ function pointTime(point: TrendPoint): number {
 }
 
 /**
- * Der Wert einer Reihe in einer Zeile, als Zahl.
+ * A series' value in a row, as a number.
  *
- * Dieselbe Lesart wie in `suggestRange`: die Zeilen sind typisiert nur ueber
- * `day`/`at`, die Reihenfelder kommen erst ueber `series` dazu.
+ * Rows are typed only through `day`/`at`; the series fields come in through
+ * `series`, so they are read by key and anything non-numeric counts as zero.
  */
 function seriesValue(point: TrendPoint, key: string): number {
   const raw = (point as unknown as Record<string, unknown>)[key];
@@ -187,14 +187,9 @@ function suggestRange(
 ): TrendRange | null {
   let oldest = Number.POSITIVE_INFINITY;
   for (const point of data) {
-    let sum = 0;
-    for (const entry of series) {
-      const raw = (point as unknown as Record<string, unknown>)[entry.key];
-      if (typeof raw === 'number' && Number.isFinite(raw)) sum += raw;
-    }
+    const sum = series.reduce((total, entry) => total + seriesValue(point, entry.key), 0);
     if (sum <= 0) continue;
-    const at = pointTime(point);
-    if (at < oldest) oldest = at;
+    oldest = Math.min(oldest, pointTime(point));
   }
   if (!Number.isFinite(oldest)) return null;
 
@@ -264,10 +259,7 @@ export function TrendChartCard<T extends TrendPoint>({
   }, [series]);
 
   const filtered = React.useMemo(() => {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() - (TREND_RANGE_DAYS[activeRange] - 1));
-    const from = start.getTime();
+    const from = windowStart(TREND_RANGE_DAYS[activeRange]);
     return data.filter((point) => pointTime(point) >= from);
   }, [data, activeRange]);
 
@@ -353,13 +345,12 @@ export function TrendChartCard<T extends TrendPoint>({
           ) : (
             <>
               {/*
-                Die Kurve ist ein Bild aus <path>-Elementen: ohne Textfassung
-                bleibt von ihr nichts uebrig, was vorgelesen werden koennte. Die
-                Tabelle unter dem Diagramm ist genau diese Fassung, deshalb ist
-                das Diagramm selbst fuer Vorlesehilfen ausgeblendet - sonst
-                stuende dieselbe Reihe zweimal da. Bedienbar ist im Diagramm
-                nichts, was dabei verloren ginge; der Zeitraumschalter sitzt im
-                Kartenkopf.
+                The curve is an image of <path> elements: without a text
+                version nothing of it is left for a screen reader. The table
+                under the chart is exactly that version, which is why the
+                chart itself is hidden from assistive tech - otherwise the
+                same series would be read twice. Nothing interactive is lost
+                by that; the range switch sits in the card header.
               */}
               <ChartContainer
                 config={chartConfig}

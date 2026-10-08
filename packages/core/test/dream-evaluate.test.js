@@ -761,8 +761,11 @@ function agreementLabels({ userCount, userFlips = 0 }) {
   return labels;
 }
 
-test('thin user labels are the finding, not a zero (concept 5.5b)', () => {
-  const report = agreementReport(agreementLabels({ userCount: 3 }), { minUserPairs: 10 });
+test('thin user labels are the finding, not a zero, while they are required (concept 5.5b)', () => {
+  const report = agreementReport(agreementLabels({ userCount: 3 }), {
+    minUserPairs: 10,
+    requireUserLabels: true,
+  });
   assert.equal(report.userPairs, 3);
   assert.equal(report.validated, false, 'the proxy is unvalidated, and that is the answer');
   assert.equal(report.floorHolds, false);
@@ -772,6 +775,28 @@ test('thin user labels are the finding, not a zero (concept 5.5b)', () => {
   assert.equal(report.pairs.length, 1);
   assert.equal(report.labelsBySource.user, 3);
   assert.equal(report.labelsBySource.correction, 12);
+});
+
+test('thin user labels are reported but do not veto when they are not required', () => {
+  const report = agreementReport(agreementLabels({ userCount: 3 }), {
+    minUserPairs: 10,
+    requireUserLabels: false,
+  });
+  assert.equal(report.validated, false, 'still reported as unvalidated');
+  assert.deepEqual(report.findings, []);
+  assert.equal(report.ok, true);
+});
+
+test('user labels that exist and disagree veto whether or not they are required', () => {
+  const report = agreementReport(agreementLabels({ userCount: 12, userFlips: 8 }), {
+    minUserPairs: 10,
+    floor: 0.4,
+    requireUserLabels: false,
+  });
+  assert.equal(report.validated, true);
+  assert.equal(report.floorHolds, false);
+  assert.deepEqual(report.findings, ['agreement-below-floor']);
+  assert.equal(report.ok, false);
 });
 
 test('with enough user labels the sensor reports an agreement and clears its floor', () => {

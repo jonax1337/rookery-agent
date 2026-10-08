@@ -97,29 +97,8 @@ export function toolServerStates(config: RookeryConfig): ToolServerState[] {
   for (const id of ids) {
     if (seen.has(id)) continue;
     seen.add(id);
-    const stored = toolServerConfig(config, id);
-    const entry = catalogEntry(id);
-    if (!entry && !stored.custom) continue;
-    const options = optionsWithDefaults(entry, stored.options);
-    const missing = missingEnv(entry, stored.env);
-    const installed = entry ? entry.installed(options) : true;
-    states.push({
-      id,
-      name: entry?.name ?? stored.custom?.name ?? id,
-      description: entry?.description ?? (stored.custom ? stored.custom.command + ' ' + stored.custom.args.join(' ') : ''),
-      homepage: entry?.homepage ?? '',
-      install: entry ? entry.install : 'custom',
-      enabled: stored.enabled,
-      audience: stored.audience,
-      options,
-      envSet: Object.fromEntries((entry?.env ?? []).map((item) => [item.name, Boolean(stored.env[item.name] || process.env[item.name])])),
-      missingEnv: missing,
-      installed,
-      active: stored.enabled && installed && missing.length === 0,
-      projectIds: stored.projectIds ?? [],
-      entry,
-      custom: stored.custom,
-    });
+    const state = configuredServerState(config, id);
+    if (state) states.push(state);
   }
   // A discovered server sharing an id with a catalogue or custom entry loses
   // it: two rows with one id would leave it open which of the two a switch on
@@ -131,6 +110,33 @@ export function toolServerStates(config: RookeryConfig): ToolServerState[] {
     states.push(state);
   }
   return states;
+}
+
+/** The state of one catalogue or custom server; undefined for an id that is neither. */
+function configuredServerState(config: RookeryConfig, id: string): ToolServerState | undefined {
+  const stored = toolServerConfig(config, id);
+  const entry = catalogEntry(id);
+  if (!entry && !stored.custom) return undefined;
+  const options = optionsWithDefaults(entry, stored.options);
+  const missing = missingEnv(entry, stored.env);
+  const installed = entry ? entry.installed(options) : true;
+  return {
+    id,
+    name: entry?.name ?? stored.custom?.name ?? id,
+    description: entry?.description ?? (stored.custom ? stored.custom.command + ' ' + stored.custom.args.join(' ') : ''),
+    homepage: entry?.homepage ?? '',
+    install: entry ? entry.install : 'custom',
+    enabled: stored.enabled,
+    audience: stored.audience,
+    options,
+    envSet: Object.fromEntries((entry?.env ?? []).map((item) => [item.name, Boolean(stored.env[item.name] || process.env[item.name])])),
+    missingEnv: missing,
+    installed,
+    active: stored.enabled && installed && missing.length === 0,
+    projectIds: stored.projectIds ?? [],
+    entry,
+    custom: stored.custom,
+  };
 }
 
 /**
@@ -146,8 +152,8 @@ export function externalServerStates(config: RookeryConfig): ToolServerState[] {
   const scan = externalScan({ enabled: config.external.enabled });
   return scan.servers.map((server) => {
     const stored = config.external.servers[server.id];
-    const changed = Boolean(stored?.enabled && stored.fingerprint !== server.fingerprint);
     const enabled = Boolean(stored?.enabled);
+    const { changed, active } = approvalStanding(enabled, stored?.fingerprint, server.fingerprint);
     return {
       id: server.id,
       name: server.name,
@@ -163,7 +169,7 @@ export function externalServerStates(config: RookeryConfig): ToolServerState[] {
       envSet: {},
       missingEnv: [],
       installed: true,
-      active: enabled && !changed,
+      active,
       projectIds: stored?.projectIds ?? [],
       external: server,
       source: server.label,
@@ -171,6 +177,20 @@ export function externalServerStates(config: RookeryConfig): ToolServerState[] {
       approvalRequired: true,
     };
   });
+}
+
+/**
+ * Whether an approval still counts. It was taken over a fingerprint of what
+ * was there at the time; once the thing has moved on, the approval is
+ * `changed` and inactive until somebody approves the new state.
+ */
+function approvalStanding(
+  approved: boolean,
+  approvedFingerprint: string | undefined,
+  currentFingerprint: string,
+): { changed: boolean; active: boolean } {
+  const changed = approved && approvedFingerprint !== currentFingerprint;
+  return { changed, active: approved && !changed };
 }
 
 /* ------------------------- subagents, hooks, plugins ------------------------ */
@@ -228,27 +248,21 @@ function pluginSources(config: RookeryConfig): ExternalSource[] {
  * and hook set of that source - so an edit in any of them re-locks the
  * whole-plugin switch until somebody approves the new state.
  */
-const pluginFingerprint = (source: ExternalSource): string => {
+function pluginFingerprint(source: ExternalSource): string {
   const scan = externalScan({ enabled: true });
   const agents = (scan.agents ?? []).filter((agent) => agent.sourceId === source.id).map((agent) => agent.fingerprint);
   const hooks = (scan.hooks ?? []).filter((set) => set.sourceId === source.id).map((set) => set.fingerprint);
   return fingerprintOf(['plugin', source.id, source.installPath ?? '', ...agents, ...hooks]);
-};
+}
 
 export function externalAgentStates(config: RookeryConfig): ExternalAgentState[] {
   const scan = externalScan({ enabled: config.external.enabled });
   const stored = config.external.agents ?? {};
   return (scan.agents ?? []).map((agent) => {
     const decision = stored[agent.id];
-    const changed = Boolean(decision?.enabled && decision.fingerprint !== agent.fingerprint);
     const enabled = Boolean(decision?.enabled);
-    return {
-      ...agent,
-      enabled,
-      audience: decision?.audience ?? 'assistant',
-      active: enabled && !changed,
-      changed,
-    };
+    const { changed, active } = approvalStanding(enabled, decision?.fingerprint, agent.fingerprint);
+    return { ...agent, enabled, audience: decision?.audience ?? 'assistant', active, changed };
   });
 }
 
@@ -257,15 +271,9 @@ export function externalHookStates(config: RookeryConfig): ExternalHookState[] {
   const stored = config.external.hooks ?? {};
   return (scan.hooks ?? []).map((set) => {
     const decision = stored[set.sourceId];
-    const changed = Boolean(decision?.enabled && decision.fingerprint !== set.fingerprint);
     const enabled = Boolean(decision?.enabled);
-    return {
-      ...set,
-      enabled,
-      audience: decision?.audience ?? 'assistant',
-      active: enabled && !changed,
-      changed,
-    };
+    const { changed, active } = approvalStanding(enabled, decision?.fingerprint, set.fingerprint);
+    return { ...set, enabled, audience: decision?.audience ?? 'assistant', active, changed };
   });
 }
 
@@ -273,16 +281,15 @@ export function externalPluginStates(config: RookeryConfig): ExternalPluginState
   const stored = config.external.plugins ?? {};
   return pluginSources(config).map((source) => {
     const decision = stored[source.id];
-    const print = pluginFingerprint(source);
-    const changed = Boolean(decision?.loadWhole && decision.fingerprint !== print);
     const loadWhole = Boolean(decision?.loadWhole);
+    const { changed, active } = approvalStanding(loadWhole, decision?.fingerprint, pluginFingerprint(source));
     return {
       sourceId: source.id,
       label: source.label,
       installPath: source.installPath ?? '',
       loadWhole,
       audience: decision?.audience ?? 'assistant',
-      active: loadWhole && !changed,
+      active,
       changed,
     };
   });
@@ -304,8 +311,6 @@ export function withExternalApproval(
   id: string,
   patch: { enabled?: boolean; audience?: ToolServerAudience; loadWhole?: boolean },
 ): Partial<RookeryConfig> | null {
-  const scan = externalScan({ enabled: config.external.enabled });
-
   if (kind === 'plugin') {
     const source = pluginSources(config).find((entry) => entry.id === id);
     if (!source) return null;
@@ -330,6 +335,7 @@ export function withExternalApproval(
     };
   }
 
+  const scan = externalScan({ enabled: config.external.enabled });
   const found =
     kind === 'agent'
       ? (scan.agents ?? []).find((agent) => agent.id === id)
@@ -489,6 +495,23 @@ export function externalTurnExtras(
   const loadedWhole = new Set(whole.map((state) => state.sourceId));
   const pluginDirs = whole.map((state) => state.installPath).filter(Boolean);
 
+  const handoffAgents = approvedHandoffAgents(config, who, loadedWhole);
+  const hooks = approvedHooks(hookStates, who, loadedWhole);
+
+  return {
+    ...(handoffAgents.length ? { handoffAgents } : {}),
+    settings,
+    ...(Object.keys(hooks).length ? { hooks } : {}),
+    ...(pluginDirs.length ? { pluginDirs } : {}),
+  };
+}
+
+/** The approved subagents whose file still is what was approved, for sources not loaded whole. */
+function approvedHandoffAgents(
+  config: RookeryConfig,
+  who: 'assistant' | 'agent',
+  loadedWhole: Set<string>,
+): ProviderAgentFile[] {
   const handoffAgents: ProviderAgentFile[] = [];
   const taken = new Set<string>();
   for (const state of externalAgentStates(config)) {
@@ -503,7 +526,15 @@ export function externalTurnExtras(
     taken.add(state.name);
     handoffAgents.push({ name: state.name, path: state.path });
   }
+  return handoffAgents;
+}
 
+/** The approved hook sets, read from disk again and merged per event, for sources not loaded whole. */
+function approvedHooks(
+  hookStates: ExternalHookState[],
+  who: 'assistant' | 'agent',
+  loadedWhole: Set<string>,
+): ProviderHookTable {
   const hooks: ProviderHookTable = {};
   for (const state of hookStates) {
     if (!state.active || !serves(state.audience, who) || loadedWhole.has(state.sourceId)) continue;
@@ -515,13 +546,7 @@ export function externalTurnExtras(
       hooks[event] = [...(hooks[event] ?? []), ...rebaseHookGroups(value, root)];
     }
   }
-
-  return {
-    ...(handoffAgents.length ? { handoffAgents } : {}),
-    settings,
-    ...(Object.keys(hooks).length ? { hooks } : {}),
-    ...(pluginDirs.length ? { pluginDirs } : {}),
-  };
+  return hooks;
 }
 
 /**
@@ -552,33 +577,47 @@ export function toolServersFor(
   const hints: string[] = [];
   for (const state of toolServerStates(config)) {
     if (!state.active || !serves(state.audience, who) || !scoped(state.projectIds, projectId)) continue;
-    const stored = toolServerConfig(config, state.id);
-    let spec: McpServerSpec | null = null;
-    let hint = '';
-    if (state.external) {
-      const server = state.external;
-      spec = {
+    const launch = launchOf(config, state, provider);
+    if (!launch || RESERVED.has(launch.spec.name)) continue;
+    specs.push(launch.spec);
+    if (launch.hint) hints.push(launch.hint);
+  }
+  return { specs, hints };
+}
+
+/** How to start one active server and what to tell the model about it; null when it cannot start. */
+function launchOf(
+  config: RookeryConfig,
+  state: ToolServerState,
+  provider: ProviderId | undefined,
+): { spec: McpServerSpec; hint: string } | null {
+  if (state.external) {
+    const server = state.external;
+    return {
+      spec: {
         name: server.name,
         transport: server.transport,
         args: server.args,
         env: server.env,
         ...(server.transport === 'stdio' ? { command: server.command } : { url: server.url, headers: server.headers }),
-      };
-      hint =
+      },
+      hint:
         'The MCP server ' + server.name + ' is attached, the one installed in ' + server.label +
-        '; its tools arrive as mcp__' + server.name + '__*.';
-    } else if (state.entry) {
-      spec = state.entry.spec({ config, options: state.options, env: stored.env, provider });
-      hint = state.entry.hint(state.options);
-    } else if (stored.custom) {
-      spec = { name: state.id, command: stored.custom.command, args: stored.custom.args, env: stored.env };
-      hint = stored.custom.hint;
-    }
-    if (!spec || RESERVED.has(spec.name)) continue;
-    specs.push(spec);
-    if (hint) hints.push(hint);
+        '; its tools arrive as mcp__' + server.name + '__*.',
+    };
   }
-  return { specs, hints };
+  const stored = toolServerConfig(config, state.id);
+  if (state.entry) {
+    const spec = state.entry.spec({ config, options: state.options, env: stored.env, provider });
+    return spec ? { spec, hint: state.entry.hint(state.options) } : null;
+  }
+  if (stored.custom) {
+    return {
+      spec: { name: state.id, command: stored.custom.command, args: stored.custom.args, env: stored.env },
+      hint: stored.custom.hint,
+    };
+  }
+  return null;
 }
 
 /**

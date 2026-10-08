@@ -15,7 +15,7 @@
 import React, { useCallback } from 'react';
 import { Box, Text } from 'ink';
 import { MultiSelect, Select } from '@inkjs/ui';
-import { glyph, ui } from '../theme.js';
+import { GUTTER, glyph, ui } from '../theme.js';
 import { shorten } from '../../ui/render.js';
 import type { OpenQuestion } from '../hooks/useTurn.js';
 
@@ -36,16 +36,22 @@ const MAX_OPTION = 72;
 /** How many rows the list shows before it scrolls. */
 const VISIBLE_OPTIONS = 6;
 
-export function QuestionView({ question, now, onAnswer }: QuestionViewProps): React.JSX.Element {
-  // The option's index is its identity: an answer is indices into the list as
-  // it was offered, so nothing depends on labels being unique.
-  const options = question.options.map((option, index) => ({
+/**
+ * The option's index is its identity: an answer is indices into the list as it
+ * was offered, so nothing depends on labels being unique.
+ */
+function toOptions(offered: OpenQuestion['options']): Array<{ value: string; label: string }> {
+  return offered.map((option, index) => ({
     value: String(index),
     label: shorten(
       option.description ? option.label + '  ' + glyph.dot + ' ' + option.description : option.label,
       MAX_OPTION,
     ),
   }));
+}
+
+export function QuestionView({ question, now, onAnswer }: QuestionViewProps): React.JSX.Element {
+  const options = toOptions(question.options);
 
   const answerOne = useCallback(
     (value: string) => {
@@ -73,7 +79,7 @@ export function QuestionView({ question, now, onAnswer }: QuestionViewProps): Re
         <Text color={ui.faint}>{'  ' + timeLeft(question.expiresAt - now)}</Text>
       </Box>
 
-      <Box paddingLeft={2} flexDirection="column">
+      <Box paddingLeft={GUTTER} flexDirection="column">
         <Text color={ui.frost}>{question.question}</Text>
 
         <Box marginTop={1} flexDirection="column">
@@ -89,18 +95,24 @@ export function QuestionView({ question, now, onAnswer }: QuestionViewProps): Re
         </Box>
 
         <Text color={ui.faint} dimColor>
-          {glyph.up + glyph.down + ' move ' + glyph.dot +
-            (question.multiSelect ? ' Space picks ' + glyph.dot : '') +
-            ' Enter answers ' + glyph.dot + ' Esc skips'}
+          {keyHint(question.multiSelect)}
         </Text>
       </Box>
     </Box>
   );
 }
 
+const MS_PER_SECOND = 1000;
+const MS_PER_MINUTE = 60_000;
+
 /** "9m left" / "40s left" - how long the turn will keep waiting. */
-export function timeLeft(ms: number): string {
+function timeLeft(ms: number): string {
   if (ms <= 0) return 'expiring';
-  if (ms < 60_000) return Math.ceil(ms / 1000) + 's left';
-  return Math.ceil(ms / 60_000) + 'm left';
+  if (ms < MS_PER_MINUTE) return Math.ceil(ms / MS_PER_SECOND) + 's left';
+  return Math.ceil(ms / MS_PER_MINUTE) + 'm left';
+}
+
+function keyHint(multiSelect: boolean): string {
+  const picks = multiSelect ? ' Space picks ' + glyph.dot : '';
+  return glyph.up + glyph.down + ' move ' + glyph.dot + picks + ' Enter answers ' + glyph.dot + ' Esc skips';
 }

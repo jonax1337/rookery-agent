@@ -27,10 +27,18 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar';
 
-interface AppSidebarProps extends ComponentProps<typeof Sidebar> {
-  /** Opens the command palette; the shell owns it, the rail only asks. */
-  onSearch(): void;
+interface RailBadge {
+  node: ReactNode;
+  label?: string;
 }
+
+/**
+ * The rail builds itself top to bottom: one stagger across all sections (brand
+ * first, footer last), capped so a longer navigation cannot string it out.
+ * Sections, never single rows - the rows themselves stay still.
+ */
+const SECTION_STAGGER_MS = 50;
+const MAX_SECTION_DELAY_MS = 400;
 
 /**
  * The navigation rail (sidebar-16), and nothing but navigation.
@@ -46,7 +54,7 @@ interface AppSidebarProps extends ComponentProps<typeof Sidebar> {
  * running tasks, live assignments. Nothing is derived from a total the server
  * never sent.
  */
-export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
+export function AppSidebar({ className, ...props }: ComponentProps<typeof Sidebar>) {
   const { pathname } = useLocation();
   const { setOpenMobile } = useSidebar();
   const tasks = useTasksState();
@@ -74,83 +82,60 @@ export function AppSidebar({ onSearch, className, ...props }: AppSidebarProps) {
   const runningTasks = tasks.countByStatus.running;
   const liveAssignments = org.running.length;
 
-  // The counts are live values, so their digits roll into place (and across
-  // on every change) instead of jumping. `thousandSeparator` matches the
-  // en-GB grouping `formatNumber` below uses for the labels.
-  const badges: Record<string, { node: ReactNode; label?: string }> = {
-    ...(openConversations > 0
-      ? {
-          '/chats': {
-            node: (
-              <>
-                <SlidingNumber number={openConversations} thousandSeparator="," />
-                {capped ? '+' : ''}
-              </>
-            ),
-            ...(capped
-              ? {
-                  label:
-                    'at least ' +
-                    formatNumber(openConversations) +
-                    ' open conversations; the list is limited to ' +
-                    formatNumber(limit),
-                }
-              : {}),
-          },
-        }
-      : {}),
-    ...(runningTasks > 0
-      ? {
-          '/tasks': {
-            node: <SlidingNumber number={runningTasks} thousandSeparator="," />,
-            label: 'running top-level tasks; subtasks are not included',
-          },
-        }
-      : {}),
-    ...(liveAssignments > 0
-      ? {
-          '/assignments': { node: <SlidingNumber number={liveAssignments} thousandSeparator="," /> },
-        }
-      : {}),
-    // Unread notifications - a schedule result, an agent's question, a
-    // finished card - on the row that opens them.
-    ...(notifications.unreadCount > 0
-      ? {
-          '/inbox': {
-            node: <SlidingNumber number={notifications.unreadCount} thousandSeparator="," />,
-            label: 'unread notifications',
-          },
-        }
-      : {}),
-  };
+  const badges: Record<string, RailBadge> = {};
+  if (openConversations > 0) {
+    badges['/chats'] = {
+      node: (
+        <>
+          <RollingCount value={openConversations} />
+          {capped ? '+' : ''}
+        </>
+      ),
+      ...(capped
+        ? {
+            label:
+              'at least ' +
+              formatNumber(openConversations) +
+              ' open conversations; the list is limited to ' +
+              formatNumber(limit),
+          }
+        : {}),
+    };
+  }
+  if (runningTasks > 0) {
+    badges['/tasks'] = {
+      node: <RollingCount value={runningTasks} />,
+      label: 'running top-level tasks; subtasks are not included',
+    };
+  }
+  if (liveAssignments > 0) {
+    badges['/assignments'] = { node: <RollingCount value={liveAssignments} /> };
+  }
+  // Unread notifications - a schedule result, an agent's question, a
+  // finished card - on the row that opens them.
+  if (notifications.unreadCount > 0) {
+    badges['/inbox'] = {
+      node: <RollingCount value={notifications.unreadCount} />,
+      label: 'unread notifications',
+    };
+  }
 
   const buildItem = (meta: RouteMeta): NavMainItem => {
     const badge = badges[meta.path];
     return {
-      title: meta.navLabel ?? meta.label,
-      url: meta.redirect ?? meta.path,
-      icon: meta.icon ?? FeatherIcon,
-      isActive: isActive(pathname, meta.path),
+      ...routeEntry(meta, pathname),
       ...(badge ? { badge: badge.node, ...(badge.label ? { badgeLabel: badge.label } : {}) } : {}),
     };
   };
 
   // No search entry here: the site header carries one, with the same shortcut.
   // Two fields for one command palette read as two different searches.
-  const secondary: NavSecondaryItem[] = [
-    ...navItems('secondary').map((meta) => ({
-      title: meta.navLabel ?? meta.label,
-      icon: meta.icon ?? FeatherIcon,
-      url: meta.redirect ?? meta.path,
-      isActive: isActive(pathname, meta.path),
-    })),
-  ];
+  const secondary: NavSecondaryItem[] = navItems('secondary').map((meta) =>
+    routeEntry(meta, pathname),
+  );
 
-  // The rail builds itself top to bottom: one stagger across all sections
-  // (brand first, footer last), capped so a longer navigation cannot string
-  // it out. Sections, never single rows - the rows themselves stay still.
   const labelledGroups = NAV_GROUPS.filter(isLabelled);
-  const sectionDelay = (index: number) => Math.min(index * 50, 400);
+  const sectionDelay = (index: number) => Math.min(index * SECTION_STAGGER_MS, MAX_SECTION_DELAY_MS);
 
   return (
     <Sidebar
@@ -256,8 +241,8 @@ function isLabelled(group: { id: NavGroup; label: string | null }): group is {
 /**
  * Which entry the current URL belongs to.
  *
- * A section owns its whole subtree, so an agent's page keeps "Firma" lit.
- * "Gespräche" additionally owns the chat hub (`/` and `/c/<id>`): an open
+ * A section owns its whole subtree, so an agent's page keeps "Organization" lit.
+ * "Conversations" additionally owns the chat hub (`/` and `/c/<id>`): an open
  * conversation has no sidebar entry of its own any more and would otherwise
  * leave the navigation showing nothing at all.
  */
@@ -266,4 +251,19 @@ function isActive(pathname: string, path: string): boolean {
     return pathname === '/chats' || pathname === '/' || pathname.startsWith('/c/');
   }
   return pathname === path || pathname.startsWith(path + '/');
+}
+
+/** The entry fields a route contributes to the main and the secondary block alike. */
+function routeEntry(meta: RouteMeta, pathname: string) {
+  return {
+    title: meta.navLabel ?? meta.label,
+    url: meta.redirect ?? meta.path,
+    icon: meta.icon ?? FeatherIcon,
+    isActive: isActive(pathname, meta.path),
+  };
+}
+
+/** The counts are live values, so their digits roll into place instead of jumping. */
+function RollingCount({ value }: { value: number }) {
+  return <SlidingNumber number={value} thousandSeparator="," />;
 }

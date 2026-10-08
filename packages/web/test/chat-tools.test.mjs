@@ -107,20 +107,22 @@ test('tools survive streaming, completion, the next turn and transcript reload d
 test('voice status never exposes tool calls, including while an assignment runs', () => {
   const file = 'VoicePage.tsx';
   const source = ts.createSourceFile(file, readFileSync(new URL('../src/pages/' + file, import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  let expression;
+  let declaration;
   function visit(node) {
-    if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'status') expression = node.initializer.getText(source);
+    if (ts.isFunctionDeclaration(node) && node.name?.getText(source) === 'captionOf') declaration = node.getText(source);
     ts.forEachChild(node, visit);
   }
   visit(source);
-  assert.ok(expression);
-  const js = ts.transpileModule(`const result = ${expression};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const status = new Function('phase', 'voice', 'chat', js + '\nreturn result;');
+  assert.ok(declaration);
+  const js = ts.transpileModule(declaration, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const captionOf = new Function(js + '\nreturn captionOf;')();
+  const caption = (activity) => captionOf({
+    phase: 'live', speech: { supported: true, interim: '' }, speaking: false, busy: true, activity,
+    muted: false, requireWake: false, wakeWord: '', assistantName: 'Rookery',
+  });
   const tool = { kind: 'tool', label: 'private_tool_name', done: false };
-  assert.equal(status('active', { speaking: false }, { busy: true, activity: [tool] }), 'Thinking …');
-  assert.equal(status('active', { speaking: false }, { busy: true, activity: [
-    { kind: 'assignment', label: 'Mara', done: false }, tool,
-  ] }), 'Mara is working …');
+  assert.equal(caption([tool]), 'Thinking …');
+  assert.equal(caption([{ kind: 'assignment', label: 'Mara', done: false }, tool]), 'Mara is working …');
 });
 
 

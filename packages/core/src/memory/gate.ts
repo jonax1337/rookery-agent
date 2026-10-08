@@ -67,6 +67,13 @@ export interface GateInput {
   sleepRunId?: string;
 }
 
+const MIN_CONTENT_LENGTH = 8;
+/** A candidate must be this many characters longer to replace the stored sentence. */
+const RICHER_MARGIN_CHARS = 8;
+const SIMILAR_CANDIDATE_LIMIT = 15;
+const MAX_LINKED_TAGS = 6;
+const MIN_ENTITY_NAME_LENGTH = 2;
+
 /**
  * Normalise a sentence to the token set similarity is measured on:
  * lower case, no diacritics, no punctuation, no stop words.
@@ -92,7 +99,7 @@ export function similarity(a: Set<string>, b: Set<string>): number {
 
 /** Of two sentences saying the same thing, keep the one that says more. */
 function richer(a: string, b: string): string {
-  return b.trim().length > a.trim().length + 8 ? b : a;
+  return b.trim().length > a.trim().length + RICHER_MARGIN_CHARS ? b : a;
 }
 
 /* --------------------------- the evidence check --------------------------- */
@@ -122,14 +129,7 @@ function quoteWords(text: string): string[] {
 function runOf(haystack: string[], needle: string[]): boolean {
   if (!needle.length || needle.length > haystack.length) return false;
   for (let start = 0; start + needle.length <= haystack.length; start += 1) {
-    let hit = true;
-    for (let offset = 0; offset < needle.length; offset += 1) {
-      if (haystack[start + offset] !== needle[offset]) {
-        hit = false;
-        break;
-      }
-    }
-    if (hit) return true;
+    if (needle.every((word, offset) => haystack[start + offset] === word)) return true;
   }
   return false;
 }
@@ -179,11 +179,11 @@ export function admitCandidates(store: Store, input: GateInput): GateResult {
   const { owner, config } = input;
   const gate = config.gate;
   const result: GateResult = { stored: [], reinforced: [], rejected: [], queued: [] };
-  const seenThisTurn: { tokens: Set<string>; content: string }[] = [];
+  const seenThisTurn: Set<string>[] = [];
 
   for (const candidate of input.candidates) {
     const content = candidate.content.trim();
-    if (content.length < 8) {
+    if (content.length < MIN_CONTENT_LENGTH) {
       result.rejected.push({ content, reason: 'short' });
       continue;
     }
@@ -208,7 +208,7 @@ export function admitCandidates(store: Store, input: GateInput): GateResult {
 
     const tokens = normalizeTokens(content);
     // Two near-identical candidates inside one batch: keep the first.
-    if (seenThisTurn.some((seen) => similarity(seen.tokens, tokens) >= gate.duplicateThreshold)) {
+    if (seenThisTurn.some((seen) => similarity(seen, tokens) >= gate.duplicateThreshold)) {
       result.rejected.push({ content, reason: 'duplicate-in-batch' });
       continue;
     }
@@ -225,22 +225,10 @@ export function admitCandidates(store: Store, input: GateInput): GateResult {
     const twin = neighbours.find((entry) => entry.score >= gate.duplicateThreshold);
 
     if (twin) {
-      // Same fact, different words. Reinforce what is there; keep whichever
-      // sentence carries more, and let the tags merge.
-      const kept = richer(twin.memory.content, content);
-      const reinforced = store.upsertMemory({
-        kind: twin.memory.kind,
-        content: twin.memory.content,
-        tags: [...new Set([...twin.memory.tags, ...candidate.tags])],
-        importance: Math.max(twin.memory.importance, candidate.importance),
-        owner,
-        evidence,
-      });
-      const final =
-        kept === twin.memory.content ? reinforced : store.updateMemory(reinforced.id, { content: kept }) ?? reinforced;
+      const final = reinforce(store, twin.memory, candidate, content);
       result.reinforced.push(final);
       linkEntities(store, owner, final.id, candidate.tags);
-      seenThisTurn.push({ tokens, content });
+      seenThisTurn.push(tokens);
       continue;
     }
 
@@ -257,25 +245,64 @@ export function admitCandidates(store: Store, input: GateInput): GateResult {
     });
     result.stored.push(record);
     linkEntities(store, owner, record.id, candidate.tags);
-    seenThisTurn.push({ tokens, content });
-
-    // Related but not the same: leave a marker for the night rather than
-    // deciding now. Condensation is a judgement call and needs a model.
-    for (const neighbour of neighbours) {
-      if (neighbour.score < gate.clusterThreshold) continue;
-      const edge = store.addEdge({
-        owner,
-        srcId: record.id,
-        dstId: neighbour.memory.id,
-        relation: 'co_occurs',
-        weight: neighbour.score,
-        origin: 'gate',
-      });
-      if (edge) result.queued.push(edge);
-    }
+    seenThisTurn.push(tokens);
+    result.queued.push(
+      ...queueCoOccurrences(
+        store,
+        record,
+        neighbours.filter((neighbour) => neighbour.score >= gate.clusterThreshold),
+      ),
+    );
   }
 
   return result;
+}
+
+/**
+ * Same fact, different words. Reinforce what is there; keep whichever
+ * sentence carries more, and let the tags merge.
+ */
+function reinforce(
+  store: Store,
+  twin: MemoryRecord,
+  candidate: MemoryCandidate,
+  content: string,
+): MemoryRecord {
+  const reinforced = store.upsertMemory({
+    kind: twin.kind,
+    content: twin.content,
+    tags: [...new Set([...twin.tags, ...candidate.tags])],
+    importance: Math.max(twin.importance, candidate.importance),
+    owner: twin.owner,
+    evidence: candidate.evidence.trim(),
+  });
+  const kept = richer(twin.content, content);
+  if (kept === twin.content) return reinforced;
+  return store.updateMemory(reinforced.id, { content: kept }) ?? reinforced;
+}
+
+/**
+ * Related but not the same: leave a marker for the night rather than
+ * deciding now. Condensation is a judgement call and needs a model.
+ */
+function queueCoOccurrences(
+  store: Store,
+  record: MemoryRecord,
+  neighbours: { memory: MemoryRecord; score: number }[],
+): MemoryEdge[] {
+  const edges: MemoryEdge[] = [];
+  for (const neighbour of neighbours) {
+    const edge = store.addEdge({
+      owner: record.owner,
+      srcId: record.id,
+      dstId: neighbour.memory.id,
+      relation: 'co_occurs',
+      weight: neighbour.score,
+      origin: 'gate',
+    });
+    if (edge) edges.push(edge);
+  }
+  return edges;
 }
 
 /**
@@ -301,7 +328,7 @@ function similarMemories(
             AND m.owner = ?
             AND m.forgotten = 0
             AND m.dormant_at IS NULL
-          LIMIT 15`,
+          LIMIT ${SIMILAR_CANDIDATE_LIMIT}`,
       )
       .all(match, owner) as Record<string, unknown>[];
   } catch {
@@ -319,9 +346,9 @@ function similarMemories(
 
 /** Tags become entities: the cheapest possible seed for the graph. */
 export function linkEntities(store: Store, owner: string, memoryId: string, tags: string[]): void {
-  for (const tag of tags.slice(0, 6)) {
+  for (const tag of tags.slice(0, MAX_LINKED_TAGS)) {
     const name = tag.trim();
-    if (name.length < 2 || !entitySlug(name)) continue;
+    if (name.length < MIN_ENTITY_NAME_LENGTH || !entitySlug(name)) continue;
     try {
       const entity = store.upsertEntity({ owner, name });
       store.linkEntity(memoryId, entity.id);

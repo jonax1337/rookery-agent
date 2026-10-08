@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import type {
+  DreamConfig,
   EffortLevel,
   ExternalConfig,
   GatewaysConfig,
@@ -93,6 +94,7 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     //   labelModelCalls           AP12 (same source's fallback: a model call per correction)
     //   userLabelWindow           AP4 (correction/merge label windowing) + AP13 (user label HTTP route)
     //   agreementFloor            AP8 (label agreement check, concept 5.5b)
+    //   requireUserLabels         AP8 (label agreement check: whether missing user labels veto a promotion)
     //   calibrationTraces         AP12 (wake test: traces after promotion before it runs)
     //   tolerance                 AP12 (wake test: score drift it tolerates)
     //   cooldownNights            AP9 (promotion condition 6: nights between promotions of one slot)
@@ -104,20 +106,21 @@ export const DEFAULT_CONFIG: RookeryConfig = {
     // clamped where they are read, never trusted because they were written
     // (S23/E21).
     dream: {
-      // Off until the stage-1 budget gate has measured what a frame costs:
-      // this ships the capability, not the operation.
-      enabled: false,
+      // On: the dream is how retrieval improves without anybody tuning it.
+      // A frame costs about 30 KB gzipped (measured on a 460-memory bank),
+      // which is what the stage-1 budget gate was waiting for.
+      enabled: true,
       // The recorder has its own switch, so recording can be switched off
       // to relieve turn latency without losing the night's probe.
-      record: false,
-      // Off: this stage ships the promotion machine, not its start (plan
-      // section 1.2 - "kein Default an").
-      promote: false,
-      // A quarter of the sessions, drawn per session and never per trace:
-      // consecutive turns of one session share topic, bank cutout and
-      // entity neighbourhood, so per-trace sampling would split
-      // near-duplicates across both sides of every comparison.
-      frameRate: 0.25,
+      record: true,
+      // On: a promotion is a small, announced, revertible move inside the
+      // declared box, and it still has to clear the nine conditions of
+      // `promotionDecision`. The switch exists to stop it, not to start it.
+      promote: true,
+      // Every session. A single user has a few dozen sessions a month, and
+      // the evaluation reads whole sessions as its unit; sampling a quarter
+      // of them would leave a pool the night can never read.
+      frameRate: 1,
       // The policy space's limit span tops out at 16. One frame recorded
       // at this corner stays replayable for every limit from 4 up; the
       // frontier it pays for is four times this number of rows.
@@ -133,9 +136,10 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       // A quarter of relative document-frequency movement over the frame
       // tokens, beyond which a trace abstains as corpus-drifted.
       corpusTolerance: 0.25,
-      // 120 KB: the upper end of the expected 40-90 KB frame size, with
-      // headroom. Above it nothing is framed at all - a frame is not
-      // allowed to grow until it fits.
+      // 120 KB stored, gzipped: a frame is 150-240 KB of JSON on a bank of a
+      // few hundred memories and about a tenth of that stored. Above the
+      // cap nothing is framed at all - a frame is not allowed to grow until
+      // it fits.
       maxFrameBytes: 120_000,
       // Twenty seconds of wall clock for the model-free night evaluation,
       // counted and reported like modelCalls: zero model calls is not zero
@@ -166,15 +170,19 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       // because triage is extraction, but reading a cause out of failure
       // cases is judgement, and that contradiction gets resolved here (E14).
       effort: 'medium',
-      // Two hundred closed traces before an evaluation is trusted at all;
-      // below it the result is invalid, not "the candidate lost".
-      minTraces: 200,
+      // Thirty closed traces before an evaluation is trusted at all; below
+      // it the result is invalid, not "the candidate lost". The cluster
+      // bootstrap interval has to clear zero on top of that, so a thin pool
+      // is not what lets noise through. Scaled to one user's volume: the
+      // concept's 200 needs a month of traffic that carries labels.
+      minTraces: 30,
       // Two percent: the delta a promotion needs over the incumbent, and
       // the freshness check's sign-agreement slack around zero.
       margin: 0.02,
-      // Below 30 percent label coverage, an evaluation cannot tell a real
-      // delta from missing labels (concept 4.4).
-      coverageFloor: 0.3,
+      // Below 10 percent label coverage, an evaluation cannot tell a real
+      // delta from missing labels (concept 4.4). Session-scoped review
+      // labels reach one session in seven on a single-user bank.
+      coverageFloor: 0.1,
       // Above half the paired traces moving on the cost term alone, the
       // delta is not a delta (concept 4.4).
       costOnlyCeiling: 0.5,
@@ -197,9 +205,12 @@ export const DEFAULT_CONFIG: RookeryConfig = {
       // Below 0.4 Cohen's kappa between two label sources, the label
       // agreement check is unvalidated rather than passing.
       agreementFloor: 0.4,
-      // Fifty traces after a promotion before the wake test's regression
+      // Off: a person who never hand-edits a memory would otherwise block
+      // every promotion for good. User evidence that exists still vetoes.
+      requireUserLabels: false,
+      // Twenty traces after a promotion before the wake test's regression
       // alarm runs, tolerating five percent score drift.
-      calibrationTraces: 50,
+      calibrationTraces: 20,
       tolerance: 0.05,
       // A week between promotions of the same slot, so `trace_set_hash`
       // disjointness has something to be disjoint from.
@@ -489,6 +500,36 @@ export function upgradePushConfig(push: TelegramPushConfig, fileConfig: unknown)
 }
 
 /**
+ * What the dream's volume-bound keys shipped as before they were scaled to
+ * one user's traffic. The settings page saves the whole memory block, so a
+ * config.json written by an older build pins these as if somebody had chosen
+ * them, and a changed default would never reach that install.
+ */
+const RETIRED_DREAM_DEFAULTS = {
+  frameRate: 0.25,
+  minTraces: 200,
+  coverageFloor: 0.3,
+  calibrationTraces: 50,
+} as const;
+
+/**
+ * Move an old file's pinned dream tuning to the current defaults. Read, never
+ * written back, like `upgradePushConfig`. A key counts as pinned only when
+ * the file holds exactly the retired default AND nothing above the file (the
+ * environment, the host's overrides) has changed it since. The three
+ * switches are left alone on purpose: a stored `false` cannot be told apart
+ * from somebody turning the dream off.
+ */
+export function upgradeDreamTuning(dream: DreamConfig, fileConfig: unknown): void {
+  const stored = (fileConfig as { memory?: { dream?: Record<string, unknown> } } | null)?.memory?.dream;
+  if (!stored) return;
+  for (const [key, retired] of Object.entries(RETIRED_DREAM_DEFAULTS)) {
+    const name = key as keyof typeof RETIRED_DREAM_DEFAULTS;
+    if (stored[name] === retired && dream[name] === retired) dream[name] = DEFAULT_CONFIG.memory.dream[name];
+  }
+}
+
+/**
  * Whether one notification is pushed to the phone, by the per-kind switches.
  * Transport-free - the push gateway decides how and when (quiet hours, the
  * hourly cap); this only says whether the user asked to hear about it at all.
@@ -590,6 +631,7 @@ export function loadConfig(overrides: Partial<RookeryConfig> = {}): RookeryConfi
   config.external.servers = servers;
 
   upgradePushConfig(config.gateways.telegram.push, fileConfig);
+  upgradeDreamTuning(config.memory.dream, fileConfig);
 
   // Clearing a setting from the UI stores an empty string, because the merge
   // skips undefined; downstream an empty model or effort must mean "unset".

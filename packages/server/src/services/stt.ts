@@ -53,8 +53,8 @@ export interface Transcript {
 }
 
 export class SttError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'SttError';
   }
 }
@@ -65,8 +65,25 @@ const TIMEOUT_MS = 180_000;
 /** Whisper's own sample rate. Anything else is silently wrong, not loud. */
 const SAMPLE_RATE = 16_000;
 
+/** ffmpeg's `f32le` output: one 32-bit float per sample. */
+const BYTES_PER_SAMPLE = 4;
+
+/** Whisper's own window, in seconds, and the overlap that keeps a word from being cut in half at the seam of two windows. */
+const WHISPER_CHUNK_SECONDS = 30;
+const WHISPER_STRIDE_SECONDS = 5;
+
+/** How much of a provider's error body is worth showing a person. */
+const ERROR_DETAIL_CHARS = 200;
+
+const CANCELLED_MESSAGE = 'The transcription was cancelled.';
+
 /** Where ffmpeg is, when it is not simply on PATH. */
 const ffmpegPath = (): string => process.env.ROOKERY_FFMPEG?.trim() || 'ffmpeg';
+
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** The text of an engine's answer, or nothing when it sent none. */
+const textOf = (answer: { text?: unknown } | null | undefined): string => (typeof answer?.text === 'string' ? answer.text : '');
 
 /* ----------------------------- decoding ----------------------------- */
 
@@ -79,6 +96,8 @@ const ffmpegPath = (): string => process.env.ROOKERY_FFMPEG?.trim() || 'ffmpeg';
  * surface as its own exit status, not as an unhandled EPIPE.
  */
 async function decodeToPcm(audio: Buffer, signal?: AbortSignal): Promise<Float32Array> {
+  // An abort that already happened never fires its listener.
+  if (signal?.aborted) throw new SttError(CANCELLED_MESSAGE);
   const binary = ffmpegPath();
   return new Promise<Float32Array>((resolve, reject) => {
     const child = spawn(
@@ -97,48 +116,55 @@ async function decodeToPcm(audio: Buffer, signal?: AbortSignal): Promise<Float32
       reject(error);
     };
 
-    const abort = (): void => fail(new SttError('The transcription was cancelled.'));
+    const abort = (): void => fail(new SttError(CANCELLED_MESSAGE));
     signal?.addEventListener('abort', abort, { once: true });
 
     child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
     child.stderr.on('data', (chunk: Buffer) => err.push(chunk));
     child.stdin.on('error', () => {});
-    child.on('error', (error: NodeJS.ErrnoException) => {
-      fail(
-        error.code === 'ENOENT'
-          ? new SttError(
-              'ffmpeg was not found. Install it (winget install Gyan.FFmpeg, brew install ffmpeg, apt install ffmpeg) ' +
-                'or point ROOKERY_FFMPEG at the binary; local transcription decodes audio with it.',
-            )
-          : new SttError('ffmpeg could not be started: ' + error.message),
-      );
-    });
+    child.on('error', (error: NodeJS.ErrnoException) => fail(ffmpegStartError(error)));
     child.on('close', (code) => {
       signal?.removeEventListener('abort', abort);
       if (settled) return;
       settled = true;
       if (code !== 0) {
-        const detail = Buffer.concat(err).toString('utf8').trim().split('\n').at(-1) ?? 'unknown error';
-        reject(new SttError('The audio could not be decoded: ' + detail));
+        reject(new SttError('The audio could not be decoded: ' + lastLine(Buffer.concat(err))));
         return;
       }
-      const pcm = Buffer.concat(out);
-      if (pcm.length < 4) {
-        reject(new SttError('The audio held no sound.'));
-        return;
+      try {
+        resolve(toSamples(Buffer.concat(out)));
+      } catch (error) {
+        reject(error);
       }
-      // A copy, not a view: `Buffer.concat` may hand back a slice of a
-      // pooled allocation whose offset is not four-byte aligned, and a
-      // Float32Array cannot be laid over that.
-      const samples = new Float32Array(Math.floor(pcm.length / 4));
-      for (let index = 0; index < samples.length; index += 1) {
-        samples[index] = pcm.readFloatLE(index * 4);
-      }
-      resolve(samples);
     });
 
     child.stdin.end(audio);
   });
+}
+
+function ffmpegStartError(error: NodeJS.ErrnoException): SttError {
+  if (error.code !== 'ENOENT') return new SttError('ffmpeg could not be started: ' + error.message);
+  return new SttError(
+    'ffmpeg was not found. Install it (winget install Gyan.FFmpeg, brew install ffmpeg, apt install ffmpeg) ' +
+      'or point ROOKERY_FFMPEG at the binary; local transcription decodes audio with it.',
+  );
+}
+
+/** The last line of ffmpeg's stderr: where it says what went wrong. */
+function lastLine(stderr: Buffer): string {
+  return stderr.toString('utf8').trim().split('\n').at(-1) ?? 'unknown error';
+}
+
+function toSamples(pcm: Buffer): Float32Array {
+  if (pcm.length < BYTES_PER_SAMPLE) throw new SttError('The audio held no sound.');
+  // A copy, not a view: `Buffer.concat` may hand back a slice of a
+  // pooled allocation whose offset is not four-byte aligned, and a
+  // Float32Array cannot be laid over that.
+  const samples = new Float32Array(Math.floor(pcm.length / BYTES_PER_SAMPLE));
+  for (let index = 0; index < samples.length; index += 1) {
+    samples[index] = pcm.readFloatLE(index * BYTES_PER_SAMPLE);
+  }
+  return samples;
 }
 
 /* --------------------------- local Whisper --------------------------- */
@@ -178,32 +204,7 @@ async function localPipeline(model: string, home: string): Promise<AsrPipeline> 
   const existing = localModels.get(model);
   if (existing) return existing;
 
-  const loading = (async (): Promise<AsrPipeline> => {
-    let transformers: TransformersModule;
-    try {
-      // Through a variable, and typed structurally: the package is optional,
-      // and an install that skipped it must still compile and still start -
-      // it is a missing engine, not a broken server.
-      transformers = (await import(TRANSFORMERS)) as unknown as TransformersModule;
-    } catch {
-      throw new SttError(
-        'Local transcription needs @huggingface/transformers, which is an optional dependency and is not installed. ' +
-          'Run npm install @huggingface/transformers in the Rookery folder, or set a transcription key on the voice page.',
-      );
-    }
-    // The cache goes next to the rest of the user's Rookery state rather
-    // than into a hidden folder in the home directory, so "what is this
-    // 130 MB" has an answer and deleting it is a decision, not a rescue.
-    transformers.env.cacheDir = join(home, 'models');
-    // The encoder stays fp32 - quantising it is where Whisper starts
-    // mishearing numbers - while the decoder, which is most of the
-    // download, is quantised.
-    const pipe = await transformers.pipeline('automatic-speech-recognition', model, {
-      dtype: { encoder_model: 'fp32', decoder_model_merged: 'q8' },
-    });
-    return pipe as unknown as AsrPipeline;
-  })();
-
+  const loading = loadPipeline(model, home);
   localModels.set(model, loading);
   try {
     return await loading;
@@ -212,6 +213,36 @@ async function localPipeline(model: string, home: string): Promise<AsrPipeline> 
     // reported forever after it has been installed.
     localModels.delete(model);
     throw error;
+  }
+}
+
+async function loadPipeline(model: string, home: string): Promise<AsrPipeline> {
+  const transformers = await importTransformers();
+  // The cache goes next to the rest of the user's Rookery state rather
+  // than into a hidden folder in the home directory, so "what is this
+  // 130 MB" has an answer and deleting it is a decision, not a rescue.
+  transformers.env.cacheDir = join(home, 'models');
+  // The encoder stays fp32 - quantising it is where Whisper starts
+  // mishearing numbers - while the decoder, which is most of the
+  // download, is quantised.
+  const pipe = await transformers.pipeline('automatic-speech-recognition', model, {
+    dtype: { encoder_model: 'fp32', decoder_model_merged: 'q8' },
+  });
+  return pipe as unknown as AsrPipeline;
+}
+
+async function importTransformers(): Promise<TransformersModule> {
+  try {
+    // Through a variable, and typed structurally: the package is optional,
+    // and an install that skipped it must still compile and still start -
+    // it is a missing engine, not a broken server.
+    return (await import(TRANSFORMERS)) as unknown as TransformersModule;
+  } catch (error) {
+    throw new SttError(
+      'Local transcription needs @huggingface/transformers, which is an optional dependency and is not installed. ' +
+        'Run npm install @huggingface/transformers in the Rookery folder, or set a transcription key on the voice page.',
+      { cause: error },
+    );
   }
 }
 
@@ -224,33 +255,45 @@ function languageOf(lang?: string): string | undefined {
 async function transcribeLocal(request: TranscribeRequest): Promise<string> {
   const audio = await decodeToPcm(request.audio, request.signal);
   const run = await localPipeline(request.model, request.home);
-  const options: Record<string, unknown> = {
-    task: 'transcribe',
-    // 30 s is Whisper's own window; the overlap keeps a word from being cut
-    // in half at the seam of two windows.
-    chunk_length_s: 30,
-    stride_length_s: 5,
-  };
   const language = languageOf(request.lang);
-  if (language) options.language = language;
   try {
-    const result = await run(audio, options);
-    return typeof result?.text === 'string' ? result.text : '';
+    return await recogniseLocally(run, audio, language);
   } catch (error) {
+    if (!language) throw localFailure(error);
     // An unsupported language tag is the one failure worth a second pass:
     // letting Whisper detect the language beats refusing the note.
-    if (language) {
-      delete options.language;
-      const result = await run(audio, options);
-      return typeof result?.text === 'string' ? result.text : '';
+    try {
+      return await recogniseLocally(run, audio, undefined);
+    } catch (retryError) {
+      throw localFailure(retryError);
     }
-    throw error instanceof SttError
-      ? error
-      : new SttError('The local model could not transcribe this: ' + (error as Error).message);
   }
 }
 
+async function recogniseLocally(run: AsrPipeline, audio: Float32Array, language: string | undefined): Promise<string> {
+  const result = await run(audio, {
+    task: 'transcribe',
+    chunk_length_s: WHISPER_CHUNK_SECONDS,
+    stride_length_s: WHISPER_STRIDE_SECONDS,
+    ...(language ? { language } : {}),
+  });
+  return textOf(result);
+}
+
+function localFailure(error: unknown): SttError {
+  return error instanceof SttError
+    ? error
+    : new SttError('The local model could not transcribe this: ' + messageOf(error), { cause: error });
+}
+
 /* ---------------------------- keyed engines ---------------------------- */
+
+/** A keyed engine's endpoint; the key is kept apart so it can be scrubbed from anything shown. */
+interface KeyedEndpoint {
+  url: string;
+  key: string;
+  headers: Record<string, string>;
+}
 
 /** A name the upload can carry; the extension is what the APIs sniff. */
 function uploadName(request: TranscribeRequest): string {
@@ -264,7 +307,7 @@ function uploadName(request: TranscribeRequest): string {
   return 'voice.ogg';
 }
 
-function form(request: TranscribeRequest, fields: Record<string, string>): FormData {
+function uploadForm(request: TranscribeRequest, fields: Record<string, string>): FormData {
   const body = new FormData();
   const blob = new Blob([new Uint8Array(request.audio)], { type: request.mime || 'application/octet-stream' });
   body.append('file', blob, uploadName(request));
@@ -272,50 +315,52 @@ function form(request: TranscribeRequest, fields: Record<string, string>): FormD
   return body;
 }
 
-async function post(
-  url: string,
-  headers: Record<string, string>,
-  body: FormData,
-  signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
+async function postForm(endpoint: KeyedEndpoint, body: FormData, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const deadline = AbortSignal.timeout(TIMEOUT_MS);
-  const response = await fetch(url, {
+  const response = await fetch(endpoint.url, {
     method: 'POST',
-    headers,
+    headers: endpoint.headers,
     body,
     signal: signal ? AbortSignal.any([deadline, signal]) : deadline,
+  }).catch((error: unknown) => {
+    throw new SttError('The transcription service could not be reached: ' + messageOf(error), { cause: error });
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
-    throw new SttError('Transcription failed (' + response.status + ') ' + detail.slice(0, 200));
+    throw new SttError(
+      'Transcription failed (' + response.status + ') ' + detail.slice(0, ERROR_DETAIL_CHARS).replaceAll(endpoint.key, '[redacted]'),
+    );
   }
   return (await response.json()) as Record<string, unknown>;
 }
 
 async function transcribeOpenAi(request: TranscribeRequest, key: string): Promise<string> {
-  const fields: Record<string, string> = { model: 'gpt-4o-mini-transcribe', response_format: 'json' };
   const language = languageOf(request.lang);
-  if (language) fields.language = language;
-  const body = await post(
-    'https://api.openai.com/v1/audio/transcriptions',
-    { authorization: 'Bearer ' + key },
-    form(request, fields),
-    request.signal,
-  );
-  return typeof body.text === 'string' ? body.text : '';
+  const fields: Record<string, string> = {
+    model: 'gpt-4o-mini-transcribe',
+    response_format: 'json',
+    ...(language ? { language } : {}),
+  };
+  const endpoint = {
+    url: 'https://api.openai.com/v1/audio/transcriptions',
+    key,
+    headers: { authorization: 'Bearer ' + key },
+  };
+  return textOf(await postForm(endpoint, uploadForm(request, fields), request.signal));
 }
 
 async function transcribeElevenLabs(request: TranscribeRequest, key: string): Promise<string> {
-  const fields: Record<string, string> = { model_id: 'scribe_v1' };
   const language = languageOf(request.lang);
-  if (language) fields.language_code = language;
-  const body = await post(
-    'https://api.elevenlabs.io/v1/speech-to-text',
-    { 'xi-api-key': key },
-    form(request, fields),
-    request.signal,
-  );
-  return typeof body.text === 'string' ? body.text : '';
+  const fields: Record<string, string> = {
+    model_id: 'scribe_v1',
+    ...(language ? { language_code: language } : {}),
+  };
+  const endpoint = {
+    url: 'https://api.elevenlabs.io/v1/speech-to-text',
+    key,
+    headers: { 'xi-api-key': key },
+  };
+  return textOf(await postForm(endpoint, uploadForm(request, fields), request.signal));
 }
 
 /* -------------------------------- entry -------------------------------- */
@@ -331,6 +376,13 @@ export function sttEngines(keys: VoiceKeys = voiceKeys()): Record<'local' | 'ope
   };
 }
 
+/** What an engine heard, before the timing is added. */
+interface Recognition {
+  text: string;
+  engine: Transcript['engine'];
+  coldStart?: boolean;
+}
+
 /**
  * Speech to text, by whichever engine the config asks for.
  *
@@ -344,59 +396,71 @@ export async function transcribe(
   keys: VoiceKeys = voiceKeys(request.home),
 ): Promise<Transcript> {
   const started = Date.now();
-  const done = (text: string, engine: Transcript['engine'], coldStart?: boolean): Transcript => {
-    const clean = text.trim();
-    if (!clean) throw new SttError('No speech was recognised in this recording.');
-    const result: Transcript = { text: clean, engine, ms: Date.now() - started };
-    if (coldStart) result.coldStart = true;
-    return result;
-  };
+  const { text, engine, coldStart } = await recognise(request, keys);
+  const transcript: Transcript = { text, engine, ms: Date.now() - started };
+  if (coldStart) transcript.coldStart = true;
+  return transcript;
+}
 
+async function recognise(request: TranscribeRequest, keys: VoiceKeys): Promise<Recognition> {
   switch (request.engine) {
     case 'off':
       throw new SttError('Transcription is switched off for this gateway.');
 
     case 'openai': {
       if (!keys.openai) throw new SttError('No OpenAI key is configured for transcription.');
-      return done(await transcribeOpenAi(request, keys.openai), 'openai');
+      return { text: spoken(await transcribeOpenAi(request, keys.openai)), engine: 'openai' };
     }
 
     case 'elevenlabs': {
       if (!keys.elevenlabs) throw new SttError('No ElevenLabs key is configured for transcription.');
-      return done(await transcribeElevenLabs(request, keys.elevenlabs), 'elevenlabs');
+      return { text: spoken(await transcribeElevenLabs(request, keys.elevenlabs)), engine: 'elevenlabs' };
     }
 
-    case 'local': {
-      const cold = !localModelReady(request.model);
-      return done(await transcribeLocal(request), 'local', cold);
-    }
+    case 'local':
+      return recogniseWithLocalModel(request);
 
     case 'auto':
-    default: {
-      const attempts: Array<[Transcript['engine'], () => Promise<string>]> = [];
-      const openaiKey = keys.openai;
-      const elevenKey = keys.elevenlabs;
-      if (openaiKey) attempts.push(['openai', () => transcribeOpenAi(request, openaiKey)]);
-      if (elevenKey) attempts.push(['elevenlabs', () => transcribeElevenLabs(request, elevenKey)]);
-      let keyedError: unknown;
-      for (const [engine, attempt] of attempts) {
-        try {
-          return done(await attempt(), engine);
-        } catch (error) {
-          keyedError = error;
-        }
-      }
-      const cold = !localModelReady(request.model);
-      try {
-        return done(await transcribeLocal(request), 'local', cold);
-      } catch (error) {
-        // Both roads are gone. The local message is the one that names
-        // something to install, so it leads; the keyed failure follows,
-        // because "your key was refused" is the other half of the story.
-        const local = error instanceof Error ? error.message : String(error);
-        const keyed = keyedError instanceof Error ? ' The configured key failed first: ' + keyedError.message : '';
-        throw new SttError(local + keyed);
-      }
+    default:
+      return recogniseAuto(request, keys);
+  }
+}
+
+/** The trimmed words of a transcription; silence is an error, not an empty message. */
+function spoken(text: string): string {
+  const clean = text.trim();
+  if (!clean) throw new SttError('No speech was recognised in this recording.');
+  return clean;
+}
+
+async function recogniseWithLocalModel(request: TranscribeRequest): Promise<Recognition> {
+  const coldStart = !localModelReady(request.model);
+  const text = spoken(await transcribeLocal(request));
+  return coldStart ? { text, engine: 'local', coldStart } : { text, engine: 'local' };
+}
+
+/** Configured keys in order, then the local model; the keyed failure is reported only if nothing else works. */
+async function recogniseAuto(request: TranscribeRequest, keys: VoiceKeys): Promise<Recognition> {
+  const attempts: Array<[Transcript['engine'], () => Promise<string>]> = [];
+  const openaiKey = keys.openai;
+  const elevenKey = keys.elevenlabs;
+  if (openaiKey) attempts.push(['openai', () => transcribeOpenAi(request, openaiKey)]);
+  if (elevenKey) attempts.push(['elevenlabs', () => transcribeElevenLabs(request, elevenKey)]);
+  let keyedError: unknown;
+  for (const [engine, attempt] of attempts) {
+    try {
+      return { text: spoken(await attempt()), engine };
+    } catch (error) {
+      keyedError = error;
     }
+  }
+  try {
+    return await recogniseWithLocalModel(request);
+  } catch (error) {
+    // Both roads are gone. The local message is the one that names
+    // something to install, so it leads; the keyed failure follows,
+    // because "your key was refused" is the other half of the story.
+    const keyed = keyedError instanceof Error ? ' The configured key failed first: ' + keyedError.message : '';
+    throw new SttError(messageOf(error) + keyed);
   }
 }

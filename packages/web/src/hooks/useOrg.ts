@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, ApiError } from '../lib/api';
+import { api } from '../lib/api';
+import { failureMessage } from '../lib/errors';
 import type { RookerySocket } from '../lib/socket';
 import type { Agent, AssignmentView, OrgSnapshot, Project, Team } from '../lib/types';
 
@@ -37,7 +38,7 @@ export function useOrg(socket: RookerySocket): OrgState {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState<Record<string, AssignmentView>>({});
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const refresh = useCallback(async (): Promise<void> => {
     try {
@@ -45,11 +46,7 @@ export function useOrg(socket: RookerySocket): OrgState {
       setSnapshot(next);
       setError(null);
     } catch (caught) {
-      if (caught instanceof ApiError && caught.offline) {
-        setError('No connection to the Rookery server.');
-      } else {
-        setError((caught as Error).message);
-      }
+      setError(failureMessage(caught));
     } finally {
       setLoading(false);
     }
@@ -60,13 +57,11 @@ export function useOrg(socket: RookerySocket): OrgState {
   }, [refresh]);
 
   const refreshSoon = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
+    clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => void refresh(), REFRESH_DEBOUNCE_MS);
   }, [refresh]);
 
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-  }, []);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
 
   useEffect(() => socket.onChanged(() => refreshSoon()), [socket, refreshSoon]);
 

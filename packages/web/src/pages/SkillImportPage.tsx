@@ -1,15 +1,13 @@
-import { forwardRef, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 
 import {
   DownloadIcon,
-  DownloadIcon as AnimatedDownloadIcon,
   FolderCogIcon as FolderSearchIcon,
   GitBranchIcon,
-  SearchIcon as AnimatedSearchIcon,
+  SearchIcon,
   SparklesIcon,
-  SparklesIcon as AnimatedSparklesIcon,
-} from "@/components/icons";
+} from '@/components/icons';
 import { toast } from 'sonner';
 
 import { Blur } from '@/components/animate-ui/primitives/effects/blur';
@@ -40,17 +38,17 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Spinner } from '@/components/ui/spinner';
 import { useSkills } from '@/hooks/useSkills';
 import { reportFailure } from '@/lib/errors';
-import type { IconComponent } from "@/components/icons";
+import type { SkillSourceEntry } from '@/lib/types';
 
 /**
  * Pulling a skill folder off GitHub - the public shelf, or any owner/repo/path.
  *
- * The page used to be two `ul.divide-y` lists with a bare input next to a
- * button; the candidate list of a collection had no heading and an empty one
- * printed nothing at all, so a wrong path looked like a page that had simply
- * forgotten to answer. Both lists are `Item` rows now, every miss says what it
- * means, and the shelf marks what is already installed.
+ * Both lists are `Item` rows, every miss says what it means, and the shelf
+ * marks what is already installed.
  */
+
+/** Rows the skeleton holds while the collection loads. */
+const SKELETON_ROWS = 5;
 
 /**
  * The folder name an import will most likely produce.
@@ -68,16 +66,6 @@ function guessName(source: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-/**
- * The collection-error empty state gets the animate-ui sparkles instead of the
- * lucide one: same silhouette and stroke, blinking in once when the state
- * enters the viewport. `EmptyState` types its `icon` as a `IconComponent` and
- * renders it without props, so the trigger rides along in this shell.
- */
-const EmptySparklesIcon = forwardRef<SVGSVGElement>(function EmptySparklesIcon() {
-  return <AnimatedSparklesIcon size={24} />;
-});
-
 export function SkillImportPage() {
   const navigate = useNavigate();
   const { skills, catalog, catalogLoading, catalogError, loadCatalog, importFrom } = useSkills();
@@ -86,7 +74,6 @@ export function SkillImportPage() {
   const [busy, setBusy] = useState<string | null>(null);
   /** `null` before the first attempt; `[]` means "a collection with nothing in it". */
   const [candidates, setCandidates] = useState<string[] | null>(null);
-  const [filter, setFilter] = useState('');
 
   usePageMeta({
     breadcrumb: [{ label: 'Skills', to: '/skills' }, { label: 'Import' }],
@@ -107,7 +94,7 @@ export function SkillImportPage() {
       const result = await importFrom(trimmed);
       if ('skill' in result) {
         const name = result.skill.name;
-        toast('Skill „' + name + '“ importiert', {
+        toast('Skill “' + name + '” imported', {
           action: { label: 'Open', onClick: () => void navigate('/skills/' + name) },
         });
         setSource('');
@@ -124,14 +111,6 @@ export function SkillImportPage() {
     }
   };
 
-  const shelf = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    if (!needle) return catalog;
-    return catalog.filter((entry) =>
-      (entry.name + ' ' + entry.description + ' ' + entry.source).toLowerCase().includes(needle),
-    );
-  }, [catalog, filter]);
-
   return (
     <PageBody width="3xl">
       <Blur>
@@ -141,192 +120,283 @@ export function SkillImportPage() {
         </p>
       </Blur>
 
-      {/* ------------------------------ GitHub ------------------------------ */}
       <Fade delay={50}>
-      <Card>
-        <CardHeader>
-          <CardTitle>From GitHub</CardTitle>
-          <CardDescription>
-            Enter owner/repo, owner/repo/path/to/skill, or a GitHub URL. Collections appear below
-            for selection.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <InputGroup>
-            <InputGroupAddon align="inline-start">
-              <GitBranchIcon />
-            </InputGroupAddon>
-            <InputGroupInput
-              value={source}
-              placeholder="owner/repo or URL"
-              aria-label="Skill source"
-              disabled={busy !== null}
-              onChange={(event) => setSource(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') void run(source);
-              }}
-            />
-            <InputGroupAddon align="inline-end">
-              <InputGroupButton
-                variant="default"
-                disabled={busy !== null || !source.trim()}
-                onClick={() => void run(source)}
-              >
-                {busy === source.trim() ? (
-                  <Spinner data-icon="inline-start" aria-label="Importing" />
-                ) : (
-                  /* size-3.5 keeps the rest-pose size: the xs button sizes only
-                     direct svg children, and the animated icon sits in a span. */
-                  <AnimatedDownloadIcon data-icon="inline-start" className="size-3.5" />
-                )}
-                Import
-              </InputGroupButton>
-            </InputGroupAddon>
-          </InputGroup>
-
-          {candidates !== null && candidates.length > 0 ? (
-            <Fade>
-            <div className="flex flex-col gap-2">
-              <p className="text-sm font-medium">Multiple skills found</p>
-              <ItemGroup className="gap-2">
-                {candidates.map((candidate) => (
-                  <Item key={candidate} variant="outline" size="sm">
-                    <ItemContent>
-                      <ItemTitle className="font-mono text-xs font-normal">{candidate}</ItemTitle>
-                    </ItemContent>
-                    <ItemActions>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy !== null}
-                        onClick={() => void run(candidate)}
-                      >
-                        {busy === candidate ? <Spinner aria-label="Importing" /> : null}
-                        Use this
-                      </Button>
-                    </ItemActions>
-                  </Item>
-                ))}
-              </ItemGroup>
-            </div>
-            </Fade>
-          ) : null}
-
-          {candidates !== null && candidates.length === 0 ? (
-            <Fade>
-            <EmptyState
-              icon={FolderSearchIcon}
-              title="No skill found there"
-              description="This address contains neither a SKILL.md file nor subfolders that could contain a skill."
-              variant="plain"
-              size="sm"
-            />
-            </Fade>
-          ) : null}
-        </CardContent>
-      </Card>
+        <GitHubImportCard
+          source={source}
+          onSourceChange={setSource}
+          busy={busy}
+          candidates={candidates}
+          onImport={(value) => void run(value)}
+        />
       </Fade>
 
-      {/* ------------------------------ Sammlung ---------------------------- */}
       <Fade delay={100}>
-      <Card>
-        <CardHeader>
-          <CardTitle>Anthropic collection</CardTitle>
-          <CardDescription>
-            Public Anthropic skills. Scripts may require Python or Node and an execution tool with
-            suitable permissions.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          {catalogError ? (
-            <Fade>
+        <CollectionCard
+          catalog={catalog}
+          loading={catalogLoading}
+          failed={Boolean(catalogError)}
+          onRetry={() => void loadCatalog(true)}
+          installed={installed}
+          busy={busy}
+          onImport={(value) => void run(value)}
+        />
+      </Fade>
+    </PageBody>
+  );
+}
+
+interface GitHubImportCardProps {
+  source: string;
+  onSourceChange(source: string): void;
+  /** The source being imported right now, if any. */
+  busy: string | null;
+  candidates: string[] | null;
+  onImport(source: string): void;
+}
+
+function GitHubImportCard({
+  source,
+  onSourceChange,
+  busy,
+  candidates,
+  onImport,
+}: GitHubImportCardProps) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>From GitHub</CardTitle>
+        <CardDescription>
+          Enter owner/repo, owner/repo/path/to/skill, or a GitHub URL. Collections appear below for
+          selection.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <InputGroup>
+          <InputGroupAddon align="inline-start">
+            <GitBranchIcon />
+          </InputGroupAddon>
+          <InputGroupInput
+            value={source}
+            placeholder="owner/repo or URL"
+            aria-label="Skill source"
+            disabled={busy !== null}
+            onChange={(event) => onSourceChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') onImport(source);
+            }}
+          />
+          <InputGroupAddon align="inline-end">
+            <InputGroupButton
+              variant="default"
+              disabled={busy !== null || !source.trim()}
+              onClick={() => onImport(source)}
+            >
+              {busy === source.trim() ? (
+                <Spinner data-icon="inline-start" aria-label="Importing" />
+              ) : (
+                /* size-3.5 keeps the rest-pose size: the xs button sizes only
+                   direct svg children, and the animated icon sits in a span. */
+                <DownloadIcon data-icon="inline-start" className="size-3.5" />
+              )}
+              Import
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
+
+        {candidates !== null ? (
+          <Fade>
+            {candidates.length > 0 ? (
+              <CandidateList candidates={candidates} busy={busy} onImport={onImport} />
+            ) : (
+              <EmptyState
+                icon={FolderSearchIcon}
+                title="No skill found there"
+                description="This address contains neither a SKILL.md file nor subfolders that could contain a skill."
+                variant="plain"
+                size="sm"
+              />
+            )}
+          </Fade>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function CandidateList({
+  candidates,
+  busy,
+  onImport,
+}: {
+  candidates: string[];
+  busy: string | null;
+  onImport(source: string): void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-sm font-medium">Multiple skills found</p>
+      <ItemGroup className="gap-2">
+        {candidates.map((candidate) => (
+          <Item key={candidate} variant="outline" size="sm">
+            <ItemContent>
+              <ItemTitle className="font-mono text-xs font-normal">{candidate}</ItemTitle>
+            </ItemContent>
+            <ItemActions>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy !== null}
+                onClick={() => onImport(candidate)}
+              >
+                {busy === candidate ? <Spinner aria-label="Importing" /> : null}
+                Use this
+              </Button>
+            </ItemActions>
+          </Item>
+        ))}
+      </ItemGroup>
+    </div>
+  );
+}
+
+interface CollectionCardProps {
+  catalog: SkillSourceEntry[];
+  loading: boolean;
+  failed: boolean;
+  onRetry(): void;
+  installed: ReadonlySet<string>;
+  busy: string | null;
+  onImport(source: string): void;
+}
+
+function CollectionCard({
+  catalog,
+  loading,
+  failed,
+  onRetry,
+  installed,
+  busy,
+  onImport,
+}: CollectionCardProps) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Anthropic collection</CardTitle>
+        <CardDescription>
+          Public Anthropic skills. Scripts may require Python or Node and an execution tool with
+          suitable permissions.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {failed ? (
+          <Fade>
             <EmptyState
-              icon={EmptySparklesIcon}
+              icon={SparklesIcon}
               title="The collection cannot be loaded right now"
               description="The list comes from GitHub. It remains empty without a network connection or during an outage there; a custom path above will still work."
               actionLabel="Try again"
-              onAction={() => void loadCatalog(true)}
+              onAction={onRetry}
               variant="plain"
               size="sm"
             />
-            </Fade>
-          ) : catalogLoading && catalog.length === 0 ? (
-            <div className="flex flex-col gap-2">
-              {Array.from({ length: 5 }, (_, index) => (
-                <Skeleton key={index} className="h-14 w-full rounded-lg" />
-              ))}
-            </div>
-          ) : (
-            <>
-              <InputGroup>
-                <InputGroupAddon align="inline-start">
-                  {/* size-4 mirrors the addon's own svg sizing, which only
-                     reaches direct svg children. */}
-                  <AnimatedSearchIcon className="size-4" />
-                </InputGroupAddon>
-                <InputGroupInput
-                  value={filter}
-                  placeholder="Sammlung durchsuchen"
-                  aria-label="Sammlung durchsuchen"
-                  onChange={(event) => setFilter(event.target.value)}
-                />
-              </InputGroup>
+          </Fade>
+        ) : loading && catalog.length === 0 ? (
+          <div className="flex flex-col gap-2">
+            {Array.from({ length: SKELETON_ROWS }, (_, index) => (
+              <Skeleton key={index} className="h-14 w-full rounded-lg" />
+            ))}
+          </div>
+        ) : (
+          <SearchableShelf catalog={catalog} installed={installed} busy={busy} onImport={onImport} />
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
-              {shelf.length === 0 ? (
-                <Fade>
-                <NoResults
-                  {...(filter.trim() ? { query: filter.trim() } : {})}
-                  onReset={() => setFilter('')}
-                />
-                </Fade>
-              ) : (
-                <ItemGroup className="gap-2">
-                  {shelf.map((entry) => {
-                    const already = installed.has(guessName(entry.source));
-                    return (
-                      <Item key={entry.source} variant="outline" size="sm">
-                        <ItemMedia variant="icon">
-                          <SparklesIcon className="text-muted-foreground" />
-                        </ItemMedia>
-                        <ItemContent>
-                          <ItemTitle>{entry.name}</ItemTitle>
-                          <ItemDescription>{entry.description}</ItemDescription>
-                        </ItemContent>
-                        <ItemActions>
-                          {entry.needsShell ? (
-                            <Badge variant="outline" className="font-normal text-muted-foreground">
-                              Scripts
-                            </Badge>
-                          ) : null}
-                          {already ? (
-                            <Badge variant="secondary" className="font-normal">
-                              Installed
-                            </Badge>
-                          ) : null}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={busy !== null || already}
-                            onClick={() => void run(entry.source)}
-                          >
-                            {busy === entry.source ? (
-                              <Spinner data-icon="inline-start" aria-label="Importing" />
-                            ) : (
-                              <DownloadIcon data-icon="inline-start" />
-                            )}
-                            Import
-                          </Button>
-                        </ItemActions>
-                      </Item>
-                    );
-                  })}
-                </ItemGroup>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
-      </Fade>
-    </PageBody>
+function SearchableShelf({
+  catalog,
+  installed,
+  busy,
+  onImport,
+}: {
+  catalog: SkillSourceEntry[];
+  installed: ReadonlySet<string>;
+  busy: string | null;
+  onImport(source: string): void;
+}) {
+  const [filter, setFilter] = useState('');
+
+  const shelf = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    if (!needle) return catalog;
+    return catalog.filter((entry) =>
+      (entry.name + ' ' + entry.description + ' ' + entry.source).toLowerCase().includes(needle),
+    );
+  }, [catalog, filter]);
+
+  return (
+    <>
+      <InputGroup>
+        <InputGroupAddon align="inline-start">
+          {/* size-4 mirrors the addon's own svg sizing, which only reaches direct svg children. */}
+          <SearchIcon className="size-4" />
+        </InputGroupAddon>
+        <InputGroupInput
+          value={filter}
+          placeholder="Search the collection"
+          aria-label="Search the collection"
+          onChange={(event) => setFilter(event.target.value)}
+        />
+      </InputGroup>
+
+      {shelf.length === 0 ? (
+        <Fade>
+          <NoResults query={filter.trim() || undefined} onReset={() => setFilter('')} />
+        </Fade>
+      ) : (
+        <ItemGroup className="gap-2">
+          {shelf.map((entry) => {
+            const already = installed.has(guessName(entry.source));
+            return (
+              <Item key={entry.source} variant="outline" size="sm">
+                <ItemMedia variant="icon">
+                  <SparklesIcon className="text-muted-foreground" />
+                </ItemMedia>
+                <ItemContent>
+                  <ItemTitle>{entry.name}</ItemTitle>
+                  <ItemDescription>{entry.description}</ItemDescription>
+                </ItemContent>
+                <ItemActions>
+                  {entry.needsShell ? (
+                    <Badge variant="outline" className="font-normal text-muted-foreground">
+                      Scripts
+                    </Badge>
+                  ) : null}
+                  {already ? (
+                    <Badge variant="secondary" className="font-normal">
+                      Installed
+                    </Badge>
+                  ) : null}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy !== null || already}
+                    onClick={() => onImport(entry.source)}
+                  >
+                    {busy === entry.source ? (
+                      <Spinner data-icon="inline-start" aria-label="Importing" />
+                    ) : (
+                      <DownloadIcon data-icon="inline-start" />
+                    )}
+                    Import
+                  </Button>
+                </ItemActions>
+              </Item>
+            );
+          })}
+        </ItemGroup>
+      )}
+    </>
   );
 }

@@ -2,11 +2,12 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { useTheme } from 'next-themes';
 
-import { MEMORY_KIND_LABEL, RELATION_LABEL } from '@/lib/format';
+import { MEMORY_KIND_LABEL, MEMORY_KINDS, RELATION_LABEL } from '@/lib/format';
 import { formatNumber } from '@/lib/stats';
-import type { MemoryKind, MemoryRecord } from '@/lib/types';
-import { useMemoryState } from '@/providers/rookery-provider';
+import type { MemoryRecord } from '@/lib/types';
+import { useMemoryState, type MemoryState } from '@/providers/rookery-provider';
 import { MemoryCortex, useCortexPalette, type CortexHandle } from '@/components/memory-cortex';
+import type { CortexPalette } from '@/components/memory-cortex/scene';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
 import { SlidingNumber } from '@/components/animate-ui/primitives/texts/sliding-number';
 import { EmptyState } from '@/components/common/empty-state';
@@ -22,7 +23,11 @@ import {
   MaximizeIcon,
   MoonIcon,
   SunIcon,
-} from "@/components/icons";
+} from '@/components/icons';
+
+type MemoryNetState = MemoryState['graph'];
+
+const LEGEND_RELATIONS = ['refines', 'contradicts', 'supersedes'] as const;
 
 /**
  * The shape of what is known.
@@ -44,7 +49,6 @@ import {
  */
 export function MemoryGraphPage() {
   const { graph, sleep } = useMemoryState();
-  const { resolvedTheme, setTheme } = useTheme();
   const stageRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CortexHandle>(null);
   const palette = useCortexPalette(stageRef);
@@ -55,20 +59,10 @@ export function MemoryGraphPage() {
   const onUnavailable = useCallback(() => setUnavailable(true), []);
 
   // The drawer that shows one memory lives on the list page, so a click in the
-  // net names the body here and hands the id over there - `?erinnerung=<id>`
+  // net names the body here and hands the id over there - `?memory=<id>`
   // is what the list opens its drawer on. A second editable sheet in this
   // file would be the same thing twice, and the two would drift.
   const [picked, setPicked] = useState<MemoryRecord | null>(null);
-
-  const entityOptions = useMemo<EntityOption[]>(
-    () =>
-      graph.entities.map((entity) => ({
-        value: entity.id,
-        label: entity.name,
-        hint: formatNumber(entity.mentions) + '×',
-      })),
-    [graph.entities],
-  );
 
   const data = graph.graph;
   const empty = !graph.loading && (!data || data.memories.length === 0);
@@ -78,60 +72,12 @@ export function MemoryGraphPage() {
     <div className="memory-network flex min-h-0 flex-1 flex-col gap-3 px-4 lg:px-6">
       <Fade className="shrink-0">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="network-controls flex min-w-0 flex-wrap items-center gap-2">
-            <EntityCombobox
-              id="netz-thema"
-              options={entityOptions}
-              value={graph.entity || null}
-              onChange={(value) => graph.setEntity(value ?? '')}
-              placeholder="All topics"
-              emptyLabel="No topic found"
-              className="w-40 sm:w-48"
-            />
-            <Field orientation="horizontal" className="w-auto">
-              <Switch
-                id="netz-schlafende"
-                checked={graph.includeDormant}
-                onCheckedChange={graph.setIncludeDormant}
-              />
-              <FieldLabel htmlFor="netz-schlafende" className="font-normal whitespace-nowrap">
-                Show sleeping
-              </FieldLabel>
-            </Field>
-            <Button
-              variant="outline"
-              onClick={() => sceneRef.current?.fit()}
-              disabled={unavailable || empty}
-            >
-              {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
-              <MaximizeIcon data-icon="inline-start" />
-              <span className="hidden sm:inline">Fit to view</span>
-              <span className="sr-only sm:hidden">Fit to view</span>
-            </Button>
-            <Button variant="outline" size="icon" aria-label={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'} onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}>
-              {resolvedTheme === 'dark' ? <SunIcon /> : <MoonIcon />}
-            </Button>
-          </div>
-
-          {data ? (
-            <div className="network-counts ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground tabular-nums">
-              {/* These three roll in from zero and keep rolling whenever the
-                  topic filter or the sleeping toggle refetches the net;
-                  `thousandSeparator` keeps `formatNumber`'s en-GB comma. */}
-              <span>
-                <SlidingNumber number={data.memories.length} fromNumber={0} thousandSeparator="," /> Memories
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>
-                <SlidingNumber number={data.entities.length} fromNumber={0} thousandSeparator="," /> topics
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>
-                <SlidingNumber number={data.edges.length} fromNumber={0} thousandSeparator="," /> Connections
-              </span>
-              {data.truncated ? <Badge variant="outline">truncated</Badge> : null}
-            </div>
-          ) : null}
+          <NetControls
+            graph={graph}
+            fitDisabled={unavailable || empty}
+            onFit={() => sceneRef.current?.fit()}
+          />
+          {data ? <NetCounts data={data} /> : null}
         </div>
       </Fade>
 
@@ -147,104 +93,182 @@ export function MemoryGraphPage() {
           className="graph-stage relative flex min-h-0 w-full flex-1 flex-col overflow-hidden rounded-lg border bg-[var(--graph-background)] text-[var(--graph-text)]"
         >
           <div className="graph-viewport relative min-h-0 flex-1">
-          {unavailable ? (
-            <Fade className="absolute inset-0 flex items-center justify-center p-6">
-              <EmptyState
-                icon={MonitorXIcon}
-                title="The network cannot be rendered here"
-                description="This view requires WebGL. The same memories are available in full in the list."
-                actionLabel="View memories"
-                actionTo="/memory/memories"
-                variant="plain"
-                className="text-[var(--graph-text)]"
-              />
-            </Fade>
-          ) : (
-            <>
-              <MemoryCortex
-                ref={sceneRef}
-                graph={data}
-                layoutGraph={graph.atlas}
-                palette={palette}
-                dreaming={dreaming}
-                selectedId={picked?.id ?? null}
-                onSelectMemory={setPicked}
-                onSelectEntity={graph.setEntity}
-                onUnavailable={onUnavailable}
-              />
+            {unavailable ? (
+              <Fade className="absolute inset-0 flex items-center justify-center p-6">
+                <EmptyState
+                  icon={MonitorXIcon}
+                  title="The network cannot be rendered here"
+                  description="This view requires WebGL. The same memories are available in full in the list."
+                  actionLabel="View memories"
+                  actionTo="/memory/memories"
+                  variant="plain"
+                  className="text-[var(--graph-text)]"
+                />
+              </Fade>
+            ) : (
+              <>
+                <MemoryCortex
+                  ref={sceneRef}
+                  graph={data}
+                  layoutGraph={graph.atlas}
+                  palette={palette}
+                  dreaming={dreaming}
+                  selectedId={picked?.id ?? null}
+                  onSelectMemory={setPicked}
+                  onSelectEntity={graph.setEntity}
+                  onUnavailable={onUnavailable}
+                />
 
-              {/* A soft vignette: the brain sits in a pool of light rather than on a flat black. */}
-              <div
-                aria-hidden="true"
-                className="graph-vignette pointer-events-none absolute inset-0"
-              />
+                {/* A soft vignette: the brain sits in a pool of light rather than on a flat black. */}
+                <div
+                  aria-hidden="true"
+                  className="graph-vignette pointer-events-none absolute inset-0"
+                />
 
-              {graph.loading ? (
-                <Fade className="graph-overlay pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2 rounded-md px-2 py-1 text-xs backdrop-blur">
-                  <Spinner aria-hidden="true" />
-                  loading
-                </Fade>
-              ) : null}
+                {graph.loading ? (
+                  <Fade className="graph-overlay pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2 rounded-md px-2 py-1 text-xs backdrop-blur">
+                    <Spinner aria-hidden="true" />
+                    loading
+                  </Fade>
+                ) : null}
 
-              {/* The night, named while it runs: the cortex is firing in its colour. */}
-              {dreaming ? (
-                <Fade className="graph-overlay pointer-events-none absolute top-3 right-3 z-10 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs backdrop-blur">
-                  <MoonIcon size={14} aria-hidden="true" style={{ color: palette.dream }} />
-                  Dreaming
-                </Fade>
-              ) : null}
+                {/* The night, named while it runs: the cortex is firing in its colour. */}
+                {dreaming ? (
+                  <Fade className="graph-overlay pointer-events-none absolute top-3 right-3 z-10 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs backdrop-blur">
+                    <MoonIcon size={14} aria-hidden="true" style={{ color: palette.dream }} />
+                    Dreaming
+                  </Fade>
+                ) : null}
 
-              {empty ? (
-                <Fade className="absolute inset-0 flex items-center justify-center p-6">
-                  <EmptyState
-                    icon={MonitorXIcon}
-                    title="Nothing in the network yet"
-                    description="Once conversations leave something lasting behind, a network will take shape here. Dream sleep draws the connections."
-                    actionLabel="View nights"
-                    actionTo="/memory/sleep"
-                    variant="plain"
-                    className="text-[var(--graph-text)]"
-                  />
-                </Fade>
-              ) : null}
-
-            </>
-          )}
+                {empty ? (
+                  <Fade className="absolute inset-0 flex items-center justify-center p-6">
+                    <EmptyState
+                      icon={MonitorXIcon}
+                      title="Nothing in the network yet"
+                      description="Once conversations leave something lasting behind, a network will take shape here. Dream sleep draws the connections."
+                      actionLabel="View nights"
+                      actionTo="/memory/sleep"
+                      variant="plain"
+                      className="text-[var(--graph-text)]"
+                    />
+                  </Fade>
+                ) : null}
+              </>
+            )}
           </div>
 
           {!unavailable && !empty && !picked ? <Legend palette={palette} /> : null}
-
-              {/*
-                A clicked body names itself here and offers the one way on: the
-                sheet that can pin, wake or forget a memory is on the list page,
-                and a second copy of it here would drift apart from it. The
-                `Fade` turns its appearance into an entrance; dismissing stays
-                immediate, as it always was.
-              */}
-              {picked ? (
-                <Fade className="graph-overlay flex shrink-0 flex-wrap items-center gap-2 border-t p-2 text-sm">
-                  <Badge variant="outline">
-                    {MEMORY_KIND_LABEL[picked.kind]}
-                  </Badge>
-                  <span className="line-clamp-2 min-w-0 flex-1">{picked.content}</span>
-                  <Button size="sm" asChild>
-                    <Link to={'/memory/memories?erinnerung=' + picked.id}>
-                      <SquareArrowOutUpRightIcon data-icon="inline-start" />
-                      Open
-                    </Link>
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setPicked(null)}
-                  >
-                    Close
-                  </Button>
-                </Fade>
-              ) : null}
+          {picked ? <PickedMemoryStrip memory={picked} onClose={() => setPicked(null)} /> : null}
         </div>
       </Fade>
     </div>
+  );
+}
+
+function NetControls({
+  graph,
+  fitDisabled,
+  onFit,
+}: {
+  graph: MemoryNetState;
+  fitDisabled: boolean;
+  onFit: () => void;
+}) {
+  const { resolvedTheme, setTheme } = useTheme();
+  const isDark = resolvedTheme === 'dark';
+
+  const entityOptions = useMemo<EntityOption[]>(
+    () =>
+      graph.entities.map((entity) => ({
+        value: entity.id,
+        label: entity.name,
+        hint: formatNumber(entity.mentions) + '×',
+      })),
+    [graph.entities],
+  );
+
+  return (
+    <div className="network-controls flex min-w-0 flex-wrap items-center gap-2">
+      <EntityCombobox
+        id="net-topic"
+        options={entityOptions}
+        value={graph.entity || null}
+        onChange={(value) => graph.setEntity(value ?? '')}
+        placeholder="All topics"
+        emptyLabel="No topic found"
+        className="w-40 sm:w-48"
+      />
+      <Field orientation="horizontal" className="w-auto">
+        <Switch
+          id="net-dormant"
+          checked={graph.includeDormant}
+          onCheckedChange={graph.setIncludeDormant}
+        />
+        <FieldLabel htmlFor="net-dormant" className="font-normal whitespace-nowrap">
+          Show sleeping
+        </FieldLabel>
+      </Field>
+      <Button variant="outline" onClick={onFit} disabled={fitDisabled}>
+        {/* Animates on hover of its wrapper span - the button base `[&_svg]:pointer-events-none` mutes only the svg, not the span. */}
+        <MaximizeIcon data-icon="inline-start" />
+        <span className="hidden sm:inline">Fit to view</span>
+        <span className="sr-only sm:hidden">Fit to view</span>
+      </Button>
+      <Button
+        variant="outline"
+        size="icon"
+        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+        onClick={() => setTheme(isDark ? 'light' : 'dark')}
+      >
+        {isDark ? <SunIcon /> : <MoonIcon />}
+      </Button>
+    </div>
+  );
+}
+
+function NetCounts({ data }: { data: NonNullable<MemoryNetState['graph']> }) {
+  return (
+    <div className="network-counts ml-auto flex flex-wrap items-center gap-2 text-xs text-muted-foreground tabular-nums">
+      {/* These three roll in from zero and keep rolling whenever the
+          topic filter or the sleeping toggle refetches the net;
+          `thousandSeparator` keeps `formatNumber`'s en-GB comma. */}
+      <span>
+        <SlidingNumber number={data.memories.length} fromNumber={0} thousandSeparator="," /> Memories
+      </span>
+      <span aria-hidden="true">·</span>
+      <span>
+        <SlidingNumber number={data.entities.length} fromNumber={0} thousandSeparator="," /> topics
+      </span>
+      <span aria-hidden="true">·</span>
+      <span>
+        <SlidingNumber number={data.edges.length} fromNumber={0} thousandSeparator="," /> Connections
+      </span>
+      {data.truncated ? <Badge variant="outline">truncated</Badge> : null}
+    </div>
+  );
+}
+
+/**
+ * A clicked body names itself here and offers the one way on: the sheet that
+ * can pin, wake or forget a memory is on the list page, and a second copy of
+ * it here would drift apart from it. The `Fade` turns its appearance into an
+ * entrance; dismissing stays immediate, as it always was.
+ */
+function PickedMemoryStrip({ memory, onClose }: { memory: MemoryRecord; onClose: () => void }) {
+  return (
+    <Fade className="graph-overlay flex shrink-0 flex-wrap items-center gap-2 border-t p-2 text-sm">
+      <Badge variant="outline">{MEMORY_KIND_LABEL[memory.kind]}</Badge>
+      <span className="line-clamp-2 min-w-0 flex-1">{memory.content}</span>
+      <Button size="sm" asChild>
+        <Link to={'/memory/memories?memory=' + memory.id}>
+          <SquareArrowOutUpRightIcon data-icon="inline-start" />
+          Open
+        </Link>
+      </Button>
+      <Button variant="ghost" size="sm" onClick={onClose}>
+        Close
+      </Button>
+    </Fade>
   );
 }
 
@@ -253,13 +277,10 @@ export function MemoryGraphPage() {
  *
  * It owns its height, so neither the legend nor a selected memory covers the brain.
  */
-function Legend({ palette }: { palette: ReturnType<typeof useCortexPalette> }) {
-  const kinds = Object.keys(MEMORY_KIND_LABEL) as MemoryKind[];
-  const relations = ['refines', 'contradicts', 'supersedes'] as const;
-
+function Legend({ palette }: { palette: CortexPalette }) {
   return (
     <div className="graph-legend flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t px-3 py-2 text-[11px] text-[var(--graph-muted)]">
-      {kinds.map((kind) => (
+      {MEMORY_KINDS.map((kind) => (
         <span key={kind} className="inline-flex items-center gap-1.5">
           <span
             className="inline-block size-1.5 rounded-full"
@@ -270,7 +291,7 @@ function Legend({ palette }: { palette: ReturnType<typeof useCortexPalette> }) {
         </span>
       ))}
       <span aria-hidden="true" className="hidden h-3 w-px bg-border sm:inline-block" />
-      {relations.map((relation) => (
+      {LEGEND_RELATIONS.map((relation) => (
         <span key={relation} className="inline-flex items-center gap-1.5">
           <span
             className="inline-block h-px w-3"

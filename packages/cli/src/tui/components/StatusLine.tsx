@@ -16,11 +16,20 @@ import { Box, Text } from 'ink';
 import { Badge, Spinner } from '@inkjs/ui';
 import type { ProviderQuota } from '@rookery/core';
 import { gauge, gaugeColor, glyph, ui } from '../theme.js';
-import { shorten } from '../../ui/render.js';
+import { shorten, shortId } from '../../ui/render.js';
 import type { SessionUsage } from '../types.js';
 
 /** Below this width the bar drops everything but the essentials. */
 const NARROW = 80;
+
+/** Terminal width assumed when the caller does not report one. */
+const DEFAULT_COLUMNS = 100;
+
+/** Longest a counterpart title or project name gets in the identity row. */
+const MAX_NAME_SEGMENT = 20;
+
+/** Longest the conversation title gets in the identity row. */
+const MAX_TITLE = 30;
 
 export interface StatusLineProps {
   /**
@@ -62,86 +71,87 @@ export interface StatusLineProps {
 }
 
 export function StatusLine(props: StatusLineProps): React.JSX.Element {
-  const {
-    assistantName,
-    counterpartTitle,
-    provider,
-    model,
-    effort,
-    permission,
-    title,
-    project,
-    sessionId,
-    busy,
-    elapsedMs,
-    label,
-    voice,
-    verbose,
-    contextTokens,
-    contextWindow,
-    usage,
-    quota,
-    columns = 100,
-  } = props;
-
+  const { contextTokens, contextWindow, usage, quota, columns = DEFAULT_COLUMNS } = props;
   const wide = columns >= NARROW;
+
+  return (
+    <Box flexDirection="column">
+      <IdentityRow {...props} wide={wide} />
+      <MeterRow
+        contextTokens={contextTokens}
+        contextWindow={contextWindow}
+        usage={usage}
+        quota={quota}
+        wide={wide}
+      />
+    </Box>
+  );
+}
+
+function IdentityRow({
+  assistantName,
+  counterpartTitle,
+  provider,
+  model,
+  effort,
+  permission,
+  title,
+  project,
+  sessionId,
+  busy,
+  elapsedMs,
+  label,
+  voice,
+  verbose,
+  wide,
+}: StatusLineProps & { wide: boolean }): React.JSX.Element {
   const seconds = Math.floor(elapsedMs / 1000);
   const flags = [voice ? 'Voice' : '', verbose ? 'verbose' : ''].filter(Boolean);
 
   return (
-    <Box flexDirection="column">
-      <Box flexDirection="row" paddingX={1}>
-        {busy ? (
-          // The library spinner animates on its own clock; the seconds come
-          // from the app's ticker.
-          <Spinner label={(label ?? 'thinking') + ' ' + seconds + 's'} />
-        ) : (
-          <Text color={ui.ok}>{glyph.bullet + ' ready'}</Text>
-        )}
+    <Box flexDirection="row" paddingX={1}>
+      {busy ? (
+        // The library spinner animates on its own clock; the seconds come
+        // from the app's ticker.
+        <Spinner label={(label ?? 'thinking') + ' ' + seconds + 's'} />
+      ) : (
+        <Text color={ui.ok}>{glyph.bullet + ' ready'}</Text>
+      )}
 
-        <Text color={ui.frost} bold>
-          {'  ' + assistantName}
-        </Text>
-        {counterpartTitle && wide ? (
-          <Text color={ui.agent}>{' ' + shorten(counterpartTitle, 20)}</Text>
-        ) : null}
+      <Text color={ui.frost} bold>
+        {'  ' + assistantName}
+      </Text>
+      {counterpartTitle && wide ? (
+        <Text color={ui.agent}>{' ' + shorten(counterpartTitle, MAX_NAME_SEGMENT)}</Text>
+      ) : null}
 
-        <Separator />
-        <Badge color={ui.info}>{provider}</Badge>
-        {model ? <Text color={ui.muted}>{' ' + model}</Text> : null}
-        {effort && wide ? <Text color={ui.faint}>{' ' + effort}</Text> : null}
+      <Separator />
+      <Badge color={ui.info}>{provider}</Badge>
+      {model ? <Text color={ui.muted}>{' ' + model}</Text> : null}
+      {effort && wide ? <Text color={ui.faint}>{' ' + effort}</Text> : null}
 
-        <Separator />
-        {permission === 'full' ? (
-          <Badge color={ui.warn}>{permission}</Badge>
-        ) : (
-          <Text color={ui.muted}>{permission}</Text>
-        )}
+      <Separator />
+      {permission === 'full' ? (
+        <Badge color={ui.warn}>{permission}</Badge>
+      ) : (
+        <Text color={ui.muted}>{permission}</Text>
+      )}
 
-        {project && wide ? (
-          <>
-            <Separator />
-            <Text color={ui.agent}>{shorten(project, 20)}</Text>
-          </>
-        ) : null}
+      {project && wide ? (
+        <>
+          <Separator />
+          <Text color={ui.agent}>{shorten(project, MAX_NAME_SEGMENT)}</Text>
+        </>
+      ) : null}
 
-        <Box flexGrow={1} />
+      <Box flexGrow={1} />
 
-        {flags.length && wide ? (
-          <Text color={ui.faint}>{flags.join(' ' + glyph.dot + ' ') + '  '}</Text>
-        ) : null}
-        <Text color={ui.faint} wrap="truncate-start">
-          {shorten(title, 30) + (sessionId ? ' ' + glyph.dot + ' ' + sessionId.slice(0, 8) : '')}
-        </Text>
-      </Box>
-
-      <MeterRow
-        {...(contextTokens !== undefined ? { contextTokens } : {})}
-        {...(contextWindow !== undefined ? { contextWindow } : {})}
-        {...(usage ? { usage } : {})}
-        {...(quota ? { quota } : {})}
-        wide={wide}
-      />
+      {flags.length && wide ? (
+        <Text color={ui.faint}>{flags.join(' ' + glyph.dot + ' ') + '  '}</Text>
+      ) : null}
+      <Text color={ui.faint} wrap="truncate-start">
+        {shorten(title, MAX_TITLE) + (sessionId ? ' ' + glyph.dot + ' ' + shortId(sessionId) : '')}
+      </Text>
     </Box>
   );
 }
@@ -176,45 +186,16 @@ function MeterRow({
   const window = quota?.windows?.[0];
   if (contextTokens === undefined && !spent && !window) return null;
 
-  const fraction =
-    contextTokens !== undefined && contextWindow ? contextTokens / contextWindow : undefined;
-
   return (
     <Box flexDirection="row" paddingX={1}>
       {contextTokens !== undefined ? (
-        <>
-          {fraction !== undefined ? (
-            <Text color={gaugeColor(fraction)}>{gauge(fraction) + ' '}</Text>
-          ) : null}
-          <Text color={ui.muted}>
-            {fraction !== undefined ? Math.round(fraction * 100) + '% ' : ''}
-            {tokens(contextTokens)}
-            {contextWindow ? '/' + tokens(contextWindow) : ''}
-            {' Context'}
-          </Text>
-        </>
+        <ContextMeter contextTokens={contextTokens} contextWindow={contextWindow} />
       ) : null}
 
       {spent ? (
         <>
           {contextTokens !== undefined ? <Separator /> : null}
-          <Text color={ui.faint}>
-            {glyph.up +
-              ' ' +
-              tokens(spent.inputTokens) +
-              '  ' +
-              glyph.down +
-              ' ' +
-              tokens(spent.outputTokens)}
-          </Text>
-          {spent.cachedInputTokens > 0 && wide ? (
-            <Text color={ui.faint}>
-              {'  ' + glyph.dot + '  ' + tokens(spent.cachedInputTokens) + ' Cache'}
-            </Text>
-          ) : null}
-          {spent.costUsd > 0 ? (
-            <Text color={ui.accentSoft}>{'  ' + glyph.dot + '  ' + money(spent.costUsd)}</Text>
-          ) : null}
+          <SpendMeter spent={spent} wide={wide} />
         </>
       ) : null}
 
@@ -229,18 +210,79 @@ function MeterRow({
   );
 }
 
+function ContextMeter({
+  contextTokens,
+  contextWindow,
+}: {
+  contextTokens: number;
+  contextWindow: number | undefined;
+}): React.JSX.Element {
+  const fraction = contextWindow ? contextTokens / contextWindow : undefined;
+
+  return (
+    <>
+      {fraction !== undefined ? (
+        <Text color={gaugeColor(fraction)}>{gauge(fraction) + ' '}</Text>
+      ) : null}
+      <Text color={ui.muted}>
+        {fraction !== undefined ? Math.round(fraction * 100) + '% ' : ''}
+        {tokens(contextTokens)}
+        {contextWindow ? '/' + tokens(contextWindow) : ''}
+        {' Context'}
+      </Text>
+    </>
+  );
+}
+
+function SpendMeter({ spent, wide }: { spent: SessionUsage; wide: boolean }): React.JSX.Element {
+  return (
+    <>
+      <Text color={ui.faint}>
+        {glyph.up +
+          ' ' +
+          tokens(spent.inputTokens) +
+          '  ' +
+          glyph.down +
+          ' ' +
+          tokens(spent.outputTokens)}
+      </Text>
+      {spent.cachedInputTokens > 0 && wide ? (
+        <Text color={ui.faint}>
+          {'  ' + glyph.dot + '  ' + tokens(spent.cachedInputTokens) + ' Cache'}
+        </Text>
+      ) : null}
+      {spent.costUsd > 0 ? (
+        <Text color={ui.accentSoft}>{'  ' + glyph.dot + '  ' + money(spent.costUsd)}</Text>
+      ) : null}
+    </>
+  );
+}
+
+const THOUSAND = 1000;
+const MILLION = 1_000_000;
+
+/** From this many thousands on, `k` drops its decimal: `123k`, not `123.4k`. */
+const WHOLE_THOUSANDS_FROM = 100;
+
 /** `840`, `12.3k`, `1.2M` - the shortest form that is still unambiguous. */
 export function tokens(value: number): string {
-  if (value < 1000) return String(Math.round(value));
-  if (value < 1_000_000) {
-    const thousands = value / 1000;
-    return (thousands >= 100 ? String(Math.round(thousands)) : thousands.toFixed(1)) + 'k';
+  if (value < THOUSAND) return String(Math.round(value));
+  if (value < MILLION) {
+    const thousands = value / THOUSAND;
+    const rounded =
+      thousands >= WHOLE_THOUSANDS_FROM ? String(Math.round(thousands)) : thousands.toFixed(1);
+    return rounded + 'k';
   }
-  return (value / 1_000_000).toFixed(1) + 'M';
+  return (value / MILLION).toFixed(1) + 'M';
 }
+
+const ONE_CENT = 0.01;
+
+/** From this many dollars on, cents drop to a single decimal. */
+const TENTHS_OF_A_DOLLAR_FROM = 10;
 
 /** Cents matter under a dollar; past that they are noise. */
 export function money(value: number): string {
-  if (value < 0.01) return '<$0.01';
-  return '$' + (value < 10 ? value.toFixed(2) : value.toFixed(1));
+  if (value < ONE_CENT) return '<$0.01';
+  return '$' + (value < TENTHS_OF_A_DOLLAR_FROM ? value.toFixed(2) : value.toFixed(1));
 }

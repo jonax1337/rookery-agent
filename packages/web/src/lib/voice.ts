@@ -1,13 +1,12 @@
-
 import {
   AudioLinesIcon,
   CloudCogIcon as CloudIcon,
   MonitorCogIcon as MonitorIcon,
   SparklesIcon,
-} from "@/components/icons";
+} from '@/components/icons';
+import type { IconComponent } from '@/components/icons';
 
 import type { TtsCatalogue, VoiceEngine } from './types';
-import type { IconComponent } from "@/components/icons";
 
 /**
  * The speech engines and the two sliders that shape them, in one place.
@@ -89,7 +88,7 @@ export interface VoiceSliderRange {
   min: number;
   max: number;
   step: number;
-  /** What "Zurücksetzen" restores. */
+  /** What "Reset" restores. */
   fallback: number;
   format(value: number): string;
 }

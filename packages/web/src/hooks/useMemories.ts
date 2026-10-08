@@ -14,7 +14,7 @@ import type {
 
 /**
  * The server's ceiling for `GET /api/memories`. Asking for more is clamped
- * there, so the list page can say "von 500 geladenen" and mean it.
+ * there, so the list page can say "of 500 loaded" and mean it.
  */
 export const MEMORY_LIST_LIMIT = 500;
 
@@ -82,11 +82,8 @@ export function useMemories() {
   );
 
   const forget = useCallback(async (id: string, hard = false) => {
-    try {
-      await api.forgetMemory(id, hard);
-    } finally {
-      setItems((current) => current.filter((item) => item.id !== id));
-    }
+    await api.forgetMemory(id, hard);
+    setItems((current) => current.filter((item) => item.id !== id));
   }, []);
 
   /** Pin, re-word, re-weight, re-file, wake or un-forget a memory. */
@@ -201,8 +198,8 @@ export function useSleep(socket: RookerySocket, onFinished?: () => void) {
   const [cycle, setCycle] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
-  // Without this the table shows "Noch keine Nacht gelaufen" plus a "Jetzt
-  // schlafen" button for the duration of both requests, even when nights exist.
+  // Without this the table shows "No night has run yet" plus a "Sleep now"
+  // button for the duration of both requests, even when nights exist.
   const [loading, setLoading] = useState(false);
 
   // Sequence guard: mount, `undo` and the socket can overlap refreshes; only
@@ -214,7 +211,7 @@ export function useSleep(socket: RookerySocket, onFinished?: () => void) {
     setLoading(true);
     try {
       // 200 nights is roughly half a year of nightly runs - enough to draw the
-      // 90-day curve the Nächte page shows without a second request.
+      // 90-day curve the Nights page shows without a second request.
       const [state, history] = await Promise.all([
         api.sleepStatus(),
         api.sleepRuns(undefined, SLEEP_RUN_LIMIT),

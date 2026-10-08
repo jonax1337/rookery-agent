@@ -10,12 +10,10 @@ export const useCopyToClipboard = ({
   copiedDuration = 3000,
 }: UseCopyToClipboardOptions = {}) => {
   const [isCopied, setIsCopied] = useState<boolean>(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // A pending reset must never outlive the component that owns the state.
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-  }, []);
+  useEffect(() => () => clearTimeout(timerRef.current), []);
 
   const copyToClipboard = (value: string) => {
     if (!value || typeof navigator === "undefined" || !navigator.clipboard) {
@@ -25,10 +23,12 @@ export const useCopyToClipboard = ({
     navigator.clipboard.writeText(value).then(
       () => {
         setIsCopied(true);
-        if (timerRef.current) clearTimeout(timerRef.current);
+        clearTimeout(timerRef.current);
         timerRef.current = setTimeout(() => setIsCopied(false), copiedDuration);
       },
-      () => {},
+      () => {
+        // Permission denied: the button just does not flip to "copied".
+      },
     );
   };
 

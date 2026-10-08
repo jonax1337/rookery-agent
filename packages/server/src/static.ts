@@ -4,13 +4,6 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import type { ServerContext } from './context.js';
 
-/**
- * Serve the built web client from the same origin as the API, which is what
- * keeps the default setup free of CORS and of a second port.
- *
- * The build is optional: running the server without `packages/web/dist` is a
- * perfectly good API-only mode, so a missing build is a hint, not an error.
- */
 export function webDistPath(): string {
   // dist/static.js -> packages/server/dist -> packages/web/dist
   return fileURLToPath(new URL('../../web/dist', import.meta.url));
@@ -20,6 +13,13 @@ function isApiPath(url: string | undefined): boolean {
   return Boolean(url && (url.startsWith('/api') || url.startsWith('/ws')));
 }
 
+/**
+ * Serve the built web client from the same origin as the API, which is what
+ * keeps the default setup free of CORS and of a second port.
+ *
+ * The build is optional: running the server without `packages/web/dist` is a
+ * perfectly good API-only mode, so a missing build is a hint, not an error.
+ */
 export async function registerStatic(
   app: FastifyInstance,
   context: ServerContext,

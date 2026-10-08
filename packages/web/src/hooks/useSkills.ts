@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useSyncExternalStore } from 'react';
-import { api, ApiError } from '../lib/api';
+import { useMemo } from 'react';
+import { api, type ApiError } from '../lib/api';
 import type { Skill, SkillImportResult, SkillInput, SkillSourceEntry } from '../lib/types';
+import { createSharedList } from './shared-list';
 
 /**
  * The skills, held once for the whole app - the same arrangement as
@@ -13,78 +14,11 @@ import type { Skill, SkillImportResult, SkillInput, SkillSourceEntry } from '../
  * it is a network call to GitHub's side of the world.
  */
 
-interface SkillsSnapshot {
-  skills: Skill[];
-  loading: boolean;
-  error: ApiError | null;
-  loaded: boolean;
-  catalog: SkillSourceEntry[];
-  catalogLoading: boolean;
-  catalogError: ApiError | null;
-  catalogLoaded: boolean;
-}
-
-let snapshot: SkillsSnapshot = {
-  skills: [],
-  loading: true,
-  error: null,
-  loaded: false,
-  catalog: [],
-  catalogLoading: false,
-  catalogError: null,
-  catalogLoaded: false,
-};
-
-const listeners = new Set<() => void>();
-let inflight: Promise<void> | null = null;
-let catalogInflight: Promise<void> | null = null;
-
-function publish(next: Partial<SkillsSnapshot>): void {
-  snapshot = { ...snapshot, ...next };
-  for (const listener of listeners) listener();
-}
-
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-function asApiError(caught: unknown): ApiError {
-  return caught instanceof ApiError ? caught : new ApiError(String(caught), 0);
-}
-
-function load(): Promise<void> {
-  if (inflight) return inflight;
-  inflight = (async () => {
-    try {
-      const skills = await api.skills();
-      publish({ skills, error: null, loading: false, loaded: true });
-    } catch (caught) {
-      publish({ error: asApiError(caught), loading: false, loaded: true });
-    } finally {
-      inflight = null;
-    }
-  })();
-  return inflight;
-}
+const skillList = createSharedList<Skill>(api.skills);
+const catalogList = createSharedList<SkillSourceEntry>(api.skillCatalog, { lazy: true });
 
 function loadCatalog(force = false): Promise<void> {
-  if (catalogInflight) return catalogInflight;
-  if (snapshot.catalogLoaded && !force) return Promise.resolve();
-  publish({ catalogLoading: true });
-  catalogInflight = (async () => {
-    try {
-      const catalog = await api.skillCatalog();
-      publish({ catalog, catalogError: null, catalogLoading: false, catalogLoaded: true });
-    } catch (caught) {
-      publish({ catalogError: asApiError(caught), catalogLoading: false, catalogLoaded: true });
-    } finally {
-      catalogInflight = null;
-    }
-  })();
-  return catalogInflight;
+  return force || !catalogList.snapshot().loaded ? catalogList.load() : Promise.resolve();
 }
 
 export interface SkillsState {
@@ -106,53 +40,43 @@ export interface SkillsState {
 }
 
 export function useSkills(): SkillsState {
-  const state = useSyncExternalStore(subscribe, () => snapshot);
-
-  useEffect(() => {
-    if (!snapshot.loaded) void load();
-  }, []);
-
-  useEffect(() => {
-    const onVisible = (): void => {
-      if (document.visibilityState === 'visible') void load();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, []);
+  const state = skillList.use();
+  const catalog = catalogList.use();
 
   return useMemo<SkillsState>(
     () => ({
-      skills: state.skills,
+      skills: state.items,
       loading: state.loading,
       error: state.error,
-      refresh: load,
+      refresh: skillList.load,
       skillByName: (name) =>
-        name ? state.skills.find((skill) => skill.name === name) : undefined,
+        name ? state.items.find((skill) => skill.name === name) : undefined,
       save: async (name, input) => {
         const skill = await api.saveSkill(name, input);
-        publish({
-          skills: state.skills.some((entry) => entry.name === name)
-            ? state.skills.map((entry) => (entry.name === name ? skill : entry))
-            : [...state.skills, skill],
-        });
+        const current = skillList.snapshot().items;
+        skillList.setItems(
+          current.some((entry) => entry.name === name)
+            ? current.map((entry) => (entry.name === name ? skill : entry))
+            : [...current, skill],
+        );
         return skill;
       },
       remove: async (name) => {
         await api.deleteSkill(name);
-        publish({ skills: snapshot.skills.filter((skill) => skill.name !== name) });
+        skillList.setItems(skillList.snapshot().items.filter((skill) => skill.name !== name));
       },
       importFrom: async (source) => {
         const result = await api.importSkill(source);
         // An import writes a folder; only a refetch knows what landed.
-        await load();
+        await skillList.load();
         return result;
       },
-      catalog: state.catalog,
-      catalogLoading: state.catalogLoading,
-      catalogError: state.catalogError,
+      catalog: catalog.items,
+      catalogLoading: catalog.loading,
+      catalogError: catalog.error,
       loadCatalog,
     }),
-    [state],
+    [state, catalog],
   );
 }
 

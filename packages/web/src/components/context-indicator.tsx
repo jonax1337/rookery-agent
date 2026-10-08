@@ -38,17 +38,20 @@ export interface ContextUsage {
 }
 
 /** Comfortable, getting full, nearly full - the same three steps everywhere. */
+const WARN_FROM_PERCENT = 70;
+const CRITICAL_FROM_PERCENT = 90;
+
 function tone(percent: number | null): string {
   if (percent === null) return 'text-muted-foreground';
-  if (percent >= 90) return 'text-destructive';
-  if (percent >= 70) return 'text-status-warn';
+  if (percent >= CRITICAL_FROM_PERCENT) return 'text-destructive';
+  if (percent >= WARN_FROM_PERCENT) return 'text-status-warn';
   return 'text-foreground';
 }
 
 /** The fill colour of a `Progress`, which paints its indicator `bg-primary`. */
 function barTone(percent: number): string {
-  if (percent >= 90) return '*:data-[slot=progress-indicator]:bg-destructive';
-  if (percent >= 70) return '*:data-[slot=progress-indicator]:bg-status-warn';
+  if (percent >= CRITICAL_FROM_PERCENT) return '*:data-[slot=progress-indicator]:bg-destructive';
+  if (percent >= WARN_FROM_PERCENT) return '*:data-[slot=progress-indicator]:bg-status-warn';
   return '';
 }
 
@@ -64,8 +67,8 @@ interface ContextIndicatorProps {
 export function ContextIndicator({ context }: ContextIndicatorProps) {
   const [open, setOpen] = useState(false);
 
-  const window = context?.window;
-  const percent = context && window ? Math.min(100, Math.round((context.tokens / window) * 100)) : null;
+  const contextWindow = context?.window;
+  const percent = context && contextWindow ? Math.min(100, Math.round((context.tokens / contextWindow) * 100)) : null;
   const valueTone = tone(percent);
 
   return (
@@ -85,7 +88,7 @@ export function ContextIndicator({ context }: ContextIndicatorProps) {
             aria-hidden="true"
             className={cn('h-1 w-8 shrink-0', barTone(percent ?? 0))}
           />
-          <span className={cn(percent !== null && percent >= 70 && valueTone)}>
+          <span className={cn(percent !== null && percent >= WARN_FROM_PERCENT && valueTone)}>
             {percent !== null ? percent + ' %' : context ? formatNumber(context.tokens) : '–'}
           </span>
         </Button>
@@ -113,7 +116,7 @@ export function ContextIndicator({ context }: ContextIndicatorProps) {
             {context ? (
               <>
                 <span className="font-medium text-foreground">{formatNumber(context.tokens)}</span>
-                {window ? ' / ' + formatNumber(window) + ' tokens' : ' tokens'}
+                {contextWindow ? ' / ' + formatNumber(contextWindow) + ' tokens' : ' tokens'}
                 {' · last response'}
               </>
             ) : (

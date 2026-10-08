@@ -38,6 +38,8 @@ class UserSettingsGuard {
   #watcher: FSWatcher | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #writing = false;
+  /** Start and stop steps run strictly one after the other, so a quick release-and-reacquire cannot interleave them. */
+  #lifecycle: Promise<void> = Promise.resolve();
 
   /**
    * Hold the guard for as long as one terminal runs; the returned function
@@ -46,14 +48,18 @@ class UserSettingsGuard {
    */
   acquire(configDir: string): () => void {
     this.#holders += 1;
-    if (this.#holders === 1) void this.#start(join(configDir, 'settings.json'));
+    if (this.#holders === 1) this.#enqueue(() => this.#start(join(configDir, 'settings.json')));
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.#holders -= 1;
-      if (this.#holders === 0) void this.#stop();
+      if (this.#holders === 0) this.#enqueue(() => this.#stop());
     };
+  }
+
+  #enqueue(step: () => Promise<void>): void {
+    this.#lifecycle = this.#lifecycle.then(step);
   }
 
   async #start(file: string): Promise<void> {

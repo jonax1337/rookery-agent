@@ -3,9 +3,7 @@ import { existsSync } from 'node:fs';
 import { readProfileExcerpt, searchProfile } from '../profile.js';
 import type {
   Agent,
-  AgentAction,
   AgentEvent,
-  AgentPerformance,
   AgentReview,
   Assignment,
   AssignmentLogEntry,
@@ -14,15 +12,17 @@ import type {
   AssignmentStatus,
   AssignmentView,
   EffortLevel,
-  MemoryKind,
+  ImapListenerConfig,
+  McpServerSpec,
   Notification,
   NotificationKind,
   NotifyEvent,
   Organization,
-  PermissionLevel,
-  ImapListenerConfig,
   Project,
+  Provider,
   ProviderId,
+  ProviderTurnOptions,
+  QuestionAnswer,
   QuestionOption,
   RequesterKind,
   RookeryConfig,
@@ -30,7 +30,6 @@ import type {
   TaskEvent,
   TaskEventActor,
   TaskEventKind,
-  TaskPriority,
   TaskStatus,
   ToolServerAudience,
 } from '../types.js';
@@ -57,6 +56,7 @@ import {
   renderOrgOverview,
   renderSchedules,
   renderTaskActivity,
+  type AgentPromptInput,
   type OrgSnapshot,
 } from './prompts.js';
 import {
@@ -68,6 +68,18 @@ import {
   type WeakReview,
 } from './review.js';
 import { buildTaskWaves, planTask, type TaskPlan } from './planner.js';
+import { AssignmentLogBuffer } from './assignment-log.js';
+import {
+  ToolArgs,
+  asMemoryKind,
+  asPermission,
+  asPriority,
+  asQuestionOptions,
+  resolveClearable,
+  resolveOptional,
+  toolError,
+  type Resolved,
+} from './tool-args.js';
 import { toolsFor, type ToolAudience } from './tools.js';
 import type { QuestionCloseReason, QuestionRegistry } from './questions.js';
 import {
@@ -251,6 +263,15 @@ export interface TaskAnswerer {
 const PROGRESS_EVERY = 700;
 /** How much of a result travels back into the caller's tool response. */
 const RESULT_BUDGET = 24000;
+/** How much of a result a task's note, a card line or a notification carries. */
+const NOTE_RESULT_BUDGET = 4000;
+/** The same for a failure notification, which also states the error. */
+const NOTIFICATION_PARTIAL_BUDGET = 2000;
+/** How much of one child's report a handed-off task's parent reads back. */
+const CHILD_REPORT_BUDGET = 6000;
+/** The port a watched mailbox gets when none is given: IMAP over TLS. */
+const DEFAULT_IMAP_PORT = 993;
+
 /**
  * How many providers one assignment may run on. The second only happens when
  * the first died on its usage limit before producing anything, so a switch
@@ -266,6 +287,24 @@ const MAX_PROVIDER_ATTEMPTS = 2;
  */
 const MAX_DELEGATION_ROUNDS = 2;
 
+/** How many recent records a lookup by id prefix, or by project, looks through. */
+const LOOKUP_SCAN_LIMIT = 500;
+/** How many of the assistant's memories `forget` searches for an id prefix. */
+const MEMORY_PREFIX_SCAN_LIMIT = 1000;
+/** How much of a profile document one `read_profile` call returns unless asked otherwise. */
+const PROFILE_EXCERPT_CHARS = 12000;
+/** What fits an `ask_user` card on a phone. */
+const MIN_QUESTION_OPTIONS = 2;
+const MAX_QUESTION_OPTIONS = 4;
+/** How many core-profile memories an agent's turn always carries. */
+const AGENT_PROFILE_LIMIT = 3;
+/** What `#learn` recalls to tell the extractor what the agent already knows. */
+const KNOWN_MEMORIES_LIMIT = 20;
+const KNOWN_MEMORIES_THRESHOLD = 0.05;
+
+const NO_SUCH_RUN = 'No run with that id.';
+const NO_PROJECT_MCP_SERVERS = "No MCP servers in this project's .mcp.json.";
+
 /** How one leaf run of a task ended - what `#runTaskLeaf` hands back. */
 interface LeafOutcome {
   status: Assignment['status'];
@@ -274,6 +313,95 @@ interface LeafOutcome {
   assignmentId: string;
   /** The agent asked its requester something while running (decision E6). */
   askedRequester: boolean;
+}
+
+/** One assignment run in flight: its record, what ends it, and how to tell who asked for the end. */
+interface RunState {
+  input: RunAssignmentInput;
+  project: Project | null;
+  record: AssignmentRecord;
+  abort: AbortController;
+  onAbort: () => void;
+  /** Whether the caller or a `cancel` by id asked for the end; the timeout is not a cancellation. */
+  cancelled: () => boolean;
+}
+
+/** The servers of a project's `.mcp.json` that start for a run, and what the agent is told about the ones that do not. */
+interface ProjectMcpSetup {
+  specs: McpServerSpec[];
+  hints: string[];
+}
+
+/** What every provider attempt of one assignment shares. */
+interface SharedRunSetup {
+  project: Project | null;
+  cwd: string;
+  preferred: ProviderId;
+  projectMcp: ProjectMcpSetup;
+  /** The system prompt as far as it does not depend on the provider attempt. */
+  promptBase: Omit<AgentPromptInput, 'toolHints' | 'agentNotes' | 'handoverFrom'>;
+}
+
+interface RunSetup extends SharedRunSetup {
+  /** The bridge token of the run, valid for every attempt. */
+  token: string;
+  started: number;
+  firstProvider: ProviderId;
+}
+
+/** How the provider attempts of a run ended: the last attempt's result, and the provider it ran on. */
+interface AttemptsOutcome {
+  text: string;
+  fatal: string | null;
+  provider: ProviderId;
+}
+
+/** Everything `#develop` needs to file one personnel action for an agent whose stage rose. */
+interface DevelopmentSubject {
+  agent: Agent;
+  orgId: string;
+  provider: Provider;
+  /** Effective reviews that are not technical failures, newest first. */
+  reviews: AgentReview[];
+  /** The latest of them, as the drafting prompts read them. */
+  weak: WeakReview[];
+}
+
+type EndingStatus = 'done' | 'failed' | 'cancelled' | 'blocked';
+
+/** Ends a task run's card through `setTaskStatus` and hands back the card as it stands. */
+type TaskFinisher = (status: TaskStatus, patch: { result?: string; error?: string }) => Promise<Task>;
+
+/** One request to move a task's card to another status; see `setTaskStatus`. */
+export interface TaskStatusChange {
+  task: Task;
+  to: TaskStatus;
+  /** Who is asking. The run loop passes `fromRun` instead. */
+  by: RequesterKind;
+  result?: string;
+  error?: string;
+  /**
+   * The run loop writing its own outcome. It owns the task for the
+   * duration of the run, so it is the one writer allowed to move a
+   * `running` card - everybody else has to cancel it first.
+   */
+  fromRun?: boolean;
+  emit?: (event: AgentEvent) => void;
+}
+
+type ProjectPatch = Parameters<OrgStore['updateProject']>[1];
+type AgentPatch = Parameters<OrgStore['updateAgent']>[1];
+type TeamPatch = Parameters<OrgStore['updateTeam']>[1];
+type TaskPatch = Parameters<OrgStore['updateTask']>[1];
+type ConfigPatch = Omit<Partial<RookeryConfig>, 'org'> & { org?: Partial<RookeryConfig['org']> };
+type ScheduledJob = Parameters<typeof describeCronJob>[0];
+
+/** What the schedule tools share: who calls, the clock, the arguments, and how a job is shown back. */
+interface ScheduleCall {
+  context: ToolContext;
+  cron: CronScheduler;
+  args: ToolArgs;
+  describe: (job: ScheduledJob) => string;
 }
 
 /**
@@ -298,7 +426,7 @@ export function reportBackNotice(task: Task, agent: Agent | null, question?: str
   const who = agent ? agent.name + ' (' + agent.slug + ')' : 'the agent';
   const ended = task.finishedAt ?? task.updatedAt;
   const took = task.startedAt && ended > task.startedAt ? ' after ' + formatAge(task.startedAt, ended, 'second') : '';
-  const head = '[Rookery] Background task ' + task.id.slice(0, 8) + ' "' + task.title + '", handed to ' + who + ', ';
+  const head = '[Rookery] Background task ' + shortId(task.id) + ' "' + task.title + '", handed to ' + who + ', ';
   const system =
     'This message comes from the system, not from your user - do not answer it as if they wrote it. ' +
     'You handed this work off earlier in this conversation; this is the follow-up you owe them.';
@@ -316,7 +444,7 @@ export function reportBackNotice(task: Task, agent: Agent | null, question?: str
         (question ? 'The question:\n' + clip(question, RESULT_BUDGET) + '\n\n' : '') +
         (task.result ? 'What it said:\n' + clip(task.result, RESULT_BUDGET) + '\n\n' : '') + system + ' ' +
         'Put the question to the user. Once they answer, pass the answer on with answer_task("' +
-        task.id.slice(0, 8) + '", ...) and the task picks up again, as the same task. Answer it yourself only ' +
+        shortId(task.id) + '", ...) and the task picks up again, as the same task. Answer it yourself only ' +
         'if you know the answer for certain.'
       );
     case 'cancelled':
@@ -324,7 +452,7 @@ export function reportBackNotice(task: Task, agent: Agent | null, question?: str
     default:
       return (
         head + 'failed' + took + ': ' + (task.error ?? 'no reason given').replace(/[.\s]+$/, '') + '.' +
-        (task.result ? '\n\nWhat it had so far:\n' + clip(task.result, 4000) : '') + '\n\n' + system + ' ' +
+        (task.result ? '\n\nWhat it had so far:\n' + clip(task.result, NOTE_RESULT_BUDGET) : '') + '\n\n' + system + ' ' +
         'Tell the user what went wrong and what you suggest - retrying, handing it to someone else, or dropping it.'
       );
   }
@@ -347,7 +475,7 @@ export function taskNotification(
     return {
       kind: 'question',
       title: (agent ? agent.name : 'An agent') + ' has a question about ' + name,
-      body: clip(question ?? task.result ?? 'The task is waiting for an answer.', 4000),
+      body: clip(question ?? task.result ?? 'The task is waiting for an answer.', NOTE_RESULT_BUDGET),
       fromKind: agent ? 'agent' : 'system',
       fromAgentId: agent?.id,
       taskId: task.id,
@@ -361,95 +489,106 @@ export function taskNotification(
         : 'Task ' + name + ' failed';
   const body =
     task.status === 'done'
-      ? clip(task.result?.trim() || '', 4000) + (task.error ? (task.result ? '\n\n' : '') + 'Note: ' + task.error : '')
+      ? clip(task.result?.trim() || '', NOTE_RESULT_BUDGET) + (task.error ? (task.result ? '\n\n' : '') + 'Note: ' + task.error : '')
       : task.status === 'cancelled'
         ? ''
-        : (task.error ?? 'No reason given.') + (task.result ? '\n\nWhat it had so far:\n' + clip(task.result, 2000) : '');
+        : (task.error ?? 'No reason given.') +
+          (task.result ? '\n\nWhat it had so far:\n' + clip(task.result, NOTIFICATION_PARTIAL_BUDGET) : '');
   return { kind: 'task', title, body, fromKind: 'system', taskId: task.id };
 }
 
-/** How much of one assignment's live log is kept, in JSON bytes. */
-const ASSIGNMENT_LOG_BYTES = 256 * 1024;
-
 /**
- * The live log of one running assignment: a ring buffer capped in bytes and
- * the watchers following it. It exists only while the run does - once the
- * assignment ends, watchers learn it from the `assignment` broadcast and the
- * buffer goes away, so watching never grows anything on disk.
+ * What one provider attempt produced so far: the report text, and the fatal
+ * error that ended it, if one did.
  */
-class AssignmentLogBuffer {
-  /** Buffered entries in arrival order; the oldest go when the cap is hit. */
-  readonly entries: AssignmentLogEntry[] = [];
-  /** Set once whole entries were dropped to stay under the cap. */
-  overflowed = false;
-  readonly listeners = new Set<(entry: AssignmentLogEntry) => void>();
-  #seq = 0;
-  #bytes = 0;
-  #done = false;
-  readonly #waiters: (() => void)[] = [];
+class AttemptOutput {
+  text = '';
+  fatal: string | null = null;
+  #sinceProgress = 0;
 
-  /** Append one event; returns the numbered entry the watchers receive. */
-  push(event: AgentEvent): AssignmentLogEntry {
-    const entry: AssignmentLogEntry = { seq: (this.#seq += 1), event };
-    this.entries.push(entry);
-    this.#bytes += byteSize(entry);
-    // Over the cap, whole entries go, oldest first - but never the one just
-    // pushed: a single huge line is better kept than silently dropped.
-    while (this.#bytes > ASSIGNMENT_LOG_BYTES && this.entries.length > 1) {
-      const dropped = this.entries.shift();
-      if (!dropped) break;
-      this.#bytes -= byteSize(dropped);
-      this.overflowed = true;
-    }
-    for (const listener of [...this.listeners]) listener(entry);
-    this.#wake();
-    return entry;
-  }
-
-  /**
-   * A provider switch starts the transcript over: the dead attempt's half
-   * output would only read as a broken restart. `seq` keeps counting, so a
-   * client ordering by it stays whole across the gap.
-   */
-  reset(): void {
-    this.entries.length = 0;
-    this.#bytes = 0;
-    this.overflowed = false;
-  }
-
-  /** The run is over: generators drain what is left and then end. */
-  end(): void {
-    this.#done = true;
-    this.#wake();
-  }
-
-  /** Replay the buffer, then follow it live until the run ends. */
-  async *stream(): AsyncGenerator<AssignmentLogEntry, void, unknown> {
-    let lastSeq = 0;
-    for (;;) {
-      // The cap shifts the oldest entries out from under any index, and a
-      // reset empties the list entirely - the cursor is the last seq
-      // yielded, never a position.
-      const next = this.entries.find((entry) => entry.seq > lastSeq);
-      if (next) {
-        lastSeq = next.seq;
-        yield next;
-        continue;
-      }
-      if (this.#done) return;
-      await new Promise<void>((resolve) => this.#waiters.push(resolve));
-    }
-  }
-
-  #wake(): void {
-    // splice, never length = 0 before the loop: both names point at the
-    // same array here, and emptying it first would leave nothing to iterate.
-    for (const waiter of this.#waiters.splice(0)) waiter();
+  /** Take in a streamed delta; true when enough has come in since the last progress line. */
+  append(delta: string): boolean {
+    this.text += delta;
+    this.#sinceProgress += delta.length;
+    if (this.#sinceProgress < PROGRESS_EVERY) return false;
+    this.#sinceProgress = 0;
+    return true;
   }
 }
 
-function byteSize(entry: AssignmentLogEntry): number {
-  return Buffer.byteLength(JSON.stringify(entry));
+/**
+ * The row of one running assignment, kept honest: every change is written,
+ * read back and announced in one step.
+ */
+class AssignmentRecord {
+  #assignment: Assignment;
+  readonly #org: OrgStore;
+  readonly #agent: Agent;
+  readonly #publish: (event: Extract<AgentEvent, { type: 'assignment' }>) => void;
+  readonly #log: Logger;
+
+  constructor(
+    org: OrgStore,
+    agent: Agent,
+    assignment: Assignment,
+    publish: (event: Extract<AgentEvent, { type: 'assignment' }>) => void,
+    log: Logger,
+  ) {
+    this.#org = org;
+    this.#agent = agent;
+    this.#assignment = assignment;
+    this.#publish = publish;
+    this.#log = log;
+  }
+
+  get id(): string {
+    return this.#assignment.id;
+  }
+
+  /** The row as last read back. */
+  get assignment(): Assignment {
+    return this.#assignment;
+  }
+
+  /** Say how the run stands, to the turn that started it and to everyone listening; `extra` carries live-only fields. */
+  announce(extra: Partial<AssignmentView> = {}): void {
+    this.#publish({ type: 'assignment', assignment: toView(this.#assignment, this.#agent, extra) });
+  }
+
+  finish(patch: Parameters<OrgStore['updateAssignment']>[1], extra: Partial<AssignmentView> = {}): Assignment {
+    this.#org.updateAssignment(this.id, patch);
+    this.#assignment = this.#org.getAssignment(this.id) ?? this.#assignment;
+    this.announce(extra);
+    return this.#assignment;
+  }
+
+  fail(error: string, started: number): Assignment {
+    const failed = this.finish(
+      { status: 'failed', error, finishedAt: Date.now(), durationMs: Date.now() - started },
+      { error },
+    );
+    // Every fail() path is a hard signal (timeout, no provider, empty
+    // output, a fatal provider error) - no model call, and it marks the run
+    // as a technical failure rather than a quality judgement (see
+    // docs/concepts/agent-performance-management.md). A write that cannot
+    // land must never take the assignment result down with it.
+    try {
+      this.#org.upsertReview({
+        orgId: failed.orgId,
+        agentId: this.#agent.id,
+        assignmentId: failed.id,
+        source: 'system',
+        overall: 1,
+        failedRun: true,
+      });
+    } catch (reviewError) {
+      this.#log.warn('System review failed to write', {
+        assignment: failed.id,
+        error: (reviewError as Error).message,
+      });
+    }
+    return failed;
+  }
 }
 
 export class OrgController extends EventEmitter {
@@ -572,851 +711,910 @@ export class OrgController extends EventEmitter {
 
   /* -------------------------------- tools -------------------------------- */
 
-  async handle(context: ToolContext, name: string, args: Record<string, unknown>): Promise<ToolCallResult> {
-    const text = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string).trim() : '');
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
-
+  async handle(context: ToolContext, name: string, rawArgs: Record<string, unknown>): Promise<ToolCallResult> {
+    const args = new ToolArgs(rawArgs);
     switch (name) {
       case 'org_overview':
         return { text: renderOrgOverview(this.snapshot(context.orgId), this.#store.org) };
-
       case 'assign':
-        return this.#assign(context, text('agent'), text('title'), text('task'), text('project'), args.wait !== false);
-
-      case 'assignment_status': {
-        const assignment = this.findAssignment(context.orgId, text('id'));
-        if (!assignment) return fail('No run with that id.');
-        return {
-          text: describeAssignment(
-            assignment,
-            this.#store.org.getAgent(assignment.agentId),
-            this.#store.org.taskRunNumber(assignment.id),
-          ),
-        };
-      }
-
-      case 'review_assignment': {
-        if (context.audience !== 'assistant') return fail('Only the assistant records reviews.');
-        const assignment = this.findAssignment(context.orgId, text('id'));
-        if (!assignment) return fail('No run with that id.');
-        const overall = clampNumber(args.overall, 1, 5, 3);
-        const review = this.#store.org.upsertReview({
-          orgId: context.orgId,
-          agentId: assignment.agentId,
-          assignmentId: assignment.id,
-          taskId: this.#store.org.getTaskIdForAssignment(assignment.id) ?? undefined,
-          source: 'assistant',
-          overall,
-          comment: text('comment') || undefined,
-        });
-        this.emit('changed', { kind: 'agent', id: assignment.agentId });
-        return { text: 'Review recorded (overall ' + review.overall + ').' };
-      }
-
-      case 'agent_performance': {
-        if (context.audience !== 'assistant') return fail('Only the assistant sees the personnel record.');
-        const agent = this.#store.org.findAgent(context.orgId, text('agent'));
-        if (!agent) return fail('No agent "' + text('agent') + '".');
-        return { text: describeAgentPerformance(agent, this.#store.org) };
-      }
-
-      case 'cancel_assignment': {
-        if (context.audience !== 'assistant') return fail('Only the assistant can call off a running task.');
-        const assignment = this.findAssignment(context.orgId, text('id'));
-        if (!assignment) return fail('No run with that id.');
-        if (!this.cancel(assignment.id, 'the assistant')) {
-          return fail('Run ' + assignment.id.slice(0, 8) + ' is not running; it is ' + assignment.status + '.');
-        }
-        return { text: 'Calling off run ' + assignment.id.slice(0, 8) + '. It ends as cancelled within a moment.' };
-      }
-
-      case 'list_assignments': {
-        if (context.audience !== 'assistant') return fail('Only the assistant can read the history.');
-        const agent = text('agent') ? this.#store.org.findAgent(context.orgId, text('agent')) : null;
-        if (text('agent') && !agent) return fail('No agent "' + text('agent') + '".');
-        const project = text('project') ? this.#store.org.findProject(context.orgId, text('project')) : null;
-        if (text('project') && !project) return fail('No project "' + text('project') + '".');
-        const wanted = text('status').split(',').map((v) => v.trim()).filter(Boolean) as AssignmentStatus[];
-        const limit = clampNumber(args.limit, 1, 200, 20);
-        const rows = this.#store.org
-          .listAssignments(context.orgId, {
-            agentId: agent?.id,
-            status: wanted.length ? wanted : undefined,
-            limit: project ? 500 : limit,
-          })
-          .filter((entry) => !project || entry.projectId === project.id)
-          .slice(0, limit);
-        if (!rows.length) return { text: 'No runs match.' };
-        const byId = new Map(
-          this.#store.org.listAgents(context.orgId, { includeArchived: true }).map((entry) => [entry.id, entry]),
-        );
-        return {
-          text: rows
-            .map((entry) => {
-              const who = byId.get(entry.agentId)?.slug ?? '?';
-              // Local wall clock, and for anything still going the elapsed
-              // span as well: "has this run too long" is the question the
-              // board watcher asks, and a span cannot be read in the wrong
-              // timezone the way a stamp can.
-              const when = formatWhen(entry.createdAt);
-              const took = entry.durationMs
-                ? ' ' + Math.round(entry.durationMs / 1000) + 's'
-                : entry.status === 'running'
-                  ? ' running ' + formatAge(entry.createdAt)
-                  : '';
-              // The name, never the brief: three runs of the same errand open
-              // with the same twenty words, and a list of those tells nobody
-              // which is which (concept 7.1).
-              const run = this.#store.org.taskRunNumber(entry.id);
-              return '- ' + entry.id.slice(0, 8) + ' ' + when + ' ' + entry.status + took + ' ' + who + ': ' +
-                shorten(entry.title, 100) + (run && run > 1 ? ' (run ' + run + ')' : '') +
-                (entry.error ? ' [' + shorten(entry.error, 60) + ']' : '');
-            })
-            .join('\n'),
-        };
-      }
-
-      case 'update_project': {
-        if (context.audience !== 'assistant') return fail('Only the assistant can change projects.');
-        const project = this.#store.org.findProject(context.orgId, text('project'));
-        if (!project) return fail('No project "' + text('project') + '".');
-        const patch: Parameters<OrgStore['updateProject']>[1] = {};
-        if (text('name')) patch.name = text('name');
-        if (text('description')) patch.description = text('description');
-        if (text('path')) {
-          if (text('path').toLowerCase() === 'none') patch.path = null;
-          else if (!existsSync(text('path'))) return fail('The directory ' + text('path') + ' does not exist.');
-          else patch.path = text('path');
-        }
-        if (typeof args.archived === 'boolean') patch.archived = args.archived;
-        if (!Object.keys(patch).length) return fail('Nothing to change.');
-        this.#store.org.updateProject(project.id, patch);
-        this.emit('changed', { kind: 'project', id: project.id });
-        return { text: 'Updated project "' + (patch.name ?? project.name) + '": ' + Object.keys(patch).join(', ') + '.' };
-      }
-
-      case 'sleep_now': {
-        if (context.audience !== 'assistant') return fail('Only the assistant has this memory.');
-        if (!this.#sleep) return fail('The nightly memory run is not available here.');
-        if (this.#sleep.isRunning(ASSISTANT_MEMORY_OWNER)) return { text: 'The memory is already asleep.' };
-        // Started, not awaited: a night takes minutes and the turn must not
-        // sit and wait for it. The memory page follows it live.
-        void this.#sleep.run({ owner: ASSISTANT_MEMORY_OWNER, trigger: 'manual' });
-        return {
-          text:
-            'The memory is going to sleep now. It condenses, files and connects; nothing is deleted, ' +
-            'and the run can be undone on the memory page.',
-        };
-      }
-
-      case 'read_profile': {
-        if (context.audience !== 'assistant') return fail('Only the assistant has this profile.');
-        return { text: readProfileExcerpt(this.#config, text('name'), args.offset === undefined ? 0 : Number(args.offset), args.limit === undefined ? 12000 : Number(args.limit)) };
-      }
-      case 'search_profile': {
-        if (context.audience !== 'assistant') return fail('Only the assistant has this profile.');
-        return { text: searchProfile(this.#config, text('query')) };
-      }
-      case 'remember': {
-        // The assistant keeps facts about the user; an agent keeps facts
-        // about its own work. Either way the write lands in the caller's own
-        // bank and nowhere else - there is no path here that writes across
-        // the owner boundary.
-        const owner =
-          context.audience === 'agent' && context.agentId ? context.agentId : ASSISTANT_MEMORY_OWNER;
-        // Same rule as write_skill below: a scheduled run has nobody present
-        // to confirm anything, and a memory it pinned would even carry
-        // origin 'user' - protected from the very night that should weigh it.
-        if (context.scheduled) {
-          return fail(
-            'This run was started by a schedule. Automated runs leave no memories - if this ' +
-              'belongs in memory, bring it up in a conversation.',
-          );
-        }
-        if (!text('content')) return fail('A memory needs content.');
-        const tags = text('tags').split(',').map((v) => v.trim()).filter(Boolean);
-        const record = this.#store.upsertMemory({
-          kind: asMemoryKind(text('kind')),
-          content: text('content'),
-          tags,
-          importance: clampNumber(args.importance, 0, 1, 0.7),
-          owner,
-          sourceSessionId: context.sessionId,
-          // Asked for explicitly, so the night never merges it away.
-          origin: 'user',
-        });
-        linkEntities(this.#store, owner, record.id, tags);
-        this.emit('changed', { kind: 'memory', id: record.id });
-        return { text: 'Remembered (' + record.id.slice(0, 8) + '): ' + record.content };
-      }
-
-      case 'forget': {
-        if (context.audience !== 'assistant') return fail('Only the assistant has this memory.');
-        // Forgetting is a deletion, and E1 of the memory concept says a
-        // deletion happens only on the user's explicit word - a schedule has
-        // nobody behind it to give that word.
-        if (context.scheduled) {
-          return fail(
-            'This run was started by a schedule. Nothing is forgotten on an automated run - ask ' +
-              'in a conversation instead.',
-          );
-        }
-        const ref = text('id');
-        if (!ref) return fail('Which memory? Give its id.');
-        const record =
-          this.#store.getMemory(ref) ??
-          this.#store.listMemories({ owner: ASSISTANT_MEMORY_OWNER, limit: 1000 }).find((m) => m.id.startsWith(ref));
-        if (!record || record.owner !== ASSISTANT_MEMORY_OWNER) return fail('No memory ' + ref + '.');
-        this.#store.forgetMemory(record.id);
-        this.emit('changed', { kind: 'memory', id: record.id });
-        return { text: 'Forgotten: ' + record.content };
-      }
-
-      case 'search_memory': {
-        // Read-only, and strictly inside the caller's own bank: the
-        // assistant searches what it knows about the user, an agent searches
-        // its own working memory. One owner in, one owner out.
-        const owner =
-          context.audience === 'agent' && context.agentId ? context.agentId : ASSISTANT_MEMORY_OWNER;
-        const limit = clampNumber(args.limit, 1, 100, 20);
-        const query = text('query');
-        const rows = query
-          ? recall(this.#store, { text: query, limit, owner, touch: false })
-          : this.#store.listMemories({ owner, limit });
-        if (!rows.length) return { text: query ? 'Nothing in memory matches.' : 'Memory is empty.' };
-        return {
-          text: rows
-            .map((m) => '- ' + m.id.slice(0, 8) + ' [' + m.kind + ', ' + m.importance.toFixed(2) + '] ' + m.content)
-            .join('\n'),
-        };
-      }
-
+        return this.#toolAssign(context, args);
+      case 'assignment_status':
+        return this.#toolAssignmentStatus(context, args);
+      case 'review_assignment':
+        return this.#toolReviewAssignment(context, args);
+      case 'agent_performance':
+        return this.#toolAgentPerformance(context, args);
+      case 'cancel_assignment':
+        return this.#toolCancelAssignment(context, args);
+      case 'list_assignments':
+        return this.#toolListAssignments(context, args);
+      case 'update_project':
+        return this.#toolUpdateProject(context, args);
+      case 'sleep_now':
+        return this.#toolSleepNow(context);
+      case 'read_profile':
+        return this.#toolReadProfile(context, args);
+      case 'search_profile':
+        return this.#toolSearchProfile(context, args);
+      case 'remember':
+        return this.#toolRemember(context, args);
+      case 'forget':
+        return this.#toolForget(context, args);
+      case 'search_memory':
+        return this.#toolSearchMemory(context, args);
       case 'get_settings':
-        if (context.audience !== 'assistant') return fail('Only the assistant can read settings.');
+        if (context.audience !== 'assistant') return toolError('Only the assistant can read settings.');
         return { text: describeSettings(this.#config) };
-
       case 'update_settings':
-        return this.#updateSettings(context, args);
-
+        return this.#toolUpdateSettings(context, args);
       case 'ask_requester':
-        return this.#askRequester(context, text('question'));
-
-      case 'answer_task': {
-        const task = this.findTask(context.orgId, text('id'));
-        if (!task) return fail('No task ' + text('id') + '.');
-        const answerer: TaskAnswerer =
-          context.audience === 'agent' ? { kind: 'agent', agentId: context.agentId } : { kind: 'assistant' };
-        const answered = await this.#answer(task, text('answer'), answerer, context);
-        if (!answered.ok) return fail(answered.reason);
-        const where = context.taskId && task.parentId === context.taskId
-          ? 'Your own task stays open until it is back: when your run ends, you are started again with its result.'
-          : task.requesterSessionId && !task.parentId
-            ? 'When it ends, a message arrives in the conversation it came from.'
-            : 'How it ends is recorded on its card.';
-        return {
-          text: 'Answered task ' + task.id.slice(0, 8) + ' "' + task.title + '"; it runs again with your answer. ' + where,
-        };
-      }
-
-      case 'report_to_user': {
-        // Agents, and the one assistant run that has no conversation to speak
-        // in: the board watcher. An ordinary assistant turn answers the user
-        // directly, and `notify` is its line for what cannot wait.
-        if (context.audience !== 'agent' && !context.watching) {
-          return fail('Reach the user through your answer, or with notify for something that has to arrive now.');
-        }
-        if (!text('title') || !text('body')) return fail('A report needs a title and a body.');
-        const notification = this.notifyUser({
-          orgId: context.orgId,
-          kind: context.watching ? 'watch' : 'agent',
-          title: text('title'),
-          body: text('body'),
-          fromKind: context.audience === 'agent' ? 'agent' : 'assistant',
-          fromAgentId: context.audience === 'agent' ? context.agentId : undefined,
-          taskId: context.taskId,
-          // The watcher's own run is where a reply to its report continues;
-          // an agent's run has no conversation of its own to point at.
-          sessionId: context.watching ? context.sessionId : undefined,
-        });
-        if (context.taskId && this.#store.org.getTask(context.taskId)) {
-          this.#taskEvent({
-            taskId: context.taskId,
-            kind: 'note',
-            actorKind: context.audience === 'agent' ? 'agent' : 'assistant',
-            actorAgentId: context.agentId,
-            text: 'Reported to the user: ' + notification.title + '\n\n' + notification.body,
-            assignmentId: context.parentAssignmentId,
-          });
-        }
-        return { text: 'Left the user a notification: "' + notification.title + '".' };
-      }
-
-      case 'task_activity': {
-        const task = this.findTask(context.orgId, text('id'));
-        if (!task) return fail('No task ' + text('id') + '.');
-        return {
-          text: clip(
-            renderTaskActivity(task, this.#store.org.listTaskEvents(task.id), this.snapshot(context.orgId)),
-            RESULT_BUDGET,
-          ),
-        };
-      }
-
-      case 'notify': {
-        if (context.audience !== 'assistant') return fail('Only the assistant can send notifications.');
-        if (!text('text')) return fail('A notification needs text.');
-        const urgency = args.urgency === 'high' ? 'high' : 'normal';
-        // Kept as well as pushed: a push is gone once it is swiped away, and
-        // the web should be able to show what the assistant said on its own.
-        // The push itself still travels on the `notify` event - the
-        // notification is the record, so a channel must not push it twice.
-        const firstLine = text('text').split('\n', 1)[0] ?? '';
-        this.notifyUser({
-          orgId: context.orgId,
-          kind: 'system',
-          title: shorten(firstLine, 80),
-          body: text('text'),
-          fromKind: 'assistant',
-          sessionId: context.sessionId,
-        });
-        if (!this.#canNotify || !this.#canNotify()) {
-          return {
-            text:
-              'No push channel can reach the user right now - none is set up, it is switched off, or it has ' +
-              'no recipient. The message is saved in their notifications and waits there.',
-          };
-        }
-        const event: NotifyEvent = { text: text('text'), urgency, at: Date.now() };
-        this.emit('notify', event);
-        return { text: 'Sent' + (urgency === 'high' ? ' (high urgency)' : '') + ': ' + event.text };
-      }
-
-      case 'ask_user': {
-        // Only the assistant asks. An agent runs unattended by design and
-        // asks whoever gave it the work (`ask_requester`); letting one block
-        // on a person would stall a whole delegation chain behind them.
-        if (context.audience !== 'assistant') {
-          return fail(
-            'Only the assistant can ask the user. Inside a task, ask whoever gave you the work with ' +
-              'ask_requester; otherwise say what you need in your result.',
-          );
-        }
-        // Belt and braces: a scheduled run is not offered the tool at all
-        // (see `register`), so getting here means the list was built for a
-        // conversation and the run turned out to be automated.
-        if (context.scheduled) {
-          return fail(
-            'This run was started by a schedule and nobody is there to answer. Decide it yourself ' +
-              'and say in your result what you assumed.',
-          );
-        }
-        if (!this.#questions) return fail('Asking the user is not available here.');
-        const header = text('header');
-        const question = text('question');
-        if (!question) return fail('A question needs its text.');
-        const options = asQuestionOptions(args.options);
-        if (options.length < 2) return fail('Offer at least two options to choose from.');
-        if (options.length > 4) return fail('Offer at most four options; more does not fit a phone.');
-
-        const timeoutMs = this.#config.questions.timeoutMs;
-        // The close event carries why it closed, and the turn wants to know:
-        // "nobody was there" and "somebody waved it away" are different
-        // things to carry on from.
-        let closedBecause: QuestionCloseReason | undefined;
-        const emit = (event: AgentEvent): void => {
-          if (event.type === 'question-closed') closedBecause = event.reason;
-          context.emit(event);
-        };
-        const answer = await this.#questions.ask(
-          {
-            header: header || 'Question',
-            question,
-            options,
-            multiSelect: args.multiSelect === true,
-            sessionId: context.sessionId,
-          },
-          // `emit` puts the card on the asking turn's own stream; `signal` is
-          // the half no other tool handler has: an aborted turn kills the
-          // provider process, and without this the question would stay open
-          // for its full timeout with nobody left to receive the answer.
-          // `owner` widens that to every way a turn can end.
-          { signal: context.signal, timeoutMs, emit, ...(context.questionOwner ? { owner: context.questionOwner } : {}) },
-        );
-
-        if (!answer) {
-          if (closedBecause === 'cancelled' || context.signal?.aborted) {
-            return { text: 'The question was cancelled before anybody answered it.' };
-          }
-          const minutes = Math.max(1, Math.round(timeoutMs / 60000));
-          return {
-            text:
-              'No answer within ' + minutes + ' minute' + (minutes === 1 ? '' : 's') + '. Carry on with ' +
-              'your own best judgement and say which way you went and why.',
-          };
-        }
-        const chosen = answer.selected
-          .map((index) => options[index]?.label)
-          .filter((label): label is string => Boolean(label));
-        const parts: string[] = [];
-        if (chosen.length) parts.push('The user chose: ' + chosen.join(', ') + '.');
-        if (answer.text) parts.push((chosen.length ? 'They added: ' : 'The user answered: ') + answer.text);
-        return { text: parts.join('\n') };
-      }
-
-      case 'use_skill': {
-        // An agent's own instructions carry its project's skills too (Befund
-        // 4 in the concept doc): the tool must resolve against the running
-        // assignment's project, not only the one long-lived home store.
-        const project =
-          context.audience === 'agent' && context.projectId ? this.#store.org.getProject(context.projectId) : null;
-        const who = context.audience === 'agent' ? 'agent' : 'assistant';
-        const skills = context.audience === 'agent' ? this.#agentSkills(project) : this.#skills.for('assistant');
-        // Rookery's own shelf first, then the one installed in Claude Code -
-        // a skill a person wrote here outranks a plugin's.
-        const skill =
-          skills.find((entry) => entry.name === text('name').toLowerCase()) ??
-          openExternalSkill(this.#config, who, text('name'));
-        if (!skill) {
-          return fail(
-            'No skill "' + text('name') + '". The list in your instructions is authoritative for ' +
-              "Rookery's own skills; for the ones installed on this machine, search with find_skill first.",
-          );
-        }
-        // Noted, not just answered. Which run had a skill open is the only
-        // way the night can later tell a procedure that still holds from one
-        // that is quietly sending every run that follows it into a wall.
-        this.#store.recordSkillUse({
-          skill: skill.name,
-          owner: context.audience === 'agent' && context.agentId ? context.agentId : ASSISTANT_MEMORY_OWNER,
-          assignmentId: context.audience === 'agent' ? context.parentAssignmentId : undefined,
-          sessionId: context.sessionId,
-        });
-        return { text: renderSkill(skill) };
-      }
-
-      case 'find_skill': {
-        const who = context.audience === 'agent' ? 'agent' : 'assistant';
-        const hits = findExternalSkills(this.#config, who, text('query'));
-        return { text: renderSkillHits(hits) };
-      }
-
-      case 'write_skill': {
-        // A scheduled run has a person's trust but not a person present:
-        // what it writes down would echo its own job prompt, and nothing
-        // standing behind it would ever be read by anyone. It says so and
-        // carries on without the skill.
-        if (context.scheduled) {
-          return fail(
-            'This run was started by a schedule. Automated runs leave no memories and write no ' +
-              'skills - if this procedure matters, ask for it in a conversation or write it yourself.',
-          );
-        }
-        // Always the home store, never the project one: a skill written in
-        // the middle of an assignment must not land in somebody's repository.
-        const audience =
-          args.audience === 'assistant' || args.audience === 'agents' || args.audience === 'both'
-            ? (args.audience as ToolServerAudience)
-            : 'both';
-        try {
-          // Keep the previous wording before replacing it. Revising a skill
-          // is the point of this tool, and a revision that turns out worse
-          // than what it replaced has to leave a way back.
-          const name = skillSlug(text('name'));
-          this.#store.snapshotSkill({ skill: name, content: this.#skills.raw(name) });
-          const skill = this.#skills.save({
-            name: text('name'),
-            description: text('description'),
-            body: text('body'),
-            audience,
-            origin: 'agent',
-          });
-          this.emit('changed', { kind: 'skill', id: skill.name });
-          return {
-            text:
-              'Skill "' + skill.name + '" written to ' + skill.path + '. It is in the index from ' +
-              'the next turn on; open it with use_skill.',
-          };
-        } catch (cause) {
-          return fail((cause as Error).message);
-        }
-      }
-
-      case 'project_mcp_servers': {
-        if (context.audience !== 'assistant') return fail('Only the assistant reviews project MCP servers.');
-        const project = this.#store.org.findProject(context.orgId, text('project'));
-        if (!project) return fail('No project "' + text('project') + '".');
-        if (!project.path) return fail('Project "' + project.name + '" has no directory.');
-        const file = readProjectMcpFile(project.path);
-        if (!file || !file.servers.length) return { text: "No MCP servers in this project's .mcp.json." };
-        const status = projectMcpStatus(file, project.mcpTrust);
-        return {
-          text:
-            'Status: ' + status + '.\n' +
-            renderProjectMcpServers(file.servers) +
-            (status === 'trusted' ? '' : '\nUse trust_project_mcp to approve before these start for a run.'),
-        };
-      }
-
-      case 'trust_project_mcp': {
-        if (context.audience !== 'assistant') return fail('Only the assistant decides project trust.');
-        const project = this.#store.org.findProject(context.orgId, text('project'));
-        if (!project) return fail('No project "' + text('project') + '".');
-        const decision = text('decision');
-        if (decision !== 'approve' && decision !== 'revoke') return fail('decision must be approve or revoke.');
-        if (decision === 'revoke') {
-          this.#store.org.updateProject(project.id, { mcpTrust: null });
-          this.emit('changed', { kind: 'project', id: project.id });
-          return { text: 'Revoked trust for "' + project.name + '"; its MCP servers no longer start for its runs.' };
-        }
-        if (!project.path) return fail('Project "' + project.name + '" has no directory.');
-        const file = readProjectMcpFile(project.path);
-        if (!file || !file.servers.length) return fail("No MCP servers in this project's .mcp.json.");
-        this.#store.org.updateProject(project.id, {
-          mcpTrust: { fingerprint: fingerprintMcpFile(file.raw), approvedAt: Date.now() },
-        });
-        this.emit('changed', { kind: 'project', id: project.id });
-        return {
-          text:
-            'Trusted "' + project.name + '": ' + file.servers.length +
-            ' MCP server(s) start for its runs from now on.',
-        };
-      }
-
+        return this.#toolAskRequester(context, args.text('question'));
+      case 'answer_task':
+        return this.#toolAnswerTask(context, args);
+      case 'report_to_user':
+        return this.#toolReportToUser(context, args);
+      case 'task_activity':
+        return this.#toolTaskActivity(context, args);
+      case 'notify':
+        return this.#toolNotify(context, args);
+      case 'ask_user':
+        return this.#toolAskUser(context, args);
+      case 'use_skill':
+        return this.#toolUseSkill(context, args);
+      case 'find_skill':
+        return { text: renderSkillHits(findExternalSkills(this.#config, callerKind(context), args.text('query'))) };
+      case 'write_skill':
+        return this.#toolWriteSkill(context, args);
+      case 'project_mcp_servers':
+        return this.#toolProjectMcpServers(context, args);
+      case 'trust_project_mcp':
+        return this.#toolTrustProjectMcp(context, args);
       case 'tool_servers':
-        if (context.audience !== 'assistant') return fail('Only the assistant sees the hub.');
+        if (context.audience !== 'assistant') return toolError('Only the assistant sees the hub.');
         return { text: renderToolServers(toolServerStates(this.#config)) };
-
-      case 'set_tool_server': {
-        if (context.audience !== 'assistant') return fail('Only the assistant can switch tools.');
-        const state = toolServerStates(this.#config).find((entry) => entry.id === text('id'));
-        if (!state) return fail('No tool server "' + text('id') + '".');
-        if (typeof args.enabled !== 'boolean') return fail('enabled must be true or false.');
-        // A server read out of Claude Code belongs to somebody else's
-        // installation. Starting it is the user's call, made on the Tools page.
-        if (state.approvalRequired) {
-          return fail(
-            state.name + ' comes from ' + (state.source || 'another installation') + ' and only the user can ' +
-              'switch it on, on the Tools page. Say that you need it and why.',
-          );
-        }
-        if (args.enabled && !state.installed) return fail(state.name + ' is not installed on this machine.');
-        if (args.enabled && state.missingEnv.length) {
-          return fail(state.name + ' needs ' + state.missingEnv.join(', ') + ' first; the user sets that on the Tools page.');
-        }
-        const audience = text('audience');
-        applyConfig(
-          this.#config,
-          withToolServer(this.#config, state.id, {
-            enabled: args.enabled,
-            ...(audience === 'assistant' || audience === 'agents' || audience === 'both' ? { audience } : {}),
-          }),
-        );
-        this.emit('changed', { kind: 'tools', id: state.id });
-        return {
-          text: state.name + ' is now ' + (args.enabled ? 'on' : 'off') + ' for ' + (audience || state.audience) + '. ' +
-            (args.enabled
-              ? 'Finish this answer and it is attached; the turn then carries on and you can use it.'
-              : 'It is gone from the next turn on.'),
-        };
-      }
-
-      case 'hire_agent': {
-        if (context.audience !== 'assistant') return fail('Only the assistant can hire.');
-        const replaces = text('replaces') ? this.#store.org.findAgent(context.orgId, text('replaces')) : null;
-        if (text('replaces') && !replaces) return fail('No agent "' + text('replaces') + '" to replace.');
-        if (replaces) {
-          // Stage 4 (docs/concepts/agent-performance-management.md, section
-          // 4): archiving, the handover and the hire happen together in
-          // #replaceAgent, never as three separate steps a half-finished
-          // call could leave inconsistent.
-          if (!text('name') || !text('title') || !text('instructions')) {
-            return fail('Replacing an agent still needs a name, a title and instructions for the successor.');
-          }
-          if (text('name').trim().toLowerCase() === replaces.name.trim().toLowerCase()) {
-            return fail('The successor needs a different name from ' + replaces.name + " - decision E4: a new identity, not a reused one.");
-          }
-          const successor = await this.replaceAgent(
-            context.orgId,
-            replaces.id,
-            {
-              name: text('name'),
-              slug: text('slug') || undefined,
-              title: text('title'),
-              instructions: text('instructions'),
-              voice: text('voice') || undefined,
-              handover: text('handover') || undefined,
-            },
-            this.#asProvider(text('provider')) ?? replaces.provider,
-          );
-          return {
-            text:
-              'Archived ' + replaces.name + ' (' + replaces.slug + ') and hired ' + successor.name + ' as ' +
-              successor.title + ' (slug: ' + successor.slug + ') in their place.',
-          };
-        }
-        const team = text('team') ? this.#store.org.findTeam(context.orgId, text('team')) : null;
-        if (text('team') && !team) return fail('No team "' + text('team') + '". Create it first.');
-        const manager = text('manager') ? this.#store.org.findAgent(context.orgId, text('manager')) : null;
-        if (text('manager') && !manager) return fail('No agent "' + text('manager') + '" to report to.');
-        const agent = this.#store.org.createAgent({
-          orgId: context.orgId,
-          slug: text('slug') || undefined,
-          name: text('name'),
-          title: text('title'),
-          instructions: text('instructions'),
-          voice: text('voice') || undefined,
-          teamId: team?.id,
-          managerId: manager?.id,
-          provider: this.#asProvider(text('provider')),
-          model: text('model') || undefined,
-          permission: asPermission(text('permission')),
-        });
-        this.emit('changed', { kind: 'agent', id: agent.id });
-        return { text: 'Hired ' + agent.name + ' as ' + agent.title + ' (slug: ' + agent.slug + ').' };
-      }
-
-      case 'create_team': {
-        if (context.audience !== 'assistant') return fail('Only the assistant can create teams.');
-        const lead = text('lead') ? this.#store.org.findAgent(context.orgId, text('lead')) : null;
-        if (text('lead') && !lead) return fail('No agent "' + text('lead') + '" to lead the team.');
-        const team = this.#store.org.createTeam({
-          orgId: context.orgId,
-          name: text('name'),
-          purpose: text('purpose') || undefined,
-          leadId: lead?.id,
-        });
-        this.emit('changed', { kind: 'team', id: team.id });
-        return { text: 'Created team "' + team.name + '" (id: ' + team.id + ').' };
-      }
-
-      case 'create_project': {
-        if (context.audience !== 'assistant') return fail('Only the assistant can create projects.');
-        const path = text('path') || undefined;
-        if (path && !existsSync(path)) return fail('The directory ' + path + ' does not exist.');
-        const project = this.#store.org.createProject({
-          orgId: context.orgId,
-          name: text('name'),
-          description: text('description') || undefined,
-          path,
-        });
-        this.emit('changed', { kind: 'project', id: project.id });
-        return { text: 'Created project "' + project.name + '" (id: ' + project.id + ').' };
-      }
-
+      case 'set_tool_server':
+        return this.#toolSetToolServer(context, args);
+      case 'hire_agent':
+        return this.#toolHireAgent(context, args);
+      case 'create_team':
+        return this.#toolCreateTeam(context, args);
+      case 'create_project':
+        return this.#toolCreateProject(context, args);
       case 'update_agent':
-        return this.#updateAgent(context, args);
-
+        return this.#toolUpdateAgent(context, args);
       case 'update_team':
-        return this.#updateTeam(context, args);
-
-      case 'create_task': {
-        if (!text('title') || !text('description')) return fail('A task needs a title and a description.');
-        const project = text('project') ? this.#store.org.findProject(context.orgId, text('project')) : null;
-        if (text('project') && !project) return fail('No project "' + text('project') + '".');
-        const assignee = text('assignee') ? this.#store.org.findAgent(context.orgId, text('assignee')) : null;
-        if (text('assignee') && !assignee) return fail('No agent "' + text('assignee') + '".');
-        const task = this.#store.org.createTask({
-          orgId: context.orgId,
-          title: text('title'),
-          description: text('description'),
-          projectId: project?.id ?? context.projectId,
-          priority: asPriority(text('priority')),
-          assigneeId: assignee?.id,
-          createdBy: context.audience === 'agent' ? 'agent' : 'assistant',
-          createdByAgentId: context.agentId,
-          // Whenever it runs, the conversation that asked for it hears how it
-          // ended. Inside a task there is a parent to report to instead.
-          requesterSessionId: context.taskId ? undefined : context.sessionId,
-        });
-        // The card opens its own activity with the brief (`createTask`), so
-        // there is nothing more to write before anybody presses start.
-        this.#announceTask(task, context.emit);
-        return { text: 'Task ' + task.id.slice(0, 8) + ' "' + task.title + '" is on the board.' };
-      }
-
-      case 'list_tasks': {
-        const wanted = text('status').split(',').map((v) => v.trim()).filter(Boolean) as TaskStatus[];
-        // Without a filter this is the board, and the board is its top row.
-        // With one it is a search, and delegated work sits under a parent
-        // (decision E9) - a blocked subtask under a finished parent is
-        // exactly what the board watcher is woken for.
-        const tasks = this.#store.org.listTasks(
-          context.orgId,
-          wanted.length ? { status: wanted, anyLevel: true } : {},
-        );
-        return { text: renderBoard(tasks, this.snapshot(context.orgId), this.#store.org) };
-      }
-
+        return this.#toolUpdateTeam(context, args);
+      case 'create_task':
+        return this.#toolCreateTask(context, args);
+      case 'list_tasks':
+        return this.#toolListTasks(context, args);
       case 'update_task':
-        return this.#updateTask(context, args);
-
-      case 'plan_task': {
-        const task = this.findTask(context.orgId, text('id'));
-        if (!task) return fail('No task ' + text('id') + '.');
-        const plan = await this.planTask(context, task, text('hint') || undefined);
-        return { text: describePlan(plan, this.#store.org.listTasks(context.orgId, { parentId: task.id })) };
-      }
-
-      case 'run_task': {
-        const task = this.findTask(context.orgId, text('id'));
-        if (!task) return fail('No task ' + text('id') + '.');
-        const finished = await this.#runAwaited(context, task);
-        if (finished.status === 'blocked') return { text: this.#waitingText(finished) };
-        if (finished.status !== 'done') {
-          return fail('Task "' + finished.title + '" ' + finished.status + (finished.error ? ': ' + finished.error : '.'));
-        }
-        return { text: 'Task "' + finished.title + '" is done.\n\n' + clip(finished.result ?? '', RESULT_BUDGET) };
-      }
-
+        return this.#toolUpdateTask(context, args);
+      case 'plan_task':
+        return this.#toolPlanTask(context, args);
+      case 'run_task':
+        return this.#toolRunTask(context, args);
       case 'list_schedules':
       case 'create_schedule':
       case 'update_schedule':
       case 'delete_schedule':
       case 'run_schedule':
       case 'set_webhook':
-        return this.#schedules(context, name, args);
-
+        return this.#toolSchedules(context, name, args);
       case 'list_listeners':
       case 'set_listener':
       case 'remove_listener':
-        return this.#listeners(context, name, args);
-
+        return this.#toolListeners(context, name, args);
       default:
-        return fail('Unknown tool ' + name + '.');
+        return toolError('Unknown tool ' + name + '.');
     }
+  }
+
+  #toolAssignmentStatus(context: ToolContext, args: ToolArgs): ToolCallResult {
+    const assignment = this.findAssignment(context.orgId, args.text('id'));
+    if (!assignment) return toolError(NO_SUCH_RUN);
+    return {
+      text: describeAssignment(
+        assignment,
+        this.#store.org.getAgent(assignment.agentId),
+        this.#store.org.taskRunNumber(assignment.id),
+      ),
+    };
+  }
+
+  #toolReviewAssignment(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant records reviews.');
+    const assignment = this.findAssignment(context.orgId, args.text('id'));
+    if (!assignment) return toolError(NO_SUCH_RUN);
+    const review = this.#store.org.upsertReview({
+      orgId: context.orgId,
+      agentId: assignment.agentId,
+      assignmentId: assignment.id,
+      taskId: this.#store.org.getTaskIdForAssignment(assignment.id) ?? undefined,
+      source: 'assistant',
+      overall: args.number('overall', 1, 5, 3),
+      comment: args.text('comment') || undefined,
+    });
+    this.emit('changed', { kind: 'agent', id: assignment.agentId });
+    return { text: 'Review recorded (overall ' + review.overall + ').' };
+  }
+
+  #toolAgentPerformance(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant sees the personnel record.');
+    const agent = this.#store.org.findAgent(context.orgId, args.text('agent'));
+    if (!agent) return toolError(noAgent(args.text('agent')));
+    return { text: describeAgentPerformance(agent, this.#store.org) };
+  }
+
+  #toolCancelAssignment(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can call off a running task.');
+    const assignment = this.findAssignment(context.orgId, args.text('id'));
+    if (!assignment) return toolError(NO_SUCH_RUN);
+    if (!this.cancel(assignment.id, 'the assistant')) {
+      return toolError('Run ' + shortId(assignment.id) + ' is not running; it is ' + assignment.status + '.');
+    }
+    return { text: 'Calling off run ' + shortId(assignment.id) + '. It ends as cancelled within a moment.' };
+  }
+
+  #toolListAssignments(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can read the history.');
+    const org = this.#store.org;
+    const agent = resolveOptional(args.text('agent'), (ref) => org.findAgent(context.orgId, ref), noAgent);
+    if (!agent.ok) return agent.error;
+    const project = resolveOptional(args.text('project'), (ref) => org.findProject(context.orgId, ref), noProject);
+    if (!project.ok) return project.error;
+    const wanted = args.list('status') as AssignmentStatus[];
+    const limit = args.number('limit', 1, 200, 20);
+    // The store cannot filter by project, so a project filter scans further
+    // back and cuts afterwards.
+    const rows = org
+      .listAssignments(context.orgId, {
+        agentId: agent.value?.id,
+        status: wanted.length ? wanted : undefined,
+        limit: project.value ? LOOKUP_SCAN_LIMIT : limit,
+      })
+      .filter((entry) => !project.value || entry.projectId === project.value.id)
+      .slice(0, limit);
+    if (!rows.length) return { text: 'No runs match.' };
+    const slugs = new Map(org.listAgents(context.orgId, { includeArchived: true }).map((entry) => [entry.id, entry.slug]));
+    return { text: rows.map((entry) => this.#assignmentListLine(entry, slugs.get(entry.agentId) ?? '?')).join('\n') };
+  }
+
+  #assignmentListLine(entry: Assignment, agentSlug: string): string {
+    // Local wall clock, and for anything still going the elapsed
+    // span as well: "has this run too long" is the question the
+    // board watcher asks, and a span cannot be read in the wrong
+    // timezone the way a stamp can.
+    const took = entry.durationMs
+      ? ' ' + toSeconds(entry.durationMs) + 's'
+      : entry.status === 'running'
+        ? ' running ' + formatAge(entry.createdAt)
+        : '';
+    // The name, never the brief: three runs of the same errand open
+    // with the same twenty words, and a list of those tells nobody
+    // which is which (concept 7.1).
+    const run = this.#store.org.taskRunNumber(entry.id);
+    return '- ' + shortId(entry.id) + ' ' + formatWhen(entry.createdAt) + ' ' + entry.status + took + ' ' + agentSlug + ': ' +
+      shorten(entry.title, 100) + (run && run > 1 ? ' (run ' + run + ')' : '') +
+      (entry.error ? ' [' + shorten(entry.error, 60) + ']' : '');
+  }
+
+  #toolUpdateProject(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can change projects.');
+    const project = this.#store.org.findProject(context.orgId, args.text('project'));
+    if (!project) return toolError(noProject(args.text('project')));
+    const patch: ProjectPatch = {};
+    if (args.text('name')) patch.name = args.text('name');
+    if (args.text('description')) patch.description = args.text('description');
+    const path = args.text('path');
+    if (path) {
+      if (path.toLowerCase() === 'none') patch.path = null;
+      else if (!existsSync(path)) return toolError('The directory ' + path + ' does not exist.');
+      else patch.path = path;
+    }
+    const archived = args.flag('archived');
+    if (archived !== undefined) patch.archived = archived;
+    if (!Object.keys(patch).length) return toolError('Nothing to change.');
+    this.#store.org.updateProject(project.id, patch);
+    this.emit('changed', { kind: 'project', id: project.id });
+    return { text: 'Updated project "' + (patch.name ?? project.name) + '": ' + Object.keys(patch).join(', ') + '.' };
+  }
+
+  #toolSleepNow(context: ToolContext): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant has this memory.');
+    if (!this.#sleep) return toolError('The nightly memory run is not available here.');
+    if (this.#sleep.isRunning(ASSISTANT_MEMORY_OWNER)) return { text: 'The memory is already asleep.' };
+    // Started, not awaited: a night takes minutes and the turn must not
+    // sit and wait for it. The memory page follows it live.
+    void this.#sleep.run({ owner: ASSISTANT_MEMORY_OWNER, trigger: 'manual' });
+    return {
+      text:
+        'The memory is going to sleep now. It condenses, files and connects; nothing is deleted, ' +
+        'and the run can be undone on the memory page.',
+    };
+  }
+
+  #toolReadProfile(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant has this profile.');
+    const offset = args.has('offset') ? Number(args.raw('offset')) : 0;
+    const limit = args.has('limit') ? Number(args.raw('limit')) : PROFILE_EXCERPT_CHARS;
+    return { text: readProfileExcerpt(this.#config, args.text('name'), offset, limit) };
+  }
+
+  #toolSearchProfile(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant has this profile.');
+    return { text: searchProfile(this.#config, args.text('query')) };
+  }
+
+  #toolRemember(context: ToolContext, args: ToolArgs): ToolCallResult {
+    // The assistant keeps facts about the user; an agent keeps facts
+    // about its own work. Either way the write lands in the caller's own
+    // bank and nowhere else - there is no path here that writes across
+    // the owner boundary.
+    const owner = memoryOwnerOf(context);
+    // Same rule as write_skill below: a scheduled run has nobody present
+    // to confirm anything, and a memory it pinned would even carry
+    // origin 'user' - protected from the very night that should weigh it.
+    if (context.scheduled) {
+      return toolError(
+        'This run was started by a schedule. Automated runs leave no memories - if this ' +
+          'belongs in memory, bring it up in a conversation.',
+      );
+    }
+    if (!args.text('content')) return toolError('A memory needs content.');
+    const tags = args.list('tags');
+    const record = this.#store.upsertMemory({
+      kind: asMemoryKind(args.text('kind')),
+      content: args.text('content'),
+      tags,
+      importance: args.number('importance', 0, 1, 0.7),
+      owner,
+      sourceSessionId: context.sessionId,
+      // Asked for explicitly, so the night never merges it away.
+      origin: 'user',
+    });
+    linkEntities(this.#store, owner, record.id, tags);
+    this.emit('changed', { kind: 'memory', id: record.id });
+    return { text: 'Remembered (' + shortId(record.id) + '): ' + record.content };
+  }
+
+  #toolForget(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant has this memory.');
+    // Forgetting is a deletion, and E1 of the memory concept says a
+    // deletion happens only on the user's explicit word - a schedule has
+    // nobody behind it to give that word.
+    if (context.scheduled) {
+      return toolError(
+        'This run was started by a schedule. Nothing is forgotten on an automated run - ask ' +
+          'in a conversation instead.',
+      );
+    }
+    const ref = args.text('id');
+    if (!ref) return toolError('Which memory? Give its id.');
+    const record =
+      this.#store.getMemory(ref) ??
+      this.#store
+        .listMemories({ owner: ASSISTANT_MEMORY_OWNER, limit: MEMORY_PREFIX_SCAN_LIMIT })
+        .find((memory) => memory.id.startsWith(ref));
+    if (!record || record.owner !== ASSISTANT_MEMORY_OWNER) return toolError('No memory ' + ref + '.');
+    this.#store.forgetMemory(record.id);
+    this.emit('changed', { kind: 'memory', id: record.id });
+    return { text: 'Forgotten: ' + record.content };
+  }
+
+  #toolSearchMemory(context: ToolContext, args: ToolArgs): ToolCallResult {
+    // Read-only, and strictly inside the caller's own bank: the
+    // assistant searches what it knows about the user, an agent searches
+    // its own working memory. One owner in, one owner out.
+    const owner = memoryOwnerOf(context);
+    const limit = args.number('limit', 1, 100, 20);
+    const query = args.text('query');
+    const rows = query
+      ? recall(this.#store, { text: query, limit, owner, touch: false })
+      : this.#store.listMemories({ owner, limit });
+    if (!rows.length) return { text: query ? 'Nothing in memory matches.' : 'Memory is empty.' };
+    return {
+      text: rows
+        .map((memory) => '- ' + shortId(memory.id) + ' [' + memory.kind + ', ' + memory.importance.toFixed(2) + '] ' + memory.content)
+        .join('\n'),
+    };
+  }
+
+  async #toolAnswerTask(context: ToolContext, args: ToolArgs): Promise<ToolCallResult> {
+    const task = this.findTask(context.orgId, args.text('id'));
+    if (!task) return toolError('No task ' + args.text('id') + '.');
+    const answerer: TaskAnswerer =
+      context.audience === 'agent' ? { kind: 'agent', agentId: context.agentId } : { kind: 'assistant' };
+    const answered = await this.#answer(task, args.text('answer'), answerer, context);
+    if (!answered.ok) return toolError(answered.reason);
+    const where = context.taskId && task.parentId === context.taskId
+      ? 'Your own task stays open until it is back: when your run ends, you are started again with its result.'
+      : task.requesterSessionId && !task.parentId
+        ? 'When it ends, a message arrives in the conversation it came from.'
+        : 'How it ends is recorded on its card.';
+    return {
+      text: 'Answered task ' + shortId(task.id) + ' "' + task.title + '"; it runs again with your answer. ' + where,
+    };
+  }
+
+  #toolReportToUser(context: ToolContext, args: ToolArgs): ToolCallResult {
+    // Agents, and the one assistant run that has no conversation to speak
+    // in: the board watcher. An ordinary assistant turn answers the user
+    // directly, and `notify` is its line for what cannot wait.
+    if (context.audience !== 'agent' && !context.watching) {
+      return toolError('Reach the user through your answer, or with notify for something that has to arrive now.');
+    }
+    if (!args.text('title') || !args.text('body')) return toolError('A report needs a title and a body.');
+    const isAgent = context.audience === 'agent';
+    const notification = this.notifyUser({
+      orgId: context.orgId,
+      kind: context.watching ? 'watch' : 'agent',
+      title: args.text('title'),
+      body: args.text('body'),
+      fromKind: callerKind(context),
+      fromAgentId: isAgent ? context.agentId : undefined,
+      taskId: context.taskId,
+      // The watcher's own run is where a reply to its report continues;
+      // an agent's run has no conversation of its own to point at.
+      sessionId: context.watching ? context.sessionId : undefined,
+    });
+    if (context.taskId && this.#store.org.getTask(context.taskId)) {
+      this.#taskEvent({
+        taskId: context.taskId,
+        kind: 'note',
+        actorKind: callerKind(context),
+        actorAgentId: context.agentId,
+        text: 'Reported to the user: ' + notification.title + '\n\n' + notification.body,
+        assignmentId: context.parentAssignmentId,
+      });
+    }
+    return { text: 'Left the user a notification: "' + notification.title + '".' };
+  }
+
+  #toolTaskActivity(context: ToolContext, args: ToolArgs): ToolCallResult {
+    const task = this.findTask(context.orgId, args.text('id'));
+    if (!task) return toolError('No task ' + args.text('id') + '.');
+    return {
+      text: clip(
+        renderTaskActivity(task, this.#store.org.listTaskEvents(task.id), this.snapshot(context.orgId)),
+        RESULT_BUDGET,
+      ),
+    };
+  }
+
+  #toolNotify(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can send notifications.');
+    const text = args.text('text');
+    if (!text) return toolError('A notification needs text.');
+    const urgency = args.raw('urgency') === 'high' ? 'high' : 'normal';
+    // Kept as well as pushed: a push is gone once it is swiped away, and
+    // the web should be able to show what the assistant said on its own.
+    // The push itself still travels on the `notify` event - the
+    // notification is the record, so a channel must not push it twice.
+    this.notifyUser({
+      orgId: context.orgId,
+      kind: 'system',
+      title: shorten(text.split('\n', 1)[0] ?? '', 80),
+      body: text,
+      fromKind: 'assistant',
+      sessionId: context.sessionId,
+    });
+    if (!this.#canNotify || !this.#canNotify()) {
+      return {
+        text:
+          'No push channel can reach the user right now - none is set up, it is switched off, or it has ' +
+          'no recipient. The message is saved in their notifications and waits there.',
+      };
+    }
+    const event: NotifyEvent = { text, urgency, at: Date.now() };
+    this.emit('notify', event);
+    return { text: 'Sent' + (urgency === 'high' ? ' (high urgency)' : '') + ': ' + event.text };
+  }
+
+  async #toolAskUser(context: ToolContext, args: ToolArgs): Promise<ToolCallResult> {
+    // Only the assistant asks. An agent runs unattended by design and
+    // asks whoever gave it the work (`ask_requester`); letting one block
+    // on a person would stall a whole delegation chain behind them.
+    if (context.audience !== 'assistant') {
+      return toolError(
+        'Only the assistant can ask the user. Inside a task, ask whoever gave you the work with ' +
+          'ask_requester; otherwise say what you need in your result.',
+      );
+    }
+    // Belt and braces: a scheduled run is not offered the tool at all
+    // (see `register`), so getting here means the list was built for a
+    // conversation and the run turned out to be automated.
+    if (context.scheduled) {
+      return toolError(
+        'This run was started by a schedule and nobody is there to answer. Decide it yourself ' +
+          'and say in your result what you assumed.',
+      );
+    }
+    if (!this.#questions) return toolError('Asking the user is not available here.');
+    const question = args.text('question');
+    if (!question) return toolError('A question needs its text.');
+    const options = asQuestionOptions(args.raw('options'));
+    if (options.length < MIN_QUESTION_OPTIONS) return toolError('Offer at least two options to choose from.');
+    if (options.length > MAX_QUESTION_OPTIONS) return toolError('Offer at most four options; more does not fit a phone.');
+
+    const timeoutMs = this.#config.questions.timeoutMs;
+    // The close event carries why it closed, and the turn wants to know:
+    // "nobody was there" and "somebody waved it away" are different
+    // things to carry on from.
+    let closedBecause: QuestionCloseReason | undefined;
+    const emit = (event: AgentEvent): void => {
+      if (event.type === 'question-closed') closedBecause = event.reason;
+      context.emit(event);
+    };
+    const answer = await this.#questions.ask(
+      {
+        header: args.text('header') || 'Question',
+        question,
+        options,
+        multiSelect: args.raw('multiSelect') === true,
+        sessionId: context.sessionId,
+      },
+      // `emit` puts the card on the asking turn's own stream; `signal` is
+      // the half no other tool handler has: an aborted turn kills the
+      // provider process, and without this the question would stay open
+      // for its full timeout with nobody left to receive the answer.
+      // `owner` widens that to every way a turn can end.
+      { signal: context.signal, timeoutMs, emit, ...(context.questionOwner ? { owner: context.questionOwner } : {}) },
+    );
+
+    if (!answer) {
+      const cancelled = closedBecause === 'cancelled' || context.signal?.aborted;
+      return { text: cancelled ? 'The question was cancelled before anybody answered it.' : noAnswerText(timeoutMs) };
+    }
+    return { text: answerText(answer, options) };
+  }
+
+  #toolUseSkill(context: ToolContext, args: ToolArgs): ToolCallResult {
+    // An agent's own instructions carry its project's skills too (Befund
+    // 4 in the concept doc): the tool must resolve against the running
+    // assignment's project, not only the one long-lived home store.
+    const isAgent = context.audience === 'agent';
+    const project = isAgent && context.projectId ? this.#store.org.getProject(context.projectId) : null;
+    const skills = isAgent ? this.#agentSkills(project) : this.#skills.for('assistant');
+    const name = args.text('name');
+    // Rookery's own shelf first, then the one installed in Claude Code -
+    // a skill a person wrote here outranks a plugin's.
+    const skill =
+      skills.find((entry) => entry.name === name.toLowerCase()) ?? openExternalSkill(this.#config, callerKind(context), name);
+    if (!skill) {
+      return toolError(
+        'No skill "' + name + '". The list in your instructions is authoritative for ' +
+          "Rookery's own skills; for the ones installed on this machine, search with find_skill first.",
+      );
+    }
+    // Noted, not just answered. Which run had a skill open is the only
+    // way the night can later tell a procedure that still holds from one
+    // that is quietly sending every run that follows it into a wall.
+    this.#store.recordSkillUse({
+      skill: skill.name,
+      owner: memoryOwnerOf(context),
+      assignmentId: isAgent ? context.parentAssignmentId : undefined,
+      sessionId: context.sessionId,
+    });
+    return { text: renderSkill(skill) };
+  }
+
+  #toolWriteSkill(context: ToolContext, args: ToolArgs): ToolCallResult {
+    // A scheduled run has a person's trust but not a person present:
+    // what it writes down would echo its own job prompt, and nothing
+    // standing behind it would ever be read by anyone. It says so and
+    // carries on without the skill.
+    if (context.scheduled) {
+      return toolError(
+        'This run was started by a schedule. Automated runs leave no memories and write no ' +
+          'skills - if this procedure matters, ask for it in a conversation or write it yourself.',
+      );
+    }
+    // Always the home store, never the project one: a skill written in
+    // the middle of an assignment must not land in somebody's repository.
+    const audience = asServerAudience(args.raw('audience')) ?? 'both';
+    try {
+      // Keep the previous wording before replacing it. Revising a skill
+      // is the point of this tool, and a revision that turns out worse
+      // than what it replaced has to leave a way back.
+      const name = skillSlug(args.text('name'));
+      this.#store.snapshotSkill({ skill: name, content: this.#skills.raw(name) });
+      const skill = this.#skills.save({
+        name: args.text('name'),
+        description: args.text('description'),
+        body: args.text('body'),
+        audience,
+        origin: 'agent',
+      });
+      this.emit('changed', { kind: 'skill', id: skill.name });
+      return {
+        text:
+          'Skill "' + skill.name + '" written to ' + skill.path + '. It is in the index from ' +
+          'the next turn on; open it with use_skill.',
+      };
+    } catch (cause) {
+      return toolError((cause as Error).message);
+    }
+  }
+
+  #toolProjectMcpServers(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant reviews project MCP servers.');
+    const project = this.#store.org.findProject(context.orgId, args.text('project'));
+    if (!project) return toolError(noProject(args.text('project')));
+    if (!project.path) return toolError('Project "' + project.name + '" has no directory.');
+    const file = readProjectMcpFile(project.path);
+    if (!file || !file.servers.length) return { text: NO_PROJECT_MCP_SERVERS };
+    const status = projectMcpStatus(file, project.mcpTrust);
+    return {
+      text:
+        'Status: ' + status + '.\n' +
+        renderProjectMcpServers(file.servers) +
+        (status === 'trusted' ? '' : '\nUse trust_project_mcp to approve before these start for a run.'),
+    };
+  }
+
+  #toolTrustProjectMcp(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant decides project trust.');
+    const project = this.#store.org.findProject(context.orgId, args.text('project'));
+    if (!project) return toolError(noProject(args.text('project')));
+    const decision = args.text('decision');
+    if (decision !== 'approve' && decision !== 'revoke') return toolError('decision must be approve or revoke.');
+    if (decision === 'revoke') {
+      this.#store.org.updateProject(project.id, { mcpTrust: null });
+      this.emit('changed', { kind: 'project', id: project.id });
+      return { text: 'Revoked trust for "' + project.name + '"; its MCP servers no longer start for its runs.' };
+    }
+    if (!project.path) return toolError('Project "' + project.name + '" has no directory.');
+    const file = readProjectMcpFile(project.path);
+    if (!file || !file.servers.length) return toolError(NO_PROJECT_MCP_SERVERS);
+    this.#store.org.updateProject(project.id, {
+      mcpTrust: { fingerprint: fingerprintMcpFile(file.raw), approvedAt: Date.now() },
+    });
+    this.emit('changed', { kind: 'project', id: project.id });
+    return {
+      text:
+        'Trusted "' + project.name + '": ' + file.servers.length +
+        ' MCP server(s) start for its runs from now on.',
+    };
+  }
+
+  #toolSetToolServer(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can switch tools.');
+    const state = toolServerStates(this.#config).find((entry) => entry.id === args.text('id'));
+    if (!state) return toolError('No tool server "' + args.text('id') + '".');
+    const enabled = args.flag('enabled');
+    if (enabled === undefined) return toolError('enabled must be true or false.');
+    // A server read out of Claude Code belongs to somebody else's
+    // installation. Starting it is the user's call, made on the Tools page.
+    if (state.approvalRequired) {
+      return toolError(
+        state.name + ' comes from ' + (state.source || 'another installation') + ' and only the user can ' +
+          'switch it on, on the Tools page. Say that you need it and why.',
+      );
+    }
+    if (enabled && !state.installed) return toolError(state.name + ' is not installed on this machine.');
+    if (enabled && state.missingEnv.length) {
+      return toolError(state.name + ' needs ' + state.missingEnv.join(', ') + ' first; the user sets that on the Tools page.');
+    }
+    const audienceText = args.text('audience');
+    const audience = asServerAudience(audienceText);
+    applyConfig(
+      this.#config,
+      withToolServer(this.#config, state.id, { enabled, ...(audience ? { audience } : {}) }),
+    );
+    this.emit('changed', { kind: 'tools', id: state.id });
+    return {
+      text: state.name + ' is now ' + (enabled ? 'on' : 'off') + ' for ' + (audienceText || state.audience) + '. ' +
+        (enabled
+          ? 'Finish this answer and it is attached; the turn then carries on and you can use it.'
+          : 'It is gone from the next turn on.'),
+    };
+  }
+
+  async #toolHireAgent(context: ToolContext, args: ToolArgs): Promise<ToolCallResult> {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can hire.');
+    const org = this.#store.org;
+    const replaces = resolveOptional(
+      args.text('replaces'),
+      (ref) => org.findAgent(context.orgId, ref),
+      (ref) => 'No agent "' + ref + '" to replace.',
+    );
+    if (!replaces.ok) return replaces.error;
+    // Stage 4 (docs/concepts/agent-performance-management.md, section
+    // 4): archiving, the handover and the hire happen together in
+    // #replaceAgent, never as three separate steps a half-finished
+    // call could leave inconsistent.
+    if (replaces.value) return this.#replaceAgentViaTool(context, replaces.value, args);
+
+    const team = resolveOptional(
+      args.text('team'),
+      (ref) => org.findTeam(context.orgId, ref),
+      (ref) => 'No team "' + ref + '". Create it first.',
+    );
+    if (!team.ok) return team.error;
+    const manager = resolveOptional(
+      args.text('manager'),
+      (ref) => org.findAgent(context.orgId, ref),
+      (ref) => 'No agent "' + ref + '" to report to.',
+    );
+    if (!manager.ok) return manager.error;
+    const agent = org.createAgent({
+      orgId: context.orgId,
+      slug: args.text('slug') || undefined,
+      name: args.text('name'),
+      title: args.text('title'),
+      instructions: args.text('instructions'),
+      voice: args.text('voice') || undefined,
+      teamId: team.value?.id,
+      managerId: manager.value?.id,
+      provider: this.#asProvider(args.text('provider')),
+      model: args.text('model') || undefined,
+      permission: asPermission(args.text('permission')),
+    });
+    this.emit('changed', { kind: 'agent', id: agent.id });
+    return { text: 'Hired ' + agent.name + ' as ' + agent.title + ' (slug: ' + agent.slug + ').' };
+  }
+
+  async #replaceAgentViaTool(context: ToolContext, replaces: Agent, args: ToolArgs): Promise<ToolCallResult> {
+    if (!args.text('name') || !args.text('title') || !args.text('instructions')) {
+      return toolError('Replacing an agent still needs a name, a title and instructions for the successor.');
+    }
+    if (args.text('name').toLowerCase() === replaces.name.trim().toLowerCase()) {
+      return toolError('The successor needs a different name from ' + replaces.name + " - decision E4: a new identity, not a reused one.");
+    }
+    const successor = await this.replaceAgent(
+      context.orgId,
+      replaces.id,
+      {
+        name: args.text('name'),
+        slug: args.text('slug') || undefined,
+        title: args.text('title'),
+        instructions: args.text('instructions'),
+        voice: args.text('voice') || undefined,
+        handover: args.text('handover') || undefined,
+      },
+      this.#asProvider(args.text('provider')) ?? replaces.provider,
+    );
+    return {
+      text:
+        'Archived ' + replaces.name + ' (' + replaces.slug + ') and hired ' + successor.name + ' as ' +
+        successor.title + ' (slug: ' + successor.slug + ') in their place.',
+    };
+  }
+
+  #toolCreateTeam(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can create teams.');
+    const lead = resolveOptional(
+      args.text('lead'),
+      (ref) => this.#store.org.findAgent(context.orgId, ref),
+      (ref) => 'No agent "' + ref + '" to lead the team.',
+    );
+    if (!lead.ok) return lead.error;
+    const team = this.#store.org.createTeam({
+      orgId: context.orgId,
+      name: args.text('name'),
+      purpose: args.text('purpose') || undefined,
+      leadId: lead.value?.id,
+    });
+    this.emit('changed', { kind: 'team', id: team.id });
+    return { text: 'Created team "' + team.name + '" (id: ' + team.id + ').' };
+  }
+
+  #toolCreateProject(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can create projects.');
+    const path = args.text('path') || undefined;
+    if (path && !existsSync(path)) return toolError('The directory ' + path + ' does not exist.');
+    const project = this.#store.org.createProject({
+      orgId: context.orgId,
+      name: args.text('name'),
+      description: args.text('description') || undefined,
+      path,
+    });
+    this.emit('changed', { kind: 'project', id: project.id });
+    return { text: 'Created project "' + project.name + '" (id: ' + project.id + ').' };
+  }
+
+  #toolCreateTask(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (!args.text('title') || !args.text('description')) return toolError('A task needs a title and a description.');
+    const project = resolveOptional(args.text('project'), (ref) => this.#store.org.findProject(context.orgId, ref), noProject);
+    if (!project.ok) return project.error;
+    const assignee = resolveOptional(args.text('assignee'), (ref) => this.#store.org.findAgent(context.orgId, ref), noAgent);
+    if (!assignee.ok) return assignee.error;
+    const task = this.#store.org.createTask({
+      orgId: context.orgId,
+      title: args.text('title'),
+      description: args.text('description'),
+      projectId: project.value?.id ?? context.projectId,
+      priority: asPriority(args.text('priority')),
+      assigneeId: assignee.value?.id,
+      createdBy: callerKind(context),
+      createdByAgentId: context.agentId,
+      // Whenever it runs, the conversation that asked for it hears how it
+      // ended. Inside a task there is a parent to report to instead.
+      requesterSessionId: context.taskId ? undefined : context.sessionId,
+    });
+    // The card opens its own activity with the brief (`createTask`), so
+    // there is nothing more to write before anybody presses start.
+    this.#announceTask(task, context.emit);
+    return { text: 'Task ' + shortId(task.id) + ' "' + task.title + '" is on the board.' };
+  }
+
+  #toolListTasks(context: ToolContext, args: ToolArgs): ToolCallResult {
+    const wanted = args.list('status') as TaskStatus[];
+    // Without a filter this is the board, and the board is its top row.
+    // With one it is a search, and delegated work sits under a parent
+    // (decision E9) - a blocked subtask under a finished parent is
+    // exactly what the board watcher is woken for.
+    const tasks = this.#store.org.listTasks(
+      context.orgId,
+      wanted.length ? { status: wanted, anyLevel: true } : {},
+    );
+    return { text: renderBoard(tasks, this.snapshot(context.orgId), this.#store.org) };
+  }
+
+  async #toolPlanTask(context: ToolContext, args: ToolArgs): Promise<ToolCallResult> {
+    const task = this.findTask(context.orgId, args.text('id'));
+    if (!task) return toolError('No task ' + args.text('id') + '.');
+    const plan = await this.planTask(context, task, args.text('hint') || undefined);
+    return { text: describePlan(plan, this.#store.org.listTasks(context.orgId, { parentId: task.id })) };
+  }
+
+  async #toolRunTask(context: ToolContext, args: ToolArgs): Promise<ToolCallResult> {
+    const task = this.findTask(context.orgId, args.text('id'));
+    if (!task) return toolError('No task ' + args.text('id') + '.');
+    const finished = await this.#runAwaited(context, task);
+    if (finished.status === 'blocked') return { text: this.#waitingText(finished) };
+    if (finished.status !== 'done') {
+      return toolError('Task "' + finished.title + '" ' + finished.status + (finished.error ? ': ' + finished.error : '.'));
+    }
+    return { text: 'Task "' + finished.title + '" is done.\n\n' + clip(finished.result ?? '', RESULT_BUDGET) };
   }
 
   /* ------------------------------- schedules ------------------------------ */
 
-  /** The schedule tools: thin validation around the clock, with agents and projects resolved by name. */
-  #schedules(context: ToolContext, name: string, args: Record<string, unknown>): ToolCallResult {
-    const text = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string).trim() : '');
-    const flag = (key: string): boolean | undefined => (typeof args[key] === 'boolean' ? (args[key] as boolean) : undefined);
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
+  #toolSchedules(context: ToolContext, name: string, args: ToolArgs): ToolCallResult {
     const cron = this.#cron;
-    if (!cron) return fail('Schedules are not available in this session.');
+    if (!cron) return toolError('Schedules are not available in this session.');
     const snapshot = this.snapshot(context.orgId);
+    if (name === 'list_schedules') return { text: renderSchedules(cron.list(context.orgId), snapshot) };
+
     const bySlug = new Map(snapshot.agents.map((agent) => [agent.id, agent.slug]));
-    const line = (job: Parameters<typeof describeCronJob>[0]): string =>
-      describeCronJob(job, job.agentId ? bySlug.get(job.agentId) : undefined);
+    const call: ScheduleCall = {
+      context,
+      cron,
+      args,
+      describe: (job) => describeCronJob(job, job.agentId ? bySlug.get(job.agentId) : undefined),
+    };
+    if (name === 'create_schedule') return this.#createSchedule(call);
 
-    if (name === 'list_schedules') {
-      return { text: renderSchedules(cron.list(context.orgId), snapshot) };
-    }
-
-    // "event" takes a schedule off the clock, and then it needs no expression
-    // at all; anything else keeps the old rule that one is required.
-    const triggerMode = text('triggerMode').toLowerCase() === 'event' ? 'event' : text('triggerMode') ? 'schedule' : undefined;
-    const cooldownMs =
-      args.cooldownSeconds === undefined ? undefined : clampNumber(args.cooldownSeconds, 0, 86_400, 60) * 1000;
-
-    if (name === 'create_schedule') {
-      if (!text('name') || !text('prompt')) return fail('A schedule needs a name and a prompt.');
-      if (!text('schedule') && triggerMode !== 'event') {
-        return fail('A schedule needs a cron expression, or triggerMode "event" to take it off the clock.');
-      }
-      const agent = text('agent') ? this.#store.org.findAgent(context.orgId, text('agent')) : null;
-      if (text('agent') && !agent) return fail('No agent "' + text('agent') + '".');
-      const project = text('project') ? this.#store.org.findProject(context.orgId, text('project')) : null;
-      if (text('project') && !project) return fail('No project "' + text('project') + '".');
-      // A one-off follow-up ("I'll get back to you here") should land back
-      // in the conversation it was promised in, not in a brand-new one.
-      // Only for the assistant's own runs - a recurring job, or one handed
-      // to an agent, keeps creating its own dedicated conversation.
-      const replyHere = !agent && flag('once') === true ? context.sessionId : undefined;
-      try {
-        const job = cron.create({
-          orgId: context.orgId,
-          name: text('name'),
-          schedule: text('schedule'),
-          triggerMode,
-          eventCooldownMs: cooldownMs,
-          prompt: text('prompt'),
-          kind: agent ? 'agent' : 'assistant',
-          agentId: agent?.id,
-          projectId: project?.id ?? context.projectId,
-          sessionId: replyHere,
-          once: flag('once'),
-          enabled: flag('enabled'),
-          createdBy: 'assistant',
-        });
-        const when = job.schedule ? describeCron(job.schedule) : 'on events only, no timetable';
-        return { text: 'Schedule created: ' + when + '.\n' + line(job) };
-      } catch (error) {
-        return fail((error as Error).message);
-      }
-    }
-
-    const job = cron.find(context.orgId, text('id'));
-    if (!job) return fail('No schedule "' + text('id') + '". list_schedules shows the ids.');
+    const job = cron.find(context.orgId, args.text('id'));
+    if (!job) return toolError('No schedule "' + args.text('id') + '". list_schedules shows the ids.');
     // The nightly memory run is Rookery's internal clockwork: it is not on
     // the list, and it is not the assistant's to delete, fire or reschedule.
     // The memory page owns it.
     if (job.kind === 'sleep') {
-      return fail('"' + job.name + '" is the memory\'s own nightly run, not a schedule of yours. It is managed on the memory page.');
+      return toolError('"' + job.name + '" is the memory\'s own nightly run, not a schedule of yours. It is managed on the memory page.');
     }
 
-    if (name === 'set_webhook') {
-      if (text('action').toLowerCase() === 'remove') {
-        cron.disableWebhook(job.id);
-        return { text: 'The webhook for "' + job.name + '" is gone; the URL opens nothing now.' };
-      }
-      const rotated = Boolean(job.webhookToken);
-      const updated = cron.enableWebhook(job.id);
-      const url = 'http://' + this.#config.host + ':' + this.#config.port + '/hooks/' + updated.webhookToken;
-      return {
-        text:
-          (rotated ? 'Rotated the webhook for "' : 'Webhook for "') + job.name +
-          '": ' + url + '\n' +
-          (rotated ? 'The previous URL stopped working just now. ' : '') +
-          'Anything that can send an HTTP POST to it starts this schedule.',
-      };
+    switch (name) {
+      case 'set_webhook':
+        return this.#setWebhook(call, job);
+      case 'delete_schedule':
+        cron.remove(job.id);
+        return { text: 'Deleted schedule "' + job.name + '".' };
+      case 'run_schedule':
+        return this.#runScheduleNow(cron, job);
+      default:
+        return this.#updateSchedule(call, job);
     }
+  }
 
-    if (name === 'delete_schedule') {
-      cron.remove(job.id);
-      return { text: 'Deleted schedule "' + job.name + '".' };
+  #createSchedule({ context, cron, args, describe }: ScheduleCall): ToolCallResult {
+    const triggerMode = triggerModeArg(args);
+    if (!args.text('name') || !args.text('prompt')) return toolError('A schedule needs a name and a prompt.');
+    if (!args.text('schedule') && triggerMode !== 'event') {
+      return toolError('A schedule needs a cron expression, or triggerMode "event" to take it off the clock.');
     }
-
-    if (name === 'run_schedule') {
-      if (cron.isRunning(job.id)) return { text: 'Schedule "' + job.name + '" is already running.' };
-      void cron.runNow(job.id).catch((error: Error) => this.#log.warn('Manual schedule run failed', { error: error.message }));
-      return { text: 'Schedule "' + job.name + '" is running now; the result reaches the user as a notification.' };
-    }
-
-    // update_schedule
-    const patch: CronJobPatch = {};
-    if (text('name')) patch.name = text('name');
-    if (text('schedule')) patch.schedule = text('schedule');
-    if (text('prompt')) patch.prompt = text('prompt');
-    if (text('agent')) {
-      const wanted = text('agent').toLowerCase();
-      if (wanted === 'assistant' || wanted === 'me' || wanted === 'none') patch.agentId = null;
-      else {
-        const agent = this.#store.org.findAgent(context.orgId, text('agent'));
-        if (!agent) return fail('No agent "' + text('agent') + '".');
-        patch.agentId = agent.id;
-      }
-    }
-    if (text('project')) {
-      if (text('project').toLowerCase() === 'none') patch.projectId = null;
-      else {
-        const project = this.#store.org.findProject(context.orgId, text('project'));
-        if (!project) return fail('No project "' + text('project') + '".');
-        patch.projectId = project.id;
-      }
-    }
-    if (triggerMode) patch.triggerMode = triggerMode;
-    if (cooldownMs !== undefined) patch.eventCooldownMs = cooldownMs;
-    if (flag('enabled') !== undefined) patch.enabled = flag('enabled');
-    if (flag('once') !== undefined) patch.once = flag('once');
-    if (!Object.keys(patch).length) return fail('Nothing to change; pass at least one field.');
+    const agent = resolveOptional(args.text('agent'), (ref) => this.#store.org.findAgent(context.orgId, ref), noAgent);
+    if (!agent.ok) return agent.error;
+    const project = resolveOptional(args.text('project'), (ref) => this.#store.org.findProject(context.orgId, ref), noProject);
+    if (!project.ok) return project.error;
+    // A one-off follow-up ("I'll get back to you here") should land back
+    // in the conversation it was promised in, not in a brand-new one.
+    // Only for the assistant's own runs - a recurring job, or one handed
+    // to an agent, keeps creating its own dedicated conversation.
+    const once = args.flag('once');
+    const replyHere = !agent.value && once === true ? context.sessionId : undefined;
     try {
-      const updated = cron.update(job.id, patch);
-      return { text: 'Updated schedule "' + updated.name + '": ' + Object.keys(patch).join(', ') + '.\n' + line(updated) };
+      const job = cron.create({
+        orgId: context.orgId,
+        name: args.text('name'),
+        schedule: args.text('schedule'),
+        triggerMode,
+        eventCooldownMs: cooldownMsArg(args),
+        prompt: args.text('prompt'),
+        kind: agent.value ? 'agent' : 'assistant',
+        agentId: agent.value?.id,
+        projectId: project.value?.id ?? context.projectId,
+        sessionId: replyHere,
+        once,
+        enabled: args.flag('enabled'),
+        createdBy: 'assistant',
+      });
+      const when = job.schedule ? describeCron(job.schedule) : 'on events only, no timetable';
+      return { text: 'Schedule created: ' + when + '.\n' + describe(job) };
     } catch (error) {
-      return fail((error as Error).message);
+      return toolError((error as Error).message);
     }
+  }
+
+  #setWebhook({ cron, args }: ScheduleCall, job: ScheduledJob): ToolCallResult {
+    if (args.text('action').toLowerCase() === 'remove') {
+      cron.disableWebhook(job.id);
+      return { text: 'The webhook for "' + job.name + '" is gone; the URL opens nothing now.' };
+    }
+    const rotated = Boolean(job.webhookToken);
+    const updated = cron.enableWebhook(job.id);
+    const url = 'http://' + this.#config.host + ':' + this.#config.port + '/hooks/' + updated.webhookToken;
+    return {
+      text:
+        (rotated ? 'Rotated the webhook for "' : 'Webhook for "') + job.name +
+        '": ' + url + '\n' +
+        (rotated ? 'The previous URL stopped working just now. ' : '') +
+        'Anything that can send an HTTP POST to it starts this schedule.',
+    };
+  }
+
+  #runScheduleNow(cron: CronScheduler, job: ScheduledJob): ToolCallResult {
+    if (cron.isRunning(job.id)) return { text: 'Schedule "' + job.name + '" is already running.' };
+    void cron.runNow(job.id).catch((error: Error) => this.#log.warn('Manual schedule run failed', { error: error.message }));
+    return { text: 'Schedule "' + job.name + '" is running now; the result reaches the user as a notification.' };
+  }
+
+  #updateSchedule(call: ScheduleCall, job: ScheduledJob): ToolCallResult {
+    const patch = this.#schedulePatch(call);
+    if (!patch.ok) return patch.error;
+    if (!Object.keys(patch.value).length) return toolError('Nothing to change; pass at least one field.');
+    try {
+      const updated = call.cron.update(job.id, patch.value);
+      return {
+        text: 'Updated schedule "' + updated.name + '": ' + Object.keys(patch.value).join(', ') + '.\n' + call.describe(updated),
+      };
+    } catch (error) {
+      return toolError((error as Error).message);
+    }
+  }
+
+  #schedulePatch({ context, args }: ScheduleCall): Resolved<CronJobPatch> {
+    const orgId = context.orgId;
+    const patch: CronJobPatch = {};
+    if (args.text('name')) patch.name = args.text('name');
+    if (args.text('schedule')) patch.schedule = args.text('schedule');
+    if (args.text('prompt')) patch.prompt = args.text('prompt');
+    if (args.text('agent')) {
+      const agent = resolveClearable(
+        args.text('agent'),
+        ['assistant', 'me', 'none'],
+        (ref) => this.#store.org.findAgent(orgId, ref),
+        noAgent,
+      );
+      if (!agent.ok) return agent;
+      patch.agentId = agent.value;
+    }
+    if (args.text('project')) {
+      const project = resolveClearable(args.text('project'), ['none'], (ref) => this.#store.org.findProject(orgId, ref), noProject);
+      if (!project.ok) return project;
+      patch.projectId = project.value;
+    }
+    const triggerMode = triggerModeArg(args);
+    if (triggerMode) patch.triggerMode = triggerMode;
+    const cooldownMs = cooldownMsArg(args);
+    if (cooldownMs !== undefined) patch.eventCooldownMs = cooldownMs;
+    const enabled = args.flag('enabled');
+    if (enabled !== undefined) patch.enabled = enabled;
+    const once = args.flag('once');
+    if (once !== undefined) patch.once = once;
+    return { ok: true, value: patch };
   }
 
   /* ------------------------------- listeners ------------------------------ */
@@ -1430,74 +1628,73 @@ export class OrgController extends EventEmitter {
    * registry follows on the `changed` event. Same split as everywhere: the
    * decision here, the socket there.
    */
-  #listeners(context: ToolContext, name: string, args: Record<string, unknown>): ToolCallResult {
-    const text = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string).trim() : '');
-    const flag = (key: string): boolean | undefined => (typeof args[key] === 'boolean' ? (args[key] as boolean) : undefined);
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
-    if (context.audience !== 'assistant') return fail('Only the assistant can change listeners.');
-    const entries = this.#config.listeners.imap;
-    const jobName = (jobId: string): string => this.#cron?.get(jobId)?.name ?? '(no schedule)';
+  #toolListeners(context: ToolContext, name: string, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can change listeners.');
+    if (name === 'list_listeners') return this.#listListeners();
 
-    if (name === 'list_listeners') {
-      if (!entries.length) return { text: 'No mailbox is being watched.' };
-      return {
-        text: entries
-          .map(
-            (entry) =>
-              '- ' + entry.id + ': ' + entry.user + ' / ' + entry.mailbox + ' on ' + entry.host + ':' + entry.port +
-              ', fires "' + jobName(entry.jobId) + '", ' + (entry.enabled ? 'on' : 'off') +
-              ', password ' + (entry.password ? 'set' : 'missing'),
-          )
-          .join('\n'),
-      };
-    }
-
-    const id = text('id');
-    if (!id) return fail('Name the listener.');
+    const id = args.text('id');
+    if (!id) return toolError('Name the listener.');
     // It ends up in `imap:<id>` on every run this mailbox causes, so it has to
     // stay a plain word.
-    if (!/^[A-Za-z0-9._-]+$/.test(id)) return fail('A listener id is letters, digits, dot, dash or underscore.');
-    const existing = entries.find((entry) => entry.id === id) ?? null;
+    if (!/^[A-Za-z0-9._-]+$/.test(id)) return toolError('A listener id is letters, digits, dot, dash or underscore.');
+    const existing = this.#config.listeners.imap.find((entry) => entry.id === id) ?? null;
 
-    if (name === 'remove_listener') {
-      if (!existing) return fail('No listener "' + id + '".');
-      this.#writeListeners(entries.filter((entry) => entry.id !== id));
-      return { text: 'Stopped watching "' + id + '" and forgot its settings, the password included.' };
-    }
+    if (name === 'remove_listener') return this.#removeListener(id, existing);
+    return this.#setListener(context, id, existing, args);
+  }
 
-    const wantedJob = text('schedule') ? this.#cron?.find(context.orgId, text('schedule')) ?? null : null;
-    if (text('schedule') && !wantedJob) {
-      return fail('No schedule "' + text('schedule') + '". list_schedules shows the names.');
-    }
-    const merged: ImapListenerConfig = {
-      id,
-      enabled: flag('enabled') ?? existing?.enabled ?? false,
-      host: text('host') || existing?.host || '',
-      port: args.port === undefined ? existing?.port ?? 993 : clampNumber(args.port, 1, 65535, 993),
-      secure: flag('secure') ?? existing?.secure ?? true,
-      user: text('user') || existing?.user || '',
-      password: text('password') || existing?.password || '',
-      mailbox: text('mailbox') || existing?.mailbox || 'INBOX',
-      jobId: wantedJob?.id ?? existing?.jobId ?? '',
+  #listListeners(): ToolCallResult {
+    const entries = this.#config.listeners.imap;
+    if (!entries.length) return { text: 'No mailbox is being watched.' };
+    return {
+      text: entries
+        .map(
+          (entry) =>
+            '- ' + entry.id + ': ' + entry.user + ' / ' + entry.mailbox + ' on ' + entry.host + ':' + entry.port +
+            ', fires "' + this.#listenerJobName(entry.jobId) + '", ' + (entry.enabled ? 'on' : 'off') +
+            ', password ' + (entry.password ? 'set' : 'missing'),
+        )
+        .join('\n'),
     };
+  }
+
+  #removeListener(id: string, existing: ImapListenerConfig | null): ToolCallResult {
+    if (!existing) return toolError('No listener "' + id + '".');
+    this.#writeListeners(this.#config.listeners.imap.filter((entry) => entry.id !== id));
+    return { text: 'Stopped watching "' + id + '" and forgot its settings, the password included.' };
+  }
+
+  #setListener(context: ToolContext, id: string, existing: ImapListenerConfig | null, args: ToolArgs): ToolCallResult {
+    const wantedJob = resolveOptional(
+      args.text('schedule'),
+      (ref) => this.#cron?.find(context.orgId, ref) ?? null,
+      (ref) => 'No schedule "' + ref + '". list_schedules shows the names.',
+    );
+    if (!wantedJob.ok) return wantedJob.error;
+    const merged = mergeListener(id, existing, args, wantedJob.value?.id);
     const missing: string[] = [];
     if (!merged.host) missing.push('a server');
     if (!merged.user) missing.push('a user');
     if (!merged.jobId) missing.push('a schedule to fire');
-    if (missing.length) return fail('This mailbox still needs ' + missing.join(', ') + '.');
+    if (missing.length) return toolError('This mailbox still needs ' + missing.join(', ') + '.');
     // Switched on without a password it would only produce a rejected login
     // and a stopped listener, which reads like a bug rather than a blank field.
-    if (merged.enabled && !merged.password) return fail('Set the password before switching "' + id + '" on.');
+    if (merged.enabled && !merged.password) return toolError('Set the password before switching "' + id + '" on.');
 
+    const entries = this.#config.listeners.imap;
     this.#writeListeners(existing ? entries.map((entry) => (entry.id === id ? merged : entry)) : [...entries, merged]);
     // The password is never repeated back, not even to the person who just
     // said it: a tool result is transcript too, and one copy is enough.
     return {
       text:
         (existing ? 'Updated mailbox "' : 'Now watching "') + id + '": ' + merged.user + ' / ' + merged.mailbox +
-        ' on ' + merged.host + ':' + merged.port + ', firing "' + jobName(merged.jobId) + '", ' +
+        ' on ' + merged.host + ':' + merged.port + ', firing "' + this.#listenerJobName(merged.jobId) + '", ' +
         (merged.enabled ? 'on.' : 'off - switch it on once the details are right.'),
     };
+  }
+
+  #listenerJobName(jobId: string): string {
+    return this.#cron?.get(jobId)?.name ?? '(no schedule)';
   }
 
   /** Write the list back; the server's registry follows on the event. */
@@ -1506,51 +1703,27 @@ export class OrgController extends EventEmitter {
     this.emit('changed', { kind: 'listeners', id: 'listeners' });
   }
 
-  async #assign(
-    context: ToolContext,
-    agentRef: string,
-    titleRaw: string,
-    task: string,
-    projectRef: string,
-    wait = true,
-  ): Promise<ToolCallResult> {
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
-    if (!agentRef) return fail('Name the agent to assign to.');
-    if (!task) return fail('The task is empty.');
+  async #toolAssign(context: ToolContext, args: ToolArgs): Promise<ToolCallResult> {
+    const agentRef = args.text('agent');
+    const task = args.text('task');
+    const wait = args.raw('wait') !== false;
+    if (!agentRef) return toolError('Name the agent to assign to.');
+    if (!task) return toolError('The task is empty.');
 
     const agent = this.#store.org.findAgent(context.orgId, agentRef);
     if (!agent) {
       const known = this.#store.org.listAgents(context.orgId).map((entry) => entry.slug);
-      return fail(
-        'No agent "' + agentRef + '". ' +
-          (known.length ? 'Known agents: ' + known.join(', ') + '.' : 'Nobody is hired yet.'),
+      return toolError(
+        noAgent(agentRef) + ' ' + (known.length ? 'Known agents: ' + known.join(', ') + '.' : 'Nobody is hired yet.'),
       );
     }
-
-    if (context.audience === 'agent') {
-      if (agent.id === context.agentId) {
-        // A self-assignment only makes sense detached: waiting on it would
-        // just be the same process blocking on itself for no reason, and in
-        // a chat turn there is no coding tool to do the work with anyway.
-        if (wait) return fail('Taking work on yourself has to run in the background - call assign with wait=false.');
-      } else if (agent.managerId !== context.agentId) {
-        const reports = this.#store.org.listAgents(context.orgId, { managerId: context.agentId }).map((r) => r.slug);
-        return fail(
-          'You may only assign work to your direct reports' +
-            (reports.length ? ': ' + reports.join(', ') : ', and you have none') + '.',
-        );
-      }
-    }
-
-    const depth = context.depth + 1;
-    if (depth >= this.#config.org.maxDelegationDepth) {
-      return fail('Delegation is nested too deep already. Do this part of the work yourself.');
-    }
+    const refusal = this.#assignmentRefusal(context, agent, wait);
+    if (refusal) return toolError(refusal);
 
     let projectId = context.projectId;
-    if (projectRef) {
-      const project = this.#store.org.findProject(context.orgId, projectRef);
-      if (!project) return fail('No project "' + projectRef + '".');
+    if (args.text('project')) {
+      const project = this.#store.org.findProject(context.orgId, args.text('project'));
+      if (!project) return toolError(noProject(args.text('project')));
       projectId = project.id;
     }
 
@@ -1558,90 +1731,116 @@ export class OrgController extends EventEmitter {
     // (decision E9). This was the fourth entrance, and the only one that left
     // a run nobody could find on a card. Inside a task, the new one becomes a
     // child of it, so a delegation chain reads as a tree.
-    const title = titleRaw.trim() || titleFromBrief(task);
-    const board = this.#store.org.createTask({
+    const card = this.#store.org.createTask({
       orgId: context.orgId,
       parentId: context.taskId,
-      title,
+      title: args.text('title') || titleFromBrief(task),
       description: task,
       projectId,
       assigneeId: agent.id,
-      createdBy: context.audience === 'agent' ? 'agent' : 'assistant',
+      createdBy: callerKind(context),
       createdByAgentId: context.agentId,
       // Where the ending is reported (R1): the conversation for top-level
       // work, the parent task for work handed on from inside one.
       requesterSessionId: context.taskId ? undefined : context.sessionId,
     });
-    this.#announceTask(board, context.emit);
-    const shortId = board.id.slice(0, 8);
+    this.#announceTask(card, context.emit);
 
     // The new task is its own errand: the note that continued the caller's
     // task is not part of this brief.
     const runContext: ToolContext = {
       ...context,
       projectId,
-      taskId: board.id,
+      taskId: card.id,
       taskNote: undefined,
-      emit: wait ? context.emit : (): void => undefined,
+      emit: wait ? context.emit : ignoreEvent,
       signal: wait ? context.signal : undefined,
     };
+    return wait
+      ? this.#assignAndWait(runContext, card, agent)
+      : this.#assignDetached(context, runContext, card, agent);
+  }
 
-    if (!wait) {
-      // Detached: the turn ends while the agent works. Its progress reaches
-      // every socket through the org-level run events; the turn's own stream
-      // and abort signal must not be tied to it.
-      //
-      // Nobody waits on the promise here, and nobody has to: how the task
-      // ends is reported back by `runTask` itself - to the conversation for
-      // top-level work, to the parent task (which waits for it, R4) for work
-      // handed on from inside one. It used to be dropped on the floor unless
-      // an agent had assigned itself, while the tool text promised otherwise.
-      const running = this.runTask(runContext, board).catch((error: unknown) => {
-        this.#log.warn('Detached task failed', { agent: agent.slug, error: String(error) });
-        return this.#store.org.getTask(board.id) ?? board;
-      });
-      if (context.taskId) {
-        let pending = this.#detached.get(context.taskId);
-        if (!pending) {
-          pending = new Map();
-          this.#detached.set(context.taskId, pending);
-        }
-        pending.set(board.id, running);
+  /** Why the caller may not hand work to this agent now, or null when it may. */
+  #assignmentRefusal(context: ToolContext, agent: Agent, wait: boolean): string | null {
+    if (context.audience === 'agent') {
+      if (agent.id === context.agentId) {
+        // A self-assignment only makes sense detached: waiting on it would
+        // just be the same process blocking on itself for no reason, and in
+        // a chat turn there is no coding tool to do the work with anyway.
+        if (wait) return 'Taking work on yourself has to run in the background - call assign with wait=false.';
+      } else if (agent.managerId !== context.agentId) {
+        const reports = this.#store.org.listAgents(context.orgId, { managerId: context.agentId }).map((r) => r.slug);
+        return 'You may only assign work to your direct reports' +
+          (reports.length ? ': ' + reports.join(', ') : ', and you have none') + '.';
       }
-      const whereBack = context.taskId
-        ? 'Your own task stays open until it is finished: when your run ends, you are started again with its result.'
-        : context.sessionId
-          ? 'When it ends - done, failed or with a question - a message arrives in this conversation, and you tell the user then.'
-          : 'It is on the board; how it ends is recorded on its card.';
-      return {
-        text:
-          (agent.id === context.agentId ? 'Started in the background' : 'Handed to ' + agent.name + ' (' + agent.slug + ')') +
-          ' as task ' + shortId + ' "' + title + '". ' + whereBack,
-      };
     }
+    if (context.depth + 1 >= this.#config.org.maxDelegationDepth) {
+      return 'Delegation is nested too deep already. Do this part of the work yourself.';
+    }
+    return null;
+  }
 
-    const finished = await this.#runAwaited(runContext, board);
-    const duration =
-      finished.startedAt && finished.finishedAt
-        ? ', ' + Math.round((finished.finishedAt - finished.startedAt) / 1000) + ' s'
-        : '';
+  /**
+   * Detached: the turn ends while the agent works. Its progress reaches
+   * every socket through the org-level run events; the turn's own stream
+   * and abort signal must not be tied to it.
+   *
+   * Nobody waits on the promise here, and nobody has to: how the task
+   * ends is reported back by `runTask` itself - to the conversation for
+   * top-level work, to the parent task (which waits for it, R4) for work
+   * handed on from inside one. It used to be dropped on the floor unless
+   * an agent had assigned itself, while the tool text promised otherwise.
+   */
+  #assignDetached(context: ToolContext, runContext: ToolContext, card: Task, agent: Agent): ToolCallResult {
+    const running = this.runTask(runContext, card).catch((error: unknown) => {
+      this.#log.warn('Detached task failed', { agent: agent.slug, error: String(error) });
+      return this.#current(card);
+    });
+    if (context.taskId) this.#trackDetached(context.taskId, card.id, running);
+    const whereBack = context.taskId
+      ? 'Your own task stays open until it is finished: when your run ends, you are started again with its result.'
+      : context.sessionId
+        ? 'When it ends - done, failed or with a question - a message arrives in this conversation, and you tell the user then.'
+        : 'It is on the board; how it ends is recorded on its card.';
+    return {
+      text:
+        (agent.id === context.agentId ? 'Started in the background' : 'Handed to ' + agent.name + ' (' + agent.slug + ')') +
+        ' as task ' + shortId(card.id) + ' "' + card.title + '". ' + whereBack,
+    };
+  }
 
+  async #assignAndWait(runContext: ToolContext, card: Task, agent: Agent): Promise<ToolCallResult> {
+    const finished = await this.#runAwaited(runContext, card);
+    const label = 'task ' + shortId(card.id) + ' "' + card.title + '"';
     if (finished.status === 'blocked') {
       // Not a failure: the agent asked whoever wanted the work a question,
       // and the card stays open until it is answered.
       return { text: this.#waitingText(finished) };
     }
     if (finished.status !== 'done') {
-      return fail(
-        'Task ' + shortId + ' "' + title + '" with ' + agent.slug + ' ' + finished.status +
+      return toolError(
+        'Task ' + shortId(card.id) + ' "' + card.title + '" with ' + agent.slug + ' ' + finished.status +
           (finished.error ? ': ' + finished.error : '.'),
       );
     }
+    const duration =
+      finished.startedAt && finished.finishedAt ? ', ' + toSeconds(finished.finishedAt - finished.startedAt) + ' s' : '';
     return {
       text:
-        'Report from ' + agent.name + ' (' + agent.slug + ') on task ' + shortId + ' "' + title + '"' +
-        duration + ':\n\n' + clip(finished.result ?? '', RESULT_BUDGET),
+        'Report from ' + agent.name + ' (' + agent.slug + ') on ' + label + duration + ':\n\n' +
+        clip(finished.result ?? '', RESULT_BUDGET),
     };
+  }
+
+  /** Note work a task handed off in the background: the task does not end while any of it is out (R4). */
+  #trackDetached(parentTaskId: string, taskId: string, running: Promise<Task>): void {
+    let pending = this.#detached.get(parentTaskId);
+    if (!pending) {
+      pending = new Map();
+      this.#detached.set(parentTaskId, pending);
+    }
+    pending.set(taskId, running);
   }
 
   /* ------------------------ questions, answers, notices ----------------------- */
@@ -1656,11 +1855,11 @@ export class OrgController extends EventEmitter {
     const who = agent ? agent.name + ' (' + agent.slug + ')' : 'The agent';
     const question = this.#questionFor(task);
     return (
-      who + ' has a question about task ' + task.id.slice(0, 8) + ' "' + task.title + '" and the task waits for ' +
+      who + ' has a question about task ' + shortId(task.id) + ' "' + task.title + '" and the task waits for ' +
       'the answer.' +
       (question ? '\n\nThe question:\n' + clip(question, RESULT_BUDGET) : '') +
       (task.result ? '\n\nWhat it said:\n' + clip(task.result, RESULT_BUDGET) : '') +
-      '\n\nAnswer it with answer_task("' + task.id.slice(0, 8) + '", ...) once you know the answer; the task ' +
+      '\n\nAnswer it with answer_task("' + shortId(task.id) + '", ...) once you know the answer; the task ' +
       'then runs again with it.'
     );
   }
@@ -1680,20 +1879,19 @@ export class OrgController extends EventEmitter {
    * or a notification). This replaces a mail on the requester's To line, and
    * the outbox scan that used to recognise one.
    */
-  #askRequester(context: ToolContext, question: string): ToolCallResult {
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
+  #toolAskRequester(context: ToolContext, question: string): ToolCallResult {
     if (context.audience !== 'agent') {
-      return fail('Only an agent working on a task asks its requester. You can ask the user with ask_user.');
+      return toolError('Only an agent working on a task asks its requester. You can ask the user with ask_user.');
     }
     if (!context.taskId) {
-      return fail(
+      return toolError(
         'You are not working on a task, so nobody is waiting to be asked. Put the question in your result, ' +
           'with what you assumed in the meantime.',
       );
     }
     const task = this.#store.org.getTask(context.taskId);
-    if (!task) return fail('The task you are working on no longer exists.');
-    if (!question) return fail('A question needs its text.');
+    if (!task) return toolError('The task you are working on no longer exists.');
+    if (!question) return toolError('A question needs its text.');
     this.#taskEvent({
       taskId: task.id,
       kind: 'question',
@@ -1705,7 +1903,7 @@ export class OrgController extends EventEmitter {
     if (context.parentAssignmentId) this.#askedRequester.add(context.parentAssignmentId);
     return {
       text:
-        'Your question is on the card of task ' + task.id.slice(0, 8) + '. End your run now with a short ' +
+        'Your question is on the card of task ' + shortId(task.id) + '. End your run now with a short ' +
         'summary of where the work stands and what you would do with each likely answer. The task waits ' +
         'for the answer, and you are started again with it.',
     };
@@ -1768,7 +1966,7 @@ export class OrgController extends EventEmitter {
     if (!task) return { ok: false, reason: 'No task ' + input.taskId + '.' };
     const answered = await this.#answer(task, input.answer.trim(), input.by ?? { kind: 'user' });
     if (!answered.ok) return answered;
-    return { ok: true, task: this.#store.org.getTask(task.id) ?? task };
+    return { ok: true, task: this.#current(task) };
   }
 
   /**
@@ -1812,7 +2010,7 @@ export class OrgController extends EventEmitter {
           : 'The assistant';
     const question = this.#questionFor(task);
     const note =
-      (question ? 'You asked:\n' + clip(question, 4000) + '\n\n' : '') +
+      (question ? 'You asked:\n' + clip(question, NOTE_RESULT_BUDGET) + '\n\n' : '') +
       label + ' answered:\n\n' + answer;
     return this.#continueTask(task, by, note, context);
   }
@@ -1854,7 +2052,7 @@ export class OrgController extends EventEmitter {
           'without the user. It stays as it is until they pick it up.',
       };
     }
-    const depth = context ? context.depth : -1;
+    const depth = context?.depth ?? -1;
     if (depth + 1 >= this.#config.org.maxDelegationDepth) {
       return { ok: false, reason: 'The answer is on the card, but delegation is nested too deep to run it from here.' };
     }
@@ -1866,22 +2064,15 @@ export class OrgController extends EventEmitter {
         depth,
         projectId: task.projectId,
         parentAssignmentId: context?.parentAssignmentId,
-        emit: () => undefined,
+        emit: ignoreEvent,
         taskNote: note,
       },
       task,
     ).catch((error: unknown) => {
       this.#log.warn('Task continuation failed', { task: task.id, error: String(error) });
-      return this.#store.org.getTask(task.id) ?? task;
+      return this.#current(task);
     });
-    if (context?.taskId && task.parentId === context.taskId) {
-      let pending = this.#detached.get(context.taskId);
-      if (!pending) {
-        pending = new Map();
-        this.#detached.set(context.taskId, pending);
-      }
-      pending.set(task.id, running);
-    }
+    if (context?.taskId && task.parentId === context.taskId) this.#trackDetached(context.taskId, task.id, running);
     return { ok: true };
   }
 
@@ -1923,43 +2114,42 @@ export class OrgController extends EventEmitter {
    * schedule's card (its own notification is the delivery) and a
    * cancellation the person just performed themselves.
    */
-  #deliverEnding(
-    task: Task,
-    status: 'done' | 'failed' | 'cancelled' | 'blocked',
-    how: { by: RequesterKind; fromRun: boolean },
-  ): void {
-    const userCard = task.createdBy === 'user' && !task.requesterSessionId && !task.parentId;
-    const reportsBack = Boolean(task.requesterSessionId) && !task.parentId;
-    const awaited = this.#awaited.has(task.id);
+  #deliverEnding(task: Task, status: EndingStatus, how: { by: RequesterKind; fromRun: boolean }): void {
     if (status === 'blocked') {
       // Only a run's own ending asks anything; a card set to `blocked` by
       // hand carries no new question.
-      if (!how.fromRun) return;
-      if (!userCard) {
-        if (awaited || reportsBack) return;
-        // A lead's own report asked it: the lead's task waits for its
-        // children and is started again with the question (R4), and
-        // `#awaitDelegated` escalates it when it cannot be.
-        if (task.createdBy === 'agent' && task.parentId) return;
-      }
-      this.#escalateQuestion(task);
+      if (how.fromRun && this.#questionFallsToUser(task)) this.#escalateQuestion(task);
       return;
     }
-    if (task.scheduleId) return;
-    if (status === 'cancelled' && how.by === 'user' && !how.fromRun) return;
-    // The user's own card tells them, even when the assistant happened to be
-    // waiting on the run: they put it up, and the card is theirs to follow.
-    if (!userCard) {
-      if (awaited || reportsBack || task.parentId) return;
-      if (task.createdBy !== 'assistant') return;
-    }
+    if (!this.#userHearsEnding(task, status, how)) return;
     const agent = task.assigneeId ? this.#store.org.getAgent(task.assigneeId) : null;
     this.notifyUser({ orgId: task.orgId, ...taskNotification(task, agent) });
   }
 
+  /** Whether a waiting card's question falls to the user: nobody else in the chain will carry it. */
+  #questionFallsToUser(task: Task): boolean {
+    if (isUserCard(task)) return true;
+    if (this.#awaited.has(task.id) || reportsBackToConversation(task)) return false;
+    // A lead's own report asked it: the lead's task waits for its
+    // children and is started again with the question (R4), and
+    // `#awaitDelegated` escalates it when it cannot be.
+    return !(task.createdBy === 'agent' && task.parentId);
+  }
+
+  /** Whether the user is owed a notification for an ending that is not a question. */
+  #userHearsEnding(task: Task, status: EndingStatus, how: { by: RequesterKind; fromRun: boolean }): boolean {
+    if (task.scheduleId) return false;
+    if (status === 'cancelled' && how.by === 'user' && !how.fromRun) return false;
+    // The user's own card tells them, even when the assistant happened to be
+    // waiting on the run: they put it up, and the card is theirs to follow.
+    if (isUserCard(task)) return true;
+    if (this.#awaited.has(task.id) || reportsBackToConversation(task) || task.parentId) return false;
+    return task.createdBy === 'assistant';
+  }
+
   /** Put a waiting card's question to the user, in the asking agent's name. */
   #escalateQuestion(task: Task): void {
-    const current = this.#store.org.getTask(task.id) ?? task;
+    const current = this.#current(task);
     const asked = this.#store.org.lastTaskEvent(current.id, 'question');
     const agentId = asked?.actorAgentId ?? current.assigneeId;
     const agent = agentId ? this.#store.org.getAgent(agentId) : null;
@@ -2001,12 +2191,28 @@ export class OrgController extends EventEmitter {
    * record says how it ended. Events flow to `input.emit` as they happen.
    */
   async run(input: RunAssignmentInput): Promise<Assignment> {
-    const { agent } = input;
+    const run = this.#openRun(input);
+    run.record.announce();
+    await this.#acquire(run.abort.signal);
+    const started = Date.now();
+
+    try {
+      return await this.#execute(run, started);
+    } catch (error) {
+      this.#log.warn('Assignment failed', { id: run.record.id, error: (error as Error).message });
+      return run.record.fail((error as Error).message, started);
+    } finally {
+      this.#closeRun(run);
+    }
+  }
+
+  /** Create the assignment's record and everything that lives from the moment it is queued. */
+  #openRun(input: RunAssignmentInput): RunState {
     const org = this.#store.org;
     const project = input.projectId ? org.getProject(input.projectId) : null;
-    let assignment = org.createAssignment({
+    const assignment = org.createAssignment({
       orgId: input.orgId,
-      agentId: agent.id,
+      agentId: input.agent.id,
       title: input.title,
       task: input.task,
       projectId: project?.id,
@@ -2017,53 +2223,23 @@ export class OrgController extends EventEmitter {
       depth: input.depth,
     });
     input.onStarted?.(assignment);
-
-    const view = (extra: Partial<AssignmentView> = {}): AssignmentView => toView(assignment, agent, extra);
-    const announce = (extra: Partial<AssignmentView> = {}): void =>
-      this.#announce({ type: 'assignment', assignment: view(extra) }, input.emit);
-    const finish = (patch: Parameters<typeof org.updateAssignment>[1], extra: Partial<AssignmentView> = {}): Assignment => {
-      org.updateAssignment(assignment.id, patch);
-      assignment = org.getAssignment(assignment.id) ?? assignment;
-      announce(extra);
-      return assignment;
-    };
-    const fail = (error: string, started: number): Assignment => {
-      const failed = finish(
-        { status: 'failed', error, finishedAt: Date.now(), durationMs: Date.now() - started },
-        { error },
-      );
-      // Every fail() path is a hard signal (timeout, no provider, empty
-      // output, a fatal provider error) - no model call, and it marks the run
-      // as a technical failure rather than a quality judgement (see
-      // docs/concepts/agent-performance-management.md). A write that cannot
-      // land must never take the assignment result down with it.
-      try {
-        org.upsertReview({
-          orgId: input.orgId,
-          agentId: agent.id,
-          assignmentId: assignment.id,
-          source: 'system',
-          overall: 1,
-          failedRun: true,
-        });
-      } catch (reviewError) {
-        this.#log.warn('System review failed to write', {
-          assignment: assignment.id,
-          error: (reviewError as Error).message,
-        });
-      }
-      return failed;
-    };
+    const record = new AssignmentRecord(
+      org,
+      input.agent,
+      assignment,
+      (event) => this.#announce(event, input.emit),
+      this.#log,
+    );
 
     // One abort controller per assignment, live from the moment it is queued:
     // the caller going away, a cancel() by id and the timeout all end in it.
-    const controller = new AbortController();
-    const onAbort = (): void => controller.abort();
+    const abort = new AbortController();
+    const onAbort = (): void => abort.abort();
     input.signal?.addEventListener('abort', onAbort, { once: true });
     let cancelledBy: string | null = null;
     this.#active.set(assignment.id, (by) => {
       cancelledBy = by;
-      controller.abort();
+      abort.abort();
     });
     // The live log lives from the moment the run is queued: watching a
     // pending assignment is legal, it simply has nothing to show yet. Its
@@ -2076,306 +2252,381 @@ export class OrgController extends EventEmitter {
     // messages of its own and opens no recall trace, and the one label its
     // runs can earn - the review (4.2d) - is keyed on this same id.
     this.#store.turns.beginAssignment(assignment.id, input.sessionId, Date.now());
-    const cancelled = (): boolean => cancelledBy !== null || Boolean(input.signal?.aborted);
+    return {
+      input,
+      project,
+      record,
+      abort,
+      onAbort,
+      cancelled: () => cancelledBy !== null || Boolean(input.signal?.aborted),
+    };
+  }
 
-    announce();
-    await this.#acquire(controller.signal);
-    const started = Date.now();
+  /** Everything between being granted a slot and having an ending to write. */
+  async #execute(run: RunState, started: number): Promise<Assignment> {
+    const { input, project, record, abort } = run;
+    const { agent } = input;
+    if (abort.signal.aborted) return record.finish({ status: 'cancelled', finishedAt: started, durationMs: 0 });
+
+    const preferred = agent.provider ?? this.#config.defaultProvider;
+    const providerId = await this.#registry.resolveUsable(preferred);
+    if (!providerId) return record.fail(await this.#noProviderReason(), started);
+
+    const cwd = project?.path || agentWorkspace(this.#config, agent.id);
+    if (!existsSync(cwd)) return record.fail('The project directory ' + cwd + ' does not exist.', started);
+
+    const shared = this.#prepareRun(run, cwd, preferred);
+    // The timeout and the bridge token span every provider attempt: a
+    // switch does not buy a second timeout, and the bridge serves whichever
+    // process is currently running.
+    const timer = setTimeout(() => abort.abort(), this.#config.org.assignmentTimeoutMs);
+    timer.unref?.();
+    const token = this.register({
+      orgId: input.orgId,
+      audience: 'agent',
+      agentId: agent.id,
+      sessionId: input.sessionId,
+      projectId: project?.id,
+      parentAssignmentId: record.id,
+      // What this run is carrying out, so anything it hands on lands under
+      // the same card instead of starting a second one (decision E9).
+      taskId: input.taskId,
+      depth: input.depth,
+      emit: input.emit,
+      signal: abort.signal,
+      scheduled: input.scheduled,
+    });
+
+    let outcome: AttemptsOutcome;
+    try {
+      outcome = await this.#runAttempts(run, { ...shared, token, started, firstProvider: providerId });
+    } finally {
+      clearTimeout(timer);
+      this.unregister(token);
+    }
+
+    if (run.cancelled()) {
+      return record.finish({ status: 'cancelled', finishedAt: Date.now(), durationMs: Date.now() - started });
+    }
+    if (abort.signal.aborted) return record.fail('Timed out.', started);
+    if (outcome.fatal) return record.fail(outcome.fatal, started);
+    if (!outcome.text.trim()) return record.fail('The agent produced no output.', started);
+    return this.#complete(run, outcome, started);
+  }
+
+  /**
+   * Why no provider could take the run. A company parked entirely for quota
+   * says so: there is nothing to log in to, only windows to wait out.
+   */
+  async #noProviderReason(): Promise<string> {
+    const ready = (await this.#registry.statuses()).filter((status) => status.available && status.authenticated);
+    return ready.length > 0 && ready.every((status) => providerBlocked(status.id))
+      ? 'Every provider is out of quota.'
+      : 'No provider is logged in.';
+  }
+
+  /**
+   * Everything shared by every provider attempt of this assignment: the
+   * company, the memory and the skills are the agent's, not the backend's.
+   */
+  #prepareRun(run: RunState, cwd: string, preferred: ProviderId): SharedRunSetup {
+    const { input, project, record } = run;
+    return {
+      project,
+      cwd,
+      preferred,
+      projectMcp: this.#projectMcpSetup(project),
+      promptBase: {
+        config: this.#config,
+        agent: input.agent,
+        snapshot: this.snapshot(input.orgId),
+        project: project ?? undefined,
+        memories: this.#memoriesFor(input.agent.id, input.task),
+        assignmentId: record.id,
+        requestedBy: this.#requesterLabel(input),
+        taskId: input.taskId,
+        skillsIndex: this.#skillsIndexFor(project, input.task),
+      },
+    };
+  }
+
+  /** Who asked for the work, in the words the agent's prompt uses. */
+  #requesterLabel(input: RunAssignmentInput): string {
+    if (input.requesterKind === 'agent') {
+      return this.#store.org.getAgent(input.requesterAgentId ?? '')?.name ?? 'your manager';
+    }
+    return input.requesterKind === 'user' ? 'the user, directly' : 'the assistant';
+  }
+
+  /**
+   * The project's own MCP servers - read from its `.mcp.json`, the same
+   * file a person's own session in that folder would read - only start
+   * once the assistant has approved this exact file (see
+   * trust_project_mcp). Untrusted or changed, they stay off and the
+   * agent is told why instead of silently missing tools it expects.
+   */
+  #projectMcpSetup(project: Project | null): ProjectMcpSetup {
+    const file = project?.path ? readProjectMcpFile(project.path) : null;
+    const state = projectMcpStatus(file, project?.mcpTrust);
+    if (state === 'trusted' && file) return { specs: file.servers, hints: [] };
+    if (!file?.servers.length) return { specs: [], hints: [] };
+    const changed = state === 'changed' ? ' (the file changed since it was approved)' : '';
+    return {
+      specs: [],
+      hints: [
+        "This project's .mcp.json lists " + file.servers.length + ' MCP server(s) not yet trusted' + changed +
+          '; the assistant can review them with project_mcp_servers and trust_project_mcp.',
+      ],
+    };
+  }
+
+  /**
+   * Rookery searches its own shelf rather than trusting the agent to
+   * remember: the index says what exists, the hint says how much more is
+   * installed, and the third line is the two or three that look like this
+   * assignment - put there the way a recalled memory is, not left to a
+   * tool call somebody has to think of.
+   */
+  #skillsIndexFor(project: Project | null, task: string): string {
+    const skills = this.#agentSkills(project);
+    return [
+      renderSkillsIndex(skills),
+      renderExternalSkillsHint(this.#config, 'agent'),
+      renderSkillMatches(matchSkills(this.#config, 'agent', skills, task)),
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  }
+
+  /** Run the provider attempts: the first on the chosen backend, and at most one more after a usage-limit death. */
+  async #runAttempts(run: RunState, setup: RunSetup): Promise<AttemptsOutcome> {
+    const { agent } = run.input;
+    let provider = setup.firstProvider;
+    const tried = new Set<ProviderId>([provider]);
+    let output = new AttemptOutput();
+
+    for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
+      // A different backend serves different names; the fallback
+      // provider's own default stands in for a model it has never
+      // heard of.
+      const model = attempt === 1 && provider === setup.preferred ? agent.model : remapModel(provider, agent.model);
+      run.record.finish({ status: 'running', provider, model, startedAt: setup.started });
+
+      // A switch discards the dead attempt's partial text: an assignment
+      // has no resume, so it starts over rather than stitching. The live
+      // log is cleared at the switch itself, below, so the switch notice
+      // is pushed after the reset and no watcher can lose it.
+      output = await this.#streamAttempt(run, setup, provider, model);
+
+      const alternate = await this.#alternateProvider(run, setup, { attempt, provider, tried, fatal: output.fatal });
+      if (!alternate) break;
+      this.#announceProviderSwitch(run, provider, alternate);
+      provider = alternate;
+      tried.add(alternate);
+    }
+    return { text: output.text, fatal: output.fatal, provider };
+  }
+
+  /**
+   * Only a usage-limit death goes around once more, on a provider
+   * that has not been tried yet; anything else falls through to the
+   * ordinary ending. Cancelled and timed-out runs are never
+   * retried on another backend.
+   */
+  async #alternateProvider(
+    run: RunState,
+    setup: RunSetup,
+    failed: { attempt: number; provider: ProviderId; tried: ReadonlySet<ProviderId>; fatal: string | null },
+  ): Promise<ProviderId | undefined> {
+    const retryable =
+      failed.fatal !== null &&
+      isUsageLimitError(failed.fatal) &&
+      failed.attempt < MAX_PROVIDER_ATTEMPTS &&
+      !run.cancelled() &&
+      !run.abort.signal.aborted &&
+      this.#config.providerFallback.enabled;
+    if (!retryable) return undefined;
+    rememberUsageFailure(failed.provider);
+    return (await this.#registry.resolveUsable(setup.preferred, { exclude: [...failed.tried] })) ?? undefined;
+  }
+
+  #announceProviderSwitch(run: RunState, from: ProviderId, to: ProviderId): void {
+    const id = run.record.id;
+    const switchEvent: Extract<AgentEvent, { type: 'status' }> = {
+      type: 'status',
+      label: 'provider',
+      detail: from + ' hit its usage limit, continuing on ' + to,
+    };
+    this.#logReset(id);
+    this.#logPush(id, switchEvent);
+    run.input.emit(switchEvent);
+    run.record.announce({ lastActivity: { kind: 'status', label: 'provider', at: Date.now() } });
+  }
+
+  /** One provider process, from prompt to last event; never throws, a failure ends in `fatal`. */
+  async #streamAttempt(run: RunState, setup: RunSetup, provider: ProviderId, model: string | undefined): Promise<AttemptOutput> {
+    const { input, record, abort } = run;
+    const { agent } = input;
+    const output = new AttemptOutput();
+    const extra = toolServersFor(this.#config, 'agent', provider, setup.project?.id);
+    const systemPrompt = buildAgentPrompt({
+      ...setup.promptBase,
+      toolHints: [...extra.hints, ...setup.projectMcp.hints],
+      agentNotes: this.#store.org.agentNotesSince(agent.id).slice(0, 2),
+      handoverFrom: this.#handoverFor(agent),
+    });
 
     try {
-      if (controller.signal.aborted) return finish({ status: 'cancelled', finishedAt: started, durationMs: 0 });
-
-      const preferred = agent.provider ?? this.#config.defaultProvider;
-      const providerId = await this.#registry.resolveUsable(preferred);
-      if (!providerId) {
-        // A company parked entirely for quota says so: there is nothing to
-        // log in to, only windows to wait out.
-        const ready = (await this.#registry.statuses()).filter((status) => status.available && status.authenticated);
-        return fail(
-          ready.length > 0 && ready.every((status) => providerBlocked(status.id))
-            ? 'Every provider is out of quota.'
-            : 'No provider is logged in.',
-          started,
-        );
+      const mcp = await this.#bridge.spec(setup.token);
+      const mcpExtra = [...extra.specs, ...setup.projectMcp.specs];
+      for await (const event of this.#registry.get(provider).run({
+        prompt: input.task,
+        systemPrompt,
+        model,
+        effort: this.#config.defaultEffort,
+        cwd: setup.cwd,
+        permission: agent.permission ?? this.#config.defaultPermission,
+        mcp,
+        mcpExtra: mcpExtra.length ? mcpExtra : undefined,
+        // Approved subagents and hooks out of the Claude Code
+        // installation, plus Rookery's own permission floor.
+        ...externalTurnExtras(this.#config, 'agent'),
+        ...this.#interactiveRunOptions(record.id),
+        signal: abort.signal,
+      })) {
+        this.#absorbProviderEvent(run, event, output);
       }
-
-      const cwd = project?.path || agentWorkspace(this.#config, agent.id);
-      if (!existsSync(cwd)) return fail('The project directory ' + cwd + ' does not exist.', started);
-
-      // Everything below is shared by every provider attempt of this
-      // assignment: the company, the memory and the skills are the agent's,
-      // not the backend's.
-      const snapshot = this.snapshot(input.orgId);
-      const memories = this.#memoriesFor(agent.id, input.task);
-      const requester =
-        input.requesterKind === 'agent'
-          ? (org.getAgent(input.requesterAgentId ?? '')?.name ?? 'your manager')
-          : input.requesterKind === 'user'
-            ? 'the user, directly'
-            : 'the assistant';
-
-      // The project's own MCP servers - read from its `.mcp.json`, the same
-      // file a person's own session in that folder would read - only start
-      // once the assistant has approved this exact file (see
-      // trust_project_mcp). Untrusted or changed, they stay off and the
-      // agent is told why instead of silently missing tools it expects.
-      const projectMcp = project?.path ? readProjectMcpFile(project.path) : null;
-      const projectMcpState = projectMcpStatus(projectMcp, project?.mcpTrust);
-      const projectMcpSpecs = projectMcpState === 'trusted' && projectMcp ? projectMcp.servers : [];
-      // Rookery searches its own shelf rather than trusting the agent to
-      // remember: the index says what exists, the hint says how much more is
-      // installed, and the third line is the two or three that look like this
-      // assignment - put there the way a recalled memory is, not left to a
-      // tool call somebody has to think of.
-      const agentSkills = this.#agentSkills(project);
-      const skillsIndex = [
-        renderSkillsIndex(agentSkills),
-        renderExternalSkillsHint(this.#config, 'agent'),
-        renderSkillMatches(matchSkills(this.#config, 'agent', agentSkills, input.task)),
-      ]
-        .filter(Boolean)
-        .join('\n\n');
-
-      // The timeout and the bridge token span every provider attempt: a
-      // switch does not buy a second timeout, and the bridge serves whichever
-      // process is currently running.
-      const timer = setTimeout(() => controller.abort(), this.#config.org.assignmentTimeoutMs);
-      timer.unref?.();
-      const token = this.register({
-        orgId: input.orgId,
-        audience: 'agent',
-        agentId: agent.id,
-        sessionId: input.sessionId,
-        projectId: project?.id,
-        parentAssignmentId: assignment.id,
-        // What this run is carrying out, so anything it hands on lands under
-        // the same card instead of starting a second one (decision E9).
-        taskId: input.taskId,
-        depth: input.depth,
-        emit: input.emit,
-        signal: controller.signal,
-        scheduled: input.scheduled,
-      });
-
-      let text = '';
-      let fatal: string | null = null;
-      /** The provider and model the assignment ends up having run with. */
-      let usedProvider = providerId;
-      let usedModel = agent.model;
-      const tried = new Set<ProviderId>([providerId]);
-
-      try {
-        for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
-          const pid = usedProvider;
-          // A different backend serves different names; the fallback
-          // provider's own default stands in for a model it has never
-          // heard of.
-          usedModel = attempt === 1 && pid === preferred ? agent.model : remapModel(pid, agent.model);
-
-          finish({ status: 'running', provider: pid, model: usedModel, startedAt: started });
-
-          const extra = toolServersFor(this.#config, 'agent', pid, project?.id);
-          const toolHints = [...extra.hints];
-          if (projectMcp?.servers.length && projectMcpState !== 'trusted') {
-            toolHints.push(
-              "This project's .mcp.json lists " + projectMcp.servers.length + ' MCP server(s) not yet trusted' +
-                (projectMcpState === 'changed' ? ' (the file changed since it was approved)' : '') +
-                '; the assistant can review them with project_mcp_servers and trust_project_mcp.',
-            );
-          }
-
-          const systemPrompt = buildAgentPrompt({
-            config: this.#config,
-            agent,
-            snapshot,
-            project: project ?? undefined,
-            memories,
-            assignmentId: assignment.id,
-            requestedBy: requester,
-            taskId: input.taskId,
-            toolHints,
-            skillsIndex,
-            agentNotes: org.agentNotesSince(agent.id).slice(0, 2),
-            handoverFrom: this.#handoverFor(agent),
-          });
-
-          // A switch discards the dead attempt's partial text: an assignment
-          // has no resume, so it starts over rather than stitching. The live
-          // log is cleared at the switch itself, below, so the switch notice
-          // is pushed after the reset and no watcher can lose it.
-          text = '';
-          let sinceProgress = 0;
-          fatal = null;
-
-          try {
-            const mcp = await this.#bridge.spec(token);
-            const mcpExtra = [...extra.specs, ...projectMcpSpecs];
-            for await (const event of this.#registry.get(pid).run({
-              prompt: input.task,
-              systemPrompt,
-              model: usedModel,
-              effort: this.#config.defaultEffort,
-              cwd,
-              permission: agent.permission ?? this.#config.defaultPermission,
-              mcp,
-              mcpExtra: mcpExtra.length ? mcpExtra : undefined,
-              // Approved subagents and hooks out of the Claude Code
-              // installation, plus Rookery's own permission floor.
-              ...externalTurnExtras(this.#config, 'agent'),
-              // A visible Claude Code terminal per run, keyed by the run so
-              // the server can stream it to whoever opens the run's page.
-              ...(this.#config.org.interactiveRuns
-                ? {
-                    tui: {
-                      key: assignment.id,
-                      // A person typing into the finished run's terminal
-                      // belongs in its transcript, not only on the screen.
-                      // The live buffer is gone once the run finished, so
-                      // these go straight into the journal the transcript
-                      // is read from.
-                      onLateEvent: (event: AgentEvent) =>
-                        this.#store.turns.append(assignment.id, event as unknown as Record<string, unknown>),
-                    },
-                  }
-                : {}),
-              signal: controller.signal,
-            })) {
-              if (event.type === 'text') {
-                this.#logPush(assignment.id, event);
-                text += event.delta;
-                sinceProgress += event.delta.length;
-                if (sinceProgress >= PROGRESS_EVERY) {
-                  sinceProgress = 0;
-                  org.updateAssignment(assignment.id, { chars: text.length });
-                  announce({ chars: text.length, preview: shorten(tail(text, 160), 110) });
-                }
-              } else if (event.type === 'thinking') {
-                this.#logPush(assignment.id, event);
-              } else if (event.type === 'tool') {
-                // The live log keeps the raw event: the `[slug]` prefix below
-                // is for the parent turn's stream, not this run's own log.
-                this.#logPush(assignment.id, event);
-                input.emit({ ...event, detail: '[' + agent.slug + '] ' + (event.detail ?? '') });
-                // A tool starting is the one moment worth telling everyone about,
-                // not just the turn that started this run - the same `announce`
-                // that already carries `chars`/`preview` org-wide, extended with
-                // what the run is doing right now. Not persisted, same as
-                // `preview`: a live-only field, gone once the run finishes.
-                if (event.status === 'start') {
-                  announce({ lastActivity: { kind: 'tool', label: event.name, at: Date.now() } });
-                }
-              } else if (event.type === 'done') {
-                text = event.text || text;
-              } else if (event.type === 'error' && event.fatal) {
-                this.#logPush(assignment.id, event);
-                fatal = event.message;
-              }
-            }
-          } catch (error) {
-            fatal = (error as Error).message;
-          }
-
-          // Only a usage-limit death goes around once more, on a provider
-          // that has not been tried yet; anything else falls through to the
-          // ordinary ending below. Cancelled and timed-out runs are never
-          // retried on another backend.
-          if (
-            fatal === null ||
-            !isUsageLimitError(fatal) ||
-            attempt >= MAX_PROVIDER_ATTEMPTS ||
-            cancelled() ||
-            controller.signal.aborted ||
-            !this.#config.providerFallback.enabled
-          ) {
-            break;
-          }
-          rememberUsageFailure(pid);
-          const alternate = await this.#registry.resolveUsable(preferred, { exclude: [...tried] });
-          if (!alternate) break;
-          const switchEvent: Extract<AgentEvent, { type: 'status' }> = {
-            type: 'status',
-            label: 'provider',
-            detail: pid + ' hit its usage limit, continuing on ' + alternate,
-          };
-          this.#logReset(assignment.id);
-          this.#logPush(assignment.id, switchEvent);
-          input.emit(switchEvent);
-          announce({ lastActivity: { kind: 'status', label: 'provider', at: Date.now() } });
-          usedProvider = alternate;
-          tried.add(alternate);
-        }
-      } finally {
-        clearTimeout(timer);
-        this.unregister(token);
-      }
-
-      if (cancelled()) {
-        return finish({ status: 'cancelled', finishedAt: Date.now(), durationMs: Date.now() - started });
-      }
-      if (controller.signal.aborted) return fail('Timed out.', started);
-      if (fatal) return fail(fatal, started);
-      if (!text.trim()) return fail('The agent produced no output.', started);
-
-      const done = finish(
-        { status: 'done', result: text, chars: text.length, finishedAt: Date.now(), durationMs: Date.now() - started },
-        { chars: text.length, preview: shorten(tail(text, 160), 110) },
-      );
-      // A scheduled assignment does not learn: its "task" is the job's own
-      // prompt, written once when the schedule was created, and every firing
-      // would otherwise quote it back into the bank as if it were news.
-      if (this.#config.memory.enabled && this.#config.memory.autoExtract && !input.scheduled) {
-        void this.#learn(agent, input.task, text, usedProvider);
-      }
-      if (this.#config.org.autoReview) void this.#review(agent, done, input.task, text, usedProvider);
-      // Asked by the run itself, through `ask_requester` - nothing to infer.
-      input.onAskedRequester?.(this.#askedRequester.has(assignment.id));
-      return done;
     } catch (error) {
-      this.#log.warn('Assignment failed', { id: assignment.id, error: (error as Error).message });
-      return fail((error as Error).message, started);
-    } finally {
-      // How it ended, written into the transcript itself.
-      //
-      // The journal used to stop at the last streamed line, so a run that
-      // timed out, found no provider, produced nothing or died on an
-      // exception left a transcript that simply broke off - and the reason
-      // existed only in `assignments.error`, which the log view does not
-      // read. Anyone opening the transcript afterwards saw an account that
-      // ends mid-sentence with no explanation. Now the last thing in the
-      // record is what happened.
-      const outcome = this.#store.org.getAssignment(assignment.id) ?? assignment;
-      this.#logPush(
-        assignment.id,
-        outcome.status === 'done'
-          ? {
-              type: 'status',
-              label: 'Done',
-              ...(outcome.durationMs ? { detail: Math.round(outcome.durationMs / 1000) + ' s' } : {}),
-            }
-          : { type: 'error', message: outcome.status + (outcome.error ? ': ' + outcome.error : ''), fatal: true },
-      );
-      const log = this.#logs.get(assignment.id);
-      if (log) {
-        // The run is over: live watchers hear it from the `assignment`
-        // broadcast `finish()` already sent, generators end here, and the
-        // buffer itself is gone. The journal stays - after a run, its
-        // transcript remains readable instead of only the result.
-        log.end();
-        this.#logs.delete(assignment.id);
-      }
-      // What the journal says has to match what happened. It used to write
-      // `done` for every run that reached this line - a run that timed out,
-      // was cancelled or died on a fatal provider error settled as an
-      // orderly end, so a client rebuilding the run from the journal after
-      // a reload saw a clean finish where the assignment row said `failed`.
-      // `done` is reserved for a run that actually ended in `done`.
-      const settled = this.#store.org.getAssignment(assignment.id) ?? assignment;
-      this.#store.turns.settle(assignment.id, settled.status === 'done' ? 'done' : 'interrupted', Date.now());
-      this.#askedRequester.delete(assignment.id);
-      this.#active.delete(assignment.id);
-      input.signal?.removeEventListener('abort', onAbort);
-      this.#release();
+      output.fatal = (error as Error).message;
     }
+    return output;
+  }
+
+  /**
+   * A visible Claude Code terminal per run, keyed by the run so the server
+   * can stream it to whoever opens the run's page.
+   */
+  #interactiveRunOptions(assignmentId: string): Pick<ProviderTurnOptions, 'tui'> {
+    if (!this.#config.org.interactiveRuns) return {};
+    return {
+      tui: {
+        key: assignmentId,
+        // A person typing into the finished run's terminal
+        // belongs in its transcript, not only on the screen.
+        // The live buffer is gone once the run finished, so
+        // these go straight into the journal the transcript
+        // is read from.
+        onLateEvent: (event: AgentEvent) =>
+          this.#store.turns.append(assignmentId, event as unknown as Record<string, unknown>),
+      },
+    };
+  }
+
+  /** Route one provider event: into the live log, the parent turn's stream, the progress line, or the attempt's result. */
+  #absorbProviderEvent(run: RunState, event: AgentEvent, output: AttemptOutput): void {
+    const { input, record } = run;
+    switch (event.type) {
+      case 'text':
+        this.#logPush(record.id, event);
+        if (output.append(event.delta)) {
+          this.#store.org.updateAssignment(record.id, { chars: output.text.length });
+          record.announce({ chars: output.text.length, preview: shorten(tail(output.text, 160), 110) });
+        }
+        break;
+      case 'thinking':
+        this.#logPush(record.id, event);
+        break;
+      case 'tool':
+        // The live log keeps the raw event: the `[slug]` prefix below
+        // is for the parent turn's stream, not this run's own log.
+        this.#logPush(record.id, event);
+        input.emit({ ...event, detail: '[' + input.agent.slug + '] ' + (event.detail ?? '') });
+        // A tool starting is the one moment worth telling everyone about,
+        // not just the turn that started this run - the same `announce`
+        // that already carries `chars`/`preview` org-wide, extended with
+        // what the run is doing right now. Not persisted, same as
+        // `preview`: a live-only field, gone once the run finishes.
+        if (event.status === 'start') {
+          record.announce({ lastActivity: { kind: 'tool', label: event.name, at: Date.now() } });
+        }
+        break;
+      case 'done':
+        output.text = event.text || output.text;
+        break;
+      case 'error':
+        if (event.fatal) {
+          this.#logPush(record.id, event);
+          output.fatal = event.message;
+        }
+        break;
+    }
+  }
+
+  /** A run that produced a report: record it, and let the agent learn from it and be judged on it. */
+  #complete(run: RunState, outcome: AttemptsOutcome, started: number): Assignment {
+    const { input, record } = run;
+    const { text } = outcome;
+    const done = record.finish(
+      { status: 'done', result: text, chars: text.length, finishedAt: Date.now(), durationMs: Date.now() - started },
+      { chars: text.length, preview: shorten(tail(text, 160), 110) },
+    );
+    // A scheduled assignment does not learn: its "task" is the job's own
+    // prompt, written once when the schedule was created, and every firing
+    // would otherwise quote it back into the bank as if it were news.
+    if (this.#config.memory.enabled && this.#config.memory.autoExtract && !input.scheduled) {
+      void this.#learn(input.agent, input.task, text, outcome.provider);
+    }
+    if (this.#config.org.autoReview) void this.#review(input.agent, done, input.task, text, outcome.provider);
+    // Asked by the run itself, through `ask_requester` - nothing to infer.
+    input.onAskedRequester?.(this.#askedRequester.has(record.id));
+    return done;
+  }
+
+  /**
+   * How it ended, written into the transcript itself.
+   *
+   * The journal used to stop at the last streamed line, so a run that
+   * timed out, found no provider, produced nothing or died on an
+   * exception left a transcript that simply broke off - and the reason
+   * existed only in `assignments.error`, which the log view does not
+   * read. Anyone opening the transcript afterwards saw an account that
+   * ends mid-sentence with no explanation. Now the last thing in the
+   * record is what happened.
+   */
+  #closeRun(run: RunState): void {
+    const { input, record } = run;
+    const id = record.id;
+    const outcome = this.#store.org.getAssignment(id) ?? record.assignment;
+    this.#logPush(
+      id,
+      outcome.status === 'done'
+        ? {
+            type: 'status',
+            label: 'Done',
+            ...(outcome.durationMs ? { detail: toSeconds(outcome.durationMs) + ' s' } : {}),
+          }
+        : { type: 'error', message: outcome.status + (outcome.error ? ': ' + outcome.error : ''), fatal: true },
+    );
+    const log = this.#logs.get(id);
+    if (log) {
+      // The run is over: live watchers hear it from the `assignment`
+      // broadcast `finish()` already sent, generators end here, and the
+      // buffer itself is gone. The journal stays - after a run, its
+      // transcript remains readable instead of only the result.
+      log.end();
+      this.#logs.delete(id);
+    }
+    // What the journal says has to match what happened. It used to write
+    // `done` for every run that reached this line - a run that timed out,
+    // was cancelled or died on a fatal provider error settled as an
+    // orderly end, so a client rebuilding the run from the journal after
+    // a reload saw a clean finish where the assignment row said `failed`.
+    // `done` is reserved for a run that actually ended in `done`.
+    this.#store.turns.settle(id, outcome.status === 'done' ? 'done' : 'interrupted', Date.now());
+    this.#askedRequester.delete(id);
+    this.#active.delete(id);
+    input.signal?.removeEventListener('abort', run.onAbort);
+    this.#release();
   }
 
   /**
@@ -2404,7 +2655,7 @@ export class OrgController extends EventEmitter {
     if (exact && exact.orgId === orgId) return exact;
     if (ref.length < 4) return null;
     const matches = this.#store.org
-      .listAssignments(orgId, { limit: 500 })
+      .listAssignments(orgId, { limit: LOOKUP_SCAN_LIMIT })
       .filter((entry) => entry.id.startsWith(ref));
     return matches.length === 1 ? (matches[0] ?? null) : null;
   }
@@ -2461,36 +2712,29 @@ export class OrgController extends EventEmitter {
 
   /* ------------------------------- settings ------------------------------- */
 
-  #updateSettings(context: ToolContext, args: Record<string, unknown>): ToolCallResult {
-    const text = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string).trim() : '');
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
-    if (context.audience !== 'assistant') return fail('Only the assistant can change settings.');
+  #toolUpdateSettings(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can change settings.');
 
-    const patch: Omit<Partial<RookeryConfig>, 'org'> & { org?: Partial<RookeryConfig['org']> } = {};
-    if (text('defaultProvider')) {
-      const provider = this.#asProvider(text('defaultProvider'));
-      if (!provider) return fail('No provider "' + text('defaultProvider') + '". Configured: ' + this.#providerIds() + '.');
+    const patch: ConfigPatch = {};
+    const defaultProvider = args.text('defaultProvider');
+    if (defaultProvider) {
+      const provider = this.#asProvider(defaultProvider);
+      if (!provider) return toolError('No provider "' + defaultProvider + '". Configured: ' + this.#providerIds() + '.');
       patch.defaultProvider = provider;
     }
     // An empty string clears a setting: the merge skips undefined, and
     // loadConfig turns '' back into "unset".
-    if (text('defaultModel')) patch.defaultModel = text('defaultModel') === 'default' ? '' : text('defaultModel');
-    if (text('defaultEffort')) {
-      const effort = text('defaultEffort');
+    const defaultModel = args.text('defaultModel');
+    if (defaultModel) patch.defaultModel = defaultModel === 'default' ? '' : defaultModel;
+    const effort = args.text('defaultEffort');
+    if (effort) {
       if (effort === 'default') patch.defaultEffort = '' as EffortLevel;
       else if ((EFFORT_LEVELS as readonly string[]).includes(effort)) patch.defaultEffort = effort as EffortLevel;
-      else return fail('Effort must be one of ' + EFFORT_LEVELS.join(', ') + ', or default.');
+      else return toolError('Effort must be one of ' + EFFORT_LEVELS.join(', ') + ', or default.');
     }
-    const org: Partial<RookeryConfig['org']> = {};
-    if (args.maxConcurrentAssignments !== undefined) {
-      org.maxConcurrentAssignments = clampNumber(args.maxConcurrentAssignments, 1, 16, 4);
-    }
-    if (args.maxDelegationDepth !== undefined) org.maxDelegationDepth = clampNumber(args.maxDelegationDepth, 1, 6, 3);
-    if (args.assignmentTimeoutMinutes !== undefined) {
-      org.assignmentTimeoutMs = clampNumber(args.assignmentTimeoutMinutes, 1, 600, 45) * 60 * 1000;
-    }
+    const org = orgSettingsPatch(args);
     if (Object.keys(org).length) patch.org = org;
-    if (!Object.keys(patch).length) return fail('Nothing to change.');
+    if (!Object.keys(patch).length) return toolError('Nothing to change.');
 
     // applyConfig writes ~/.rookery/config.json and refreshes the one config
     // object the runtime and the server share, dropping the keys a cleared
@@ -2502,94 +2746,89 @@ export class OrgController extends EventEmitter {
 
   /* ------------------------------- structure ------------------------------ */
 
-  async #updateAgent(context: ToolContext, args: Record<string, unknown>): Promise<ToolCallResult> {
-    const text = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string).trim() : '');
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
-    if (context.audience !== 'assistant') return fail('Only the assistant can change staff.');
-    const agent = this.#store.org.findAgent(context.orgId, text('agent'));
-    if (!agent) return fail('No agent "' + text('agent') + '".');
+  #toolUpdateAgent(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can change staff.');
+    const agent = this.#store.org.findAgent(context.orgId, args.text('agent'));
+    if (!agent) return toolError(noAgent(args.text('agent')));
 
-    const newInstructions = text('instructions');
+    const newInstructions = args.text('instructions');
+    const reason = args.text('reason');
     // Once an agent is flagged (stage >= 1), a silent instruction change is
     // the exact failure `agent_actions` exists to prevent - "protocol before
     // effect", decision E1. Below stage 1 this is unchanged: a free
     // restructuring of the company is not a personnel action.
     if (newInstructions && newInstructions !== agent.instructions) {
       const stage = this.#store.org.performance(agent.id).stage;
-      if (stage >= 1 && !text('reason')) {
-        return fail(
+      if (stage >= 1 && !reason) {
+        return toolError(
           agent.name + ' is at escalation stage ' + stage + '; changing standing instructions needs a "reason" ' +
             '(it is written to the personnel record as a reconfig). Use agent_performance to see why.',
         );
       }
     }
 
-    const patch: Parameters<OrgStore['updateAgent']>[1] = {};
-    if (text('name')) patch.name = text('name');
-    if (text('title')) patch.title = text('title');
-    if (newInstructions) patch.instructions = newInstructions;
-    if (text('team')) {
-      if (text('team').toLowerCase() === 'none') patch.teamId = null;
-      else {
-        const team = this.#store.org.findTeam(context.orgId, text('team'));
-        if (!team) return fail('No team "' + text('team') + '".');
-        patch.teamId = team.id;
-      }
-    }
-    if (text('manager')) {
-      if (text('manager').toLowerCase() === 'assistant') patch.managerId = null;
-      else {
-        const manager = this.#store.org.findAgent(context.orgId, text('manager'));
-        if (!manager) return fail('No agent "' + text('manager') + '".');
-        if (manager.id === agent.id) return fail('An agent cannot be its own manager.');
-        patch.managerId = manager.id;
-      }
-    }
-    // An id the registry does not serve clears the preference back to the
-    // company default, the same way an unknown permission does below.
-    if (text('provider')) patch.provider = this.#asProvider(text('provider')) ?? null;
-    if (text('model')) patch.model = text('model');
-    if (text('permission')) patch.permission = asPermission(text('permission')) ?? null;
-    if (typeof args.archived === 'boolean') patch.archived = args.archived;
+    const patch = this.#agentPatch(context.orgId, args, agent);
+    if (!patch.ok) return patch.error;
 
-    this.#store.org.updateAgent(agent.id, patch);
+    this.#store.org.updateAgent(agent.id, patch.value);
     // A `reason` on an instructions change is a personnel action by hand,
     // same rule as the automatic one in #develop: the record and the change
     // land together (decision E1). `stage` here is the one this reconfig
     // responds to, not necessarily still current a moment later.
-    if (patch.instructions && text('reason')) {
+    if (patch.value.instructions && reason) {
       const stage = this.#store.org.performance(agent.id).stage;
       this.#store.org.createAction({
         orgId: context.orgId,
         agentId: agent.id,
         kind: 'reconfig',
         stage: Math.max(stage, 1),
-        reason: text('reason'),
+        reason,
         beforeText: agent.instructions,
-        afterText: patch.instructions,
+        afterText: patch.value.instructions,
         decidedBy: 'assistant',
       });
     }
     this.emit('changed', { kind: 'agent', id: agent.id });
-    return { text: 'Updated ' + agent.name + ' (' + agent.slug + '): ' + Object.keys(patch).join(', ') + '.' };
+    return { text: 'Updated ' + agent.name + ' (' + agent.slug + '): ' + Object.keys(patch.value).join(', ') + '.' };
   }
 
-  async #updateTeam(context: ToolContext, args: Record<string, unknown>): Promise<ToolCallResult> {
-    const text = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string).trim() : '');
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
-    if (context.audience !== 'assistant') return fail('Only the assistant can change teams.');
-    const team = this.#store.org.findTeam(context.orgId, text('team'));
-    if (!team) return fail('No team "' + text('team') + '".');
-    const patch: Parameters<OrgStore['updateTeam']>[1] = {};
-    if (text('name')) patch.name = text('name');
-    if (text('purpose')) patch.purpose = text('purpose');
-    if (text('lead')) {
-      if (text('lead').toLowerCase() === 'none') patch.leadId = null;
-      else {
-        const lead = this.#store.org.findAgent(context.orgId, text('lead'));
-        if (!lead) return fail('No agent "' + text('lead') + '".');
-        patch.leadId = lead.id;
-      }
+  #agentPatch(orgId: string, args: ToolArgs, agent: Agent): Resolved<AgentPatch> {
+    const patch: AgentPatch = {};
+    if (args.text('name')) patch.name = args.text('name');
+    if (args.text('title')) patch.title = args.text('title');
+    if (args.text('instructions')) patch.instructions = args.text('instructions');
+    if (args.text('team')) {
+      const team = resolveClearable(args.text('team'), ['none'], (ref) => this.#store.org.findTeam(orgId, ref), noTeam);
+      if (!team.ok) return team;
+      patch.teamId = team.value;
+    }
+    if (args.text('manager')) {
+      const manager = resolveClearable(args.text('manager'), ['assistant'], (ref) => this.#store.org.findAgent(orgId, ref), noAgent);
+      if (!manager.ok) return manager;
+      if (manager.value === agent.id) return { ok: false, error: toolError('An agent cannot be its own manager.') };
+      patch.managerId = manager.value;
+    }
+    // An id the registry does not serve clears the preference back to the
+    // company default, the same way an unknown permission does below.
+    if (args.text('provider')) patch.provider = this.#asProvider(args.text('provider')) ?? null;
+    if (args.text('model')) patch.model = args.text('model');
+    if (args.text('permission')) patch.permission = asPermission(args.text('permission')) ?? null;
+    const archived = args.flag('archived');
+    if (archived !== undefined) patch.archived = archived;
+    return { ok: true, value: patch };
+  }
+
+  #toolUpdateTeam(context: ToolContext, args: ToolArgs): ToolCallResult {
+    if (context.audience !== 'assistant') return toolError('Only the assistant can change teams.');
+    const team = this.#store.org.findTeam(context.orgId, args.text('team'));
+    if (!team) return toolError(noTeam(args.text('team')));
+    const patch: TeamPatch = {};
+    if (args.text('name')) patch.name = args.text('name');
+    if (args.text('purpose')) patch.purpose = args.text('purpose');
+    if (args.text('lead')) {
+      const lead = resolveClearable(args.text('lead'), ['none'], (ref) => this.#store.org.findAgent(context.orgId, ref), noAgent);
+      if (!lead.ok) return lead.error;
+      patch.leadId = lead.value;
     }
     this.#store.org.updateTeam(team.id, patch);
     this.emit('changed', { kind: 'team', id: team.id });
@@ -2604,35 +2843,23 @@ export class OrgController extends EventEmitter {
     if (!wanted) return null;
     const exact = this.#store.org.getTask(wanted);
     if (exact && exact.orgId === orgId) return exact;
-    const matches = this.#store.org.listAllTasks(orgId, 500).filter((task) => task.id.startsWith(wanted));
+    const matches = this.#store.org.listAllTasks(orgId, LOOKUP_SCAN_LIMIT).filter((task) => task.id.startsWith(wanted));
     return matches.length === 1 ? (matches[0] ?? null) : null;
   }
 
-  async #updateTask(context: ToolContext, args: Record<string, unknown>): Promise<ToolCallResult> {
-    const text = (key: string): string => (typeof args[key] === 'string' ? (args[key] as string).trim() : '');
-    const fail = (message: string): ToolCallResult => ({ text: message, isError: true });
-    const task = this.findTask(context.orgId, text('id'));
-    if (!task) return fail('No task ' + text('id') + '.');
+  async #toolUpdateTask(context: ToolContext, args: ToolArgs): Promise<ToolCallResult> {
+    const task = this.findTask(context.orgId, args.text('id'));
+    if (!task) return toolError('No task ' + args.text('id') + '.');
     if (task.status === 'running') {
       // The one edit allowed mid-run: pulling the plug. The run loop writes
       // the final status itself once its assignments have stopped.
-      if (text('status') === 'cancelled' && this.cancelTask(task.id)) {
+      if (args.text('status') === 'cancelled' && this.cancelTask(task.id)) {
         return { text: 'Cancelling task "' + task.title + '" and everything it started.' };
       }
-      return fail('The task is running; wait for it to finish, or cancel it with status "cancelled".');
+      return toolError('The task is running; wait for it to finish, or cancel it with status "cancelled".');
     }
-    const patch: Parameters<OrgStore['updateTask']>[1] = {};
-    if (text('title')) patch.title = text('title');
-    if (text('description')) patch.description = text('description');
-    if (text('priority')) patch.priority = asPriority(text('priority'));
-    if (text('assignee')) {
-      if (text('assignee').toLowerCase() === 'none') patch.assigneeId = null;
-      else {
-        const agent = this.#store.org.findAgent(context.orgId, text('assignee'));
-        if (!agent) return fail('No agent "' + text('assignee') + '".');
-        patch.assigneeId = agent.id;
-      }
-    }
+    const patch = this.#taskPatch(context.orgId, args);
+    if (!patch.ok) return patch.error;
     // The status goes through `setTaskStatus`, which is what makes this tool
     // record on the card what it did and tell whoever is owed the ending -
     // closing a task from here used to leave whoever was waiting waiting for
@@ -2642,29 +2869,43 @@ export class OrgController extends EventEmitter {
     // the other edits standing and unannounced: the caller read "that is not
     // allowed", believed nothing had happened, and the card had quietly lost
     // its assignee in an open browser that was never told.
-    const fields = Object.keys(patch);
-    const status = text('status');
+    const fields = Object.keys(patch.value);
+    const status = args.text('status');
     const settable = status === 'open' || status === 'done' || status === 'cancelled' || status === 'blocked';
-    if (!settable && !fields.length) return fail('Nothing to change.');
+    if (!settable && !fields.length) return toolError('Nothing to change.');
 
     if (settable) {
+      const result = args.text('result');
       const moved = await this.setTaskStatus({
         task,
         to: status,
-        by: context.audience === 'agent' ? 'agent' : 'assistant',
-        ...(text('result') ? { result: text('result') } : {}),
+        by: callerKind(context),
+        ...(result ? { result } : {}),
         emit: context.emit,
       });
-      if (!moved.ok) return fail(moved.reason);
+      if (!moved.ok) return toolError(moved.reason);
     }
-    if (fields.length) this.#store.org.updateTask(task.id, patch);
-    const edited = this.#store.org.getTask(task.id) ?? task;
+    if (fields.length) this.#store.org.updateTask(task.id, patch.value);
+    const edited = this.#current(task);
     this.#announceTask(edited, context.emit);
     return {
       text:
         'Updated task "' + edited.title + '": ' +
         [...fields, ...(settable ? ['status'] : [])].join(', ') + '.',
     };
+  }
+
+  #taskPatch(orgId: string, args: ToolArgs): Resolved<TaskPatch> {
+    const patch: TaskPatch = {};
+    if (args.text('title')) patch.title = args.text('title');
+    if (args.text('description')) patch.description = args.text('description');
+    if (args.text('priority')) patch.priority = asPriority(args.text('priority'));
+    if (args.text('assignee')) {
+      const assignee = resolveClearable(args.text('assignee'), ['none'], (ref) => this.#store.org.findAgent(orgId, ref), noAgent);
+      if (!assignee.ok) return assignee;
+      patch.assigneeId = assignee.value;
+    }
+    return { ok: true, value: patch };
   }
 
   /**
@@ -2685,41 +2926,49 @@ export class OrgController extends EventEmitter {
       signal: context.signal,
     });
 
-    for (const child of this.#store.org.listTasks(context.orgId, { parentId: task.id })) {
+    this.#cancelUnfinishedSubtasks(context.orgId, task.id);
+    this.#applyPlan(context, task, plan, snapshot.agents);
+    this.#announceTask(this.#current(task), context.emit);
+    return plan;
+  }
+
+  #cancelUnfinishedSubtasks(orgId: string, parentId: string): void {
+    for (const child of this.#store.org.listTasks(orgId, { parentId })) {
       if (child.status === 'open' || child.status === 'planned') {
         this.#store.org.updateTask(child.id, { status: 'cancelled', finishedAt: Date.now() });
       }
     }
+  }
 
-    const bySlug = new Map(snapshot.agents.map((agent) => [agent.slug, agent]));
-    if (plan.mode === 'split') {
-      const created: Task[] = [];
-      for (const subtask of plan.subtasks) {
-        const child = this.#store.org.createTask({
-          orgId: context.orgId,
-          parentId: task.id,
-          projectId: task.projectId,
-          title: subtask.title,
-          description: subtask.description,
-          priority: task.priority,
-          assigneeId: bySlug.get(subtask.agent)?.id,
-          createdBy: 'assistant',
-          dependsOn: subtask.dependsOn.map((index) => created[index]?.id ?? '').filter(Boolean),
-          status: 'planned',
-        });
-        created.push(child);
-        this.#announceTask(child, context.emit);
-      }
-      this.#store.org.updateTask(task.id, { status: 'planned', planNote: plan.reason, assigneeId: null });
-    } else {
+  /** Write the planner's decision to the board: subtasks for a split, an assignee for a single task. */
+  #applyPlan(context: ToolContext, task: Task, plan: TaskPlan, agents: Agent[]): void {
+    const bySlug = new Map(agents.map((agent) => [agent.slug, agent]));
+    if (plan.mode !== 'split') {
       this.#store.org.updateTask(task.id, {
         status: 'planned',
         planNote: plan.reason,
         assigneeId: plan.assignee ? (bySlug.get(plan.assignee)?.id ?? null) : null,
       });
+      return;
     }
-    this.#announceTask(this.#store.org.getTask(task.id) ?? task, context.emit);
-    return plan;
+    const created: Task[] = [];
+    for (const subtask of plan.subtasks) {
+      const child = this.#store.org.createTask({
+        orgId: context.orgId,
+        parentId: task.id,
+        projectId: task.projectId,
+        title: subtask.title,
+        description: subtask.description,
+        priority: task.priority,
+        assigneeId: bySlug.get(subtask.agent)?.id,
+        createdBy: 'assistant',
+        dependsOn: subtask.dependsOn.map((index) => created[index]?.id ?? '').filter(Boolean),
+        status: 'planned',
+      });
+      created.push(child);
+      this.#announceTask(child, context.emit);
+    }
+    this.#store.org.updateTask(task.id, { status: 'planned', planNote: plan.reason, assigneeId: null });
   }
 
   /**
@@ -2728,14 +2977,12 @@ export class OrgController extends EventEmitter {
    * reports. Never throws; the returned task says how it ended.
    */
   async runTask(outer: ToolContext, task: Task): Promise<Task> {
-    const org = this.#store.org;
-    const reload = (): Task => org.getTask(task.id) ?? task;
     // A task's row only says `running` once planning has finished, and
     // planning awaits - so two first invocations (a double-click before the
     // first scheduling) both read a not-yet-running row and both plan. The
     // claim on `#activeTasks` below is written before the first await, which
     // makes it the one check a concurrent invocation cannot slip past.
-    if (this.#activeTasks.has(task.id) || reload().status === 'running') return reload();
+    if (this.#activeTasks.has(task.id) || this.#current(task).status === 'running') return this.#current(task);
 
     // The run gets its own abort controller so cancelTask() can stop it
     // without touching the caller's turn; the caller's signal feeds into it.
@@ -2752,7 +2999,7 @@ export class OrgController extends EventEmitter {
       // Every ending of every run passes here, thrown or not, so this is the
       // one place a report-back can be neither forgotten nor sent twice.
       this.#detached.delete(task.id);
-      this.#reportBack(reload());
+      this.#reportBack(this.#current(task));
     }
   }
 
@@ -2792,10 +3039,7 @@ export class OrgController extends EventEmitter {
    * runtime's to fall back from: it turns the event into a notification.
    */
   #reportBack(task: Task): void {
-    if (!task.requesterSessionId || task.parentId || this.#awaited.has(task.id)) return;
-    if (task.status !== 'done' && task.status !== 'failed' && task.status !== 'cancelled' && task.status !== 'blocked') {
-      return;
-    }
+    if (!task.requesterSessionId || task.parentId || this.#awaited.has(task.id) || !isEnding(task.status)) return;
     const agent = task.assigneeId ? this.#store.org.getAgent(task.assigneeId) : null;
     const event: ReportBackEvent = {
       sessionId: task.requesterSessionId,
@@ -2821,23 +3065,14 @@ export class OrgController extends EventEmitter {
         this.#detached.delete(task.id);
         return outcome;
       }
-      const entries = [...pending.entries()];
+      const handedOff = [...pending.entries()];
       pending.clear();
-      const cancelAll = (): void => {
-        for (const [id] of entries) this.cancelTask(id);
-      };
       if (context.signal?.aborted || outcome.status === 'cancelled') {
-        cancelAll();
+        for (const [id] of handedOff) this.cancelTask(id);
         this.#detached.delete(task.id);
         return outcome;
       }
-      context.signal?.addEventListener('abort', cancelAll, { once: true });
-      let children: Task[];
-      try {
-        children = await Promise.all(entries.map(([, promise]) => promise));
-      } finally {
-        context.signal?.removeEventListener('abort', cancelAll);
-      }
+      const children = await this.#awaitHandedOff(context.signal, handedOff);
       // Cancelled while it waited: the task ends cancelled, not with the
       // interim report it had written before the work came back.
       if (context.signal?.aborted) {
@@ -2849,47 +3084,59 @@ export class OrgController extends EventEmitter {
       // over the question or the failure. Nor is one past either ceiling.
       // A child that came back with a question then has nobody left to ask
       // it of, and a question is never silent: it goes to the user.
-      const current = children.map((child) => this.#store.org.getTask(child.id) ?? child);
-      if (
-        outcome.status !== 'done' ||
-        outcome.askedRequester ||
-        round >= MAX_DELEGATION_ROUNDS ||
-        this.#store.org.taskRunCount(task.id) >= this.#config.org.maxTaskRuns
-      ) {
+      const current = children.map((child) => this.#current(child));
+      const mayPickUp =
+        outcome.status === 'done' &&
+        !outcome.askedRequester &&
+        round < MAX_DELEGATION_ROUNDS &&
+        this.#store.org.taskRunCount(task.id) < this.#config.org.maxTaskRuns;
+      if (!mayPickUp) {
         for (const child of current) if (child.status === 'blocked') this.#escalateQuestion(child);
         continue;
       }
-      const results = current
-        .map((child) => {
-          const who = child.assigneeId ? (this.#store.org.getAgent(child.assigneeId)?.slug ?? 'agent') : 'agent';
-          const head = '### ' + child.title + ' (' + who + ', ' + child.status + ', task ' + child.id.slice(0, 8) + ')\n';
-          if (child.status === 'blocked') {
-            // R4 meets ask_requester: the child asked its requester, and the
-            // requester is this run. The question comes back here with the
-            // results, and answering it carries the child on.
-            const question = this.#questionFor(child);
-            return (
-              head + 'It stopped with a question for you:\n' + clip(question ?? child.result ?? '(no text)', 6000) +
-              '\nAnswer it with answer_task("' + child.id.slice(0, 8) + '", ...) - it then carries on in the ' +
-              'background, and you are started again once it is back. If you cannot answer it, say so in your ' +
-              'report instead.'
-            );
-          }
-          return head + clip(child.result ?? (child.error ? 'FAILED: ' + child.error : 'no output'), 6000);
-        })
-        .join('\n\n');
       const note =
-        'The work you handed off in the background while doing this task has come back:\n\n' + results +
-        '\n\nYour own report from before it came back:\n' + clip(outcome.result ?? '', 6000) +
+        'The work you handed off in the background while doing this task has come back:\n\n' +
+        current.map((child) => this.#handedOffReport(child)).join('\n\n') +
+        '\n\nYour own report from before it came back:\n' + clip(outcome.result ?? '', CHILD_REPORT_BUDGET) +
         '\n\nPick the task back up with these results and finish it. What you answer now is the final report.';
-      outcome = await this.#runTaskLeaf({ ...context, taskNote: note }, this.#store.org.getTask(task.id) ?? task, agent);
+      outcome = await this.#runTaskLeaf({ ...context, taskNote: note }, this.#current(task), agent);
     }
+  }
+
+  /** Wait for work handed off in the background; an abort of the waiter calls all of it off. */
+  async #awaitHandedOff(signal: AbortSignal | undefined, handedOff: [string, Promise<Task>][]): Promise<Task[]> {
+    const cancelAll = (): void => {
+      for (const [id] of handedOff) this.cancelTask(id);
+    };
+    signal?.addEventListener('abort', cancelAll, { once: true });
+    try {
+      return await Promise.all(handedOff.map(([, promise]) => promise));
+    } finally {
+      signal?.removeEventListener('abort', cancelAll);
+    }
+  }
+
+  /** One handed-off child as its parent reads it when the work is back. */
+  #handedOffReport(child: Task): string {
+    const who = child.assigneeId ? (this.#store.org.getAgent(child.assigneeId)?.slug ?? 'agent') : 'agent';
+    const head = '### ' + child.title + ' (' + who + ', ' + child.status + ', task ' + shortId(child.id) + ')\n';
+    if (child.status === 'blocked') {
+      // R4 meets ask_requester: the child asked its requester, and the
+      // requester is this run. The question comes back here with the
+      // results, and answering it carries the child on.
+      const question = this.#questionFor(child);
+      return (
+        head + 'It stopped with a question for you:\n' + clip(question ?? child.result ?? '(no text)', CHILD_REPORT_BUDGET) +
+        '\nAnswer it with answer_task("' + shortId(child.id) + '", ...) - it then carries on in the ' +
+        'background, and you are started again once it is back. If you cannot answer it, say so in your ' +
+        'report instead.'
+      );
+    }
+    return head + clip(child.result ?? (child.error ? 'FAILED: ' + child.error : 'no output'), CHILD_REPORT_BUDGET);
   }
 
   async #runTask(context: ToolContext, task: Task): Promise<Task> {
     const org = this.#store.org;
-    const reload = (): Task => org.getTask(task.id) ?? task;
-
     const started = Date.now();
 
     // How a run ends is the card's business, not an HTTP route's: every
@@ -2899,17 +3146,16 @@ export class OrgController extends EventEmitter {
     // move a card that is `running`: this loop owns that card for the
     // duration, and it is the only writer that may decide the outcome from
     // inside rather than having to cancel first.
-    const finish = async (status: TaskStatus, patch: { result?: string; error?: string }): Promise<Task> => {
+    const finish: TaskFinisher = async (status, patch) => {
       const moved = await this.setTaskStatus({
-        task: reload(),
+        task: this.#current(task),
         to: status,
         by: task.createdBy,
         fromRun: true,
-        since: started,
         emit: context.emit,
         ...patch,
       });
-      return moved.ok ? moved.task : reload();
+      return moved.ok ? moved.task : this.#current(task);
     };
 
     try {
@@ -2920,19 +3166,19 @@ export class OrgController extends EventEmitter {
       // explanation. The claim below is what makes the card `running`, and
       // it is atomic: a status write that slips in between the read above
       // and this line loses, rather than being silently overwritten.
-      let children = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
-      if (!children.length && !reload().assigneeId) {
-        await this.planTask(context, reload());
-        children = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
+      let children = this.#liveSubtasks(context.orgId, task.id);
+      if (!children.length && !this.#current(task).assigneeId) {
+        await this.planTask(context, this.#current(task));
+        children = this.#liveSubtasks(context.orgId, task.id);
       }
 
       if (!org.claimTaskForRun(task.id, started)) {
         // Somebody finished or cancelled it while this was getting ready.
-        return reload();
+        return this.#current(task);
       }
-      this.#announceTask(reload(), context.emit);
+      this.#announceTask(this.#current(task), context.emit);
 
-      return await this.#runTaskBody(context, task, children, finish, started);
+      return await this.#runTaskBody(context, task, children, finish);
     } catch (error) {
       // The card claims to be running and nothing is. Left like that it can
       // be neither cancelled (no controller any more) nor edited (every
@@ -2946,70 +3192,74 @@ export class OrgController extends EventEmitter {
       } catch {
         // Even the status write failed. The column is the last thing that
         // can still be made true, so it is written directly.
-        org.updateTask(task.id, { status: 'failed', error: message, finishedAt: Date.now() });
-        return reload();
+        this.#markEnded(task.id, { status: 'failed', error: message });
+        return this.#current(task);
       }
     }
+  }
+
+  /** The subtasks of a task that still count: everything but the cancelled. */
+  #liveSubtasks(orgId: string, parentId: string): Task[] {
+    return this.#store.org.listTasks(orgId, { parentId }).filter((child) => child.status !== 'cancelled');
   }
 
   /**
    * The body of one task run, split out only so `#runTask` can wrap the
    * whole of it - planning, waves and all - in a single catch.
    */
-  async #runTaskBody(
-    context: ToolContext,
-    task: Task,
-    children: Task[],
-    finish: (status: TaskStatus, patch: { result?: string; error?: string }) => Promise<Task>,
-    started: number,
-  ): Promise<Task> {
-    const org = this.#store.org;
-    const reload = (): Task => org.getTask(task.id) ?? task;
+  async #runTaskBody(context: ToolContext, task: Task, children: Task[], finish: TaskFinisher): Promise<Task> {
+    if (!children.length) return await this.#runUnsplitTask(context, task, finish);
 
-    if (!children.length) {
-      const current = reload();
-      const agent = current.assigneeId ? org.getAgent(current.assigneeId) : null;
-      if (!agent) return await finish('failed', { error: 'Nobody is assigned and nobody could be found to do it.' });
-      const leaf = await this.#runTaskLeaf(context, current, agent);
-      const outcome = await this.#awaitDelegated(context, current, agent, leaf);
-      return await finish(taskStatusFor(outcome), { result: outcome.result, error: outcome.error });
-    }
-
-    const waves = buildTaskWaves(children.filter((c) => c.status !== 'done'));
     // The note that continued the parent is the parent's; each subtask runs
     // on its own brief. The parent speaks for the split once, below, with
     // the combined result.
     const waveContext: ToolContext = { ...context, taskNote: undefined };
-    for (const wave of waves) {
+    for (const wave of buildTaskWaves(children.filter((child) => child.status !== 'done'))) {
       if (waveContext.signal?.aborted) break;
       await Promise.all(wave.map((child) => this.#runSubtask(waveContext, child)));
     }
 
-    const all = org.listTasks(context.orgId, { parentId: task.id }).filter((c) => c.status !== 'cancelled');
-    const failed = all.filter((c) => c.status === 'failed');
-    const combined = all
-      .map((c) => {
-        const agent = c.assigneeId ? org.getAgent(c.assigneeId) : null;
-        const head = '### ' + c.title + ' (' + (agent?.slug ?? 'unassigned') + ', ' + c.status + ')';
-        return head + '\n' + (c.result ?? (c.error ? 'FAILED: ' + c.error : 'no output'));
+    const outcome = this.#splitOutcome(
+      this.#liveSubtasks(context.orgId, task.id),
+      Boolean(context.signal?.aborted),
+    );
+    return await finish(outcome.status, { result: outcome.result, error: outcome.error });
+  }
+
+  /** A task that was not split: its assignee does the whole of it. */
+  async #runUnsplitTask(context: ToolContext, task: Task, finish: TaskFinisher): Promise<Task> {
+    const current = this.#current(task);
+    const agent = current.assigneeId ? this.#store.org.getAgent(current.assigneeId) : null;
+    if (!agent) return await finish('failed', { error: 'Nobody is assigned and nobody could be found to do it.' });
+    const leaf = await this.#runTaskLeaf(context, current, agent);
+    const outcome = await this.#awaitDelegated(context, current, agent, leaf);
+    return await finish(taskStatusFor(outcome), { result: outcome.result, error: outcome.error });
+  }
+
+  /** How a split task ended, from where its subtasks ended up, with their reports side by side. */
+  #splitOutcome(
+    subtasks: Task[],
+    aborted: boolean,
+  ): { status: TaskStatus; result: string; error?: string } {
+    const failed = subtasks.filter((child) => child.status === 'failed');
+    const result = subtasks
+      .map((child) => {
+        const agent = child.assigneeId ? this.#store.org.getAgent(child.assigneeId) : null;
+        const head = '### ' + child.title + ' (' + (agent?.slug ?? 'unassigned') + ', ' + child.status + ')';
+        return head + '\n' + (child.result ?? (child.error ? 'FAILED: ' + child.error : 'no output'));
       })
       .join('\n\n');
-    const outcome =
-      context.signal?.aborted
-        ? { status: 'cancelled' as const, result: combined }
-        : failed.length === all.length
-          ? { status: 'failed' as const, error: 'Every subtask failed.', result: combined }
-          : {
-              status: 'done' as const,
-              result: combined,
-              error: failed.length ? failed.length + ' of ' + all.length + ' subtasks failed.' : undefined,
-            };
-    return await finish(outcome.status, { result: outcome.result, error: outcome.error });
+    if (aborted) return { status: 'cancelled', result };
+    if (failed.length === subtasks.length) return { status: 'failed', error: 'Every subtask failed.', result };
+    return {
+      status: 'done',
+      result,
+      error: failed.length ? failed.length + ' of ' + subtasks.length + ' subtasks failed.' : undefined,
+    };
   }
 
   /** One subtask inside a wave: mark it, run its leaf, record the outcome. */
   async #runSubtask(outer: ToolContext, child: Task): Promise<void> {
-    const org = this.#store.org;
     // A subtask gets its own controller in `#activeTasks`, exactly like the
     // task above it. Without one, `cancelTask(childId)` found nothing and
     // returned false, so a single stuck child of a five-way split could not
@@ -3026,8 +3276,8 @@ export class OrgController extends EventEmitter {
       // Same rule as the parent: a child must never be left claiming to run.
       const message = (error as Error).message;
       this.#log.warn('Subtask run failed', { task: child.id, error: message });
-      org.updateTask(child.id, { status: 'failed', error: message, finishedAt: Date.now() });
-      this.#announceTask(org.getTask(child.id) ?? child, context.emit);
+      this.#markEnded(child.id, { status: 'failed', error: message });
+      this.#announceTask(this.#current(child), context.emit);
     } finally {
       this.#activeTasks.delete(child.id);
       this.#detached.delete(child.id);
@@ -3036,58 +3286,62 @@ export class OrgController extends EventEmitter {
   }
 
   async #runSubtaskBody(context: ToolContext, child: Task): Promise<void> {
-    const org = this.#store.org;
-    const agent = child.assigneeId ? org.getAgent(child.assigneeId) : null;
-    org.updateTask(child.id, { status: 'running', startedAt: Date.now() });
-    this.#announceTask(org.getTask(child.id) ?? child, context.emit);
-    if (context.signal?.aborted) {
-      org.updateTask(child.id, { status: 'cancelled', finishedAt: Date.now() });
-    } else if (!agent) {
-      org.updateTask(child.id, { status: 'failed', error: 'No assignee.', finishedAt: Date.now() });
-    } else {
-      const deps = child.dependsOn.map((id) => org.getTask(id)).filter((t): t is Task => Boolean(t));
-      // A dependency that ended failed or cancelled used to be silently
-      // dropped (no result), and this subtask ran on a basis it never saw.
-      // It fails with the reason instead, the way a missing assignee does;
-      // the parent's summary then carries the failure. A dependency that is
-      // merely not finished yet (a cycle released in one wave) is not broken
-      // here - it stays dropped from the inputs, as before.
-      const broken = deps.filter((t) => t.status === 'failed' || t.status === 'cancelled');
-      if (broken.length) {
-        org.updateTask(child.id, {
-          status: 'failed',
-          error: 'Dependency did not finish: ' + broken.map((t) => t.title).join(', ') + '.',
-          finishedAt: Date.now(),
-        });
-      } else {
-        // A subtask's agent may hand work on in the background as well; the
-        // subtask is not done before that work is back (R4).
-        const leaf = await this.#runTaskLeaf(context, child, agent, deps.filter((t) => t.result));
-        const outcome = await this.#awaitDelegated(context, child, agent, leaf);
-        org.updateTask(child.id, {
-          status: taskStatusFor(outcome),
-          result: outcome.result,
-          error: outcome.error,
-          finishedAt: Date.now(),
-        });
-      }
-    }
-    const ended = org.getTask(child.id) ?? child;
+    this.#store.org.updateTask(child.id, { status: 'running', startedAt: Date.now() });
+    this.#announceTask(this.#current(child), context.emit);
+    await this.#carryOutSubtask(context, child);
+    const ended = this.#current(child);
     this.#announceTask(ended, context.emit);
     // A subtask's ending is written straight to its row above - the parent's
     // loop owns it - but it still goes on the card, and a question on it
     // still has to reach somebody: the split's parent only collects results.
-    if (ended.status === 'done' || ended.status === 'failed' || ended.status === 'cancelled' || ended.status === 'blocked') {
+    if (isEnding(ended.status)) {
       this.#recordStatus(ended, 'system');
       this.#deliverEnding(ended, ended.status, { by: 'assistant', fromRun: true });
     }
   }
 
+  /** Run the subtask's leaf - or refuse it - and write how that ended onto its row. */
+  async #carryOutSubtask(context: ToolContext, child: Task): Promise<void> {
+    const org = this.#store.org;
+    if (context.signal?.aborted) return this.#markEnded(child.id, { status: 'cancelled' });
+    const agent = child.assigneeId ? org.getAgent(child.assigneeId) : null;
+    if (!agent) return this.#markEnded(child.id, { status: 'failed', error: 'No assignee.' });
+
+    const deps = child.dependsOn.map((id) => org.getTask(id)).filter((dep): dep is Task => Boolean(dep));
+    // A dependency that ended failed or cancelled used to be silently
+    // dropped (no result), and this subtask ran on a basis it never saw.
+    // It fails with the reason instead, the way a missing assignee does;
+    // the parent's summary then carries the failure. A dependency that is
+    // merely not finished yet (a cycle released in one wave) is not broken
+    // here - it stays dropped from the inputs, as before.
+    const broken = deps.filter((dep) => dep.status === 'failed' || dep.status === 'cancelled');
+    if (broken.length) {
+      return this.#markEnded(child.id, {
+        status: 'failed',
+        error: 'Dependency did not finish: ' + broken.map((dep) => dep.title).join(', ') + '.',
+      });
+    }
+
+    // A subtask's agent may hand work on in the background as well; the
+    // subtask is not done before that work is back (R4).
+    const leaf = await this.#runTaskLeaf(context, child, agent, deps.filter((dep) => dep.result));
+    const outcome = await this.#awaitDelegated(context, child, agent, leaf);
+    this.#markEnded(child.id, { status: taskStatusFor(outcome), result: outcome.result, error: outcome.error });
+  }
+
+  /** Write a task's final status straight onto its row, stamped as finished now. */
+  #markEnded(taskId: string, patch: { status: TaskStatus; result?: string; error?: string }): void {
+    this.#store.org.updateTask(taskId, { ...patch, finishedAt: Date.now() });
+  }
+
+  /** The task as the store has it now; the one passed in when it has gone. */
+  #current(task: Task): Task {
+    return this.#store.org.getTask(task.id) ?? task;
+  }
+
   /** The card's own line about where it now stands. */
   #recordStatus(task: Task, actor: TaskEventActor): void {
-    if (task.status !== 'done' && task.status !== 'failed' && task.status !== 'cancelled' && task.status !== 'blocked') {
-      return;
-    }
+    if (!isEnding(task.status)) return;
     this.#taskEvent({ taskId: task.id, kind: 'status', actorKind: actor, text: statusNote(task, task.status) });
   }
 
@@ -3098,11 +3352,6 @@ export class OrgController extends EventEmitter {
     agent: Agent,
     deps: Task[] = [],
   ): Promise<LeafOutcome> {
-    const prior = deps.length
-      ? 'Results of the subtasks this one depends on:\n\n' +
-        deps.map((dep) => '### ' + dep.title + '\n' + clip(dep.result ?? '', 6000)).join('\n\n') +
-        '\n\n---\n\n'
-      : '';
     // What continued the task comes after the work order: the order is what
     // the task is, the note is what changed about it.
     const note = context.taskNote ? '\n\n---\n\n' + context.taskNote : '';
@@ -3119,7 +3368,7 @@ export class OrgController extends EventEmitter {
       // line, so heading the brief with it says the same thing twice - and
       // the agent reads the repetition as emphasis that was never meant.
       // Only a title that adds something gets a heading.
-      task: prior + briefFor(task) + note,
+      task: dependencyResults(deps) + briefFor(task) + note,
       projectId: task.projectId ?? context.projectId,
       sessionId: context.sessionId,
       parentId: context.parentAssignmentId,
@@ -3156,11 +3405,7 @@ export class OrgController extends EventEmitter {
       kind: 'run-ended',
       actorKind: 'agent',
       actorAgentId: agent.id,
-      text:
-        'Run ' + runNumber + ' ' + (askedRequester && assignment.status === 'done' ? 'ended with a question' : assignment.status) +
-        (assignment.durationMs !== undefined ? ' after ' + Math.round(assignment.durationMs / 1000) + ' s' : '') +
-        (assignment.error ? ': ' + assignment.error : '.') +
-        (assignment.result ? '\n\n' + clip(assignment.result, 4000) : ''),
+      text: runEndedNote(runNumber, assignment, askedRequester),
       assignmentId: assignment.id,
     });
     return {
@@ -3194,86 +3439,24 @@ export class OrgController extends EventEmitter {
    * the page - and the watcher's "running far longer than it should" - did
    * arithmetic with a timestamp from a run that had ended days ago.
    */
-  async setTaskStatus(input: {
-    task: Task;
-    to: TaskStatus;
-    /** Who is asking. The run loop passes `fromRun` instead. */
-    by: RequesterKind;
-    result?: string;
-    error?: string;
-    /**
-     * The run loop writing its own outcome. It owns the task for the
-     * duration of the run, so it is the one writer allowed to move a
-     * `running` card - everybody else has to cancel it first.
-     */
-    fromRun?: boolean;
-    /**
-     * When this ending began. Read by nothing since the status note left
-     * the mail thread; kept so existing callers still type-check.
-     */
-    since?: number;
-    emit?: (event: AgentEvent) => void;
-  }): Promise<{ ok: true; task: Task } | { ok: false; reason: string }> {
+  async setTaskStatus(input: TaskStatusChange): Promise<{ ok: true; task: Task } | { ok: false; reason: string }> {
     const org = this.#store.org;
     const current = org.getTask(input.task.id);
     if (!current) return { ok: false, reason: 'The task no longer exists.' };
     if (current.status === input.to && !input.fromRun) {
       return { ok: true, task: current };
     }
-    // A run in flight owns its card. Cancelling is the way to interrupt it;
-    // anything else would have two writers deciding the same outcome.
-    if (current.status === 'running' && !input.fromRun && input.to !== 'cancelled') {
-      return { ok: false, reason: 'The task is running. Cancel it first, or wait for it to finish.' };
-    }
-    // An agent reports; the person who asked decides it is finished
-    // (decision O3). `update_task` is offered to agents and checked nothing,
-    // so an agent could close or drop a card the user had put on the board
-    // themselves - and the user found out by noticing it was gone. Marking
-    // it `blocked` or handing back a result stays open to them, and a run
-    // recording its own outcome passes `fromRun`.
-    if (
-      input.by === 'agent' &&
-      !input.fromRun &&
-      current.createdBy === 'user' &&
-      (input.to === 'done' || input.to === 'cancelled')
-    ) {
-      return {
-        ok: false,
-        reason: 'This task belongs to the user. Report what you found and let them close it.',
-      };
-    }
+    const refusal = statusChangeRefusal(current, input);
+    if (refusal) return { ok: false, reason: refusal };
 
-    const now = Date.now();
-    const terminal = input.to === 'done' || input.to === 'failed' || input.to === 'cancelled';
-    const patch: Parameters<OrgStore['updateTask']>[1] = { status: input.to };
-    if (terminal) {
-      patch.finishedAt = now;
-      if (input.result !== undefined) patch.result = input.result;
-      if (input.error !== undefined) patch.error = input.error;
-    } else if (input.to === 'blocked') {
-      // Waiting is not a new life. A blocked card is mid-question: it
-      // carries what the run produced so far and the reason it stopped,
-      // and clearing those - as "back into play" does - threw away the
-      // very thing the person is being asked about.
-      patch.finishedAt = null;
-      if (input.result !== undefined) patch.result = input.result;
-      if (input.error !== undefined) patch.error = input.error;
-    } else {
-      // Back into play: nothing from the last attempt may survive as if it
-      // described this one.
-      patch.finishedAt = null;
-      patch.result = input.result ?? null;
-      patch.error = input.error ?? null;
-      if (input.to === 'running') patch.startedAt = now;
-    }
-    org.updateTask(current.id, patch);
-    const updated = org.getTask(current.id) ?? current;
-    this.#announceTask(updated, input.emit ?? ((): void => undefined));
+    org.updateTask(current.id, statusPatch(input, Date.now()));
+    const updated = this.#current(current);
+    this.#announceTask(updated, input.emit ?? ignoreEvent);
     // Every ending and every wait goes on the card, whoever moved it; then
     // whoever is owed the news gets it (`#deliverEnding` has the rules - who
     // hears, and the old silences: a schedule's card, the person's own
     // cancel).
-    if (input.to === 'done' || input.to === 'failed' || input.to === 'cancelled' || input.to === 'blocked') {
+    if (isEnding(input.to)) {
       this.#recordStatus(updated, input.fromRun ? 'system' : input.by);
       this.#deliverEnding(updated, input.to, { by: input.by, fromRun: Boolean(input.fromRun) });
     }
@@ -3286,7 +3469,7 @@ export class OrgController extends EventEmitter {
    * card the moment the work is handed over, not once planning is done.
    */
   announceTask(task: Task): void {
-    this.#announceTask(task, () => undefined);
+    this.#announceTask(task, ignoreEvent);
   }
 
   #announceTask(task: Task, emit: (event: AgentEvent) => void): void {
@@ -3355,7 +3538,7 @@ export class OrgController extends EventEmitter {
       hopEntity: policy.hopEntity,
       hopEdge: policy.hopEdge,
     });
-    const profile = coreProfile(this.#store, { owner: agentId, limit: 3 });
+    const profile = coreProfile(this.#store, { owner: agentId, limit: AGENT_PROFILE_LIMIT });
     const byId = new Map(profile.map((memory) => [memory.id, memory]));
     for (const memory of matched) byId.set(memory.id, memory);
     // Total order on ties (R11): score descending, then id ascending - the
@@ -3373,8 +3556,8 @@ export class OrgController extends EventEmitter {
       const known = recall(this.#store, {
         text: task + '\n' + report,
         owner: agent.id,
-        limit: 20,
-        threshold: 0.05,
+        limit: KNOWN_MEMORIES_LIMIT,
+        threshold: KNOWN_MEMORIES_THRESHOLD,
         touch: false,
         expand: false,
       }).map((memory) => memory.content);
@@ -3452,8 +3635,7 @@ export class OrgController extends EventEmitter {
    */
   async #develop(agent: Agent, orgId: string, providerId: ProviderId): Promise<void> {
     const performance = this.#store.org.performance(agent.id);
-    const actions = this.#store.org.listActions(agent.id, { limit: 1 });
-    const lastStage = actions[0]?.stage ?? 0;
+    const lastStage = this.#store.org.listActions(agent.id, { limit: 1 })[0]?.stage ?? 0;
     if (performance.stage <= lastStage) return;
 
     const reviews = this.#store.org.effectiveReviews(agent.id, 10).filter((review) => !review.failedRun);
@@ -3464,80 +3646,82 @@ export class OrgController extends EventEmitter {
       tags: review.tags,
       createdAt: review.createdAt,
     }));
-    const provider = this.#registry.get(providerId);
+    const subject: DevelopmentSubject = { agent, orgId, provider: this.#registry.get(providerId), reviews, weak };
 
-    if (performance.stage === 1) {
-      const drafted = await draftNote(provider, { roleTitle: agent.title, instructions: agent.instructions, reviews: weak });
-      if (!drafted) return;
-      this.#store.org.createAction({
-        orgId,
-        agentId: agent.id,
-        kind: 'note',
-        stage: 1,
-        reason: drafted.reason,
-        agentNote: drafted.agentNote,
-        reviewIds: reviews.slice(0, 3).map((review) => review.id),
-        decidedBy: 'assistant',
-      });
-      this.emit('changed', { kind: 'agent', id: agent.id });
-      return;
-    }
+    if (performance.stage === 1) await this.#fileNote(subject);
+    else if (performance.stage === 2) await this.#fileReconfig(subject);
+    else if (performance.stage === 3) await this.#fileReplacementProposal(subject);
+  }
 
-    if (performance.stage === 2) {
-      const drafted = await draftReconfig(provider, { roleTitle: agent.title, instructions: agent.instructions, reviews: weak });
-      if (!drafted) return;
-      // Propose by default, apply only where the user has said it may
-      // (`org.autoReconfig`). Standing instructions are something a person
-      // wrote, and stage 2 is reached by one model's judgment of another
-      // model's output - a chain with nobody in it. Filed as a proposal,
-      // the same text is one click away on the agent's page and the agent
-      // keeps working to its current instructions until then.
-      const applying = this.#config.org.autoReconfig;
-      // Protocol before effect (decision E1): the action and the instruction
-      // change happen together, or not at all - `updateAgent` never runs
-      // ahead of a personnel-file entry that justifies it.
-      this.#store.org.createAction({
-        orgId,
-        agentId: agent.id,
-        kind: applying ? 'reconfig' : 'reconfig-proposal',
-        stage: 2,
-        reason: drafted.reason,
-        beforeText: agent.instructions,
-        afterText: drafted.newInstructions,
-        agentNote: drafted.agentNote,
-        reviewIds: reviews.slice(0, 5).map((review) => review.id),
-        decidedBy: 'assistant',
-      });
-      if (applying) this.#store.org.updateAgent(agent.id, { instructions: drafted.newInstructions });
-      this.emit('changed', { kind: 'agent', id: agent.id });
-      return;
-    }
+  async #fileNote({ agent, orgId, provider, reviews, weak }: DevelopmentSubject): Promise<void> {
+    const drafted = await draftNote(provider, { roleTitle: agent.title, instructions: agent.instructions, reviews: weak });
+    if (!drafted) return;
+    this.#store.org.createAction({
+      orgId,
+      agentId: agent.id,
+      kind: 'note',
+      stage: 1,
+      reason: drafted.reason,
+      agentNote: drafted.agentNote,
+      reviewIds: reviews.slice(0, 3).map((review) => review.id),
+      decidedBy: 'assistant',
+    });
+    this.emit('changed', { kind: 'agent', id: agent.id });
+  }
 
-    if (performance.stage === 3) {
-      const drafted = await draftReplacementProposal(provider, {
-        currentName: agent.name,
-        roleTitle: agent.title,
-        instructions: agent.instructions,
-        reviews: weak,
-      });
-      if (!drafted) return;
-      // Only a proposal (section 4, stage 3): logged so the agent page can
-      // show it as a pending action item, nothing about the agent changes
-      // until the user approves the replacement.
-      this.#store.org.createAction({
-        orgId,
-        agentId: agent.id,
-        kind: 'probation',
-        stage: 3,
-        reason:
-          drafted.reason +
-          '\n\nProposed successor: ' + drafted.successorName + ' (' + drafted.successorSlug + '), ' +
-          drafted.successorTitle + '.\n\n' + drafted.successorInstructions,
-        reviewIds: reviews.slice(0, 5).map((review) => review.id),
-        decidedBy: 'assistant',
-      });
-      this.emit('changed', { kind: 'agent', id: agent.id });
-    }
+  async #fileReconfig({ agent, orgId, provider, reviews, weak }: DevelopmentSubject): Promise<void> {
+    const drafted = await draftReconfig(provider, { roleTitle: agent.title, instructions: agent.instructions, reviews: weak });
+    if (!drafted) return;
+    // Propose by default, apply only where the user has said it may
+    // (`org.autoReconfig`). Standing instructions are something a person
+    // wrote, and stage 2 is reached by one model's judgment of another
+    // model's output - a chain with nobody in it. Filed as a proposal,
+    // the same text is one click away on the agent's page and the agent
+    // keeps working to its current instructions until then.
+    const applying = this.#config.org.autoReconfig;
+    // Protocol before effect (decision E1): the action and the instruction
+    // change happen together, or not at all - `updateAgent` never runs
+    // ahead of a personnel-file entry that justifies it.
+    this.#store.org.createAction({
+      orgId,
+      agentId: agent.id,
+      kind: applying ? 'reconfig' : 'reconfig-proposal',
+      stage: 2,
+      reason: drafted.reason,
+      beforeText: agent.instructions,
+      afterText: drafted.newInstructions,
+      agentNote: drafted.agentNote,
+      reviewIds: reviews.slice(0, 5).map((review) => review.id),
+      decidedBy: 'assistant',
+    });
+    if (applying) this.#store.org.updateAgent(agent.id, { instructions: drafted.newInstructions });
+    this.emit('changed', { kind: 'agent', id: agent.id });
+  }
+
+  async #fileReplacementProposal({ agent, orgId, provider, reviews, weak }: DevelopmentSubject): Promise<void> {
+    const drafted = await draftReplacementProposal(provider, {
+      currentName: agent.name,
+      roleTitle: agent.title,
+      instructions: agent.instructions,
+      reviews: weak,
+    });
+    if (!drafted) return;
+    // Only a proposal (section 4, stage 3): logged so the agent page can
+    // show it as a pending action item, nothing about the agent changes
+    // until the user approves the replacement.
+    this.#store.org.createAction({
+      orgId,
+      agentId: agent.id,
+      kind: 'probation',
+      stage: 3,
+      reason:
+        drafted.reason +
+        '\n\nProposed successor: ' + drafted.successorName + ' (' + drafted.successorSlug + '), ' +
+        drafted.successorTitle + '.\n\n' + drafted.successorInstructions,
+      reviewIds: reviews.slice(0, 5).map((review) => review.id),
+      decidedBy: 'assistant',
+    });
+    this.emit('changed', { kind: 'agent', id: agent.id });
   }
 
   /**
@@ -3594,28 +3778,7 @@ export class OrgController extends EventEmitter {
     const predecessor = this.#store.org.getAgent(predecessorId);
     if (!predecessor) throw new Error('No agent ' + predecessorId + '.');
 
-    let handover = successor.handover?.trim();
-    if (!handover) {
-      const resolvedProvider = await this.#registry.resolveUsable(providerId ?? this.#config.defaultProvider);
-      if (resolvedProvider) {
-        try {
-          const memories = this.#store.listMemories({ owner: predecessor.id, limit: 300, includeDormant: false });
-          handover =
-            (await draftHandover(this.#registry.get(resolvedProvider), {
-              predecessorName: predecessor.name,
-              roleTitle: predecessor.title,
-              instructions: predecessor.instructions,
-              memories: memories.map((memory) => ({
-                content: memory.content,
-                importance: memory.importance,
-                createdAt: memory.createdAt,
-              })),
-            })) ?? undefined;
-        } catch (error) {
-          this.#log.warn('Handover draft failed', { agent: predecessor.slug, error: (error as Error).message });
-        }
-      }
-    }
+    const handover = successor.handover?.trim() || (await this.#condenseHandover(predecessor, providerId));
 
     const newAgent = this.#store.org.createAgent({
       orgId,
@@ -3652,6 +3815,29 @@ export class OrgController extends EventEmitter {
     this.emit('changed', { kind: 'agent', id: predecessor.id });
     this.emit('changed', { kind: 'agent', id: newAgent.id });
     return newAgent;
+  }
+
+  /** A handover condensed from the predecessor's memory; undefined without a usable provider or when drafting fails. */
+  async #condenseHandover(predecessor: Agent, providerId?: ProviderId): Promise<string | undefined> {
+    const resolvedProvider = await this.#registry.resolveUsable(providerId ?? this.#config.defaultProvider);
+    if (!resolvedProvider) return undefined;
+    try {
+      const memories = this.#store.listMemories({ owner: predecessor.id, limit: 300, includeDormant: false });
+      const handover = await draftHandover(this.#registry.get(resolvedProvider), {
+        predecessorName: predecessor.name,
+        roleTitle: predecessor.title,
+        instructions: predecessor.instructions,
+        memories: memories.map((memory) => ({
+          content: memory.content,
+          importance: memory.importance,
+          createdAt: memory.createdAt,
+        })),
+      });
+      return handover ?? undefined;
+    } catch (error) {
+      this.#log.warn('Handover draft failed', { agent: predecessor.slug, error: (error as Error).message });
+      return undefined;
+    }
   }
 
   /** Concurrency gate: at most `maxConcurrentAssignments` provider processes at once. */
@@ -3721,7 +3907,7 @@ export function describeAssignment(assignment: Assignment, agent: Agent | null, 
     'Status: ' + assignment.status,
     'Brief: ' + clip(assignment.task, 400),
   ];
-  if (assignment.durationMs !== undefined) lines.push('Duration: ' + Math.round(assignment.durationMs / 1000) + ' s');
+  if (assignment.durationMs !== undefined) lines.push('Duration: ' + toSeconds(assignment.durationMs) + ' s');
   if (assignment.error) lines.push('Error: ' + assignment.error);
   if (assignment.result) lines.push('', clip(assignment.result, RESULT_BUDGET));
   return lines.join('\n');
@@ -3752,42 +3938,6 @@ export function describeAgentPerformance(agent: Agent, org: OrgStore): string {
   return lines.join('\n');
 }
 
-function asMemoryKind(value: string): MemoryKind {
-  return value === 'preference' || value === 'project' || value === 'event' ? value : 'fact';
-}
-
-/**
- * The `ask_user` options, read defensively. The schema says objects with a
- * label, but a model that answers a list of strings is asking the same
- * question and should not be sent back round for a formality; anything
- * without readable text is dropped rather than shown as an empty button.
- */
-function asQuestionOptions(value: unknown): QuestionOption[] {
-  if (!Array.isArray(value)) return [];
-  const options: QuestionOption[] = [];
-  for (const entry of value) {
-    if (typeof entry === 'string') {
-      const label = entry.trim();
-      if (label) options.push({ label });
-      continue;
-    }
-    if (!entry || typeof entry !== 'object') continue;
-    const record = entry as Record<string, unknown>;
-    const label = typeof record.label === 'string' ? record.label.trim() : '';
-    if (!label) continue;
-    const description = typeof record.description === 'string' ? record.description.trim() : '';
-    options.push(description ? { label, description } : { label });
-  }
-  return options;
-}
-
-/** A number argument within bounds; the fallback when it is missing or not a number. */
-function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
-  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, parsed));
-}
-
 /** The settings the assistant may see and change, as plain lines. */
 export function describeSettings(config: RookeryConfig): string {
   return [
@@ -3800,11 +3950,6 @@ export function describeSettings(config: RookeryConfig): string {
   ].join('\n');
 }
 
-function asPriority(value: string): TaskPriority | undefined {
-  return value === 'low' || value === 'normal' || value === 'high' ? value : undefined;
-}
-
-/** The status note itself: one sentence a person can read without the board. */
 /**
  * The work order an agent reads for one task.
  *
@@ -3841,7 +3986,7 @@ function statusNote(task: Task, status: 'done' | 'failed' | 'cancelled' | 'block
   const name = 'The task "' + task.title + '"';
   if (status === 'done') {
     const result = task.result?.trim();
-    return result ? name + ' is done.\n\n' + clip(result, 4000) : name + ' is done.';
+    return result ? name + ' is done.\n\n' + clip(result, NOTE_RESULT_BUDGET) : name + ' is done.';
   }
   if (status === 'cancelled') return name + ' was cancelled.';
   if (status === 'blocked') return name + ' is waiting for an answer.';
@@ -3871,7 +4016,7 @@ export function describePlan(plan: TaskPlan, children: Task[]): string {
     for (const [index, subtask] of plan.subtasks.entries()) {
       const child = children.find((c) => c.title === subtask.title && c.status === 'planned');
       lines.push(
-        '- [' + (child?.id.slice(0, 8) ?? '?') + '] ' + subtask.title + ' → ' + subtask.agent +
+        '- [' + (child ? shortId(child.id) : '?') + '] ' + subtask.title + ' → ' + subtask.agent +
           (subtask.dependsOn.length ? ' (after ' + subtask.dependsOn.map((i) => i + 1).join(', ') + ')' : '') +
           ' #' + (index + 1),
       );
@@ -3881,6 +4026,181 @@ export function describePlan(plan: TaskPlan, children: Task[]): string {
   return lines.join('\n');
 }
 
-function asPermission(value: string): PermissionLevel | undefined {
-  return value === 'chat' || value === 'read' || value === 'write' || value === 'full' ? value : undefined;
+/** The first characters of an id: what people and models see, and quote back. */
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
+function toSeconds(ms: number): number {
+  return Math.round(ms / 1000);
+}
+
+function ignoreEvent(): void {
+  // A caller with no turn to emit into: the controller's own listeners still hear it.
+}
+
+const noAgent = (ref: string): string => 'No agent "' + ref + '".';
+const noTeam = (ref: string): string => 'No team "' + ref + '".';
+const noProject = (ref: string): string => 'No project "' + ref + '".';
+
+/** Who a tool call comes from, as the cards and notifications it writes name them. */
+function callerKind(context: ToolContext): 'agent' | 'assistant' {
+  return context.audience === 'agent' ? 'agent' : 'assistant';
+}
+
+/** The memory bank a caller reads and writes: an agent's own, or the assistant's. */
+function memoryOwnerOf(context: ToolContext): string {
+  return context.audience === 'agent' && context.agentId ? context.agentId : ASSISTANT_MEMORY_OWNER;
+}
+
+function isEnding(status: TaskStatus): status is EndingStatus {
+  return status === 'done' || status === 'failed' || status === 'cancelled' || status === 'blocked';
+}
+
+/** A card the user put on the board themselves, with no conversation or parent to report into. */
+function isUserCard(task: Task): boolean {
+  return task.createdBy === 'user' && !task.requesterSessionId && !task.parentId;
+}
+
+/** Work a conversation handed off: its ending travels back to that conversation as a turn of its own. */
+function reportsBackToConversation(task: Task): boolean {
+  return Boolean(task.requesterSessionId) && !task.parentId;
+}
+
+/** Why `change` may not move `current`, or null when it may. */
+function statusChangeRefusal(current: Task, change: TaskStatusChange): string | null {
+  // A run in flight owns its card. Cancelling is the way to interrupt it;
+  // anything else would have two writers deciding the same outcome.
+  if (current.status === 'running' && !change.fromRun && change.to !== 'cancelled') {
+    return 'The task is running. Cancel it first, or wait for it to finish.';
+  }
+  // An agent reports; the person who asked decides it is finished
+  // (decision O3). `update_task` is offered to agents and checked nothing,
+  // so an agent could close or drop a card the user had put on the board
+  // themselves - and the user found out by noticing it was gone. Marking
+  // it `blocked` or handing back a result stays open to them, and a run
+  // recording its own outcome passes `fromRun`.
+  if (
+    change.by === 'agent' &&
+    !change.fromRun &&
+    current.createdBy === 'user' &&
+    (change.to === 'done' || change.to === 'cancelled')
+  ) {
+    return 'This task belongs to the user. Report what you found and let them close it.';
+  }
+  return null;
+}
+
+/** The columns a move to `change.to` writes. */
+function statusPatch(change: TaskStatusChange, now: number): TaskPatch {
+  const patch: TaskPatch = { status: change.to };
+  if (isEnding(change.to)) {
+    // Waiting is not a new life. A blocked card is mid-question: it
+    // carries what the run produced so far and the reason it stopped,
+    // and clearing those - as "back into play" does - threw away the
+    // very thing the person is being asked about.
+    patch.finishedAt = change.to === 'blocked' ? null : now;
+    if (change.result !== undefined) patch.result = change.result;
+    if (change.error !== undefined) patch.error = change.error;
+    return patch;
+  }
+  // Back into play: nothing from the last attempt may survive as if it
+  // described this one.
+  patch.finishedAt = null;
+  patch.result = change.result ?? null;
+  patch.error = change.error ?? null;
+  if (change.to === 'running') patch.startedAt = now;
+  return patch;
+}
+
+/** The results of the subtasks a task depends on, ahead of its own work order. */
+function dependencyResults(deps: Task[]): string {
+  if (!deps.length) return '';
+  return (
+    'Results of the subtasks this one depends on:\n\n' +
+    deps.map((dep) => '### ' + dep.title + '\n' + clip(dep.result ?? '', CHILD_REPORT_BUDGET)).join('\n\n') +
+    '\n\n---\n\n'
+  );
+}
+
+/** The card's line about one run of it ending. */
+function runEndedNote(runNumber: number, assignment: Assignment, askedRequester: boolean): string {
+  const outcome = askedRequester && assignment.status === 'done' ? 'ended with a question' : assignment.status;
+  return (
+    'Run ' + runNumber + ' ' + outcome +
+    (assignment.durationMs !== undefined ? ' after ' + toSeconds(assignment.durationMs) + ' s' : '') +
+    (assignment.error ? ': ' + assignment.error : '.') +
+    (assignment.result ? '\n\n' + clip(assignment.result, NOTE_RESULT_BUDGET) : '')
+  );
+}
+
+/** The org settings `update_settings` was asked to change, each within its bounds. */
+function orgSettingsPatch(args: ToolArgs): Partial<RookeryConfig['org']> {
+  const org: Partial<RookeryConfig['org']> = {};
+  if (args.has('maxConcurrentAssignments')) {
+    org.maxConcurrentAssignments = args.number('maxConcurrentAssignments', 1, 16, 4);
+  }
+  if (args.has('maxDelegationDepth')) org.maxDelegationDepth = args.number('maxDelegationDepth', 1, 6, 3);
+  if (args.has('assignmentTimeoutMinutes')) {
+    org.assignmentTimeoutMs = args.number('assignmentTimeoutMinutes', 1, 600, 45) * 60 * 1000;
+  }
+  return org;
+}
+
+/** "event" takes a schedule off the clock, and then it needs no expression at all; anything else keeps the old rule that one is required. */
+function triggerModeArg(args: ToolArgs): 'event' | 'schedule' | undefined {
+  const mode = args.text('triggerMode');
+  if (mode.toLowerCase() === 'event') return 'event';
+  return mode ? 'schedule' : undefined;
+}
+
+function cooldownMsArg(args: ToolArgs): number | undefined {
+  if (!args.has('cooldownSeconds')) return undefined;
+  return args.number('cooldownSeconds', 0, 86_400, 60) * 1000;
+}
+
+/** The mailbox settings as they stand after this call: what it names, over what was there, over the defaults. */
+function mergeListener(
+  id: string,
+  existing: ImapListenerConfig | null,
+  args: ToolArgs,
+  jobId: string | undefined,
+): ImapListenerConfig {
+  return {
+    id,
+    enabled: args.flag('enabled') ?? existing?.enabled ?? false,
+    host: args.text('host') || existing?.host || '',
+    port: args.has('port')
+      ? args.number('port', 1, 65535, DEFAULT_IMAP_PORT)
+      : existing?.port ?? DEFAULT_IMAP_PORT,
+    secure: args.flag('secure') ?? existing?.secure ?? true,
+    user: args.text('user') || existing?.user || '',
+    password: args.text('password') || existing?.password || '',
+    mailbox: args.text('mailbox') || existing?.mailbox || 'INBOX',
+    jobId: jobId ?? existing?.jobId ?? '',
+  };
+}
+
+function asServerAudience(value: unknown): ToolServerAudience | undefined {
+  return value === 'assistant' || value === 'agents' || value === 'both' ? value : undefined;
+}
+
+/** What a turn is told when its question went unanswered until the timeout. */
+function noAnswerText(timeoutMs: number): string {
+  const minutes = Math.max(1, Math.round(timeoutMs / 60000));
+  return (
+    'No answer within ' + minutes + ' minute' + (minutes === 1 ? '' : 's') + '. Carry on with ' +
+    'your own best judgement and say which way you went and why.'
+  );
+}
+
+/** What a turn is told when the user answered its question: the options they chose, and what they added. */
+function answerText(answer: QuestionAnswer, options: QuestionOption[]): string {
+  const chosen = answer.selected
+    .map((index) => options[index]?.label)
+    .filter((label): label is string => Boolean(label));
+  const parts: string[] = [];
+  if (chosen.length) parts.push('The user chose: ' + chosen.join(', ') + '.');
+  if (answer.text) parts.push((chosen.length ? 'They added: ' : 'The user answered: ') + answer.text);
+  return parts.join('\n');
 }

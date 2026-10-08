@@ -22,6 +22,7 @@ import {
 import type { RookeryConfig, ToolServerState } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import {
+  audienceSchema,
   customToolServerSchema,
   importSkillSchema,
   parseOrThrow,
@@ -32,6 +33,9 @@ import {
 
 type IdParams = { Params: { id: string } };
 type NameParams = { Params: { name: string } };
+
+const PREPARE_TIMEOUT_MS = 10 * 60 * 1000;
+const PREPARE_OUTPUT_TAIL_CHARS = 6000;
 
 /**
  * What the browser may decide about something found in Claude Code, and
@@ -46,12 +50,12 @@ type NameParams = { Params: { name: string } };
  */
 const approvalSchema = z.object({
   enabled: z.boolean().optional(),
-  audience: z.enum(['assistant', 'agents', 'both']).optional(),
+  audience: audienceSchema.optional(),
 });
 
 const pluginApprovalSchema = z.object({
   loadWhole: z.boolean().optional(),
-  audience: z.enum(['assistant', 'agents', 'both']).optional(),
+  audience: audienceSchema.optional(),
 });
 
 /** The state as the browser sees it: recipe metadata, never env values. */
@@ -89,11 +93,11 @@ function runPrepare(command: string, args: string[]): Promise<{ ok: boolean; out
     });
     let output = '';
     const collect = (chunk: Buffer): void => {
-      output = (output + chunk.toString('utf8')).slice(-6000);
+      output = (output + chunk.toString('utf8')).slice(-PREPARE_OUTPUT_TAIL_CHARS);
     };
     child.stdout?.on('data', collect);
     child.stderr?.on('data', collect);
-    const timer = setTimeout(() => child.kill(), 10 * 60 * 1000);
+    const timer = setTimeout(() => child.kill(), PREPARE_TIMEOUT_MS);
     child.on('error', (error) => {
       clearTimeout(timer);
       resolve({ ok: false, output: error.message });

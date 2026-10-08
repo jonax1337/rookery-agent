@@ -11,6 +11,7 @@ import {
 } from '@rookery/core';
 import type { ServerContext } from '../context.js';
 import { parseOrThrow, providerProfilePatchSchema } from '../schemas.js';
+import { isTruthy } from './query.js';
 
 /**
  * Provider health, plus the models each one accepts so a UI can offer a
@@ -125,8 +126,4 @@ export async function registerProviderRoutes(
       return { ok: true };
     },
   );
-}
-
-function isTruthy(value: string | undefined): boolean {
-  return value === '1' || value === 'true' || value === 'yes';
 }

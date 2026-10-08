@@ -5,7 +5,7 @@ import { ApiError } from './api';
 /**
  * What a failed call is allowed to say out loud.
  *
- * `toast.error('<Tat> fehlgeschlagen', { description: (caught as Error).message })`
+ * `toast.error('<action> failed', { description: (caught as Error).message })`
  * stood fifty-five times in the pages. Folding it does not save lines - one
  * line stays one line - it fixes what the line said: `ApiError` carries an
  * `offline` flag (set in `api.ts` when `fetch` itself rejects) and not a single
@@ -35,11 +35,11 @@ export function failureMessage(caught: unknown): string {
 /**
  * The failure toast, said the same way everywhere.
  *
- * `action` is the deed that did not happen, as a noun: "Löschen",
- * "Archivieren", "Speichern". The headline reads "<Tat> fehlgeschlagen".
+ * `action` is the deed that did not happen, as a noun: "Delete",
+ * "Archive", "Save". The headline reads "<action> failed".
  *
  * ```ts
- * try { await remove(skill.name); } catch (caught) { reportFailure('Löschen', caught); }
+ * try { await remove(skill.name); } catch (caught) { reportFailure('Delete', caught); }
  * ```
  */
 export function reportFailure(action: string, caught: unknown): void {

@@ -57,47 +57,14 @@ export interface NoteActivity {
   color?: string;
 }
 
-export interface ToolActivity extends ToolCall {
-  kind: 'tool';
+/** The dim line for a `memory` event: how many memories were recalled or stored. */
+export function memoryText(count: number, action: 'recalled' | 'stored'): string {
+  return count + ' ' + (count === 1 ? 'memory' : 'memories') + ' ' + action;
 }
 
-/** One thing that happened next to the answer, in the order it happened. */
-export type Activity = NoteActivity | ToolActivity;
-
-/** A run of consecutive tool calls, or a single note between two such runs. */
-export type ActivityGroup =
-  | { kind: 'note'; note: NoteActivity }
-  | { kind: 'tools'; id: string; calls: ToolCall[] };
-
-/**
- * Collapse consecutive tool calls into one group.
- *
- * Both the live region and the committed scrollback need this and they must
- * agree, or a turn would visibly re-flow the moment it finishes.
- */
-export function groupActivities(activities: Activity[]): ActivityGroup[] {
-  const groups: ActivityGroup[] = [];
-  let calls: ToolCall[] = [];
-
-  const flush = (): void => {
-    if (!calls.length) return;
-    groups.push({ kind: 'tools', id: 'k' + (calls[0]?.id ?? groups.length), calls });
-    calls = [];
-  };
-
-  for (const activity of activities) {
-    if (activity.kind === 'tool') {
-      const { kind, ...call } = activity;
-      void kind;
-      calls.push(call);
-      continue;
-    }
-    flush();
-    groups.push({ kind: 'note', note: activity });
-  }
-  flush();
-
-  return groups;
+/** The dim line for a `status` event: its label, then the detail when there is one. */
+export function statusText(event: { label: string; detail?: string }): string {
+  return event.label + (event.detail ? ' ' + glyph.dot + ' ' + event.detail : '');
 }
 
 /** Wall-clock timing of one tool block, kept by the live accumulator. */
@@ -137,8 +104,7 @@ export interface BlockSegmentOptions {
  *
  * This is the one walk both the live region and the committed scrollback
  * render from, so a finished turn never visibly re-flows: consecutive tool
- * blocks collapse into one `tools` segment exactly the way `groupActivities`
- * collapses consecutive tool activities, and everything between them keeps
+ * blocks collapse into one `tools` segment, and everything between them keeps
  * its arrival order.
  */
 export function blockSegments(blocks: LiveBlock[], options: BlockSegmentOptions = {}): BlockSegment[] {
@@ -171,14 +137,13 @@ export function blockSegments(blocks: LiveBlock[], options: BlockSegmentOptions 
       // A reloaded turn says what it was given the same way the live turn
       // said it: one dim line, in the place the recall happened. The rows
       // themselves belong to the web's card, not to a scrollback.
-      const word = block.memories.length === 1 ? 'memory' : 'memories';
       segments.push({
         kind: 'note',
         note: {
           kind: 'note',
           id: 'm' + segments.length,
           icon: glyph.memory,
-          text: block.memories.length + ' ' + word + ' recalled',
+          text: memoryText(block.memories.length, 'recalled'),
         },
       });
       continue;
@@ -365,4 +330,9 @@ export interface SessionState {
   projectName?: string;
   voice: boolean;
   verbose: boolean;
+}
+
+/** The name the other side of the conversation goes by. */
+export function speakerName(session: SessionState): string {
+  return session.counterpart || session.assistantName;
 }

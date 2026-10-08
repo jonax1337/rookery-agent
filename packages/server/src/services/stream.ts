@@ -44,16 +44,18 @@ export function openSse(request: FastifyRequest, reply: FastifyReply): SseStream
   res.on('close', markClosed);
   res.on('error', markClosed);
 
+  const isClosed = (): boolean => closed || res.writableEnded;
+
   return {
     get closed() {
-      return closed || res.writableEnded;
+      return isClosed();
     },
     send(event: AgentEvent) {
-      if (closed || res.writableEnded) return;
+      if (isClosed()) return;
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     },
     comment(text: string) {
-      if (closed || res.writableEnded) return;
+      if (isClosed()) return;
       res.write(`: ${text}\n\n`);
     },
     end() {
@@ -81,7 +83,7 @@ export async function pipeToSse(
       sse.send(event);
     }
   } catch (error) {
-    sse.send({ type: 'error', message: (error as Error).message, fatal: true });
+    sse.send({ type: 'error', message: error instanceof Error ? error.message : String(error), fatal: true });
   } finally {
     sse.end();
   }
@@ -148,6 +150,7 @@ export type ServerFrame =
   | { type: 'pong' }
   | { type: 'error'; id?: string; message: string };
 
+/** `WebSocket.OPEN`; the only state a frame can be sent in. */
 const OPEN = 1;
 
 export function sendFrame(socket: WebSocket, frame: ServerFrame): void {

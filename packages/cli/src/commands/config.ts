@@ -10,7 +10,7 @@ import { loadConfig, saveConfig } from '@rookery/core';
 import type { RookeryConfig } from '@rookery/core';
 import { glyph, theme } from '../ui/theme.js';
 import { heading } from '../ui/render.js';
-import { CliError, withAssistant } from './shared.js';
+import { CliError, printJson, withAssistant } from './shared.js';
 
 type Plain = Record<string, unknown>;
 
@@ -36,7 +36,7 @@ function configGet(key: string | undefined, options: ConfigOptions): number {
 
   if (!key) {
     if (options.json) {
-      process.stdout.write(JSON.stringify(config, null, 2) + '\n');
+      printJson(config);
       return 0;
     }
     process.stdout.write('\n' + heading('Config') + '\n');
@@ -51,7 +51,7 @@ function configGet(key: string | undefined, options: ConfigOptions): number {
   if (current === undefined) throw unknownKey(key, config);
 
   if (options.json) {
-    process.stdout.write(JSON.stringify(current, null, 2) + '\n');
+    printJson(current);
     return 0;
   }
   process.stdout.write(format(current) + '\n');
@@ -81,7 +81,7 @@ function configSet(key: string | undefined, raw: string | undefined, options: Co
   const stored = readPath(next as unknown as Plain, parts);
 
   if (options.json) {
-    process.stdout.write(JSON.stringify({ key, value: stored }, null, 2) + '\n');
+    printJson({ key, value: stored });
     return 0;
   }
   process.stdout.write(

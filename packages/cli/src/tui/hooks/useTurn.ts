@@ -20,31 +20,33 @@
  *    keeps the latest per id and remembers when each one started running.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TurnBlocks } from '@rookery/core';
 import type { Assistant, AssignInput, ChatInput } from '@rookery/core';
 import type { AgentEvent, AssignmentView, ProviderQuota, TurnUsage } from '@rookery/core';
 import { glyph, ui } from '../theme.js';
-import { shorten } from '../../ui/render.js';
-import { blockSegments, thinkingLines } from '../types.js';
+import { shortId, shorten } from '../../ui/render.js';
+import { amendLastAssistant, segmentEntries } from '../history.js';
+import { blockSegments, memoryText, speakerName, statusText } from '../types.js';
 import type {
-  Activity,
   AssignmentsState,
   AssignmentsSummary,
+  BlockSegment,
   Entry,
   LiveBlock,
   NoteActivity,
   SessionState,
-  ToolActivity,
   ToolTiming,
 } from '../types.js';
+import { createCoalescer } from './coalescer.js';
 
-/** How often live state is pushed into React, in milliseconds. */
-const FLUSH_MS = 40;
-/** Hard cap on live activity lines, so a chatty provider cannot blow up RAM. */
-const MAX_ACTIVITIES = 500;
-/** How much of a tool's argument summary is kept. Wrapping shows the rest. */
-const MAX_TOOL_DETAIL = 400;
+/** Widths the dim side-channel lines are cut to. */
+const TASK_TITLE_WIDTH = 60;
+const NOTE_WIDTH = 90;
+const ANSWER_WIDTH = 80;
+
+/** What an interrupted turn that said nothing shows in its place. */
+const NO_OUTPUT = '(no output)';
 
 /** A question the assistant asked, exactly as core streamed it. */
 export type OpenQuestion = Extract<AgentEvent, { type: 'question' }>;
@@ -53,8 +55,6 @@ export interface LiveTurn {
   busy: boolean;
   /** Streamed assistant text for the turn in flight. */
   text: string;
-  /** Tool calls and side-channel notes, in the order they happened. */
-  activities: Activity[];
   /** The ordered transcript: text, thinking, tools and notes interleaved. */
   blocks: LiveBlocks;
   assignments: AssignmentsState | null;
@@ -113,16 +113,29 @@ export class LiveBlocks {
       return;
     }
 
-    // Core appends a block per start (and per unmatched end) and replaces the
-    // merged block in place on a matched end, so the timing can be kept in
-    // step by watching which positions hold a block object that was not there
-    // before. The accumulator hands out its live array, so the "before" view
-    // has to be copied, not just referenced.
+    // The accumulator hands out its live array, so the "before" view has to
+    // be copied, not just referenced.
     const before = [...this.#acc.blocks];
-    const seen = new Set(before);
     this.#acc.apply(event);
-    const after = this.#acc.blocks;
+    this.#recordToolTiming(event, before, this.#acc.blocks);
+  }
 
+  /** The provider's final text, offered as a correction of what the deltas added up to. */
+  reconcile(doneText: string): void {
+    this.#acc.reconcile(doneText);
+  }
+
+  /**
+   * Keep the timings in step with the tool blocks. Core appends a block per
+   * start (and per unmatched end) and replaces the merged block in place on a
+   * matched end, so the timing follows from which position holds a block
+   * object that was not there before.
+   */
+  #recordToolTiming(
+    event: Extract<AgentEvent, { type: 'tool' }>,
+    before: LiveBlock[],
+    after: LiveBlock[],
+  ): void {
     if (after.length > before.length) {
       this.#toolTimes.push({
         startedAt: Date.now(),
@@ -131,21 +144,16 @@ export class LiveBlocks {
       });
       return;
     }
-    for (let index = 0; index < after.length; index += 1) {
-      const block = after[index];
-      if (block?.type !== 'tool' || seen.has(block)) continue;
-      const ordinal = after.slice(0, index).filter((entry) => entry?.type === 'tool').length;
-      const timing = this.#toolTimes[ordinal];
-      if (timing && timing.durationMs === undefined) {
-        timing.durationMs = Date.now() - timing.startedAt;
-      }
-      return;
-    }
-  }
 
-  /** The provider's final text, offered as a correction of what the deltas added up to. */
-  reconcile(doneText: string): void {
-    this.#acc.reconcile(doneText);
+    const seen = new Set(before);
+    const merged = after.findIndex((block) => block.type === 'tool' && !seen.has(block));
+    if (merged < 0) return;
+
+    const ordinal = after.slice(0, merged).filter((block) => block.type === 'tool').length;
+    const timing = this.#toolTimes[ordinal];
+    if (timing && timing.durationMs === undefined) {
+      timing.durationMs = Date.now() - timing.startedAt;
+    }
   }
 }
 
@@ -177,16 +185,29 @@ export interface TurnApi extends LiveTurn {
   abort: () => void;
 }
 
+type PushNote = (icon: string, text: string, color?: string) => void;
+
 const IDLE: LiveTurn = {
   busy: false,
   text: '',
-  activities: [],
   blocks: new LiveBlocks(),
   assignments: null,
   question: null,
   label: 'thinking',
   startedAt: null,
 };
+
+function startingTurn(request: TurnRequest): LiveTurn {
+  return {
+    busy: true,
+    text: '',
+    blocks: new LiveBlocks(),
+    assignments: null,
+    question: null,
+    label: request.kind === 'assign' ? 'delegating' : 'thinking',
+    startedAt: Date.now(),
+  };
+}
 
 export function useTurn({
   assistant,
@@ -197,130 +218,122 @@ export function useTurn({
 }: UseTurnOptions): TurnApi {
   const [live, setLive] = useState<LiveTurn>(IDLE);
   const draft = useRef<LiveTurn>(IDLE);
-  const flushTimer = useRef<NodeJS.Timeout | null>(null);
   const controller = useRef<AbortController | null>(null);
   const counter = useRef(0);
 
-  const commitDraft = useCallback(() => {
-    flushTimer.current = null;
-    setLive({
-      ...draft.current,
-      activities: draft.current.activities.slice(),
-      assignments: draft.current.assignments ? { ...draft.current.assignments } : null,
-    });
-  }, []);
-
-  const schedule = useCallback(() => {
-    if (flushTimer.current) return;
-    const timer = setTimeout(commitDraft, FLUSH_MS);
-    timer.unref?.();
-    flushTimer.current = timer;
-  }, [commitDraft]);
-
-  const flushNow = useCallback(() => {
-    if (flushTimer.current) {
-      clearTimeout(flushTimer.current);
-      flushTimer.current = null;
-    }
-    commitDraft();
-  }, [commitDraft]);
+  const coalescer = useMemo(
+    () =>
+      createCoalescer(() => {
+        setLive({
+          ...draft.current,
+          assignments: draft.current.assignments ? { ...draft.current.assignments } : null,
+        });
+      }),
+    [],
+  );
 
   // A live turn must not outlive the app: unmounting kills the child process.
   useEffect(
     () => () => {
       controller.current?.abort();
-      if (flushTimer.current) clearTimeout(flushTimer.current);
+      coalescer.cancel();
     },
-    [],
+    [coalescer],
   );
 
-  const pushActivity = useCallback(
-    (icon: string, text: string, color?: string) => {
+  const pushNote = useCallback<PushNote>(
+    (icon, text, color) => {
       counter.current += 1;
-      const activity: Activity = color
-        ? { kind: 'note', id: 'a' + counter.current, icon, text, color }
-        : { kind: 'note', id: 'a' + counter.current, icon, text };
-      draft.current.activities = capped([...draft.current.activities, activity]);
-      draft.current.blocks.pushNote(activity);
-      schedule();
+      const note: NoteActivity = {
+        kind: 'note',
+        id: 'a' + counter.current,
+        icon,
+        text,
+        ...(color ? { color } : {}),
+      };
+      draft.current.blocks.pushNote(note);
+      coalescer.schedule();
     },
-    [schedule],
+    [coalescer],
   );
 
   const abort = useCallback(() => {
     controller.current?.abort();
   }, []);
 
+  const agentSlug = useCallback(
+    (agentId: string) => assistant.store.org.getAgent(agentId)?.slug ?? shortId(agentId),
+    [assistant],
+  );
+
+  /** Feed the provider's events into the draft until the stream ends. */
+  const consume = useCallback(
+    async (request: TurnRequest, session: SessionState, signal: AbortSignal) => {
+      let failed = false;
+      let usage: TurnUsage | undefined;
+
+      try {
+        const stream =
+          request.kind === 'assign'
+            ? assistant.assign(assignInput(request, session, signal))
+            : assistant.chat(chatInput(request, session, signal));
+
+        for await (const event of stream) {
+          if (event.type === 'session') onSession(event.sessionId);
+          if (event.type === 'done') usage = event.usage;
+          if (event.type === 'quota') onQuota?.(event.quota);
+          if (event.type === 'error' && event.fatal && !signal.aborted) failed = true;
+          applyEvent(draft, event, session.verbose, pushNote, agentSlug);
+          coalescer.schedule();
+        }
+      } catch (error) {
+        if (!signal.aborted) {
+          failed = true;
+          pushNote(glyph.fail, (error as Error).message, ui.danger);
+        }
+      }
+
+      return { failed, usage };
+    },
+    [agentSlug, assistant, coalescer, onQuota, onSession, pushNote],
+  );
+
+  const run = useCallback(
+    async (request: TurnRequest, session: SessionState, signal: AbortSignal) => {
+      const { failed, usage } = await consume(request, session, signal);
+
+      const aborted = signal.aborted;
+      const finished = draft.current;
+      const durationMs = Date.now() - (finished.startedAt ?? Date.now());
+
+      onCommit(toEntries(finished, session, request, durationMs, aborted, counter, usage));
+
+      controller.current = null;
+      draft.current = IDLE;
+      coalescer.flushNow();
+      onFinish?.({ text: finished.text, aborted, failed, ...(usage ? { usage } : {}) });
+    },
+    [coalescer, consume, onCommit, onFinish],
+  );
+
   const start = useCallback(
     (request: TurnRequest, session: SessionState) => {
       if (controller.current) return;
 
-      const signal = new AbortController();
-      controller.current = signal;
+      const turn = new AbortController();
+      controller.current = turn;
+      draft.current = startingTurn(request);
+      coalescer.flushNow();
 
-      draft.current = {
-        busy: true,
-        text: '',
-        activities: [],
-        blocks: new LiveBlocks(),
-        assignments: null,
-        question: null,
-        label: request.kind === 'assign' ? 'delegating' : 'thinking',
-        startedAt: Date.now(),
-      };
-      flushNow();
-
-      void (async () => {
-        let failed = false;
-        let usage: TurnUsage | undefined;
-
-        try {
-          const stream =
-            request.kind === 'assign'
-              ? assistant.assign(assignInput(request, session, signal.signal))
-              : assistant.chat(chatInput(request, session, signal.signal));
-
-          for await (const event of stream) {
-            if (event.type === 'session') onSession(event.sessionId);
-            if (event.type === 'done') usage = event.usage;
-            if (event.type === 'quota') onQuota?.(event.quota);
-            if (event.type === 'error' && event.fatal && !signal.signal.aborted) failed = true;
-            applyEvent(draft, event, session.verbose, pushActivity, (id) =>
-              assistant.store.org.getAgent(id)?.slug ?? id.slice(0, 8),
-            );
-            schedule();
-          }
-        } catch (error) {
-          if (!signal.signal.aborted) {
-            failed = true;
-            pushActivity(glyph.fail, (error as Error).message, ui.danger);
-          }
-        }
-
-        const aborted = signal.signal.aborted;
-        closeOpenTools(draft.current, aborted);
-        const finished = draft.current;
-        const durationMs = Date.now() - (finished.startedAt ?? Date.now());
-
-        onCommit(toEntries(finished, session, request, durationMs, aborted, counter, usage));
-
-        controller.current = null;
-        draft.current = IDLE;
-        flushNow();
-        onFinish?.({ text: finished.text, aborted, failed, ...(usage ? { usage } : {}) });
-      })();
+      void run(request, session, turn.signal);
     },
-    [assistant, flushNow, onCommit, onFinish, onQuota, onSession, pushActivity, schedule],
+    [coalescer, run],
   );
 
   return { ...live, start, abort };
 }
 
 /* ------------------------------- plumbing ------------------------------ */
-
-function capped(activities: Activity[]): Activity[] {
-  return activities.length > MAX_ACTIVITIES ? activities.slice(-MAX_ACTIVITIES) : activities;
-}
 
 function chatInput(
   request: Extract<TurnRequest, { kind: 'chat' }>,
@@ -366,8 +379,8 @@ export function applyEvent(
   draft: { current: LiveTurn },
   event: AgentEvent,
   verbose: boolean,
-  pushActivity: (icon: string, text: string, color?: string) => void,
-  agentSlug: (agentId: string) => string = (id) => id.slice(0, 8),
+  pushNote: PushNote,
+  agentSlug: (agentId: string) => string = shortId,
 ): void {
   const live = draft.current;
 
@@ -389,45 +402,22 @@ export function applyEvent(
     }
 
     case 'tool': {
-      applyTool(live, event);
       live.blocks.apply(event);
       return;
     }
 
     case 'memory': {
-      const word = event.count === 1 ? 'memory' : 'memories';
-      const verb = event.action === 'recalled' ? 'recalled' : 'stored';
-      pushActivity(glyph.memory, event.count + ' ' + word + ' ' + verb);
+      pushNote(glyph.memory, memoryText(event.count, event.action === 'recalled' ? 'recalled' : 'stored'));
       return;
     }
 
     case 'status': {
-      pushActivity(
-        glyph.status,
-        event.label + (event.detail ? ' ' + glyph.dot + ' ' + event.detail : ''),
-      );
+      pushNote(glyph.status, statusText(event));
       return;
     }
 
     case 'assignment': {
-      const view = event.assignment;
-      const state: AssignmentsState = live.assignments ?? {
-        byId: {},
-        order: [],
-        startedAt: {},
-        since: live.startedAt ?? Date.now(),
-      };
-      if (!state.byId[view.id]) state.order = [...state.order, view.id];
-      if (view.status === 'running' && state.startedAt[view.id] === undefined) {
-        state.startedAt = { ...state.startedAt, [view.id]: Date.now() };
-      }
-      state.byId = { ...state.byId, [view.id]: view };
-      live.assignments = state;
-      // The status bar says what the turn is actually doing: as long as an
-      // agent is working somewhere, the assistant is delegating, not thinking.
-      live.label = Object.values(state.byId).some((entry) => entry.status === 'running')
-        ? 'delegating'
-        : 'thinking';
+      foldAssignment(live, event.assignment);
       return;
     }
 
@@ -435,14 +425,14 @@ export function applyEvent(
       // The board is a side channel, exactly like the assignments: one line
       // saying what moved and where it stands.
       const task = event.task;
-      const bits = [shorten(task.title, 60), task.status];
+      const bits = [shorten(task.title, TASK_TITLE_WIDTH), task.status];
       if (task.assigneeId) bits.push(agentSlug(task.assigneeId));
-      pushActivity(glyph.task, bits.join(' ' + glyph.dot + ' '));
+      pushNote(glyph.task, bits.join(' ' + glyph.dot + ' '));
       return;
     }
 
     case 'message': {
-      pushActivity(glyph.message, shorten(event.message.content, 90));
+      pushNote(glyph.message, shorten(event.message.content, NOTE_WIDTH));
       return;
     }
 
@@ -451,7 +441,7 @@ export function applyEvent(
       // moment the question closes - so the transcript gets the question as a
       // line of its own. What was asked is part of the conversation.
       live.question = event;
-      pushActivity(glyph.prompt, shorten(event.header + ' ' + glyph.dot + ' ' + event.question, 90));
+      pushNote(glyph.prompt, shorten(event.header + ' ' + glyph.dot + ' ' + event.question, NOTE_WIDTH));
       return;
     }
 
@@ -462,16 +452,17 @@ export function applyEvent(
       // for - and reads exactly like one given at this terminal.
       const asked = live.question?.id === event.id ? live.question : null;
       if (asked) live.question = null;
-      pushActivity(
-        event.reason === 'answered' ? glyph.ok : glyph.warn,
+      const answered = event.reason === 'answered';
+      pushNote(
+        answered ? glyph.ok : glyph.warn,
         answerOutcome(event, asked),
-        event.reason === 'answered' ? ui.muted : ui.warn,
+        answered ? ui.muted : ui.warn,
       );
       return;
     }
 
     case 'error': {
-      pushActivity(glyph.fail, event.message, ui.danger);
+      pushNote(glyph.fail, event.message, ui.danger);
       return;
     }
 
@@ -481,11 +472,31 @@ export function applyEvent(
       return;
     }
 
-    case 'quota':
-    case 'session':
     default:
+      // `quota` and `session` are the hook's business, not render state.
       return;
   }
+}
+
+/** Merge one re-sent assignment view into the turn's delegation state. */
+function foldAssignment(live: LiveTurn, view: AssignmentView): void {
+  const state: AssignmentsState = live.assignments ?? {
+    byId: {},
+    order: [],
+    startedAt: {},
+    since: live.startedAt ?? Date.now(),
+  };
+  if (!state.byId[view.id]) state.order = [...state.order, view.id];
+  if (view.status === 'running' && state.startedAt[view.id] === undefined) {
+    state.startedAt = { ...state.startedAt, [view.id]: Date.now() };
+  }
+  state.byId = { ...state.byId, [view.id]: view };
+  live.assignments = state;
+  // The status bar says what the turn is actually doing: as long as an
+  // agent is working somewhere, the assistant is delegating, not thinking.
+  live.label = Object.values(state.byId).some((entry) => entry.status === 'running')
+    ? 'delegating'
+    : 'thinking';
 }
 
 /**
@@ -507,98 +518,15 @@ export function answerOutcome(
     (index) => asked?.options[index]?.label ?? 'option ' + (index + 1),
   );
   if (answer?.text) labels.push(answer.text);
-  return labels.length ? 'answered ' + shorten(labels.join(', '), 80) : 'answered';
+  return labels.length ? 'answered ' + shorten(labels.join(', '), ANSWER_WIDTH) : 'answered';
 }
 
-/**
- * Fold a `tool` event into the row it belongs to.
- *
- * `start` opens a row; `end` closes the newest still-open row with that id.
- * An `end` whose `start` was never seen - a provider that only reports
- * completions - opens and closes a row in one go, so the call is still shown.
- */
-function applyTool(live: LiveTurn, event: Extract<AgentEvent, { type: 'tool' }>): void {
-  const id = event.id ?? event.name + ':' + live.activities.length;
+/** Id prefixes of the entries a finished turn commits. */
+const ENTRY_ID_PREFIX = { tools: 'k', thinking: 't', text: 'm', assignments: 'g' } as const;
 
-  if (event.status === 'start') {
-    const call: ToolActivity = {
-      kind: 'tool',
-      id,
-      name: event.name,
-      status: 'running',
-      startedAt: Date.now(),
-      ...(event.detail ? { detail: event.detail.slice(0, MAX_TOOL_DETAIL) } : {}),
-    };
-    live.activities = capped([...live.activities, call]);
-    return;
-  }
-
-  const open = findOpenTool(live.activities, id);
-  if (!open) {
-    const now = Date.now();
-    live.activities = capped([
-      ...live.activities,
-      {
-        kind: 'tool',
-        id,
-        name: event.name,
-        status: 'done',
-        startedAt: now,
-        durationMs: 0,
-        ...(event.detail ? { detail: event.detail.slice(0, MAX_TOOL_DETAIL) } : {}),
-      },
-    ]);
-    return;
-  }
-
-  // The row is replaced rather than mutated: the committed React state holds
-  // the same objects, and mutating them would change the past silently.
-  live.activities = live.activities.map((activity) =>
-    activity === open
-      ? {
-          ...open,
-          status: 'done' as const,
-          durationMs: Date.now() - open.startedAt,
-          // An `end` that carries a better summary than the `start` wins.
-          ...(event.detail ? { detail: event.detail.slice(0, MAX_TOOL_DETAIL) } : {}),
-        }
-      : activity,
-  );
-}
-
-function findOpenTool(activities: Activity[], id: string): ToolActivity | undefined {
-  for (let index = activities.length - 1; index >= 0; index -= 1) {
-    const activity = activities[index];
-    if (activity?.kind === 'tool' && activity.id === id && activity.status === 'running') {
-      return activity;
-    }
-  }
-  return undefined;
-}
-
-/**
- * A turn that ends leaves no tool spinning.
- *
- * An interrupted turn marks them failed - that is what happened to them - and
- * a clean end marks them done, because a provider that closes its stream has
- * finished whatever it was doing.
- */
-function closeOpenTools(live: LiveTurn, aborted: boolean): void {
-  const open = live.activities.some(
-    (activity) => activity.kind === 'tool' && activity.status === 'running',
-  );
-  if (!open) return;
-
-  const now = Date.now();
-  live.activities = live.activities.map((activity) =>
-    activity.kind === 'tool' && activity.status === 'running'
-      ? {
-          ...activity,
-          status: aborted ? ('failed' as const) : ('done' as const),
-          durationMs: now - activity.startedAt,
-        }
-      : activity,
-  );
+function nextEntryId(prefix: string, counter: { current: number }): string {
+  counter.current += 1;
+  return prefix + counter.current;
 }
 
 /**
@@ -620,93 +548,53 @@ export function toEntries(
   counter: { current: number },
   usage: TurnUsage | undefined,
 ): Entry[] {
-  const entries: Entry[] = [];
   // An assignment's output is the agent's report, not the assistant's voice;
   // a direct chat is the agent speaking for itself.
-  const speaker =
-    request.kind === 'assign' ? request.agent : session.counterpart || session.assistantName;
-  let lastAssistant = -1;
+  const speaker = request.kind === 'assign' ? request.agent : speakerName(session);
 
   // A finished turn leaves no tool spinning: open calls close as done, or as
   // failed when the user interrupted them.
-  const toolTimes = closeToolTimes(live.blocks.toolTimes);
-
-  for (const segment of blockSegments(live.blocks.blocks, {
-    toolTimes,
+  const segments = blockSegments(live.blocks.blocks, {
+    toolTimes: closeToolTimes(live.blocks.toolTimes),
     closed: aborted ? 'failed' : 'done',
-  })) {
-    if (segment.kind === 'tools') {
-      counter.current += 1;
-      entries.push({ kind: 'tools', id: 'k' + counter.current, calls: segment.calls });
-      continue;
-    }
-    if (segment.kind === 'note') {
-      entries.push({
-        kind: 'activity',
-        id: 'e' + segment.note.id,
-        icon: segment.note.icon,
-        text: segment.note.text,
-        ...(segment.note.color ? { color: segment.note.color } : {}),
-      });
-      continue;
-    }
-    if (segment.kind === 'thinking') {
-      if (!session.verbose) continue;
-      for (const line of thinkingLines(segment.text)) {
-        counter.current += 1;
-        entries.push({ kind: 'activity', id: 't' + counter.current, icon: glyph.thinking, text: line });
-      }
-      continue;
-    }
+  });
 
-    const text = segment.text.trim();
-    if (!text) continue;
-    counter.current += 1;
-    entries.push({
-      kind: 'assistant',
-      id: 'm' + counter.current,
-      text,
-      speaker,
-      provider: session.provider,
-    });
-    lastAssistant = entries.length - 1;
-  }
+  const entries = segmentEntries(segments, {
+    verbose: session.verbose,
+    speaker,
+    provider: session.provider,
+    nextId: (segment: BlockSegment) =>
+      segment.kind === 'note'
+        ? 'e' + segment.note.id
+        : nextEntryId(ENTRY_ID_PREFIX[segment.kind], counter),
+  });
 
-  if (lastAssistant >= 0) {
-    const entry = entries[lastAssistant];
-    if (entry?.kind === 'assistant') {
-      entries[lastAssistant] = {
-        ...entry,
-        durationMs,
-        ...(usage ? { usage } : {}),
-        ...(aborted ? { aborted: true } : {}),
-      };
-    }
-  } else {
+  const answerStats = {
+    durationMs,
+    ...(usage ? { usage } : {}),
+    ...(aborted ? { aborted: true } : {}),
+  };
+  if (!amendLastAssistant(entries, answerStats)) {
     // No text segment at all: either the provider only reported a final text
     // (`done` without deltas - the accumulator never opened a block), or the
     // turn was interrupted before anything arrived.
     const text = live.text.trim();
     if (text || aborted) {
-      counter.current += 1;
       entries.push({
         kind: 'assistant',
-        id: 'm' + counter.current,
+        id: nextEntryId(ENTRY_ID_PREFIX.text, counter),
         speaker,
-        text: text || '(no output)',
+        text: text || NO_OUTPUT,
         provider: session.provider,
-        durationMs,
-        ...(usage ? { usage } : {}),
-        ...(aborted ? { aborted: true } : {}),
+        ...answerStats,
       });
     }
   }
 
   if (live.assignments && live.assignments.order.length) {
-    counter.current += 1;
     entries.push({
       kind: 'assignments',
-      id: 'g' + counter.current,
+      id: nextEntryId(ENTRY_ID_PREFIX.assignments, counter),
       summary: summarise(live.assignments, durationMs),
     });
   }

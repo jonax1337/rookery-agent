@@ -12,11 +12,11 @@ import {
   AlertDialogMedia,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { BadgeAlertIcon as TriangleAlertIcon } from '@/components/icons';
+import type { IconComponent } from '@/components/icons';
 import { reportFailure } from '@/lib/errors';
 import { formatNumber } from '@/lib/stats';
-import type { IconComponent } from "@/components/icons";
 
-import { BadgeAlertIcon as TriangleAlertIcon } from "@/components/icons";
 /**
  * The question every irreversible action has to ask.
  *

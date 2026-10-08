@@ -12,12 +12,12 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { cn } from '@/lib/utils';
-import type { IconComponent } from "@/components/icons";
+import type { IconComponent } from '@/components/icons';
 import {
   PlugZapIcon,
   SearchIcon as SearchXIcon,
   ServerCrashIcon as ServerOffIcon,
-} from "@/components/icons";
+} from '@/components/icons';
 
 /**
  * The one way this app says "nothing here".

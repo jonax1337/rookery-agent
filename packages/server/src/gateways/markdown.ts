@@ -24,8 +24,18 @@ import { escapeHtml } from '@rookery/core';
  * make Telegram refuse the edit, and the message would appear to freeze.
  */
 
+/** Longest language tag worth putting on a code block. */
+const MAX_LANGUAGE_LENGTH = 24;
+
 /** Language tags worth putting on a code block; anything odd is dropped. */
-const LANGUAGE = /^[A-Za-z0-9+#._-]{1,24}$/;
+const LANGUAGE = new RegExp(`^[A-Za-z0-9+#._-]{1,${MAX_LANGUAGE_LENGTH}}$`);
+
+/** `[label](target)`, bounded so that a half-typed or runaway one stays literal. */
+const LINK = /\[([^\]\n]{1,200})\]\(([^)\s]{1,500})\)/g;
+
+/** A private-use character standing in for a lifted link while emphasis runs. */
+const LINK_SLOT = '\uE000';
+const LINK_SLOT_PATTERN = new RegExp(`${LINK_SLOT}(\\d+)${LINK_SLOT}`, 'g');
 
 /** Schemes a link may use. Everything else stays literal text. */
 const SAFE_SCHEME = /^(https?:\/\/|tg:\/\/|mailto:)/i;
@@ -44,18 +54,9 @@ function safeUrl(url: string): string | undefined {
   return trimmed;
 }
 
-/**
- * Inline markers on one stretch of text that is known to hold no code span.
- * The text is already escaped, so the markers are all that is left to find.
- */
-function marks(escaped: string): string {
+/** Emphasis markers on text that holds no code span and no link. */
+function emphasis(escaped: string): string {
   let out = escaped;
-
-  // Links first: their label is styled text and their target must not be.
-  out = out.replace(/\[([^\]\n]{1,200})\]\(([^)\s]{1,500})\)/g, (all, label: string, url: string) => {
-    const href = safeUrl(url);
-    return href ? `<a href="${href}">${label}</a>` : all;
-  });
 
   // Bold before italic, and the three-marker form before both, or `***x***`
   // would be read as bold plus a stray asterisk.
@@ -71,6 +72,25 @@ function marks(escaped: string): string {
   out = out.replace(/~~(?!\s)([^~\n]+?)~~/g, '<s>$1</s>');
   out = out.replace(/\|\|(?!\s)([^|\n]+?)\|\|/g, '<span class="tg-spoiler">$1</span>');
   return out;
+}
+
+/**
+ * Inline markers on one stretch of text that is known to hold no code span.
+ * The text is already escaped, so the markers are all that is left to find.
+ *
+ * Links are lifted out before any emphasis runs and put back after it: their
+ * label is styled text, but their target must not be, or a `__` in a URL
+ * would put a `<b>` inside the href and Telegram would refuse the message.
+ */
+function marks(escaped: string): string {
+  const links: string[] = [];
+  const lifted = escaped.replace(LINK, (all, label: string, url: string) => {
+    const href = safeUrl(url);
+    if (!href) return all;
+    links.push(`<a href="${href}">${emphasis(label)}</a>`);
+    return LINK_SLOT + (links.length - 1) + LINK_SLOT;
+  });
+  return emphasis(lifted).replace(LINK_SLOT_PATTERN, (all, index: string) => links[Number(index)] ?? all);
 }
 
 /**
@@ -154,7 +174,7 @@ export function toTelegramHtml(markdown: string): string {
       } else {
         flushQuote();
         code = [];
-        language = (fence[1] as string).trim().slice(0, 24);
+        language = (fence[1] as string).trim().slice(0, MAX_LANGUAGE_LENGTH);
       }
       continue;
     }

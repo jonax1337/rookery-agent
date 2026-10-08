@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent';
 
-const ORDER: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40, silent: 99 };
+const LEVEL_RANK: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40, silent: 99 };
 
 export interface Logger {
   debug(msg: string, meta?: unknown): void;
@@ -23,21 +23,22 @@ export function createLogger(options: {
   scope?: string;
   stderr?: boolean;
 } = {}): Logger {
-  const level = options.level ?? 'info';
+  const threshold = LEVEL_RANK[options.level ?? 'info'];
   const scope = options.scope ?? 'rookery';
   const toStderr = options.stderr ?? true;
-  const logFile = options.home ? prepareLogFile(options.home) : undefined;
+  const logDir = options.home ? prepareLogDir(options.home) : undefined;
 
-  function emit(lvl: Exclude<LogLevel, 'silent'>, msg: string, meta?: unknown): void {
-    if (ORDER[lvl] < ORDER[level]) return;
+  function emit(level: Exclude<LogLevel, 'silent'>, msg: string, meta?: unknown): void {
+    if (LEVEL_RANK[level] < threshold) return;
     const time = new Date().toISOString();
     if (toStderr) {
       const suffix = meta === undefined ? '' : ` ${safeJson(meta)}`;
-      process.stderr.write(`${time} ${lvl.toUpperCase().padEnd(5)} [${scope}] ${msg}${suffix}\n`);
+      process.stderr.write(`${time} ${level.toUpperCase().padEnd(5)} [${scope}] ${msg}${suffix}\n`);
     }
-    if (logFile) {
+    if (logDir) {
       try {
-        appendFileSync(logFile, `${JSON.stringify({ time, level: lvl, scope, msg, meta })}\n`);
+        // The file name carries the day, so a long-running process rolls over at midnight (UTC).
+        appendFileSync(join(logDir, `rookery-${time.slice(0, 10)}.log`), `${JSON.stringify({ time, level, scope, msg, meta })}\n`);
       } catch {
         // Logging must never take the process down.
       }
@@ -54,11 +55,10 @@ export function createLogger(options: {
   };
 }
 
-function prepareLogFile(home: string): string {
+function prepareLogDir(home: string): string {
   const dir = join(home, 'logs');
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const day = new Date().toISOString().slice(0, 10);
-  return join(dir, `rookery-${day}.log`);
+  return dir;
 }
 
 function safeJson(value: unknown): string {

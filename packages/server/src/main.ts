@@ -5,20 +5,23 @@ import { Assistant, createLogger, type RookeryConfig } from '@rookery/core';
 import { buildServer } from './server.js';
 import { VERSION } from './context.js';
 
-/**
+/*
  * Process entrypoint.
  *
  * Everything configurable already lives in ~/.rookery/config.json and the
  * ROOKERY_* environment variables; the two flags here exist so a second
  * instance can be started on another port without touching either.
  */
+
+const MAX_PORT = 65_535;
+
 function parseArgs(argv: string[]): Partial<RookeryConfig> {
   const patch: Partial<RookeryConfig> = {};
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--port' || arg === '-p') {
       const value = Number(argv[i + 1]);
-      if (Number.isFinite(value)) patch.port = value;
+      if (Number.isInteger(value) && value > 0 && value <= MAX_PORT) patch.port = value;
       i += 1;
     } else if (arg === '--host') {
       const value = argv[i + 1];

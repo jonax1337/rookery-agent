@@ -1,8 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ServerContext } from '../context.js';
 import { createSessionSchema, parseOrThrow, patchSessionSchema } from '../schemas.js';
+import { clampPositiveInt, isTruthy } from './query.js';
 
 type IdParams = { Params: { id: string } };
+
+const DEFAULT_SESSION_LIMIT = 50;
+const MAX_SESSION_LIMIT = 500;
 
 /**
  * Session CRUD. A session owns the transcript and the provider-side thread id;
@@ -13,6 +17,11 @@ export async function registerSessionRoutes(
   app: FastifyInstance,
   context: ServerContext,
 ): Promise<void> {
+  const notFound = (reply: FastifyReply, id: string): { error: string; message: string } => {
+    reply.code(404);
+    return { error: 'Not found', message: `No session ${id}` };
+  };
+
   // Chat is the assistant's own hub now; `?includeArchived=1` adds the ones
   // filed away, for an archive view.
   app.get(
@@ -22,7 +31,7 @@ export async function registerSessionRoutes(
         Querystring: { limit?: string; kind?: string; includeArchived?: string };
       }>,
     ) => {
-      const limit = clampLimit(request.query.limit, 50, 500);
+      const limit = clampPositiveInt(request.query.limit, DEFAULT_SESSION_LIMIT, MAX_SESSION_LIMIT);
       // No `kind` means "the open list", which leaves mail transcripts out.
       // `kind=mail` is the way to see them anyway.
       const kind = (['chat', 'voice', 'mail'] as const).find((value) => value === request.query.kind);
@@ -39,10 +48,7 @@ export async function registerSessionRoutes(
 
   app.get('/api/sessions/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
     const session = context.assistant.getSession(request.params.id);
-    if (!session) {
-      reply.code(404);
-      return { error: 'Not found', message: `No session ${request.params.id}` };
-    }
+    if (!session) return notFound(reply, request.params.id);
     return { session, messages: context.assistant.store.getMessages(session.id) };
   });
 
@@ -62,18 +68,15 @@ export async function registerSessionRoutes(
 
   app.patch('/api/sessions/:id', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
     const session = context.assistant.getSession(request.params.id);
-    if (!session) {
-      reply.code(404);
-      return { error: 'Not found', message: `No session ${request.params.id}` };
-    }
-    const patch = parseOrThrow(patchSessionSchema, request.body ?? {});
+    if (!session) return notFound(reply, request.params.id);
+    const { projectId, ...patch } = parseOrThrow(patchSessionSchema, request.body ?? {});
+    // `updateSession` leaves a field alone when it is undefined and has no way
+    // to write NULL, so a cleared project (`null`) takes the direct statement.
     context.assistant.store.updateSession(session.id, {
-      title: patch.title,
-      // null clears the project; undefined leaves it alone.
-      projectId: patch.projectId === null ? (undefined as unknown as string) : patch.projectId,
-      archived: patch.archived,
+      ...patch,
+      ...(projectId ? { projectId } : {}),
     });
-    if (patch.projectId === null) {
+    if (projectId === null) {
       context.assistant.store.db.prepare('UPDATE sessions SET project_id = NULL WHERE id = ?').run(session.id);
     }
     // Announce it the way the org does: every tab refetches its lists on a
@@ -90,26 +93,10 @@ export async function registerSessionRoutes(
     return { ok: true };
   });
 
-  app.post(
-    '/api/sessions/:id/reset',
-    async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
-      const session = context.assistant.getSession(request.params.id);
-      if (!session) {
-        reply.code(404);
-        return { error: 'Not found', message: `No session ${request.params.id}` };
-      }
-      context.assistant.resetSessionContext(session.id);
-      return { ok: true };
-    },
-  );
-}
-
-function clampLimit(raw: string | undefined, fallback: number, max: number): number {
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.min(Math.floor(parsed), max);
-}
-
-function isTruthy(value: string | undefined): boolean {
-  return value === '1' || value === 'true' || value === 'yes';
+  app.post('/api/sessions/:id/reset', async (request: FastifyRequest<IdParams>, reply: FastifyReply) => {
+    const session = context.assistant.getSession(request.params.id);
+    if (!session) return notFound(reply, request.params.id);
+    context.assistant.resetSessionContext(session.id);
+    return { ok: true };
+  });
 }

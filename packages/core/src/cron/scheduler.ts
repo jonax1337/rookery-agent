@@ -114,6 +114,8 @@ const DEFAULT_CATCH_UP_MS = 10 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 45 * 60 * 1000;
 /** How much of a result goes into the outcome notification. */
 const NOTICE_BUDGET = 1500;
+/** How much of a job's prompt `describeCronJob` shows. */
+const PROMPT_PREVIEW = 160;
 /**
  * How long a job rests after a run before an event may start the next one.
  *
@@ -175,18 +177,28 @@ export class CronScheduler extends EventEmitter {
       // one from. Without this, a single event-only schedule in the database
       // would take the whole server down on the next start.
       if (!this.#onTheClock(job)) continue;
-      const missedBy = job.nextRunAt === undefined ? Infinity : now - job.nextRunAt;
-      if (missedBy <= this.#catchUpMs) continue;
+      if (job.nextRunAt !== undefined && now - job.nextRunAt <= this.#catchUpWindow(job)) continue;
       const next = this.#next(job.schedule, now);
       this.#store.cron.updateJob(job.id, { nextRunAt: next }, false);
       if (job.nextRunAt !== undefined) {
         this.#log.info('Schedule missed while the server was down; skipping to the next run', {
           job: job.name,
-          missedBy,
+          missedBy: now - job.nextRunAt,
         });
       }
     }
     this.#arm();
+  }
+
+  /**
+   * How late a job may still start when the server comes back. A night of
+   * memory consolidation is never skipped for being late: one run covers
+   * every slot missed while the machine was off, which on a machine that is
+   * off at half past three is most of the nights (the dream's evidence
+   * stood still for weeks while the nights it rests on kept being skipped).
+   */
+  #catchUpWindow(job: CronJob): number {
+    return job.kind === 'sleep' ? Number.POSITIVE_INFINITY : this.#catchUpMs;
   }
 
   /** Stop the clock and abort whatever is running. */
@@ -245,7 +257,7 @@ export class CronScheduler extends EventEmitter {
     // An event-only job has no clock and so needs no expression. One given
     // anyway is still normalised, so putting the job back on the clock later
     // is a change of mode and nothing else.
-    const schedule = triggerMode === 'event' && !input.schedule.trim() ? '' : parseCron(input.schedule).expression;
+    const schedule = normaliseSchedule(triggerMode, input.schedule);
     const kind = input.kind ?? (input.agentId ? 'agent' : 'assistant');
     if (kind === 'agent' && !input.agentId) throw new Error('An agent schedule needs an agent.');
     // A sleep job's `prompt` carries a scope, not an instruction. Default it
@@ -254,10 +266,7 @@ export class CronScheduler extends EventEmitter {
     const enabled = input.enabled ?? true;
     validateExecution({ kind, script: input.script, permission: input.permission, enabled, remainingRuns: input.remainingRuns });
     const onTheClock = triggerMode === 'schedule' && schedule !== '';
-    const nextRunAt = enabled && onTheClock ? this.#next(schedule, Date.now()) : null;
-    if (enabled && onTheClock && nextRunAt === null) {
-      throw new CronSyntaxError('The schedule "' + schedule + '" never matches a real date.');
-    }
+    const nextRunAt = enabled && onTheClock ? this.#nextOrThrow(schedule, Date.now()) : undefined;
     const job = this.#store.cron.createJob({
       ...input,
       schedule,
@@ -265,7 +274,7 @@ export class CronScheduler extends EventEmitter {
       kind,
       agentId: kind === 'agent' ? input.agentId : undefined,
       enabled,
-      nextRunAt: nextRunAt ?? undefined,
+      nextRunAt,
     });
     this.#announce(job);
     this.#arm();
@@ -280,7 +289,7 @@ export class CronScheduler extends EventEmitter {
     const wanted = patch.schedule !== undefined ? patch.schedule : current.schedule;
     // Putting a job back on the clock without an expression is the one case
     // that must still fail loudly: parseCron says so in its own words.
-    const schedule = triggerMode === 'event' && !wanted.trim() ? '' : parseCron(wanted).expression;
+    const schedule = normaliseSchedule(triggerMode, wanted);
     const kind = patch.kind ?? (patch.agentId ? 'agent' : patch.agentId === null ? 'assistant' : current.kind);
     const agentId = patch.agentId === undefined ? current.agentId : (patch.agentId ?? undefined);
     if (kind === 'agent' && !agentId) throw new Error('An agent schedule needs an agent.');
@@ -298,10 +307,7 @@ export class CronScheduler extends EventEmitter {
       current.nextRunAt === undefined;
     // Off the clock, the next run is not "unknown" but "never": null clears it
     // so neither `dueJobs` nor the timer ever considers this job again.
-    const nextRunAt = !enabled || !onTheClock ? null : reschedule ? this.#next(schedule, Date.now()) : undefined;
-    if (enabled && onTheClock && reschedule && nextRunAt === null) {
-      throw new CronSyntaxError('The schedule "' + schedule + '" never matches a real date.');
-    }
+    const nextRunAt = !enabled || !onTheClock ? null : reschedule ? this.#nextOrThrow(schedule, Date.now()) : undefined;
 
     this.#store.cron.updateJob(id, {
       name: patch.name,
@@ -452,20 +458,32 @@ export class CronScheduler extends EventEmitter {
     /** Called the moment the run is on the books, before any work starts. */
     onBooked?: (run: CronRun) => void,
   ): Promise<CronRun> {
+    // One run per job at a time, whoever asks. Every caller checks first; this
+    // is the invariant they all rely on, kept where the controller is stored.
     if (this.#running.has(job.id)) {
-      // One run at a time. The clock moves on so the job is not re-armed for
-      // the same minute again and again while a long run is under way.
-      if (trigger === 'schedule') {
-        this.#store.cron.updateJob(job.id, { nextRunAt: this.#next(job.schedule, Date.now()) }, false);
-      }
       const latest = this.#store.cron.listRuns(job.id, 1)[0];
       if (latest && latest.status === 'running') return latest;
     }
     validateExecution({ ...job, enabled: true });
 
-    // Book the next slot (or retire a one-shot) before the run, so a crash
-    // mid-run cannot fire the same slot twice after a restart.
     const started = Date.now();
+    this.#bookNextSlot(job, started);
+    const run = this.#store.cron.createRun({ jobId: job.id, orgId: job.orgId, trigger, sessionId: job.sessionId, source });
+    onBooked?.(run);
+    const outcome = await this.#runUnderTimeout(job, run, trigger);
+    const finishedRun = this.#recordOutcome(job, run, outcome, started, source);
+    // An event that arrived while this was running has not been looked at by
+    // anything yet. Detached on purpose: whoever started this run is waiting
+    // for this run, not for the one the next event earned.
+    void this.#drain(job.id);
+    return finishedRun;
+  }
+
+  /**
+   * Book the next slot (or retire a one-shot) before the run, so a crash
+   * mid-run cannot fire the same slot twice after a restart.
+   */
+  #bookNextSlot(job: CronJob, started: number): void {
     if (job.remainingRuns !== undefined) this.#store.cron.updateJob(job.id, { remainingRuns: job.remainingRuns - 1 }, false);
     if (job.once || job.remainingRuns === 1) {
       this.#store.cron.updateJob(job.id, { enabled: false, nextRunAt: null }, false);
@@ -475,9 +493,10 @@ export class CronScheduler extends EventEmitter {
       // arrive, and one just did.
       this.#store.cron.updateJob(job.id, { nextRunAt: this.#next(job.schedule, started) }, false);
     }
+  }
 
-    const run = this.#store.cron.createRun({ jobId: job.id, orgId: job.orgId, trigger, sessionId: job.sessionId, source });
-    onBooked?.(run);
+  /** Hand the run to the runner with an abort signal that also fires on the timeout. */
+  async #runUnderTimeout(job: CronJob, run: CronRun, trigger: CronTrigger): Promise<CronRunOutcome> {
     const controller = new AbortController();
     this.#running.set(job.id, controller);
     const timer = setTimeout(() => controller.abort(), this.#timeoutMs);
@@ -495,9 +514,13 @@ export class CronScheduler extends EventEmitter {
       this.#running.delete(job.id);
     }
     if (controller.signal.aborted && outcome.status === 'done' && !outcome.result) {
-      outcome = { ...outcome, status: 'failed', error: outcome.error ?? 'The run was cancelled.' };
+      return { ...outcome, status: 'failed', error: outcome.error ?? 'The run was cancelled.' };
     }
+    return outcome;
+  }
 
+  /** Write the finished run and the job's last-run facts, tell the user, tell the listeners. */
+  #recordOutcome(job: CronJob, run: CronRun, outcome: CronRunOutcome, started: number, source?: string): CronRun {
     const finished = Date.now();
     this.#store.cron.updateRun(run.id, {
       status: outcome.status,
@@ -527,10 +550,6 @@ export class CronScheduler extends EventEmitter {
     const finishedRun = this.#store.cron.getRun(run.id) ?? run;
     this.#announce(this.#store.cron.getJob(job.id) ?? job, finishedRun);
     this.#log.info('Schedule run finished', { job: job.name, status: outcome.status, durationMs: finished - started });
-    // An event that arrived while this was running has not been looked at by
-    // anything yet. Detached on purpose: whoever started this run is waiting
-    // for this run, not for the one the next event earned.
-    void this.#drain(job.id);
     return finishedRun;
   }
 
@@ -614,29 +633,7 @@ export class CronScheduler extends EventEmitter {
    * own emitter instead.
    */
   #postOutcome(job: CronJob, runId: string, outcome: CronRunOutcome, source?: string): void {
-    const when = new Date().toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' });
-    const title = 'Schedule "' + job.name + '" ' + (outcome.status === 'done' ? 'completed' : 'failed');
-    // Why it ran at all: the expression when the clock asked, and the name of
-    // whatever happened when something else did. An event-only job has no
-    // expression to quote, so quoting one would be an invention.
-    const because = source ? 'fired by ' + source : job.schedule ? describeCron(job.schedule) : 'on events';
-    const body =
-      outcome.status === 'done'
-        ? 'Completed at ' + when + ' (' + because + '). Result: ' +
-          (clip(outcome.result ?? '', NOTICE_BUDGET) || '(no text)')
-        : 'Failed at ' + when + ' (' + because + '): ' + (outcome.error ?? 'unknown error');
-    const byAgent = job.kind === 'agent' && Boolean(job.agentId);
-    const input: NotifyUserInput = {
-      orgId: job.orgId,
-      kind: 'schedule',
-      title,
-      body,
-      fromKind: byAgent ? 'agent' : 'assistant',
-      fromAgentId: byAgent ? job.agentId : undefined,
-      cronJobId: job.id,
-      cronRunId: runId,
-      sessionId: outcome.sessionId,
-    };
+    const input = outcomeNotice(job, runId, outcome, source);
     try {
       if (this.#notify) {
         this.#notify(input);
@@ -654,6 +651,12 @@ export class CronScheduler extends EventEmitter {
   #next(schedule: string, from: number): number | null {
     const next = nextCronRun(schedule, new Date(from));
     return next ? next.getTime() : null;
+  }
+
+  #nextOrThrow(schedule: string, from: number): number {
+    const next = this.#next(schedule, from);
+    if (next === null) throw new CronSyntaxError('The schedule "' + schedule + '" never matches a real date.');
+    return next;
   }
 
   /** Sleep until the earliest next run, capped so a job edited elsewhere is never missed for long. */
@@ -679,23 +682,53 @@ export class CronScheduler extends EventEmitter {
   }
 }
 
-/** One line per job, for the assistant's prompt and tool replies. */
-export function describeCronJob(job: CronJob, agentSlug?: string): string {
-  const who =
-    job.kind === 'script' ? 'imported ' + (job.script?.runtime ?? '') + ' script' : job.kind === 'agent'
-      ? 'agent ' + (agentSlug ?? job.agentId ?? '?')
-      : job.kind === 'sleep'
-        ? 'the memory itself'
-        : 'you';
+function outcomeNotice(job: CronJob, runId: string, outcome: CronRunOutcome, source?: string): NotifyUserInput {
+  const when = new Date().toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' });
+  // Why it ran at all: the expression when the clock asked, and the name of
+  // whatever happened when something else did. An event-only job has no
+  // expression to quote, so quoting one would be an invention.
+  const because = source ? 'fired by ' + source : job.schedule ? describeCron(job.schedule) : 'on events';
+  const body =
+    outcome.status === 'done'
+      ? 'Completed at ' + when + ' (' + because + '). Result: ' +
+        (clip(outcome.result ?? '', NOTICE_BUDGET) || '(no text)')
+      : 'Failed at ' + when + ' (' + because + '): ' + (outcome.error ?? 'unknown error');
+  const byAgent = job.kind === 'agent' && Boolean(job.agentId);
+  return {
+    orgId: job.orgId,
+    kind: 'schedule',
+    title: 'Schedule "' + job.name + '" ' + (outcome.status === 'done' ? 'completed' : 'failed'),
+    body,
+    fromKind: byAgent ? 'agent' : 'assistant',
+    fromAgentId: byAgent ? job.agentId : undefined,
+    cronJobId: job.id,
+    cronRunId: runId,
+    sessionId: outcome.sessionId,
+  };
+}
+
+/** An event-only job has no clock and needs no expression, so a blank one stays blank; anything else must parse. */
+function normaliseSchedule(triggerMode: CronTriggerMode, expression: string): string {
+  return triggerMode === 'event' && !expression.trim() ? '' : parseCron(expression).expression;
+}
+
+function describeRunner(job: CronJob, agentSlug?: string): string {
+  if (job.kind === 'script') return 'imported ' + (job.script?.runtime ?? '') + ' script';
+  if (job.kind === 'agent') return 'agent ' + (agentSlug ?? job.agentId ?? '?');
+  if (job.kind === 'sleep') return 'the memory itself';
+  return 'you';
+}
+
+function describeNextRun(job: CronJob): string {
+  if (!job.enabled) return 'off';
+  if (job.nextRunAt) return 'next ' + new Date(job.nextRunAt).toLocaleString('en-GB');
   // An event job is not "off" because it has no next time - it is waiting.
   // Saying "off" would read as broken and invite someone to fix what works.
-  const next = !job.enabled
-    ? 'off'
-    : job.nextRunAt
-      ? 'next ' + new Date(job.nextRunAt).toLocaleString('en-GB')
-      : job.triggerMode === 'event'
-        ? 'waiting for events'
-        : 'off';
+  return job.triggerMode === 'event' ? 'waiting for events' : 'off';
+}
+
+/** One line per job, for the assistant's prompt and tool replies. */
+export function describeCronJob(job: CronJob, agentSlug?: string): string {
   const last = job.lastRunAt
     ? ', last ' + new Date(job.lastRunAt).toLocaleString('en-GB') + ' ' + (job.lastStatus ?? '')
     : '';
@@ -704,7 +737,8 @@ export function describeCronJob(job: CronJob, agentSlug?: string): string {
   return (
     '- ' + job.id.slice(0, 8) + ' "' + job.name + '": ' + timing + also +
     (job.webhookToken ? ', webhook' : '') +
-    (job.once ? ', once' : '') + ', by ' + who + ', ' + next + last + ' - ' + clip(job.prompt, 160)
+    (job.once ? ', once' : '') + ', by ' + describeRunner(job, agentSlug) + ', ' + describeNextRun(job) + last +
+    ' - ' + clip(job.prompt, PROMPT_PREVIEW)
   );
 }
 

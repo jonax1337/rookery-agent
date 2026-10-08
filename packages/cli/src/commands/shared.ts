@@ -4,24 +4,28 @@
  * paste a full UUID at a prompt.
  */
 
-import { Assistant, EFFORT_LEVELS, MEMORY_KINDS } from '@rookery/core';
+import { Assistant, EFFORT_LEVELS, MEMORY_KINDS, recall } from '@rookery/core';
+import type { RecallOptions } from '@rookery/core';
 import type {
-  EffortLevel,
   Agent,
+  EffortLevel,
   MemoryKind,
+  Organization,
   PermissionLevel,
   Project,
   ProviderId,
+  ScoredMemory,
   Session,
   Task,
   TaskPriority,
   TaskStatus,
 } from '@rookery/core';
+import { shortId } from '../ui/render.js';
 import { glyph, theme } from '../ui/theme.js';
 
 export const PERMISSION_LEVELS: readonly PermissionLevel[] = ['chat', 'read', 'write', 'full'];
 export const PROVIDER_IDS: readonly ProviderId[] = ['claude', 'codex'];
-export const TASK_STATUSES: readonly TaskStatus[] = [
+const TASK_STATUSES: readonly TaskStatus[] = [
   'open',
   'planned',
   'running',
@@ -30,12 +34,15 @@ export const TASK_STATUSES: readonly TaskStatus[] = [
   'failed',
   'cancelled',
 ];
-export const TASK_PRIORITIES: readonly TaskPriority[] = ['low', 'normal', 'high'];
+const TASK_PRIORITIES: readonly TaskPriority[] = ['low', 'normal', 'high'];
 /**
  * What a board shows when nobody asked for a set of statuses. Finished and
  * cancelled work is history, and history is what `--all` is for.
  */
 export const ACTIVE_TASK_STATUSES: readonly TaskStatus[] = ['open', 'planned', 'running', 'blocked', 'failed'];
+
+/** Exit code of a run the user interrupted (128 + SIGINT). */
+export const EXIT_INTERRUPTED = 130;
 
 export class CliError extends Error {
   readonly exitCode: number;
@@ -46,40 +53,45 @@ export class CliError extends Error {
   }
 }
 
+/* ---------------------------- option parsing --------------------------- */
+
+function parseChoice<Choice extends string>(
+  value: string | undefined,
+  choices: readonly Choice[],
+  noun: string,
+): Choice | undefined {
+  if (value === undefined) return undefined;
+  const choice = value.trim().toLowerCase() as Choice;
+  if (!choices.includes(choice)) {
+    throw new CliError('Unknown ' + noun + ' "' + value + '". Use one of: ' + choices.join(', '));
+  }
+  return choice;
+}
+
+export function parsePermission(value: string): PermissionLevel;
+export function parsePermission(value: string | undefined): PermissionLevel | undefined;
 export function parsePermission(value: string | undefined): PermissionLevel | undefined {
-  if (value === undefined) return undefined;
-  const level = value.trim().toLowerCase() as PermissionLevel;
-  if (!PERMISSION_LEVELS.includes(level)) {
-    throw new CliError('Unknown permission "' + value + '". Use one of: ' + PERMISSION_LEVELS.join(', '));
-  }
-  return level;
+  return parseChoice(value, PERMISSION_LEVELS, 'permission');
 }
 
+export function parseEffort(value: string): EffortLevel;
+export function parseEffort(value: string | undefined): EffortLevel | undefined;
 export function parseEffort(value: string | undefined): EffortLevel | undefined {
-  if (value === undefined) return undefined;
-  const level = value.trim().toLowerCase() as EffortLevel;
-  if (!EFFORT_LEVELS.includes(level)) {
-    throw new CliError('Unknown effort "' + value + '". Use one of: ' + EFFORT_LEVELS.join(', '));
-  }
-  return level;
+  return parseChoice<EffortLevel>(value, EFFORT_LEVELS, 'effort');
 }
 
+export function parseProvider(value: string): ProviderId;
+export function parseProvider(value: string | undefined): ProviderId | undefined;
 export function parseProvider(value: string | undefined): ProviderId | undefined {
-  if (value === undefined) return undefined;
-  const id = value.trim().toLowerCase() as ProviderId;
-  if (!PROVIDER_IDS.includes(id)) {
-    throw new CliError('Unknown provider "' + value + '". Use one of: ' + PROVIDER_IDS.join(', '));
-  }
-  return id;
+  return parseChoice(value, PROVIDER_IDS, 'provider');
 }
 
 export function parseKind(value: string | undefined): MemoryKind | undefined {
-  if (value === undefined) return undefined;
-  const kind = value.trim().toLowerCase() as MemoryKind;
-  if (!MEMORY_KINDS.includes(kind)) {
-    throw new CliError('Unknown memory kind "' + value + '". Use one of: ' + MEMORY_KINDS.join(', '));
-  }
-  return kind;
+  return parseChoice<MemoryKind>(value, MEMORY_KINDS, 'memory kind');
+}
+
+export function parseTaskPriority(value: string | undefined): TaskPriority | undefined {
+  return parseChoice(value, TASK_PRIORITIES, 'priority');
 }
 
 export function parseTags(value: string | undefined): string[] | undefined {
@@ -116,15 +128,6 @@ export function parseTaskStatuses(value: string | undefined): TaskStatus[] | und
   return [...new Set(wanted)];
 }
 
-export function parseTaskPriority(value: string | undefined): TaskPriority | undefined {
-  if (value === undefined) return undefined;
-  const priority = value.trim().toLowerCase() as TaskPriority;
-  if (!TASK_PRIORITIES.includes(priority)) {
-    throw new CliError('Unknown priority "' + value + '". Use one of: ' + TASK_PRIORITIES.join(', '));
-  }
-  return priority;
-}
-
 export function parseLimit(value: string | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   const limit = Number(value);
@@ -133,6 +136,8 @@ export function parseLimit(value: string | undefined, fallback: number): number 
   }
   return limit;
 }
+
+/* ------------------------------- lifecycle ------------------------------ */
 
 /** Run `fn` with an assistant that is always closed, even on failure. */
 export async function withAssistant<T>(fn: (assistant: Assistant) => Promise<T> | T): Promise<T> {
@@ -148,21 +153,81 @@ export async function withAssistant<T>(fn: (assistant: Assistant) => Promise<T> 
   }
 }
 
+/** Run `fn` with a signal that Ctrl+C trips instead of killing the process. */
+export async function withInterruptSignal<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const onInterrupt = (): void => {
+    controller.abort();
+  };
+  process.on('SIGINT', onInterrupt);
+  try {
+    return await fn(controller.signal);
+  } finally {
+    process.off('SIGINT', onInterrupt);
+  }
+}
+
+export function printInterrupted(): void {
+  process.stderr.write(theme.dim(glyph.warn + ' interrupted') + '\n');
+}
+
+export function printJson(value: unknown): void {
+  process.stdout.write(JSON.stringify(value, null, 2) + '\n');
+}
+
+export function printError(error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(theme.red(glyph.fail + ' ' + message) + '\n');
+}
+
+/* ------------------------------ resolution ------------------------------ */
+
+/** Resolve an agent id to its slug, falling back to the short id for staff who left. */
+export function agentSlugOf(assistant: Assistant): (agentId: string) => string {
+  return (agentId) => assistant.store.org.getAgent(agentId)?.slug ?? shortId(agentId);
+}
+
+/** Every agent of the company, archived ones included, by id. */
+export function agentIndex(assistant: Assistant, organization: Organization): Map<string, Agent> {
+  return new Map(
+    assistant.store.org
+      .listAgents(organization.id, { includeArchived: true })
+      .map((agent) => [agent.id, agent]),
+  );
+}
+
+/**
+ * The one candidate whose id starts with `idOrPrefix`. Throws when none does
+ * or when several do, so a short prefix can never act on the wrong record.
+ */
+export function pickByIdPrefix<Candidate extends { id: string }>(
+  candidates: readonly Candidate[],
+  idOrPrefix: string,
+  noun: string,
+  noMatchMessage = 'No ' + noun + ' matches "' + idOrPrefix + '".',
+): Candidate {
+  const needle = idOrPrefix.trim().toLowerCase();
+  const matches = candidates.filter((candidate) => candidate.id.toLowerCase().startsWith(needle));
+
+  const [only] = matches;
+  if (matches.length === 1 && only) return only;
+  if (!matches.length) throw new CliError(noMatchMessage);
+  throw ambiguousIdError(noun, idOrPrefix, matches);
+}
+
+function ambiguousIdError(noun: string, idOrPrefix: string, matches: readonly { id: string }[]): CliError {
+  return new CliError(
+    'Ambiguous ' + noun + ' id "' + idOrPrefix + '": ' + matches.map((match) => shortId(match.id)).join(', '),
+  );
+}
+
 /** Accept a full id or any unambiguous prefix of one. */
 export function resolveSession(assistant: Assistant, idOrPrefix: string): Session {
   const exact = assistant.getSession(idOrPrefix);
   if (exact) return exact;
 
-  const needle = idOrPrefix.trim().toLowerCase();
-  const matches = assistant.store
-    .listSessions({ limit: 500, includeArchived: true })
-    .filter((session) => session.id.toLowerCase().startsWith(needle));
-
-  if (matches.length === 1) return matches[0] as Session;
-  if (matches.length === 0) throw new CliError('No session matches "' + idOrPrefix + '".');
-  throw new CliError(
-    'Ambiguous session id "' + idOrPrefix + '": ' + matches.map((s) => s.id.slice(0, 8)).join(', '),
-  );
+  const sessions = assistant.store.listSessions({ limit: 500, includeArchived: true });
+  return pickByIdPrefix(sessions, idOrPrefix, 'session');
 }
 
 /**
@@ -205,7 +270,7 @@ export function resolveAgent(assistant: Assistant, ref: string): Agent {
  */
 export function counterpartLabel(assistant: Assistant, agentId: string | undefined): string {
   if (!agentId) return 'assistant';
-  return assistant.store.org.getAgent(agentId)?.slug ?? agentId.slice(0, 8);
+  return assistant.store.org.getAgent(agentId)?.slug ?? shortId(agentId);
 }
 
 /** Accept a full task id or any unambiguous prefix of one. */
@@ -220,11 +285,7 @@ export function resolveTask(assistant: Assistant, idOrPrefix: string): Task {
   const matches = assistant.store.org
     .listAllTasks(organization.id, 500)
     .filter((candidate) => candidate.id.toLowerCase().startsWith(wanted.toLowerCase()));
-  if (matches.length > 1) {
-    throw new CliError(
-      'Ambiguous task id "' + wanted + '": ' + matches.map((item) => item.id.slice(0, 8)).join(', '),
-    );
-  }
+  if (matches.length > 1) throw ambiguousIdError('task', wanted, matches);
   throw new CliError('No task matches "' + wanted + '". Run `rookery tasks` to see the board.');
 }
 
@@ -232,19 +293,12 @@ export function resolveTask(assistant: Assistant, idOrPrefix: string): Task {
 export function resolveMemoryId(assistant: Assistant, idOrPrefix: string): string {
   if (assistant.store.getMemory(idOrPrefix)) return idOrPrefix;
 
-  const needle = idOrPrefix.trim().toLowerCase();
-  const matches = assistant.store
-    .listMemories({ limit: 1000, includeForgotten: true })
-    .filter((memory) => memory.id.toLowerCase().startsWith(needle));
-
-  if (matches.length === 1) return (matches[0] as { id: string }).id;
-  if (matches.length === 0) throw new CliError('No memory matches "' + idOrPrefix + '".');
-  throw new CliError(
-    'Ambiguous memory id "' + idOrPrefix + '": ' + matches.map((m) => m.id.slice(0, 8)).join(', '),
-  );
+  const memories = assistant.store.listMemories({ limit: 1000, includeForgotten: true });
+  return pickByIdPrefix(memories, idOrPrefix, 'memory').id;
 }
 
-export function printError(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(theme.red(glyph.fail + ' ' + message) + '\n');
+/** Scored recall exactly as a turn would see it, without counting as a use of what it finds. */
+export function inspectMemories(assistant: Assistant, query: Omit<RecallOptions, 'touch'>): ScoredMemory[] {
+  // Inspection should not inflate the usage signal it is inspecting.
+  return recall(assistant.store, { ...query, touch: false });
 }

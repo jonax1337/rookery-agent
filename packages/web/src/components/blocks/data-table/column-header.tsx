@@ -1,5 +1,3 @@
-
-
 import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, EyeOffIcon } from "@/components/icons";
 import { Button } from '@/components/ui/button';
 import {
@@ -79,16 +77,7 @@ export function DataTableColumnHeader({
             className="-ml-2 h-8 data-[state=open]:bg-accent"
           >
             <span>{title}</span>
-            {sorted === 'desc' ? (
-              <ArrowDownIcon data-icon="inline-end" />
-            ) : sorted === 'asc' ? (
-              <ArrowUpIcon data-icon="inline-end" />
-            ) : (
-              <ChevronsUpDownIcon
-                data-icon="inline-end"
-                className="text-muted-foreground"
-              />
-            )}
+            <SortIcon sorted={sorted} />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align={align === 'end' ? 'end' : 'start'} className="w-40">
@@ -105,7 +94,7 @@ export function DataTableColumnHeader({
               {sorted === false ? null : (
                 <DropdownMenuItem onSelect={() => column.clearSorting()}>
                   <ChevronsUpDownIcon data-icon="inline-start" />
-                Clear sorting
+                  Clear sorting
                 </DropdownMenuItem>
               )}
             </>
@@ -121,4 +110,10 @@ export function DataTableColumnHeader({
       </DropdownMenu>
     </div>
   );
+}
+
+function SortIcon({ sorted }: { sorted: false | 'asc' | 'desc' }) {
+  if (sorted === 'desc') return <ArrowDownIcon data-icon="inline-end" />;
+  if (sorted === 'asc') return <ArrowUpIcon data-icon="inline-end" />;
+  return <ChevronsUpDownIcon data-icon="inline-end" className="text-muted-foreground" />;
 }

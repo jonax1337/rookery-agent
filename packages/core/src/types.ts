@@ -936,7 +936,7 @@ export interface DreamFrame {
   box: RecallBox;
   corpusStampId: string;
   payload: RecallFrame;
-  /** Serialised size; `saveFrame` rejects frames above `dream.maxFrameBytes`. */
+  /** Stored (gzipped) size; `saveFrame` rejects frames above `dream.maxFrameBytes`. */
   bytes: number;
   createdAt: number;
 }
@@ -2226,7 +2226,7 @@ export interface DreamConfig {
   /**
    * The promotion gate. Off means: the night still measures and writes
    * `dream_evals`, but never touches `policy_versions` (concept 10.2,
-   * condition 8; E20/E22 - this stage ships it off).
+   * condition 8). On, a promotion still needs every other condition.
    */
   promote: boolean;
   /** Share of sessions that get framed at all. Drawn per session, never per trace. */
@@ -2239,7 +2239,7 @@ export interface DreamConfig {
   costWeight: number;
   /** Relative change in the frame tokens' document frequency at which a trace abstains. */
   corpusTolerance: number;
-  /** Hard ceiling on frame size in bytes; above it, nothing is framed. */
+  /** Hard ceiling on a frame's stored (gzipped) size in bytes; above it, nothing is framed. */
   maxFrameBytes: number;
   /** Wall-clock ceiling for the model-free night evaluation, in milliseconds. */
   maxEvalMs: number;
@@ -2286,6 +2286,15 @@ export interface DreamConfig {
   userLabelWindow: number;
   /** Below this Cohen's kappa between label sources, the label agreement check is unvalidated (concept 5.5b). */
   agreementFloor: number;
+  /**
+   * Whether a promotion needs the user's own labels (concept 5.5b). On: too
+   * few `user` labels is a blocker (`user-labels-thin`) - the strict reading,
+   * and one that only a person who hand-edits memories can ever satisfy. Off:
+   * the missing user evidence does not veto, but user evidence that exists
+   * and disagrees still does (`agreement-below-floor`,
+   * `influenceable-only-delta`).
+   */
+  requireUserLabels: boolean;
   /** Traces after promotion before the wake test's regression alarm runs (concept 5.5c). */
   calibrationTraces: number;
   /** Replay-vs-online score drift the wake test tolerates before it freezes the slot. */

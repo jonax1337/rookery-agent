@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,11 +16,23 @@ import type { TurnHub } from './turns.js';
 
 export const PACKAGE_NAME = 'rookery-agent';
 const REGISTRY = (process.env.ROOKERY_NPM_REGISTRY || 'https://registry.npmjs.org').replace(/\/+$/, '');
+const RELEASES_URL = 'https://github.com/jonax1337/rookery-agent/releases/tag';
 const FIRST_CHECK_MS = 60_000;
 const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+const REGISTRY_TIMEOUT_MS = 15_000;
 /** How often `auto` looks again whether the work that held an update back is done. */
 const IDLE_RETRY_MS = 5 * 60 * 1000;
+/** Long enough for the HTTP answer to leave before the server shuts down; the updater waits for our PID. */
+const SHUTDOWN_DELAY_MS = 750;
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const NUMERIC_IDENTIFIER = /^\d+$/;
+const VERSION_CORE_PARTS = 3;
+
+/** The updater's files under `<home>/run`; `scripts/updater.mjs` reads and writes the same names. */
+const RUN_DIR = 'run';
+const UPDATER_COPY = 'updater.mjs';
+const PLAN_FILE = 'update-plan.json';
+const STATUS_FILE = 'update-status.json';
 
 /**
  * Order two versions the semver way: numbers numerically, a pre-release
@@ -28,35 +40,47 @@ const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
  * numbers. Enough for what npm hands out; build metadata never gets here.
  */
 export function compareVersions(a: string, b: string): number {
-  const parse = (value: string) => {
-    const dash = value.indexOf('-');
-    const core = dash < 0 ? value : value.slice(0, dash);
-    const pre = dash < 0 ? '' : value.slice(dash + 1);
-    return { parts: core.split('.').map(Number), pre: pre ? pre.split('.') : [] };
-  };
-  const left = parse(a);
-  const right = parse(b);
-  for (let i = 0; i < 3; i++) {
-    const diff = (left.parts[i] ?? 0) - (right.parts[i] ?? 0);
+  const left = parseVersion(a);
+  const right = parseVersion(b);
+  for (let i = 0; i < VERSION_CORE_PARTS; i++) {
+    const diff = (left.numbers[i] ?? 0) - (right.numbers[i] ?? 0);
     if (diff) return Math.sign(diff);
   }
-  if (!left.pre.length || !right.pre.length) return left.pre.length ? -1 : right.pre.length ? 1 : 0;
-  for (let i = 0; i < Math.max(left.pre.length, right.pre.length); i++) {
-    const x = left.pre[i];
-    const y = right.pre[i];
+  return comparePreRelease(left.preRelease, right.preRelease);
+}
+
+function parseVersion(value: string): { numbers: number[]; preRelease: string[] } {
+  const dash = value.indexOf('-');
+  const core = dash < 0 ? value : value.slice(0, dash);
+  const preRelease = dash < 0 ? '' : value.slice(dash + 1);
+  return { numbers: core.split('.').map(Number), preRelease: preRelease ? preRelease.split('.') : [] };
+}
+
+/** A release outranks every pre-release of it; two pre-releases compare identifier by identifier. */
+function comparePreRelease(left: string[], right: string[]): number {
+  if (!left.length && !right.length) return 0;
+  if (!left.length) return 1;
+  if (!right.length) return -1;
+  for (let i = 0; i < Math.max(left.length, right.length); i++) {
+    const x = left[i];
+    const y = right[i];
+    // The shorter list is the lower version when everything before it ties.
     if (x === undefined) return -1;
     if (y === undefined) return 1;
-    const xNumeric = /^\d+$/.test(x);
-    const yNumeric = /^\d+$/.test(y);
-    if (xNumeric && yNumeric) {
-      if (Number(x) !== Number(y)) return Math.sign(Number(x) - Number(y));
-    } else if (xNumeric !== yNumeric) {
-      return xNumeric ? -1 : 1;
-    } else if (x !== y) {
-      return x < y ? -1 : 1;
-    }
+    const order = compareIdentifiers(x, y);
+    if (order) return order;
   }
   return 0;
+}
+
+/** Numeric identifiers compare as numbers and rank below alphanumeric ones. */
+function compareIdentifiers(x: string, y: string): number {
+  const xNumeric = NUMERIC_IDENTIFIER.test(x);
+  const yNumeric = NUMERIC_IDENTIFIER.test(y);
+  if (xNumeric && yNumeric) return Math.sign(Number(x) - Number(y));
+  if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
+  if (x === y) return 0;
+  return x < y ? -1 : 1;
 }
 
 export type InstallKind =
@@ -132,6 +156,14 @@ export class UpdateError extends Error {
   }
 }
 
+type NpmInstall = Extract<InstallKind, { kind: 'npm' }>;
+
+/** `[::]` and `0.0.0.0` listen everywhere but cannot be dialled; the updater health-checks over loopback. */
+function healthUrl(host: string, port: number): string {
+  const dialable = ['0.0.0.0', '::'].includes(host) ? '127.0.0.1' : host;
+  return `http://${dialable.includes(':') ? `[${dialable}]` : dialable}:${port}/api/health`;
+}
+
 export class UpdateService {
   readonly #options: UpdateServiceOptions;
   readonly #config: RookeryConfig;
@@ -142,8 +174,9 @@ export class UpdateService {
   #error: string | null = null;
   #checking: Promise<void> | null = null;
   #installing = false;
-  #timer: NodeJS.Timeout | null = null;
-  #idleTimer: NodeJS.Timeout | null = null;
+  #stopped = false;
+  #timer: NodeJS.Timeout | undefined;
+  #idleTimer: NodeJS.Timeout | undefined;
 
   constructor(options: UpdateServiceOptions) {
     this.#options = options;
@@ -157,6 +190,7 @@ export class UpdateService {
   /** Begin the periodic check. `stop` undoes it. */
   start(): void {
     if (this.#timer) return;
+    this.#stopped = false;
     const tick = (): void => {
       if (this.#config.updates.mode !== 'off') void this.check();
     };
@@ -168,20 +202,19 @@ export class UpdateService {
     this.#timer.unref();
   }
 
+  /** Cancels the timers; a check still in flight ends without arming a retry or starting an install. */
   stop(): void {
-    if (this.#timer) clearTimeout(this.#timer);
-    if (this.#idleTimer) clearTimeout(this.#idleTimer);
-    this.#timer = null;
-    this.#idleTimer = null;
+    this.#stopped = true;
+    clearTimeout(this.#timer);
+    clearTimeout(this.#idleTimer);
+    this.#timer = undefined;
+    this.#idleTimer = undefined;
   }
 
   status(): UpdateStatus {
     const current = this.#options.version;
     const available = this.#latest !== null && compareVersions(this.#latest, current) > 0;
-    const restartable = Boolean(this.#options.requestShutdown);
-    let reason: string | null = null;
-    if (this.#install.kind !== 'npm') reason = this.#install.reason;
-    else if (!restartable) reason = 'This server was not started by Rookery itself and cannot restart on its own.';
+    const reason = this.#notInstallableReason();
     return {
       current,
       latest: this.#latest,
@@ -196,7 +229,7 @@ export class UpdateService {
       reason,
       busy: this.busy(),
       lastResult: this.#readLastResult(),
-      releaseNotesUrl: available ? `https://github.com/jonax1337/rookery-agent/releases/tag/v${this.#latest}` : null,
+      releaseNotesUrl: available ? `${RELEASES_URL}/v${this.#latest}` : null,
     };
   }
 
@@ -223,14 +256,7 @@ export class UpdateService {
 
   async #check(): Promise<void> {
     try {
-      const response = await this.#fetch(`${REGISTRY}/${PACKAGE_NAME}/${this.#config.updates.channel}`, {
-        headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) throw new Error(`The npm registry answered ${response.status}.`);
-      const body = (await response.json()) as { version?: unknown };
-      if (typeof body.version !== 'string' || !VERSION.test(body.version)) throw new Error('The npm registry sent no usable version.');
-      this.#latest = body.version;
+      this.#latest = await this.#fetchLatestVersion();
       this.#error = null;
     } catch (error) {
       this.#error = error instanceof Error ? error.message : String(error);
@@ -241,21 +267,29 @@ export class UpdateService {
     this.#maybeAutoInstall();
   }
 
+  async #fetchLatestVersion(): Promise<string> {
+    const response = await this.#fetch(`${REGISTRY}/${PACKAGE_NAME}/${this.#config.updates.channel}`, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`The npm registry answered ${response.status}.`);
+    const body = (await response.json()) as { version?: unknown };
+    if (typeof body.version !== 'string' || !VERSION.test(body.version)) throw new Error('The npm registry sent no usable version.');
+    return body.version;
+  }
+
   /**
    * `auto` installs only when nothing would be cut off, and never retries a
    * version whose install already failed and was rolled back - that would be
    * a restart loop with a database restore in every round of it.
    */
   #maybeAutoInstall(): void {
+    if (this.#stopped) return;
     const status = this.status();
     if (status.mode !== 'auto' || !status.available || !status.installable || this.#installing) return;
     if (status.lastResult && !status.lastResult.ok && status.lastResult.to === status.latest) return;
     if (status.busy.length) {
-      this.#idleTimer ??= setTimeout(() => {
-        this.#idleTimer = null;
-        this.#maybeAutoInstall();
-      }, IDLE_RETRY_MS);
-      this.#idleTimer.unref();
+      this.#retryWhenIdle();
       return;
     }
     try {
@@ -263,6 +297,14 @@ export class UpdateService {
     } catch (error) {
       this.#options.log.warn('Automatic update did not start', { error: error instanceof Error ? error.message : String(error) });
     }
+  }
+
+  #retryWhenIdle(): void {
+    this.#idleTimer ??= setTimeout(() => {
+      this.#idleTimer = undefined;
+      this.#maybeAutoInstall();
+    }, IDLE_RETRY_MS);
+    this.#idleTimer.unref();
   }
 
   /**
@@ -281,35 +323,23 @@ export class UpdateService {
       throw new UpdateError(409, `Updating restarts Rookery, and ${status.busy.join(', ')}. Wait for them, or update anyway.`);
     }
 
-    const home = this.#config.home;
-    const run = join(home, 'run');
-    mkdirSync(run, { recursive: true });
-    // A copy, because the original is about to be overwritten by npm.
-    const updater = join(run, 'updater.mjs');
-    copyFileSync(join(this.#install.root, 'scripts', 'updater.mjs'), updater);
-
-    const host = ['0.0.0.0', '::'].includes(this.#config.host) ? '127.0.0.1' : this.#config.host;
     const underSystemd = process.platform === 'linux' && Boolean(process.env.INVOCATION_ID);
-    const plan = {
-      packageName: PACKAGE_NAME,
-      from: status.current,
-      to: status.latest,
-      home,
-      prefix: this.#install.prefix,
-      root: this.#install.root,
-      database: databasePath(this.#config),
-      restart: underSystemd ? 'systemd' : 'launcher',
-      healthUrl: `http://${host.includes(':') ? `[${host}]` : host}:${this.#config.port}/api/health`,
-      token: this.#config.token || undefined,
-      waitPid: process.pid,
-      registry: process.env.ROOKERY_NPM_REGISTRY || undefined,
-    };
-    const planPath = join(run, 'update-plan.json');
-    writeFileSync(planPath, JSON.stringify(plan, null, 2), { mode: 0o600 });
-    rmSync(join(run, 'update-status.json'), { force: true });
+    const { updater, planPath } = this.#stageUpdate(this.#install, status.current, status.latest, underSystemd);
+    const child = this.#launchUpdater(updater, planPath, underSystemd);
 
-    // Under systemd the whole unit is torn down with the server, a detached
-    // child included; a transient unit of its own survives that.
+    this.#installing = true;
+    this.#options.log.info('Update handed to the updater; shutting down', { from: status.current, to: status.latest, force });
+    this.#shutDownUnlessUpdaterFails(child, underSystemd);
+    return { from: status.current, to: status.latest };
+  }
+
+  /**
+   * Under systemd the whole unit is torn down with the server, a detached
+   * child included; a transient unit of its own survives that. The arguments
+   * go straight to `spawn` without a shell, so nothing in them is interpreted.
+   */
+  #launchUpdater(updater: string, planPath: string, underSystemd: boolean): ChildProcess {
+    const home = this.#config.home;
     const [command, args] = underSystemd
       ? ['systemd-run', ['--user', '--collect', '--quiet', process.execPath, updater, planPath]]
       : [process.execPath, [updater, planPath]];
@@ -321,15 +351,47 @@ export class UpdateService {
       env: { ...process.env, ROOKERY_HOME: home },
     });
     child.unref();
+    return child;
+  }
 
-    this.#installing = true;
-    this.#options.log.info('Update handed to the updater; shutting down', { from: plan.from, to: plan.to, force });
-    // Long enough for the HTTP answer to leave; the updater waits for our PID.
-    const shutdown = setTimeout(() => this.#options.requestShutdown?.(), 750);
+  /** Copy the updater out of the package that is about to be replaced, and write the plan it reads. */
+  #stageUpdate(install: NpmInstall, from: string, to: string, underSystemd: boolean): { updater: string; planPath: string } {
+    const home = this.#config.home;
+    const run = join(home, RUN_DIR);
+    mkdirSync(run, { recursive: true });
+    // A copy, because the original is about to be overwritten by npm.
+    const updater = join(run, UPDATER_COPY);
+    copyFileSync(join(install.root, 'scripts', 'updater.mjs'), updater);
+
+    const plan = {
+      packageName: PACKAGE_NAME,
+      from,
+      to,
+      home,
+      prefix: install.prefix,
+      root: install.root,
+      database: databasePath(this.#config),
+      restart: underSystemd ? 'systemd' : 'launcher',
+      healthUrl: healthUrl(this.#config.host, this.#config.port),
+      token: this.#config.token || undefined,
+      waitPid: process.pid,
+      registry: process.env.ROOKERY_NPM_REGISTRY || undefined,
+    };
+    const planPath = join(run, PLAN_FILE);
+    // The plan carries the API token, so it is readable by this user only.
+    writeFileSync(planPath, JSON.stringify(plan, null, 2), { mode: 0o600 });
+    rmSync(join(run, STATUS_FILE), { force: true });
+    return { updater, planPath };
+  }
+
+  /**
+   * The updater itself never ends before we do - it waits for this PID - and
+   * systemd-run ends at once, with 0 once the unit is up. Anything else
+   * means nobody would bring the server back, so it must stay up.
+   */
+  #shutDownUnlessUpdaterFails(child: ChildProcess, underSystemd: boolean): void {
+    const shutdown = setTimeout(() => this.#options.requestShutdown?.(), SHUTDOWN_DELAY_MS);
     shutdown.unref();
-    // The updater itself never ends before we do - it waits for this PID - and
-    // systemd-run ends at once, with 0 once the unit is up. Anything else
-    // means nobody would bring the server back, so it must stay up.
     const abort = (reason: string): void => {
       clearTimeout(shutdown);
       this.#installing = false;
@@ -339,17 +401,24 @@ export class UpdateService {
     child.once('exit', (code) => {
       if (!underSystemd || code !== 0) abort(`updater exited early with ${code}`);
     });
-    return { from: plan.from, to: plan.to };
+  }
+
+  /** Why this installation cannot replace itself, or null when it can. */
+  #notInstallableReason(): string | null {
+    if (this.#install.kind !== 'npm') return this.#install.reason;
+    if (!this.#options.requestShutdown) return 'This server was not started by Rookery itself and cannot restart on its own.';
+    return null;
   }
 
   /**
    * Read on every status, not once at start: the updater writes its verdict
    * only after the server it started has answered, so the server that is
    * running is always younger than the file it would otherwise have missed.
+   * A missing or half-written file simply means there is no verdict yet.
    */
   #readLastResult(): UpdateResult | null {
     try {
-      return JSON.parse(readFileSync(join(this.#config.home, 'run', 'update-status.json'), 'utf8')) as UpdateResult;
+      return JSON.parse(readFileSync(join(this.#config.home, RUN_DIR, STATUS_FILE), 'utf8')) as UpdateResult;
     } catch {
       return null;
     }

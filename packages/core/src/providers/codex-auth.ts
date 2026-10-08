@@ -19,6 +19,7 @@ const TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 /** Refresh this long before the token actually expires, as the CLI does. */
 const REFRESH_WINDOW_MS = 5 * 60 * 1000;
+const REFRESH_TIMEOUT_MS = 30000;
 
 interface AuthFile {
   auth_mode?: string;
@@ -37,11 +38,12 @@ export interface CodexCredentials {
   accountId: string;
 }
 
-function codexHome(): string {
+/** Where the Codex CLI keeps its state; `CODEX_HOME` overrides it, as it does for the CLI. */
+export function codexHome(): string {
   return process.env.CODEX_HOME ?? join(homedir(), '.codex');
 }
 
-function authPath(): string {
+export function codexAuthPath(): string {
   return join(codexHome(), 'auth.json');
 }
 
@@ -67,10 +69,10 @@ export class CodexSession {
 
   #read(): AuthFile {
     try {
-      return JSON.parse(readFileSync(authPath(), 'utf8')) as AuthFile;
+      return JSON.parse(readFileSync(codexAuthPath(), 'utf8')) as AuthFile;
     } catch {
       throw new Error(
-        'No ChatGPT session found at ' + authPath() + '. Run `codex login` once to create it.',
+        'No ChatGPT session found at ' + codexAuthPath() + '. Run `codex login` once to create it.',
       );
     }
   }
@@ -90,7 +92,7 @@ export class CodexSession {
     const file = this.#read();
     const tokens = file.tokens;
     if (!tokens?.access_token || !tokens.account_id) {
-      throw new Error('The ChatGPT session in ' + authPath() + ' is incomplete. Run `codex login` again.');
+      throw new Error('The ChatGPT session in ' + codexAuthPath() + ' is incomplete. Run `codex login` again.');
     }
 
     const expiry = expiryOf(tokens.access_token);
@@ -124,7 +126,7 @@ export class CodexSession {
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
       }),
-      signal: AbortSignal.timeout(30000),
+      signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
     });
 
     if (!response.ok) {
@@ -156,7 +158,7 @@ export class CodexSession {
       },
       last_refresh: new Date().toISOString(),
     };
-    writeFileSync(authPath(), JSON.stringify(next, null, 2) + '\n', 'utf8');
+    writeFileSync(codexAuthPath(), JSON.stringify(next, null, 2) + '\n', 'utf8');
 
     return { accessToken: body.access_token, accountId };
   }
