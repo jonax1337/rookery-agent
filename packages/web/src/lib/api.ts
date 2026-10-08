@@ -440,7 +440,7 @@ export const api = {
       ...json(patch),
     }),
   /** Same for a hook set - its command lines are shown, never written back. */
-  setExternalHook: (id: string, patch: { enabled?: boolean; audience?: ToolServerAudience }) =>
+  setExternalHook: (id: string, patch: { enabled?: boolean; audience?: ToolServerAudience; skip?: string[] }) =>
     request<unknown>('/api/external/hooks/' + encodeURIComponent(id), {
       method: 'PATCH',
       ...json(patch),

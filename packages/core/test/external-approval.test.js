@@ -152,6 +152,40 @@ test('an edited hooks.json locks itself out again', () => {
   assert.equal(state.active, false, 'but it waits for somebody to look again');
 });
 
+test('a hook group left out is not handed to the turn, and only real groups can be left out', () => {
+  const { sourceId } = installation();
+  let config = fresh();
+
+  const [set] = externalHookStates(config);
+  const bash = set.groups.find((group) => group.matcher === 'Bash');
+  assert.ok(bash, 'every matcher group is listed with its own key');
+
+  config = applyPatch(
+    config,
+    withExternalApproval(config, 'hook', sourceId, { enabled: true, audience: 'both', skip: [bash.key, 'not-a-group'] }),
+  );
+  assert.deepEqual(externalHookStates(config)[0].skip, [bash.key], 'a key that names nothing is not kept');
+
+  for (const who of ['assistant', 'agent']) {
+    const { hooks } = externalTurnExtras(config, who);
+    assert.deepEqual(
+      hooks.PreToolUse.map((group) => group.matcher),
+      ['Write'],
+      'the Bash group stays home, the rest goes over for ' + who,
+    );
+    assert.ok(hooks.SessionStart, 'an untouched event still arrives');
+  }
+
+  // Leaving something out is not approving something new: the approval keeps
+  // the fingerprint it had, so an edited file is still locked out afterwards.
+  assert.equal(externalHookStates(config)[0].active, true);
+
+  // Leaving out the only group of an event takes the event with it.
+  const hello = set.groups.find((group) => group.event === 'SessionStart');
+  config = applyPatch(config, withExternalApproval(config, 'hook', sourceId, { skip: [bash.key, hello.key] }));
+  assert.deepEqual(Object.keys(externalTurnExtras(config, 'assistant').hooks), ['PreToolUse']);
+});
+
 test('a dropdown change is not a second look: it does not re-approve an edited file', () => {
   const { plugin, sourceId } = installation();
   let config = fresh();

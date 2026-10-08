@@ -2468,7 +2468,7 @@ export class OrgController extends EventEmitter {
     const { input, record, abort } = run;
     const { agent } = input;
     const output = new AttemptOutput();
-    const extra = toolServersFor(this.#config, 'agent', provider, setup.project?.id);
+    const extra = toolServersFor(this.#config, 'agent', provider, setup.project?.id, agent.id);
     const systemPrompt = buildAgentPrompt({
       ...setup.promptBase,
       toolHints: [...extra.hints, ...setup.projectMcp.hints],

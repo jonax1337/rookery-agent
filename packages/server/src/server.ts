@@ -1,6 +1,5 @@
 import { EventEmitter } from 'node:events';
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import fastifyCors from '@fastify/cors';
 import fastifyWebsocket, { type WebSocket } from '@fastify/websocket';
 import {
   createLogger,
@@ -15,7 +14,7 @@ import {
   type TuiSessionInfo,
 } from '@rookery/core';
 import { VERSION, type ServerContext } from './context.js';
-import { createAuthHook, createSameOriginHook } from './auth.js';
+import { createAuthHook, createHostGuard, createSameOriginHook } from './auth.js';
 import { errorMessage } from './errors.js';
 import { sendFrame, type ServerFrame } from './services/stream.js';
 import { TurnHub } from './services/turns.js';
@@ -176,12 +175,12 @@ function createErrorHandler(log: Logger) {
 }
 
 async function registerMiddleware(app: FastifyInstance, context: ServerContext): Promise<void> {
-  await app.register(fastifyCors, {
-    // Loopback by default; a token is what gates access when it is not.
-    origin: true,
-    credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-  });
+  // Not even CORS. The web app is served by this server (or proxied to it by
+  // Vite) and so is always same-origin; sending no `Access-Control-*` headers
+  // means no other page's script can read a response, which the Origin check
+  // on writes alone does not stop. The host guard in front of everything
+  // covers the one way a page can become "same-origin" regardless: DNS rebinding.
+  app.addHook('onRequest', createHostGuard(context));
 
   await app.register(fastifyWebsocket, { options: { maxPayload: MAX_PAYLOAD_BYTES } });
 

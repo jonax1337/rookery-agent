@@ -60,6 +60,15 @@ export function recencyOf(updatedAt: number, now: number): number {
   return Math.pow(0.5, (now - updatedAt) / RECENCY_HALF_LIFE_MS);
 }
 
+/**
+ * Lower case, with every accent taken off the letter it sits on. The index
+ * folds the same way, so a query has to as well - and the stop words below
+ * have to, or "für" would never match the "fur" the text turns into.
+ */
+function fold(text: string): string {
+  return text.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+}
+
 /** Words too common to narrow anything down, in the two languages Rookery targets. */
 const STOP_WORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'but', 'is', 'are', 'was', 'were', 'be', 'been', 'to', 'of',
@@ -68,7 +77,7 @@ const STOP_WORDS = new Set([
   'der', 'die', 'das', 'und', 'oder', 'ist', 'sind', 'war', 'ein', 'eine', 'einen', 'zu', 'von',
   'im', 'in', 'am', 'auf', 'fuer', 'für', 'mit', 'mein', 'meine', 'mir', 'mich', 'ich', 'du',
   'es', 'dass', 'was', 'wie', 'warum', 'wann', 'kann', 'koennte', 'bitte', 'nicht', 'den', 'dem',
-]);
+].map(fold));
 
 const MIN_TOKEN_LENGTH = 3;
 const MAX_QUERY_TOKENS = 24;
@@ -99,9 +108,10 @@ export function toMatchQuery(text: string): string {
 }
 
 export function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .normalize('NFKD')
+  // The accents come off first: the index folds them too, and cutting at the
+  // loose combining mark instead would split every word that has one in two
+  // ("Müller" into "ller").
+  return fold(text)
     .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
     .split(/[\s-]+/)
     .filter((token) => token.length >= MIN_TOKEN_LENGTH && !STOP_WORDS.has(token))

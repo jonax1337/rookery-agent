@@ -12,6 +12,15 @@ test('tokenize drops stop words and short tokens in both languages', () => {
   assert.deepEqual(tokenize('Wie ist der Zeitplan für mein Projekt'), ['zeitplan', 'projekt']);
 });
 
+test('tokenize keeps words with umlauts whole so they still meet the index', () => {
+  // The index folds accents ("Müller" is stored as "muller"); a query that
+  // cut the word at the accent looked for "ller" and found nothing.
+  assert.deepEqual(tokenize('Müller möchte Käse'), ['muller', 'mochte', 'kase']);
+  assert.equal(toMatchQuery('über Straße'), '"uber"* OR "straße"*');
+  // The stop word list is folded the same way, or "für" would slip through as "fur".
+  assert.deepEqual(tokenize('Zeitplan für Projekt'), ['zeitplan', 'projekt']);
+});
+
 test('toMatchQuery quotes every token so punctuation cannot inject FTS syntax', () => {
   assert.equal(toMatchQuery('deploy pipeline'), '"deploy"* OR "pipeline"*');
   // A query that is only punctuation and stop words has nothing to search for.

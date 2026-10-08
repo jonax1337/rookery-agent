@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import type {
   DreamConfig,
   EffortLevel,
@@ -35,6 +35,7 @@ export const DEFAULT_CONFIG: RookeryConfig = {
   defaultProvider: 'claude',
   defaultPermission: 'read',
   token: '',
+  allowedHosts: [],
   logLevel: 'info',
   assistantName: 'Rookery',
   formalAddress: false,
@@ -431,6 +432,9 @@ function envOverrides(): Partial<RookeryConfig> {
   if (env.ROOKERY_PORT) patch.port = Number(env.ROOKERY_PORT);
   if (env.ROOKERY_HOST) patch.host = env.ROOKERY_HOST;
   if (env.ROOKERY_TOKEN) patch.token = env.ROOKERY_TOKEN;
+  if (env.ROOKERY_ALLOWED_HOSTS) {
+    patch.allowedHosts = env.ROOKERY_ALLOWED_HOSTS.split(',').map((name) => name.trim().toLowerCase()).filter(Boolean);
+  }
   if (env.ROOKERY_LOG_LEVEL) patch.logLevel = env.ROOKERY_LOG_LEVEL;
   if (env.ROOKERY_ASSISTANT_NAME) patch.assistantName = env.ROOKERY_ASSISTANT_NAME;
   if (env.ROOKERY_USER_NAME) patch.userName = env.ROOKERY_USER_NAME;
@@ -645,7 +649,7 @@ export function loadConfig(overrides: Partial<RookeryConfig> = {}): RookeryConfi
     config.voice = merge(config.voice, previous.voice);
     // Persist the previous defaults once, so subsequent loads preserve the old voice too.
     mkdirSync(config.home, { recursive: true });
-    writeFileSync(path, JSON.stringify(merge(fileConfig, { voice: { jarvisEffect: config.voice.jarvisEffect, style: config.voice.style } }), null, 2) + '\n', 'utf8');
+    writeFileAtomic(path, JSON.stringify(merge(fileConfig, { voice: { jarvisEffect: config.voice.jarvisEffect, style: config.voice.style } }), null, 2) + '\n');
   }
   ensureHome(config.home, config.workspace);
   ensureProfile(config, upgradingLegacy);
@@ -663,6 +667,17 @@ export function ensureHome(home: string, workspace = join(home, 'workspace')): s
   return home;
 }
 
+/**
+ * Write next to the target and rename over it. The file holds the token, the
+ * bot token and every provider key; a crash in the middle of a plain write
+ * would leave half a JSON document where all of that was.
+ */
+function writeFileAtomic(path: string, text: string): void {
+  const staging = path + '.' + process.pid + '.tmp';
+  writeFileSync(staging, text, 'utf8');
+  renameSync(staging, path);
+}
+
 /** Persist a partial config back to ~/.rookery/config.json. */
 export function saveConfig(patch: Partial<RookeryConfig>, home?: string): RookeryConfig {
   const root = home ?? loadConfig().home;
@@ -671,7 +686,7 @@ export function saveConfig(patch: Partial<RookeryConfig>, home?: string): Rooker
   const path = configPath(root);
   const existing: unknown = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
   const next = merge(existing as Record<string, unknown>, patch);
-  writeFileSync(path, JSON.stringify(next, null, 2) + '\n', 'utf8');
+  writeFileAtomic(path, JSON.stringify(next, null, 2) + '\n');
   // Read back from the same home; without it a non-default home (a test's
   // temp directory, or ROOKERY_HOME) would save to one file and load another.
   return loadConfig({ home: root });

@@ -2114,6 +2114,13 @@ export interface RookeryConfig {
   defaultPermission: PermissionLevel;
   /** Shared secret for non-loopback access. Empty disables remote auth. */
   token: string;
+  /**
+   * Host names the server answers to besides loopback and IP addresses, for
+   * reaching it by name (`mypc.tailnet.ts.net`). Only enforced while no
+   * `token` is set: without one, a web page that rebinds its own domain to
+   * 127.0.0.1 would otherwise talk to the API as if it were the person.
+   */
+  allowedHosts: string[];
   logLevel: 'debug' | 'info' | 'warn' | 'error' | 'silent';
   memory: MemoryConfig;
   voice: VoiceConfig;
@@ -2451,6 +2458,12 @@ export interface ExternalApproval {
   enabled: boolean;
   audience: ToolServerAudience;
   fingerprint: string;
+  /**
+   * Hook sets only: keys of matcher groups left out of an approved set. Not
+   * part of the fingerprint - leaving something out is never a risk to
+   * re-check, only approving more is.
+   */
+  skip?: string[];
 }
 
 export interface ExternalConfig {

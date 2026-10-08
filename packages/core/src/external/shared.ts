@@ -108,8 +108,26 @@ export interface ExternalHookSet {
    * what it actually runs, so the lines travel to the page - and never back.
    */
   commands: string[];
+  /**
+   * One entry per matcher group, the unit a person can leave out. A plugin
+   * written for a person at a keyboard can carry a dozen groups that only make
+   * sense there - a gate that wants facts presented, a health probe of the
+   * person's own MCP servers - and approving the file whole would otherwise
+   * mean running all of them in an unattended run.
+   */
+  groups: ExternalHookGroup[];
   /** Over the whole declaration: an edited file deactivates its own approval. */
   fingerprint: string;
+}
+
+/** One matcher group of a `hooks.json`: what it is called, and what it hooks. */
+export interface ExternalHookGroup {
+  /** Stable under reordering and over the group's own content; what a "leave out" decision stores. */
+  key: string;
+  event: string;
+  matcher: string;
+  /** The group's own `id` when the plugin names it, else the start of its command. */
+  label: string;
 }
 
 export interface ExternalScan {
@@ -294,8 +312,35 @@ export function readHookSet(dir: string, sourceId: string): ExternalHookSet | nu
   const path = join(dir, 'hooks.json');
   const doc = readHookDocument(path);
   if (!doc) return null;
-  const { events, commands, handlerCount, fingerprint } = doc;
-  return { sourceId, path, events, handlerCount, commands, fingerprint };
+  const { events, commands, handlerCount, groups, fingerprint } = doc;
+  return { sourceId, path, events, handlerCount, commands, groups, fingerprint };
+}
+
+/** The command lines of one matcher group, in order. */
+function groupCommands(group: Record<string, unknown>): string[] {
+  return (Array.isArray(group?.hooks) ? (group.hooks as Record<string, unknown>[]) : [])
+    .map((handler) => (typeof handler?.command === 'string' ? handler.command : ''))
+    .filter(Boolean);
+}
+
+/** What a "leave this group out" decision is stored under: over event, matcher and commands, not position. */
+function hookGroupKey(event: string, matcher: string, commands: string[]): string {
+  return createHash('sha1').update([event, matcher, ...commands].join('\n')).digest('hex').slice(0, 10);
+}
+
+/** The table without the groups a person left out; events that end up empty go with them. */
+export function withoutHookGroups(table: Record<string, unknown>, skip: ReadonlySet<string>): Record<string, unknown> {
+  if (skip.size === 0) return table;
+  const kept: Record<string, unknown> = {};
+  for (const [event, value] of Object.entries(table)) {
+    if (!Array.isArray(value)) continue;
+    const groups = (value as Record<string, unknown>[]).filter((group) => {
+      const matcher = typeof group?.matcher === 'string' && group.matcher ? group.matcher : '*';
+      return !skip.has(hookGroupKey(event, matcher, groupCommands(group)));
+    });
+    if (groups.length) kept[event] = groups;
+  }
+  return kept;
 }
 
 /**
@@ -311,6 +356,7 @@ export function readHookDocument(path: string): {
   table: Record<string, unknown>;
   events: string[];
   commands: string[];
+  groups: ExternalHookGroup[];
   handlerCount: number;
   fingerprint: string;
 } | null {
@@ -321,6 +367,7 @@ export function readHookDocument(path: string): {
   const table: Record<string, unknown> = {};
   const events: string[] = [];
   const commands: string[] = [];
+  const groups: ExternalHookGroup[] = [];
   let handlerCount = 0;
   for (const [event, value] of Object.entries(source)) {
     // `$schema` and friends sit beside the events in the bare spelling.
@@ -328,12 +375,20 @@ export function readHookDocument(path: string): {
     let seen = false;
     for (const group of value as Record<string, unknown>[]) {
       const matcher = typeof group?.matcher === 'string' && group.matcher ? group.matcher : '*';
-      for (const handler of Array.isArray(group?.hooks) ? (group.hooks as Record<string, unknown>[]) : []) {
-        const command = typeof handler?.command === 'string' ? handler.command : '';
-        if (!command) continue;
+      const own = groupCommands(group);
+      for (const command of own) {
         seen = true;
         handlerCount += 1;
         commands.push(event + ' ' + matcher + ': ' + command);
+      }
+      if (own.length) {
+        const named = typeof group.id === 'string' && group.id ? group.id : '';
+        groups.push({
+          key: hookGroupKey(event, matcher, own),
+          event,
+          matcher,
+          label: named || (own[0] ?? '').replace(/\s+/g, ' ').slice(0, 80),
+        });
       }
     }
     if (!seen) continue;
@@ -341,7 +396,7 @@ export function readHookDocument(path: string): {
     table[event] = value;
   }
   if (!handlerCount) return null;
-  return { table, events, commands, handlerCount, fingerprint: fingerprintOf(commands) };
+  return { table, events, commands, groups, handlerCount, fingerprint: fingerprintOf(commands) };
 }
 
 /**

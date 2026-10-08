@@ -12,6 +12,7 @@ import { SectionHeading } from '@/components/blocks/section-heading';
 import { EmptyState, NoResults, ServerOffline } from '@/components/common/empty-state';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 
 import { AudienceSelect, ChangedBadge } from './approval-controls';
@@ -187,7 +188,8 @@ export function ClaudeCodeSections() {
                   example, refuses the first attempt and asks the model to state its facts and
                   repeat the command — in an unattended agent run that costs a round trip at best,
                   and can stall the run at worst. Approve hooks for the assistant first, and only
-                  extend them to agents once you have seen what they do.
+                  extend them to agents once you have seen what they do — or untick the single
+                  hook groups that only make sense with a person watching.
                 </AlertDescription>
               </Alert>
 
@@ -198,6 +200,7 @@ export function ClaudeCodeSections() {
                   sourceLabel={sourceLabelOf(set.sourceId)}
                   onSetAudience={(audience) => void attempt(external.setHook(set, { audience }))}
                   onApprove={(enabled) => void attempt(external.setHook(set, { enabled }))}
+                  onSetSkip={(skip) => void attempt(external.setHook(set, { skip }))}
                 />
               ))}
             </div>
@@ -262,12 +265,17 @@ function HookSetCard({
   sourceLabel,
   onSetAudience,
   onApprove,
+  onSetSkip,
 }: {
   set: ExternalHookSet;
   sourceLabel: string;
   onSetAudience(audience: ExternalHookSet['audience']): void;
   onApprove(enabled: boolean): void;
+  onSetSkip(skip: string[]): void;
 }) {
+  const skipped = new Set(set.skip);
+  const toggle = (key: string, runs: boolean) =>
+    onSetSkip(runs ? set.skip.filter((entry) => entry !== key) : [...set.skip, key]);
   return (
     <div className="flex flex-col gap-3 rounded-lg border bg-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -292,10 +300,36 @@ function HookSetCard({
         </div>
       </div>
       <p className="text-xs text-muted-foreground">{set.path}</p>
-      {/* Wide content scrolls in its own box; the page never does. */}
-      <pre className="max-h-64 overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed">
-        {set.commands.join('\n\n')}
-      </pre>
+      <div className="flex flex-col gap-1">
+        <span className="text-sm text-muted-foreground">
+          {formatNumber(set.groups.length - skipped.size)} of {formatNumber(set.groups.length)} hook groups run.
+          Untick the ones that make no sense without a person watching.
+        </span>
+        <ul className="flex max-h-72 flex-col overflow-auto rounded-md border">
+          {set.groups.map((group) => (
+            <li key={group.key} className="flex items-center gap-3 border-b px-3 py-2 last:border-b-0">
+              <Checkbox
+                checked={!skipped.has(group.key)}
+                aria-label={'Run ' + group.label}
+                onCheckedChange={(checked) => toggle(group.key, checked === true)}
+              />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-sm font-medium">{group.label}</span>
+                <span className="truncate text-xs text-muted-foreground">
+                  {group.event} · {group.matcher}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <details>
+        <summary className="cursor-pointer text-xs text-muted-foreground">Show the command lines</summary>
+        {/* Wide content scrolls in its own box; the page never does. */}
+        <pre className="mt-2 max-h-64 overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed">
+          {set.commands.join('\n\n')}
+        </pre>
+      </details>
     </div>
   );
 }

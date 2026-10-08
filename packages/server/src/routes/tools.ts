@@ -51,6 +51,8 @@ const PREPARE_OUTPUT_TAIL_CHARS = 6000;
 const approvalSchema = z.object({
   enabled: z.boolean().optional(),
   audience: audienceSchema.optional(),
+  /** Hook sets only; the core drops keys that name no group of the file. */
+  skip: z.array(z.string().max(64)).max(500).optional(),
 });
 
 const pluginApprovalSchema = z.object({

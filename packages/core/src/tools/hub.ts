@@ -15,6 +15,7 @@ import {
   fingerprintOf,
   readAgentFile,
   readHookDocument,
+  withoutHookGroups,
   type ExternalAgentRef,
   type ExternalHookSet,
   type ExternalMcpServer,
@@ -221,6 +222,8 @@ export interface ExternalHookState extends ExternalHookSet {
   audience: ToolServerAudience;
   active: boolean;
   changed: boolean;
+  /** Keys of the matcher groups left out of this approval. */
+  skip: string[];
 }
 
 /** The "load the whole plugin" switch for one source. */
@@ -273,7 +276,7 @@ export function externalHookStates(config: RookeryConfig): ExternalHookState[] {
     const decision = stored[set.sourceId];
     const enabled = Boolean(decision?.enabled);
     const { changed, active } = approvalStanding(enabled, decision?.fingerprint, set.fingerprint);
-    return { ...set, enabled, audience: decision?.audience ?? 'assistant', active, changed };
+    return { ...set, enabled, audience: decision?.audience ?? 'assistant', active, changed, skip: decision?.skip ?? [] };
   });
 }
 
@@ -309,7 +312,7 @@ export function withExternalApproval(
   config: RookeryConfig,
   kind: 'agent' | 'hook' | 'plugin',
   id: string,
-  patch: { enabled?: boolean; audience?: ToolServerAudience; loadWhole?: boolean },
+  patch: { enabled?: boolean; audience?: ToolServerAudience; loadWhole?: boolean; skip?: string[] },
 ): Partial<RookeryConfig> | null {
   if (kind === 'plugin') {
     const source = pluginSources(config).find((entry) => entry.id === id);
@@ -351,6 +354,11 @@ export function withExternalApproval(
     // a file edited in the meantime stays `changed` and locked out until
     // somebody looks at it again - a dropdown is not a second look.
     fingerprint: patch.enabled === true ? found.fingerprint : (stored?.fingerprint ?? found.fingerprint),
+    // Only groups that exist in the file can be left out; a key from an older
+    // version of it would otherwise sit in the config forever.
+    ...(kind === 'hook'
+      ? { skip: hookSkip(found as ExternalHookSet, patch.skip ?? stored?.skip ?? []) }
+      : {}),
   };
   return {
     external: {
@@ -484,13 +492,16 @@ export function externalTurnExtras(
   // this audience is left out entirely for that audience - the hook approval
   // is the gate the plan set, and a convenience switch must not route around
   // it. Subagents and skills come back the moment the hooks are approved too.
+  // Leaving a hook group out is the same thing in reverse: a folder loaded
+  // whole cannot lose half of its hooks, so that source travels as curated
+  // copies instead.
   const hookStates = externalHookStates(config);
   const hookSetFor = (sourceId: string): ExternalHookState | undefined =>
     hookStates.find((set) => set.sourceId === sourceId);
   const whole = externalPluginStates(config).filter((state) => {
     if (!state.active || !serves(state.audience, who)) return false;
     const hooks = hookSetFor(state.sourceId);
-    return !hooks || (hooks.active && serves(hooks.audience, who));
+    return !hooks || (hooks.active && serves(hooks.audience, who) && hooks.skip.length === 0);
   });
   const loadedWhole = new Set(whole.map((state) => state.sourceId));
   const pluginDirs = whole.map((state) => state.installPath).filter(Boolean);
@@ -541,12 +552,18 @@ function approvedHooks(
     const doc = readHookDocument(state.path);
     if (!doc || doc.fingerprint !== state.fingerprint) continue;
     const root = pluginRootOf(state.path);
-    for (const [event, value] of Object.entries(doc.table)) {
+    for (const [event, value] of Object.entries(withoutHookGroups(doc.table, new Set(state.skip)))) {
       if (!Array.isArray(value)) continue;
       hooks[event] = [...(hooks[event] ?? []), ...rebaseHookGroups(value, root)];
     }
   }
   return hooks;
+}
+
+/** The requested keys that name a group in this set, each once. */
+function hookSkip(set: ExternalHookSet, requested: string[]): string[] {
+  const known = new Set(set.groups.map((group) => group.key));
+  return [...new Set(requested)].filter((key) => known.has(key));
 }
 
 /**
@@ -572,12 +589,13 @@ export function toolServersFor(
   who: 'assistant' | 'agent',
   provider?: ProviderId,
   projectId?: string,
+  agentId?: string,
 ): { specs: McpServerSpec[]; hints: string[] } {
   const specs: McpServerSpec[] = [];
   const hints: string[] = [];
   for (const state of toolServerStates(config)) {
     if (!state.active || !serves(state.audience, who) || !scoped(state.projectIds, projectId)) continue;
-    const launch = launchOf(config, state, provider);
+    const launch = launchOf(config, state, provider, agentId);
     if (!launch || RESERVED.has(launch.spec.name)) continue;
     specs.push(launch.spec);
     if (launch.hint) hints.push(launch.hint);
@@ -590,6 +608,7 @@ function launchOf(
   config: RookeryConfig,
   state: ToolServerState,
   provider: ProviderId | undefined,
+  agentId?: string,
 ): { spec: McpServerSpec; hint: string } | null {
   if (state.external) {
     const server = state.external;
@@ -608,7 +627,7 @@ function launchOf(
   }
   const stored = toolServerConfig(config, state.id);
   if (state.entry) {
-    const spec = state.entry.spec({ config, options: state.options, env: stored.env, provider });
+    const spec = state.entry.spec({ config, options: state.options, env: stored.env, provider, agentId });
     return spec ? { spec, hint: state.entry.hint(state.options) } : null;
   }
   if (stored.custom) {

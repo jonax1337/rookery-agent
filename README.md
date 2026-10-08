@@ -337,6 +337,8 @@ On the desktop, every physical action returns the screen once it has stopped cha
 
 For websites, use **Browser (Playwright)** with **Hidden (headless)** for work without a desktop window. Its cursor overlay has eased movement, a subtle mint glow and a small click pulse, respects reduced motion, and is included in screenshots, and its separate browser profile can keep logins between turns. The bundled `computer-use` skill teaches both routes. Validate the native and headless-browser paths with `$env:ROOKERY_COMPUTER_TEST_UI='1'; node --import ./packages/core/test/setup.mjs --test packages/core/test/computer.test.js` on Windows with Edge installed; this opens a disposable test window and never types into the user's apps.
 
+A browser profile can be open in only one browser at a time, so the assistant keeps `~/.rookery/browser-profile` and every agent gets its own folder under `~/.rookery/browser-profiles/`. Agents and the assistant can browse at the same time; logins made in the assistant's browser are not visible to agents, and an agent signs in once and stays signed in.
+
 Rookery's organization and memory tools use its per-turn MCP bridge; the tool hub attaches additional MCP servers directly to each provider process for the configured audience. Provider-native tools are governed by the permission flags above, so MCP-only execution is a design intent, not a universal enforced guarantee. Toggles apply to subsequent provider processes, including the bounded second pass described above. Showing tool calls in web chat is a browser-local preference.
 
 **Skills** (`/skills`, `rookery skills`) are folders under `~/.rookery/skills`, each containing a `SKILL.md` with name, description, audience and origin metadata, plus supporting files. Rookery advertises the catalog in context; `use_skill` loads instructions and the file list. Beyond that index, every turn starts by matching the task itself against both shelves and naming the two or three skills that look like they fit — the way recalled memories arrive, so opening the right one does not depend on the model remembering to search. The match is lexical and deliberately quiet: one shared word is not enough, weak candidates are dropped rather than padded in, and when many skills tie on a common word it prints nothing and leaves `find_skill` to do the work.
@@ -352,6 +354,8 @@ Two rules bound the unattended paths: **a skill you wrote is never overwritten**
 **What Claude Code and Codex already have.** Rookery runs on the OAuth sessions those two CLIs created, so whatever is installed for them sits on the same disk. It reads `~/.claude` and `~/.codex` — each CLI's own `skills/` folder, the `skills/` and `.mcp.json` of every plugin switched on there, and the MCP servers in `~/.claude.json` and `~/.codex/config.toml` — and never writes back into either. One plugin installed in both CLIs shows up once, and so does one MCP server that both declare identically.
 
 Nothing found is active by default. Each CLI's own skills folder counts from the start; a plugin's shelf is switched on per source on the Skills page, because a single plugin can hold several hundred entries. Those skills never go into the prompt: it says how many there are and where they come from, `find_skill` searches them, and `use_skill` opens the match — so the assistant sees what is available and loads it when a task calls for it. A discovered MCP server appears on the Tools page switched off, and only a person can switch it on: starting a process out of somebody else's plugin is a decision, not a convenience. Approval covers the start definition as it stood; if it changes in the CLI's own configuration, the server reads "Changed" and stays out until somebody looks at it again.
+
+An approved hook set can be trimmed: the Skills page lists every matcher group of its `hooks.json` with a checkbox, and an unticked group is not handed to the turn. Plugin hooks are written for a person at a keyboard — ECC's gate that makes the model restate its facts before the first `Bash`, or its health check of the MCP servers in your own `~/.claude.json`, only add errors to an unattended run. A source loaded whole as a plugin cannot lose half its hooks, so unticking one makes that source travel as curated copies instead.
 
 ## Voice
 
@@ -418,6 +422,8 @@ npm start
 ```
 
 API clients send `Authorization: Bearer <token>`. Browser WebSockets use the token query parameter. This is a shared-token model, not individual user accounts. Telegram controller IDs are a separate policy.
+
+Without a token, the server only answers to loopback, IP addresses and `*.localhost` in the `Host` header, so a web page that points its own domain at `127.0.0.1` (DNS rebinding) cannot use it. To reach it by a name instead, add that name to `allowedHosts` in `config.json` or set `ROOKERY_ALLOWED_HOSTS` (comma-separated). With a token set the name does not matter. The server sends no CORS headers; the web app is always served by it, or proxied to it by Vite.
 
 ## Development and checks
 

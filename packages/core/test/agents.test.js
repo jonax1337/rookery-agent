@@ -175,6 +175,24 @@ test('the tool hub resolves catalogue and custom servers per audience', () => {
   assert.equal(toolServerStates({ ...base, ...without }).some((s) => s.id === 'custom-my-notion'), false);
 });
 
+test('the assistant and every agent browse on a profile of their own, so they can run side by side', () => {
+  const base = { ...DEFAULT_CONFIG, tools: { servers: [] } };
+  const config = { ...base, ...withToolServer(base, 'playwright', { enabled: true, audience: 'both' }) };
+  const profileOf = (specs) => {
+    const args = specs.find((spec) => spec.name === 'playwright').args;
+    return args[args.indexOf('--user-data-dir') + 1];
+  };
+
+  const assistant = profileOf(toolServersFor(config, 'assistant', 'claude').specs);
+  const mara = profileOf(toolServersFor(config, 'agent', 'claude', undefined, 'mara-id').specs);
+  const iris = profileOf(toolServersFor(config, 'agent', 'claude', undefined, 'iris-id').specs);
+
+  assert.equal(assistant, join(config.home, 'browser-profile'), 'the assistant keeps the profile its logins are in');
+  assert.equal(new Set([assistant, mara, iris]).size, 3, 'two browsers on one profile is the "already in use" error');
+  assert.equal(mara, profileOf(toolServersFor(config, 'agent', 'claude', undefined, 'mara-id').specs), 'and an agent finds its logins again');
+  assert.ok(!mara.startsWith(assistant + '\\') && !mara.startsWith(assistant + '/'), 'not nested inside the assistant\'s profile');
+});
+
 test('a server scoped to specific projects only serves those, and is left out of the dormant hint elsewhere', () => {
   const base = { ...DEFAULT_CONFIG, tools: { servers: [] } };
   const token = process.env.GITHUB_PERSONAL_ACCESS_TOKEN;

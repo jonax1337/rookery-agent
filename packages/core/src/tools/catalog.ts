@@ -36,6 +36,12 @@ export interface SpecContext {
   options: Record<string, string>;
   env: Record<string, string>;
   provider?: ProviderId;
+  /**
+   * The agent the server is started for; unset for the assistant. A browser
+   * profile can be open in one browser at a time, so whoever may run beside
+   * somebody else needs a folder of their own.
+   */
+  agentId?: string;
 }
 
 export interface ToolCatalogEntry {
@@ -85,6 +91,17 @@ export function playwrightCliPath(): string | null {
 function bundledOrNpx(name: string, script: string | null, pkg: string, args: string[], env: Record<string, string> = {}): McpServerSpec {
   if (script) return { name, command: process.execPath, args: [script, ...args], env };
   return npxSpec(name, [pkg, ...args], env);
+}
+
+/**
+ * The folder a persistent browser keeps its profile in. Chromium lets one
+ * browser use a profile at a time ("Browser is already in use"), and agents
+ * run beside the assistant and beside each other, so each agent gets a folder
+ * of its own and the assistant keeps the original one - and the logins in it.
+ */
+export function browserProfileDir(home: string, agentId?: string): string {
+  if (!agentId) return join(home, 'browser-profile');
+  return join(home, 'browser-profiles', agentId.replace(/[^\w-]/g, '_'));
 }
 
 const withKeys = (env: Record<string, string>, names: string[]): Record<string, string> => {
@@ -168,7 +185,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
       {
         key: 'persistent',
         label: 'Profile',
-        hint: 'Saved: the browser keeps its own profile, so logins and cookies survive between turns. Fresh: a clean profile each turn. Either way the window only opens when a browser tool is actually used.',
+        hint: 'Saved: the browser keeps its own profile, so logins and cookies survive between turns. Each agent has a profile of its own, so agents and the assistant can browse at the same time. Fresh: a clean profile each turn. Either way the window only opens when a browser tool is actually used.',
         type: 'select',
         choices: [
           { value: 'yes', label: 'Keep logins between turns' },
@@ -196,13 +213,13 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     // No `ensure`: the browser starts when Playwright first needs it, not at
     // the top of every turn. A conversation that never touches the web never
     // sees a browser window.
-    spec: ({ config, options }) => {
+    spec: ({ config, options, agentId }) => {
       const kind = options.browser || 'msedge';
       return bundledOrNpx('playwright', playwrightCliPath(), '@playwright/mcp', [
         '--browser',
         kind,
         // One profile folder of its own, so logins survive the turn that made them.
-        ...(options.persistent !== 'no' ? ['--user-data-dir', join(config.home, 'browser-profile')] : []),
+        ...(options.persistent !== 'no' ? ['--user-data-dir', browserProfileDir(config.home, agentId)] : []),
         ...(options.headless === 'yes' ? ['--headless'] : []),
         '--init-page', fileURLToPath(new URL('../computer/browser-init.js', import.meta.url)),
       ]);

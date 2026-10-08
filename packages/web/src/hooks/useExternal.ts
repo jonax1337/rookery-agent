@@ -18,6 +18,8 @@ function patchRows<Row>(rows: Row[] | undefined, isTarget: (row: Row) => boolean
 export interface ExternalApprovalPatch {
   enabled?: boolean;
   audience?: ToolServerAudience;
+  /** Hook sets only: keys of the matcher groups left out. */
+  skip?: string[];
 }
 
 /**

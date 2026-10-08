@@ -1531,6 +1531,15 @@ export interface ExternalAgentRef {
   active: boolean;
 }
 
+/** One matcher group of a hook set. */
+export interface ExternalHookGroup {
+  key: string;
+  event: string;
+  matcher: string;
+  /** The group's own id when the plugin names it, else the start of its command. */
+  label: string;
+}
+
 /**
  * The hook handlers one source declares. A hook set is a list of command
  * lines that run around every tool call, so the page has to show them before
@@ -1544,6 +1553,10 @@ export interface ExternalHookSet {
   handlerCount: number;
   /** The command lines, for reading only. */
   commands: string[];
+  /** One entry per matcher group of the file: the unit that can be left out. */
+  groups: ExternalHookGroup[];
+  /** Keys of the groups left out of this approval. */
+  skip: string[];
   enabled: boolean;
   audience: ToolServerAudience;
   /** False once `hooks.json` changed after approval. */

@@ -1,0 +1,34 @@
+# Build and test on every push to main and every pull request. The release
+# workflow only runs on a version tag, so without this nothing checks a change
+# before it is tagged - and the server and web suites are not part of it at all.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the platform the computer-control tests were written for;
+        # they skip themselves elsewhere.
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: npm test
+      - run: npm test -w @rookery/server
+      - run: npm test -w @rookery/web
