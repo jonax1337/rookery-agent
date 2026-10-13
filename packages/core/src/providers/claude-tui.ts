@@ -1151,6 +1151,24 @@ function commandOutput(screen: string, command: string): string {
 
 /** Lines Claude Code draws under its input box, and only there. */
 const INPUT_FOOTERS = ['shift+tab to cycle', 'for shortcuts'];
+/** What Claude Code's spinner line says while it works on a message. */
+const WORKING_HINT = 'esc to interrupt';
+
+/**
+ * What to do about a typed message the transcript has not confirmed yet.
+ * Retyping is only for keys that never arrived: a long message - a
+ * report-back carrying a whole report - scrolls its first line off the
+ * screen once sent, and typing it again while Claude Code worked on it
+ * queued every copy into the next turn (the same notice three times over).
+ */
+export function unconfirmedMessage(screen: string | null, prompt: string): 'enter' | 'wait' | 'retype' {
+  if (screen === null) return 'enter';
+  if (screen.includes(WORKING_HINT)) return 'wait';
+  const flat = screen.replace(/\s+/g, ' ');
+  const text = prompt.replace(/\s+/g, ' ').trim();
+  const shown = [text.slice(0, SNIPPET_LENGTH), text.slice(-SNIPPET_LENGTH)].some((snippet) => flat.includes(snippet));
+  return shown || screen.includes('[Pasted text') ? 'enter' : 'retype';
+}
 
 /**
  * The `UserPromptSubmit` hook of a conversation terminal: whatever Rookery
@@ -1356,21 +1374,20 @@ export class ConversationTerminal {
 
   /**
    * The message has to arrive. Every few seconds without it in the
-   * transcript, the screen says why: the text sits in the input box (a
-   * paste the TUI held on to) and gets another Enter, or it is not there at
-   * all (keys swallowed while the TUI was still setting up) and is typed
-   * again. Past the limit it is an error, not a turn waiting for ever.
+   * transcript, the screen says why (`unconfirmedMessage`): the text is
+   * still there and gets another Enter, Claude Code is already working on it
+   * and the transcript has yet to catch up, or it is not there at all (keys
+   * swallowed while the TUI was still setting up) and is typed again. Past
+   * the limit it is an error, not a turn waiting for ever.
    */
   async #ensureAccepted(pending: PendingTurn): Promise<void> {
     const typedAt = Date.now();
-    const snippet = pending.prompt.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_LENGTH);
     while (Date.now() - typedAt < ACCEPT_DEADLINE_MS) {
       await sleep(ACCEPT_RETRY_MS);
       if (this.#pending !== pending || pending.accepted) return;
-      const screen = tuiSessions.screenText(this.key);
-      const waiting = screen === null || screen.includes('[Pasted text') || screen.replace(/\s+/g, ' ').includes(snippet);
-      if (waiting) tuiSessions.write(this.key, '\r');
-      else this.#type(pending.prompt);
+      const next = unconfirmedMessage(tuiSessions.screenText(this.key), pending.prompt);
+      if (next === 'enter') tuiSessions.write(this.key, '\r');
+      else if (next === 'retype') this.#type(pending.prompt);
     }
     if (this.#pending !== pending || pending.accepted) return;
     this.#settle(pending, { error: 'The terminal did not take the message.' });
