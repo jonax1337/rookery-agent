@@ -13,6 +13,7 @@ import type {
   TelegramPushConfig,
 } from './types.js';
 import { ensureProfile } from './profile.js';
+import { DEFAULT_WEB_LOGIN_BLOCKLIST } from './computer/tools.js';
 
 /**
  * Config resolution order, later wins:
@@ -36,6 +37,9 @@ export const DEFAULT_CONFIG: RookeryConfig = {
   defaultPermission: 'read',
   token: '',
   allowedHosts: [],
+  webLoginMode: 'off',
+  webLoginDomains: [],
+  webLoginBlocklist: [...DEFAULT_WEB_LOGIN_BLOCKLIST],
   logLevel: 'info',
   assistantName: 'Rookery',
   formalAddress: false,
@@ -633,6 +637,13 @@ export function loadConfig(overrides: Partial<RookeryConfig> = {}): RookeryConfi
     if (!(key in servers)) servers[key] = decided;
   }
   config.external.servers = servers;
+
+  // The first cut had a switch, `allowWebLogins`, over the allowlist alone.
+  const webLogins = config as { allowWebLogins?: unknown };
+  if (webLogins.allowWebLogins === true && !(fileConfig as { webLoginMode?: unknown }).webLoginMode) {
+    config.webLoginMode = 'allowlist';
+  }
+  delete webLogins.allowWebLogins;
 
   upgradePushConfig(config.gateways.telegram.push, fileConfig);
   upgradeDreamTuning(config.memory.dream, fileConfig);

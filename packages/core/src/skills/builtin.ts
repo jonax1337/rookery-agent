@@ -252,7 +252,8 @@ servers with set_tool_server. Agents must report missing access to their owner.
   repeated screenshots.
 - Things only the user may do: UAC prompts, Windows Hello, PINs, sign-ins and
   CAPTCHAs. Software cannot and must not answer them; call hand_over with a
-  short reason and continue from the screenshot it returns.
+  short reason and continue from the screenshot it returns. The one exception
+  is a web sign-in your instructions explicitly allow.
 - Drawing and painting: see "Paint well" below.
 
 ## Paint well

@@ -32,9 +32,11 @@ import type {
   TaskEventKind,
   TaskStatus,
   ToolServerAudience,
+  WebLoginMode,
 } from '../types.js';
-import { ASSISTANT_MEMORY_OWNER, EFFORT_LEVELS } from '../types.js';
+import { ASSISTANT_MEMORY_OWNER, EFFORT_LEVELS, WEB_LOGIN_MODES } from '../types.js';
 import { agentWorkspace, applyConfig } from '../config.js';
+import { webLoginHosts } from '../computer/tools.js';
 import type { Logger } from '../logger.js';
 import { silentLogger } from '../logger.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -2734,6 +2736,20 @@ export class OrgController extends EventEmitter {
     }
     const org = orgSettingsPatch(args);
     if (Object.keys(org).length) patch.org = org;
+    const webLoginMode = args.text('webLoginMode');
+    if (webLoginMode) {
+      if (!(WEB_LOGIN_MODES as readonly string[]).includes(webLoginMode)) {
+        return toolError('webLoginMode must be one of ' + WEB_LOGIN_MODES.join(', ') + '.');
+      }
+      patch.webLoginMode = webLoginMode as WebLoginMode;
+    }
+    for (const key of ['webLoginDomains', 'webLoginBlocklist'] as const) {
+      if (!args.has(key)) continue;
+      const domains = args.list(key).filter((domain) => domain.toLowerCase() !== 'none');
+      const invalid = domains.filter((domain) => !webLoginHosts([domain]).length);
+      if (invalid.length) return toolError(key + ': not a host name: ' + invalid.join(', ') + '.');
+      patch[key] = webLoginHosts(domains);
+    }
     if (!Object.keys(patch).length) return toolError('Nothing to change.');
 
     // applyConfig writes ~/.rookery/config.json and refreshes the one config
@@ -3947,6 +3963,9 @@ export function describeSettings(config: RookeryConfig): string {
     'Parallel runs: ' + config.org.maxConcurrentAssignments,
     'Delegation depth: ' + config.org.maxDelegationDepth,
     'Run timeout: ' + Math.round(config.org.assignmentTimeoutMs / 60000) + ' min',
+    'Web sign-ins: ' + config.webLoginMode +
+      ', allowed: ' + ((config.webLoginDomains ?? []).join(', ') || 'none') +
+      ', blocked: ' + ((config.webLoginBlocklist ?? []).join(', ') || 'none'),
   ].join('\n');
 }
 

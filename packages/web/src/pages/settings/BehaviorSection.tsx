@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { Fade } from '@/components/animate-ui/primitives/effects/fade';
-import { FieldDescription, FieldLegend, FieldSet } from '@/components/ui/field';
+import { Field, FieldDescription, FieldLabel, FieldLegend, FieldSet } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
 import { RadioGroup } from '@/components/ui/radio-group';
 import {
   EFFORT_HINT,
@@ -9,6 +11,8 @@ import {
   PERMISSION_LABEL,
 } from '@/lib/format';
 import type { EffortLevel, PermissionLevel, PublicConfig } from '@/lib/types';
+
+type WebLoginMode = NonNullable<PublicConfig['webLoginMode']>;
 import { DEFAULT_OPTION_VALUE, FADE_STEP_MS, RadioOptionField, SwitchField } from './fields';
 
 const PERMISSION_LEVELS = Object.keys(PERMISSION_LABEL) as PermissionLevel[];
@@ -20,6 +24,8 @@ export function BehaviorSection({
   draft: PublicConfig;
   set(patch: Partial<PublicConfig>): void;
 }) {
+  const mode = draft.webLoginMode ?? 'off';
+
   return (
     <>
       <Fade>
@@ -88,6 +94,88 @@ export function BehaviorSection({
           />
         </FieldSet>
       </Fade>
+
+      <Fade delay={3 * FADE_STEP_MS}>
+        <FieldSet>
+          <FieldLegend variant="label">Web sign-ins</FieldLegend>
+          <FieldDescription>
+            Where the assistant may click sign in, use the browser's saved password or one you put on the
+            clipboard, and type a verification code it reads from your own mailbox. Windows prompts (UAC,
+            Windows Hello, PIN, lock screen), CAPTCHAs and payments always stay with you.
+          </FieldDescription>
+          <RadioGroup
+            value={mode}
+            onValueChange={(value) => set({ webLoginMode: value as WebLoginMode })}
+          >
+            <RadioOptionField id="set-web-logins-off" value="off" title="Off" hint="Every sign-in stays with you." />
+            <RadioOptionField
+              id="set-web-logins-allowlist"
+              value="allowlist"
+              title="Only allowed websites"
+              hint="Only on the websites listed under Allowed websites."
+            />
+            <RadioOptionField
+              id="set-web-logins-all"
+              value="all"
+              title="All websites except blocked"
+              hint="Everywhere except the blocked websites. Banks, brokers, payment services and government ID sites are always excluded."
+            />
+          </RadioGroup>
+          <DomainListField
+            id="set-web-login-domains"
+            label="Allowed websites"
+            placeholder="e.g. microsoft.com, github.com"
+            value={draft.webLoginDomains ?? []}
+            disabled={mode !== 'allowlist'}
+            onChange={(webLoginDomains) => set({ webLoginDomains })}
+          />
+          <DomainListField
+            id="set-web-login-blocklist"
+            label="Blocked websites"
+            placeholder="e.g. sparkasse.de, paypal.com"
+            value={draft.webLoginBlocklist ?? []}
+            disabled={mode !== 'all'}
+            onChange={(webLoginBlocklist) => set({ webLoginBlocklist })}
+          />
+        </FieldSet>
+      </Fade>
     </>
+  );
+}
+
+function DomainListField({
+  id,
+  label,
+  placeholder,
+  value,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  placeholder: string;
+  value: string[];
+  disabled: boolean;
+  onChange(domains: string[]): void;
+}) {
+  // The typed text while the field has focus, so "a.com, " keeps its comma;
+  // the draft only ever holds the split list.
+  const [raw, setRaw] = useState<string | null>(null);
+  return (
+    <Field>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Input
+        id={id}
+        value={raw ?? value.join(', ')}
+        placeholder={placeholder}
+        disabled={disabled}
+        onChange={(event) => {
+          setRaw(event.target.value);
+          onChange(event.target.value.split(/[\s,]+/).filter(Boolean));
+        }}
+        onBlur={() => setRaw(null)}
+      />
+      <FieldDescription>Domain names separated by commas; subdomains are included. Empty means none.</FieldDescription>
+    </Field>
   );
 }

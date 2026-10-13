@@ -628,7 +628,7 @@ function launchOf(
   const stored = toolServerConfig(config, state.id);
   if (state.entry) {
     const spec = state.entry.spec({ config, options: state.options, env: stored.env, provider, agentId });
-    return spec ? { spec, hint: state.entry.hint(state.options) } : null;
+    return spec ? { spec, hint: state.entry.hint(state.options, config) } : null;
   }
   if (stored.custom) {
     return {

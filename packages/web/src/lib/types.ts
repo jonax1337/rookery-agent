@@ -1374,6 +1374,10 @@ export interface PublicConfig {
   /** Unset or empty means each provider's own default; empty clears it. */
   defaultEffort?: EffortLevel | '';
   defaultPermission: PermissionLevel;
+  /** Where the assistant may complete web sign-ins: nowhere, `webLoginDomains`, or all but `webLoginBlocklist`. */
+  webLoginMode?: 'off' | 'allowlist' | 'all';
+  webLoginDomains?: string[];
+  webLoginBlocklist?: string[];
   voice: VoiceConfig;
   memory: MemoryConfig;
   org: OrgConfig;

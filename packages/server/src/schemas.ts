@@ -536,6 +536,10 @@ export const patchConfigSchema = z
     // An empty string clears the setting back to the provider default.
     defaultEffort: effortSchema.or(z.literal('')),
     defaultPermission: permissionSchema,
+    webLoginMode: z.enum(['off', 'allowlist', 'all']),
+    // Host names only; the prompt drops anything else again (webLoginHosts).
+    webLoginDomains: z.array(z.string().trim().toLowerCase().min(1).max(253)).max(100),
+    webLoginBlocklist: z.array(z.string().trim().toLowerCase().min(1).max(253)).max(100),
     logLevel: z.enum(['debug', 'info', 'warn', 'error', 'silent']),
     assistantName: z.string().min(1),
     userName: z.string(),
