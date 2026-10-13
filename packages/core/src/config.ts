@@ -36,6 +36,8 @@ export const DEFAULT_CONFIG: RookeryConfig = {
   defaultPermission: 'read',
   token: '',
   allowedHosts: [],
+  allowWebLogins: false,
+  webLoginDomains: [],
   logLevel: 'info',
   assistantName: 'Rookery',
   formalAddress: false,

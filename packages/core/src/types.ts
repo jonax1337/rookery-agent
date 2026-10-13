@@ -2121,6 +2121,16 @@ export interface RookeryConfig {
    * 127.0.0.1 would otherwise talk to the API as if it were the person.
    */
   allowedHosts: string[];
+  /**
+   * Whether the assistant may complete web sign-ins itself: click sign in,
+   * accept the browser's autofill or a password on the clipboard, and type a
+   * code it read from the user's own mailbox. Off by default; on, it applies
+   * only to `webLoginDomains`. UAC, Windows Hello, PINs, the Windows sign-in,
+   * CAPTCHAs and payment confirmations stay the user's either way.
+   */
+  allowWebLogins: boolean;
+  /** Host names (and their subdomains) `allowWebLogins` covers. Empty means none. */
+  webLoginDomains: string[];
   logLevel: 'debug' | 'info' | 'warn' | 'error' | 'silent';
   memory: MemoryConfig;
   voice: VoiceConfig;

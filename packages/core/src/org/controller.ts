@@ -35,6 +35,7 @@ import type {
 } from '../types.js';
 import { ASSISTANT_MEMORY_OWNER, EFFORT_LEVELS } from '../types.js';
 import { agentWorkspace, applyConfig } from '../config.js';
+import { webLoginDomains } from '../computer/tools.js';
 import type { Logger } from '../logger.js';
 import { silentLogger } from '../logger.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -2734,6 +2735,15 @@ export class OrgController extends EventEmitter {
     }
     const org = orgSettingsPatch(args);
     if (Object.keys(org).length) patch.org = org;
+    const allowWebLogins = args.flag('allowWebLogins');
+    if (allowWebLogins !== undefined) patch.allowWebLogins = allowWebLogins;
+    if (args.has('webLoginDomains')) {
+      const domains = args.list('webLoginDomains').filter((domain) => domain.toLowerCase() !== 'none');
+      const hosts = (list: string[]) => webLoginDomains({ allowWebLogins: true, webLoginDomains: list });
+      const invalid = domains.filter((domain) => !hosts([domain]).length);
+      if (invalid.length) return toolError('Not a host name: ' + invalid.join(', ') + '.');
+      patch.webLoginDomains = hosts(domains);
+    }
     if (!Object.keys(patch).length) return toolError('Nothing to change.');
 
     // applyConfig writes ~/.rookery/config.json and refreshes the one config
@@ -3947,6 +3957,8 @@ export function describeSettings(config: RookeryConfig): string {
     'Parallel runs: ' + config.org.maxConcurrentAssignments,
     'Delegation depth: ' + config.org.maxDelegationDepth,
     'Run timeout: ' + Math.round(config.org.assignmentTimeoutMs / 60000) + ' min',
+    'Web sign-ins: ' + (config.allowWebLogins ? 'on' : 'off') +
+      ', domains: ' + ((config.webLoginDomains ?? []).join(', ') || 'none'),
   ].join('\n');
 }
 

@@ -129,7 +129,7 @@ const TOOLS: ComputerToolDefinition[] = [
     name: 'hand_over',
     description:
       'Let the user do what software must not: approve a UAC prompt, confirm Windows Hello or a PIN, solve ' +
-      'a CAPTCHA, sign in. The cursor shows "Your turn" with the reason and a sound plays; the call returns ' +
+      'a CAPTCHA, sign in (unless your instructions allow that web sign-in). The cursor shows "Your turn" with the reason and a sound plays; the call returns ' +
       'when a secure prompt closes, or when the user has acted and then been idle for 4 s, with a fresh ' +
       'screenshot. Never try to answer such prompts yourself.',
     inputSchema: {
@@ -399,8 +399,41 @@ export function computerScriptPath(): string {
   return fileURLToPath(new URL('./mcp-server.js', import.meta.url));
 }
 
+/**
+ * The domains the user allowed web sign-ins on, cleaned up; empty while the
+ * setting is off. `https://Login.Example.com/path` and `*.example.com` both
+ * become the bare host name, and anything that is not one is dropped, so a
+ * stray word in the list can never widen what the prompt allows.
+ */
+export function webLoginDomains(config: Pick<RookeryConfig, 'allowWebLogins' | 'webLoginDomains'>): string[] {
+  if (!config.allowWebLogins) return [];
+  const hosts = (config.webLoginDomains ?? []).map((entry) =>
+    entry.trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/:?#].*$/, '').replace(/^\*\./, ''),
+  );
+  return [...new Set(hosts.filter((host) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host)))];
+}
+
+/**
+ * What the model may do about a web sign-in on the allowed domains, and what
+ * stays the user's regardless. Empty when no domain is allowed, so the
+ * prompts read exactly as they did before the setting existed.
+ */
+export function webLoginRule(domains: string[]): string {
+  if (!domains.length) return '';
+  return [
+    'The user allowed you to complete web sign-ins in a browser, only on these domains and their',
+    'subdomains: ' + domains.join(', ') + '. There you may click sign in, accept the browser\'s autofill',
+    'or paste a password the user put on the clipboard, and type a verification or MFA code you read',
+    'from the user\'s own mailbox. Never repeat a password or code in a reply, note or memory.',
+    'A sign-in on any other domain, a CAPTCHA, a payment confirmation, UAC, Windows Hello, a PIN and',
+    'the Windows sign-in or lock screen stay the user\'s: call hand_over with a short reason, never',
+    'try to answer them.',
+  ].join(' ');
+}
+
 /** The prompt paragraph that comes with the tools. Method, not enthusiasm. */
-export function computerPromptBlock(engine: ComputerEngine = 'builtin'): string {
+export function computerPromptBlock(engine: ComputerEngine = 'builtin', loginDomains: string[] = []): string {
+  const loginRule = webLoginRule(loginDomains);
   const shared = [
     'Before anything the user could not undo - deleting, sending, paying, closing unsaved work -',
     'stop and ask with one question. When the user says stop, stop at once. In a written turn do',
@@ -417,7 +450,8 @@ export function computerPromptBlock(engine: ComputerEngine = 'builtin'): string 
       'so pass target_app when you click or type. get_tool_guide tells you the best route for an',
       'unfamiliar app. Verify after acting: a fresh screenshot or a fresh ui tree, never an assumption.',
       ...shared,
-    ].join(' ');
+      loginRule,
+    ].filter(Boolean).join(' ');
   }
   return [
     'You can see and operate this computer through Rookery\'s embedded computer tools.',
@@ -437,9 +471,11 @@ export function computerPromptBlock(engine: ComputerEngine = 'builtin'): string 
     'The background-only mode refuses all foreground input. Use Playwright for browser work.',
     'stop cancels current and queued work for this session. Verify results; sending input is not success.',
     'Prefer open and focus_window over hunting for pixels; put very long text on the clipboard and',
-    'paste it. UAC prompts, Windows Hello, PINs, sign-ins and CAPTCHAs are the user\'s: call hand_over',
-    'with a short reason, never try to answer them. If every action is refused because the pointer sits',
-    'in the top-left corner, the user pulled the emergency brake: stop, do not work around it.',
+    'paste it.',
+    loginRule ||
+      'UAC prompts, Windows Hello, PINs, sign-ins and CAPTCHAs are the user\'s: call hand_over ' +
+      'with a short reason, never try to answer them.',
+    'If every action is refused because the pointer sits in the top-left corner, the user pulled the emergency brake: stop, do not work around it.',
     'An action stopped because "the user moved the mouse" means the user took over: do not retry',
     'until the user hands control back.',
     ...shared,

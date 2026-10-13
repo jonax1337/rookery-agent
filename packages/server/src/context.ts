@@ -110,6 +110,8 @@ export function publicConfig(config: RookeryConfig): Record<string, unknown> {
     defaultModel: config.defaultModel,
     defaultEffort: config.defaultEffort,
     defaultPermission: config.defaultPermission,
+    allowWebLogins: config.allowWebLogins,
+    webLoginDomains: config.webLoginDomains,
     voice: config.voice,
     memory: config.memory,
     // `roleplay` is gone with mail; the key stays in old files and is ignored.
