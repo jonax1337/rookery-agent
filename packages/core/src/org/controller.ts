@@ -632,6 +632,13 @@ export class OrgController extends EventEmitter {
    * run waits, then picks its own work back up with the results.
    */
   readonly #detached = new Map<string, Map<string, Promise<Task>>>();
+  /**
+   * The last report-back each task sent, by task id. `runTask` reports from
+   * its `finally`, so a second invocation that never claimed the card (it
+   * was finished already) would tell the conversation the same ending again;
+   * only a notice that differs - a new question, a later run - goes out.
+   */
+  readonly #reportedBack = new Map<string, string>();
 
   constructor(options: OrgControllerOptions) {
     super();
@@ -3063,6 +3070,8 @@ export class OrgController extends EventEmitter {
       status: task.status,
       notice: reportBackNotice(task, agent, task.status === 'blocked' ? this.#questionFor(task) : undefined),
     };
+    if (this.#reportedBack.get(task.id) === event.notice) return;
+    this.#reportedBack.set(task.id, event.notice);
     this.emit('report-back', event);
   }
 

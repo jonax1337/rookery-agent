@@ -258,3 +258,32 @@ test('the notice says what the assistant is to do for each ending', () => {
   assert.match(reportBackNotice({ ...base, status: 'cancelled' }, agent), /was cancelled/);
   assert.match(reportBackNotice({ ...base, status: 'failed', error: 'boom' }, agent), /failed after 1m: boom\./);
 });
+
+test('an ending is reported back once, however often it is triggered', async () => {
+  const fake = createFakeProvider();
+  const assistant = createAssistant(fake);
+  hire(assistant, { name: 'Dev' });
+  const reports = [];
+  assistant.org.on('report-back', (event) => reports.push(event));
+
+  const first = await drain(assistant.chat({ text: 'ASSIGNBG:dev|write the report' }));
+  const sessionId = first.find((event) => event.type === 'session').sessionId;
+  await waitFor(() => assistant.store.getMessages(sessionId).length >= 4, 'the report-back turn');
+  assert.equal(reports.length, 1);
+
+  // Every trigger again: a run started on the finished card (it never claims
+  // it) and the startup sweep reporting it as ended.
+  const orgId = assistant.org.activeOrganization().id;
+  const task = assistant.store.org.listTasks(orgId, { anyLevel: true })[0];
+  await assistant.org.runTask({ orgId, audience: 'assistant', depth: -1, emit: () => {} }, task);
+  assistant.org.reportEnded(assistant.store.org.getTask(task.id));
+  assistant.org.reportEnded(assistant.store.org.getTask(task.id));
+  await sleep(200);
+  assert.equal(reports.length, 1, 'the same ending is not sent again');
+  assert.equal(assistant.store.getMessages(sessionId).length, 4, 'and no later turn carries it');
+
+  // A genuinely new ending still comes through.
+  assistant.org.reportEnded({ ...assistant.store.org.getTask(task.id), status: 'failed', error: 'later failure' });
+  assert.equal(reports.length, 2);
+  assert.match(reports[1].notice, /failed.*later failure/);
+});
