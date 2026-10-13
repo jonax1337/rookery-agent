@@ -17,7 +17,7 @@ const HAND_OVER_MAIN =
   'when a secure prompt closes, or when the user has acted and then been idle for 4 s, with a fresh ' +
   'screenshot. Never try to answer such prompts yourself.';
 const EXCLUSIONS = ['CAPTCHA', 'payment confirmation', 'UAC', 'Windows Hello', 'a PIN', 'lock screen', 'hand_over'];
-const hint = (id, config) => TOOL_CATALOG.find((entry) => entry.id === id).hint({}, config);
+const hint = (id, config) => TOOL_CATALOG.find((entry) => entry.id === id).hint({ engine: 'builtin' }, config);
 const handOver = (on) => computerTools(on).find((tool) => tool.name === 'hand_over').description;
 const env = (config) => computerServerSpec({ ...config, home: tmpdir() }, undefined, 'ax', 'builtin').env;
 
