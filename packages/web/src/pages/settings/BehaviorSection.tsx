@@ -11,6 +11,8 @@ import {
   PERMISSION_LABEL,
 } from '@/lib/format';
 import type { EffortLevel, PermissionLevel, PublicConfig } from '@/lib/types';
+
+type WebLoginMode = NonNullable<PublicConfig['webLoginMode']>;
 import { DEFAULT_OPTION_VALUE, FADE_STEP_MS, RadioOptionField, SwitchField } from './fields';
 
 const PERMISSION_LEVELS = Object.keys(PERMISSION_LABEL) as PermissionLevel[];
@@ -22,10 +24,7 @@ export function BehaviorSection({
   draft: PublicConfig;
   set(patch: Partial<PublicConfig>): void;
 }) {
-  // The typed text while the domain field has focus, so "a.com, " keeps its
-  // comma; the draft only ever holds the cleaned list.
-  const [domainsRaw, setDomainsRaw] = useState<string | null>(null);
-  const domains = draft.webLoginDomains ?? [];
+  const mode = draft.webLoginMode ?? 'off';
 
   return (
     <>
@@ -99,32 +98,84 @@ export function BehaviorSection({
       <Fade delay={3 * FADE_STEP_MS}>
         <FieldSet>
           <FieldLegend variant="label">Web sign-ins</FieldLegend>
-          <SwitchField
-            id="set-web-logins"
-            label="Let the assistant sign in on websites"
-            description="On the websites listed below, the assistant may click sign in, use the browser's saved password or one you put on the clipboard, and type a verification code it reads from your own mailbox. Windows prompts (UAC, Windows Hello, PIN, lock screen), CAPTCHAs, payments and every other website always stay with you."
-            checked={draft.allowWebLogins ?? false}
-            onChange={(on) => set({ allowWebLogins: on })}
-          />
-          <Field>
-            <FieldLabel htmlFor="set-web-login-domains">Allowed websites</FieldLabel>
-            <Input
-              id="set-web-login-domains"
-              value={domainsRaw ?? domains.join(', ')}
-              placeholder="e.g. microsoft.com, github.com"
-              disabled={!draft.allowWebLogins}
-              onChange={(event) => {
-                setDomainsRaw(event.target.value);
-                set({ webLoginDomains: event.target.value.split(/[\s,]+/).filter(Boolean) });
-              }}
-              onBlur={() => setDomainsRaw(null)}
+          <FieldDescription>
+            Where the assistant may click sign in, use the browser's saved password or one you put on the
+            clipboard, and type a verification code it reads from your own mailbox. Windows prompts (UAC,
+            Windows Hello, PIN, lock screen), CAPTCHAs and payments always stay with you.
+          </FieldDescription>
+          <RadioGroup
+            value={mode}
+            onValueChange={(value) => set({ webLoginMode: value as WebLoginMode })}
+          >
+            <RadioOptionField id="set-web-logins-off" value="off" title="Off" hint="Every sign-in stays with you." />
+            <RadioOptionField
+              id="set-web-logins-allowlist"
+              value="allowlist"
+              title="Only allowed websites"
+              hint="Only on the websites listed under Allowed websites."
             />
-            <FieldDescription>
-              Domain names separated by commas; subdomains are included. Empty means none.
-            </FieldDescription>
-          </Field>
+            <RadioOptionField
+              id="set-web-logins-all"
+              value="all"
+              title="All websites except blocked"
+              hint="Everywhere except the blocked websites. Banks, brokers, payment services and government ID sites are always excluded."
+            />
+          </RadioGroup>
+          <DomainListField
+            id="set-web-login-domains"
+            label="Allowed websites"
+            placeholder="e.g. microsoft.com, github.com"
+            value={draft.webLoginDomains ?? []}
+            disabled={mode !== 'allowlist'}
+            onChange={(webLoginDomains) => set({ webLoginDomains })}
+          />
+          <DomainListField
+            id="set-web-login-blocklist"
+            label="Blocked websites"
+            placeholder="e.g. sparkasse.de, paypal.com"
+            value={draft.webLoginBlocklist ?? []}
+            disabled={mode !== 'all'}
+            onChange={(webLoginBlocklist) => set({ webLoginBlocklist })}
+          />
         </FieldSet>
       </Fade>
     </>
+  );
+}
+
+function DomainListField({
+  id,
+  label,
+  placeholder,
+  value,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  placeholder: string;
+  value: string[];
+  disabled: boolean;
+  onChange(domains: string[]): void;
+}) {
+  // The typed text while the field has focus, so "a.com, " keeps its comma;
+  // the draft only ever holds the split list.
+  const [raw, setRaw] = useState<string | null>(null);
+  return (
+    <Field>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Input
+        id={id}
+        value={raw ?? value.join(', ')}
+        placeholder={placeholder}
+        disabled={disabled}
+        onChange={(event) => {
+          setRaw(event.target.value);
+          onChange(event.target.value.split(/[\s,]+/).filter(Boolean));
+        }}
+        onBlur={() => setRaw(null)}
+      />
+      <FieldDescription>Domain names separated by commas; subdomains are included. Empty means none.</FieldDescription>
+    </Field>
   );
 }

@@ -2096,6 +2096,9 @@ export interface ProviderTerminalHandlers {
  * Config
  * ------------------------------------------------------------------ */
 
+export type WebLoginMode = 'off' | 'allowlist' | 'all';
+export const WEB_LOGIN_MODES: readonly WebLoginMode[] = ['off', 'allowlist', 'all'];
+
 export interface RookeryConfig {
   /** Root for db, logs and config. Defaults to ~/.rookery */
   home: string;
@@ -2122,15 +2125,19 @@ export interface RookeryConfig {
    */
   allowedHosts: string[];
   /**
-   * Whether the assistant may complete web sign-ins itself: click sign in,
+   * Where the assistant may complete web sign-ins itself: click sign in,
    * accept the browser's autofill or a password on the clipboard, and type a
-   * code it read from the user's own mailbox. Off by default; on, it applies
-   * only to `webLoginDomains`. UAC, Windows Hello, PINs, the Windows sign-in,
-   * CAPTCHAs and payment confirmations stay the user's either way.
+   * code it read from the user's own mailbox. `off` (the default) nowhere,
+   * `allowlist` only on `webLoginDomains`, `all` everywhere but
+   * `webLoginBlocklist` and banking, brokerage, payment and government
+   * identity sites. UAC, Windows Hello, PINs, the Windows sign-in, CAPTCHAs
+   * and payment confirmations stay the user's in every mode.
    */
-  allowWebLogins: boolean;
-  /** Host names (and their subdomains) `allowWebLogins` covers. Empty means none. */
+  webLoginMode: WebLoginMode;
+  /** Host names (and their subdomains) `allowlist` mode covers. Empty means none. */
   webLoginDomains: string[];
+  /** Host names (and their subdomains) never signed in to; beats `webLoginDomains`. */
+  webLoginBlocklist: string[];
   logLevel: 'debug' | 'info' | 'warn' | 'error' | 'silent';
   memory: MemoryConfig;
   voice: VoiceConfig;

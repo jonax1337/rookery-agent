@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { McpServerSpec, ProviderId, RookeryConfig, ToolServerAudience } from '../types.js';
-import { computerEngine, computerPromptBlock, computerServerSpec, webLoginDomains, webLoginRule, zavoraServerPath } from '../computer/tools.js';
+import { computerEngine, computerPromptBlock, computerServerSpec, webLoginRule, webLoginScope, zavoraServerPath } from '../computer/tools.js';
 
 /**
  * The catalogue of MCP servers Rookery knows how to run.
@@ -155,7 +155,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
     hint: (options, config) => {
       const engine = computerEngine(options.engine);
       const backgroundOnly = engine === 'builtin' && options.mode === 'background';
-      return computerPromptBlock(engine, webLoginDomains(config)) +
+      return computerPromptBlock(engine, webLoginScope(config)) +
         (backgroundOnly ? ' Background-only mode is enforced: no physical input, clipboard writes, launching or focus changes.' : '');
     },
     installed: (options) => computerEngine(options?.engine) === 'builtin' ? process.platform === 'win32' : zavoraServerPath() !== null,
@@ -237,7 +237,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
           ? 'The browser opens on your first browser call and closes with the turn, but it keeps its profile: logins from earlier turns are still there.'
           : '',
         'Never submit a purchase, a message or a form with consequences without asking once.',
-        webLoginRule(webLoginDomains(config)),
+        webLoginRule(webLoginScope(config)),
       ]
         .filter(Boolean)
         .join(' '),

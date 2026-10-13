@@ -15,7 +15,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { describeAct, describeControl, describeSnapshot, type ActResult, type FoundControl, type Snapshot, type View } from './accessibility.js';
 import { parseKeySequence } from './keys.js';
 import { PowerShellSession, psQuote } from './powershell.js';
-import { COMPUTER_SERVER_NAME, COMPUTER_TOOLS } from './tools.js';
+import { COMPUTER_SERVER_NAME, computerTools } from './tools.js';
 import {
   describeScreen, describeSettle, describeWindow, findText, pickMatch,
   type ScreenText, type SettleResult, type TextMatch, type WindowInfo,
@@ -27,6 +27,7 @@ const PROTOCOL_FALLBACK = '2025-06-18';
 const MAX_WIDTH = Math.min(3840, Math.max(320, Number(process.env.ROOKERY_COMPUTER_MAX_WIDTH) || 1280));
 const RUN_DIR = process.env.ROOKERY_COMPUTER_DIR ? join(process.env.ROOKERY_COMPUTER_DIR, 'run') : '';
 const BACKGROUND = process.env.ROOKERY_COMPUTER_MODE === 'background';
+const TOOL_LIST = computerTools(process.env.ROOKERY_COMPUTER_WEB_LOGINS === '1');
 /** What a fresh worker gets to let go of held buttons and keys. */
 const RELEASE_TIMEOUT_MS = 10_000;
 /** Version reported in the MCP initialize handshake. */
@@ -722,7 +723,7 @@ async function respond(id: number | string, method: string | undefined, params: 
       send({ id, result: {} });
       return;
     case 'tools/list':
-      send({ id, result: { tools: COMPUTER_TOOLS } });
+      send({ id, result: { tools: TOOL_LIST } });
       return;
     case 'tools/call':
       await callTool(id, String(params?.name ?? ''), (params?.arguments ?? {}) as Record<string, unknown>);

@@ -129,7 +129,7 @@ const TOOLS: ComputerToolDefinition[] = [
     name: 'hand_over',
     description:
       'Let the user do what software must not: approve a UAC prompt, confirm Windows Hello or a PIN, solve ' +
-      'a CAPTCHA, sign in (unless your instructions allow that web sign-in). The cursor shows "Your turn" with the reason and a sound plays; the call returns ' +
+      'a CAPTCHA, sign in. The cursor shows "Your turn" with the reason and a sound plays; the call returns ' +
       'when a secure prompt closes, or when the user has acted and then been idle for 4 s, with a fresh ' +
       'screenshot. Never try to answer such prompts yourself.',
     inputSchema: {
@@ -318,6 +318,18 @@ export const COMPUTER_TOOLS: ComputerToolDefinition[] = TOOLS.map((tool) => OBSE
   ? { ...tool, inputSchema: { ...tool.inputSchema, properties: { ...(tool.inputSchema.properties as Record<string, unknown>), observe: observeProperty } } }
   : tool);
 
+/**
+ * The tool list the server hands out. With web sign-ins on, hand_over's
+ * description names the exception the prompt grants; off, it is the list
+ * above, unchanged. The server learns the setting from its environment.
+ */
+export function computerTools(webLogins = false): ComputerToolDefinition[] {
+  if (!webLogins) return COMPUTER_TOOLS;
+  return COMPUTER_TOOLS.map((tool) => tool.name === 'hand_over'
+    ? { ...tool, description: tool.description.replace('a CAPTCHA, sign in.', 'a CAPTCHA, sign in (unless your instructions allow that web sign-in).') }
+    : tool);
+}
+
 /* --------------------------------- engines -------------------------------- */
 
 const ZAVORA_PACKAGE = '@zavora-ai/computer-use-mcp';
@@ -391,6 +403,7 @@ function builtinServerSpec(config: RookeryConfig, mode: string): McpServerSpec {
       ROOKERY_COMPUTER_MAX_WIDTH: SCREENSHOT_MAX_WIDTH,
       ROOKERY_COMPUTER_DIR: config.home,
       ROOKERY_COMPUTER_MODE: mode === 'background' ? 'background' : 'desktop',
+      ...(webLoginScope(config) ? { ROOKERY_COMPUTER_WEB_LOGINS: '1' } : {}),
     },
   };
 }
@@ -400,40 +413,91 @@ export function computerScriptPath(): string {
 }
 
 /**
- * The domains the user allowed web sign-ins on, cleaned up; empty while the
- * setting is off. `https://Login.Example.com/path` and `*.example.com` both
- * become the bare host name, and anything that is not one is dropped, so a
- * stray word in the list can never widen what the prompt allows.
+ * Banks, brokers and payment services the blocklist starts with. The prompt's
+ * hard rule covers the ones missing here; the list makes the common ones
+ * explicit and gives the user something to edit.
  */
-export function webLoginDomains(config: Pick<RookeryConfig, 'allowWebLogins' | 'webLoginDomains'>): string[] {
-  if (!config.allowWebLogins) return [];
-  const hosts = (config.webLoginDomains ?? []).map((entry) =>
+export const DEFAULT_WEB_LOGIN_BLOCKLIST = [
+  'sparkasse.de', 'deutsche-bank.de', 'commerzbank.de', 'ing.de', 'dkb.de', 'comdirect.de',
+  'consorsbank.de', 'postbank.de', 'hypovereinsbank.de', 'targobank.de', 'santander.de', 'volksbank.de',
+  'vr.de', 'n26.com', 'revolut.com', 'bunq.com', 'traderepublic.com', 'scalable.capital', 'flatex.de',
+  'paypal.com', 'klarna.com', 'wise.com',
+];
+
+/**
+ * A domain list, cleaned up: `https://Login.Example.com/path` and
+ * `*.example.com` both become the bare host name, and anything that is not
+ * one is dropped, so a stray word in a list can never widen what the prompt
+ * allows.
+ */
+export function webLoginHosts(list: string[] = []): string[] {
+  const hosts = list.map((entry) =>
     entry.trim().toLowerCase().replace(/^[a-z]+:\/\//, '').replace(/[/:?#].*$/, '').replace(/^\*\./, ''),
   );
   return [...new Set(hosts.filter((host) => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host)))];
 }
 
+/** Whether `host` is `domain` or one of its subdomains. */
+const covers = (domain: string, host: string) => host === domain || host.endsWith('.' + domain);
+
+export interface WebLoginScope {
+  mode: 'allowlist' | 'all';
+  /** The allowed domains in allowlist mode, minus any the blocklist covers. */
+  domains: string[];
+  /** The blocked domains the prompt has to name for this mode. */
+  blocked: string[];
+}
+
 /**
- * What the model may do about a web sign-in on the allowed domains, and what
- * stays the user's regardless. Empty when no domain is allowed, so the
- * prompts read exactly as they did before the setting existed.
+ * Where the assistant may complete web sign-ins, or null for nowhere: the
+ * setting is off, or the allowlist is empty once the blocklist is applied.
+ * Null keeps the prompts exactly as they were before the setting existed.
  */
-export function webLoginRule(domains: string[]): string {
-  if (!domains.length) return '';
+export function webLoginScope(
+  config: Pick<RookeryConfig, 'webLoginMode' | 'webLoginDomains' | 'webLoginBlocklist'>,
+): WebLoginScope | null {
+  const blocked = webLoginHosts(config.webLoginBlocklist);
+  if (config.webLoginMode === 'all') return { mode: 'all', domains: [], blocked };
+  if (config.webLoginMode !== 'allowlist') return null;
+  const domains = webLoginHosts(config.webLoginDomains).filter((host) => !blocked.some((block) => covers(block, host)));
+  if (!domains.length) return null;
+  // A blocked subdomain of an allowed domain still has to be named.
+  return { mode: 'allowlist', domains, blocked: blocked.filter((block) => domains.some((host) => covers(host, block))) };
+}
+
+/**
+ * What the model may do about a web sign-in, and what stays the user's
+ * regardless. Empty without a scope.
+ */
+export function webLoginRule(scope: WebLoginScope | null): string {
+  if (!scope) return '';
+  const blocked = scope.blocked.join(', ');
+  const where = scope.mode === 'all'
+    ? [
+        'The user allowed you to complete web sign-ins in a browser on any website' +
+          (blocked ? ' except these domains and their subdomains: ' + blocked + '.' : '.'),
+        'Never sign in to a banking, brokerage, payment or government identity site, listed or not.',
+      ]
+    : [
+        'The user allowed you to complete web sign-ins in a browser, only on these domains and their',
+        'subdomains: ' + scope.domains.join(', ') + '.' + (blocked ? ' Never on these or their subdomains: ' + blocked + '.' : ''),
+      ];
   return [
-    'The user allowed you to complete web sign-ins in a browser, only on these domains and their',
-    'subdomains: ' + domains.join(', ') + '. There you may click sign in, accept the browser\'s autofill',
+    ...where,
+    'There you may click sign in, accept the browser\'s autofill',
     'or paste a password the user put on the clipboard, and type a verification or MFA code you read',
     'from the user\'s own mailbox. Never repeat a password or code in a reply, note or memory.',
-    'A sign-in on any other domain, a CAPTCHA, a payment confirmation, UAC, Windows Hello, a PIN and',
+    scope.mode === 'all'
+      ? 'A sign-in on a blocked or excluded site, a CAPTCHA, a payment confirmation, UAC, Windows Hello, a PIN and'
+      : 'A sign-in on any other domain, a CAPTCHA, a payment confirmation, UAC, Windows Hello, a PIN and',
     'the Windows sign-in or lock screen stay the user\'s: call hand_over with a short reason, never',
     'try to answer them.',
   ].join(' ');
 }
 
 /** The prompt paragraph that comes with the tools. Method, not enthusiasm. */
-export function computerPromptBlock(engine: ComputerEngine = 'builtin', loginDomains: string[] = []): string {
-  const loginRule = webLoginRule(loginDomains);
+export function computerPromptBlock(engine: ComputerEngine = 'builtin', loginScope: WebLoginScope | null = null): string {
+  const loginRule = webLoginRule(loginScope);
   const shared = [
     'Before anything the user could not undo - deleting, sending, paying, closing unsaved work -',
     'stop and ask with one question. When the user says stop, stop at once. In a written turn do',

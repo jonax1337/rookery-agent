@@ -110,8 +110,9 @@ export function publicConfig(config: RookeryConfig): Record<string, unknown> {
     defaultModel: config.defaultModel,
     defaultEffort: config.defaultEffort,
     defaultPermission: config.defaultPermission,
-    allowWebLogins: config.allowWebLogins,
+    webLoginMode: config.webLoginMode,
     webLoginDomains: config.webLoginDomains,
+    webLoginBlocklist: config.webLoginBlocklist,
     voice: config.voice,
     memory: config.memory,
     // `roleplay` is gone with mail; the key stays in old files and is ignored.
@@ -119,6 +120,8 @@ export function publicConfig(config: RookeryConfig): Record<string, unknown> {
     // No secret here - profile API keys live behind GET /api/providers/profiles.
     router: config.router,
     providerFallback: config.providerFallback,
+    // The "Chat in Claude Code's terminal" switch reads `turns.terminal`.
+    turns: config.turns,
     // The one settings block that carries a secret. It is blanked rather than
     // dropped, so the page still sees the shape it edits; whether a token is
     // actually set - and whether it came from the environment - is what

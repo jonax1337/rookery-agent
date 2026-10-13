@@ -1039,6 +1039,12 @@ test('the assistant can cancel, browse history, edit projects, keep memory and c
   assert.equal(assistant.config.defaultEffort, undefined);
   const bad = await assistant.org.handle(ctx, 'update_settings', { defaultEffort: 'ludicrous' });
   assert.equal(bad.isError, true);
+  const logins = await assistant.org.handle(ctx, 'update_settings', { webLoginMode: 'all', webLoginBlocklist: 'https://Bank.example/x, *.paypal.com' });
+  assert.match(logins.text, /Web sign-ins: all, allowed: none, blocked: bank\.example, paypal\.com/);
+  assert.deepEqual(assistant.config.webLoginBlocklist, ['bank.example', 'paypal.com']);
+  assert.match((await assistant.org.handle(ctx, 'update_settings', { webLoginMode: 'everywhere' })).text, /webLoginMode must be one of off, allowlist, all/);
+  assert.match((await assistant.org.handle(ctx, 'update_settings', { webLoginDomains: 'github.com, my bank' })).text, /webLoginDomains: not a host name: my bank/);
+  assert.equal(assistant.config.webLoginMode, 'all');
   assistant.close();
 });
 

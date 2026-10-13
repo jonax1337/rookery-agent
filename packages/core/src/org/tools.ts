@@ -834,7 +834,7 @@ export const ORG_TOOLS: ToolDefinition[] = [
     description:
       'The current settings you may change: default provider, model and effort for turns and ' +
       'runs, the company limits (parallel runs, delegation depth, run ' +
-      'timeout), and whether you may complete web sign-ins and on which domains.',
+      'timeout), and where you may complete web sign-ins (mode, allowlist, blocklist).',
     inputSchema: objectSchema({}),
     audience: ASSISTANT_ONLY,
   },
@@ -851,13 +851,20 @@ export const ORG_TOOLS: ToolDefinition[] = [
         maxConcurrentAssignments: num('Agent processes at the same time, 1 to 16. Optional.'),
         maxDelegationDepth: num('How deep agents may delegate below you, 1 to 6. Optional.'),
         assignmentTimeoutMinutes: num('Hard stop for one run, 1 to 600. Optional.'),
-        allowWebLogins: bool(
-          'Let you complete web sign-ins on webLoginDomains (autofill, a password the user put on the ' +
-            'clipboard, a code from their own mailbox). Only when the user asks for it. Optional.',
+        webLoginMode: oneOf(
+          ['off', 'allowlist', 'all'],
+          'Where you may complete web sign-ins yourself (autofill, a password the user put on the clipboard, ' +
+            'a code from their own mailbox): off, allowlist (only webLoginDomains) or all (every site except ' +
+            'webLoginBlocklist and banking, brokerage, payment and government identity sites). Only when the ' +
+            'user asks for it. Optional.',
         ),
         webLoginDomains: str(
-          'Comma-separated host names web sign-ins are allowed on, subdomains included; replaces the list, ' +
+          'Comma-separated host names allowlist mode covers, subdomains included; replaces the list, ' +
             '"none" empties it. Optional.',
+        ),
+        webLoginBlocklist: str(
+          'Comma-separated host names you never sign in to, subdomains included; beats the allowlist. ' +
+            'Replaces the list, "none" empties it. Optional.',
         ),
       },
     ),
