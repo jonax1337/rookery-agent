@@ -913,7 +913,9 @@ test('the night rewrites a skill that a failed run had open', async () => {
   store.org.updateAssignment(assignment.id, {
     status: 'failed',
     error: 'npm error Missing script: "build:core"',
-    finishedAt: Date.now(),
+    // After the skill was written, also where Date.now() ticks in 15 ms steps
+    // (Windows CI): the same millisecond does not count as after.
+    finishedAt: skill.updatedAt + 1,
   });
   store.recordSkillUse({ skill: skill.name, owner: 'assistant', assignmentId: assignment.id });
 
