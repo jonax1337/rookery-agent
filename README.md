@@ -311,6 +311,8 @@ Dormant memories remain in the database and can be woken. Sleep does not retire 
 
 A persistent agent is a stored role, not a permanently running provider process. Assignments launch fresh CLI processes. Delegation follows reporting relationships and is bounded by depth and concurrency limits. Defaults are four concurrent assignments, depth three, and a 45-minute timeout per assignment.
 
+An assignment is done only when everything it started is done. Sub-agents, workflows and background commands an agent starts inside its Claude Code terminal hold the run open: when the agent stops while they still run, the run stays `running`, the task card notes what it is waiting for, and Claude Code picks the agent back up with each result. The report after the last one is the final report, and the requester hears about it once. An agent that leaves only background commands running is asked to stop or finish them. A report that says itself it is still waiting, with nothing left running, gets one request for the final report. If the assignment timeout (`org.assignmentTimeoutMs`) runs out while the run waits, it fails as `Incomplete: ...` with the last interim report, never as done. A `done` report that still reads like an interim note, or a file the task asked for that does not exist, is flagged with a warning on the card. Headless runs (`org.interactiveRuns: false`) get the card warnings only.
+
 ```bash
 rookery org
 rookery org hire --name Mara --title "Backend Engineer" --instructions "Maintain the server."
