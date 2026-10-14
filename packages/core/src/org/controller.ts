@@ -51,6 +51,7 @@ import { admitCandidates, linkEntities } from '../memory/gate.js';
 import type { SleepRunner } from '../memory/sleep.js';
 import { clip, shorten, tail, titleFromBrief } from '../util/queue.js';
 import { formatAge, formatDay, formatWhen } from '../util/time.js';
+import { expectedArtifacts, looksInterim } from '../util/interim-report.js';
 import type { BridgeServer, ToolCallResult, ToolHandler } from './bridge.js';
 import {
   buildAgentPrompt,
@@ -356,6 +357,8 @@ interface AttemptsOutcome {
   text: string;
   fatal: string | null;
   provider: ProviderId;
+  /** What the run was still waiting for when it last stopped, if it never got past that. */
+  waitingOn: string | null;
 }
 
 /** Everything `#develop` needs to file one personnel action for an agent whose stage rose. */
@@ -506,6 +509,8 @@ export function taskNotification(
 class AttemptOutput {
   text = '';
   fatal: string | null = null;
+  /** Set while the agent's last stop was held back for background work; cleared by `done`. */
+  waitingOn: string | null = null;
   #sinceProgress = 0;
 
   /** Take in a streamed delta; true when enough has come in since the last progress line. */
@@ -2317,10 +2322,22 @@ export class OrgController extends EventEmitter {
     if (run.cancelled()) {
       return record.finish({ status: 'cancelled', finishedAt: Date.now(), durationMs: Date.now() - started });
     }
-    if (abort.signal.aborted) return record.fail('Timed out.', started);
+    if (abort.signal.aborted) {
+      // Timed out while its own sub-agents were still out: that is an
+      // unfinished job, said as such - never a `done` with an interim text.
+      return record.fail(outcome.waitingOn ? this.#incompleteReason(outcome) : 'Timed out.', started);
+    }
     if (outcome.fatal) return record.fail(outcome.fatal, started);
     if (!outcome.text.trim()) return record.fail('The agent produced no output.', started);
     return this.#complete(run, outcome, started);
+  }
+
+  #incompleteReason(outcome: AttemptsOutcome): string {
+    const minutes = Math.round(this.#config.org.assignmentTimeoutMs / 60000);
+    return (
+      'Incomplete: the run timed out after ' + minutes + ' min (' + outcome.waitingOn + ').' +
+      (outcome.text.trim() ? ' Last interim report: ' + clip(outcome.text.trim(), NOTE_RESULT_BUDGET) : '')
+    );
   }
 
   /**
@@ -2433,7 +2450,7 @@ export class OrgController extends EventEmitter {
       provider = alternate;
       tried.add(alternate);
     }
-    return { text: output.text, fatal: output.fatal, provider };
+    return { text: output.text, fatal: output.fatal, provider, waitingOn: output.waitingOn };
   }
 
   /**
@@ -2559,8 +2576,13 @@ export class OrgController extends EventEmitter {
           record.announce({ lastActivity: { kind: 'tool', label: event.name, at: Date.now() } });
         }
         break;
+      case 'status':
+        if (event.label === 'waiting') this.#holdOpen(run, output, event.detail ?? 'waiting for background work');
+        else if (event.label === 'resumed' && output.waitingOn) output.waitingOn = event.detail ?? output.waitingOn;
+        break;
       case 'done':
         output.text = event.text || output.text;
+        output.waitingOn = null;
         break;
       case 'error':
         if (event.fatal) {
@@ -2569,6 +2591,29 @@ export class OrgController extends EventEmitter {
         }
         break;
     }
+  }
+
+  /**
+   * The agent stopped, but the run is held open for the work it started in
+   * the background (claude-tui `stopVerdict`). The live line and the card say
+   * so, so a run that sits quiet for minutes reads as waiting, not stuck.
+   */
+  #holdOpen(run: RunState, output: AttemptOutput, detail: string): void {
+    const { input, record } = run;
+    const event: AgentEvent = { type: 'status', label: 'waiting', detail };
+    this.#logPush(record.id, event);
+    input.emit(event);
+    record.announce({ preview: shorten(detail, 110), lastActivity: { kind: 'status', label: 'waiting', at: Date.now() } });
+    if (output.waitingOn !== detail && input.taskId) {
+      this.#taskEvent({
+        taskId: input.taskId,
+        kind: 'note',
+        actorKind: 'system',
+        text: input.agent.name + ' stopped, but the run stays open: ' + detail + '.',
+        assignmentId: record.id,
+      });
+    }
+    output.waitingOn = detail;
   }
 
   /** A run that produced a report: record it, and let the agent learn from it and be judged on it. */
@@ -3382,6 +3427,7 @@ export class OrgController extends EventEmitter {
     const note = context.taskNote ? '\n\n---\n\n' + context.taskNote : '';
     let askedRequester = false;
     const runNumber = this.#store.org.taskRunCount(task.id) + 1;
+    const brief = briefFor(task);
     const assignment = await this.run({
       orgId: context.orgId,
       agent,
@@ -3393,7 +3439,7 @@ export class OrgController extends EventEmitter {
       // line, so heading the brief with it says the same thing twice - and
       // the agent reads the repetition as emphasis that was never meant.
       // Only a title that adds something gets a heading.
-      task: dependencyResults(deps) + briefFor(task) + note,
+      task: dependencyResults(deps) + brief + note,
       projectId: task.projectId ?? context.projectId,
       sessionId: context.sessionId,
       parentId: context.parentAssignmentId,
@@ -3433,6 +3479,11 @@ export class OrgController extends EventEmitter {
       text: runEndedNote(runNumber, assignment, askedRequester),
       assignmentId: assignment.id,
     });
+    if (assignment.status === 'done') {
+      for (const warning of completionWarnings(brief, assignment.result ?? '')) {
+        this.#taskEvent({ taskId: task.id, kind: 'note', actorKind: 'system', text: warning, assignmentId: assignment.id });
+      }
+    }
     return {
       status: assignment.status,
       result: assignment.result,
@@ -4152,6 +4203,23 @@ function dependencyResults(deps: Task[]): string {
 }
 
 /** The card's line about one run of it ending. */
+/**
+ * What looks wrong about a report that came back `done`: it says itself that
+ * it is still waiting for something, or a file the task asked for is not
+ * there. A warning on the card, not a verdict - both checks are heuristics.
+ */
+function completionWarnings(brief: string, result: string): string[] {
+  const warnings: string[] = [];
+  if (looksInterim(result)) {
+    warnings.push('Warning: the report reads like an interim note - it says it is still waiting for something.');
+  }
+  const missing = expectedArtifacts(brief).filter((path) => !existsSync(path));
+  if (missing.length) {
+    warnings.push('Warning: the task asked for ' + missing.join(', ') + ', which does not exist.');
+  }
+  return warnings;
+}
+
 function runEndedNote(runNumber: number, assignment: Assignment, askedRequester: boolean): string {
   const outcome = askedRequester && assignment.status === 'done' ? 'ended with a question' : assignment.status;
   return (

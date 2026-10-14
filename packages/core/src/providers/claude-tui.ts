@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { AgentEvent } from '../types.js';
+import { looksInterim } from '../util/interim-report.js';
 import { quoteForCmd, type ResolvedBinary } from './process.js';
 import { userSettingsGuard } from './user-settings-guard.js';
 
@@ -54,7 +55,7 @@ interface PtyProcess {
   kill(signal?: string): void;
 }
 
-interface PtyModule {
+export interface PtyModule {
   spawn(
     file: string,
     args: string[] | string,
@@ -104,6 +105,16 @@ const POLL_MS = 250;
 
 /** How long after a Stop the transcript is watched for work a blocking hook set going again. */
 const HOOK_BLOCK_GRACE_MS = 4 * POLL_MS;
+
+/**
+ * Background work finished, Claude Code stopped while it ran, and nothing has
+ * picked the work back up for this long: the agent is asked once for its
+ * final report instead of leaving the run hanging until its timeout.
+ */
+const RESUME_GRACE_MS = 30_000;
+
+/** How often an agent is asked to settle the background commands it left running. */
+const MAX_COMMAND_NUDGES = 2;
 
 /** The slower pace at which a lingering terminal's transcript is followed. */
 const LATE_POLL_MS = 4 * POLL_MS;
@@ -491,6 +502,8 @@ export interface TuiSpawnSpec {
   /** Runs once the process is gone - the temp folders go then, not earlier. */
   cleanup: () => void;
   lingerMs?: number;
+  /** Tests hand in a fake pty here; otherwise the native binding is loaded. */
+  pty?: PtyModule;
 }
 
 export interface TuiRunSpec extends TuiSpawnSpec {
@@ -737,6 +750,8 @@ class TerminalWatch {
   contextTokens: number | undefined;
   /** The model of the newest assistant entry - `/model` can change it mid-session. */
   model: string | undefined;
+  /** Sub-agents, workflows and background commands the session has not heard back from. */
+  readonly work = new BackgroundWork();
   #tail: TranscriptTail | null = null;
   /** The read in flight, if any; the next one starts when it is over. */
   #reading: Promise<unknown> = Promise.resolve();
@@ -782,6 +797,7 @@ class TerminalWatch {
     const events: AgentEvent[] = [];
     for (const entry of await tail.read()) {
       this.lastActivity = Date.now();
+      this.work.observe(entry);
       if (entry.isSidechain === true) continue;
       const typed = typedPrompt(entry);
       if (typed !== null) {
@@ -858,6 +874,205 @@ class TerminalWatch {
   }
 }
 
+/* ----------------------------- background work ----------------------------- */
+
+/** What a session still has running in the background, by kind. */
+export interface PendingWork {
+  agents: number;
+  workflows: number;
+  commands: number;
+  /** Of `agents`, those that sent an interim result and may or may not notify again. */
+  interim: number;
+}
+
+const TASK_NOTIFICATION = /<task-notification>([\s\S]*?)<\/task-notification>/g;
+const TASK_ID = /<task-id>([^<]+)<\/task-id>/;
+/**
+ * A sub-agent that stopped with background work of its own still running
+ * (Claude Code 2.1.299). Seen live, the label is no promise either way: some
+ * notified again with "finished", others delivered their final result under
+ * the same label and never notified again.
+ */
+const STILL_WORKING = /is waiting on its own background work|result below may be interim/;
+
+const countOf = (value: unknown): number => (typeof value === 'number' && value > 0 ? value : 0);
+
+/** The text of a transcript entry's message, whether a plain string or text blocks. */
+function entryText(entry: Record<string, unknown>): string {
+  const content = (entry.message as Record<string, unknown> | undefined)?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return (content as Record<string, unknown>[])
+    .map((block) => (block.type === 'text' && typeof block.text === 'string' ? block.text : ''))
+    .join('\n');
+}
+
+/**
+ * The work a Claude Code session started in the background and has not heard
+ * back from, read off its transcript.
+ *
+ * The Stop hook fires whenever the agent stops talking - also when it has
+ * just sent sub-agents off (`Agent` with `run_in_background`), started a
+ * workflow or a background command, and says it will write the report once
+ * they are back. Claude Code picks the conversation back up by itself when
+ * one of them finishes, so such a stop is not the end of the run.
+ *
+ * Two sources, because neither covers everything: the launches and their
+ * `<task-notification>`s (agents and commands, by id), and the
+ * `pendingBackgroundAgentCount` / `pendingWorkflowCount` Claude Code writes
+ * on the `turn_duration` entry right after a stop (the only trace of a
+ * workflow). That count is a snapshot that stops holding once the
+ * conversation goes on, so the next message drops it. Seen live, it also
+ * leaves out sub-agents that wait on background work of their own; those stay
+ * open here, counted as `interim`, until a notification for them no longer
+ * says so.
+ */
+export class BackgroundWork {
+  readonly #open = new Map<string, 'agents' | 'commands'>();
+  /** Open sub-agents whose last notification was an interim one. */
+  readonly #interim = new Set<string>();
+  #reported = { agents: 0, workflows: 0 };
+  /**
+   * A result came back after the agent last spoke: Claude Code wakes the
+   * agent with it by itself. Seen live - the notifications land right behind the stop,
+   * and a nudge typed then only queues a second, redundant turn.
+   */
+  resuming = false;
+
+  observe(entry: Record<string, unknown>): void {
+    if (entry.isSidechain === true) return;
+    if (entry.type === 'system' && entry.subtype === 'turn_duration') {
+      this.#reported = {
+        agents: countOf(entry.pendingBackgroundAgentCount),
+        workflows: countOf(entry.pendingWorkflowCount),
+      };
+      return;
+    }
+    if (entry.type !== 'user' && entry.type !== 'assistant') return;
+    this.#reported = { agents: 0, workflows: 0 };
+    if (entry.type !== 'user') {
+      this.resuming = false;
+      return;
+    }
+    const result = entry.toolUseResult as Record<string, unknown> | undefined;
+    if (result?.isAsync === true && typeof result.agentId === 'string') this.#open.set(result.agentId, 'agents');
+    if (typeof result?.backgroundTaskId === 'string') this.#open.set(result.backgroundTaskId, 'commands');
+    for (const [, block = ''] of entryText(entry).matchAll(TASK_NOTIFICATION)) {
+      const id = block.match(TASK_ID)?.[1]?.trim();
+      if (!id) continue;
+      this.resuming = true;
+      if (STILL_WORKING.test(block)) {
+        this.#interim.add(id);
+      } else {
+        this.#open.delete(id);
+        this.#interim.delete(id);
+      }
+    }
+  }
+
+  pending(): PendingWork {
+    const open = [...this.#open.values()];
+    const agents = open.filter((kind) => kind === 'agents').length;
+    const interim = [...this.#interim].filter((id) => this.#open.has(id)).length;
+    return {
+      // Claude Code's own count leaves the interim ones out.
+      agents: Math.max(agents - interim, this.#reported.agents) + interim,
+      workflows: this.#reported.workflows,
+      commands: open.length - agents,
+      interim,
+    };
+  }
+}
+
+export const pendingTotal = (pending: PendingWork): number => pending.agents + pending.workflows + pending.commands;
+
+/** "2 sub-agents and 1 background command", for the card and the timeout message. */
+export function describePending(pending: PendingWork): string {
+  const parts: string[] = [];
+  const add = (count: number, one: string, many: string): void => {
+    if (count > 0) parts.push(count + ' ' + (count === 1 ? one : many));
+  };
+  add(pending.agents, 'sub-agent', 'sub-agents');
+  add(pending.workflows, 'workflow', 'workflows');
+  add(pending.commands, 'background command', 'background commands');
+  const last = parts.pop() ?? 'nothing';
+  return parts.length ? parts.join(', ') + ' and ' + last : last;
+}
+
+/** How a run's gate has dealt with its agent's stops so far. */
+export interface StopGate {
+  commandNudges: number;
+  interimNudged: boolean;
+}
+
+/** What a stop means for the run: the end, or not yet - and whether the agent is told something. */
+export type StopVerdict =
+  | { action: 'finish' }
+  | { action: 'wait'; detail: string; nudge?: string; finishAfterMs?: number };
+
+/**
+ * How long a final-sounding report waits for sub-agents that only sent an
+ * interim result. ponytail: a fixed grace; a sub-agent that reports again
+ * later than this after a report that did not sound like waiting is cut off.
+ */
+const INTERIM_AGENT_GRACE_MS = 2 * MINUTE_MS;
+
+const COMMANDS_NUDGE =
+  '[Rookery] Your run only ends once every background command you started has finished. ' +
+  'If you still need their output, wait for it; if not, stop them with TaskStop. Then give your final report.';
+
+const INTERIM_NUDGE =
+  '[Rookery] Your last message says you are still waiting for something, but nothing you started is running any more. ' +
+  'Finish the work now - what you answer next is the final report.';
+
+const RESUME_NUDGE =
+  '[Rookery] All background work you started has finished. Use its results and give your final report now.';
+
+/**
+ * The completion gate. A stop while sub-agents or workflows run is waited
+ * out: Claude Code wakes the agent with each result, and the stop after the
+ * last one is the real end. Background commands wake nobody once the agent
+ * no longer cares about them (a dev server left running), so the agent is
+ * asked to settle them. A sub-agent that has only sent an interim result
+ * holds the run while the agent's own report still says it is waiting; after
+ * a final-sounding one the run ends unless a result arrives within a grace
+ * period - live, some such sub-agents notified again and others never did.
+ * A report that itself says it is still waiting, with
+ * nothing left running, gets one request for the final report.
+ */
+export function stopVerdict(pending: PendingWork, text: string, gate: StopGate, resuming = false): StopVerdict {
+  const total = pendingTotal(pending);
+  if (total > pending.interim || (total > 0 && looksInterim(text))) {
+    const detail = 'waiting for ' + describePending(pending) + ' before the final report';
+    if (pending.agents + pending.workflows > 0 || gate.commandNudges >= MAX_COMMAND_NUDGES) return { action: 'wait', detail };
+    gate.commandNudges += 1;
+    return { action: 'wait', detail, nudge: COMMANDS_NUDGE };
+  }
+  if (resuming) return { action: 'wait', detail: 'all background work is back and Claude Code is picking up the results' };
+  if (total > 0) {
+    return {
+      action: 'wait',
+      detail: 'giving ' + describePending(pending) + ' with an interim result a moment to report again',
+      finishAfterMs: INTERIM_AGENT_GRACE_MS,
+    };
+  }
+  if (!gate.interimNudged && looksInterim(text)) {
+    gate.interimNudged = true;
+    return {
+      action: 'wait',
+      detail: 'the report said it was still waiting for something; asked for the final report',
+      nudge: INTERIM_NUDGE,
+    };
+  }
+  return { action: 'finish' };
+}
+
+/** Types one line into a run's terminal and sends it, the way a person would. */
+function nudgeTerminal(key: string, text: string): void {
+  if (!tuiSessions.write(key, text)) return;
+  setTimeout(() => tuiSessions.write(key, '\r'), DIALOG_KEY_DELAY_MS);
+}
+
 /**
  * The prompt as it goes on the command line. Through a `.cmd` shim the whole
  * command line is cmd.exe's to parse, and a task is outside text - a mail can
@@ -921,7 +1136,7 @@ function startupDialogAnswerer(child: PtyProcess, watch: TerminalWatch): (data: 
 
 /** Starts Claude Code in a pty and registers it. Throws only before the process exists. */
 async function spawnTerminal(spec: TuiSpawnSpec, resumed: boolean): Promise<TerminalWatch> {
-  const pty = await loadPty();
+  const pty = spec.pty ?? (await loadPty());
   if (!pty) throw new Error('Terminal support is not available on this system.');
 
   const prompt = await promptArgument(spec);
@@ -998,6 +1213,14 @@ export async function* runTui(spec: TuiRunSpec): AsyncGenerator<AgentEvent, void
   const watch = await spawnTerminal(spec, false);
   const started = Date.now();
   let finished = false;
+  const gate: StopGate = { commandNudges: 0, interimNudged: false };
+  /** Set once a stop was not the end: the agent waits for its background work. */
+  let parked = false;
+  /** Parked on work that was still running; cleared, and said, once it is all back. */
+  let awaitingWork = false;
+  let resumeNudged = false;
+  /** A final-sounding report held for interim sub-agents: it stands unless the agent speaks again in time. */
+  let held: { text: string; until: number; entries: number } | null = null;
 
   try {
     yield { type: 'status', label: 'terminal', detail: 'Claude Code is running in a terminal.' };
@@ -1020,17 +1243,52 @@ export async function* runTui(spec: TuiRunSpec): AsyncGenerator<AgentEvent, void
           yield fatalError(watch.apiError);
           return;
         }
+        const text = reported || watch.lastBlock;
+        const verdict = stopVerdict(watch.work.pending(), text, gate, watch.work.resuming);
+        if (verdict.action === 'wait') {
+          // Not the end: the next stop is judged again once the work is back.
+          await watch.clearMarker();
+          parked = true;
+          awaitingWork = pendingTotal(watch.work.pending()) > 0;
+          resumeNudged = false;
+          held = verdict.finishAfterMs
+            ? { text, until: Date.now() + verdict.finishAfterMs, entries: watch.assistantEntries }
+            : null;
+          yield { type: 'status', label: 'waiting', detail: verdict.detail };
+          if (verdict.nudge) nudgeTerminal(spec.key, verdict.nudge);
+          continue;
+        }
         finished = true;
         yield {
           type: 'done',
-          text: reported || watch.lastBlock,
+          text,
           providerSessionId: spec.sessionId,
           usage: watch.usage(started),
         };
         return;
       }
 
-      if (Date.now() - watch.lastActivity > IDLE_LIMIT_MS) {
+      if (held && watch.assistantEntries > held.entries) held = null;
+      if (held && Date.now() > held.until) {
+        finished = true;
+        yield { type: 'done', text: held.text, providerSessionId: spec.sessionId, usage: watch.usage(started) };
+        return;
+      }
+
+      // Sub-agents can work for a long while without a line in this
+      // transcript; the run's own timeout bounds that wait, not the idle limit.
+      const waiting = parked && pendingTotal(watch.work.pending()) > 0;
+      if (awaitingWork && !waiting) {
+        // Nothing is out any more; a timeout from here on is the report, not the wait.
+        awaitingWork = false;
+        yield { type: 'status', label: 'resumed', detail: 'all background work is back; the final report is being written' };
+      }
+      if (parked && !waiting && !resumeNudged && Date.now() - watch.lastActivity > RESUME_GRACE_MS) {
+        resumeNudged = true;
+        nudgeTerminal(spec.key, RESUME_NUDGE);
+      }
+
+      if (!waiting && Date.now() - watch.lastActivity > IDLE_LIMIT_MS) {
         yield fatalError(IDLE_MESSAGE);
         return;
       }
