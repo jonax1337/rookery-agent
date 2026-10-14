@@ -691,7 +691,9 @@ function typedPrompt(entry: Record<string, unknown>): string | null {
     if (blocks.some((block) => block.type === 'tool_result')) return null;
     text = blocks.map((block) => (block.type === 'text' && typeof block.text === 'string' ? block.text : '')).join('\n');
   }
-  text = text.trim();
+  // Claude Code 2.1.296+ wraps pasted text in <pasted_content id="..."> tags;
+  // read as a wrapper, every report-back looked unsent and was typed again.
+  text = text.replace(/<\/?pasted_content(?: id="[^"]*")?>/g, '').trim();
   if (!text || text.startsWith('<')) return null;
   return text;
 }
